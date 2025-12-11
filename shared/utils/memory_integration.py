@@ -1,14 +1,15 @@
 """
 Memory Integration for WaddleAI
-Provides conversation memory using mem0 and ChromaDB
+Provides conversation memory using mem0 or ChromaDB (user choice)
 """
 
 import asyncio
 import logging
 import json
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Protocol
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+from abc import ABC, abstractmethod
 import chromadb
 from chromadb.config import Settings
 import numpy as np
@@ -16,10 +17,10 @@ from sentence_transformers import SentenceTransformer
 
 # Optional mem0 import (if available)
 try:
-    import mem0
+    from mem0 import MemoryClient
     HAS_MEM0 = True
 except ImportError:
-    mem0 = None
+    MemoryClient = None
     HAS_MEM0 = False
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,260 @@ class ConversationContext:
     conversation_summary: Optional[str] = None
 
 
-class ChromaDBMemoryStore:
+class MemoryStore(ABC):
+    """Abstract base class for memory storage backends"""
+
+    @abstractmethod
+    async def initialize(self):
+        """Initialize the memory store connection"""
+        pass
+
+    @abstractmethod
+    async def store_memory(self, entry: MemoryEntry) -> bool:
+        """Store a memory entry"""
+        pass
+
+    @abstractmethod
+    async def search_memories(
+        self,
+        query: str,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        limit: int = 10,
+        min_relevance: float = 0.7
+    ) -> List[MemoryEntry]:
+        """Search for relevant memories"""
+        pass
+
+    @abstractmethod
+    async def get_recent_memories(
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        hours: int = 24,
+        limit: int = 20
+    ) -> List[MemoryEntry]:
+        """Get recent memories within time window"""
+        pass
+
+    @abstractmethod
+    async def delete_memory(self, memory_id: str) -> bool:
+        """Delete a specific memory"""
+        pass
+
+    @abstractmethod
+    async def cleanup_old_memories(self, days: int = 90) -> int:
+        """Cleanup memories older than specified days"""
+        pass
+
+
+class Mem0MemoryStore(MemoryStore):
+    """mem0-based memory storage"""
+
+    def __init__(self, api_key: Optional[str] = None, org_id: Optional[str] = None, config: Optional[Dict] = None):
+        if not HAS_MEM0:
+            raise ImportError("mem0ai package not installed. Install with: pip install mem0ai")
+
+        self.api_key = api_key
+        self.org_id = org_id
+        self.config = config or {}
+        self.client = None
+
+    async def initialize(self):
+        """Initialize mem0 client"""
+        try:
+            # Initialize mem0 client
+            client_config = {}
+            if self.api_key:
+                client_config['api_key'] = self.api_key
+            if self.org_id:
+                client_config['org_id'] = self.org_id
+
+            self.client = MemoryClient(**client_config)
+            logger.info("Initialized mem0 memory store")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize mem0: {e}")
+            raise
+
+    async def store_memory(self, entry: MemoryEntry) -> bool:
+        """Store memory in mem0"""
+        try:
+            if not self.client:
+                await self.initialize()
+
+            # Prepare metadata
+            metadata = {
+                **entry.metadata,
+                "user_id": entry.user_id,
+                "organization_id": entry.organization_id,
+                "session_id": entry.session_id or "",
+                "created_at": entry.created_at.isoformat(),
+                "memory_id": entry.id
+            }
+
+            # Store in mem0
+            self.client.add(
+                entry.content,
+                user_id=str(entry.user_id),
+                metadata=metadata
+            )
+
+            logger.debug(f"Stored memory in mem0: {entry.id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to store memory in mem0: {e}")
+            return False
+
+    async def search_memories(
+        self,
+        query: str,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        limit: int = 10,
+        min_relevance: float = 0.7
+    ) -> List[MemoryEntry]:
+        """Search memories in mem0"""
+        try:
+            if not self.client:
+                await self.initialize()
+
+            # Search in mem0
+            results = self.client.search(
+                query,
+                user_id=str(user_id),
+                limit=limit
+            )
+
+            # Convert to MemoryEntry objects
+            memories = []
+            for result in results:
+                metadata = result.get('metadata', {})
+
+                # Filter by organization and session if needed
+                if metadata.get('organization_id') != organization_id:
+                    continue
+                if session_id and metadata.get('session_id') != session_id:
+                    continue
+
+                # Check relevance
+                relevance_score = result.get('score', 0.0)
+                if relevance_score < min_relevance:
+                    continue
+
+                memory = MemoryEntry(
+                    id=metadata.get('memory_id', result.get('id', '')),
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    session_id=metadata.get('session_id'),
+                    content=result.get('memory', ''),
+                    metadata={k: v for k, v in metadata.items()
+                            if k not in ['user_id', 'organization_id', 'session_id', 'created_at', 'memory_id']},
+                    embedding=None,
+                    created_at=datetime.fromisoformat(metadata.get('created_at', datetime.utcnow().isoformat())),
+                    relevance_score=relevance_score
+                )
+                memories.append(memory)
+
+            return memories
+
+        except Exception as e:
+            logger.error(f"Failed to search memories in mem0: {e}")
+            return []
+
+    async def get_recent_memories(
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        hours: int = 24,
+        limit: int = 20
+    ) -> List[MemoryEntry]:
+        """Get recent memories from mem0"""
+        try:
+            if not self.client:
+                await self.initialize()
+
+            # mem0 get_all for user
+            results = self.client.get_all(user_id=str(user_id))
+
+            # Filter and convert
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            memories = []
+
+            for result in results:
+                metadata = result.get('metadata', {})
+
+                # Filter by organization and session
+                if metadata.get('organization_id') != organization_id:
+                    continue
+                if session_id and metadata.get('session_id') != session_id:
+                    continue
+
+                # Check time
+                created_at = datetime.fromisoformat(metadata.get('created_at', datetime.utcnow().isoformat()))
+                if created_at < cutoff:
+                    continue
+
+                memory = MemoryEntry(
+                    id=metadata.get('memory_id', result.get('id', '')),
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    session_id=metadata.get('session_id'),
+                    content=result.get('memory', ''),
+                    metadata={k: v for k, v in metadata.items()
+                            if k not in ['user_id', 'organization_id', 'session_id', 'created_at', 'memory_id']},
+                    embedding=None,
+                    created_at=created_at
+                )
+                memories.append(memory)
+
+                if len(memories) >= limit:
+                    break
+
+            # Sort by created_at descending
+            memories.sort(key=lambda m: m.created_at, reverse=True)
+            return memories[:limit]
+
+        except Exception as e:
+            logger.error(f"Failed to get recent memories from mem0: {e}")
+            return []
+
+    async def delete_memory(self, memory_id: str) -> bool:
+        """Delete memory from mem0"""
+        try:
+            if not self.client:
+                await self.initialize()
+
+            self.client.delete(memory_id)
+            logger.debug(f"Deleted memory from mem0: {memory_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to delete memory from mem0: {e}")
+            return False
+
+    async def cleanup_old_memories(self, days: int = 90) -> int:
+        """Cleanup old memories from mem0"""
+        try:
+            if not self.client:
+                await self.initialize()
+
+            # Note: mem0 may not support bulk cleanup by date
+            # This is a placeholder - adjust based on actual mem0 API
+            logger.warning("mem0 cleanup not fully implemented - may need manual cleanup")
+            return 0
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup memories in mem0: {e}")
+            return 0
+
+
+class ChromaDBMemoryStore(MemoryStore):
     """ChromaDB-based memory storage"""
     
     def __init__(self, persist_directory: str = "./chroma_data", collection_name: str = "waddleai_memory"):
@@ -327,20 +581,11 @@ class ChromaDBMemoryStore:
 
 class WaddleAIMemoryManager:
     """Main memory management system for WaddleAI"""
-    
-    def __init__(self, db, memory_store: ChromaDBMemoryStore):
+
+    def __init__(self, db, memory_store: MemoryStore):
         self.db = db
         self.memory_store = memory_store
-        self.mem0_client = None
-        
-        # Initialize mem0 if available
-        if HAS_MEM0:
-            try:
-                self.mem0_client = mem0.MemoryClient()
-                logger.info("Initialized mem0 client")
-            except Exception as e:
-                logger.warning(f"Failed to initialize mem0: {e}")
-    
+
     async def initialize(self):
         """Initialize memory manager"""
         await self.memory_store.initialize()
@@ -355,26 +600,36 @@ class WaddleAIMemoryManager:
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
-        """Add a conversation turn to memory"""
+        """Add a conversation turn to memory with complete context including routing information"""
         try:
             # Combine user message and assistant response
             user_messages = [msg for msg in messages if msg.get('role') == 'user']
             last_user_message = user_messages[-1]['content'] if user_messages else ""
-            
+
             # Create conversation context
             conversation_text = f"User: {last_user_message}\nAssistant: {response}"
-            
+
             # Generate memory ID
             memory_id = f"conv_{user_id}_{int(datetime.utcnow().timestamp() * 1000)}"
-            
-            # Prepare metadata
+
+            # Prepare enhanced metadata with routing context
             memory_metadata = {
                 "type": "conversation",
                 "message_count": len(messages),
                 "response_length": len(response),
+                "model_used": metadata.get('model', 'unknown') if metadata else 'unknown',
+                "provider": metadata.get('provider', 'unknown') if metadata else 'unknown',
+                "routing_decision": metadata.get('routing_decision', '') if metadata else '',
+                "routing_reasoning": metadata.get('routing_reasoning', '') if metadata else '',
+                "request_type": metadata.get('request_type', 'unknown') if metadata else 'unknown',
+                "waddleai_tokens": metadata.get('waddleai_tokens', 0) if metadata else 0,
+                "llm_tokens_input": metadata.get('llm_tokens_input', 0) if metadata else 0,
+                "llm_tokens_output": metadata.get('llm_tokens_output', 0) if metadata else 0,
+                "latency_ms": metadata.get('latency_ms', 0) if metadata else 0,
+                "api_format": metadata.get('api_format', 'openai') if metadata else 'openai',
                 **(metadata or {})
             }
-            
+
             # Create memory entry
             entry = MemoryEntry(
                 id=memory_id,
@@ -386,30 +641,15 @@ class WaddleAIMemoryManager:
                 embedding=None,
                 created_at=datetime.utcnow()
             )
-            
+
             # Store in memory store
             success = await self.memory_store.store_memory(entry)
-            
-            # Also try to store in mem0 if available
-            if self.mem0_client and success:
-                try:
-                    self.mem0_client.add(
-                        conversation_text,
-                        user_id=str(user_id),
-                        metadata={
-                            "organization_id": organization_id,
-                            "session_id": session_id or "",
-                            **memory_metadata
-                        }
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to store in mem0: {e}")
-            
+
             if success:
-                logger.debug(f"Added conversation turn to memory for user {user_id}")
-            
+                logger.debug(f"Added conversation turn to memory for user {user_id} (model={memory_metadata['model_used']}, provider={memory_metadata['provider']}, routing={memory_metadata['routing_decision']})")
+
             return success
-            
+
         except Exception as e:
             logger.error(f"Failed to add conversation turn: {e}")
             return False
@@ -570,17 +810,17 @@ class WaddleAIMemoryManager:
                 hours=24 * 30,  # Last 30 days
                 limit=1000
             )
-            
+
             # Calculate statistics
             total_memories = len(recent_memories)
             avg_length = sum(len(m.content) for m in recent_memories) / max(total_memories, 1)
-            
+
             # Group by day
             daily_counts = {}
             for memory in recent_memories:
                 day = memory.created_at.date().isoformat()
                 daily_counts[day] = daily_counts.get(day, 0) + 1
-            
+
             return {
                 "total_memories": total_memories,
                 "average_content_length": round(avg_length, 2),
@@ -588,7 +828,7 @@ class WaddleAIMemoryManager:
                 "oldest_memory": min(recent_memories, key=lambda m: m.created_at).created_at.isoformat() if recent_memories else None,
                 "newest_memory": max(recent_memories, key=lambda m: m.created_at).created_at.isoformat() if recent_memories else None
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get memory stats: {e}")
             return {
@@ -599,8 +839,159 @@ class WaddleAIMemoryManager:
                 "newest_memory": None
             }
 
+    async def semantic_search_conversations(
+        self,
+        query: str,
+        user_id: Optional[int] = None,
+        organization_id: Optional[int] = None,
+        limit: int = 10,
+        min_relevance: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """
+        Semantic search across conversations with routing context
 
-def create_memory_manager(db, persist_directory: str = "./chroma_data") -> WaddleAIMemoryManager:
-    """Factory function to create memory manager"""
-    memory_store = ChromaDBMemoryStore(persist_directory=persist_directory)
+        Returns list of conversation dictionaries with full metadata
+        """
+        try:
+            # Perform search in ChromaDB
+            if user_id:
+                memories = await self.memory_store.search_memories(
+                    query=query,
+                    user_id=user_id,
+                    organization_id=organization_id or 0,
+                    session_id=None,
+                    limit=limit,
+                    min_relevance=min_relevance
+                )
+            else:
+                # Admin search across all users (need to implement in ChromaDBMemoryStore)
+                memories = []
+
+            # Convert to detailed conversation format
+            conversations = []
+            for memory in memories:
+                conversation = {
+                    "id": memory.id,
+                    "user_id": memory.user_id,
+                    "organization_id": memory.organization_id,
+                    "session_id": memory.session_id,
+                    "content": memory.content,
+                    "created_at": memory.created_at.isoformat(),
+                    "relevance_score": memory.relevance_score,
+                    "metadata": memory.metadata
+                }
+                conversations.append(conversation)
+
+            logger.info(f"Semantic search returned {len(conversations)} conversations for query: {query[:50]}")
+            return conversations
+
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}")
+            return []
+
+    async def store_complete_conversation(
+        self,
+        user_id: int,
+        organization_id: int,
+        messages: List[Dict],
+        response: str,
+        model_used: str,
+        routing_decision: str,
+        routing_reasoning: str,
+        metadata: Dict[str, Any]
+    ) -> bool:
+        """
+        Store complete conversation with full routing context for analytics
+
+        This is an enhanced version that stores all details for analysis
+        """
+        try:
+            # Create comprehensive conversation record
+            conversation_id = f"full_conv_{user_id}_{int(datetime.utcnow().timestamp() * 1000)}"
+
+            # Build full conversation text
+            conversation_parts = []
+            for msg in messages:
+                role = msg.get('role', 'unknown')
+                content = msg.get('content', '')
+                conversation_parts.append(f"{role.capitalize()}: {content}")
+
+            conversation_parts.append(f"Assistant: {response}")
+            full_conversation_text = "\n".join(conversation_parts)
+
+            # Enhanced metadata
+            enhanced_metadata = {
+                "type": "full_conversation",
+                "model_used": model_used,
+                "routing_decision": routing_decision,
+                "routing_reasoning": routing_reasoning,
+                "request_type": metadata.get("request_type", "unknown"),
+                "waddleai_tokens": metadata.get("waddleai_tokens", 0),
+                "llm_tokens_input": metadata.get("llm_tokens_input", 0),
+                "llm_tokens_output": metadata.get("llm_tokens_output", 0),
+                "latency_ms": metadata.get("latency_ms", 0),
+                "timestamp": datetime.utcnow().isoformat(),
+                "message_count": len(messages),
+                **metadata
+            }
+
+            # Create memory entry
+            entry = MemoryEntry(
+                id=conversation_id,
+                user_id=user_id,
+                organization_id=organization_id,
+                session_id=None,
+                content=full_conversation_text,
+                metadata=enhanced_metadata,
+                embedding=None,
+                created_at=datetime.utcnow()
+            )
+
+            # Store in memory
+            success = await self.memory_store.store_memory(entry)
+
+            if success:
+                logger.info(f"Stored complete conversation: {conversation_id}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Failed to store complete conversation: {e}")
+            return False
+
+
+def create_memory_manager(
+    db,
+    backend: str = "mem0",
+    persist_directory: str = "./chroma_data",
+    api_key: Optional[str] = None,
+    org_id: Optional[str] = None,
+    config: Optional[Dict] = None
+) -> WaddleAIMemoryManager:
+    """
+    Factory function to create memory manager
+
+    Args:
+        db: Database connection
+        backend: Memory backend to use ("mem0" or "chromadb")
+        persist_directory: ChromaDB persist directory (chromadb only)
+        api_key: API key for mem0 (mem0 only)
+        org_id: Organization ID for mem0 (mem0 only)
+        config: Additional configuration dictionary
+
+    Returns:
+        WaddleAIMemoryManager instance
+    """
+    if backend == "mem0":
+        if not HAS_MEM0:
+            logger.warning("mem0 not available, falling back to ChromaDB")
+            memory_store = ChromaDBMemoryStore(persist_directory=persist_directory)
+        else:
+            memory_store = Mem0MemoryStore(api_key=api_key, org_id=org_id, config=config)
+    elif backend == "chromadb":
+        collection_name = config.get('collection_name', 'waddleai_memory') if config else 'waddleai_memory'
+        memory_store = ChromaDBMemoryStore(persist_directory=persist_directory, collection_name=collection_name)
+    else:
+        raise ValueError(f"Unknown memory backend: {backend}. Use 'mem0' or 'chromadb'")
+
     return WaddleAIMemoryManager(db, memory_store)

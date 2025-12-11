@@ -27,6 +27,7 @@ def define_tables(db):
         Field('description', 'text'),
         Field('token_quota_monthly', 'integer', default=1000000),
         Field('token_quota_daily', 'integer', default=100000),
+        Field('default_model', 'string'),  # Default model for organization
         Field('enabled', 'boolean', default=True),
         Field('created_at', 'datetime', default=datetime.utcnow),
         format='%(name)s'
@@ -43,6 +44,7 @@ def define_tables(db):
         Field('created_at', 'datetime', default=datetime.utcnow),
         Field('token_quota_monthly', 'integer', default=100000),
         Field('token_quota_daily', 'integer', default=10000),
+        Field('default_model', 'string'),  # Default model for user
         Field('enabled', 'boolean', default=True),
         format='%(username)s'
     )
@@ -57,6 +59,7 @@ def define_tables(db):
         Field('token_quota_monthly', 'integer'),  # Override user quota
         Field('token_quota_daily', 'integer'),    # Override user quota
         Field('rate_limit_rpm', 'integer', default=60),  # Requests per minute
+        Field('default_model', 'string'),  # Default model for this API key
         Field('enabled', 'boolean', default=True),
         Field('expires_at', 'datetime'),
         Field('last_used', 'datetime'),
@@ -103,13 +106,29 @@ def define_tables(db):
         Field('enabled', 'boolean', default=True)
     )
 
-    # Memory Configurations
-    db.define_table('memory_configs',
+    # Conversation Memory Configurations
+    db.define_table('conversation_memory_configs',
         Field('name', required=True),
-        Field('provider', 'string'),  # mem0, chromadb
+        Field('provider', 'string', default='mem0'),  # mem0, chromadb
         Field('connection_string'),
+        Field('api_key', 'password'),
         Field('collection_name'),
         Field('embedding_model'),
+        Field('config_json', 'json'),  # Provider-specific settings
+        Field('enabled', 'boolean', default=True)
+    )
+
+    # RAG/Knowledge Base Configurations
+    db.define_table('rag_configs',
+        Field('name', required=True),
+        Field('provider', 'string', default='supabase'),  # supabase, qdrant, chromadb
+        Field('connection_string'),
+        Field('api_key', 'password'),
+        Field('collection_name'),
+        Field('embedding_model', default='all-MiniLM-L6-v2'),
+        Field('config_json', 'json'),  # Provider-specific settings (host, port, etc.)
+        Field('chunk_size', 'integer', default=512),
+        Field('chunk_overlap', 'integer', default=50),
         Field('enabled', 'boolean', default=True)
     )
 

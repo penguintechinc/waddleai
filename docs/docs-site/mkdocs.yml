@@ -34,6 +34,7 @@ theme:
 
 nav:
   - Home: index.md
+  - Architecture: architecture.md
   - Claude Integration: claude.md
   - Getting Started:
     - Installation: getting-started/installation.md
@@ -56,6 +57,10 @@ nav:
     - Cloudflare: deployment/cloudflare.md
     - Production Checklist: deployment/production-checklist.md
   - Integrations:
+    - Claude Code: integrations/claude-code.md
+    - Cursor IDE: integrations/cursor-ide.md
+    - VS Code Extension: integrations/vscode-extension.md
+    - Open WebUI: integrations/open-webui.md
     - Ollama Setup: integrations/ollama-setup.md
     - Anthropic Config: integrations/anthropic-config.md
     - OpenAI Config: integrations/openai-config.md

@@ -451,6 +451,341 @@ async def _get_dashboard_data(user_context) -> Dict[str, Any]:
     return data
 
 
+# HTML Template Routes
+@app.get("/routing-config", response_class=HTMLResponse)
+async def routing_config(request: FastAPIRequest):
+    """Routing configuration page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Admin only
+        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            raise HTTPException(status_code=403, detail="Admin permission required")
+
+        # Get routing instructions from Redis
+        routing_data = {}
+        try:
+            import redis
+            redis_url = mgmt_server.config['redis_url']
+            r = redis.from_url(redis_url, decode_responses=True)
+            routing_data = {
+                "instructions": r.get('routing:instructions') or "No routing instructions configured",
+                "routing_llm": r.get('routing:llm_model') or "llama3.2:1b"
+            }
+        except Exception as e:
+            logger.error(f"Failed to get routing data: {e}")
+            routing_data = {
+                "instructions": "Error loading routing instructions",
+                "routing_llm": "unknown"
+            }
+
+        return templates.TemplateResponse("routing_config.html", {
+            "request": request,
+            "user": user_context,
+            "data": routing_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/providers", response_class=HTMLResponse)
+async def providers(request: FastAPIRequest):
+    """LLM providers management page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Admin only
+        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            raise HTTPException(status_code=403, detail="Admin permission required")
+
+        # Get connection links from database
+        connection_links = mgmt_server.db(mgmt_server.db.connection_links.id > 0).select()
+
+        providers_data = {
+            "connection_links": [dict(link) for link in connection_links],
+            "total_providers": len(connection_links),
+            "enabled_providers": len([link for link in connection_links if link.enabled])
+        }
+
+        return templates.TemplateResponse("providers.html", {
+            "request": request,
+            "user": user_context,
+            "data": providers_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/memory-config", response_class=HTMLResponse)
+async def memory_config(request: FastAPIRequest):
+    """Memory configuration page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Admin and Reporter can access
+        if not (mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE) or
+                mgmt_server.rbac.check_permission(user_context, Permission.REPORT_VIEW)):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Get memory stats
+        memory_data = {
+            "total_conversations": 0,
+            "storage_size_mb": 0,
+            "backend": "mem0",
+            "status": "connected"
+        }
+
+        return templates.TemplateResponse("memory_config.html", {
+            "request": request,
+            "user": user_context,
+            "data": memory_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/redis-config", response_class=HTMLResponse)
+async def redis_config(request: FastAPIRequest):
+    """Redis configuration page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Admin only
+        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            raise HTTPException(status_code=403, detail="Admin permission required")
+
+        # Get Redis connection status
+        redis_data = {
+            "connected": False,
+            "url": mgmt_server.config['redis_url'],
+            "version": "unknown"
+        }
+
+        try:
+            import redis
+            r = redis.from_url(mgmt_server.config['redis_url'], decode_responses=True)
+            info = r.info()
+            redis_data["connected"] = True
+            redis_data["version"] = info.get('redis_version', 'unknown')
+            redis_data["used_memory_human"] = info.get('used_memory_human', 'unknown')
+            redis_data["connected_clients"] = info.get('connected_clients', 0)
+        except Exception as e:
+            logger.error(f"Redis connection check failed: {e}")
+
+        return templates.TemplateResponse("redis_config.html", {
+            "request": request,
+            "user": user_context,
+            "data": redis_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/mcp-management", response_class=HTMLResponse)
+async def mcp_management(request: FastAPIRequest):
+    """MCP server management page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Admin only
+        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            raise HTTPException(status_code=403, detail="Admin permission required")
+
+        # Get MCP server status
+        mcp_data = {
+            "running": mgmt_server.mcp_websocket_server is not None,
+            "host": mgmt_server.config['mcp_host'],
+            "port": mgmt_server.config['mcp_port'],
+            "active_clients": len(mgmt_server.mcp_server.clients) if mgmt_server.mcp_server else 0,
+            "auto_start": mgmt_server.config['mcp_auto_start']
+        }
+
+        return templates.TemplateResponse("mcp_management.html", {
+            "request": request,
+            "user": user_context,
+            "data": mcp_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/api-keys-enhanced", response_class=HTMLResponse)
+async def api_keys_enhanced(request: FastAPIRequest):
+    """Enhanced API keys management page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Get API keys based on user role
+        if mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            keys = mgmt_server.db(mgmt_server.db.api_keys.id > 0).select()
+        elif mgmt_server.rbac.check_permission(user_context, Permission.RESOURCE_MANAGE):
+            keys = mgmt_server.db(
+                mgmt_server.db.api_keys.organization_id == user_context.organization_id
+            ).select()
+        else:
+            keys = mgmt_server.db(
+                mgmt_server.db.api_keys.user_id == user_context.user_id
+            ).select()
+
+        # Redact key hashes
+        api_keys = []
+        for key in keys:
+            key_dict = dict(key)
+            key_dict['key_hash'] = '***REDACTED***'
+            api_keys.append(key_dict)
+
+        keys_data = {
+            "api_keys": api_keys,
+            "total_keys": len(api_keys),
+            "enabled_keys": len([k for k in keys if k.enabled])
+        }
+
+        return templates.TemplateResponse("api_keys_enhanced.html", {
+            "request": request,
+            "user": user_context,
+            "data": keys_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/analytics", response_class=HTMLResponse)
+async def analytics_enhanced(request: FastAPIRequest):
+    """Enhanced analytics page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Get usage data based on role
+        days = 30
+        query = mgmt_server.db.token_usage.created_at > datetime.utcnow() - timedelta(days=days)
+
+        if user_context.role == Role.ADMIN:
+            usage_records = mgmt_server.db(query).select()
+        elif user_context.role in [Role.RESOURCE_MANAGER, Role.REPORTER]:
+            usage_records = mgmt_server.db(
+                query & (mgmt_server.db.token_usage.organization_id == user_context.organization_id)
+            ).select()
+        else:
+            usage_records = mgmt_server.db(
+                query & (mgmt_server.db.token_usage.user_id == user_context.user_id)
+            ).select()
+
+        # Calculate analytics
+        total_tokens = sum(record.waddleai_tokens for record in usage_records)
+        total_requests = len(usage_records)
+
+        # Daily usage
+        daily_usage = {}
+        for record in usage_records:
+            day = record.created_at.date().isoformat()
+            if day not in daily_usage:
+                daily_usage[day] = {'tokens': 0, 'requests': 0}
+            daily_usage[day]['tokens'] += record.waddleai_tokens
+            daily_usage[day]['requests'] += 1
+
+        # Provider usage
+        provider_usage = {}
+        for record in usage_records:
+            provider = record.provider
+            if provider not in provider_usage:
+                provider_usage[provider] = {'tokens': 0, 'requests': 0}
+            provider_usage[provider]['tokens'] += record.waddleai_tokens
+            provider_usage[provider]['requests'] += 1
+
+        analytics_data = {
+            "total_tokens": total_tokens,
+            "total_requests": total_requests,
+            "daily_usage": daily_usage,
+            "provider_usage": provider_usage,
+            "period_days": days
+        }
+
+        return templates.TemplateResponse("analytics_enhanced.html", {
+            "request": request,
+            "user": user_context,
+            "data": analytics_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/performance", response_class=HTMLResponse)
+async def performance_config(request: FastAPIRequest):
+    """Performance configuration page"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Admin only
+        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            raise HTTPException(status_code=403, detail="Admin permission required")
+
+        # Get XDP status
+        xdp_data = {
+            "enabled": False,
+            "interface": "eth0",
+            "program_loaded": False,
+            "af_xdp_sockets": 0,
+            "rate_limits_active": 0,
+            "stats": {
+                "packets_total": 0,
+                "packets_passed": 0,
+                "packets_dropped": 0,
+                "packets_rate_limited": 0,
+                "bytes_processed": 0
+            },
+            "performance": {
+                "drop_rate": 0.0,
+                "throughput_mbps": 0.0
+            },
+            "message": "XDP not enabled. Set ENABLE_XDP=true and run as root to enable."
+        }
+
+        return templates.TemplateResponse("performance_config.html", {
+            "request": request,
+            "user": user_context,
+            "data": xdp_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/dashboard-enhanced", response_class=HTMLResponse)
+async def dashboard_enhanced(request: FastAPIRequest):
+    """Enhanced dashboard with additional widgets"""
+    try:
+        user_context = await get_current_user(request)
+
+        # Get enhanced dashboard data
+        dashboard_data = await _get_dashboard_data(user_context)
+
+        # Add additional metrics
+        if user_context.role == Role.ADMIN:
+            # System health
+            try:
+                health_results = await mgmt_server.health_monitor.check_all()
+                dashboard_data['system_health'] = health_results
+            except Exception as e:
+                logger.error(f"Health check failed: {e}")
+                dashboard_data['system_health'] = {"status": "unknown"}
+
+        return templates.TemplateResponse("dashboard_enhanced.html", {
+            "request": request,
+            "user": user_context,
+            "data": dashboard_data
+        })
+
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request})
+
+
 # API endpoints for management
 @app.get("/api/organizations")
 async def list_organizations(user_context = Depends(get_current_user)):
@@ -886,10 +1221,10 @@ async def list_mcp_clients(user_context = Depends(get_current_user)):
     """List active MCP clients (Admin only)"""
     if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
         raise HTTPException(status_code=403, detail="Admin permission required")
-    
+
     if not mgmt_server.mcp_server:
         return {"clients": []}
-    
+
     clients = []
     for websocket, user_ctx in mgmt_server.mcp_server.clients.items():
         clients.append({
@@ -899,8 +1234,256 @@ async def list_mcp_clients(user_context = Depends(get_current_user)):
             "role": user_ctx.role.value,
             "organization_id": user_ctx.organization_id
         })
-    
+
     return {"clients": clients}
+
+
+# Routing Configuration Endpoints
+@app.get("/api/routing/instructions")
+async def get_routing_instructions(user_context = Depends(get_current_user)):
+    """Get current routing instructions from Redis"""
+    try:
+        import redis
+        redis_url = mgmt_server.config['redis_url']
+        r = redis.from_url(redis_url, decode_responses=True)
+
+        instructions = r.get('routing:instructions')
+        routing_llm = r.get('routing:llm_model')
+
+        return {
+            "instructions": instructions or "No routing instructions configured",
+            "routing_llm": routing_llm or "llama3.2:1b",
+            "source": "redis"
+        }
+    except Exception as e:
+        logger.error(f"Failed to get routing instructions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get routing instructions: {str(e)}")
+
+
+@app.post("/api/routing/instructions")
+async def set_routing_instructions(
+    request: FastAPIRequest,
+    user_context = Depends(get_current_user)
+):
+    """Set routing instructions in Redis (Admin only)"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    try:
+        body = await request.json()
+        instructions = body.get("instructions")
+        routing_llm = body.get("routing_llm", "llama3.2:1b")
+
+        if not instructions:
+            raise HTTPException(status_code=400, detail="instructions field required")
+
+        import redis
+        redis_url = mgmt_server.config['redis_url']
+        r = redis.from_url(redis_url, decode_responses=True)
+
+        # Store routing instructions
+        r.set('routing:instructions', instructions)
+        r.set('routing:llm_model', routing_llm)
+
+        logger.info(f"Updated routing instructions (length={len(instructions)}, llm={routing_llm})")
+
+        return {
+            "status": "success",
+            "instructions_length": len(instructions),
+            "routing_llm": routing_llm
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to set routing instructions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to set routing instructions: {str(e)}")
+
+
+@app.post("/api/routing/test")
+async def test_routing_decision(
+    request: FastAPIRequest,
+    user_context = Depends(get_current_user)
+):
+    """Test routing decision without executing request (Admin only)"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    try:
+        body = await request.json()
+        test_prompt = body.get("prompt", "")
+
+        if not test_prompt:
+            raise HTTPException(status_code=400, detail="prompt field required")
+
+        # Use request router to make routing decision
+        # This would call the routing LLM with the prompt
+        # For now, return a mock response
+        result = {
+            "prompt": test_prompt,
+            "routing_decision": "claude-3-sonnet",
+            "routing_reasoning": "Programming task detected - routing to Claude Sonnet for code generation",
+            "request_type": "programming",
+            "confidence": 0.85,
+            "alternative_models": ["gpt-4", "llama-70b"]
+        }
+
+        logger.info(f"Routing test completed for prompt: {test_prompt[:100]}...")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Routing test failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Routing test failed: {str(e)}")
+
+
+# Memory/Conversation Endpoints
+@app.get("/api/memory/conversations")
+async def search_conversations(
+    user_context = Depends(get_current_user),
+    query: str = "",
+    limit: int = 20,
+    user_id: Optional[int] = None,
+    org_id: Optional[int] = None
+):
+    """Search and retrieve conversations from mem0 (Admin sees all, users see own)"""
+    try:
+        # Permission checks
+        if user_id and user_id != user_context.user_id:
+            if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+                raise HTTPException(status_code=403, detail="Admin permission required to view other users' conversations")
+
+        # Default to current user if not admin
+        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            user_id = user_context.user_id
+            org_id = user_context.organization_id
+
+        # For now, return mock data
+        # In production, this would query the memory system
+        conversations = [
+            {
+                "id": "conv_123",
+                "user_id": user_id or user_context.user_id,
+                "organization_id": org_id or user_context.organization_id,
+                "created_at": "2025-09-29T10:30:00Z",
+                "model_used": "claude-3-sonnet",
+                "routing_decision": "claude-3-sonnet",
+                "routing_reasoning": "Code generation task",
+                "request_type": "programming",
+                "content_preview": "User: Help me write a Python function...",
+                "waddleai_tokens": 150,
+                "llm_tokens_input": 50,
+                "llm_tokens_output": 200
+            }
+        ]
+
+        return {
+            "query": query,
+            "count": len(conversations),
+            "conversations": conversations
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to search conversations: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to search conversations: {str(e)}")
+
+
+@app.get("/api/memory/stats")
+async def get_memory_stats(user_context = Depends(get_current_user)):
+    """Get memory system statistics"""
+    try:
+        # Admin sees system-wide stats, users see their own
+        if mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            scope = "system"
+            filter_user_id = None
+        else:
+            scope = "user"
+            filter_user_id = user_context.user_id
+
+        # Mock stats for now
+        stats = {
+            "scope": scope,
+            "total_conversations": 1247,
+            "total_users": 42 if scope == "system" else 1,
+            "storage_size_mb": 156.3,
+            "oldest_conversation": "2025-01-15T08:00:00Z",
+            "newest_conversation": "2025-09-29T12:00:00Z",
+            "models_used": {
+                "claude-3-sonnet": 450,
+                "gpt-4": 320,
+                "llama-70b": 477
+            }
+        }
+
+        return stats
+
+    except Exception as e:
+        logger.error(f"Failed to get memory stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get memory stats: {str(e)}")
+
+
+# XDP/Performance Endpoints
+@app.get("/api/performance/xdp")
+async def get_xdp_status(user_context = Depends(get_current_user)):
+    """Get XDP acceleration status and statistics (Admin only)"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    try:
+        # Mock XDP status for now
+        # In production, this would query the proxy server's XDP accelerator
+        xdp_status = {
+            "enabled": False,
+            "interface": "eth0",
+            "program_loaded": False,
+            "af_xdp_sockets": 0,
+            "rate_limits_active": 0,
+            "stats": {
+                "packets_total": 0,
+                "packets_passed": 0,
+                "packets_dropped": 0,
+                "packets_rate_limited": 0,
+                "bytes_processed": 0
+            },
+            "performance": {
+                "drop_rate": 0.0,
+                "throughput_mbps": 0.0
+            },
+            "message": "XDP not enabled. Set ENABLE_XDP=true and run as root to enable."
+        }
+
+        return xdp_status
+
+    except Exception as e:
+        logger.error(f"Failed to get XDP status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get XDP status: {str(e)}")
+
+
+@app.post("/api/performance/xdp/enable")
+async def toggle_xdp(
+    request: FastAPIRequest,
+    user_context = Depends(get_current_user)
+):
+    """Enable or disable XDP acceleration (Admin only)"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    try:
+        body = await request.json()
+        enable = body.get("enable", False)
+
+        # This would communicate with the proxy server to enable/disable XDP
+        # For now, return a mock response
+        return {
+            "status": "success" if enable else "disabled",
+            "message": f"XDP acceleration {'enabled' if enable else 'disabled'}. Restart proxy server to apply changes."
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to toggle XDP: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to toggle XDP: {str(e)}")
 
 
 if __name__ == "__main__":

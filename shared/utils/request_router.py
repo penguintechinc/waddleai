@@ -1,11 +1,14 @@
 """
 Intelligent request routing system for WaddleAI
 Routes requests to optimal LLM providers based on model, cost, availability, and load
+Supports Redis-based natural language routing instructions and routing LLM integration
 """
 
 import logging
 import asyncio
 import random
+import os
+import redis.asyncio as aioredis
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -49,22 +52,35 @@ class ModelConfig:
 
 
 class LLMRequestRouter:
-    """Intelligent request router for LLM providers"""
-    
-    def __init__(self, llm_manager, db):
+    """Intelligent request router for LLM providers with Redis-based intelligent routing and RAG enrichment"""
+
+    def __init__(self, llm_manager, db, redis_client: Optional[aioredis.Redis] = None, rag_manager=None):
         self.llm_manager = llm_manager
         self.db = db
+        self.redis_client = redis_client
+        self.rag_manager = rag_manager  # Optional RAG manager for context enrichment
         self.provider_stats: Dict[str, ProviderStats] = {}
         self.round_robin_counters: Dict[str, int] = {}
         self.model_configs: Dict[str, ModelConfig] = {}
         self.default_strategy = RoutingStrategy.LOAD_BALANCED
         self.health_check_interval = 300  # 5 minutes
-        
+
+        # Routing LLM configuration
+        self.routing_llm_model = os.getenv("ROUTING_LLM", "llama3.2:1b")
+        self.use_intelligent_routing = os.getenv("USE_INTELLIGENT_ROUTING", "true").lower() == "true"
+
+        # RAG configuration
+        self.enable_rag = os.getenv("ENABLE_RAG", "false").lower() == "true" and rag_manager is not None
+        self.rag_collection = os.getenv("RAG_COLLECTION", "default")
+        self.rag_top_k = int(os.getenv("RAG_TOP_K", "3"))
+
         # Load model configurations
         self._load_model_configs()
-        
+
         # Initialize provider stats
         self._initialize_provider_stats()
+
+        logger.info(f"Initialized LLMRequestRouter with routing_llm={self.routing_llm_model}, intelligent_routing={self.use_intelligent_routing}, rag_enabled={self.enable_rag}")
     
     def _load_model_configs(self):
         """Load model configurations from database"""
@@ -122,7 +138,96 @@ class LLMRequestRouter:
                 self.provider_stats[provider_name] = ProviderStats()
             if provider_name not in self.round_robin_counters:
                 self.round_robin_counters[provider_name] = 0
-    
+
+    async def enrich_request_with_rag_context(
+        self,
+        messages: List[Dict[str, str]],
+        collection: Optional[str] = None,
+        top_k: Optional[int] = None
+    ) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+        """
+        Enrich request messages with RAG context from knowledge base
+
+        Args:
+            messages: Original messages
+            collection: RAG collection to search (defaults to self.rag_collection)
+            top_k: Number of documents to retrieve (defaults to self.rag_top_k)
+
+        Returns:
+            Tuple of (enriched_messages, rag_metadata)
+        """
+        if not self.enable_rag or not self.rag_manager:
+            return messages, {}
+
+        try:
+            # Extract query from user messages
+            user_messages = [msg['content'] for msg in messages if msg.get('role') == 'user']
+            if not user_messages:
+                return messages, {}
+
+            query = user_messages[-1]  # Use last user message as query
+            collection = collection or self.rag_collection
+            top_k = top_k or self.rag_top_k
+
+            # Search knowledge base
+            search_results = await self.rag_manager.search_knowledge_base(
+                query=query,
+                collection=collection,
+                limit=top_k,
+                min_score=0.7
+            )
+
+            if not search_results:
+                logger.debug("No relevant RAG documents found")
+                return messages, {"rag_enabled": True, "rag_documents_found": 0}
+
+            # Build context from results
+            context_parts = []
+            for idx, result in enumerate(search_results):
+                context_parts.append(
+                    f"[Document {idx+1}] (Relevance: {result.score:.2f})\n{result.document.content}"
+                )
+
+            rag_context = "\n\n".join(context_parts)
+
+            # Inject context into messages
+            enriched_messages = []
+            context_injected = False
+
+            for msg in messages:
+                if msg.get('role') == 'system' and not context_injected:
+                    # Add to existing system message
+                    enriched_content = msg['content'] + f"\n\n## Relevant Knowledge Base Context:\n{rag_context}"
+                    enriched_messages.append({
+                        'role': 'system',
+                        'content': enriched_content
+                    })
+                    context_injected = True
+                else:
+                    enriched_messages.append(msg)
+
+            # If no system message, inject before first user message
+            if not context_injected:
+                enriched_messages.insert(0, {
+                    'role': 'system',
+                    'content': f"## Relevant Knowledge Base Context:\n{rag_context}\n\nUse the above context to help answer the user's question."
+                })
+
+            rag_metadata = {
+                "rag_enabled": True,
+                "rag_documents_found": len(search_results),
+                "rag_collection": collection,
+                "rag_query": query,
+                "rag_scores": [r.score for r in search_results]
+            }
+
+            logger.info(f"Enriched request with {len(search_results)} RAG documents from collection '{collection}'")
+            return enriched_messages, rag_metadata
+
+        except Exception as e:
+            logger.error(f"Failed to enrich request with RAG context: {e}")
+            return messages, {"rag_enabled": True, "rag_error": str(e)}
+
     async def route_request(
         self,
         model: str,
@@ -133,18 +238,21 @@ class LLMRequestRouter:
     ) -> Tuple[str, Any]:
         """
         Route a request to the best available provider
-        
+
         Returns:
             Tuple of (response_content, usage_info)
         """
         routing_strategy = strategy or self.default_strategy
-        
+
+        # Enrich with RAG context if enabled
+        enriched_messages, rag_metadata = await self.enrich_request_with_rag_context(messages)
+
         # Get available providers for the model
         available_providers = self._get_available_providers(model)
-        
+
         if not available_providers:
             raise ValueError(f"No available providers for model {model}")
-        
+
         # Select provider based on strategy
         selected_provider = self._select_provider(
             model,
@@ -152,15 +260,21 @@ class LLMRequestRouter:
             routing_strategy,
             user_preferences
         )
-        
-        # Execute request with fallback
-        return await self._execute_with_fallback(
+
+        # Execute request with fallback (using enriched messages)
+        response, usage_info = await self._execute_with_fallback(
             selected_provider,
             available_providers,
             model,
-            messages,
+            enriched_messages,
             **kwargs
         )
+
+        # Add RAG metadata to usage info
+        if rag_metadata:
+            usage_info['rag_metadata'] = rag_metadata
+
+        return response, usage_info
     
     def _get_available_providers(self, model: str) -> List[str]:
         """Get list of available providers for a model"""
@@ -409,7 +523,243 @@ class LLMRequestRouter:
         self.default_strategy = strategy
         logger.info(f"Routing strategy changed to: {strategy.value}")
 
+    async def get_routing_instructions(self) -> str:
+        """Get routing instructions from Redis"""
+        try:
+            if self.redis_client:
+                instructions = await self.redis_client.get("routing:instructions")
+                if instructions:
+                    return instructions.decode('utf-8') if isinstance(instructions, bytes) else instructions
 
-def create_request_router(llm_manager, db) -> LLMRequestRouter:
-    """Factory function to create request router"""
-    return LLMRequestRouter(llm_manager, db)
+            # Default fallback instructions
+            return "Route to fastest available LLM. Use codellama or Claude for programming tasks. Use GPT-4 for complex reasoning. Use local Ollama for simple queries."
+
+        except Exception as e:
+            logger.error(f"Failed to get routing instructions from Redis: {e}")
+            return "Route to fastest available LLM"
+
+    async def set_routing_instructions(self, instructions: str) -> bool:
+        """Set routing instructions in Redis"""
+        try:
+            if self.redis_client:
+                await self.redis_client.set("routing:instructions", instructions)
+                logger.info(f"Updated routing instructions: {instructions[:100]}...")
+                return True
+            else:
+                logger.warning("Redis client not available, cannot set routing instructions")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to set routing instructions: {e}")
+            return False
+
+    def _classify_request_type(self, messages: List[Dict[str, str]]) -> str:
+        """Classify request type for better routing"""
+        if not messages:
+            return 'general_chat'
+
+        last_message = messages[-1].get('content', '').lower()
+
+        # Programming keywords
+        if any(kw in last_message for kw in ['code', 'function', 'debug', 'programming', 'python', 'javascript', 'java', 'c++', 'rust', 'go']):
+            return 'programming'
+
+        # Data analysis keywords
+        elif any(kw in last_message for kw in ['analyze', 'data', 'statistics', 'chart', 'graph', 'dataset']):
+            return 'analysis'
+
+        # Explanation keywords
+        elif any(kw in last_message for kw in ['explain', 'what is', 'how does', 'why', 'define']):
+            return 'explanation'
+
+        # Complex reasoning
+        elif any(kw in last_message for kw in ['complex', 'advanced', 'detailed', 'comprehensive', 'thorough']):
+            return 'complex_reasoning'
+
+        # Simple query
+        elif len(last_message) < 50:
+            return 'simple_query'
+
+        else:
+            return 'general_chat'
+
+    def _summarize_request(self, messages: List[Dict[str, str]]) -> str:
+        """Summarize request for routing decision"""
+        if not messages:
+            return "Empty request"
+
+        # Extract user messages
+        user_messages = [msg.get('content', '') for msg in messages if msg.get('role') == 'user']
+
+        if not user_messages:
+            return "No user messages"
+
+        # Use last user message or combine last 2
+        if len(user_messages) == 1:
+            summary = user_messages[-1]
+        else:
+            summary = f"{user_messages[-2][:100]}... {user_messages[-1][:100]}"
+
+        # Truncate if too long
+        if len(summary) > 300:
+            summary = summary[:300] + "..."
+
+        return summary
+
+    def _format_available_llms(self) -> str:
+        """Format available LLMs for routing prompt"""
+        llm_list = []
+        for provider_name, connector in self.llm_manager.connectors.items():
+            stats = self.provider_stats.get(provider_name, ProviderStats())
+            status = "healthy" if stats.consecutive_failures < 3 else "unhealthy"
+            models = ", ".join(connector.model_list[:3]) if connector.model_list else "all models"
+            llm_list.append(f"{provider_name} ({status}): {models}")
+
+        return "\n".join(llm_list) if llm_list else "No LLMs available"
+
+    async def _call_routing_llm(self, prompt: str) -> str:
+        """Call routing LLM for intelligent decision"""
+        try:
+            # Get routing LLM connector
+            connector = None
+            for provider_name, conn in self.llm_manager.connectors.items():
+                if self.routing_llm_model in conn.model_list or provider_name == "ollama":
+                    connector = conn
+                    break
+
+            if not connector:
+                logger.warning(f"Routing LLM {self.routing_llm_model} not available, using fallback")
+                return "default"
+
+            # Call routing LLM with low temperature for consistency
+            response, _ = await connector.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.routing_llm_model,
+                max_tokens=50,
+                temperature=0.1
+            )
+
+            # Extract LLM name from response
+            llm_name = response.strip().lower()
+
+            # Map common variations to actual provider names
+            if "claude" in llm_name:
+                return "anthropic"
+            elif "gpt" in llm_name or "openai" in llm_name:
+                return "openai"
+            elif "ollama" in llm_name or "llama" in llm_name or "mistral" in llm_name:
+                return "ollama"
+            elif "codellama" in llm_name:
+                return "ollama"  # codellama typically runs on Ollama
+            else:
+                return llm_name
+
+        except Exception as e:
+            logger.error(f"Routing LLM call failed: {e}")
+            return "default"
+
+    async def _intelligent_routing_decision(self, messages: List[Dict[str, str]], user_preferences: Optional[Dict[str, Any]] = None) -> str:
+        """Make intelligent routing decision using routing LLM"""
+        try:
+            # Get routing instructions from Redis
+            instructions = await self.get_routing_instructions()
+
+            # Classify request type
+            request_type = self._classify_request_type(messages)
+
+            # Summarize request
+            request_summary = self._summarize_request(messages)
+
+            # Format available LLMs
+            available_llms = self._format_available_llms()
+
+            # Build routing prompt
+            routing_prompt = f"""Routing Rules: {instructions}
+
+Request Type: {request_type}
+Request Summary: {request_summary}
+
+Available LLMs:
+{available_llms}
+
+Based on the routing rules, which LLM should handle this request?
+Reply with ONLY the LLM provider name (anthropic, openai, ollama, etc.), nothing else."""
+
+            # Call routing LLM
+            target_llm = await self._call_routing_llm(routing_prompt)
+
+            logger.info(f"Intelligent routing decision: {target_llm} for request_type={request_type}")
+
+            return target_llm
+
+        except Exception as e:
+            logger.error(f"Intelligent routing failed: {e}")
+            return "default"
+
+    async def route_request_with_intelligence(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        strategy: Optional[RoutingStrategy] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Tuple[str, Any]:
+        """
+        Route request using intelligent routing with LLM decision
+
+        Returns:
+            Tuple of (response_content, usage_info with routing_decision and routing_reasoning)
+        """
+        routing_decision = None
+        routing_reasoning = None
+
+        if self.use_intelligent_routing and model == "auto":
+            # Use intelligent routing
+            routing_decision = await self._intelligent_routing_decision(messages, user_preferences)
+            routing_reasoning = f"Intelligent routing based on request type and Redis instructions"
+
+            # If routing LLM returned a valid provider, use it
+            if routing_decision and routing_decision != "default":
+                # Check if provider is available
+                available_providers = self._get_available_providers(model)
+
+                if routing_decision in available_providers:
+                    selected_provider = routing_decision
+                else:
+                    # Fallback to strategy-based selection
+                    logger.warning(f"Routing LLM suggested {routing_decision}, but it's not available. Using fallback.")
+                    selected_provider = self._select_provider(model, available_providers, strategy or self.default_strategy, user_preferences)
+                    routing_decision = selected_provider
+                    routing_reasoning = f"Fallback to {selected_provider} (routing LLM suggestion unavailable)"
+            else:
+                # Fallback to strategy-based selection
+                available_providers = self._get_available_providers(model)
+                selected_provider = self._select_provider(model, available_providers, strategy or self.default_strategy, user_preferences)
+                routing_decision = selected_provider
+                routing_reasoning = "Strategy-based routing (intelligent routing unavailable)"
+        else:
+            # Use traditional strategy-based routing
+            available_providers = self._get_available_providers(model)
+            selected_provider = self._select_provider(model, available_providers, strategy or self.default_strategy, user_preferences)
+            routing_decision = selected_provider
+            routing_reasoning = f"Strategy-based routing: {self.default_strategy.value}"
+
+        # Execute request with fallback
+        response, usage_info = await self._execute_with_fallback(
+            selected_provider,
+            available_providers if 'available_providers' in locals() else self._get_available_providers(model),
+            model,
+            messages,
+            **kwargs
+        )
+
+        # Add routing information to usage_info
+        usage_info['routing_decision'] = routing_decision
+        usage_info['routing_reasoning'] = routing_reasoning
+        usage_info['request_type'] = self._classify_request_type(messages)
+
+        return response, usage_info
+
+
+def create_request_router(llm_manager, db, redis_client: Optional[aioredis.Redis] = None, rag_manager=None) -> LLMRequestRouter:
+    """Factory function to create request router with optional RAG manager"""
+    return LLMRequestRouter(llm_manager, db, redis_client, rag_manager)

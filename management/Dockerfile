@@ -30,5 +30,8 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8001/healthz || exit 1
 
+# Set Python path to include /app for shared module imports
+ENV PYTHONPATH=/app
+
 # Run the application
 CMD ["python", "apps/management_server/main.py"]
