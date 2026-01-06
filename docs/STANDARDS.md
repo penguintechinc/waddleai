@@ -1,15 +1,22 @@
-# WaddleAI Development Standards
+# Development Standards
 
-This document outlines the development, testing, and deployment standards for the WaddleAI project.
+This document consolidates all development standards, patterns, and requirements for the WaddleAI project, extending the gold standard template from Penguin Tech Inc.
 
 ## Table of Contents
 
 1. [Code Quality Standards](#code-quality-standards)
-2. [CI/CD Standards](#cicd-standards)
-3. [Testing Standards](#testing-standards)
-4. [Security Standards](#security-standards)
-5. [Documentation Standards](#documentation-standards)
-6. [Git Workflow](#git-workflow)
+2. [Language Selection](#language-selection)
+3. [Python Development Standards](#python-development-standards)
+4. [Flask-Security-Too Integration](#flask-security-too-integration)
+5. [Database Standards](#database-standards)
+6. [API Versioning](#api-versioning)
+7. [Protocol Support](#protocol-support)
+8. [Testing Requirements](#testing-requirements)
+9. [Security Standards](#security-standards)
+10. [CI/CD Standards](#cicd-standards)
+11. [Documentation Standards](#documentation-standards)
+12. [Git Workflow](#git-workflow)
+13. [WaddleAI-Specific Standards](#waddleai-specific-standards)
 
 ---
 
@@ -60,22 +67,18 @@ This document outlines the development, testing, and deployment standards for th
        """
    ```
 
-4. **Import Organization**
-   - Standard library imports first
-   - Third-party imports second
-   - Local imports third
-   - Blank line between groups
+4. **Dataclasses with Slots (MANDATORY)**
 
    ```python
-   import os
-   import sys
-   from typing import List
+   from dataclasses import dataclass, field
 
-   import flask
-   import redis
-
-   from shared.auth import validate_token
-   from shared.db import get_db_connection
+   @dataclass(slots=True, frozen=True)
+   class User:
+       """User model with slots for 30-50% memory reduction."""
+       id: int
+       email: str
+       name: str
+       metadata: dict = field(default_factory=dict)
    ```
 
 ### Linting Tools
@@ -90,161 +93,285 @@ All Python code MUST pass these linters before commit:
 | **mypy** | Type checking | `mypy proxy management shared` |
 | **bandit** | Security scanning | `bandit -r proxy management shared -ll` |
 
-### Configuration Files
+---
 
-**Python project configuration** (if applicable):
+## Language Selection
 
-```ini
-# setup.cfg or pyproject.toml
-[flake8]
-max-line-length = 120
-ignore = E501, W503
-exclude = .git,__pycache__,venv
+### Python 3.13 (Default Choice)
 
-[tool:pytest]
-testpaths = tests
-python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
+**Use Python for all WaddleAI applications:**
+- Web services (Flask-based)
+- Background workers (Celery)
+- API servers and proxies
+- Data processing and analytics
+- Management interfaces
+
+**Advantages:**
+- Rapid development and iteration
+- Rich ecosystem of libraries
+- Strong support for async/await
+- Excellent for network services
+
+---
+
+## Python Development Standards
+
+### Concurrency Patterns
+
+**asyncio** - For I/O-bound operations:
+- Database queries and connections
+- HTTP/REST API calls
+- File I/O operations
+- Network communication
+- Best for operations that wait on external resources
+
+**threading.Thread** - For I/O-bound operations with blocking libraries:
+- Legacy libraries without async support
+- Blocking I/O operations
+- Moderate parallelism (10-100 threads)
+- Use ThreadPoolExecutor for managed thread pools
+
+**multiprocessing** - For CPU-bound operations:
+- Data processing and transformations
+- Cryptographic operations
+- Heavy computational tasks
+- Bypasses GIL for true parallelism
+
+---
+
+## Flask-Security-Too Integration
+
+**MANDATORY for ALL Flask applications - provides comprehensive security framework**
+
+### Core Features
+- User authentication and session management
+- Role-based access control (RBAC)
+- Password hashing with bcrypt
+- Email confirmation and password reset
+- Two-factor authentication (2FA)
+- Token-based authentication for APIs
+- Login tracking and session management
+
+### Integration with PyDAL
+
+```python
+from flask import Flask
+from flask_security import Security, auth_required, hash_password
+from pydal import DAL, Field
+import os
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret')
+app.config['SECURITY_PASSWORD_SALT'] = os.getenv('SECURITY_PASSWORD_SALT', 'salt')
+app.config['SECURITY_REGISTERABLE'] = True
+app.config['SECURITY_PASSWORD_HASH'] = 'bcrypt'
+
+# PyDAL database setup
+db = DAL(
+    f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}@"
+    f"{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}",
+    pool_size=10,
+    migrate=True
+)
+
+# Define user and role tables
+db.define_table('auth_user',
+    Field('email', 'string', requires=IS_EMAIL(), unique=True),
+    Field('password', 'string'),
+    Field('active', 'boolean', default=True),
+    Field('fs_uniquifier', 'string', unique=True),
+    migrate=True
+)
+
+db.define_table('auth_role',
+    Field('name', 'string', unique=True),
+    Field('description', 'text'),
+    migrate=True
+)
+
+# Initialize Flask-Security-Too
+from flask_security import PyDALUserDatastore
+user_datastore = PyDALUserDatastore(db, db.auth_user, db.auth_role)
+security = Security(app, user_datastore)
+
+# Protected route example
+@app.route('/api/protected')
+@auth_required()
+def protected_endpoint():
+    return {'message': 'Access granted'}
+```
+
+### WaddleAI Roles
+
+**WaddleAI implements the following roles:**
+
+| Role | Permissions |
+|------|-------------|
+| **Admin** | Full system access, user management, configuration |
+| **Resource Manager** | Organization quota management, user management |
+| **Reporter** | Read-only analytics and reporting |
+| **User** | API access only, personal usage statistics |
+
+---
+
+## Database Standards
+
+### Hybrid Approach (SQLAlchemy + PyDAL)
+
+**SQLAlchemy**: Database initialization only
+- Used for initial schema creation
+- Runs once at startup
+- Handles all supported databases reliably
+
+**PyDAL**: Day-to-day operations and migrations (MANDATORY)
+- All CRUD operations
+- All queries and data access
+- Schema migrations
+- Thread-safe connection pooling
+
+### PyDAL Configuration
+
+```python
+from pydal import DAL, Field
+
+def get_db_connection():
+    """Initialize PyDAL database connection with pooling."""
+    db_type = os.getenv('DB_TYPE', 'postgresql')
+    db_uri = f"{db_type}://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}@" \
+             f"{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+
+    db = DAL(
+        db_uri,
+        pool_size=int(os.getenv('DB_POOL_SIZE', '10')),
+        migrate_enabled=True,
+        check_reserved=['all'],
+        lazy_tables=True
+    )
+
+    return db
+```
+
+### Supported Databases
+
+- **postgres** - PostgreSQL (recommended)
+- **mysql** - MySQL/MariaDB
+- **sqlite** - SQLite (development only)
+
+### Thread Safety Requirements
+
+**PyDAL MUST be used in a thread-safe manner:**
+
+```python
+import threading
+from pydal import DAL
+
+thread_local = threading.local()
+
+def get_thread_db():
+    """Get thread-local database connection."""
+    if not hasattr(thread_local, 'db'):
+        thread_local.db = DAL(db_uri, pool_size=10, migrate_enabled=True)
+    return thread_local.db
 ```
 
 ---
 
-## CI/CD Standards
+## API Versioning
 
-### Workflow Requirements
+**ALL REST APIs MUST use versioning in the URL path**
 
-**All build workflows MUST:**
+### URL Structure
 
-1. **Include Path Filters**
-   ```yaml
-   on:
-     push:
-       paths:
-         - 'service/**'
-         - '.version'
-         - '.github/workflows/workflow-name.yml'
-   ```
+**Required Format:** `/api/v{major}/endpoint`
 
-2. **Generate Epoch64 Timestamp**
-   ```yaml
-   - name: Generate epoch64 timestamp
-     id: timestamp
-     run: |
-       EPOCH64=$(date +%s)
-       echo "epoch64=$EPOCH64" >> $GITHUB_OUTPUT
-   ```
+**Examples:**
+- `/api/v1/chat/completions` - Chat completion
+- `/api/v1/embeddings` - Embeddings
+- `/api/v1/users` - User management
+- `/api/v2/analytics` - Version 2 of analytics
 
-3. **Detect Version Changes**
-   ```yaml
-   - name: Check version file
-     id: version
-     run: |
-       if [ -f .version ]; then
-         VERSION=$(cat .version | tr -d '[:space:]')
-         SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3)
-         echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+**Key Rules:**
+1. Always include version prefix in URL path
+2. Semantic versioning: v1, v2, v3, etc.
+3. Major version only in URL
+4. Consistent prefix across all endpoints
 
-         if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
-           echo "changed=true" >> $GITHUB_OUTPUT
-         else
-           echo "changed=false" >> $GITHUB_OUTPUT
-         fi
-       fi
-   ```
+### WaddleAI API Standards
 
-4. **Use Conditional Tagging**
-   ```yaml
-   - name: Extract metadata
-     id: meta
-     uses: docker/metadata-action@v5
-     with:
-       tags: |
-         type=raw,value=alpha-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref != 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
-         type=raw,value=beta-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
-         type=raw,value=v${{ steps.version.outputs.semver }}-alpha,enable=${{ github.ref != 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
-         type=raw,value=v${{ steps.version.outputs.semver }}-beta,enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
-   ```
+**Proxy Service Endpoints:**
+```python
+@app.route('/v1/chat/completions', methods=['POST'])
+@auth_required()
+def chat_completions():
+    """OpenAI-compatible chat completions endpoint."""
+    pass
 
-5. **Include Security Scanning**
-   - Python: bandit
-   - Go: gosec
-   - JavaScript/Node.js: npm audit
-   - Container images: Trivy
+@app.route('/v1/embeddings', methods=['POST'])
+@auth_required()
+def embeddings():
+    """OpenAI-compatible embeddings endpoint."""
+    pass
+```
 
-6. **Fetch Full History**
-   ```yaml
-   - name: Checkout code
-     uses: actions/checkout@v4
-     with:
-       fetch-depth: 0
-   ```
+**Management Service Endpoints:**
+```python
+@app.route('/api/v1/users', methods=['GET'])
+@auth_required()
+@roles_required('admin', 'resource_manager')
+def list_users():
+    """List users (admin/resource_manager only)."""
+    pass
 
-### Build Naming Convention
-
-Container images follow automatic naming based on branch and version changes:
-
-| Scenario | Main Branch | Other Branches |
-|----------|------------|-----------------|
-| Regular build (no `.version` change) | `beta-<epoch64>` | `alpha-<epoch64>` |
-| Version release (`.version` changed) | `vX.X.X-beta` | `vX.X.X-alpha` |
-| Tagged release | `vX.X.X` + `latest` | N/A |
-
-**Example Workflow**:
-1. Push feature branch: Image tagged `alpha-1702312159`
-2. Update `.version` to 1.2.0 on feature branch: Image tagged `v1.2.0-alpha`
-3. Merge to main: Image tagged `beta-1702312189`
-4. Update `.version` to 1.2.0 on main: Image tagged `v1.2.0-beta`
-5. Create git tag `v1.2.0`: Image tagged `v1.2.0` + `latest`
-
-### Workflow Documentation
-
-**New workflows MUST be documented in `docs/WORKFLOWS.md` including:**
-
-- Trigger events (branches, tags, paths)
-- Job descriptions and dependencies
-- Environment variables and secrets
-- Security scanning integration
-- Tagging strategy
+@app.route('/api/v1/analytics/tokens', methods=['GET'])
+@auth_required()
+def get_token_usage():
+    """Get token usage analytics."""
+    pass
+```
 
 ---
 
-## Testing Standards
+## Protocol Support
+
+**All WaddleAI services MUST support:**
+
+1. **REST API**: RESTful HTTP endpoints (GET, POST, PUT, DELETE)
+   - JSON request/response format
+   - Proper HTTP status codes
+   - OpenAI-compatible format
+
+2. **gRPC**: High-performance RPC protocol (optional for future)
+   - Protocol Buffers for serialization
+   - Health checking via gRPC health protocol
+
+3. **HTTP/1.1**: Standard HTTP protocol
+   - Keep-alive connections
+   - Chunked transfer encoding
+   - Compression (gzip)
+
+4. **HTTP/2**: Modern HTTP protocol
+   - Multiplexing multiple requests
+   - Header compression
+
+### Configuration via Environment Variables
+
+```bash
+HTTP1_ENABLED=true
+HTTP2_ENABLED=true
+HTTP_PORT=8000
+```
+
+---
+
+## Testing Requirements
 
 ### Unit Testing
 
 **Minimum Coverage**: 80% code coverage required
 
-**Python Testing**:
-- Framework: pytest
-- Async testing: pytest-asyncio
-- Coverage: pytest-cov
-- Command: `pytest tests/unit/ -v --cov=<module>`
+**Framework**: pytest
 
-**Test File Organization**:
-```
-tests/
-├── unit/
-│   ├── test_proxy/
-│   │   ├── __init__.py
-│   │   ├── test_routes.py
-│   │   ├── test_auth.py
-│   │   └── test_cache.py
-│   ├── test_management/
-│   │   ├── __init__.py
-│   │   ├── test_admin.py
-│   │   └── test_users.py
-│   └── test_shared/
-│       ├── __init__.py
-│       └── test_utils.py
-├── integration/
-│   ├── test_proxy_integration.py
-│   └── test_management_integration.py
-└── e2e/
-    └── test_workflows.py
-```
-
-**Test Requirements**:
+**Requirements**:
 - Isolated unit tests (no network, mocked dependencies)
 - Descriptive test names following `test_<function>_<scenario>`
 - Docstrings explaining test purpose
@@ -261,15 +388,17 @@ def mock_db():
     return Mock()
 
 @pytest.mark.asyncio
-async def test_authenticate_user_valid_credentials(mock_db):
-    """Test successful user authentication with valid credentials."""
+async def test_proxy_request_valid_token(mock_db):
+    """Test proxy request with valid authentication token."""
     # Test implementation
     pass
 
-@pytest.mark.parametrize("password", ["short", "", None])
-def test_authenticate_user_invalid_password(mock_db, password):
-    """Test authentication fails with invalid passwords."""
-    # Test implementation
+@pytest.mark.parametrize("input_data", [
+    {"model": "gpt-4", "messages": []},
+    {"model": "gpt-3.5", "messages": []},
+])
+def test_chat_completion_models(input_data):
+    """Test chat completions with different models."""
     pass
 ```
 
@@ -284,104 +413,118 @@ def test_authenticate_user_invalid_password(mock_db, password):
 - Health checks before testing
 - Cleanup after tests
 
-### Test Execution in CI/CD
+### E2E Testing
 
-**Location**: `docker-build.yml` → `test` job
-
-```yaml
-- name: Run unit tests
-  run: |
-    python -m pytest tests/unit/ -v --cov=shared --cov-report=xml
-  env:
-    PYTHONPATH: ${{ github.workspace }}
-
-- name: Run security check (bandit)
-  run: |
-    bandit -r proxy management shared -ll -f json -o bandit-results.json || true
-```
+**Scope**:
+- Full workflow testing
+- API endpoint validation
+- User flow verification
 
 ---
 
 ## Security Standards
 
-### Code Security
+### Input Validation
 
-**Mandatory Security Scanning**:
+- ALL inputs MUST have appropriate validators
+- Use Flask validators or shared validation libraries
+- Implement XSS and SQL injection prevention
+- Server-side validation for all client input
 
-1. **bandit (Python)**: Detect security issues
+```python
+from wtforms.validators import InputRequired, Email, Length
+
+class LoginForm(FlaskForm):
+    email = StringField(validators=[InputRequired(), Email()])
+    password = PasswordField(validators=[InputRequired(), Length(min=12)])
+```
+
+### SQL Injection Prevention
+
+**Use PyDAL for all database queries:**
+
+```python
+# Good: Using PyDAL
+users = db(db.users.email == user_email).select()
+
+# Bad: String concatenation (NEVER DO THIS)
+# query = f"SELECT * FROM users WHERE email = '{user_email}'"
+```
+
+### Authentication & Authorization
+
+- Multi-factor authentication support
+- Role-based access control (RBAC)
+- API key management with rotation
+- JWT token validation with proper expiration
+- Session management with secure cookies
+
+### TLS/Encryption
+
+- **TLS enforcement**: TLS 1.2 minimum, prefer TLS 1.3
+- **Connection security**: Use HTTPS where possible
+- **JWT**: For API authentication
+- **MFA**: Multi-factor authentication standard
+
+### Dependency Security
+
+- **ALWAYS check for Dependabot alerts** before commits
+- **Monitor vulnerabilities via Socket.dev**
+- **Mandatory security scanning** before dependency changes
+- **Fix all security alerts immediately**
+- **Regular security audits**: `pip audit`, `bandit`
+
+---
+
+## CI/CD Standards
+
+### Build Naming Convention
+
+Container images follow automatic naming based on branch and version:
+
+| Scenario | Main Branch | Other Branches |
+|----------|------------|-----------------|
+| Regular build | `beta-<epoch64>` | `alpha-<epoch64>` |
+| Version release | `vX.X.X-beta` | `vX.X.X-alpha` |
+| Tagged release | `vX.X.X` + `latest` | N/A |
+
+### Path Filter Requirements
+
+**EVERY build workflow MUST include `.version` in its path filter:**
+
+```yaml
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - '.version'                              # MANDATORY
+      - 'proxy/**'                              # Service path
+      - 'management/**'                         # Service path
+      - '.github/workflows/docker-build.yml'    # Workflow
+```
+
+### Security Scanning
+
+**Mandatory for all builds:**
+
+1. **bandit** (Python security)
    ```bash
    bandit -r proxy management shared -ll
    ```
 
-2. **Input Validation**: All user inputs MUST be validated
-   ```python
-   from wtforms.validators import InputRequired, Email, Length
-
-   class LoginForm(FlaskForm):
-       email = StringField(validators=[InputRequired(), Email()])
-       password = PasswordField(validators=[InputRequired(), Length(min=12)])
+2. **Trivy** (Container scanning)
+   ```yaml
+   - uses: aquasecurity/trivy-action@master
+     with:
+       image-ref: ${{ image }}
+       severity: 'HIGH,CRITICAL'
    ```
 
-3. **SQL Injection Prevention**: Use PyDAL for all database queries
-   - Never construct SQL strings with user input
-   - Use parameterized queries via PyDAL
-   ```python
-   # Good: Using PyDAL
-   users = db(db.users.email == user_email).select()
-
-   # Bad: String concatenation (NEVER DO THIS)
-   # query = f"SELECT * FROM users WHERE email = '{user_email}'"
+3. **CodeQL** (Code analysis)
+   ```yaml
+   - uses: github/codeql-action/init@v2
+   - uses: github/codeql-action/analyze@v2
    ```
-
-4. **Authentication**: All protected endpoints MUST require authentication
-   ```python
-   from flask_security import auth_required
-
-   @app.route('/api/protected', methods=['GET'])
-   @auth_required()
-   def protected_endpoint():
-       return {'message': 'Protected content'}
-   ```
-
-5. **TLS**: All HTTPS connections MUST use TLS 1.2 minimum
-   - Production: TLS 1.3 preferred
-   - Configuration via environment variables
-
-6. **Secrets Management**:
-   - Never hardcode credentials
-   - Use environment variables for all secrets
-   - Use GitHub Secrets for CI/CD
-   - No secrets in logs
-
-### Dependency Security
-
-**Vulnerability Scanning**:
-
-| Tool | Purpose | Frequency |
-|------|---------|-----------|
-| **npm audit** | Node.js dependencies | Every build |
-| **bandit** | Python security issues | Every build |
-| **Trivy** | Container image scanning | After build |
-| **Dependabot** | Dependency updates | Weekly |
-
-### Container Security
-
-**Image Standards**:
-- Base image: debian-slim (never alpine)
-- Non-root user required
-- Read-only filesystem where possible
-- Minimal attack surface
-- Signed images (if applicable)
-
-**Trivy Scanning**:
-```yaml
-- name: Run Trivy vulnerability scanner
-  uses: aquasecurity/trivy-action@master
-  with:
-    image-ref: ghcr.io/penguintechinc/waddleai/proxy:latest
-    format: 'sarif'
-    output: 'trivy-results.sarif'
-```
 
 ---
 
@@ -389,94 +532,53 @@ def test_authenticate_user_invalid_password(mock_db, password):
 
 ### Code Documentation
 
-1. **Module Docstrings**: Describe module purpose
+1. **Module Docstrings**
    ```python
    """Authentication module for user login and session management.
 
-   This module provides:
-   - User authentication and validation
-   - Session token generation
-   - Token refresh and validation
+   This module provides user authentication, token generation, and validation.
    """
    ```
 
-2. **Class Docstrings**: Explain class purpose and usage
+2. **Class Docstrings**
    ```python
-   class User(db.Model):
-       """User model for authentication and profile management.
+   class WaddleAIProxy:
+       """OpenAI-compatible API proxy for WaddleAI.
 
-       Attributes:
-           id: Unique user identifier
-           email: User email address (unique)
-           password: Hashed password
-           active: Whether user account is active
+       Handles request routing, authentication, and response translation.
        """
    ```
 
-3. **Function/Method Docstrings**: Google-style format
+3. **Function/Method Docstrings**
    ```python
-   def generate_session_token(user_id: int, expiry_hours: int = 24) -> str:
-       """Generate JWT session token for user.
+   def validate_request(request_data: Dict) -> bool:
+       """Validate incoming API request.
 
        Args:
-           user_id: User database ID
-           expiry_hours: Token expiration time in hours (default: 24)
+           request_data: Request payload dictionary
 
        Returns:
-           JWT token string
+           True if valid, False otherwise
 
        Raises:
-           ValueError: If user_id is invalid
-           TokenGenerationError: If JWT generation fails
-
-       Example:
-           >>> token = generate_session_token(123, expiry_hours=1)
-           >>> len(token) > 50
-           True
+           ValueError: If required fields missing
        """
    ```
 
 ### Project Documentation
 
-**Required Documentation Files**:
+**Required Documentation Files:**
 
 | File | Purpose |
 |------|---------|
 | `README.md` | Project overview and quick start |
-| `docs/WORKFLOWS.md` | CI/CD workflow documentation |
+| `CLAUDE.md` | Claude Code context (39K max) |
 | `docs/STANDARDS.md` | Development standards (this file) |
+| `docs/WORKFLOWS.md` | CI/CD pipeline documentation |
 | `docs/ARCHITECTURE.md` | System architecture and design |
 | `docs/API.md` | API endpoints and usage |
-| `CHANGELOG.md` | Version release notes |
-
-### README.md Structure
-
-```markdown
-# WaddleAI
-
-Brief project description
-
-## Quick Start
-
-Installation and basic usage
-
-## Services
-
-- **Proxy**: Description
-- **Management**: Description
-
-## Development
-
-Setup and running locally
-
-## Documentation
-
-Links to detailed docs
-
-## License
-
-License information
-```
+| `RELEASE_NOTES.md` | Version release notes |
+| `NETWORK-ARCHITECTURE.md` | Network design and flow |
 
 ---
 
@@ -485,19 +587,14 @@ License information
 ### Branch Strategy
 
 **Branch Naming**: `<type>/<description>`
-- `feature/add-user-roles`
-- `bugfix/fix-cache-expiry`
+- `feature/add-model-routing`
+- `bugfix/fix-rate-limiting`
 - `docs/add-api-documentation`
 - `ci/update-workflows`
 
-**Main Branches**:
-- `main`: Production-ready code
-- `develop`: Development branch (if using)
-
 ### Commit Guidelines
 
-**Commit Message Format**:
-
+**Commit Message Format:**
 ```
 <type>(<scope>): <subject>
 
@@ -506,7 +603,7 @@ License information
 <footer>
 ```
 
-**Types**:
+**Types:**
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation
@@ -514,9 +611,8 @@ License information
 - `refactor`: Code refactoring
 - `test`: Test additions/changes
 - `ci`: CI/CD changes
-- `chore`: Build, dependencies
 
-**Example**:
+**Example:**
 ```
 feat(proxy): add request timeout configuration
 
@@ -529,7 +625,7 @@ Closes #123
 
 ### Before Committing
 
-**Pre-Commit Checklist**:
+**Pre-Commit Checklist:**
 
 1. **Code Quality**
    - [ ] `flake8 proxy management shared` passes
@@ -546,7 +642,6 @@ Closes #123
    - [ ] `pytest tests/unit/ -v` passes
    - [ ] Coverage >= 80%
    - [ ] New tests for new features
-   - [ ] Integration tests for API changes
 
 4. **Documentation**
    - [ ] Updated docstrings
@@ -555,88 +650,102 @@ Closes #123
 
 5. **Version Management**
    - [ ] Update `.version` if releasing
-   - [ ] Update `CHANGELOG.md` for version changes
-
-### Pull Request Process
-
-1. Create feature branch from `main`
-2. Make changes following all standards
-3. Pass all pre-commit checks locally
-4. Push to remote and create PR
-5. Wait for GitHub Actions to pass
-6. Request code review
-7. Address review feedback
-8. Merge after approval
-
-**PR Template**:
-```markdown
-## Description
-Brief description of changes
-
-## Related Issues
-Closes #123
-
-## Changes Made
-- Change 1
-- Change 2
-- Change 3
-
-## Testing
-- [ ] Unit tests added/updated
-- [ ] Integration tests passed
-- [ ] Manual testing completed
-
-## Security
-- [ ] No secrets committed
-- [ ] Security scanning passed
-- [ ] Dependencies updated if needed
-```
+   - [ ] Update `RELEASE_NOTES.md` for version changes
 
 ---
 
-## Version Management
+## WaddleAI-Specific Standards
 
-### .version File
+### OpenAI Compatibility
 
-**Format**: Semantic versioning
+All proxy endpoints MUST be OpenAI API compatible:
+
+```python
+# Request format matches OpenAI
+{
+    "model": "gpt-4",
+    "messages": [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Hello!"}
+    ],
+    "max_tokens": 100
+}
+
+# Response format matches OpenAI
+{
+    "id": "chatcmpl-xxx",
+    "object": "chat.completion",
+    "created": 1234567890,
+    "model": "gpt-4",
+    "choices": [{
+        "index": 0,
+        "message": {
+            "role": "assistant",
+            "content": "Hello! How can I help?"
+        }
+    }],
+    "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 10,
+        "total_tokens": 30
+    }
+}
 ```
-MAJOR.MINOR.PATCH
+
+### Token System
+
+**WaddleAI maintains dual token counting:**
+
+1. **LLM Tokens**: Raw provider token counts
+   - `prompt_tokens`: Input tokens from provider
+   - `completion_tokens`: Output tokens from provider
+   - `total_tokens`: Sum of above
+
+2. **WaddleAI Tokens**: Normalized billing units
+   - Consistent across all LLM providers
+   - Used for quota enforcement
+   - Used for cost calculation
+
+### Rate Limiting
+
+**Proxy must implement rate limiting:**
+
+```python
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="redis://localhost:6379"
+)
+
+@app.route('/v1/chat/completions', methods=['POST'])
+@limiter.limit("10/minute")
+@auth_required()
+def chat_completions():
+    pass
 ```
 
-**Example**: `1.2.3`
+### Caching
 
-**Update Process**:
-1. Edit `.version` file
-2. Commit: `git add .version && git commit -m "Release v1.2.3"`
-3. Push: `git push origin main`
-4. docker-build tags images automatically
-5. version-release creates GitHub pre-release
+**Redis caching for frequent requests:**
 
-### Changelog Management
+```python
+import redis
 
-**File**: `CHANGELOG.md`
+cache = redis.Redis(
+    host=os.getenv('REDIS_HOST', 'localhost'),
+    port=int(os.getenv('REDIS_PORT', 6379)),
+    db=int(os.getenv('REDIS_DB', 0))
+)
 
-**Format**:
-```markdown
-# Changelog
-
-## [1.2.3] - 2023-12-11
-
-### Added
-- New request timeout configuration
-- User role management endpoint
-
-### Fixed
-- Cache expiration bug in proxy service
-
-### Changed
-- Updated authentication flow
-
-### Security
-- Fixed SQL injection vulnerability in user search
-
-## [1.2.2] - 2023-12-01
-...
+# Cache embeddings (they rarely change)
+cache_key = f"embedding:{model}:{text_hash}"
+cached = cache.get(cache_key)
+if cached:
+    return json.loads(cached)
 ```
 
 ---
@@ -654,7 +763,7 @@ DB_NAME=waddleai
 DB_USER=waddleai
 DB_PASS=<secure-password>
 
-# Redis Cache
+# Redis
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
@@ -662,106 +771,48 @@ REDIS_DB=0
 # Flask
 FLASK_ENV=development
 SECRET_KEY=<secure-key>
+SECURITY_PASSWORD_SALT=<secure-salt>
 
-# Proxy Service
+# Services
 PROXY_PORT=8000
+MANAGEMENT_PORT=8001
 LOG_LEVEL=INFO
 
-# Management Service
-MANAGEMENT_PORT=8001
+# License (optional, development mode)
+LICENSE_KEY=PENG-XXXX-XXXX-XXXX-XXXX-ABCD
+RELEASE_MODE=false
 ```
-
-### Development vs Production
-
-**Development** (`.env.dev`):
-- Debug mode enabled
-- Verbose logging
-- Mocked external services
-- Local database/cache
-
-**Production**:
-- Debug mode disabled
-- Structured logging
-- Real external services
-- Managed database/cache
 
 ---
 
-## Monitoring and Observability
+## Quality Checklist
 
-### Logging Standards
-
-**Log Levels**:
-- **DEBUG**: Detailed diagnostic information
-- **INFO**: General informational messages
-- **WARNING**: Warning messages for potential issues
-- **ERROR**: Error messages for failures
-- **CRITICAL**: Critical errors requiring immediate attention
-
-**Log Format** (structured):
-```python
-import logging
-
-logger = logging.getLogger(__name__)
-
-# Good: Structured logging with context
-logger.info("User authenticated", extra={
-    "user_id": user.id,
-    "email": user.email,
-    "timestamp": datetime.utcnow().isoformat()
-})
-
-# Bad: String formatting
-# logger.info(f"User {user.id} authenticated at {datetime.utcnow()}")
-```
-
-### Health Checks
-
-**Proxy Service** (`/health`):
-```json
-{
-  "status": "healthy",
-  "service": "proxy",
-  "version": "1.2.3",
-  "timestamp": "2023-12-11T14:30:00Z"
-}
-```
-
-**Management Service** (`/health`):
-```json
-{
-  "status": "healthy",
-  "service": "management",
-  "version": "1.2.3",
-  "timestamp": "2023-12-11T14:30:00Z"
-}
-```
-
-### Metrics Endpoints
-
-Both services expose Prometheus metrics at `/metrics`
-
-```
-# HELP http_requests_total Total HTTP requests
-# TYPE http_requests_total counter
-http_requests_total{method="GET",endpoint="/api/v1/users"} 1234
-
-# HELP http_request_duration_seconds HTTP request duration
-# TYPE http_request_duration_seconds histogram
-http_request_duration_seconds_bucket{le="1.0"} 500
-```
+Before marking any task complete, verify:
+- ✅ All error cases handled properly
+- ✅ Unit tests cover all code paths
+- ✅ Integration tests verify component interactions
+- ✅ Security requirements fully implemented
+- ✅ Performance meets acceptable standards
+- ✅ Documentation complete and accurate
+- ✅ Code review standards met
+- ✅ No hardcoded secrets or credentials
+- ✅ Logging and monitoring in place
+- ✅ Build passes in containerized environment
+- ✅ No security vulnerabilities in dependencies
+- ✅ Edge cases and boundary conditions tested
 
 ---
 
 ## Related Documentation
 
-- [WaddleAI Workflows](WORKFLOWS.md)
-- [Network Architecture](NETWORK-ARCHITECTURE.md)
-- [API Documentation](API.md)
+- [WaddleAI CLAUDE.md](../CLAUDE.md)
+- [CI/CD Workflows](WORKFLOWS.md)
+- [Network Architecture](../NETWORK-ARCHITECTURE.md)
+- [API Reference](API.md)
 - [Project Template Standards](../../project-template/docs/STANDARDS.md)
 
 ---
 
-**Last Updated**: 2025-12-11
+**Last Updated**: 2025-12-18
 **Version**: 1.0.0
 **Maintained by**: WaddleAI Development Team
