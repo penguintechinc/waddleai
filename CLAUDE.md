@@ -926,3 +926,12 @@ curl http://localhost:8001/health
 **Maintained by**: WaddleAI Development Team
 **Repository**: https://github.com/penguintechinc/WaddleAI
 **License Server**: https://license.penguintech.io
+
+
+## License & Legal
+
+**License File**: `LICENSE.md` (located at project root)
+
+**License Type**: Limited AGPL-3.0 with commercial use restrictions and Contributor Employer Exception
+
+The `LICENSE.md` file is located at the project root following industry standards. This project uses a modified AGPL-3.0 license with additional exceptions for commercial use and special provisions for companies employing contributors.
