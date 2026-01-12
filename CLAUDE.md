@@ -1,177 +1,98 @@
-# WaddleAI - Claude Code Context
+# Project Template - Claude Code Context
+
+**⚠️ Important**: Application-specific context should be added to `docs/APP_STANDARDS.md` instead of this file. This allows the template CLAUDE.md to be updated across all projects without losing app-specific information. See `docs/APP_STANDARDS.md` for app-specific architecture, requirements, and context.
 
 ## Project Overview
 
-WaddleAI is an AI proxy and management system that provides OpenAI-compatible APIs with advanced routing, security, and token management. It enables organizations to manage AI/LLM requests across multiple backends with enterprise-grade request handling, authentication, rate limiting, and comprehensive management interfaces.
+This is a comprehensive project template incorporating best practices and patterns from Penguin Tech Inc projects. It provides a standardized foundation for multi-language projects with enterprise-grade infrastructure and integrated licensing.
 
-**Core Features:**
-- OpenAI-compatible API proxy with multi-backend routing
-- Advanced model routing and load balancing
-- Dual token system (WaddleAI tokens + LLM tokens) for accurate billing
-- Role-based access control (Admin, Resource Manager, Reporter, User)
-- Request rate limiting, caching, and quota management
-- Comprehensive administrative dashboard and analytics
-- Security scanning, threat detection, and vulnerability monitoring
-- Prometheus metrics and observability integration
+**Template Features:**
+- Multi-language support (Go 1.24.x, Python 3.12/3.13, Node.js 18+)
+- Enterprise security and licensing integration
+- Comprehensive CI/CD pipeline
+- Production-ready containerization
+- Monitoring and observability
+- Version management system
+- PenguinTech License Server integration
 
 ## Technology Stack
 
-### Services & Containers
-
-**WaddleAI consists of two core services:**
-
-| Service | Language | Purpose | Port |
-|---------|----------|---------|------|
-| **Proxy** | Python 3.13 | OpenAI-compatible API endpoint, routing, caching, request handling | 8000 |
-| **Management** | Python 3.13 | Administrative dashboard, user management, analytics, quota control | 8001 |
-
-**Container Architecture:**
-- Each service runs in a separate Docker container
-- Independent scaling and deployment
-- Shared PostgreSQL/MariaDB database and Redis cache
-- Multi-architecture builds (amd64, arm64)
-
 ### Languages & Frameworks
 
-**Language Selection:**
-- **Python**: 3.13.x for all applications (3.12+ minimum)
-- **Web Framework**: Flask + Flask-Security-Too (mandatory for all Flask applications)
-- **Database ORM**: Hybrid approach
-  - **SQLAlchemy**: Database initialization and schema creation
-  - **PyDAL**: Day-to-day operations and migrations (mandatory)
+**Language Selection Criteria (Case-by-Case Basis):**
+- **Python 3.13**: Default choice for most applications
+  - Web applications and APIs
+  - Business logic and data processing
+  - Integration services and connectors
+- **Go 1.24.x**: ONLY for high-traffic/performance-critical applications
+  - Applications handling >10K requests/second
+  - Network-intensive services
+  - Low-latency requirements (<10ms)
+  - CPU-bound operations requiring maximum throughput
+
+**Python Stack:**
+- **Python**: 3.13 for all applications (3.12+ minimum)
+- **Web Framework**:
+  - **Flask + Flask-Security-Too**: Standard choice for typical applications (mandatory)
+  - **Quart**: Async-first framework for high-performance/high-concurrency applications (>100 concurrent requests, <10ms latency requirements). Drop-in Flask replacement with native async/await support.
+- **Database Libraries** (mandatory for all Python applications):
+  - **SQLAlchemy**: Database initialization and schema creation only
+  - **PyDAL**: Runtime database operations and migrations
 - **Performance**: Dataclasses with slots, type hints, async/await required
 
+**Frontend Stack:**
+- **React**: ReactJS for all frontend applications
+- **Node.js**: 18+ for build tooling and React development
+- **JavaScript/TypeScript**: Modern ES2022+ standards
+
+**Go Stack (When Required):**
+- **Go**: 1.24.x (latest patch version, minimum 1.24.2)
+- **Database**: Use DAL with PostgreSQL/MySQL cross-support (e.g., GORM, sqlx)
+- Use only for traffic-intensive applications
+
 ### Infrastructure & DevOps
-- **Containers**: Docker with multi-stage builds, multi-architecture (amd64, arm64)
-- **Orchestration**: Docker Compose (local), Kubernetes (production ready)
+- **Containers**: Docker with multi-stage builds, Docker Compose
+- **Orchestration**: Kubernetes with Helm charts
+- **Configuration Management**: Ansible for infrastructure automation
 - **CI/CD**: GitHub Actions with comprehensive pipelines
-- **Container Registry**: GitHub Container Registry (ghcr.io)
 - **Monitoring**: Prometheus metrics, Grafana dashboards
-- **Logging**: Structured JSON logging with configurable levels
-- **Security**: Pre-commit scanning (bandit, CodeQL, npm audit)
+- **Logging**: Structured logging with configurable levels
 
 ### Databases & Storage
-- **Primary**: PostgreSQL (default, configurable via DB_TYPE)
-- **Production**: MariaDB Galera cluster (with WSREP support)
-- **Cache**: Redis/Valkey with optional TLS
-- **Database Strategy**: Hybrid (SQLAlchemy init + PyDAL operations)
-- **Supported DB_TYPE Values**: `postgres`, `mysql`, `sqlite`
+- **Primary**: PostgreSQL (default, configurable via `DB_TYPE` environment variable)
+- **Cache**: Redis/Valkey with optional TLS and authentication
+- **Supported Databases** (ALL must be supported by default):
+  - **PostgreSQL**: Primary/default database for production
+  - **MySQL**: Full support for MySQL 8.0+
+  - **MariaDB Galera**: Cluster support with WSREP, auto-increment, transaction handling
+  - **SQLite**: Development and lightweight deployments
+- **Database Libraries (Python)**:
+  - **SQLAlchemy**: Used ONLY for database initialization and schema creation
+  - **PyDAL**: Used for ALL runtime database operations and migrations
+  - `DB_TYPE` must match PyDAL connection string prefixes exactly
+- **Database Libraries (Go)**: GORM or sqlx (mandatory for cross-database support)
+  - Must support PostgreSQL, MySQL/MariaDB, and SQLite
+  - Stable, well-maintained library required
+- **Migrations**: PyDAL handles all migrations via `migrate=True`
+- **MariaDB Galera Support**: Handle Galera-specific requirements (WSREP, auto-increment, transactions)
 
-## Project Structure
+📚 **Supported DB_TYPE Values**: See [Development Standards - Database Standards](docs/STANDARDS.md#database-standards) for complete list and configuration details.
 
-```
-WaddleAI/
-├── .github/
-│   ├── workflows/
-│   │   ├── docker-build.yml          # Main CI/CD pipeline
-│   │   ├── version-release.yml       # Version-triggered releases
-│   │   └── deploy-cloudflare-pages.yml # Website deployment
-│   └── dependabot.yml
-├── proxy/                             # API/Backend service (Python)
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── apps/
-│   │   ├── __init__.py
-│   │   ├── routes.py                 # API endpoints
-│   │   ├── middleware.py             # Request handling
-│   │   └── cache.py                  # Redis caching
-│   ├── config/
-│   └── .plan                          # Recovery plan (crash recovery)
-├── management/                        # Management/Dashboard service (Python)
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── apps/
-│   │   ├── __init__.py
-│   │   ├── admin.py                  # Admin interface
-│   │   ├── users.py                  # User management
-│   │   └── analytics.py              # Reporting
-│   ├── templates/
-│   ├── static/
-│   ├── config/
-│   └── .todo                          # Todo tracking (crash recovery)
-├── shared/                            # Shared utilities
-│   ├── auth.py                        # Authentication
-│   ├── db.py                          # Database connection (SQLAlchemy/PyDAL)
-│   ├── cache.py                       # Cache utilities
-│   ├── errors.py                      # Error definitions
-│   └── logging.py                     # Logging setup
-├── tests/                             # Test suites
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
-├── docs/                              # Documentation
-│   ├── WORKFLOWS.md                   # CI/CD documentation
-│   ├── STANDARDS.md                   # Development standards
-│   ├── ARCHITECTURE.md                # Architecture design
-│   └── API.md                         # API reference
-├── docker-compose.yml                 # Production environment
-├── docker-compose.testing.yml         # Testing environment
-├── .version                           # Version file (SemVer)
-├── README.md                          # Project overview (max 25K chars)
-├── RELEASE_NOTES.md                   # Version release notes
-├── NETWORK-ARCHITECTURE.md            # Network design (max 25K chars)
-├── CLAUDE.md                          # This file (39K exception allowed)
-└── .env.dev                           # Development environment
-```
-
-## API Endpoints
-
-### Proxy Service (Port 8000)
-
-**OpenAI-Compatible Endpoints:**
-- `POST /v1/chat/completions` - Chat completion requests
-- `POST /v1/embeddings` - Embedding generation
-- `GET /health` - Health check
-- `GET /metrics` - Prometheus metrics
-
-**Authentication:**
-- All endpoints require Bearer token in Authorization header
-- Format: `Authorization: Bearer <api-key>`
-
-### Management Service (Port 8001)
-
-**Admin Dashboard:**
-- `GET /` - Dashboard home
-- `GET /users` - User management
-- `GET /analytics` - Analytics and reporting
-- `GET /health` - Health check
-- `GET /metrics` - Prometheus metrics
-
-**API Endpoints:**
-- `GET /api/v1/users` - List users
-- `POST /api/v1/users` - Create user
-- `GET /api/v1/users/<id>` - Get user details
-- `PUT /api/v1/users/<id>` - Update user
-- `DELETE /api/v1/users/<id>` - Delete user
-
-**Authentication:**
-- Admin panel: Session-based (Flask-Security-Too)
-- API: JWT tokens required
-
-## Security & Authentication
-
-### Flask-Security-Too Integration
-- **MANDATORY for all Flask applications**
-- Role-based access control (RBAC) with configurable roles
-- User authentication and session management
-- Password hashing with bcrypt (mandatory)
-- Email confirmation and password reset
-- Two-factor authentication (2FA) support
-- Token-based authentication for APIs (JWT)
-
-### API Authentication
-- All endpoints require Bearer token in Authorization header
-- Format: `Authorization: Bearer <api-key>`
-- JWT tokens with configurable expiration
-- API key management with rotation support
-
-### Security Standards
+### Security & Authentication
+- **Flask-Security-Too**: Mandatory for all Flask applications
+  - Role-based access control (RBAC) with OAuth2-style scopes
+  - User authentication and session management
+  - Password hashing with bcrypt
+  - Email confirmation and password reset
+  - Two-factor authentication (2FA)
+- **Permissions Model**: Global, container/team, and resource-level roles with custom scope-based permissions
 - **TLS**: Enforce TLS 1.2 minimum, prefer TLS 1.3
-- **Input Validation**: ALL API endpoints MUST validate user input
-- **SQL Injection Prevention**: Use PyDAL for all database queries (never construct SQL strings)
-- **Secrets Management**: Never hardcode credentials - use environment variables
-- **Security Scanning**: Mandatory bandit, CodeQL, npm audit analysis
-- **Dependency Scanning**: Trivy container scanning and Dependabot monitoring
+- **HTTP3/QUIC**: Utilize UDP with TLS for high-performance connections where possible
+- **Authentication**: JWT and MFA (standard), mTLS where applicable
+- **SSO**: SAML/OAuth2 SSO as enterprise-only features
+- **Secrets**: Environment variable management
+- **Scanning**: Trivy vulnerability scanning, CodeQL analysis
+- **Code Quality**: All code must pass CodeQL security analysis
 
 ## PenguinTech License Server Integration
 
@@ -190,12 +111,77 @@ All projects integrate with the centralized PenguinTech License Server at `https
 
 **Environment Variables**:
 ```bash
+# License configuration
 LICENSE_KEY=PENG-XXXX-XXXX-XXXX-XXXX-ABCD
 LICENSE_SERVER_URL=https://license.penguintech.io
-PRODUCT_NAME=waddleai
+PRODUCT_NAME=your-product-identifier
+
+# Release mode (enables license enforcement)
 RELEASE_MODE=false  # Development (default)
 RELEASE_MODE=true   # Production (explicitly set)
 ```
+
+📚 **Detailed Documentation**: [License Server Integration Guide](docs/licensing/license-server-integration.md)
+
+## WaddleAI Integration (Optional)
+
+For projects requiring AI capabilities, integrate with WaddleAI located at `~/code/WaddleAI`.
+
+**When to Use WaddleAI:**
+- Natural language processing (NLP)
+- Machine learning model inference
+- AI-powered features and automation
+- Intelligent data analysis
+- Chatbots and conversational interfaces
+
+**Integration Pattern:**
+- WaddleAI runs as separate microservice container
+- Communicate via REST API or gRPC
+- Environment variable configuration for API endpoints
+- License-gate AI features as enterprise functionality
+
+📚 **WaddleAI Documentation**: See WaddleAI project at `~/code/WaddleAI` for integration details
+
+## Project Structure
+
+```
+project-name/
+├── .github/             # CI/CD pipelines and templates
+│   └── workflows/       # GitHub Actions for each container
+├── services/            # Microservices (separate containers by default)
+│   ├── flask-backend/   # Flask + PyDAL backend (auth, users, standard APIs)
+│   ├── go-backend/      # Go high-performance backend (XDP/AF_XDP, NUMA)
+│   ├── webui/           # Node.js + React frontend shell
+│   └── connector/       # Integration services (placeholder)
+├── shared/              # Shared components
+├── infrastructure/      # Infrastructure as code
+├── scripts/             # Utility scripts
+├── tests/               # Test suites (unit, integration, e2e, performance, smoke)
+│   ├── smoke/           # Smoke tests (build, run, API, page loads)
+│   ├── api/             # API tests
+│   ├── unit/            # Unit tests
+│   ├── integration/     # Integration tests
+│   └── e2e/             # End-to-end tests
+├── docs/                # Documentation
+├── config/              # Configuration files
+├── docker-compose.yml   # Production environment
+├── docker-compose.dev.yml # Local development
+├── Makefile             # Build automation
+├── .version             # Version tracking
+└── CLAUDE.md            # This file
+```
+
+### Three-Container Architecture
+
+| Container | Purpose | When to Use |
+|-----------|---------|-------------|
+| **flask-backend** | Standard APIs, auth, CRUD | <10K req/sec, business logic |
+| **go-backend** | High-performance networking | >10K req/sec, <10ms latency |
+| **webui** | Node.js + React frontend | All frontend applications |
+
+**Default Roles**: Admin (full access), Maintainer (read/write, no user mgmt), Viewer (read-only)
+
+📚 **Architecture diagram and details**: [Development Standards - Microservices Architecture](docs/STANDARDS.md#microservices-architecture)
 
 ## Version Management System
 
@@ -213,224 +199,76 @@ RELEASE_MODE=true   # Production (explicitly set)
 ./scripts/version/update-version.sh major    # Increment major version
 ```
 
-## CI/CD & Workflows
-
-### Build Naming Convention
-
-Container images follow automatic naming based on branch and version:
-
-| Scenario | Main Branch | Other Branches |
-|----------|------------|-----------------|
-| Regular build | `beta-<epoch64>` | `alpha-<epoch64>` |
-| Version release | `vX.X.X-beta` | `vX.X.X-alpha` |
-| Tagged release | `vX.X.X` + `latest` | N/A |
-
-### Main Workflows
-
-**1. docker-build.yml** (Main CI/CD Pipeline)
-- Triggers: Push to main/v1.x, PRs, version tags
-- Jobs: test → build-and-push → security-scan → integration-test → release → cleanup
-- Security: bandit, Trivy scanning
-- Coverage: Codecov integration
-- Documentation: [See docs/WORKFLOWS.md](docs/WORKFLOWS.md)
-
-**2. version-release.yml** (Version Management)
-- Triggers: `.version` file changes on main branch
-- Creates GitHub pre-releases automatically
-- Parses semantic version from `.version` file
-- Documentation: [See docs/WORKFLOWS.md](docs/WORKFLOWS.md)
-
-**3. deploy-cloudflare-pages.yml** (Website)
-- Triggers: Changes to website/ directory
-- Builds and deploys to Cloudflare Pages
-- npm audit for dependency scanning
-- PR comments with preview URLs
-
-### Security Scanning
-
-**Code Security:**
-- **bandit**: Python security issues (severity: low+)
-- **npm audit**: JavaScript/Node.js dependencies
-- **Trivy**: Container image scanning
-
-**Container Registry:**
-- Registry: ghcr.io (GitHub Container Registry)
-- Authentication: GITHUB_TOKEN provided by Actions
-- Multi-arch: linux/amd64, linux/arm64
-
 ## Development Workflow
 
-### Local Setup
+### Quick Start
 
 ```bash
-# Clone and setup
-git clone https://github.com/penguintechinc/WaddleAI.git
-cd WaddleAI
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Setup environment
-cp .env.dev .env
-
-# Start services
-docker-compose -f docker-compose.testing.yml up -d
-
-# Run tests
-pytest tests/unit/ -v --cov=proxy,management,shared
+git clone <repository-url>
+cd project-name
+make setup                    # Install dependencies
+make dev                      # Start development environment
+make seed-mock-data          # Populate with 3-4 test items per feature
 ```
 
-### Pre-Commit Checklist
+### Essential Documentation (Complete for Your Project)
 
-**Code Quality:**
-- [ ] `flake8 proxy management shared` passes
-- [ ] `black --check proxy management shared` passes
-- [ ] `isort --check-only proxy management shared` passes
-- [ ] `mypy proxy management shared` passes
+Before starting development on this template, projects MUST complete and maintain these three critical documentation files:
 
-**Security:**
-- [ ] `bandit -r proxy management shared -ll` passes (Python security)
-- [ ] `npm audit` passes (JavaScript dependencies)
-- [ ] `CodeQL` analysis passes (GitHub advanced security)
-- [ ] No hardcoded secrets or credentials
-- [ ] No debug logging of sensitive data
+**📚 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - LOCAL DEVELOPMENT SETUP GUIDE
+- Prerequisites and installation for your tech stack
+- Environment configuration specifics
+- Starting your services locally
+- Development workflow with mock data injection
+- Common developer tasks and troubleshooting
+- Tips for your specific architecture
 
-**Testing:**
-- [ ] `pytest tests/unit/ -v` passes
-- [ ] Coverage >= 80%
-- [ ] New tests for new features
+**📚 [docs/TESTING.md](docs/TESTING.md)** - TESTING & VALIDATION GUIDE
+- Mock data scripts (3-4 items per feature pattern)
+- Smoke tests (mandatory verification)
+- Unit, integration, and E2E testing
+- Performance testing procedures
+- Cross-architecture testing with QEMU
+- Pre-commit test execution order
 
-**Documentation:**
-- [ ] Docstrings updated
-- [ ] API docs updated if endpoints changed
-- [ ] WORKFLOWS.md updated if CI/CD changed
+**📚 [docs/PRE_COMMIT.md](docs/PRE_COMMIT.md)** - PRE-COMMIT CHECKLIST
+- Required steps before every git commit
+- Smoke tests (mandatory, <2 min)
+- Mock data seeding for feature testing
+- Screenshot capture with realistic data
+- Security scanning requirements
+- Build and test verification steps
 
-**Version:**
-- [ ] `.version` updated for releases
-- [ ] RELEASE_NOTES.md updated
+**🔄 Workflow**: DEVELOPMENT.md → TESTING.md → PRE_COMMIT.md (integrated flow)
+- Developers follow DEVELOPMENT.md to set up locally
+- Reference TESTING.md for testing patterns and mock data
+- Run PRE_COMMIT.md checklist before commits (includes smoke tests + screenshots)
 
-### Git Workflow
-
-**Branch Strategy:**
-- Feature: `feature/<description>`
-- Bugfix: `bugfix/<description>`
-- CI/CD: `ci/<description>`
-- Docs: `docs/<description>`
-
-**Before Commit:**
-1. Run all pre-commit checks locally
-2. Ensure tests pass
-3. Update documentation
-4. Update `.version` if releasing
-
-**Commit Message Format:**
-```
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
-```
-
-**Example:**
-```
-feat(proxy): add request timeout configuration
-
-- Add REQUEST_TIMEOUT environment variable
-- Default timeout: 30 seconds
-- Configurable per-request via headers
-- Update integration tests
-
-Closes #123
-```
-
-### CRITICAL: Git Workflow Rules
-
-- **NEVER commit automatically** unless explicitly requested by the user
-- **NEVER push to remote repositories** under any circumstances
-- **ONLY commit when explicitly asked** - never assume commit permission
-- Always use feature branches for development
-- Require pull request reviews for main branch
-- Automated testing must pass before merge
-
-**Before Every Commit - Security Scanning**:
-- **Run security audits on all modified packages**:
-  - **Python packages**: Run `bandit -r proxy management shared -ll`
-  - **Node.js packages**: Run `npm audit` (if applicable)
-- **Do NOT commit if security vulnerabilities are found** - fix all issues first
-
-## Configuration
-
-### Environment Variables
-
-**Shared:**
+### Essential Commands
 ```bash
-# Logging
-LOG_LEVEL=INFO
+# Development
+make dev                      # Start development services
+make test                     # Run all tests
+make lint                     # Run linting
+make build                    # Build all services
+make clean                    # Clean build artifacts
 
-# Database (supports: postgres, mysql, sqlite)
-# Local development: postgres or sqlite
-# Production: MariaDB Galera cluster required
-DB_TYPE=postgres
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=waddleai
-DB_USER=waddleai
-DB_PASS=<password>
+# Production
+make docker-build             # Build containers
+make docker-push              # Push to registry
+make deploy-dev               # Deploy to development
+make deploy-prod              # Deploy to production
 
-# MariaDB Galera (production only)
-DB_GALERA_CLUSTER_NODES=node1,node2,node3
-DB_GALERA_WSREP_PROVIDER=/usr/lib/galera/libgalera_smm.so
+# Testing
+make test-unit               # Run unit tests
+make test-integration        # Run integration tests
+make test-e2e                # Run end-to-end tests
+make smoke-test              # Run smoke tests (build, run, API, page loads)
 
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-
-# Flask
-FLASK_ENV=development
-SECRET_KEY=<secure-key>
-SECURITY_PASSWORD_SALT=<secure-salt>
+# License Management
+make license-validate        # Validate license
+make license-check-features  # Check available features
 ```
-
-**Proxy Service:**
-```bash
-PROXY_PORT=8000
-REQUEST_TIMEOUT=30
-RATE_LIMIT_REQUESTS=1000
-RATE_LIMIT_WINDOW=3600
-```
-
-**Management Service:**
-```bash
-MANAGEMENT_PORT=8001
-ENABLE_ANALYTICS=true
-ANALYTICS_RETENTION_DAYS=90
-```
-
-### Version File
-
-**Location**: `.version` (repository root)
-
-**Format**: Semantic versioning
-```
-MAJOR.MINOR.PATCH
-```
-
-**Example**: `1.2.3`
-
-**Usage**:
-- Edit `.version` and commit to trigger release workflow
-- Both docker-build and version-release detect changes
-- Images automatically tagged with version
-
-### Local State Management
-
-**Crash Recovery Files:**
-- **`.plan`** (proxy service): Recovery plan for API/Backend service
-- **`.todo`** (management service): Todo tracking for state recovery
-
-**Purpose**: Enable system recovery from unexpected shutdowns
 
 ## Critical Development Rules
 
@@ -448,7 +286,6 @@ MAJOR.MINOR.PATCH
 
 #### Red Flags (Never Do These)
 - ❌ Skipping input validation "just this once"
-- ❌ Writing custom validators instead of using shared libraries
 - ❌ Hardcoding credentials or configuration
 - ❌ Ignoring error returns or exceptions
 - ❌ Commenting out failing tests to make CI pass
@@ -463,6 +300,7 @@ MAJOR.MINOR.PATCH
 - ✅ All error cases handled properly
 - ✅ Unit tests cover all code paths
 - ✅ Integration tests verify component interactions
+- ✅ Smoke tests verify build, run, API health, and page loads
 - ✅ Security requirements fully implemented
 - ✅ Performance meets acceptable standards
 - ✅ Documentation complete and accurate
@@ -473,9 +311,84 @@ MAJOR.MINOR.PATCH
 - ✅ No security vulnerabilities in dependencies
 - ✅ Edge cases and boundary conditions tested
 
+### Git Workflow
+- **NEVER commit automatically** unless explicitly requested by the user
+- **NEVER push to remote repositories** under any circumstances
+- **ONLY commit when explicitly asked** - never assume commit permission
+- **Prefer `gh` CLI over direct GitHub access** - use GitHub CLI (`gh`) for all GitHub operations (PRs, issues, releases, repo info) instead of web scraping or direct API calls
+- Always use feature branches for development
+- Require pull request reviews for main branch
+- Automated testing must pass before merge
+
+**Before Every Commit - Security Scanning**:
+- **Run security audits on all modified packages**:
+  - **Go packages**: Run `gosec ./...` on modified Go services
+  - **Node.js packages**: Run `npm audit` on modified Node.js services
+  - **Python packages**: Run `bandit -r .` and `safety check` on modified Python services
+- **Do NOT commit if security vulnerabilities are found** - fix all issues first
+- **Document vulnerability fixes** in commit message if applicable
+
+**Before Every Commit - API Testing**:
+- **Create and run API testing scripts** for each modified container service
+- **Testing scope**: All new endpoints and modified functionality
+- **Test files location**: `tests/api/` directory with service-specific subdirectories
+  - `tests/api/flask-backend/` - Flask backend API tests
+  - `tests/api/go-backend/` - Go backend API tests
+  - `tests/api/webui/` - WebUI container tests
+- **Run before commit**: Each test script should be executable and pass completely
+- **Test coverage**: Health checks, authentication, CRUD operations, error cases
+- **Command pattern**: `cd services/<service-name> && npm run test:api` or equivalent
+
+**Before Every Commit - Screenshots**:
+- **Requirement**: Update UI screenshots with current application state when features change
+- **Prerequisites**: Start development environment with mock data populated
+  ```bash
+  make dev                    # Start all services
+  make seed-mock-data         # Populate with 3-4 test items per feature
+  ```
+- **Capture screenshots**: Run from project root (auto-removes old, captures fresh)
+  ```bash
+  node scripts/capture-screenshots.cjs
+  # Or via npm script if configured
+  npm run screenshots
+  ```
+- **Purpose**: Screenshots should showcase features with realistic mock data (3-4 items)
+  - Demonstrates feature functionality and purpose
+  - Shows data in context (products list, orders, user profiles, etc.)
+  - Updated whenever UI changes or new features added
+- **Location**: Screenshots saved to `docs/screenshots/`
+- **Commit**: Include updated screenshots with relevant feature/UI changes
+
+**Before Every Commit - Smoke Tests**:
+- **Create and run smoke tests** to verify basic functionality (build, runtime, API health, UI loads)
+- **Mandatory requirements**: All must be created and passing before commit
+- **Run before commit**: `make smoke-test` or `./tests/smoke/run-all.sh`
+- **Continuous validation**: Smoke tests prevent regressions in core functionality
+
+📚 **Detailed smoke testing requirements**: [Testing Documentation](docs/TESTING.md#smoke-tests)
+
+### Local State Management (Crash Recovery)
+- **ALWAYS maintain local .PLAN and .TODO files** for crash recovery
+- **Keep .PLAN file updated** with current implementation plans and progress
+- **Keep .TODO file updated** with task lists and completion status
+- **Update these files in real-time** as work progresses
+- **Add to .gitignore**: Both .PLAN and .TODO files must be in .gitignore
+- **File format**: Use simple text format for easy recovery
+- **Automatic recovery**: Upon restart, check for existing files to resume work
+
+### Dependency Security Requirements
+- **ALWAYS check for Dependabot alerts** before every commit
+- **Monitor vulnerabilities via Socket.dev** for all dependencies
+- **Mandatory security scanning** before any dependency changes
+- **Fix all security alerts immediately** - no commits with outstanding vulnerabilities
+- **Regular security audits**: `npm audit`, `go mod audit`, `safety check`
+
 ### Linting & Code Quality Requirements
 - **ALL code must pass linting** before commit - no exceptions
 - **Python**: flake8, black, isort, mypy (type checking), bandit (security)
+- **JavaScript/TypeScript**: ESLint, Prettier
+- **Go**: golangci-lint (includes staticcheck, gosec, etc.)
+- **Ansible**: ansible-lint
 - **Docker**: hadolint
 - **YAML**: yamllint
 - **Markdown**: markdownlint
@@ -485,7 +398,7 @@ MAJOR.MINOR.PATCH
 
 ### Build & Deployment Requirements
 - **NEVER mark tasks as completed until successful build verification**
-- All Python builds MUST be executed within Docker containers
+- All Go and Python builds MUST be executed within Docker containers
 - Use containerized builds for local development and CI/CD pipelines
 - Build failures must be resolved before task completion
 
@@ -495,437 +408,260 @@ MAJOR.MINOR.PATCH
 - **RELEASE_NOTES.md**: Maintain in docs/ folder, prepend new version releases to top
 - Update CLAUDE.md when adding significant context
 - **Build status badges**: Always include in README.md
+- **ASCII art**: Include catchy, project-appropriate ASCII art in README
 - **Company homepage**: Point to www.penguintech.io
+- **License**: All projects use Limited AGPL3 with preamble for fair use
 
 ### File Size Limits
 - **Maximum file size**: 25,000 characters for ALL code and markdown files
 - **Split large files**: Decompose into modules, libraries, or separate documents
 - **CLAUDE.md exception**: Maximum 39,000 characters (only exception to 25K rule)
+- **High-level approach**: CLAUDE.md contains high-level context and references detailed docs
+- **Documentation strategy**: Create detailed documentation in `docs/` folder and link to them from CLAUDE.md
+- **Keep focused**: Critical context, architectural decisions, and workflow instructions only
+- **User approval required**: ALWAYS ask user permission before splitting CLAUDE.md files
+- **Use Task Agents**: Utilize task agents (subagents) to be more expedient and efficient when making changes to large files, updating or reviewing multiple files, or performing complex multi-step operations
+- **Avoid sed/cat**: Use sed and cat commands only when necessary; prefer dedicated Read/Edit/Write tools for file operations
 
-## Testing Strategy
+### Task Agent Usage Guidelines
 
-### Unit Tests
-- Framework: pytest
-- Location: `tests/unit/`
-- Isolation: Mocked dependencies, no network
-- Coverage: >= 80% required
+**Model Selection:**
+- **Haiku model**: Use for the majority of task agent work (file searches, simple edits, routine operations)
+- **Sonnet model**: Use for more complex jobs requiring deeper reasoning (architectural decisions, complex refactoring, multi-file coordination)
+- Default to haiku unless the task explicitly requires complex analysis
 
-### Integration Tests
-- Location: `tests/integration/`
-- Services: Real database, Redis, docker-compose
-- Health checks before testing
-- Cleanup on completion
+**Response Size Requirements:**
+- **CRITICAL**: Task agents MUST return minimal responses to avoid context overload of the orchestration model
+- Agents should return only essential information: file paths, line numbers, brief summaries
+- Avoid returning full file contents or verbose explanations in agent responses
+- Use bullet points and concise formatting in agent outputs
 
-### E2E Tests
-- Location: `tests/e2e/`
-- Full workflow testing
-- API endpoint validation
-- User flow verification
+**Concurrency Limits:**
+- **Maximum 10 task agents** running concurrently at any time
+- Even with minimal responses, running more than 10 agents risks context overload
+- Queue additional tasks if the limit would be exceeded
+- Monitor active agent count before spawning new agents
 
-## Monitoring & Observability
-
-### Health Endpoints
-
-**Proxy** (`GET /health`):
-```json
-{
-  "status": "healthy",
-  "service": "proxy",
-  "version": "1.2.3",
-  "timestamp": "2023-12-11T14:30:00Z"
-}
-```
-
-**Management** (`GET /health`):
-```json
-{
-  "status": "healthy",
-  "service": "management",
-  "version": "1.2.3",
-  "timestamp": "2023-12-11T14:30:00Z"
-}
-```
-
-### Metrics Endpoints
-
-Both services expose Prometheus metrics at `GET /metrics`:
-- HTTP request counts
-- Request duration histograms
-- Cache hit/miss ratios
-- API usage statistics
-- Error rates by endpoint
-
-### Logging
-
-**Format**: Structured JSON logging
-```python
-logger.info("Request processed", extra={
-    "service": "proxy",
-    "endpoint": "/v1/chat/completions",
-    "status": 200,
-    "duration_ms": 145,
-    "timestamp": "2023-12-11T14:30:00Z"
-})
-```
-
-## WaddleAI Integration
-
-WaddleAI is a **proxy and management system** for AI/LLM request orchestration. It serves as a critical infrastructure component that abstracts and manages communication with multiple AI backends (OpenAI, Claude, local models, etc.).
-
-**Role as AI Proxy/Management System:**
-- Central gateway for all AI/LLM requests across the organization
-- Provides unified OpenAI-compatible API interface
-- Manages authentication, rate limiting, quota enforcement
-- Implements token accounting and cost tracking (dual token system)
-- Handles request routing to appropriate backend based on model availability, load, cost
-- Enables seamless backend switching and fallback mechanisms
-- Centralized monitoring, analytics, and security scanning
-- Reduces vendor lock-in by supporting multiple LLM providers
-
-**Self-Reference Integration:**
-WaddleAI IS the AI proxy layer. This CLAUDE.md documents:
-- How WaddleAI components interact (proxy ↔ management)
-- API contract and authentication mechanisms
-- Token management and billing system
-- Multi-backend routing architecture
-- Integration with external systems
-
-**Integration with Other Systems:**
-- Projects can integrate with WaddleAI by pointing to proxy service (port 8000)
-- Use Bearer token authentication
-- Send requests to OpenAI-compatible endpoints
-- WaddleAI handles backend selection and request proxying
-
-**When to Build on WaddleAI vs. Use Standalone:**
-- Use WaddleAI: Multi-user environments, billing/quota tracking, multi-backend support needed
-- Use standalone: Single-user development, direct LLM provider access acceptable
+**Best Practices:**
+- Provide clear, specific prompts to agents to get focused responses
+- Request only the information needed, not comprehensive analysis
+- Use agents for parallelizable work (searching multiple directories, checking multiple files)
+- Combine related small tasks into single agent calls when possible
 
 ## Development Standards
 
-Comprehensive development standards for WaddleAI are documented in [docs/STANDARDS.md](docs/STANDARDS.md).
+Comprehensive development standards are documented separately to keep this file concise.
 
-**Key Standards Reference:**
-- Dual token system: WaddleAI tokens (user-facing) + LLM tokens (actual usage)
-- Multi-backend routing with fallback mechanisms
-- PyDAL for all runtime database operations
-- Flask-Security-Too for admin panel and API authentication
-- Prometheus metrics on `/metrics` endpoint
-- Structured JSON logging for observability
-- Rate limiting and quota enforcement patterns
+📚 **Complete Standards Documentation**: [Development Standards](docs/STANDARDS.md)
 
-**Database Standards (PyDAL):**
-- All database operations use PyDAL ORM (mandatory)
-- SQLAlchemy used only for schema initialization
-- Support PostgreSQL, MySQL, MariaDB Galera, SQLite
-- Thread-safe connection pooling with retry logic
-- Environment variable configuration via `DB_TYPE`
+### Quick Reference
 
-**Authentication Patterns (Flask-Security-Too + PyDAL):**
-```python
-# User authentication with Flask-Security-Too
-from flask_security import Security, SQLAlchemyUserDatastore
-from pydal import DAL
+**API Versioning**:
+- ALL REST APIs MUST use versioning: `/api/v{major}/endpoint` format
+- Semantic versioning for major versions only in URL
+- Support current and 2 previous versions (N-2) minimum
+- Add deprecation headers to old versions
+- Document migration paths for version changes
+- Keep APIs simple and extensible: use flexible inputs, backward-compatible responses
+- Leverage and reuse existing APIs where possible
 
-# Session-based for admin panel
-# JWT/Bearer tokens for API endpoints
-# Role-based access control (Admin, Resource Manager, Reporter, User)
-```
+**Database Standards**:
+- SQLAlchemy for database initialization and schema creation only
+- PyDAL mandatory for ALL runtime database operations and migrations
+- Supported databases: PostgreSQL, MySQL, MariaDB Galera, SQLite
+- Thread-safe usage with thread-local connections
+- Environment variable configuration for all database settings
+- Connection pooling and retry logic required
+- Async/multi-threading based on workload (see Performance Optimization)
 
-**Multi-Backend Routing Patterns:**
-- Route request based on model availability and load
-- Implement fallback to secondary backends
-- Track token usage per backend
-- Log routing decisions for analytics
+**API Design Principles**:
+- **Simple & Extensible**: Keep REST and gRPC APIs simple, use flexible input structures and backward-compatible responses
+- **Leverage Existing**: Reuse existing APIs where possible, avoid creating duplicate endpoints
+- **Consistent Versioning**: All APIs use `/api/v{major}/endpoint` versioning for REST and semantic versioning for gRPC
+- **Deprecation Support**: Maintain N-2 API versions minimum (current + 2 previous), include deprecation headers and migration paths
+
+**Protocol Support**:
+- **External Communication** (clients, third-party integrations): REST API over HTTPS
+  - Flask REST endpoints for client-facing APIs
+  - Supports external consumers and web UIs
+  - Versioned: `/api/v1/endpoint`, `/api/v2/endpoint`, etc.
+- **Inter-Container Communication** (within cluster): gRPC preferred for best performance
+  - Service-to-service calls between containers in same namespace/cluster
+  - Binary protocol with Protocol Buffers for lower latency and bandwidth
+  - Use for internal APIs between microservices
+  - Fallback to REST over HTTP/2 if gRPC unavailable
+- **HTTP/3 (QUIC)**: Consider for high-performance inter-container scenarios (>10K req/sec)
+  - UDP-based, reduced latency, connection multiplexing
+- Environment variables for protocol configuration
+- Multi-protocol implementation: REST for external, gRPC for internal
+
+**Performance Optimization (Python):**
+- Dataclasses with slots mandatory (30-50% memory reduction)
+- Type hints required for all Python code
+- **Concurrency selection based on workload:**
+  - `asyncio` + `databases` library for I/O-bound operations (>100 concurrent requests)
+  - `threading` + `ThreadPoolExecutor` for blocking I/O and legacy integrations
+  - `multiprocessing` for CPU-bound operations
+- Connection pool sizing: `(2 * CPU_cores) + disk_spindles`
+- Avoid premature optimization - profile first
+
+**High-Performance Networking (Case-by-Case):**
+- XDP (eXpress Data Path): Kernel-level packet processing
+- AF_XDP: Zero-copy socket for user-space packet processing
+- Use only for network-intensive applications requiring >100K packets/sec
+- Evaluate Python vs Go based on traffic requirements
+
+**Microservices Architecture**:
+- Web UI, API, and Connector as **separate containers by default**
+- Single responsibility per service
+- API-first design
+- Independent deployment and scaling
+- Each service has its own Dockerfile and dependencies
+
+**MarchProxy API Gateway/LB Integration**:
+- Applications are expected to run behind MarchProxy (`~/code/MarchProxy`)
+- **DO NOT include MarchProxy in default deployment** - it's external infrastructure
+- **Generate MarchProxy-compatible import configuration** in `config/marchproxy/`
+- Import config via MarchProxy's API: `POST /api/v1/services/import`
+- See [Development Standards - MarchProxy Integration](docs/STANDARDS.md#marchproxy-api-gateway-integration)
+
+**Docker Standards**:
+- Multi-arch builds (amd64/arm64)
+- Debian-slim base images
+- Docker Compose for local development
+- Minimal host port exposure
+- **Cross-Architecture Testing**: Before final commit, test on alternate architecture:
+  - If developing on amd64: Use QEMU to build and test arm64 (`docker buildx build --platform linux/arm64 ...`)
+  - If developing on arm64: Use QEMU to build and test amd64 (`docker buildx build --platform linux/amd64 ...`)
+  - Ensures multi-architecture compatibility and prevents platform-specific bugs
+  - Command: `docker buildx build --platform linux/amd64,linux/arm64 -t image:tag --push .`
+
+**Testing**:
+- Unit tests: Network isolated, mocked dependencies
+- Integration tests: Component interactions
+- E2E tests: Critical workflows
+- Performance tests: Scalability validation
+- Smoke tests: Build, run, API health, page/tab load verification (mandatory)
+- Mock data: 3-4 items per feature/entity for development
+
+📚 **Complete Testing Guide**: [Testing Documentation](docs/TESTING.md) includes smoke tests, unit tests, integration tests, E2E tests, performance tests, mock data scripts, and cross-architecture testing with QEMU
+
+**Security**:
+- TLS 1.2+ required
+- Input validation mandatory
+- JWT, MFA, mTLS standard
+- SSO as enterprise feature
 
 ## Application Architecture
 
-WaddleAI uses a **dual-container proxy/management microservices architecture**:
+**ALWAYS use microservices architecture** - decompose into specialized, independently deployable containers:
 
-### Service Architecture
+1. **Web UI Container**: ReactJS frontend (separate container, served via nginx)
+2. **Application API Container**: Flask + Flask-Security-Too backend (separate container)
+3. **Connector Container**: External system integration (separate container)
 
-**Proxy Service** (Port 8000):
-- OpenAI-compatible API endpoint
-- Request routing engine with load balancing
-- Token accounting and tracking
-- Request validation and security scanning
-- Cache layer (Redis) for response caching
-- Middleware for authentication, rate limiting, request/response transformation
+**Default Container Separation**: Web UI and API are ALWAYS separate containers by default. This provides:
+- Independent scaling of frontend and backend
+- Different resource allocation per service
+- Separate deployment lifecycles
+- Technology-specific optimization
 
-**Management Service** (Port 8001):
-- Administrative dashboard (Flask + Jinja2 templates)
-- User and API key management
-- Analytics and reporting dashboard
-- Quota and billing management
-- Backend configuration interface
-- System health and metrics dashboard
+**Benefits**:
+- Independent scaling
+- Technology diversity
+- Team autonomy
+- Resilience
+- Continuous deployment
 
-### Communication Flow
-
-```
-Client
-  ↓ (Bearer Token)
-┌─────────────────────────────────────────┐
-│  Proxy Service (8000)                   │
-│  - Route /v1/chat/completions           │
-│  - Validate token + rate limit          │
-│  - Select backend + route request       │
-│  - Cache responses in Redis             │
-│  - Track token usage                    │
-└────────────┬────────────────────────────┘
-             ↓
-┌──────────────────────────────────────────┐
-│  Backend Selection                       │
-│  - OpenAI API                            │
-│  - Anthropic Claude                      │
-│  - Local LLM (ollama, vLLM)             │
-│  - Other providers                       │
-└──────────────────────────────────────────┘
-```
-
-### Data Flow: Token Accounting
-
-```
-1. Request arrives → WaddleAI token consumed
-2. Request routed to backend → LLM tokens consumed
-3. Response returned → Both token types recorded
-4. Billing calculated → Dual-token accuracy
-```
-
-### Shared Components
-
-- **shared/auth.py**: Token validation, API key management
-- **shared/db.py**: SQLAlchemy + PyDAL database abstraction
-- **shared/cache.py**: Redis caching utilities
-- **shared/logging.py**: Structured JSON logging
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architectural diagrams.
+📚 **Detailed Architecture Patterns**: See [Development Standards - Microservices Architecture](docs/STANDARDS.md#microservices-architecture)
 
 ## Common Integration Patterns
 
-### Flask-Security-Too Authentication + PyDAL
+📚 **Complete code examples and integration patterns**: [Development Standards](docs/STANDARDS.md)
 
-**Admin Panel (Session-Based):**
-```python
-from flask_security import Security, SQLAlchemyUserDatastore, login_required, roles_required
-
-@app.route('/dashboard')
-@login_required
-@roles_required('admin')
-def admin_dashboard():
-    # Session-based authentication
-    # Role checking handled automatically
-    pass
-```
-
-**API Endpoints (JWT/Bearer Token):**
-```python
-from flask import request
-from shared.auth import validate_token
-
-@app.route('/api/v1/models', methods=['GET'])
-def list_models():
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    user = validate_token(token)
-    # Database queries use PyDAL
-    pass
-```
-
-**Database Integration (PyDAL):**
-```python
-from pydal import DAL, Field
-
-# Initialize in shared/db.py
-db = DAL(f'{db_type}://{db_host}:{db_port}/{db_name}', user=db_user, password=db_pass)
-
-# Define tables
-db.define_table('api_keys',
-    Field('user_id', 'reference auth_user'),
-    Field('key_hash', 'string'),
-    Field('name', 'string'),
-    Field('created_on', 'datetime'))
-
-# Use in business logic
-# Query: records = db(db.api_keys.user_id == user_id).select()
-# Insert: db.api_keys.insert(user_id=user_id, key_hash=hash, name='My Key')
-# Update: db(db.api_keys.id == key_id).update(name='New Name')
-```
-
-### Multi-Backend Routing
-
-**Backend Configuration:**
-```python
-BACKENDS = {
-    'openai': {
-        'url': 'https://api.openai.com/v1',
-        'api_key': os.getenv('OPENAI_API_KEY'),
-        'models': ['gpt-4', 'gpt-3.5-turbo'],
-        'priority': 1,
-        'token_ratio': 1.0
-    },
-    'claude': {
-        'url': 'https://api.anthropic.com/v1',
-        'api_key': os.getenv('ANTHROPIC_API_KEY'),
-        'models': ['claude-3-opus', 'claude-3-sonnet'],
-        'priority': 2,
-        'token_ratio': 1.2
-    }
-}
-```
-
-**Routing Decision Logic:**
-```python
-def select_backend(model: str, load_preference: str = 'balanced'):
-    available = [b for b in BACKENDS.values() if model in b['models']]
-    if not available:
-        raise ValueError(f'Model {model} not available')
-
-    if load_preference == 'lowest_latency':
-        return min(available, key=lambda x: x['priority'])
-    elif load_preference == 'lowest_cost':
-        return min(available, key=lambda x: x['token_ratio'])
-    else:  # balanced (default)
-        return available[0]  # Round-robin via priority
-```
+Key integration patterns documented:
+- Flask + Flask-Security-Too + PyDAL authentication
+- Database integration with multi-DB support
+- ReactJS frontend with API client
+- License-gated features
+- Prometheus monitoring integration
 
 ## Website Integration Requirements
 
-WaddleAI requires integrated marketing and documentation websites for enterprise positioning.
+**Required websites**: Marketing/Sales (Node.js) + Documentation (Markdown)
 
-**Website Components:**
-1. **Marketing Website** (Node.js/Next.js)
-   - Overview of WaddleAI capabilities
-   - Use cases and benefits
-   - Pricing and feature tiers
-   - Getting started guide
-   - Contact/sales information
+**Design**: Multi-page, modern aesthetic, subtle gradients, responsive, performance-focused
 
-2. **Documentation Website** (Markdown-based)
-   - API reference documentation
-   - Integration guides
-   - Best practices and examples
-   - Troubleshooting guides
-   - Admin panel documentation
+**Repository**: Sparse checkout submodule from `github.com/penguintechinc/website` with `{app_name}/` and `{app_name}-docs/` folders
 
-**Repository Structure:**
-- Sparse checkout from `github.com/penguintechinc/website`
-- `waddleai/` folder for marketing site
-- `waddleai-docs/` folder for documentation site
-- Deployed via deploy-cloudflare-pages.yml workflow
+## Troubleshooting & Support
 
-**Design Requirements:**
-- Modern, professional aesthetic
-- Responsive design (mobile-first)
-- Performance optimized (Core Web Vitals)
-- Subtle gradients and smooth transitions
-- Clear call-to-action for API keys/signup
-- Live API examples and documentation
-- Integration with license server for account management
+**Common Issues**: Port conflicts, database connections, license validation, build failures, test failures
+
+**Quick Debug**: `docker-compose logs -f <service>` | `make debug` | `make health`
+
+**Support**: support@penguintech.io | sales@penguintech.io | https://status.penguintech.io
+
+📚 **Detailed troubleshooting**: [Development Standards](docs/STANDARDS.md) | [License Guide](docs/licensing/license-server-integration.md)
+
+## CI/CD & Workflows
+
+**Build Tags**: `beta-<epoch64>` (main) | `alpha-<epoch64>` (other) | `vX.X.X-beta` (version release) | `vX.X.X` (tagged release)
+
+**Version**: `.version` file in root, semver format, monitored by all workflows
+
+### Pre-Commit Checklist
+
+**CRITICAL: You MUST run the pre-commit script before every commit:**
+
+```bash
+./scripts/pre-commit/pre-commit.sh
+```
+
+Results logged to: `/tmp/pre-commit-<project>-<epoch>/summary.log`
+
+Quick reference (see [docs/PRE_COMMIT.md](docs/PRE_COMMIT.md) for full details):
+1. Linters → 2. Security scans → 3. No secrets → 4. Build & Run → 5. Smoke tests → 6. Tests → 7. Version update → 8. Docker debian-slim
+
+**Smoke tests are mandatory in pre-commit checklist:**
+- Build verification for all containers
+- Runtime health checks for all services
+- API health endpoint validation
+- Web UI page and tab load verification
+- Must pass before proceeding to full test suite
+
+**Only commit when asked** — run pre-commit script, verify all checks pass, then wait for approval before `git commit`.
+
+### Applying Code Changes
+
+**After making code changes, rebuild and restart containers to apply changes:**
+
+```bash
+# All services
+docker compose down && docker compose up -d --build
+
+# Single service
+docker compose up -d --build <service-name>
+```
+
+**IMPORTANT:** `docker compose restart` and `docker restart` do NOT apply code changes - they only restart the existing container with old code. Always use `--build` to rebuild images with new code.
+
+**Browser Cache & Hard Reload During Development:**
+- Developers will routinely perform hard reloads (Ctrl+Shift+R / Cmd+Shift+R) and cache clearing during development
+- DO NOT assume the browser cache contains stale assets or that developers haven't already cleared it
+- Implement proper cache headers and asset versioning in your frontend/static assets
+- Use content-based cache busting (e.g., hashing filenames: `app.abc123.js`) for production builds
+- Consider setting `Cache-Control: no-cache, must-revalidate` for development builds when appropriate
+
+📚 **Complete CI/CD documentation**: [Workflows](docs/WORKFLOWS.md) | [Standards](docs/STANDARDS.md)
 
 ## Template Customization
 
-WaddleAI's architecture can be extended for specific deployment scenarios:
+**Adding Languages/Services**: Create in `services/`, add Dockerfile, update CI/CD, add linting/testing, update docs.
 
-### Adding Custom Backends
+**Enterprise Integration**: License server, multi-tenancy, usage tracking, audit logging, monitoring.
 
-1. **Register Backend** in configuration
-   ```python
-   BACKENDS['custom'] = {
-       'url': 'https://custom-llm.example.com',
-       'api_key': os.getenv('CUSTOM_LLM_KEY'),
-       'models': ['custom-model-v1'],
-       'token_ratio': 0.8
-   }
-   ```
-
-2. **Add Adapter** if API differs from OpenAI format
-   ```python
-   def adapt_openai_to_custom(openai_request):
-       # Transform request format
-       return custom_format_request
-   ```
-
-3. **Update Tests** and Documentation
-
-### Extending Management Features
-
-**Add Custom Analytics:**
-- Extend `/api/v1/analytics` endpoint
-- Add new PyDAL tables for tracking
-- Create dashboard widgets
-
-**Add Custom User Quotas:**
-- Modify rate limiting logic
-- Add quota enforcement in middleware
-- Create quota management UI
-
-**Add Custom Security Scanning:**
-- Add request inspection middleware
-- Integrate with security scanning services
-- Add threat detection alerts
-
-### Multi-Region Deployment
-
-- Deploy proxy and management services in multiple regions
-- Use shared PostgreSQL/MariaDB Galera cluster
-- Implement Redis cluster for cache
-- Use DNS routing or load balancer for region selection
-
-## Documentation
-
-**Primary Documentation:**
-- `README.md` - Project overview and quick start
-- `CLAUDE.md` - This file (development context)
-- `docs/WORKFLOWS.md` - CI/CD pipeline documentation
-- `docs/STANDARDS.md` - Development standards and requirements
-- `docs/ARCHITECTURE.md` - System architecture and design
-- `docs/API.md` - API reference and examples
-- `NETWORK-ARCHITECTURE.md` - Network topology and flow
-
-## Deployment
-
-### Local Development
-
-```bash
-docker-compose -f docker-compose.testing.yml up -d
-curl http://localhost:8000/health
-curl http://localhost:8001/health
-```
-
-### Production Deployment
-
-**Via Kubernetes:**
-1. Update `.version` file
-2. Commit and push to main
-3. docker-build workflow tags images
-4. Pull images in production environment
-5. Deploy via Helm or kubectl
-
-**Container Registry:**
-- Images: ghcr.io/penguintechinc/waddleai/{proxy,management}
-- Tags: version + beta tags
-
-## Support & Resources
-
-**Documentation:**
-- Development Standards: [docs/STANDARDS.md](docs/STANDARDS.md)
-- Workflow Reference: [docs/WORKFLOWS.md](docs/WORKFLOWS.md)
-- Architecture Guide: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- API Reference: [docs/API.md](docs/API.md)
-- Network Design: [NETWORK-ARCHITECTURE.md](NETWORK-ARCHITECTURE.md)
-
-**Troubleshooting:**
-- Check workflow logs in GitHub Actions
-- Review container logs: `docker logs <container-name>`
-- Verify environment variables are set
-- Ensure dependencies are installed
-
----
-
-**Last Updated**: 2025-12-18
-**Version**: 1.0.0
-**Maintained by**: WaddleAI Development Team
-**Repository**: https://github.com/penguintechinc/WaddleAI
-**License Server**: https://license.penguintech.io
+📚 **Detailed customization guides**: [Development Standards](docs/STANDARDS.md)
 
 
 ## License & Legal
@@ -935,3 +671,39 @@ curl http://localhost:8001/health
 **License Type**: Limited AGPL-3.0 with commercial use restrictions and Contributor Employer Exception
 
 The `LICENSE.md` file is located at the project root following industry standards. This project uses a modified AGPL-3.0 license with additional exceptions for commercial use and special provisions for companies employing contributors.
+
+
+---
+
+**Template Version**: 1.3.0
+**Last Updated**: 2025-12-03
+**Maintained by**: Penguin Tech Inc
+**License Server**: https://license.penguintech.io
+
+**Key Updates in v1.3.0:**
+- Three-container architecture: Flask backend, Go backend, WebUI shell
+- WebUI shell with Node.js + React, role-based access (Admin, Maintainer, Viewer)
+- Flask backend with PyDAL, JWT auth, user management
+- Go backend with XDP/AF_XDP support, NUMA-aware memory pools
+- GitHub Actions workflows for multi-arch builds (AMD64, ARM64)
+- Gold text theme by default, Elder sidebar pattern, WaddlePerf tabs
+- Docker Compose updated for new architecture
+
+**Key Updates in v1.2.0:**
+- Web UI and API as separate containers by default
+- Mandatory linting for all languages (flake8, ansible-lint, eslint, etc.)
+- CodeQL inspection compliance required
+- Multi-database support by design (all PyDAL databases + MariaDB Galera)
+- DB_TYPE environment variable with input validation
+- Flask as sole web framework (PyDAL for database abstraction)
+
+**Key Updates in v1.1.0:**
+- Flask-Security-Too mandatory for authentication
+- ReactJS as standard frontend framework
+- Python 3.13 vs Go decision criteria
+- XDP/AF_XDP guidance for high-performance networking
+- WaddleAI integration patterns
+- Release-mode license enforcement
+- Performance optimization requirements (dataclasses with slots)
+
+*This template provides a production-ready foundation for enterprise software development with comprehensive tooling, security, operational capabilities, and integrated licensing management.*
