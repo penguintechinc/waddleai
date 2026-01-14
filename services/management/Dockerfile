@@ -29,6 +29,7 @@ FROM python:3.13-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -s /bin/false waddleai
 
@@ -44,7 +45,7 @@ COPY app/ /app/app/
 COPY wsgi.py /app/
 
 # Create necessary directories
-RUN mkdir -p /app/config/marchproxy /app/logs && \
+RUN mkdir -p /app/config/marchproxy /app/logs /app/databases && \
     chown -R waddleai:waddleai /app
 
 # Switch to non-root user

@@ -1,106 +1,84 @@
-version: '3.8'
-
-# WaddleAI Management Platform
-# AI proxying is delegated to MarchProxy AILB - this service manages:
-# - AI provider configuration and sync to AILB
-# - Ollama deployment and model lifecycle
-# - Usage tracking, token quotas, and billing
-# - Virtual key management
-
 services:
+  postgres:
+    environment:
+    - POSTGRES_DB=waddleai
+    - POSTGRES_USER=waddleai
+    - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - pg_isready -U waddleai -d waddleai
+      timeout: 5s
+    image: postgres:15
+    restart: unless-stopped
+    volumes:
+    - postgres_data:/var/lib/postgresql/data
+    - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+  redis:
+    command: redis-server --appendonly yes
+    healthcheck:
+      interval: 10s
+      retries: 3
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      timeout: 5s
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+    - redis_data:/data
   waddleai-mgmt:
     build:
       context: ./services/management
       dockerfile: Dockerfile
-    ports:
-      - "8001:8001"
-    environment:
-      # Database
-      - DATABASE_URL=postgresql://waddleai:${POSTGRES_PASSWORD:-password}@postgres:5432/waddleai
-      - DB_TYPE=postgres
-      # Authentication
-      - JWT_SECRET=${JWT_SECRET:-change-in-production-min-32-chars}
-      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-flask-secret-key-change-me}
-      # Cache
-      - REDIS_URL=redis://redis:6379/0
-      # MarchProxy AILB Integration
-      - MARCHPROXY_AILB_HOST=${MARCHPROXY_AILB_HOST:-localhost}
-      - MARCHPROXY_AILB_GRPC_PORT=${MARCHPROXY_AILB_GRPC_PORT:-50051}
-      - MARCHPROXY_AILB_HTTP_PORT=${MARCHPROXY_AILB_HTTP_PORT:-8080}
-      - MARCHPROXY_AILB_TLS_ENABLED=${MARCHPROXY_AILB_TLS_ENABLED:-false}
-      # Webhook Authentication
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-shared-secret-for-ailb-webhooks}
-      - WEBHOOK_CALLBACK_URL=${WEBHOOK_CALLBACK_URL:-http://waddleai-mgmt:8001/api/v1/webhooks/ailb/usage}
-      # Ollama Management
-      - OLLAMA_MANAGEMENT_MODE=${OLLAMA_MANAGEMENT_MODE:-both}
-      - DOCKER_HOST=${DOCKER_HOST:-unix:///var/run/docker.sock}
-      # Feature Flags
-      - ENABLE_OLLAMA_MANAGEMENT=${ENABLE_OLLAMA_MANAGEMENT:-true}
-      - ENABLE_USAGE_WEBHOOKS=${ENABLE_USAGE_WEBHOOKS:-true}
-      - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
-      - ENABLE_BEDROCK=${ENABLE_BEDROCK:-true}
-      - ENABLE_AZURE_OPENAI=${ENABLE_AZURE_OPENAI:-true}
-      - ENABLE_COHERE=${ENABLE_COHERE:-true}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/healthz"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    volumes:
-      - ./config/marchproxy:/app/config/marchproxy
-      - ./services/management/logs:/app/logs
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-
-  postgres:
-    image: postgres:15
     environment:
-      - POSTGRES_DB=waddleai
-      - POSTGRES_USER=waddleai
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    - DATABASE_URL=postgres://waddleai:${POSTGRES_PASSWORD:-password}@postgres:5432/waddleai
+    - DB_TYPE=postgres
+    - JWT_SECRET=${JWT_SECRET:-change-in-production-min-32-chars}
+    - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-flask-secret-key-change-me}
+    - REDIS_URL=redis://redis:6379/0
+    - MARCHPROXY_AILB_HOST=${MARCHPROXY_AILB_HOST:-localhost}
+    - MARCHPROXY_AILB_GRPC_PORT=${MARCHPROXY_AILB_GRPC_PORT:-50051}
+    - MARCHPROXY_AILB_HTTP_PORT=${MARCHPROXY_AILB_HTTP_PORT:-8080}
+    - MARCHPROXY_AILB_TLS_ENABLED=${MARCHPROXY_AILB_TLS_ENABLED:-false}
+    - WEBHOOK_SECRET=${WEBHOOK_SECRET:-shared-secret-for-ailb-webhooks}
+    - WEBHOOK_CALLBACK_URL=${WEBHOOK_CALLBACK_URL:-http://waddleai-mgmt:8001/api/v1/webhooks/ailb/usage}
+    - OLLAMA_MANAGEMENT_MODE=${OLLAMA_MANAGEMENT_MODE:-both}
+    - DOCKER_HOST=${DOCKER_HOST:-unix:///var/run/docker.sock}
+    - ENABLE_OLLAMA_MANAGEMENT=${ENABLE_OLLAMA_MANAGEMENT:-true}
+    - ENABLE_USAGE_WEBHOOKS=${ENABLE_USAGE_WEBHOOKS:-true}
+    - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
+    - ENABLE_BEDROCK=${ENABLE_BEDROCK:-true}
+    - ENABLE_AZURE_OPENAI=${ENABLE_AZURE_OPENAI:-true}
+    - ENABLE_COHERE=${ENABLE_COHERE:-true}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U waddleai -d waddleai"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
       retries: 3
-    restart: unless-stopped
-
-  docs:
-    build:
-      context: docs/docs-site
-      dockerfile: Dockerfile
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8001/healthz
+      timeout: 10s
     ports:
-      - "8080:8080"
+    - 8001:8001
     restart: unless-stopped
-
-  website:
-    build:
-      context: website
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    restart: unless-stopped
-
+    user: root
+    volumes:
+    - ./config/marchproxy:/app/config/marchproxy
+    - ./services/management/logs:/app/logs
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+    - waddleai_databases:/app/databases
+version: '3.8'
 volumes:
-  postgres_data:
-  redis_data:
+  postgres_data: null
+  redis_data: null
+  waddleai_databases: null

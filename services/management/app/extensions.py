@@ -289,6 +289,18 @@ def define_tables(db: DAL):
         Field('auto_pull', 'boolean', default=False)
     )
 
+    # Ollama Model Routes (Model-Specific AILB Routing)
+    db.define_table('ollama_model_routes',
+        Field('model_id', 'reference ollama_models', required=True),
+        Field('deployment_id', 'reference ollama_deployments', required=True),
+        Field('ailb_instance_id', 'string'),
+        Field('ailb_route_id', 'string'),
+        Field('sync_status', 'string', default='pending'),  # synced, pending, failed, deleted
+        Field('last_synced', 'datetime'),
+        Field('sync_error', 'text'),
+        Field('created_at', 'datetime', default=datetime.utcnow)
+    )
+
     # Virtual Keys (WaddleAI keys mapped to AILB)
     db.define_table('virtual_keys',
         Field('user_id', 'reference users'),

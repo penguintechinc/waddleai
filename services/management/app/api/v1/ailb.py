@@ -10,6 +10,7 @@ from flask import request, jsonify, current_app, Response
 from . import api_v1_bp
 from .auth import require_auth, require_role
 from ...extensions import db
+from ...services.marchproxy_config import MarchProxyConfigGenerator
 
 
 @api_v1_bp.route('/ailb/status', methods=['GET'])
@@ -329,3 +330,138 @@ def sync_all_providers():
         'message': 'Sync completed',
         'results': results
     })
+
+
+@api_v1_bp.route('/ailb/marchproxy-import-config', methods=['GET'])
+@require_auth
+@require_role('admin')
+def generate_marchproxy_import_config():
+    """
+    Generate MarchProxy-compatible import configuration.
+
+    Returns JSON config that can be imported via:
+    POST http://marchproxy:8080/api/v1/services/import
+
+    Query params:
+    - format: 'json' (default) or 'yaml'
+    - include_ollama: 'true' (default) or 'false' - include Ollama model routes
+    - download: 'true' or 'false' (default) - download as file
+    """
+    generator = MarchProxyConfigGenerator(db)
+
+    # Generate full configuration
+    config = generator.generate_full_config()
+
+    # Check if Ollama routes should be excluded
+    include_ollama = request.args.get('include_ollama', 'true').lower() == 'true'
+    if not include_ollama:
+        # Filter out Ollama routes
+        config['ailb']['routes'] = [
+            r for r in config['ailb']['routes']
+            if 'ollama' not in r.get('id', '')
+        ]
+
+    # Format selection
+    format_type = request.args.get('format', 'json').lower()
+    download = request.args.get('download', 'false').lower() == 'true'
+
+    if format_type == 'yaml':
+        import yaml
+        config_str = yaml.dump(config, default_flow_style=False)
+        mimetype = 'text/yaml'
+        filename = 'marchproxy-import.yml'
+    else:
+        config_str = json.dumps(config, indent=2)
+        mimetype = 'application/json'
+        filename = 'marchproxy-import.json'
+
+    if download:
+        return Response(
+            config_str,
+            mimetype=mimetype,
+            headers={'Content-Disposition': f'attachment; filename={filename}'}
+        )
+
+    return jsonify(config)
+
+
+@api_v1_bp.route('/ailb/ollama-routing-table', methods=['GET'])
+@require_auth
+@require_role('admin')
+def get_ollama_routing_table():
+    """
+    Get Ollama model-to-endpoint routing table.
+
+    Returns a simple mapping for routing decisions:
+    {
+        "llama3.2": "http://node-1:11434",
+        "mistral": "http://node-2:11434",
+        "codellama": "http://node-1:11434"
+    }
+    """
+    generator = MarchProxyConfigGenerator(db)
+    routing_table = generator.generate_ollama_routing_table()
+
+    return jsonify({
+        'routing_table': routing_table,
+        'total_models': len(routing_table),
+        'generated_at': datetime.utcnow().isoformat()
+    })
+
+
+@api_v1_bp.route('/ailb/model-routing-config', methods=['GET'])
+@require_auth
+@require_role('admin')
+def get_model_routing_config():
+    """
+    Get model-aware routing configuration for MarchProxy AILB.
+
+    This provides detailed routing rules with health checks and
+    fallback strategies for intelligent model routing.
+    """
+    generator = MarchProxyConfigGenerator(db)
+    routing_config = generator.generate_model_routing_config()
+
+    return jsonify(routing_config)
+
+
+@api_v1_bp.route('/ailb/export-all-configs', methods=['GET'])
+@require_auth
+@require_role('admin')
+def export_all_configs():
+    """
+    Export all configurations as a bundle.
+
+    Returns:
+    - MarchProxy import config
+    - Ollama routing table
+    - Model routing config
+    - MetalLB service configs
+    """
+    from ...services.ollama_manager import OllamaDeploymentManager
+
+    generator = MarchProxyConfigGenerator(db)
+    ollama_manager = OllamaDeploymentManager(db)
+
+    bundle = {
+        'version': '1.0',
+        'generated_at': datetime.utcnow().isoformat(),
+        'configs': {
+            'marchproxy_import': generator.generate_full_config(),
+            'ollama_routing_table': generator.generate_ollama_routing_table(),
+            'model_routing_config': generator.generate_model_routing_config(),
+            'metallb_config': ollama_manager.export_metallb_config()
+        }
+    }
+
+    download = request.args.get('download', 'false').lower() == 'true'
+
+    if download:
+        bundle_json = json.dumps(bundle, indent=2)
+        return Response(
+            bundle_json,
+            mimetype='application/json',
+            headers={'Content-Disposition': 'attachment; filename=waddleai-configs-bundle.json'}
+        )
+
+    return jsonify(bundle)

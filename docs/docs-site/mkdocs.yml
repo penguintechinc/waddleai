@@ -29,8 +29,8 @@ theme:
   font:
     text: Inter
     code: JetBrains Mono
-  logo: assets/logo.svg
-  favicon: assets/favicon.ico
+  logo: assets/logo.png
+  favicon: assets/images/favicon.png
 
 nav:
   - Home: index.md

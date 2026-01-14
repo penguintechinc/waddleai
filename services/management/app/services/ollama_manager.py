@@ -393,6 +393,165 @@ class OllamaDeploymentManager:
         manifests = [k8s_pvc, k8s_deployment, k8s_service]
         return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
 
+    def generate_metallb_service(self, deployment_id: int) -> str:
+        """
+        Generate MetalLB-compatible Kubernetes Service manifest with model labels.
+
+        Creates a LoadBalancer Service with model annotations for intelligent routing.
+        """
+        db = self.db
+
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return ""
+
+        # Get all models on this deployment
+        models = db(db.ollama_models.deployment_id == deployment_id).select()
+        model_names = [m.model_name for m in models]
+
+        # MetalLB Service with model labels
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": f"ollama-{deployment.name}-lb",
+                "namespace": "waddleai",
+                "labels": {
+                    "app": f"ollama-{deployment.name}",
+                    "managed-by": "waddleai",
+                    "service-type": "ollama"
+                },
+                "annotations": {
+                    # MetalLB configuration
+                    "metallb.universe.tf/allow-shared-ip": f"ollama-{deployment.name}",
+                    # Model routing information
+                    "waddleai.io/models": ",".join(model_names),
+                    "waddleai.io/deployment-id": str(deployment_id),
+                    "waddleai.io/deployment-name": deployment.name
+                }
+            },
+            "spec": {
+                "type": "LoadBalancer",
+                "selector": {
+                    "app": f"ollama-{deployment.name}"
+                },
+                "ports": [{
+                    "name": "ollama-api",
+                    "protocol": "TCP",
+                    "port": 11434,
+                    "targetPort": 11434
+                }],
+                "sessionAffinity": "ClientIP",
+                "sessionAffinityConfig": {
+                    "clientIP": {
+                        "timeoutSeconds": 3600
+                    }
+                }
+            }
+        }
+
+        return yaml.dump(service, default_flow_style=False)
+
+    def generate_model_specific_metallb_services(self, deployment_id: int) -> str:
+        """
+        Generate individual MetalLB Services for each model on a deployment.
+
+        This creates separate LoadBalancer IPs for each model, enabling
+        direct model-to-IP routing without HTTP inspection.
+
+        Example:
+        - llama3.2 → 192.168.1.100:11434
+        - mistral → 192.168.1.101:11434
+        """
+        db = self.db
+
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return ""
+
+        # Get all models on this deployment
+        models = db(db.ollama_models.deployment_id == deployment_id).select()
+
+        if not models:
+            return ""
+
+        services = []
+
+        for model in models:
+            # Create a Service for each model
+            service = {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {
+                    "name": f"ollama-{deployment.name}-{model.model_name.replace('.', '-')}",
+                    "namespace": "waddleai",
+                    "labels": {
+                        "app": f"ollama-{deployment.name}",
+                        "managed-by": "waddleai",
+                        "service-type": "ollama",
+                        "model": model.model_name
+                    },
+                    "annotations": {
+                        # MetalLB configuration - unique IP per model
+                        "metallb.universe.tf/allow-shared-ip": f"ollama-{deployment.name}-{model.model_name}",
+                        # Model routing information
+                        "waddleai.io/model": model.model_name,
+                        "waddleai.io/model-tag": model.model_tag or "latest",
+                        "waddleai.io/deployment-id": str(deployment_id),
+                        "waddleai.io/deployment-name": deployment.name,
+                        "waddleai.io/model-id": str(model.id)
+                    }
+                },
+                "spec": {
+                    "type": "LoadBalancer",
+                    "selector": {
+                        "app": f"ollama-{deployment.name}"
+                    },
+                    "ports": [{
+                        "name": "ollama-api",
+                        "protocol": "TCP",
+                        "port": 11434,
+                        "targetPort": 11434
+                    }],
+                    "sessionAffinity": "ClientIP",
+                    "sessionAffinityConfig": {
+                        "clientIP": {
+                            "timeoutSeconds": 3600
+                        }
+                    }
+                }
+            }
+
+            services.append(service)
+
+        return "---\n".join(yaml.dump(s, default_flow_style=False) for s in services)
+
+    def export_metallb_config(self) -> str:
+        """
+        Export complete MetalLB configuration for all Ollama deployments.
+
+        Returns YAML with all LoadBalancer Services across all deployments.
+        """
+        db = self.db
+
+        deployments = db(db.ollama_deployments.status.belongs(['running', 'pending'])).select()
+
+        all_services = []
+
+        for deployment in deployments:
+            # Get model-specific services
+            model_services_yaml = self.generate_model_specific_metallb_services(deployment.id)
+            if model_services_yaml:
+                # Parse and add to list
+                import yaml
+                services = list(yaml.safe_load_all(model_services_yaml))
+                all_services.extend(services)
+
+        if not all_services:
+            return ""
+
+        return "---\n".join(yaml.dump(s, default_flow_style=False) for s in all_services)
+
     # Container Management (Orchestrated Mode)
 
     def start_deployment(self, deployment_id: int) -> Dict[str, Any]:

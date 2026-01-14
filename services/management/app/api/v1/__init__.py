@@ -12,6 +12,7 @@ from . import users
 from . import organizations
 from . import providers
 from . import ollama
+from . import ollama_models
 from . import ailb
 from . import keys
 from . import usage

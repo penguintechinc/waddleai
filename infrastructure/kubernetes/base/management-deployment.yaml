@@ -1,0 +1,195 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waddleai-mgmt
+  namespace: waddleai
+  labels:
+    app: waddleai
+    component: management
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: waddleai
+      component: management
+  template:
+    metadata:
+      labels:
+        app: waddleai
+        component: management
+    spec:
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          until nc -z postgres.waddleai.svc.cluster.local 5432; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+      - name: wait-for-redis
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          until nc -z redis.waddleai.svc.cluster.local 6379; do
+            echo "Waiting for redis..."
+            sleep 2
+          done
+      containers:
+      - name: management
+        image: ghcr.io/penguintechinc/waddleai/management:beta-latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8001
+          name: http
+          protocol: TCP
+        env:
+        # Database Configuration
+        - name: DB_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: DB_TYPE
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: waddleai-secrets
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: waddleai-secrets
+              key: POSTGRES_PASSWORD
+        - name: DATABASE_URL
+          value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.waddleai.svc.cluster.local:5432/waddleai"
+
+        # Redis Configuration
+        - name: REDIS_URL
+          value: "redis://redis.waddleai.svc.cluster.local:6379/0"
+
+        # JWT Secrets
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: waddleai-secrets
+              key: JWT_SECRET
+        - name: FLASK_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: waddleai-secrets
+              key: FLASK_SECRET_KEY
+
+        # MarchProxy AILB Integration
+        - name: MARCHPROXY_AILB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: MARCHPROXY_AILB_HOST
+        - name: MARCHPROXY_AILB_GRPC_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: MARCHPROXY_AILB_GRPC_PORT
+        - name: MARCHPROXY_AILB_HTTP_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: MARCHPROXY_AILB_HTTP_PORT
+
+        # Webhook Configuration
+        - name: WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: waddleai-secrets
+              key: WEBHOOK_SECRET
+        - name: WEBHOOK_CALLBACK_URL
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: WEBHOOK_CALLBACK_URL
+
+        # Feature Flags
+        - name: ENABLE_OLLAMA_MANAGEMENT
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: ENABLE_OLLAMA_MANAGEMENT
+        - name: ENABLE_USAGE_WEBHOOKS
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: ENABLE_USAGE_WEBHOOKS
+
+        # Flask Configuration
+        - name: FLASK_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: FLASK_ENV
+        - name: FLASK_DEBUG
+          valueFrom:
+            configMapKeyRef:
+              name: waddleai-config
+              key: FLASK_DEBUG
+
+        volumeMounts:
+        - name: databases
+          mountPath: /app/databases
+        - name: marchproxy-config
+          mountPath: /app/config/marchproxy
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+      volumes:
+      - name: databases
+        emptyDir: {}
+      - name: marchproxy-config
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: waddleai-mgmt
+  namespace: waddleai
+  labels:
+    app: waddleai
+    component: management
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8001
+    targetPort: 8001
+    name: http
+    protocol: TCP
+  selector:
+    app: waddleai
+    component: management

@@ -610,3 +610,89 @@ def generate_k8s_manifest(name: str, gpu_config: dict, resource_limits: dict) ->
     }
 
     return [deployment, service, pvc]
+
+
+@api_v1_bp.route('/ollama/deployments/<int:deployment_id>/metallb-service', methods=['GET'])
+@require_auth
+@require_role('admin')
+def export_metallb_service(deployment_id):
+    """
+    Export MetalLB-compatible LoadBalancer Service for Ollama deployment.
+
+    Returns a single LoadBalancer Service with model annotations.
+    """
+    from ...services.ollama_manager import OllamaDeploymentManager
+
+    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+
+    if not deployment:
+        return jsonify({'error': 'Deployment not found'}), 404
+
+    manager = OllamaDeploymentManager(db)
+    service_yaml = manager.generate_metallb_service(deployment_id)
+
+    if not service_yaml:
+        return jsonify({'error': 'No models assigned to deployment'}), 400
+
+    return Response(
+        service_yaml,
+        mimetype='text/yaml',
+        headers={'Content-Disposition': f'attachment; filename=ollama-{deployment.name}-metallb.yml'}
+    )
+
+
+@api_v1_bp.route('/ollama/deployments/<int:deployment_id>/metallb-model-services', methods=['GET'])
+@require_auth
+@require_role('admin')
+def export_metallb_model_services(deployment_id):
+    """
+    Export individual MetalLB Services for each model on deployment.
+
+    This creates separate LoadBalancer IPs for each model, enabling
+    direct model-to-IP routing:
+    - llama3.2 → 192.168.1.100:11434
+    - mistral → 192.168.1.101:11434
+    """
+    from ...services.ollama_manager import OllamaDeploymentManager
+
+    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+
+    if not deployment:
+        return jsonify({'error': 'Deployment not found'}), 404
+
+    manager = OllamaDeploymentManager(db)
+    services_yaml = manager.generate_model_specific_metallb_services(deployment_id)
+
+    if not services_yaml:
+        return jsonify({'error': 'No models assigned to deployment'}), 400
+
+    return Response(
+        services_yaml,
+        mimetype='text/yaml',
+        headers={'Content-Disposition': f'attachment; filename=ollama-{deployment.name}-models-metallb.yml'}
+    )
+
+
+@api_v1_bp.route('/ollama/export/metallb-all', methods=['GET'])
+@require_auth
+@require_role('admin')
+def export_all_metallb_services():
+    """
+    Export MetalLB configuration for all Ollama deployments.
+
+    Returns complete YAML with model-specific LoadBalancer Services
+    for all active deployments.
+    """
+    from ...services.ollama_manager import OllamaDeploymentManager
+
+    manager = OllamaDeploymentManager(db)
+    config_yaml = manager.export_metallb_config()
+
+    if not config_yaml:
+        return jsonify({'error': 'No active Ollama deployments with models'}), 404
+
+    return Response(
+        config_yaml,
+        mimetype='text/yaml',
+        headers={'Content-Disposition': 'attachment; filename=ollama-metallb-all.yml'}
+    )
