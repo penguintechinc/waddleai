@@ -10,6 +10,14 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: waddleai-webui
+  namespace: waddleai
+spec:
+  replicas: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: postgres
   namespace: waddleai
 spec:

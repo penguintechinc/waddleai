@@ -10,10 +10,6 @@ metadata:
     # Ingress class
     kubernetes.io/ingress.class: "nginx"
 
-    # Cert-manager annotations for wildcard certificate
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    cert-manager.io/common-name: "waddleai.beta.k8s.cluster"
-
     # Nginx specific annotations
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
@@ -38,37 +34,23 @@ metadata:
 spec:
   tls:
   - hosts:
-    - waddleai.beta.k8s.cluster
-    - "*.waddleai.beta.k8s.cluster"
-    secretName: waddleai-tls-wildcard
+    - waddleai.penguintech.io
+    secretName: penguintech-wildcard-tls
   rules:
-  - host: waddleai.beta.k8s.cluster
+  - host: waddleai.penguintech.io
     http:
       paths:
-      - path: /
+      - path: /api
         pathType: Prefix
         backend:
           service:
             name: waddleai-mgmt
             port:
               number: 8001
-  - host: api.waddleai.beta.k8s.cluster
-    http:
-      paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: waddleai-mgmt
+            name: waddleai-webui
             port:
-              number: 8001
-  - host: mgmt.waddleai.beta.k8s.cluster
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: waddleai-mgmt
-            port:
-              number: 8001
+              number: 80

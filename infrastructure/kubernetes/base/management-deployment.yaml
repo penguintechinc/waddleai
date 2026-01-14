@@ -42,7 +42,7 @@ spec:
           done
       containers:
       - name: management
-        image: ghcr.io/penguintechinc/waddleai/management:beta-latest
+        image: registry-dal2.penguintech.io/waddleai/management:beta-latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8001

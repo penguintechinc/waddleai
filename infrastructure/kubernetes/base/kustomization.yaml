@@ -11,6 +11,7 @@ resources:
   - postgres-deployment.yaml
   - redis-deployment.yaml
   - management-deployment.yaml
+  - webui-deployment.yaml
   - ingress.yaml
 
 commonLabels:
@@ -18,5 +19,7 @@ commonLabels:
   managed-by: kustomize
 
 images:
-  - name: ghcr.io/penguintechinc/waddleai/management
+  - name: registry-dal2.penguintech.io/waddleai/management
+    newTag: beta-latest
+  - name: registry-dal2.penguintech.io/waddleai/webui
     newTag: beta-latest

@@ -4,25 +4,14 @@ kind: Kustomization
 
 namespace: waddleai
 
-bases:
+resources:
   - ../../base
 
-patchesStrategicMerge:
-  - replica-patch.yaml
-
-configMapGenerator:
-  - name: waddleai-config
-    behavior: merge
-    literals:
-      - FLASK_ENV=production
-      - FLASK_DEBUG=false
-
-secretGenerator:
-  - name: waddleai-secrets
-    behavior: merge
-    literals:
-      - RELEASE_MODE=false
+patches:
+  - path: replica-patch.yaml
 
 images:
-  - name: ghcr.io/penguintechinc/waddleai/management
+  - name: registry-dal2.penguintech.io/waddleai/management
+    newTag: beta-latest
+  - name: registry-dal2.penguintech.io/waddleai/webui
     newTag: beta-latest
