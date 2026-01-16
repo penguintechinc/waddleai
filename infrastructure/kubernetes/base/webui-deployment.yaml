@@ -21,10 +21,10 @@ spec:
     spec:
       containers:
       - name: webui
-        image: registry-dal2.penguintech.io/waddleai/webui:beta-latest
+        image: registry-dal2.penguintech.io/waddleai-webui:beta-1768512464
         imagePullPolicy: Always
         ports:
-        - containerPort: 80
+        - containerPort: 8080
           name: http
           protocol: TCP
         env:
@@ -42,7 +42,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /
-            port: 80
+            port: 8080
           initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 5
@@ -50,7 +50,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /
-            port: 80
+            port: 8080
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 3
@@ -68,7 +68,7 @@ spec:
   type: ClusterIP
   ports:
   - port: 80
-    targetPort: 80
+    targetPort: 8080
     name: http
     protocol: TCP
   selector:

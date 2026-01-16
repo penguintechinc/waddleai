@@ -77,6 +77,15 @@ services:
     - ./services/management/logs:/app/logs
     - /var/run/docker.sock:/var/run/docker.sock:ro
     - waddleai_databases:/app/databases
+  waddleai-webui:
+    build:
+      context: ./services/webui
+      dockerfile: Dockerfile
+    depends_on:
+    - waddleai-mgmt
+    ports:
+    - 8003:8080
+    restart: unless-stopped
 version: '3.8'
 volumes:
   postgres_data: null

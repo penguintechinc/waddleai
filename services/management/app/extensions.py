@@ -181,19 +181,54 @@ class PyDALRole(RoleMixin):
 
 
 def init_db(app: Flask) -> DAL:
-    """Initialize PyDAL database connection"""
+    """Initialize database with SQLAlchemy for schema, PyDAL for runtime operations"""
+    import time
+    from app.models_sqlalchemy import init_schema
     global db
+
+    # Wait for DNS to be ready (common issue in Kubernetes with --preload)
+    logger.info("Waiting for DNS to initialize...")
+    time.sleep(5)
 
     db_url = app.config['DATABASE_URL']
     logger.info(f"Connecting to database: {db_url.split('@')[-1] if '@' in db_url else db_url}")
 
-    db = DAL(db_url, migrate=True, fake_migrate_all=False, folder='databases')
+    max_retries = 10
+    retry_delay = 2  # seconds
 
-    # Define tables
-    define_tables(db)
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Step 1: Initialize schema with SQLAlchemy (creates tables if needed)
+            logger.info("Initializing database schema with SQLAlchemy...")
+            init_schema(db_url)
+            logger.info("Database schema initialized")
 
-    logger.info("Database initialized successfully")
-    return db
+            # Step 2: Connect with PyDAL for runtime operations (no migrations)
+            db = DAL(
+                db_url,
+                migrate=False,  # Tables already created by SQLAlchemy
+                fake_migrate_all=False,
+                folder='databases',
+                adapter_args={'connect_timeout': 5}
+            )
+
+            # Test the connection
+            db.executesql("SELECT 1")
+
+            # Define PyDAL table mappings (for runtime operations)
+            define_tables(db)
+
+            logger.info(f"Database initialized successfully on attempt {attempt}")
+            return db
+
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(f"Database connection attempt {attempt}/{max_retries} failed: {e}")
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to connect to database after {max_retries} attempts")
+                raise
 
 
 def define_tables(db: DAL):
@@ -515,7 +550,7 @@ def init_default_data(db: DAL):
     if not db(db.users.username == 'admin').select():
         admin_id = db.users.insert(
             username='admin',
-            email='admin@waddleai.local',
+            email='admin@localhost.local',
             password_hash=bcrypt.hash('admin123'),
             role='admin',
             organization_id=org_id,

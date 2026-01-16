@@ -8,7 +8,8 @@ flask-cors>=4.0.0
 flask-limiter>=3.5.0
 
 # Database
-pydal>=20240101
+sqlalchemy>=2.0.0  # Schema initialization and migrations
+pydal>=20240101  # Runtime database operations
 psycopg2-binary>=2.9.9
 pymysql>=1.1.0
 

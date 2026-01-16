@@ -1,0 +1,298 @@
+"""
+SQLAlchemy models for database schema initialization and migrations
+Use SQLAlchemy for schema creation and Alembic for migrations
+Use PyDAL for runtime database operations
+"""
+
+from sqlalchemy import (
+    Column, Integer, String, Text, Boolean, DateTime, BigInteger,
+    ForeignKey, UniqueConstraint, JSON, create_engine
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
+from datetime import datetime
+
+Base = declarative_base()
+
+
+class Organization(Base):
+    __tablename__ = 'organizations'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    description = Column(Text)
+    token_quota_monthly = Column(Integer, default=1000000)
+    token_quota_daily = Column(Integer, default=100000)
+    default_model = Column(String(255))
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class User(Base):
+    __tablename__ = 'users'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(255), unique=True, nullable=False)
+    email = Column(String(255), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(50), nullable=False, default='user')  # admin, resource_manager, reporter, user
+    organization_id = Column(Integer, ForeignKey('organizations.id'), nullable=False)
+    managed_orgs = Column(JSON)  # List of organization IDs for resource managers
+    created_at = Column(DateTime, default=datetime.utcnow)
+    token_quota_monthly = Column(Integer, default=100000)
+    token_quota_daily = Column(Integer, default=10000)
+    default_model = Column(String(255))
+    enabled = Column(Boolean, default=True)
+    # Login tracking fields
+    last_login_at = Column(DateTime)
+    current_login_at = Column(DateTime)
+    last_login_ip = Column(String(50))
+    current_login_ip = Column(String(50))
+    login_count = Column(Integer, default=0)
+
+
+class APIKey(Base):
+    __tablename__ = 'api_keys'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key_id = Column(String(255), unique=True, nullable=False)
+    key_hash = Column(String(255), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    organization_id = Column(Integer, ForeignKey('organizations.id'), nullable=False)
+    name = Column(String(255), nullable=False)
+    token_quota_monthly = Column(Integer)
+    token_quota_daily = Column(Integer)
+    rate_limit_rpm = Column(Integer, default=60)
+    default_model = Column(String(255))
+    enabled = Column(Boolean, default=True)
+    expires_at = Column(DateTime)
+    last_used = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    permissions = Column(JSON)
+    allowed_endpoints = Column(JSON)
+    api_access_level = Column(String(50))
+
+
+class AIProvider(Base):
+    __tablename__ = 'ai_providers'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    provider_type = Column(String(50), nullable=False)  # openai, anthropic, ollama, etc
+    endpoint_url = Column(String(512), nullable=False)
+    api_key = Column(String(512))
+    model_list = Column(JSON)
+    rate_limits = Column(JSON)
+    enabled = Column(Boolean, default=True)
+    tls_config = Column(JSON)
+    extra_config = Column(JSON)  # Provider-specific settings (replaces management_capabilities)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OllamaDeployment(Base):
+    __tablename__ = 'ollama_deployments'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    endpoint_url = Column(String(512), nullable=False)
+    deployment_type = Column(String(50))  # docker, kubernetes, external
+    docker_compose_config = Column(JSON)
+    gpu_config = Column(JSON)
+    resource_limits = Column(JSON)
+    status = Column(String(50))  # running, stopped, pulling, error
+    health_status = Column(String(50))
+    last_health_check = Column(DateTime)
+    auto_start = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OllamaModel(Base):
+    __tablename__ = 'ollama_models'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    deployment_id = Column(Integer, ForeignKey('ollama_deployments.id'), nullable=False)
+    model_name = Column(String(255), nullable=False)
+    model_tag = Column(String(50), default='latest')
+    status = Column(String(50), default='unknown')  # available, pulling, failed, removed
+    size_bytes = Column(BigInteger)
+    pull_progress = Column(JSON)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+    auto_pull = Column(Boolean, default=False)
+
+
+class VirtualKey(Base):
+    __tablename__ = 'virtual_keys'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    name = Column(String(255), nullable=False)
+    key_prefix = Column(String(20))  # wa-xxx for display
+    key_hash = Column(String(255))  # Hashed full key
+    ailb_key_id = Column(String(255))  # Synced AILB key ID
+    ailb_sync_status = Column(String(50))  # synced, pending, failed
+    allowed_models = Column(JSON)
+    allowed_providers = Column(JSON)
+    budget_limit_daily = Column(Integer)
+    budget_limit_monthly = Column(Integer)
+    tpm_limit = Column(Integer)  # Tokens per minute
+    rpm_limit = Column(Integer)  # Requests per minute
+    enabled = Column(Boolean, default=True)
+    expires_at = Column(DateTime)
+    last_used = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MarchProxyAILBSync(Base):
+    __tablename__ = 'marchproxy_ailb_sync'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey('ai_providers.id'))
+    ailb_instance_id = Column(String(255))
+    ailb_route_id = Column(String(255))
+    sync_status = Column(String(50))  # synced, pending, failed, deleted
+    last_synced = Column(DateTime)
+    sync_error = Column(Text)
+    config_hash = Column(String(64))  # Hash to detect config changes
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AILBUsageEvent(Base):
+    __tablename__ = 'ailb_usage_events'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(255), unique=True)
+    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
+    ailb_key_id = Column(String(255))
+    request_id = Column(String(255))
+    model = Column(String(255))
+    provider = Column(String(100))
+    input_tokens = Column(Integer)
+    output_tokens = Column(Integer)
+    cost_usd = Column(Integer)  # Store as cents to avoid floating point
+    latency_ms = Column(Integer)
+    status = Column(String(50))  # success, error, rate_limited
+    error_message = Column(Text)
+    timestamp = Column(DateTime)
+    processed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TokenUsage(Base):
+    __tablename__ = 'token_usage'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
+    user_id = Column(Integer, ForeignKey('users.id'))
+    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    date = Column(DateTime)  # Date for this usage record
+    waddleai_tokens = Column(Integer, default=0)
+    llm_tokens = Column(JSON)  # Breakdown by model/provider
+    tokens_input_total = Column(Integer, default=0)
+    tokens_output_total = Column(Integer, default=0)
+    request_count = Column(Integer, default=0)
+    cost_usd_total = Column(Integer, default=0)  # Store as cents
+    last_updated = Column(DateTime, default=datetime.utcnow)
+
+
+class UsageCache(Base):
+    __tablename__ = 'usage_cache'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
+    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    period = Column(String(20), nullable=False)  # daily, monthly
+    period_start = Column(DateTime, nullable=False)
+    waddleai_tokens_used = Column(Integer, default=0)
+    llm_tokens_used = Column(JSON)
+    requests_made = Column(Integer, default=0)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+
+
+class TokenConversionRate(Base):
+    __tablename__ = 'token_conversion_rates'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(100), nullable=False)
+    model = Column(String(255), nullable=False)
+    input_rate = Column(Integer, nullable=False)  # Cost per token
+    output_rate = Column(Integer, nullable=False)  # Cost per token
+    base_cost_per_waddleai_token = Column(Integer, default=1)  # Base cost multiplier
+    effective_date = Column(DateTime, default=datetime.utcnow)
+    enabled = Column(Boolean, default=True)
+
+
+class RoutingRule(Base):
+    __tablename__ = 'routing_rules'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    priority = Column(Integer, default=100)
+    match_conditions = Column(JSON)  # Model patterns, user groups, etc
+    target_provider_id = Column(Integer, ForeignKey('ai_providers.id'))
+    fallback_provider_id = Column(Integer, ForeignKey('ai_providers.id'))
+    load_balancing_strategy = Column(String(50))  # round_robin, least_latency, cost_optimized
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OllamaModelRoute(Base):
+    __tablename__ = 'ollama_model_routes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    deployment_id = Column(Integer, ForeignKey('ollama_deployments.id'), nullable=False)
+    model_pattern = Column(String(255), nullable=False)  # Regex pattern for model matching
+    priority = Column(Integer, default=100)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UsageLog(Base):
+    __tablename__ = 'usage_logs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    api_key_id = Column(Integer, ForeignKey('api_keys.id'))
+    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    request_id = Column(String(255))
+    endpoint = Column(String(512))
+    model = Column(String(255))
+    provider = Column(String(100))
+    input_tokens = Column(Integer)
+    output_tokens = Column(Integer)
+    total_tokens = Column(Integer)
+    response_time_ms = Column(Integer)
+    status_code = Column(Integer)
+    error_message = Column(Text)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+class SecurityLog(Base):
+    __tablename__ = 'security_logs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
+    user_id = Column(Integer, ForeignKey('users.id'))
+    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    request_hash = Column(String(255))
+    threat_type = Column(String(100))
+    severity = Column(String(50))
+    blocked = Column(Boolean, default=False)
+    prompt_sample = Column(Text)
+    detection_rules = Column(JSON)
+    ip_address = Column(String(50))
+
+
+def init_schema(database_url: str):
+    """Initialize database schema using SQLAlchemy"""
+    # SQLAlchemy 2.0+ requires 'postgresql://' not 'postgres://'
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+
+    engine = create_engine(database_url)
+
+    # Create all tables if they don't exist
+    Base.metadata.create_all(engine, checkfirst=True)
+
+    return engine

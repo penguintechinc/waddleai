@@ -179,6 +179,28 @@ curl -X POST http://localhost:8080/api/v1/services/import \
 
 ---
 
+## 📸 Screenshots
+
+### Login Page
+![Login](docs/screenshots/login.png)
+
+### Dashboard
+![Dashboard](docs/screenshots/dashboard.png)
+
+### AI Providers
+![Providers](docs/screenshots/providers.png)
+
+### Ollama Deployments
+![Ollama](docs/screenshots/ollama.png)
+
+### Virtual Keys
+![Keys](docs/screenshots/keys.png)
+
+### Usage Analytics
+![Analytics](docs/screenshots/analytics.png)
+
+---
+
 ## 📚 Core Workflows
 
 ### Model-Specific Ollama Routing

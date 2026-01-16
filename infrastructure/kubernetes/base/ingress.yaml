@@ -40,6 +40,36 @@ spec:
   - host: waddleai.penguintech.io
     http:
       paths:
+      # Flask root-level endpoints (health, metrics, etc.)
+      - path: /healthz
+        pathType: Exact
+        backend:
+          service:
+            name: waddleai-mgmt
+            port:
+              number: 8001
+      - path: /readyz
+        pathType: Exact
+        backend:
+          service:
+            name: waddleai-mgmt
+            port:
+              number: 8001
+      - path: /livez
+        pathType: Exact
+        backend:
+          service:
+            name: waddleai-mgmt
+            port:
+              number: 8001
+      - path: /metrics
+        pathType: Exact
+        backend:
+          service:
+            name: waddleai-mgmt
+            port:
+              number: 8001
+      # API endpoints
       - path: /api
         pathType: Prefix
         backend:
@@ -47,6 +77,7 @@ spec:
             name: waddleai-mgmt
             port:
               number: 8001
+      # WebUI (default/fallback)
       - path: /
         pathType: Prefix
         backend:
