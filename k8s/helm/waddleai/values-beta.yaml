@@ -88,7 +88,7 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
   hosts:
-    - host: waddleai.penguintech.io
+    - host: waddleai.penguintech.cloud
       paths:
         - path: /
           pathType: Prefix
@@ -101,7 +101,7 @@ ingress:
   tls:
     - secretName: waddleai-tls
       hosts:
-        - waddleai.penguintech.io
+        - waddleai.penguintech.cloud
 
 # Pod Disruption Budget - Enabled for Beta
 podDisruptionBudget:

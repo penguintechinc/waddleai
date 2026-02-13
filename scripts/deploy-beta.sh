@@ -11,7 +11,7 @@ RELEASE_NAME="waddleai"
 CHART_PATH="$PROJECT_ROOT/k8s/helm/waddleai"
 VALUES_FILE="$CHART_PATH/values-beta.yaml"
 IMAGE_REGISTRY="registry-dal2.penguintech.io"
-APP_HOST="waddleai.penguintech.io"
+APP_HOST="waddleai.penguintech.cloud"
 
 DRY_RUN=0
 ROLLBACK=0
