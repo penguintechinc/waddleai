@@ -1,0 +1,123 @@
+# Beta Environment Values
+# Staging/Pre-production environment with production-like resources
+
+environment: beta
+
+# Global image settings
+global:
+  imageRegistry: registry-dal2.penguintech.io
+  imagePullPolicy: Always
+
+# Management Service - Beta
+management:
+  replicaCount: 2
+  image:
+    repository: waddleai/management
+    tag: beta-latest
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+  env:
+    LOG_LEVEL: INFO
+    FLASK_ENV: production
+
+# WebUI Service - Beta
+webui:
+  replicaCount: 2
+  image:
+    repository: waddleai/webui
+    tag: beta-latest
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "200m"
+    limits:
+      memory: "256Mi"
+      cpu: "400m"
+
+# PostgreSQL - Beta
+postgres:
+  replicaCount: 1
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "2000m"
+
+  persistence:
+    enabled: true
+    size: 20Gi
+
+# Redis - Beta
+redis:
+  replicaCount: 1
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "512Mi"
+      cpu: "400m"
+
+  persistence:
+    enabled: true
+    size: 10Gi
+
+# Ingress - Enabled for Beta
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  hosts:
+    - host: waddleai.penguintech.io
+      paths:
+        - path: /
+          pathType: Prefix
+          serviceName: waddleai-webui
+          servicePort: 8080
+        - path: /api
+          pathType: Prefix
+          serviceName: waddleai-management
+          servicePort: 8001
+  tls:
+    - secretName: waddleai-tls
+      hosts:
+        - waddleai.penguintech.io
+
+# Pod Disruption Budget - Enabled for Beta
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Affinity rules for better distribution
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - waddleai
+          topologyKey: kubernetes.io/hostname

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: waddleai
+description: WaddleAI - AI Infrastructure Management Platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - ai
+  - llm
+  - infrastructure
+  - management
+home: https://github.com/penguintechinc/waddleai
+sources:
+  - https://github.com/penguintechinc/waddleai
+maintainers:
+  - name: Penguin Tech Inc
+    email: support@penguintech.io
+    url: https://www.penguintech.io
