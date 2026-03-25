@@ -1,7 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: waddleai-beta
-namePrefix: beta-
+namespace: waddleai
 commonLabels:
   environment: beta
 resources:
@@ -10,7 +9,8 @@ replicas:
   - name: management
     count: 2
 images:
-  - name: registry-dal2.penguintech.io/waddleai/management
+  - name: waddleai/management
+    newName: ghcr.io/penguintechinc/waddleai/management
     newTag: latest
 configMapGenerator:
   - name: waddleai-config

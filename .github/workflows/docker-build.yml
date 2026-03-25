@@ -2,7 +2,7 @@ name: Build and Push Multi-Architecture Docker Images
 
 on:
   push:
-    branches: [ main, v1.x ]
+    branches: [ main, 'v*' ]
     paths:
       - 'proxy/**'
       - 'management/**'
@@ -148,12 +148,13 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
         tags: |
           # Regular builds (no .version change)
-          type=raw,value=alpha-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref != 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
-          type=raw,value=beta-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
+          type=raw,value=beta-${{ steps.timestamp.outputs.epoch64 }},enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
+          type=raw,value=gamma-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
+          type=raw,value=alpha-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
 
           # Version builds (.version changed)
-          type=raw,value=v${{ steps.version.outputs.semver }}-alpha,enable=${{ github.ref != 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
-          type=raw,value=v${{ steps.version.outputs.semver }}-beta,enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
+          type=raw,value=v${{ steps.version.outputs.semver }}-beta,enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed == 'true' }}
+          type=raw,value=v${{ steps.version.outputs.semver }}-gamma,enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
 
           # Release tags
           type=semver,pattern={{version}}

@@ -69,9 +69,29 @@ redis:
     enabled: true
     size: 2Gi
 
-# Ingress - Disabled for Alpha
+# Ingress - Enabled for Alpha
 ingress:
-  enabled: false
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: waddleai.localhost.local
+      paths:
+        - path: /
+          pathType: Prefix
+          serviceName: waddleai-webui
+          servicePort: 8080
+        - path: /api
+          pathType: Prefix
+          serviceName: waddleai-management
+          servicePort: 8001
+  tls:
+    - secretName: waddleai-tls
+      hosts:
+        - waddleai.localhost.local
 
 # Pod Disruption Budget - Disabled for Alpha
 podDisruptionBudget:

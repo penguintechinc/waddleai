@@ -5,8 +5,10 @@ environment: beta
 
 # Global image settings
 global:
-  imageRegistry: registry-dal2.penguintech.io
+  imageRegistry: ghcr.io/penguintechinc/waddleai
   imagePullPolicy: Always
+  imagePullSecrets:
+    - name: ghcr-pull-secret
 
 # Management Service - Beta
 management:

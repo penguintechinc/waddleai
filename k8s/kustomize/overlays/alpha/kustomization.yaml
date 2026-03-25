@@ -1,6 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: waddleai-alpha
+namespace: waddleai
 namePrefix: alpha-
 commonLabels:
   environment: alpha
@@ -10,7 +10,8 @@ replicas:
   - name: management
     count: 1
 images:
-  - name: registry-dal2.penguintech.io/waddleai/management
+  - name: management
+    newName: localhost:32000/management
     newTag: latest
 configMapGenerator:
   - name: waddleai-config
