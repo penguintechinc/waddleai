@@ -184,15 +184,16 @@ jobs:
     
     steps:
     - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
       if: github.event_name != 'pull_request'
       with:
         image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.ref_name }}
         format: 'sarif'
         output: 'trivy-results-${{ matrix.service }}.sarif'
-    
+        trivy-version: 'v0.69.3'
+
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
+      uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
       if: github.event_name != 'pull_request'
       with:
         sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
