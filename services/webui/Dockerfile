@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for WaddleAI WebUI
 # React frontend served via nginx
 
-FROM node:18-alpine AS builder
+FROM node:18-bookworm-slim@sha256:f9ab18e354e6855ae56ef2b290dd225c1e51a564f87584b9bd21dd651838830e AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM nginx:alpine
+FROM nginx:stable-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -30,8 +30,8 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY public/logo.png /usr/share/nginx/html/logo.png
 
 # Create non-root user
-RUN addgroup -g 1000 waddleai && \
-    adduser -D -u 1000 -G waddleai waddleai && \
+RUN groupadd -r -g 1000 waddleai && \
+    useradd -r -u 1000 -g waddleai waddleai && \
     chown -R waddleai:waddleai /usr/share/nginx/html && \
     chown -R waddleai:waddleai /var/cache/nginx && \
     chown -R waddleai:waddleai /var/log/nginx && \
@@ -47,7 +47,7 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+    CMD curl -f http://localhost:8080/ || exit 1
 
 # Start nginx
 CMD ["nginx", "-g", "daemon off;"]

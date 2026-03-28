@@ -1,0 +1,14 @@
+# Proxy Server Specific Requirements
+-r ../requirements.txt
+
+# Additional proxy-specific dependencies
+gunicorn>=21.2.0
+redis>=5.0.1
+celery>=5.3.4
+
+# Rate limiting
+slowapi>=0.1.9
+limits>=3.7.0
+
+# Streaming support
+sse-starlette>=1.8.2

@@ -26,7 +26,7 @@ mkdir -p "$OUTPUT_DIR/marchproxy"
 
 # Generate Python gRPC stubs
 echo "Generating Python gRPC stubs..."
-python -m grpc_tools.protoc \
+python3 -m grpc_tools.protoc \
     -I "$MARCHPROXY_PROTO_DIR" \
     --python_out="$OUTPUT_DIR" \
     --grpc_python_out="$OUTPUT_DIR" \
