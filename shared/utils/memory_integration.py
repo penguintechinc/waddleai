@@ -961,28 +961,62 @@ class WaddleAIMemoryManager:
 
 
 def create_memory_manager(
-    db,
-    backend: str = "mem0",
+    db=None,
+    backend: str = "pgvector",
     persist_directory: str = "./chroma_data",
     api_key: Optional[str] = None,
     org_id: Optional[str] = None,
-    config: Optional[Dict] = None
+    config: Optional[Dict] = None,
+    write_db=None,
+    embedding_manager=None,
+    replica_pool: Optional["ReadReplicaPool"] = None,
 ) -> WaddleAIMemoryManager:
     """
-    Factory function to create memory manager
+    Factory function to create memory manager.
 
     Args:
-        db: Database connection
-        backend: Memory backend to use ("mem0" or "chromadb")
-        persist_directory: ChromaDB persist directory (chromadb only)
-        api_key: API key for mem0 (mem0 only)
-        org_id: Organization ID for mem0 (mem0 only)
-        config: Additional configuration dictionary
+        db: Database connection (used as write_db for pgvector when write_db is not provided;
+            also forwarded to WaddleAIMemoryManager as the primary db reference).
+        backend: Memory backend to use. Default is "pgvector".
+                 Supported values: "pgvector", "mem0", "chromadb".
+        persist_directory: ChromaDB persist directory (chromadb only).
+        api_key: API key for mem0 (mem0 only).
+        org_id: Organization ID for mem0 (mem0 only).
+        config: Additional configuration dictionary.
+        write_db: Explicit primary DAL connection for pgvector writes.
+                  Falls back to ``db`` if not provided.
+        embedding_manager: EmbeddingManager instance for pgvector.
+                           If None, a default instance is created via
+                           ``shared.utils.embedding_manager.create_embedding_manager()``.
+        replica_pool: Optional ReadReplicaPool for pgvector read distribution.
+                      If None, reads fall back to write_db.
 
     Returns:
         WaddleAIMemoryManager instance
     """
-    if backend == "mem0":
+    if backend == "pgvector":
+        _write_db = write_db or db
+        if _write_db is None:
+            raise ValueError("pgvector backend requires a database connection (db or write_db)")
+
+        _embedding_manager = embedding_manager
+        if _embedding_manager is None:
+            try:
+                from shared.utils.embedding_manager import create_embedding_manager
+                _embedding_manager = create_embedding_manager()
+            except ImportError:
+                raise ImportError(
+                    "embedding_manager is required for the pgvector backend. "
+                    "Either pass embedding_manager= explicitly or ensure "
+                    "shared.utils.embedding_manager is importable."
+                )
+
+        memory_store = PgvectorMemoryStore(
+            write_db=_write_db,
+            embedding_manager=_embedding_manager,
+            replica_pool=replica_pool,
+        )
+    elif backend == "mem0":
         if not HAS_MEM0:
             logger.warning("mem0 not available, falling back to ChromaDB")
             memory_store = ChromaDBMemoryStore(persist_directory=persist_directory)
@@ -992,6 +1026,303 @@ def create_memory_manager(
         collection_name = config.get('collection_name', 'waddleai_memory') if config else 'waddleai_memory'
         memory_store = ChromaDBMemoryStore(persist_directory=persist_directory, collection_name=collection_name)
     else:
-        raise ValueError(f"Unknown memory backend: {backend}. Use 'mem0' or 'chromadb'")
+        raise ValueError(f"Unknown memory backend: {backend}. Use 'pgvector', 'mem0', or 'chromadb'")
 
-    return WaddleAIMemoryManager(db, memory_store)
+    return WaddleAIMemoryManager(db or write_db, memory_store)
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL + pgvector backend (primary backend for WaddleAI)
+# ---------------------------------------------------------------------------
+
+import threading
+import random
+
+
+class ReadReplicaPool:
+    """Round-robin pool of read-only database connections for pgvector search queries.
+
+    Write operations should use the primary DAL connection.
+    Read (similarity search) operations use replicas to avoid overloading the primary.
+
+    Usage:
+        pool = ReadReplicaPool.from_env()    # reads DATABASE_REPLICA_URL env var
+        read_db = pool.get()                 # returns next replica connection
+    """
+
+    def __init__(self, replica_dbs: list):
+        self._replicas = replica_dbs
+        self._lock = threading.Lock()
+        self._index = 0
+
+    def get(self):
+        """Return the next replica DB connection (round-robin)."""
+        if not self._replicas:
+            return None
+        with self._lock:
+            db = self._replicas[self._index % len(self._replicas)]
+            self._index += 1
+        return db
+
+    def __len__(self) -> int:
+        return len(self._replicas)
+
+    @classmethod
+    def from_env(cls, replica_url_env: str = "DATABASE_REPLICA_URL") -> "ReadReplicaPool":
+        """Build pool from comma-separated replica URLs in an env var.
+
+        Falls back to an empty pool (reads will fall back to the write DB).
+        """
+        import os
+        from pydal import DAL
+
+        urls_raw = os.getenv(replica_url_env, "").strip()
+        if not urls_raw:
+            return cls([])
+
+        replicas = []
+        for url in urls_raw.split(","):
+            url = url.strip()
+            if url:
+                if url.startswith("postgres://"):
+                    url = url.replace("postgres://", "postgresql://", 1)
+                try:
+                    db = DAL(url, pool_size=5, migrate=False)
+                    replicas.append(db)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Failed to connect to replica %s: %s", url, exc
+                    )
+        return cls(replicas)
+
+
+class PgvectorMemoryStore(MemoryStore):
+    """PostgreSQL + pgvector memory backend with read/write splitting.
+
+    - Writes (store_memory) go to the primary write_db.
+    - Reads (search_memories) are distributed across read replicas via replica_pool.
+      If no replicas are configured, reads fall back to write_db.
+
+    Requires the pgvector extension and the memory_embeddings table
+    (created by services/management/app/models_sqlalchemy.py::init_schema).
+    """
+
+    def __init__(self, write_db, embedding_manager, replica_pool: Optional["ReadReplicaPool"] = None):
+        """
+        Args:
+            write_db: Primary DAL connection (write operations).
+            embedding_manager: EmbeddingManager instance for generating vectors.
+            replica_pool: ReadReplicaPool for distributing similarity searches.
+                          Falls back to write_db if None or empty.
+        """
+        self.write_db = write_db
+        self.embedding_manager = embedding_manager
+        self.replica_pool = replica_pool
+        self._initialized = False
+
+    def _read_db(self):
+        """Return a read connection: replica if available, else primary."""
+        if self.replica_pool and len(self.replica_pool) > 0:
+            db = self.replica_pool.get()
+            if db is not None:
+                return db
+        return self.write_db
+
+    async def initialize(self):
+        """No async setup needed; connections are passed in at construction."""
+        self._initialized = True
+
+    async def store_memory(self, entry: MemoryEntry) -> bool:
+        """Store a memory entry, generating its embedding vector.
+
+        Always writes to the primary (write_db).
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            embedding = await loop.run_in_executor(
+                None, self.embedding_manager.embed, entry.content
+            )
+            embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
+
+            self.write_db.executesql(
+                "INSERT INTO memory_embeddings "
+                "(user_id, organization_id, session_id, content, embedding, role, metadata) "
+                "VALUES (%s, %s, %s, %s, %s::vector, %s, %s::jsonb)",
+                (
+                    entry.user_id,
+                    entry.organization_id,
+                    entry.session_id or "",
+                    entry.content,
+                    embedding_str,
+                    entry.metadata.get("role", "user"),
+                    json.dumps(entry.metadata),
+                ),
+            )
+            return True
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.store_memory failed: %s", exc)
+            return False
+
+    async def search_memories(
+        self,
+        query: str,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        limit: int = 10,
+        min_relevance: float = 0.7,
+    ) -> List[MemoryEntry]:
+        """Search for relevant memories using cosine similarity.
+
+        Routes the query to a read replica for scalability.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            embedding = await loop.run_in_executor(
+                None, self.embedding_manager.embed, query
+            )
+            embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
+
+            read_db = self._read_db()
+
+            params: list = [embedding_str, user_id, organization_id, embedding_str, min_relevance, embedding_str, limit]
+            session_filter = ""
+            if session_id:
+                session_filter = " AND session_id = %s"
+                params = [embedding_str, user_id, organization_id, session_id, embedding_str, min_relevance, embedding_str, limit]
+
+            sql = (
+                "SELECT id, user_id, organization_id, session_id, content, role, "
+                "created_at, metadata, "
+                "1 - (embedding <=> %s::vector) AS similarity "
+                "FROM memory_embeddings "
+                "WHERE user_id = %s AND organization_id = %s"
+                + session_filter
+                + " AND embedding IS NOT NULL "
+                "AND 1 - (embedding <=> %s::vector) >= %s "
+                "ORDER BY embedding <=> %s::vector "
+                "LIMIT %s"
+            )
+
+            rows = read_db.executesql(sql, params)
+            if not rows:
+                return []
+
+            entries = []
+            for row in rows:
+                (row_id, uid, org_id, sess_id, content, role,
+                 created_at, metadata_raw, similarity) = row
+
+                try:
+                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+
+                meta["role"] = role
+                entries.append(MemoryEntry(
+                    id=str(row_id),
+                    user_id=uid,
+                    organization_id=org_id,
+                    session_id=sess_id,
+                    content=content,
+                    metadata=meta,
+                    embedding=None,
+                    created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
+                    relevance_score=float(similarity),
+                ))
+            return entries
+
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.search_memories failed: %s", exc)
+            return []
+
+    async def get_conversation_history(
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: str,
+        limit: int = 20,
+    ) -> List[MemoryEntry]:
+        """Retrieve recent conversation history ordered by time (no vector search).
+
+        Uses a read replica for scalability.
+        """
+        try:
+            read_db = self._read_db()
+            rows = read_db.executesql(
+                "SELECT id, user_id, organization_id, session_id, content, role, "
+                "created_at, metadata "
+                "FROM memory_embeddings "
+                "WHERE user_id = %s AND organization_id = %s AND session_id = %s "
+                "ORDER BY created_at DESC LIMIT %s",
+                (user_id, organization_id, session_id, limit),
+            )
+            if not rows:
+                return []
+
+            entries = []
+            for row in rows:
+                row_id, uid, org_id, sess_id, content, role, created_at, metadata_raw = row
+                try:
+                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta["role"] = role
+                entries.append(MemoryEntry(
+                    id=str(row_id),
+                    user_id=uid,
+                    organization_id=org_id,
+                    session_id=sess_id,
+                    content=content,
+                    metadata=meta,
+                    embedding=None,
+                    created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
+                    relevance_score=1.0,
+                ))
+            return entries
+
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.get_conversation_history failed: %s", exc)
+            return []
+
+    async def clear_memories(self, user_id: int, organization_id: int, session_id: Optional[str] = None) -> bool:
+        """Delete memories for a user/org. Always writes to primary."""
+        try:
+            if session_id:
+                self.write_db.executesql(
+                    "DELETE FROM memory_embeddings "
+                    "WHERE user_id = %s AND organization_id = %s AND session_id = %s",
+                    (user_id, organization_id, session_id),
+                )
+            else:
+                self.write_db.executesql(
+                    "DELETE FROM memory_embeddings WHERE user_id = %s AND organization_id = %s",
+                    (user_id, organization_id),
+                )
+            return True
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.clear_memories failed: %s", exc)
+            return False
+
+    async def get_memory_stats(self, user_id: int, organization_id: int) -> Dict[str, Any]:
+        """Return memory usage statistics. Routes to read replica."""
+        try:
+            read_db = self._read_db()
+            rows = read_db.executesql(
+                "SELECT COUNT(*), MIN(created_at), MAX(created_at) "
+                "FROM memory_embeddings "
+                "WHERE user_id = %s AND organization_id = %s",
+                (user_id, organization_id),
+            )
+            if rows:
+                count, earliest, latest = rows[0]
+                return {
+                    "total_memories": int(count or 0),
+                    "earliest": earliest.isoformat() if earliest else None,
+                    "latest": latest.isoformat() if latest else None,
+                    "backend": "pgvector",
+                }
+            return {"total_memories": 0, "backend": "pgvector"}
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.get_memory_stats failed: %s", exc)
+            return {"total_memories": 0, "backend": "pgvector", "error": str(exc)}

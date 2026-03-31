@@ -109,7 +109,7 @@ services:
 
   # PostgreSQL Database
   postgres:
-    image: postgres:16-bookworm@sha256:7858a1a43bb2e3decc07650c8989ba526e0a8164f212c9bb88b622cdbd71c4be
+    image: pgvector/pgvector:pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
     container_name: waddleai-postgres
     environment:
       - POSTGRES_DB=waddleai

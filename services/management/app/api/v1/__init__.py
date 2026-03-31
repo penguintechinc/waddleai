@@ -14,6 +14,7 @@ from . import providers
 from . import ollama
 from . import ollama_models
 from . import ailb
+from . import ailb_memory
 from . import keys
 from . import usage
 from . import quotas

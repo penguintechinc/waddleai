@@ -5,9 +5,10 @@ Use PyDAL for runtime database operations
 """
 
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, BigInteger,
+    Column, Integer, String, Text, Boolean, DateTime, BigInteger, Float,
     ForeignKey, UniqueConstraint, JSON, create_engine
 )
+from sqlalchemy import text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -86,6 +87,8 @@ class AIProvider(Base):
     enabled = Column(Boolean, default=True)
     tls_config = Column(JSON)
     extra_config = Column(JSON)  # Provider-specific settings (replaces management_capabilities)
+    ailb_sync_enabled = Column(Boolean, default=False)
+    priority = Column(Integer, default=100)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -284,15 +287,112 @@ class SecurityLog(Base):
     ip_address = Column(String(50))
 
 
+class EmbeddingSettings(Base):
+    __tablename__ = 'embedding_settings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=True)  # NULL = global default
+    backend = Column(String(50), nullable=False, default='ollama')  # ollama, openai, anthropic
+    model = Column(String(255), nullable=False, default='nomic-embed-text')
+    ollama_host = Column(String(500), default='http://localhost:11434')
+    dimensions = Column(Integer, default=768)  # nomic=768, openai-3-small=1536
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MemoryEmbedding(Base):
+    __tablename__ = 'memory_embeddings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    organization_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(255), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    embedding_json = Column(Text)  # JSON-serialized float array; replaced by pgvector column after extension is confirmed
+    role = Column(String(50), nullable=False)  # user, assistant
+    created_at = Column(DateTime, default=datetime.utcnow)
+    metadata_ = Column('metadata', JSON, default=dict)
+
+
+class RAGDocument(Base):
+    __tablename__ = 'rag_documents'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False, index=True)
+    collection = Column(String(255), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    embedding_json = Column(Text)  # JSON-serialized float array
+    source = Column(String(500))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    metadata_ = Column('metadata', JSON, default=dict)
+
+
+class ConversationMemoryConfig(Base):
+    __tablename__ = 'conversation_memory_configs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, unique=True, nullable=False)
+    enabled = Column(Boolean, default=True)
+    max_messages = Column(Integer, default=20)
+    similarity_threshold = Column(Float, default=0.7)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RAGConfig(Base):
+    __tablename__ = 'rag_configs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, unique=True, nullable=False)
+    enabled = Column(Boolean, default=True)
+    collection = Column(String(255), nullable=False, default='default')
+    top_k = Column(Integer, default=5)
+    similarity_threshold = Column(Float, default=0.7)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def init_schema(database_url: str):
-    """Initialize database schema using SQLAlchemy"""
+    """Initialize database schema using SQLAlchemy.
+
+    Enables the pgvector extension and creates all tables. After table creation,
+    adds native vector columns (requires pgvector) and IVFFlat indexes for fast
+    similarity search.
+    """
     # SQLAlchemy 2.0+ requires 'postgresql://' not 'postgres://'
     if database_url.startswith('postgres://'):
         database_url = database_url.replace('postgres://', 'postgresql://', 1)
 
     engine = create_engine(database_url)
 
+    # Enable pgvector extension (idempotent)
+    with engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.commit()
+
     # Create all tables if they don't exist
     Base.metadata.create_all(engine, checkfirst=True)
+
+    # Add native vector columns and IVFFlat indexes (pgvector-specific, idempotent)
+    with engine.connect() as conn:
+        # Add vector columns if not present
+        conn.execute(text(
+            "ALTER TABLE memory_embeddings "
+            "ADD COLUMN IF NOT EXISTS embedding vector(768)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE rag_documents "
+            "ADD COLUMN IF NOT EXISTS embedding vector(768)"
+        ))
+        # IVFFlat indexes for cosine similarity search
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_idx "
+            "ON memory_embeddings USING ivfflat (embedding vector_cosine_ops) "
+            "WITH (lists = 100)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS rag_documents_emb_idx "
+            "ON rag_documents USING ivfflat (embedding vector_cosine_ops) "
+            "WITH (lists = 100)"
+        ))
+        conn.commit()
 
     return engine

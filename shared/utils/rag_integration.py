@@ -915,22 +915,41 @@ class RAGManager:
 
 
 def create_rag_manager(
-    db,
-    backend: str = "supabase",
+    backend: str = "pgvector",
+    write_db=None,
+    replica_pool=None,
+    embedding_manager=None,
     **kwargs
 ) -> RAGManager:
     """
     Factory function to create RAG manager
 
     Args:
-        db: Database connection
-        backend: RAG backend ("supabase", "qdrant", or "chromadb")
+        backend: RAG backend ("pgvector", "supabase", "qdrant", or "chromadb")
+        write_db: Primary DAL connection (required for pgvector; also used as
+                  the ``db`` arg passed to RAGManager for legacy backends)
+        replica_pool: ReadReplicaPool for pgvector read scaling (optional)
+        embedding_manager: EmbeddingManager instance (pgvector only); a default
+                           instance is created automatically if not provided
         **kwargs: Backend-specific configuration
 
     Returns:
         RAGManager instance
     """
-    if backend == "supabase":
+    # Legacy callers may pass db as the first positional arg via write_db
+    db = write_db
+
+    if backend == "pgvector":
+        # Lazy import to avoid circular imports
+        from shared.utils.embedding_manager import create_embedding_manager  # noqa: PLC0415
+        if embedding_manager is None:
+            embedding_manager = create_embedding_manager()
+        rag_store = PgvectorRAGStore(
+            write_db=write_db,
+            embedding_manager=embedding_manager,
+            replica_pool=replica_pool,
+        )
+    elif backend == "supabase":
         if not HAS_SUPABASE:
             raise ImportError("supabase package not installed. Install with: pip install supabase")
         rag_store = SupabaseVectorStore(
@@ -956,6 +975,222 @@ def create_rag_manager(
             port=kwargs.get('port')
         )
     else:
-        raise ValueError(f"Unknown RAG backend: {backend}. Use 'supabase', 'qdrant', or 'chromadb'")
+        raise ValueError(f"Unknown RAG backend: {backend}. Use 'pgvector', 'supabase', 'qdrant', or 'chromadb'")
 
     return RAGManager(db, rag_store)
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL + pgvector RAG backend (primary backend for WaddleAI)
+# ---------------------------------------------------------------------------
+
+
+class PgvectorRAGStore(RAGStore):
+    """PostgreSQL + pgvector RAG backend with read/write splitting.
+
+    - Writes (add_documents) go to the primary write_db.
+    - Reads (search) are distributed across read replicas via replica_pool.
+      If no replicas are configured, reads fall back to write_db.
+
+    Requires the pgvector extension and rag_documents table
+    (created by services/management/app/models_sqlalchemy.py::init_schema).
+    """
+
+    def __init__(self, write_db, embedding_manager, replica_pool=None):
+        """
+        Args:
+            write_db: Primary DAL connection (write operations).
+            embedding_manager: EmbeddingManager instance from shared.utils.embedding_manager.
+            replica_pool: ReadReplicaPool for distributing similarity searches.
+                          If None or empty, reads fall back to write_db.
+        """
+        self.write_db = write_db
+        self.embedding_manager = embedding_manager
+        self.replica_pool = replica_pool
+        self._initialized = False
+
+    def _read_db(self):
+        """Return a read connection: replica if available, else primary."""
+        if self.replica_pool and len(self.replica_pool) > 0:
+            db = self.replica_pool.get()
+            if db is not None:
+                return db
+        return self.write_db
+
+    async def initialize(self):
+        """No async setup needed; connections are passed in at construction."""
+        self._initialized = True
+
+    async def add_documents(
+        self,
+        documents: List[Document],
+        collection: str = "default",
+    ) -> bool:
+        """Embed and store documents. Always writes to the primary."""
+        try:
+            loop = asyncio.get_event_loop()
+            success_count = 0
+            for doc in documents:
+                try:
+                    embedding = await loop.run_in_executor(
+                        None, self.embedding_manager.embed, doc.content
+                    )
+                    embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
+
+                    org_id = doc.metadata.get("organization_id", 0)
+                    source = doc.metadata.get("source", "")
+
+                    self.write_db.executesql(
+                        "INSERT INTO rag_documents "
+                        "(organization_id, collection, content, embedding, source, metadata) "
+                        "VALUES (%s, %s, %s, %s::vector, %s, %s::jsonb)",
+                        (
+                            org_id,
+                            collection,
+                            doc.content,
+                            embedding_str,
+                            source,
+                            json.dumps(doc.metadata),
+                        ),
+                    )
+                    success_count += 1
+                except Exception as exc:
+                    logger.error("Failed to embed/store doc %s: %s", doc.id, exc)
+            return success_count == len(documents)
+        except Exception as exc:
+            logger.error("PgvectorRAGStore.add_documents failed: %s", exc)
+            return False
+
+    async def search(
+        self,
+        query: str,
+        collection: str = "default",
+        organization_id: int = 0,
+        limit: int = 5,
+        min_score: float = 0.7,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[SearchResult]:
+        """Vector similarity search routed to a read replica for scalability."""
+        try:
+            loop = asyncio.get_event_loop()
+            embedding = await loop.run_in_executor(
+                None, self.embedding_manager.embed, query
+            )
+            embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
+
+            read_db = self._read_db()
+
+            rows = read_db.executesql(
+                "SELECT id, content, source, metadata, "
+                "1 - (embedding <=> %s::vector) AS similarity "
+                "FROM rag_documents "
+                "WHERE organization_id = %s AND collection = %s "
+                "  AND embedding IS NOT NULL "
+                "  AND 1 - (embedding <=> %s::vector) >= %s "
+                "ORDER BY embedding <=> %s::vector "
+                "LIMIT %s",
+                (embedding_str, organization_id, collection,
+                 embedding_str, min_score, embedding_str, limit),
+            )
+
+            if not rows:
+                return []
+
+            results = []
+            for row in rows:
+                row_id, content, source, metadata_raw, similarity = row
+                try:
+                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta.setdefault("source", source or "")
+                meta.setdefault("organization_id", organization_id)
+
+                doc = Document(
+                    id=str(row_id),
+                    content=content,
+                    metadata=meta,
+                    collection=collection,
+                )
+                results.append(SearchResult(
+                    document=doc,
+                    score=float(similarity),
+                    distance=float(1.0 - similarity),
+                ))
+            return results
+
+        except Exception as exc:
+            logger.error("PgvectorRAGStore.search failed: %s", exc)
+            return []
+
+    async def delete_document(self, document_id: str, collection: str = "default") -> bool:
+        """Delete a single document by ID. Always writes to primary."""
+        return await self.delete_documents([document_id], collection)
+
+    async def delete_documents(
+        self,
+        document_ids: List[str],
+        collection: str = "default",
+    ) -> bool:
+        """Delete documents by ID. Always writes to primary."""
+        try:
+            if not document_ids:
+                return True
+            placeholders = ",".join(["%s"] * len(document_ids))
+            ids = [int(doc_id) for doc_id in document_ids]
+            self.write_db.executesql(
+                f"DELETE FROM rag_documents WHERE id IN ({placeholders}) AND collection = %s",
+                ids + [collection],
+            )
+            return True
+        except Exception as exc:
+            logger.error("PgvectorRAGStore.delete_documents failed: %s", exc)
+            return False
+
+    async def delete_collection(self, collection: str) -> bool:
+        """Delete all documents in a collection. Always writes to primary."""
+        try:
+            self.write_db.executesql(
+                "DELETE FROM rag_documents WHERE collection = %s",
+                (collection,),
+            )
+            return True
+        except Exception as exc:
+            logger.error("PgvectorRAGStore.delete_collection failed: %s", exc)
+            return False
+
+    async def list_collections(self) -> List[str]:
+        """Return distinct collection names. Uses read replica."""
+        try:
+            read_db = self._read_db()
+            rows = read_db.executesql(
+                "SELECT DISTINCT collection FROM rag_documents ORDER BY collection"
+            )
+            return [row[0] for row in rows] if rows else []
+        except Exception as exc:
+            logger.error("PgvectorRAGStore.list_collections failed: %s", exc)
+            return []
+
+    async def get_collection_stats(self, collection: str, organization_id: int = 0) -> Dict[str, Any]:
+        """Return document count for a collection. Uses read replica."""
+        try:
+            read_db = self._read_db()
+            rows = read_db.executesql(
+                "SELECT COUNT(*), MIN(created_at), MAX(created_at) "
+                "FROM rag_documents "
+                "WHERE organization_id = %s AND collection = %s",
+                (organization_id, collection),
+            )
+            if rows:
+                count, earliest, latest = rows[0]
+                return {
+                    "document_count": int(count or 0),
+                    "earliest": earliest.isoformat() if earliest else None,
+                    "latest": latest.isoformat() if latest else None,
+                    "backend": "pgvector",
+                    "collection": collection,
+                }
+            return {"document_count": 0, "backend": "pgvector", "collection": collection}
+        except Exception as exc:
+            logger.error("PgvectorRAGStore.get_collection_stats failed: %s", exc)
+            return {"document_count": 0, "backend": "pgvector", "error": str(exc)}

@@ -9,9 +9,15 @@ flask-limiter>=3.5.0
 
 # Database
 sqlalchemy>=2.0.0  # Schema initialization and migrations
-pydal==20260313.1
+penguin-dal>=0.2.0
+asyncpg>=0.29.0
 psycopg2-binary>=2.9.9
+pgvector>=0.3.0
 pymysql>=1.1.0
+
+# PenguinTech Libraries
+penguin-aaa>=0.1.0
+penguin-libs>=0.2.0
 
 # Authentication & Security
 bcrypt>=4.1.0

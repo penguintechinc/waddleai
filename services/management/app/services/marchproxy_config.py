@@ -9,6 +9,7 @@ Generates MarchProxy-compatible import configurations for:
 
 import json
 import logging
+import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
@@ -26,7 +27,7 @@ class MarchProxyConfigGenerator:
     def __init__(self, db):
         self.db = db
 
-    def generate_full_config(self) -> Dict[str, Any]:
+    def generate_full_config(self, organization_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Generate complete MarchProxy AILB configuration.
 
@@ -44,6 +45,10 @@ class MarchProxyConfigGenerator:
                 "virtual_keys": self._generate_virtual_keys()
             }
         }
+
+        memory_injection = self._generate_memory_injection_config(organization_id)
+        if memory_injection:
+            config["ailb"]["memory_injection"] = memory_injection
 
         return config
 
@@ -280,6 +285,70 @@ class MarchProxyConfigGenerator:
             keys_list.append(key_config)
 
         return keys_list
+
+    def _generate_memory_injection_config(self, organization_id: Optional[int] = None) -> Dict[str, Any]:
+        """Generate mem0-compatible memory injection config for MarchProxy AILB.
+
+        mem0 and RAG are both optional — they are omitted from the AILB config
+        if not explicitly enabled for the organization. MarchProxy uses the
+        WaddleAI proxy as its mem0 endpoint; WaddleAI handles embedding and
+        retrieval internally.
+
+        Args:
+            organization_id: Organization to generate config for.
+                If None, returns empty config (no injection).
+        """
+        if organization_id is None:
+            return {}
+
+        db = self.db
+        waddleai_mem0_endpoint = os.getenv(
+            "WADDLEAI_MEM0_ENDPOINT",
+            "http://waddleai-proxy:8080/mem0"
+        )
+
+        config: Dict[str, Any] = {}
+
+        # Memory (conversation history) injection
+        try:
+            mem_configs = db(
+                db.conversation_memory_configs.organization_id == organization_id
+            ).select()
+            mem_config = mem_configs.first() if mem_configs else None
+        except Exception:
+            mem_config = None
+
+        if mem_config and mem_config.enabled:
+            config["mem0"] = {
+                "enabled": True,
+                "endpoint": waddleai_mem0_endpoint,
+                "timeout_ms": int(os.getenv("WADDLEAI_MEM0_TIMEOUT_MS", "500")),
+                "on_timeout": "skip",
+                "max_memories": mem_config.max_messages,
+                "similarity_threshold": float(mem_config.similarity_threshold),
+            }
+
+        # RAG (document retrieval) injection
+        try:
+            rag_configs = db(
+                db.rag_configs.organization_id == organization_id
+            ).select()
+            rag_config = rag_configs.first() if rag_configs else None
+        except Exception:
+            rag_config = None
+
+        if rag_config and rag_config.enabled:
+            config["rag"] = {
+                "enabled": True,
+                "endpoint": waddleai_mem0_endpoint,
+                "collection": rag_config.collection,
+                "top_k": rag_config.top_k,
+                "similarity_threshold": float(rag_config.similarity_threshold),
+                "timeout_ms": int(os.getenv("WADDLEAI_MEM0_TIMEOUT_MS", "500")),
+                "on_timeout": "skip",
+            }
+
+        return config
 
     def generate_ollama_routing_table(self) -> Dict[str, str]:
         """

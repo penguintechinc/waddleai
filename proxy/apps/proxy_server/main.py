@@ -21,13 +21,14 @@ from datetime import datetime
 import logging
 import structlog
 
-from shared.database.models import get_db, init_default_data
+from penguin_dal import get_dal
 from shared.auth.rbac import RBACManager, AuthenticationError, AuthorizationError, Permission
 from shared.security.prompt_security import create_security_scanner, Action
 from shared.utils.token_manager import create_token_manager
 from shared.utils.llm_connectors import create_llm_connection_manager
 from shared.utils.request_router import create_request_router, RoutingStrategy
 from shared.utils.memory_integration import create_memory_manager
+from proxy.apps.proxy_server.mem0_api import mem0_router, set_memory_manager
 from shared.utils.metrics import get_proxy_metrics, MetricsMiddleware
 from shared.utils.health_checks import WaddleAIHealthMonitor
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -76,9 +77,9 @@ class ProxyServer:
         """Initialize server components"""
         logger.info("Starting WaddleAI Proxy Server")
         
-        # Initialize database
-        self.db = get_db()
-        init_default_data(self.db)
+        # Initialize database (pgvector-enabled PostgreSQL primary)
+        database_url = os.getenv('DATABASE_URL', 'postgresql://waddleai:password@localhost:5432/waddleai')
+        self.db = get_dal(database_url)
         
         # Initialize components
         self.rbac = RBACManager(self.db, self.config['jwt_secret'])
@@ -86,7 +87,13 @@ class ProxyServer:
         self.token_manager = create_token_manager(self.db)
         self.llm_manager = create_llm_connection_manager(self.db)
         self.request_router = create_request_router(self.llm_manager, self.db)
-        self.memory_manager = create_memory_manager(self.db, persist_directory="./proxy_memory")
+        from shared.utils.memory_integration import ReadReplicaPool
+        replica_pool = ReadReplicaPool.from_env("DATABASE_REPLICA_URL")
+        self.memory_manager = create_memory_manager(
+            backend="pgvector",
+            write_db=self.db,
+            replica_pool=replica_pool,
+        )
         
         # Initialize HTTP session for external requests
         self.http_session = aiohttp.ClientSession(
@@ -111,6 +118,8 @@ class ProxyServer:
         # Initialize memory manager
         await self.memory_manager.initialize()
         
+        # Wire memory manager into mem0-compatible API
+        set_memory_manager(self.memory_manager)
         logger.info("Proxy server initialized successfully")
     
     async def shutdown(self):
@@ -152,6 +161,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# mem0-compatible API for MarchProxy AILB memory injection
+app.include_router(mem0_router)
 
 # Request metrics middleware
 @app.middleware("http")
