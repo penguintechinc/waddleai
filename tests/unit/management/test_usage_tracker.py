@@ -67,13 +67,40 @@ class MockField:
         self.field = field
 
     def __eq__(self, other):
-        return ('eq', self.table, self.field, other)
+        return self
+
+    def __ne__(self, other):
+        return self
 
     def __ge__(self, other):
-        return ('ge', self.table, self.field, other)
+        return self
+
+    def __gt__(self, other):
+        return self
+
+    def __lt__(self, other):
+        return self
+
+    def __le__(self, other):
+        return self
+
+    def __and__(self, other):
+        return self
+
+    def __rand__(self, other):
+        return self
+
+    def __or__(self, other):
+        return self
+
+    def __ror__(self, other):
+        return self
 
     def like(self, pattern):
-        return ('like', self.table, self.field, pattern)
+        return self
+
+    def __hash__(self):
+        return id(self)
 
 
 class MockQuery:

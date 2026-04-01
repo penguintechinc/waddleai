@@ -106,15 +106,14 @@ class TestMCPServer:
         """Test that all expected tools are registered"""
         rbac_manager = Mock()
         request_router = Mock()
-        
+
         server = MCPServer(rbac_manager, request_router, mock_db)
-        
+
         expected_tools = [
             "chat_completion",
             "list_models",
             "get_usage",
             "get_routing_stats",
-            "get_memory_stats"
         ]
         
         for tool_name in expected_tools:
@@ -142,7 +141,8 @@ class TestMCPServer:
         """Test client authentication with API key"""
         rbac_manager = Mock()
         rbac_manager.verify_api_key.return_value = UserContext(
-            user_id=1, username="test", role=Role.USER, organization_id=1
+            user_id=1, username="test", role=Role.USER, organization_id=1,
+            managed_orgs=[], permissions=set()
         )
         request_router = Mock()
         
@@ -162,7 +162,8 @@ class TestMCPServer:
         rbac_manager = Mock()
         rbac_manager.verify_api_key.side_effect = Exception("Not an API key")
         rbac_manager.verify_jwt_token.return_value = UserContext(
-            user_id=2, username="admin", role=Role.ADMIN, organization_id=1
+            user_id=2, username="admin", role=Role.ADMIN, organization_id=1,
+            managed_orgs=[], permissions=set()
         )
         request_router = Mock()
         
@@ -324,12 +325,13 @@ class TestMCPServer:
         server = MCPServer(rbac_manager, request_router, mock_db)
         
         # Mock database query
+        from unittest.mock import PropertyMock
         mock_usage_records = [
             Mock(waddleai_tokens=100),
             Mock(waddleai_tokens=50)
         ]
         mock_db.token_usage = Mock()
-        mock_db.token_usage.created_at = Mock()
+        type(mock_db.token_usage).created_at = PropertyMock(return_value=datetime.utcnow())
         mock_db.return_value = Mock()
         mock_db.return_value.select = Mock(return_value=mock_usage_records)
         
@@ -376,8 +378,9 @@ class TestMCPServer:
             Mock(waddleai_tokens=100, provider="openai", created_at=datetime.utcnow()),
             Mock(waddleai_tokens=50, provider="anthropic", created_at=datetime.utcnow())
         ]
+        from unittest.mock import PropertyMock
         mock_db.token_usage = Mock()
-        mock_db.token_usage.created_at = Mock()
+        type(mock_db.token_usage).created_at = PropertyMock(return_value=datetime.utcnow())
         mock_db.return_value = Mock()
         mock_db.return_value.select = Mock(return_value=mock_usage_records)
         

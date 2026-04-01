@@ -133,7 +133,7 @@ class TestProviderConfigs:
 
     def test_openai_config_defaults(self):
         """Test OpenAI config with defaults"""
-        config = OpenAIConfig(name="test-openai")
+        config = OpenAIConfig(name="test-openai", provider_type=ProviderType.OPENAI)
         assert config.provider_type == ProviderType.OPENAI
         assert config.endpoint_url == "https://api.openai.com/v1"
         assert "gpt-4o" in config.model_list
@@ -141,14 +141,14 @@ class TestProviderConfigs:
 
     def test_anthropic_config_defaults(self):
         """Test Anthropic config with defaults"""
-        config = AnthropicConfig(name="test-anthropic")
+        config = AnthropicConfig(name="test-anthropic", provider_type=ProviderType.ANTHROPIC)
         assert config.provider_type == ProviderType.ANTHROPIC
         assert config.endpoint_url == "https://api.anthropic.com/v1"
         assert config.anthropic_version == "2024-01-01"
 
     def test_ollama_config_defaults(self):
         """Test Ollama config with defaults"""
-        config = OllamaConfig(name="test-ollama")
+        config = OllamaConfig(name="test-ollama", provider_type=ProviderType.OLLAMA)
         assert config.provider_type == ProviderType.OLLAMA
         assert config.endpoint_url == "http://localhost:11434"
 
@@ -156,14 +156,17 @@ class TestProviderConfigs:
         """Test Gemini config with Vertex AI"""
         config = GeminiConfig(
             name="test-gemini",
+            provider_type=ProviderType.GEMINI,
             project_id="my-project",
-            use_vertex_ai=True
+            use_vertex_ai=True,
         )
         assert "aiplatform.googleapis.com" in config.endpoint_url
 
     def test_bedrock_config(self):
         """Test Bedrock config"""
-        config = BedrockConfig(name="test-bedrock", aws_region="us-west-2")
+        config = BedrockConfig(
+            name="test-bedrock", provider_type=ProviderType.BEDROCK, aws_region="us-west-2"
+        )
         assert config.provider_type == ProviderType.BEDROCK
         assert "us-west-2" in config.endpoint_url
 
@@ -171,14 +174,15 @@ class TestProviderConfigs:
         """Test Azure OpenAI config"""
         config = AzureOpenAIConfig(
             name="test-azure",
-            azure_endpoint="https://my-resource.openai.azure.com/"
+            provider_type=ProviderType.AZURE_OPENAI,
+            azure_endpoint="https://my-resource.openai.azure.com/",
         )
         assert config.provider_type == ProviderType.AZURE_OPENAI
         assert config.api_version == "2024-02-01"
 
     def test_cohere_config(self):
         """Test Cohere config"""
-        config = CohereConfig(name="test-cohere")
+        config = CohereConfig(name="test-cohere", provider_type=ProviderType.COHERE)
         assert config.provider_type == ProviderType.COHERE
         assert config.endpoint_url == "https://api.cohere.ai/v1"
 

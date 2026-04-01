@@ -54,26 +54,30 @@ def mock_db():
 @pytest.fixture
 def sample_user_context():
     """Sample user context for testing"""
+    from shared.auth.rbac import ROLE_PERMISSIONS
     return UserContext(
         user_id=1,
         username="testuser",
         role=Role.USER,
         organization_id=1,
+        managed_orgs=[],
+        permissions=[p.value for p in ROLE_PERMISSIONS[Role.USER]],
         api_key_id=1,
-        permissions=["user:read"]
     )
 
 
 @pytest.fixture
 def admin_user_context():
     """Admin user context for testing"""
+    from shared.auth.rbac import ROLE_PERMISSIONS
     return UserContext(
         user_id=2,
         username="admin",
         role=Role.ADMIN,
         organization_id=1,
+        managed_orgs=[],
+        permissions=[p.value for p in ROLE_PERMISSIONS[Role.ADMIN]],
         api_key_id=2,
-        permissions=["admin:*"]
     )
 
 

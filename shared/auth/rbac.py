@@ -211,7 +211,10 @@ class RBACManager:
         
         managed_orgs = []
         if user.managed_orgs:
-            managed_orgs = [int(org_id) for org_id in user.managed_orgs]
+            if isinstance(user.managed_orgs, str):
+                managed_orgs = [int(x.strip()) for x in user.managed_orgs.split(',') if x.strip()]
+            else:
+                managed_orgs = [int(org_id) for org_id in user.managed_orgs]
         
         return UserContext(
             user_id=user.id,
@@ -266,8 +269,9 @@ class RBACManager:
     ) -> bool:
         """Check if user has permission for specific resource"""
         
-        # Check base permission
-        if permission not in user_context.permissions:
+        # Check base permission — permissions may be stored as strings (e.g. from JWT)
+        perm_value = permission.value if isinstance(permission, Permission) else permission
+        if perm_value not in user_context.permissions and permission not in user_context.permissions:
             return False
         
         # Admin has access to everything
@@ -369,3 +373,26 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     """Verify password against hash"""
     return bcrypt.verify(password, hashed)
+
+
+# --- penguin-aaa integration ---
+try:
+    from penguin_aaa.authz.rbac import RBACEnforcer, Role as AAARole
+
+    def build_penguin_rbac_enforcer() -> RBACEnforcer:
+        """Build a penguin-aaa RBACEnforcer from the local ROLE_PERMISSIONS mapping.
+
+        Converts the Permission enum values to scope strings and maps them to
+        penguin-aaa Roles for scope-based enforcement.
+        """
+        enforcer = RBACEnforcer()
+        for role, perms in ROLE_PERMISSIONS.items():
+            scope_list = [p.value for p in perms]
+            enforcer.register(AAARole(name=role.value, scopes=scope_list))
+        return enforcer
+
+    # Module-level enforcer instance for use in decorators
+    penguin_enforcer: RBACEnforcer = build_penguin_rbac_enforcer()
+
+except ImportError:
+    penguin_enforcer = None

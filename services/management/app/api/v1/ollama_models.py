@@ -166,7 +166,7 @@ def assign_model_to_deployment():
 @api_v1_bp.route('/ollama/models/<int:model_id>/reassign', methods=['POST'])
 @require_auth
 @require_role('admin')
-def reassign_model():
+def reassign_model(model_id):
     """
     Reassign a model to a different Ollama deployment.
 

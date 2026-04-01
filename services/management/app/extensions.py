@@ -1,6 +1,6 @@
 """
 WaddleAI Management Server Extensions
-Flask-Security-Too, PyDAL, Redis initialization
+Flask-Security-Too, penguin-dal, Redis initialization
 """
 
 import os
@@ -11,13 +11,14 @@ from typing import Optional
 from flask import Flask, current_app
 from flask_security import Security, UserMixin, RoleMixin
 from flask_security.datastore import UserDatastore
-from pydal import DAL, Field
+from penguin_dal.db import DB
+from penguin_dal.flask_ext import init_dal
 import redis
 
 logger = logging.getLogger(__name__)
 
 # Global instances
-db: Optional[DAL] = None
+db: Optional[DB] = None
 security: Optional[Security] = None
 redis_client: Optional[redis.Redis] = None
 
@@ -25,7 +26,7 @@ redis_client: Optional[redis.Redis] = None
 class PyDALUserDatastore(UserDatastore):
     """Custom UserDatastore for PyDAL integration with Flask-Security-Too"""
 
-    def __init__(self, db: DAL):
+    def __init__(self, db: DB):
         self.db = db
 
     def find_user(self, **kwargs):
@@ -102,7 +103,7 @@ class PyDALUserDatastore(UserDatastore):
 class PyDALUser(UserMixin):
     """User model wrapper for PyDAL row with Flask-Security-Too compatibility"""
 
-    def __init__(self, row, db: DAL):
+    def __init__(self, row, db: DB):
         self._row = row
         self._db = db
 
@@ -180,8 +181,8 @@ class PyDALRole(RoleMixin):
         return hash(self._name)
 
 
-def init_db(app: Flask) -> DAL:
-    """Initialize database with SQLAlchemy for schema, PyDAL for runtime operations"""
+def init_db(app: Flask) -> DB:
+    """Initialize database with SQLAlchemy for schema, penguin-dal for runtime operations"""
     import time
     from app.models_sqlalchemy import init_schema
     global db
@@ -203,20 +204,8 @@ def init_db(app: Flask) -> DAL:
             init_schema(db_url)
             logger.info("Database schema initialized")
 
-            # Step 2: Connect with PyDAL for runtime operations (no migrations)
-            db = DAL(
-                db_url,
-                migrate=False,  # Tables already created by SQLAlchemy
-                fake_migrate_all=False,
-                folder='databases',
-                adapter_args={'connect_timeout': 5}
-            )
-
-            # Test the connection
-            db.executesql("SELECT 1")
-
-            # Define PyDAL table mappings (for runtime operations)
-            define_tables(db)
+            # Step 2: Connect with penguin-dal for runtime operations (auto-reflects schema)
+            db = init_dal(app)
 
             logger.info(f"Database initialized successfully on attempt {attempt}")
             return db
@@ -229,257 +218,6 @@ def init_db(app: Flask) -> DAL:
             else:
                 logger.error(f"Failed to connect to database after {max_retries} attempts")
                 raise
-
-
-def define_tables(db: DAL):
-    """Define all database tables"""
-
-    # Organizations for multi-tenancy
-    db.define_table('organizations',
-        Field('name', unique=True, required=True),
-        Field('description', 'text'),
-        Field('token_quota_monthly', 'integer', default=1000000),
-        Field('token_quota_daily', 'integer', default=100000),
-        Field('default_model', 'string'),
-        Field('enabled', 'boolean', default=True),
-        Field('created_at', 'datetime', default=datetime.utcnow),
-        format='%(name)s'
-    )
-
-    # Users and Authentication
-    db.define_table('users',
-        Field('username', unique=True, required=True),
-        Field('email', unique=True, required=True),
-        Field('password_hash', 'password', required=True),
-        Field('role', 'string', required=True, default='user'),
-        Field('organization_id', 'reference organizations', required=True),
-        Field('managed_orgs', 'list:reference organizations'),
-        Field('created_at', 'datetime', default=datetime.utcnow),
-        Field('token_quota_monthly', 'integer', default=100000),
-        Field('token_quota_daily', 'integer', default=10000),
-        Field('default_model', 'string'),
-        Field('enabled', 'boolean', default=True),
-        Field('last_login_at', 'datetime'),
-        Field('current_login_at', 'datetime'),
-        Field('last_login_ip', 'string'),
-        Field('current_login_ip', 'string'),
-        Field('login_count', 'integer', default=0),
-        format='%(username)s'
-    )
-
-    # AI Providers (connection_links renamed and enhanced)
-    db.define_table('ai_providers',
-        Field('name', unique=True, required=True),
-        Field('provider_type', 'string', required=True),  # openai, anthropic, ollama, gemini, bedrock, azure_openai, cohere
-        Field('endpoint_url', required=True),
-        Field('api_key', 'password'),
-        Field('model_list', 'json'),
-        Field('rate_limits', 'json'),
-        Field('enabled', 'boolean', default=True),
-        Field('tls_config', 'json'),
-        Field('extra_config', 'json'),  # Provider-specific settings
-        Field('priority', 'integer', default=100),
-        Field('ailb_sync_enabled', 'boolean', default=True),
-        Field('ailb_route_config', 'json'),
-        Field('created_at', 'datetime', default=datetime.utcnow),
-        format='%(name)s'
-    )
-
-    # MarchProxy AILB Sync Status
-    db.define_table('marchproxy_ailb_sync',
-        Field('provider_id', 'reference ai_providers'),
-        Field('ailb_instance_id', 'string'),
-        Field('ailb_route_id', 'string'),
-        Field('sync_status', 'string', default='pending'),  # synced, pending, failed, deleted
-        Field('last_synced', 'datetime'),
-        Field('sync_error', 'text'),
-        Field('config_hash', 'string'),
-        Field('created_at', 'datetime', default=datetime.utcnow)
-    )
-
-    # Ollama Deployments
-    db.define_table('ollama_deployments',
-        Field('name', unique=True, required=True),
-        Field('endpoint_url', required=True),
-        Field('deployment_type', 'string', default='external'),  # docker, kubernetes, external
-        Field('docker_compose_config', 'json'),
-        Field('gpu_config', 'json'),
-        Field('resource_limits', 'json'),
-        Field('status', 'string', default='unknown'),  # running, stopped, pulling, error
-        Field('health_status', 'string'),
-        Field('last_health_check', 'datetime'),
-        Field('auto_start', 'boolean', default=True),
-        Field('created_at', 'datetime', default=datetime.utcnow)
-    )
-
-    # Ollama Models
-    db.define_table('ollama_models',
-        Field('deployment_id', 'reference ollama_deployments', required=True),
-        Field('model_name', required=True),
-        Field('model_tag', default='latest'),
-        Field('status', 'string', default='unknown'),  # available, pulling, failed, removed
-        Field('size_bytes', 'bigint'),
-        Field('pull_progress', 'json'),
-        Field('last_updated', 'datetime', default=datetime.utcnow),
-        Field('auto_pull', 'boolean', default=False)
-    )
-
-    # Ollama Model Routes (Model-Specific AILB Routing)
-    db.define_table('ollama_model_routes',
-        Field('model_id', 'reference ollama_models', required=True),
-        Field('deployment_id', 'reference ollama_deployments', required=True),
-        Field('ailb_instance_id', 'string'),
-        Field('ailb_route_id', 'string'),
-        Field('sync_status', 'string', default='pending'),  # synced, pending, failed, deleted
-        Field('last_synced', 'datetime'),
-        Field('sync_error', 'text'),
-        Field('created_at', 'datetime', default=datetime.utcnow)
-    )
-
-    # Virtual Keys (WaddleAI keys mapped to AILB)
-    db.define_table('virtual_keys',
-        Field('user_id', 'reference users'),
-        Field('organization_id', 'reference organizations'),
-        Field('name', required=True),
-        Field('key_prefix', 'string'),
-        Field('key_hash', 'password'),
-        Field('ailb_key_id', 'string'),
-        Field('ailb_sync_status', 'string', default='pending'),
-        Field('allowed_models', 'json'),
-        Field('allowed_providers', 'json'),
-        Field('budget_limit_daily', 'double'),
-        Field('budget_limit_monthly', 'double'),
-        Field('tpm_limit', 'integer', default=10000),
-        Field('rpm_limit', 'integer', default=60),
-        Field('enabled', 'boolean', default=True),
-        Field('expires_at', 'datetime'),
-        Field('last_used', 'datetime'),
-        Field('created_at', 'datetime', default=datetime.utcnow)
-    )
-
-    # AILB Usage Events (webhooks)
-    db.define_table('ailb_usage_events',
-        Field('event_id', 'string', unique=True),
-        Field('virtual_key_id', 'reference virtual_keys'),
-        Field('ailb_key_id', 'string'),
-        Field('request_id', 'string'),
-        Field('model', 'string'),
-        Field('provider', 'string'),
-        Field('input_tokens', 'integer'),
-        Field('output_tokens', 'integer'),
-        Field('cost_usd', 'double'),
-        Field('latency_ms', 'integer'),
-        Field('status', 'string'),
-        Field('error_message', 'text'),
-        Field('timestamp', 'datetime'),
-        Field('processed', 'boolean', default=False),
-        Field('created_at', 'datetime', default=datetime.utcnow)
-    )
-
-    # Token Conversion Rates
-    db.define_table('token_conversion_rates',
-        Field('provider', 'string', required=True),
-        Field('model', 'string', required=True),
-        Field('input_rate', 'double', required=True),
-        Field('output_rate', 'double', required=True),
-        Field('base_cost_per_waddleai_token', 'double', default=0.001),
-        Field('effective_date', 'datetime', default=datetime.utcnow),
-        Field('enabled', 'boolean', default=True)
-    )
-
-    # Token Usage Tracking
-    db.define_table('token_usage',
-        Field('virtual_key_id', 'reference virtual_keys'),
-        Field('user_id', 'reference users'),
-        Field('organization_id', 'reference organizations'),
-        Field('date', 'date'),
-        Field('waddleai_tokens', 'integer', default=0),
-        Field('llm_tokens', 'json'),
-        Field('tokens_input_total', 'integer', default=0),
-        Field('tokens_output_total', 'integer', default=0),
-        Field('request_count', 'integer', default=0),
-        Field('cost_usd_total', 'double', default=0.0),
-        Field('last_updated', 'datetime', default=datetime.utcnow)
-    )
-
-    # Usage Cache (real-time quota enforcement)
-    db.define_table('usage_cache',
-        Field('virtual_key_id', 'reference virtual_keys'),
-        Field('organization_id', 'reference organizations'),
-        Field('period', 'string', required=True),
-        Field('period_start', 'datetime', required=True),
-        Field('waddleai_tokens_used', 'integer', default=0),
-        Field('llm_tokens_used', 'json'),
-        Field('requests_made', 'integer', default=0),
-        Field('last_updated', 'datetime', default=datetime.utcnow)
-    )
-
-    # Security Logs
-    db.define_table('security_logs',
-        Field('timestamp', 'datetime', default=datetime.utcnow),
-        Field('virtual_key_id', 'reference virtual_keys'),
-        Field('user_id', 'reference users'),
-        Field('organization_id', 'reference organizations'),
-        Field('request_hash', 'string'),
-        Field('threat_type', 'string'),
-        Field('severity', 'string'),
-        Field('blocked', 'boolean', default=False),
-        Field('prompt_sample', 'text'),
-        Field('detection_rules', 'json'),
-        Field('ip_address', 'string')
-    )
-
-    # Usage Logs
-    db.define_table('usage_logs',
-        Field('timestamp', 'datetime', default=datetime.utcnow),
-        Field('virtual_key_id', 'reference virtual_keys'),
-        Field('user_id', 'reference users'),
-        Field('organization_id', 'reference organizations'),
-        Field('request_hash', 'string'),
-        Field('provider_id', 'reference ai_providers'),
-        Field('waddleai_tokens_used', 'integer', default=0),
-        Field('llm_tokens_input', 'integer', default=0),
-        Field('llm_tokens_output', 'integer', default=0),
-        Field('llm_tokens_total', 'integer', default=0),
-        Field('response_time', 'double'),
-        Field('status_code', 'integer'),
-        Field('model_used', 'string'),
-        Field('provider_type', 'string'),
-        Field('cost_estimate_waddleai', 'double'),
-        Field('cost_estimate_usd', 'double')
-    )
-
-    # Routing Rules
-    db.define_table('routing_rules',
-        Field('name', required=True),
-        Field('routing_llm_id', 'reference ai_providers'),
-        Field('conditions', 'json'),
-        Field('target_providers', 'list:reference ai_providers'),
-        Field('priority', 'integer', default=100),
-        Field('enabled', 'boolean', default=True)
-    )
-
-    # Legacy api_keys table (for migration)
-    db.define_table('api_keys',
-        Field('key_id', unique=True, required=True),
-        Field('key_hash', 'password', required=True),
-        Field('user_id', 'reference users', required=True),
-        Field('organization_id', 'reference organizations', required=True),
-        Field('name', 'string', required=True),
-        Field('token_quota_monthly', 'integer'),
-        Field('token_quota_daily', 'integer'),
-        Field('rate_limit_rpm', 'integer', default=60),
-        Field('default_model', 'string'),
-        Field('enabled', 'boolean', default=True),
-        Field('expires_at', 'datetime'),
-        Field('last_used', 'datetime'),
-        Field('created_at', 'datetime', default=datetime.utcnow),
-        Field('permissions', 'json'),
-        Field('allowed_endpoints', 'list:string'),
-        Field('api_access_level', 'string'),
-        Field('migrated_to_virtual_key', 'reference virtual_keys'),
-        format='%(name)s'
-    )
 
 
 def init_redis(app: Flask) -> Optional[redis.Redis]:
@@ -501,7 +239,7 @@ def init_redis(app: Flask) -> Optional[redis.Redis]:
         return None
 
 
-def init_security(app: Flask, db: DAL) -> Security:
+def init_security(app: Flask, db: DB) -> Security:
     """Initialize Flask-Security-Too"""
     global security
 
@@ -529,7 +267,7 @@ def init_extensions(app: Flask):
     init_default_data(db)
 
 
-def init_default_data(db: DAL):
+def init_default_data(db: DB):
     """Initialize default data for the database"""
     from passlib.hash import bcrypt
     import secrets

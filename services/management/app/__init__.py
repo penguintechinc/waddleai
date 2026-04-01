@@ -59,7 +59,9 @@ def create_app(config_class=Config):
         }
 
         try:
-            db.executesql("SELECT 1")
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
             checks['database'] = True
         except Exception:
             pass

@@ -338,31 +338,6 @@ def get_ollama_logs(deployment_id):
     })
 
 
-@api_v1_bp.route('/ollama/deployments/<int:deployment_id>/models', methods=['GET'])
-@require_auth
-@require_role('admin')
-def list_ollama_models(deployment_id):
-    """List models in Ollama deployment"""
-    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
-
-    if not deployment:
-        return jsonify({'error': 'Deployment not found'}), 404
-
-    models = db(db.ollama_models.deployment_id == deployment_id).select()
-
-    return jsonify({
-        'deployment_id': deployment_id,
-        'models': [{
-            'id': m.id,
-            'model_name': m.model_name,
-            'model_tag': m.model_tag,
-            'status': m.status,
-            'size_bytes': m.size_bytes,
-            'last_updated': m.last_updated.isoformat() if m.last_updated else None
-        } for m in models]
-    })
-
-
 @api_v1_bp.route('/ollama/deployments/<int:deployment_id>/models/pull', methods=['POST'])
 @require_auth
 @require_role('admin')
