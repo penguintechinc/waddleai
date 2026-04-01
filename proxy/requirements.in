@@ -1,14 +1,26 @@
 # Proxy Server Specific Requirements
 -r ../requirements.txt
 
+# Quart ASGI Framework (replaces FastAPI)
+quart>=0.19.0
+hypercorn>=0.16.0
+
 # Additional proxy-specific dependencies
 gunicorn>=21.2.0
 redis>=5.0.1
 celery>=5.3.4
 
+# gRPC
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+
 # Rate limiting
 slowapi>=0.1.9
 limits>=3.7.0
 
-# Streaming support
-sse-starlette>=1.8.2
+# PenguinTech Libraries
+penguin-aaa>=0.1.0
+penguin-dal>=0.2.1
+penguin-utils>=0.1.0
+penguin-sal>=0.2.0
+penguin-licensing>=0.1.0
