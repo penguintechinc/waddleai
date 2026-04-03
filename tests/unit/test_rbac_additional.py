@@ -23,7 +23,7 @@ def mock_db():
 @pytest.fixture
 def rbac_manager(mock_db):
     """Create an RBACManager instance with mocked DB"""
-    return RBACManager(mock_db, "test-secret-key")
+    return RBACManager(mock_db)
 
 
 @pytest.fixture

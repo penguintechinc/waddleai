@@ -83,7 +83,10 @@ def create_app(config_class=Config):
 def register_blueprints(app):
     """Register API blueprints"""
     from .api.v1 import api_v1_bp
+    from .api.v1.routing_matrix import routing_matrix_bp
+
     app.register_blueprint(api_v1_bp, url_prefix='/api/v1')
+    app.register_blueprint(routing_matrix_bp)
 
     app.logger.info("Registered API v1 blueprints")
 

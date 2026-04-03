@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "penguincode.fullname" . }}-test-connection"
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+  - name: grpc-test
+    image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+    command: ['sh', '-c']
+    args:
+    - |
+      python -c "
+      import grpc, sys
+      try:
+          channel = grpc.insecure_channel('{{ include "penguincode.fullname" . }}-server:{{ .Values.server.service.port }}')
+          grpc.channel_ready_future(channel).result(timeout=30)
+          print('gRPC connection successful')
+      except Exception as e:
+          print(f'gRPC connection failed: {e}')
+          sys.exit(1)
+      " &&
+      python -c "
+      import httpx, sys
+      try:
+          r = httpx.get('http://{{ include "penguincode.fullname" . }}-server:8080/api/v1/health', timeout=10)
+          r.raise_for_status()
+          data = r.json()
+          assert data['status'] == 'ok', f'Unexpected status: {data}'
+          print(f'REST health check passed: {data}')
+      except Exception as e:
+          print(f'REST health check failed: {e}')
+          sys.exit(1)
+      " &&
+      python -c "
+      import httpx, sys, json
+      try:
+          r = httpx.post('http://{{ include "penguincode.fullname" . }}-server:8080/api/v1/provision', json={}, timeout=15)
+          r.raise_for_status()
+          data = r.json()
+          assert 'agents' in data, 'Missing agents in provision response'
+          assert 'ollama' in data, 'Missing ollama in provision response'
+          assert data['license']['tier'] == 'community', f'Expected community tier, got {data[\"license\"][\"tier\"]}'
+          print(f'Provision smoke test passed: tier={data[\"license\"][\"tier\"]}, agents={list(data[\"agents\"].keys())}')
+      except Exception as e:
+          print(f'Provision smoke test failed: {e}')
+          sys.exit(1)
+      "
+  restartPolicy: Never

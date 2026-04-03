@@ -13,7 +13,8 @@ def get_db(db_uri=None):
     if db_uri is None:
         db_uri = os.getenv('DATABASE_URL', 'sqlite://waddleai.db')
     
-    db = DAL(db_uri, migrate=True, fake_migrate_all=False)
+    # migrate=False: Alembic is the sole schema authority. Do not auto-migrate here.
+    db = DAL(db_uri, migrate=False, fake_migrate_all=False)
     define_tables(db)
     return db
 
@@ -71,6 +72,11 @@ def define_tables(db):
     )
 
     # Connection Links (LLM Providers)
+    # TODO: This file uses raw PyDAL and is used by the proxy service.
+    # The management service uses penguin-dal (auto-reflects schema from SQLAlchemy models).
+    # provider_credentials is NOT defined here because the proxy service should be
+    # migrated to penguin-dal in a dedicated ticket — at that point this file is removed.
+    # See: services/management/app/models_sqlalchemy.py for the canonical schema.
     db.define_table('connection_links',
         Field('name', unique=True, required=True),
         Field('provider', 'string', required=True),  # ollama, anthropic, openai

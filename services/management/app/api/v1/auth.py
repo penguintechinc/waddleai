@@ -6,39 +6,50 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import request, jsonify, current_app, g
-import jwt
+from functools import lru_cache
 from passlib.hash import bcrypt
+from shared.auth.penguin_auth import create_oidc_provider, issue_token
+from shared.auth.penguin_auth import verify_token as _aaa_verify_token
+from shared.auth.rbac import Role, ROLE_PERMISSIONS, UserContext
 
 from . import api_v1_bp
 from ...extensions import db
 
 
-def get_jwt_secret():
-    """Get JWT secret from config"""
-    return current_app.config['JWT_SECRET_KEY']
+@lru_cache(maxsize=1)
+def _get_oidc_provider():
+    return create_oidc_provider()
 
 
 def create_token(user_id: int, username: str, role: str, organization_id: int, expires_hours: int = 24) -> str:
-    """Create JWT token"""
-    payload = {
-        'user_id': user_id,
-        'username': username,
-        'role': role,
-        'organization_id': organization_id,
-        'exp': datetime.utcnow() + timedelta(hours=expires_hours),
-        'iat': datetime.utcnow()
-    }
-    return jwt.encode(payload, get_jwt_secret(), algorithm='HS256')
-
-
-def verify_token(token: str) -> dict:
-    """Verify JWT token and return payload"""
+    """Create RS256 JWT token via penguin-aaa."""
     try:
-        payload = jwt.decode(token, get_jwt_secret(), algorithms=['HS256'])
-        return payload
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
+        role_enum = Role(role)
+    except ValueError:
+        role_enum = Role.USER
+    permissions = {p.value for p in ROLE_PERMISSIONS.get(role_enum, set())}
+    user_context = UserContext(
+        user_id=user_id,
+        username=username,
+        role=role_enum,
+        organization_id=organization_id,
+        managed_orgs=[],
+        permissions=permissions,
+    )
+    return issue_token(user_context, _get_oidc_provider())
+
+
+def verify_token(token: str) -> dict | None:
+    """Verify RS256 JWT token and return payload dict."""
+    try:
+        user_context = _aaa_verify_token(token, _get_oidc_provider())
+        return {
+            'user_id': user_context.user_id,
+            'username': user_context.username,
+            'role': user_context.role.value,
+            'organization_id': user_context.organization_id,
+        }
+    except Exception:
         return None
 
 

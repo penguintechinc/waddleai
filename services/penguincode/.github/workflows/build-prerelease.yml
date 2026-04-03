@@ -1,0 +1,139 @@
+name: Build Pre-release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'vsix-extension/**'
+      - 'penguincode/**'
+      - '.version'
+      - 'pyproject.toml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-extension:
+    name: Build VS Code Extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: vsix-extension/package-lock.json
+
+      - name: Install dependencies
+        working-directory: vsix-extension
+        run: npm ci
+
+      - name: Run linter
+        working-directory: vsix-extension
+        run: npm run lint
+
+      - name: Build extension
+        working-directory: vsix-extension
+        run: npm run compile
+
+      - name: Read version file
+        id: version
+        run: |
+          VERSION=$(cat .version)
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          EPOCH=$(echo $VERSION | cut -d. -f4)
+          echo "EPOCH=${EPOCH}" >> $GITHUB_OUTPUT
+
+      - name: Package extension
+        working-directory: vsix-extension
+        run: |
+          npx vsce package --out penguin-code-${{ steps.version.outputs.VERSION }}-gamma.vsix
+
+      - name: Create Pre-release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Penguin Code ${{ steps.version.outputs.VERSION }}-gamma
+          tag_name: ${{ steps.version.outputs.VERSION }}-gamma
+          body: |
+            ## Penguin Code Gamma Build
+
+            **Version**: ${{ steps.version.outputs.VERSION }}-gamma
+            **Build Time**: ${{ steps.version.outputs.EPOCH }}
+            **Branch**: main
+
+            ### What's Included
+
+            - 🔧 VS Code Extension (VSIX)
+            - 🐧 PenguinCode CLI Tool
+            - 🔍 Multi-engine research (DuckDuckGo, Google, SciraAI, SearXNG, Fireplexity)
+            - 🧠 mem0 memory layer integration
+            - 🔌 MCP protocol support
+
+            ### Installation
+
+            **VS Code Extension:**
+            1. Download `penguin-code-${{ steps.version.outputs.VERSION }}-gamma.vsix`
+            2. In VS Code: Extensions → ··· → Install from VSIX
+            3. Select the downloaded file
+
+            **CLI Tool:**
+            ```bash
+            pip install -e .
+            penguincode setup
+            ```
+
+            ### Requirements
+
+            - [Ollama](https://ollama.ai) installed and running
+            - Models pulled: `ollama pull llama3.2:3b qwen2.5-coder:7b deepseek-coder:6.7b`
+            - Optional: `ollama pull nomic-embed-text` (for memory features)
+
+            ### Platform Support
+
+            - ✅ Windows (x64, arm64)
+            - ✅ macOS (x64, arm64/Apple Silicon)
+            - ✅ Linux (x64, arm64)
+
+            ---
+
+            **Note**: This is a gamma pre-release build from the main branch.
+          draft: false
+          prerelease: true
+          files: |
+            vsix-extension/penguin-code-${{ steps.version.outputs.VERSION }}-gamma.vsix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-cli:
+    name: Test CLI Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v
+
+      - name: Verify CLI
+        run: |
+          penguincode --help

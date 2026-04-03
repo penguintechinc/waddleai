@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: penguincode
+
+bases:
+- ../../base
+
+namePrefix: beta-
+
+commonLabels:
+  environment: beta
+  release: penguincode-beta
+
+commonAnnotations:
+  environment: beta
+  release: penguincode-beta
+
+replicas:
+- name: penguincode-server
+  count: 2
+
+images:
+- name: penguincode/server
+  newTag: latest
+  newName: ghcr.io/penguintechinc/penguincode
+
+patches:
+- target:
+    kind: Deployment
+    name: beta-penguincode-server
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/imagePullPolicy
+      value: IfNotPresent
+    - op: replace
+      path: /spec/template/spec/containers/0/env/16/value
+      value: "8192"
+    - op: replace
+      path: /spec/template/spec/containers/0/env/17/value
+      value: "2"
+    - op: replace
+      path: /spec/template/spec/containers/0/env/19/value
+      value: "INFO"
+
+envs:
+- name: env.yaml

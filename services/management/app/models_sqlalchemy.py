@@ -81,6 +81,8 @@ class AIProvider(Base):
     name = Column(String(255), unique=True, nullable=False)
     provider_type = Column(String(50), nullable=False)  # openai, anthropic, ollama, etc
     endpoint_url = Column(String(512), nullable=False)
+    # DEPRECATED: use provider_credentials table instead.
+    # Retained for backward-compat fallback until migration 004 runs.
     api_key = Column(String(512))
     model_list = Column(JSON)
     rate_limits = Column(JSON)
@@ -90,6 +92,44 @@ class AIProvider(Base):
     ailb_sync_enabled = Column(Boolean, default=False)
     priority = Column(Integer, default=100)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    credentials = relationship(
+        "ProviderCredential",
+        back_populates="provider",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+
+
+class ProviderCredential(Base):
+    """One row per API token/account for an AIProvider.
+
+    Replaces the single api_key field on AIProvider. The pool of enabled
+    credentials for a provider is selected from by LLMConnectionManager
+    using a CredentialSelector strategy (round-robin by default).
+    """
+    __tablename__ = 'provider_credentials'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(
+        Integer,
+        ForeignKey('ai_providers.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    label = Column(String(255), nullable=False)
+    # Fernet-encrypted with enc: prefix via shared.security.credential_encryption
+    api_key = Column(String(512))
+    org_id = Column(String(255))          # Optional: OpenAI org, Anthropic workspace
+    account_meta = Column(JSON)           # Arbitrary provider-specific account fields
+    weight = Column(Integer, nullable=False, default=100)
+    enabled = Column(Boolean, nullable=False, default=True)
+    request_count = Column(BigInteger, nullable=False, default=0)
+    token_count = Column(BigInteger, nullable=False, default=0)
+    last_used_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    provider = relationship("AIProvider", back_populates="credentials")
 
 
 class OllamaDeployment(Base):
@@ -347,6 +387,46 @@ class RAGConfig(Base):
     collection = Column(String(255), nullable=False, default='default')
     top_k = Column(Integer, default=5)
     similarity_threshold = Column(Float, default=0.7)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RoutingMatrixEntry(Base):
+    __tablename__ = 'routing_matrix'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tool_type = Column(String(50), nullable=False)
+    complexity = Column(String(10), nullable=False)
+    region = Column(String(5), nullable=False)
+    model_name = Column(String(255), nullable=False)
+    model_params = Column(String(50))
+    vram_gb = Column(Integer)
+    capability_score = Column(Float)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    # Optional: pin this route to a specific provider credential by label.
+    # When set, LLMConnectionManager bypasses the pool selector and uses this
+    # credential directly. When None, pool selection applies normally.
+    credential_label = Column(String(255), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('tool_type', 'complexity', 'region', name='uq_routing_matrix_lookup'),
+    )
+
+
+class AILBUsageRecord(Base):
+    __tablename__ = 'ailb_usage_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    api_key_id = Column(String(255), index=True)
+    model = Column(String(255), nullable=False)
+    provider = Column(String(100), nullable=False)
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    latency_ms = Column(Integer)
+    request_id = Column(String(255))
+    timestamp = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

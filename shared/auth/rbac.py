@@ -6,7 +6,6 @@ Handles authentication and authorization for WaddleAI
 from enum import Enum
 from typing import List, Dict, Optional, Set
 from passlib.hash import bcrypt
-import jwt
 from datetime import datetime, timedelta
 import functools
 from dataclasses import dataclass
@@ -154,9 +153,8 @@ class AuthorizationError(Exception):
 class RBACManager:
     """Role-Based Access Control Manager"""
     
-    def __init__(self, db, jwt_secret: str):
+    def __init__(self, db):
         self.db = db
-        self.jwt_secret = jwt_secret
     
     def authenticate_user(self, username: str, password: str) -> UserContext:
         """Authenticate user with username/password"""
@@ -224,41 +222,6 @@ class RBACManager:
             managed_orgs=managed_orgs,
             permissions=permissions
         )
-    
-    def generate_jwt_token(self, user_context: UserContext, expires_hours: int = 24) -> str:
-        """Generate JWT token for user"""
-        payload = {
-            'user_id': user_context.user_id,
-            'username': user_context.username,
-            'role': user_context.role.value,
-            'organization_id': user_context.organization_id,
-            'managed_orgs': user_context.managed_orgs,
-            'exp': datetime.utcnow() + timedelta(hours=expires_hours),
-            'iat': datetime.utcnow()
-        }
-        
-        return jwt.encode(payload, self.jwt_secret, algorithm='HS256')
-    
-    def verify_jwt_token(self, token: str) -> UserContext:
-        """Verify JWT token and return user context"""
-        try:
-            payload = jwt.decode(token, self.jwt_secret, algorithms=['HS256'])
-            
-            role = Role(payload['role'])
-            permissions = ROLE_PERMISSIONS.get(role, set())
-            
-            return UserContext(
-                user_id=payload['user_id'],
-                username=payload['username'],
-                role=role,
-                organization_id=payload['organization_id'],
-                managed_orgs=payload.get('managed_orgs', []),
-                permissions=permissions
-            )
-        except jwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
-        except jwt.InvalidTokenError:
-            raise AuthenticationError("Invalid token")
     
     def check_permission(
         self, 
@@ -374,25 +337,3 @@ def verify_password(password: str, hashed: str) -> bool:
     """Verify password against hash"""
     return bcrypt.verify(password, hashed)
 
-
-# --- penguin-aaa integration ---
-try:
-    from penguin_aaa.authz.rbac import RBACEnforcer, Role as AAARole
-
-    def build_penguin_rbac_enforcer() -> RBACEnforcer:
-        """Build a penguin-aaa RBACEnforcer from the local ROLE_PERMISSIONS mapping.
-
-        Converts the Permission enum values to scope strings and maps them to
-        penguin-aaa Roles for scope-based enforcement.
-        """
-        enforcer = RBACEnforcer()
-        for role, perms in ROLE_PERMISSIONS.items():
-            scope_list = [p.value for p in perms]
-            enforcer.register(AAARole(name=role.value, scopes=scope_list))
-        return enforcer
-
-    # Module-level enforcer instance for use in decorators
-    penguin_enforcer: RBACEnforcer = build_penguin_rbac_enforcer()
-
-except ImportError:
-    penguin_enforcer = None

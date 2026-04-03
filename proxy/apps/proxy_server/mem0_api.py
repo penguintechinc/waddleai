@@ -17,18 +17,15 @@ Endpoints (mem0 REST API subset):
 """
 
 import logging
-import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query, Path
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from quart import Blueprint, request, jsonify, abort
 
 logger = logging.getLogger(__name__)
 
-# Router — mounted at /mem0 in main.py
-mem0_router = APIRouter(prefix="/mem0", tags=["mem0"])
+# Blueprint — mounted at /mem0 in main.py
+mem0_bp = Blueprint("mem0", __name__, url_prefix="/mem0")
 
 # The memory manager is set by the proxy startup (injected after initialization)
 _memory_manager = None
@@ -42,43 +39,8 @@ def set_memory_manager(manager) -> None:
 
 def get_memory_manager():
     if _memory_manager is None:
-        raise HTTPException(status_code=503, detail="Memory manager not initialized")
+        abort(503, description="Memory manager not initialized")
     return _memory_manager
-
-
-# ---------------------------------------------------------------------------
-# Request / Response models
-# ---------------------------------------------------------------------------
-
-
-class AddMemoryRequest(BaseModel):
-    messages: List[Dict[str, str]] = Field(
-        ..., description="List of message dicts with 'role' and 'content'"
-    )
-    user_id: str = Field(..., description="User identifier")
-    agent_id: Optional[str] = Field(None, description="Agent/session identifier")
-    run_id: Optional[str] = Field(None, description="Run/session ID (alias for agent_id)")
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    organization_id: Optional[int] = Field(None)
-
-
-class SearchMemoryRequest(BaseModel):
-    query: str = Field(..., description="Search query (last user message)")
-    user_id: str = Field(..., description="User identifier")
-    agent_id: Optional[str] = Field(None)
-    run_id: Optional[str] = Field(None)
-    limit: int = Field(10, ge=1, le=50)
-    threshold: float = Field(0.7, ge=0.0, le=1.0)
-    organization_id: Optional[int] = Field(None)
-
-
-class MemoryResult(BaseModel):
-    id: str
-    memory: str
-    user_id: str
-    score: Optional[float] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    created_at: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -86,26 +48,37 @@ class MemoryResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@mem0_router.post("/memories", response_model=Dict[str, Any])
-async def add_memories(request: AddMemoryRequest):
+@mem0_bp.route("/memories", methods=["POST"])
+async def add_memories():
     """Add conversation messages to memory.
 
     Called by MarchProxy after each LLM turn to persist the conversation.
     """
     manager = get_memory_manager()
+    body = await request.get_json()
+
+    if not body:
+        abort(400, description="Request body required")
+
+    messages = body.get("messages", [])
+    user_id_raw = body.get("user_id", "0")
+    agent_id = body.get("agent_id")
+    run_id = body.get("run_id")
+    metadata = body.get("metadata", {})
+    organization_id = body.get("organization_id")
 
     try:
-        user_id_int = int(request.user_id)
+        user_id_int = int(user_id_raw)
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = request.organization_id or 0
-    session_id = request.agent_id or request.run_id or ""
+    org_id = organization_id or 0
+    session_id = agent_id or run_id or ""
 
     from shared.utils.memory_integration import MemoryEntry
 
     stored = 0
-    for msg in request.messages:
+    for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "").strip()
         if not content:
@@ -117,7 +90,7 @@ async def add_memories(request: AddMemoryRequest):
             organization_id=org_id,
             session_id=session_id,
             content=content,
-            metadata={**request.metadata, "role": role},
+            metadata={**metadata, "role": role},
             embedding=None,
             created_at=datetime.utcnow(),
         )
@@ -125,71 +98,83 @@ async def add_memories(request: AddMemoryRequest):
         if success:
             stored += 1
 
-    return {
+    return jsonify({
         "status": "success",
         "stored": stored,
-        "user_id": request.user_id,
+        "user_id": str(user_id_raw),
         "session_id": session_id,
-    }
+    })
 
 
-@mem0_router.post("/memories/search", response_model=Dict[str, Any])
-async def search_memories(request: SearchMemoryRequest):
+@mem0_bp.route("/memories/search", methods=["POST"])
+async def search_memories():
     """Search memories by semantic similarity.
 
     Called by MarchProxy before each LLM turn to retrieve relevant context.
     """
     manager = get_memory_manager()
+    body = await request.get_json()
+
+    if not body:
+        abort(400, description="Request body required")
+
+    query = body.get("query", "")
+    user_id_raw = body.get("user_id", "0")
+    agent_id = body.get("agent_id")
+    run_id = body.get("run_id")
+    limit = body.get("limit", 10)
+    threshold = body.get("threshold", 0.7)
+    organization_id = body.get("organization_id")
 
     try:
-        user_id_int = int(request.user_id)
-    except (ValueError, TypeError):
-        user_id_int = 0
-
-    org_id = request.organization_id or 0
-    session_id = request.agent_id or request.run_id or None
-
-    entries = await manager.store.search_memories(
-        query=request.query,
-        user_id=user_id_int,
-        organization_id=org_id,
-        session_id=session_id,
-        limit=request.limit,
-        min_relevance=request.threshold,
-    )
-
-    results = [
-        MemoryResult(
-            id=entry.id,
-            memory=entry.content,
-            user_id=str(entry.user_id),
-            score=entry.relevance_score,
-            metadata=entry.metadata,
-            created_at=entry.created_at.isoformat() if entry.created_at else None,
-        ).model_dump()
-        for entry in entries
-    ]
-
-    return {"results": results, "total": len(results)}
-
-
-@mem0_router.get("/memories", response_model=Dict[str, Any])
-async def list_memories(
-    user_id: str = Query(..., description="User ID"),
-    agent_id: Optional[str] = Query(None),
-    run_id: Optional[str] = Query(None),
-    limit: int = Query(20, ge=1, le=100),
-    organization_id: Optional[int] = Query(None),
-):
-    """List recent memories for a user (chronological order)."""
-    manager = get_memory_manager()
-
-    try:
-        user_id_int = int(user_id)
+        user_id_int = int(user_id_raw)
     except (ValueError, TypeError):
         user_id_int = 0
 
     org_id = organization_id or 0
+    session_id = agent_id or run_id or None
+
+    entries = await manager.store.search_memories(
+        query=query,
+        user_id=user_id_int,
+        organization_id=org_id,
+        session_id=session_id,
+        limit=limit,
+        min_relevance=threshold,
+    )
+
+    results = [
+        {
+            "id": entry.id,
+            "memory": entry.content,
+            "user_id": str(entry.user_id),
+            "score": entry.relevance_score,
+            "metadata": entry.metadata,
+            "created_at": entry.created_at.isoformat() if entry.created_at else None,
+        }
+        for entry in entries
+    ]
+
+    return jsonify({"results": results, "total": len(results)})
+
+
+@mem0_bp.route("/memories", methods=["GET"])
+async def list_memories():
+    """List recent memories for a user (chronological order)."""
+    manager = get_memory_manager()
+
+    user_id_raw = request.args.get("user_id", "0")
+    agent_id = request.args.get("agent_id")
+    run_id = request.args.get("run_id")
+    limit = int(request.args.get("limit", "20"))
+    organization_id_raw = request.args.get("organization_id")
+
+    try:
+        user_id_int = int(user_id_raw)
+    except (ValueError, TypeError):
+        user_id_int = 0
+
+    org_id = int(organization_id_raw) if organization_id_raw else 0
     session_id = agent_id or run_id or ""
 
     entries = await manager.store.get_conversation_history(
@@ -200,35 +185,34 @@ async def list_memories(
     )
 
     results = [
-        MemoryResult(
-            id=entry.id,
-            memory=entry.content,
-            user_id=str(entry.user_id),
-            score=entry.relevance_score,
-            metadata=entry.metadata,
-            created_at=entry.created_at.isoformat() if entry.created_at else None,
-        ).model_dump()
+        {
+            "id": entry.id,
+            "memory": entry.content,
+            "user_id": str(entry.user_id),
+            "score": entry.relevance_score,
+            "metadata": entry.metadata,
+            "created_at": entry.created_at.isoformat() if entry.created_at else None,
+        }
         for entry in entries
     ]
 
-    return {"memories": results, "total": len(results)}
+    return jsonify({"memories": results, "total": len(results)})
 
 
-@mem0_router.delete("/memories/{memory_id}", response_model=Dict[str, Any])
-async def delete_memory(
-    memory_id: str = Path(..., description="Memory ID to delete"),
-    user_id: str = Query(...),
-    organization_id: Optional[int] = Query(None),
-):
+@mem0_bp.route("/memories/<memory_id>", methods=["DELETE"])
+async def delete_memory(memory_id: str):
     """Delete a specific memory by ID."""
     manager = get_memory_manager()
 
+    user_id_raw = request.args.get("user_id", "0")
+    organization_id_raw = request.args.get("organization_id")
+
     try:
-        user_id_int = int(user_id)
+        user_id_int = int(user_id_raw)
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = organization_id or 0
+    org_id = int(organization_id_raw) if organization_id_raw else 0
 
     # Delete via raw SQL (direct write to primary)
     try:
@@ -236,28 +220,28 @@ async def delete_memory(
             "DELETE FROM memory_embeddings WHERE id = %s AND user_id = %s AND organization_id = %s",
             (int(memory_id), user_id_int, org_id),
         )
-        return {"status": "deleted", "id": memory_id}
+        return jsonify({"status": "deleted", "id": memory_id})
     except Exception as exc:
         logger.error("Failed to delete memory %s: %s", memory_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to delete memory")
+        abort(500, description="Failed to delete memory")
 
 
-@mem0_router.delete("/memories", response_model=Dict[str, Any])
-async def clear_memories(
-    user_id: str = Query(...),
-    agent_id: Optional[str] = Query(None),
-    run_id: Optional[str] = Query(None),
-    organization_id: Optional[int] = Query(None),
-):
+@mem0_bp.route("/memories", methods=["DELETE"])
+async def clear_memories():
     """Clear all memories for a user (optionally scoped to a session)."""
     manager = get_memory_manager()
 
+    user_id_raw = request.args.get("user_id", "0")
+    agent_id = request.args.get("agent_id")
+    run_id = request.args.get("run_id")
+    organization_id_raw = request.args.get("organization_id")
+
     try:
-        user_id_int = int(user_id)
+        user_id_int = int(user_id_raw)
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = organization_id or 0
+    org_id = int(organization_id_raw) if organization_id_raw else 0
     session_id = agent_id or run_id or None
 
     success = await manager.store.clear_memories(
@@ -267,6 +251,6 @@ async def clear_memories(
     )
 
     if not success:
-        raise HTTPException(status_code=500, detail="Failed to clear memories")
+        abort(500, description="Failed to clear memories")
 
-    return {"status": "cleared", "user_id": user_id}
+    return jsonify({"status": "cleared", "user_id": str(user_id_raw)})

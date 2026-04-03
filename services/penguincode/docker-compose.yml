@@ -1,0 +1,113 @@
+# PenguinCode Platform — 3-tier architecture
+#
+# Components:
+#   code-api    — Central server (gRPC + REST provisioning)
+#   code-webui  — Admin dashboard (placeholder — Phase 3)
+#   ollama      — Local LLM inference (optional profile)
+#
+# Usage:
+#   docker compose up                         # Start code-api (uses host Ollama)
+#   docker compose --profile with-ollama up   # Start with bundled Ollama
+#
+# K8s remains the production deployment method (make k8s-*-deploy).
+# This file is for local development and testing.
+
+services:
+  # ---- code-api: gRPC (50051) + REST provisioning (8080) -----------------
+  code-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "${PENGUINCODE_GRPC_PORT:-50051}:50051"
+      - "${PENGUINCODE_REST_PORT:-8080}:8080"
+    environment:
+      # Ollama Connection
+      - OLLAMA_HOST=${OLLAMA_HOST:-host.docker.internal}
+      - OLLAMA_API_URL=${OLLAMA_API_URL:-}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-120}
+
+      # Server Configuration
+      - PENGUINCODE_SERVER_MODE=${PENGUINCODE_SERVER_MODE:-standalone}
+      - PENGUINCODE_SERVER_HOST=0.0.0.0
+      - PENGUINCODE_SERVER_PORT=50051
+      - REST_PORT=8080
+
+      # Authentication
+      - PENGUINCODE_AUTH_ENABLED=${PENGUINCODE_AUTH_ENABLED:-false}
+      - PENGUINCODE_JWT_SECRET=${JWT_SECRET:-}
+      - PENGUINCODE_API_KEY=${PENGUINCODE_API_KEY:-}
+
+      # License (optional)
+      - LICENSE_KEY=${LICENSE_KEY:-}
+      - LICENSE_SERVER_URL=${LICENSE_SERVER_URL:-https://license.penguintech.io}
+
+      # Model Configuration
+      - PENGUINCODE_MODEL_PLANNING=${PENGUINCODE_MODEL_PLANNING:-codellama:13b}
+      - PENGUINCODE_MODEL_ORCHESTRATION=${PENGUINCODE_MODEL_ORCHESTRATION:-llama3.2:3b}
+      - PENGUINCODE_MODEL_EXECUTION=${PENGUINCODE_MODEL_EXECUTION:-codellama:7b}
+      - PENGUINCODE_MODEL_EXPLORATION=${PENGUINCODE_MODEL_EXPLORATION:-llama3.2:3b}
+      - PENGUINCODE_MODEL_RESEARCH=${PENGUINCODE_MODEL_RESEARCH:-llama3.2:3b}
+
+      # Memory Configuration
+      - PENGUINCODE_MEMORY_ENABLED=${PENGUINCODE_MEMORY_ENABLED:-true}
+      - PENGUINCODE_MEMORY_STORE=${PENGUINCODE_MEMORY_STORE:-chroma}
+      - PENGUINCODE_EMBEDDING_MODEL=${PENGUINCODE_EMBEDDING_MODEL:-nomic-embed-text}
+
+      # GPU Regulators
+      - PENGUINCODE_VRAM_MB=${PENGUINCODE_VRAM_MB:-8192}
+      - PENGUINCODE_MAX_CONCURRENT=${PENGUINCODE_MAX_CONCURRENT:-2}
+      - PENGUINCODE_MAX_MODELS=${PENGUINCODE_MAX_MODELS:-1}
+
+      # Security & Defaults
+      - PENGUINCODE_SECURITY_LEVEL=${PENGUINCODE_SECURITY_LEVEL:-2}
+      - PENGUINCODE_TEMPERATURE=${PENGUINCODE_TEMPERATURE:-0.7}
+      - PENGUINCODE_MAX_TOKENS=${PENGUINCODE_MAX_TOKENS:-4096}
+
+      # Config generation
+      - PENGUINCODE_USE_ENV_CONFIG=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - penguincode-data:/app/.penguincode
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:8080/api/v1/health', timeout=5); assert r.status_code == 200"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ---- code-webui: Admin dashboard (Phase 3 placeholder) -----------------
+  # code-webui:
+  #   build:
+  #     context: ./services/webui
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "${WEBUI_PORT:-3000}:3000"
+  #   environment:
+  #     - API_URL=http://code-api:8080
+  #   depends_on:
+  #     code-api:
+  #       condition: service_healthy
+
+  # ---- Ollama: Local LLM inference (optional) ----------------------------
+  ollama:
+    image: ollama/ollama:latest@sha256:5a5d014aa774f78ebe1340c0d4afc2e35afc12a2c3b34c84e71f78ea20af4ba3
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    profiles:
+      - with-ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  penguincode-data:
+  ollama-models:

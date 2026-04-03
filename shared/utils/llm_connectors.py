@@ -14,7 +14,64 @@ import openai
 import anthropic
 import tiktoken
 
+from shared.security.credential_encryption import decrypt_credential
+import random
+import threading
+from dataclasses import dataclass, field
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class CredentialInfo:
+    """Lightweight credential representation for pool selection."""
+    credential_id: int
+    label: str
+    api_key: str          # Already decrypted
+    org_id: str
+    weight: int
+
+
+class CredentialSelector(ABC):
+    """Strategy interface for selecting a credential from a pool.
+
+    Implementations: RoundRobinSelector (default), WeightedSelector.
+    The interface is intentionally minimal so future strategies
+    (least-latency, cost-aware) can be added without changing callers.
+    """
+
+    @abstractmethod
+    def select(self, credentials: list[CredentialInfo]) -> CredentialInfo:
+        """Select one credential from a non-empty list."""
+        ...
+
+
+class RoundRobinSelector(CredentialSelector):
+    """Distribute requests evenly across all enabled credentials."""
+
+    def __init__(self) -> None:
+        self._index: int = 0
+        self._lock = threading.Lock()
+
+    def select(self, credentials: list[CredentialInfo]) -> CredentialInfo:
+        with self._lock:
+            chosen = credentials[self._index % len(credentials)]
+            self._index += 1
+        return chosen
+
+
+class WeightedSelector(CredentialSelector):
+    """Probability-proportional selection based on each credential's weight."""
+
+    def select(self, credentials: list[CredentialInfo]) -> CredentialInfo:
+        total = sum(c.weight for c in credentials)
+        r = random.uniform(0, total)
+        cumulative = 0
+        for cred in credentials:
+            cumulative += cred.weight
+            if r <= cumulative:
+                return cred
+        return credentials[-1]  # Fallback (floating-point edge case)
 
 
 class LLMConnector(ABC):
@@ -442,27 +499,39 @@ class OllamaConnector(LLMConnector):
 
 class LLMConnectionManager:
     """Manages all LLM provider connections"""
-    
-    def __init__(self, db):
+
+    def __init__(
+        self,
+        db,
+        selector: CredentialSelector | None = None,
+    ) -> None:
         self.db = db
         self.connectors: Dict[str, LLMConnector] = {}
+        self._selector: CredentialSelector = selector or RoundRobinSelector()
         self._load_connectors()
     
-    def _load_connectors(self):
-        """Load connectors from database configuration"""
+    def _load_connectors(self) -> None:
+        """Load connectors from database, using credential pool if available.
+
+        For each enabled connection_link, attempts to read its credential pool
+        from provider_credentials (keyed by matching name to ai_providers.name).
+        Falls back to link.api_key when no pool rows exist, preserving backward
+        compatibility until migration 004 drops the deprecated column.
+        """
         links = self.db(self.db.connection_links.enabled == True).select()
-        
+
         for link in links:
             try:
+                api_key = self._select_credential(link)
                 config = {
                     'enabled': link.enabled,
                     'endpoint_url': link.endpoint_url,
-                    'api_key': link.api_key,
+                    'api_key': api_key,
                     'model_list': link.model_list or [],
                     'rate_limits': link.rate_limits or {},
-                    'tls_config': link.tls_config or {}
+                    'tls_config': link.tls_config or {},
                 }
-                
+
                 if link.provider == 'openai':
                     connector = OpenAIConnector(link.name, config)
                 elif link.provider == 'anthropic':
@@ -472,12 +541,64 @@ class LLMConnectionManager:
                 else:
                     logger.warning(f"Unknown provider: {link.provider}")
                     continue
-                
+
                 self.connectors[link.name] = connector
                 logger.info(f"Loaded connector: {link.name} ({link.provider})")
-                
+
             except Exception as e:
                 logger.error(f"Failed to load connector {link.name}: {e}")
+
+    def _select_credential(self, link: object) -> str:
+        """Select an API key for link using the credential pool.
+
+        Queries provider_credentials for enabled credentials belonging to the
+        matching ai_providers row. Uses RoundRobinSelector by default.
+        Falls back to link.api_key when:
+          - provider_credentials table is not available (proxy service context)
+          - No enabled credentials exist in the pool
+        """
+        try:
+            # Resolve provider_id by matching name across connection_links → ai_providers
+            if not hasattr(self.db, 'provider_credentials'):
+                # Table not yet available in this DB context (e.g. proxy service)
+                return decrypt_credential(link.api_key or '')
+
+            if not hasattr(self.db, 'ai_providers'):
+                return decrypt_credential(link.api_key or '')
+
+            provider_row = self.db(
+                self.db.ai_providers.name == link.name
+            ).select().first()
+            if not provider_row:
+                return decrypt_credential(link.api_key or '')
+
+            cred_rows = self.db(
+                (self.db.provider_credentials.provider_id == provider_row.id)
+                & (self.db.provider_credentials.enabled == True)
+            ).select()
+
+            if not cred_rows:
+                # Pool is empty — fall back to deprecated api_key
+                return decrypt_credential(link.api_key or '')
+
+            pool: list[CredentialInfo] = [
+                CredentialInfo(
+                    credential_id=r.id,
+                    label=r.label,
+                    api_key=decrypt_credential(r.api_key or ''),
+                    org_id=r.org_id or '',
+                    weight=r.weight or 100,
+                )
+                for r in cred_rows
+            ]
+            return self._selector.select(pool).api_key
+
+        except Exception as e:
+            logger.warning(
+                f"Credential pool lookup failed for {link.name}, "
+                f"falling back to api_key: {e}"
+            )
+            return decrypt_credential(link.api_key or '')
     
     def reload_connectors(self):
         """Reload connectors from database"""

@@ -1,0 +1,180 @@
+# Default values for penguincode
+# This is a YAML-formatted file.
+
+# Global settings
+global:
+  namespace: penguincode-prod
+
+# Image configuration
+image:
+  repository: penguincode/server
+  pullPolicy: IfNotPresent
+  tag: latest
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Server configuration
+server:
+  enabled: true
+  name: penguincode-server
+  replicas: 2
+
+  service:
+    type: ClusterIP
+    port: 50051
+    protocol: TCP
+    annotations: {}
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  # gRPC health check configuration
+  healthCheck:
+    enabled: true
+    grpc:
+      port: 50051
+
+  # Environment configuration
+  env:
+    # Ollama connection
+    OLLAMA_HOST: "host.docker.internal"
+    OLLAMA_TIMEOUT: "120"
+
+    # Server configuration
+    PENGUINCODE_SERVER_MODE: "standalone"
+    PENGUINCODE_SERVER_HOST: "0.0.0.0"
+    PENGUINCODE_SERVER_PORT: "50051"
+
+    # Authentication (disabled by default)
+    PENGUINCODE_AUTH_ENABLED: "false"
+
+    # Model configuration
+    PENGUINCODE_MODEL_PLANNING: "deepseek-coder:6.7b"
+    PENGUINCODE_MODEL_ORCHESTRATION: "llama3.2:3b"
+    PENGUINCODE_MODEL_EXECUTION: "qwen2.5-coder:7b"
+    PENGUINCODE_MODEL_EXPLORATION: "llama3.2:3b"
+    PENGUINCODE_MODEL_RESEARCH: "llama3.2:3b"
+
+    # Memory configuration
+    PENGUINCODE_MEMORY_ENABLED: "true"
+    PENGUINCODE_MEMORY_STORE: "chroma"
+    PENGUINCODE_EMBEDDING_MODEL: "nomic-embed-text"
+
+    # GPU regulators
+    PENGUINCODE_VRAM_MB: "8192"
+    PENGUINCODE_MAX_CONCURRENT: "2"
+    PENGUINCODE_MAX_MODELS: "1"
+
+    # Security & defaults
+    PENGUINCODE_SECURITY_LEVEL: "2"
+    PENGUINCODE_TEMPERATURE: "0.7"
+    PENGUINCODE_MAX_TOKENS: "4096"
+
+    # Research configuration
+    PENGUINCODE_RESEARCH_ENGINE: "duckduckgo"
+
+    # Generate config from ENV
+    PENGUINCODE_USE_ENV_CONFIG: "true"
+
+# Optional Ollama service (disabled by default in production)
+ollama:
+  enabled: false
+  name: ollama
+  replicas: 1
+
+  image:
+    repository: ollama/ollama
+    pullPolicy: IfNotPresent
+    tag: latest
+
+  service:
+    type: ClusterIP
+    port: 11434
+
+  resources:
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+      nvidia.com/gpu: 1
+    requests:
+      cpu: 2000m
+      memory: 4Gi
+      nvidia.com/gpu: 1
+
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+
+# ConfigMap for environment-based configuration
+configMap:
+  enabled: true
+
+# Secrets (JWT, API keys - created externally)
+secrets:
+  enabled: true
+  # Values should be base64 encoded
+  JWT_SECRET: ""
+  PENGUINCODE_API_KEY: ""
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod security context
+podSecurityContext: {}
+
+# Security context
+securityContext: {}
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: penguincode.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: penguincode-tls
+      hosts:
+        - penguincode.example.com
+
+# Persistence for data
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+# Autoscaling
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80

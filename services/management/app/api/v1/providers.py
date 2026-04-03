@@ -393,3 +393,235 @@ def get_provider_models(provider_id):
         'provider_type': provider.provider_type,
         'models': models
     })
+
+
+# ---------------------------------------------------------------------------
+# Provider Credentials Sub-Resource  (/api/v1/providers/<id>/credentials)
+# ---------------------------------------------------------------------------
+
+def _mask_key(api_key: str | None) -> str:
+    """Return a masked representation of an API key — never the plaintext value."""
+    if not api_key:
+        return ''
+    # Strip enc: prefix before masking so length reflects real key, not ciphertext
+    raw = api_key[4:] if api_key.startswith('enc:') else api_key
+    if len(raw) <= 8:
+        return '****'
+    return raw[:4] + '****' + raw[-4:]
+
+
+def _credential_to_dict(cred) -> dict:
+    """Serialise a provider_credentials row — api_key is NEVER returned."""
+    return {
+        'id': cred.id,
+        'provider_id': cred.provider_id,
+        'label': cred.label,
+        'api_key_masked': _mask_key(cred.api_key),
+        'org_id': cred.org_id,
+        'account_meta': cred.account_meta,
+        'weight': cred.weight,
+        'enabled': cred.enabled,
+        'request_count': cred.request_count,
+        'token_count': cred.token_count,
+        'last_used_at': cred.last_used_at.isoformat() if cred.last_used_at else None,
+        'created_at': cred.created_at.isoformat() if cred.created_at else None,
+    }
+
+
+@api_v1_bp.route('/providers/<int:provider_id>/credentials', methods=['GET'])
+@require_auth
+@require_role('admin')
+def list_provider_credentials(provider_id: int):
+    """List all credentials for a provider. API keys are never returned in plaintext."""
+    provider = db(db.ai_providers.id == provider_id).select().first()
+    if not provider:
+        return jsonify({'status': 'error', 'error': 'Provider not found'}), 404
+
+    creds = db(db.provider_credentials.provider_id == provider_id).select(
+        orderby=db.provider_credentials.id
+    )
+    return jsonify({
+        'status': 'success',
+        'data': [_credential_to_dict(c) for c in creds],
+        'meta': {
+            'provider_id': provider_id,
+            'total': len(creds),
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+        },
+    })
+
+
+@api_v1_bp.route('/providers/<int:provider_id>/credentials', methods=['POST'])
+@require_auth
+@require_role('admin')
+def create_provider_credential(provider_id: int):
+    """Add a credential to a provider's pool."""
+    from shared.security.credential_encryption import encrypt_credential
+
+    provider = db(db.ai_providers.id == provider_id).select().first()
+    if not provider:
+        return jsonify({'status': 'error', 'error': 'Provider not found'}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'status': 'error', 'error': 'Request body required'}), 400
+
+    label = data.get('label', '').strip()
+    if not label:
+        return jsonify({'status': 'error', 'error': 'label is required'}), 400
+    if len(label) > 255:
+        return jsonify({'status': 'error', 'error': 'label must be <= 255 characters'}), 400
+
+    api_key_plain = data.get('api_key', '').strip()
+    if not api_key_plain:
+        provider_info = SUPPORTED_PROVIDERS.get(provider.provider_type, {})
+        if provider_info.get('requires_api_key', True):
+            return jsonify({'status': 'error', 'error': 'api_key is required for this provider type'}), 400
+
+    # Check label uniqueness within this provider
+    existing = db(
+        (db.provider_credentials.provider_id == provider_id)
+        & (db.provider_credentials.label == label)
+    ).select().first()
+    if existing:
+        return jsonify({'status': 'error', 'error': f"Credential with label '{label}' already exists for this provider"}), 409
+
+    weight = data.get('weight', 100)
+    if not isinstance(weight, int) or weight < 1 or weight > 10000:
+        return jsonify({'status': 'error', 'error': 'weight must be an integer between 1 and 10000'}), 400
+
+    encrypted_key = encrypt_credential(api_key_plain) if api_key_plain else None
+
+    cred_id = db.provider_credentials.insert(
+        provider_id=provider_id,
+        label=label,
+        api_key=encrypted_key,
+        org_id=data.get('org_id'),
+        account_meta=data.get('account_meta'),
+        weight=weight,
+        enabled=data.get('enabled', True),
+        request_count=0,
+        token_count=0,
+        created_at=datetime.utcnow(),
+    )
+    db.commit()
+
+    new_cred = db(db.provider_credentials.id == cred_id).select().first()
+    return jsonify({
+        'status': 'success',
+        'data': _credential_to_dict(new_cred),
+        'meta': {
+            'action': 'created',
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+        },
+    }), 201
+
+
+@api_v1_bp.route('/providers/<int:provider_id>/credentials/<int:cred_id>', methods=['PATCH'])
+@require_auth
+@require_role('admin')
+def update_provider_credential(provider_id: int, cred_id: int):
+    """Update label, weight, enabled, org_id, account_meta, or rotate the api_key."""
+    from shared.security.credential_encryption import encrypt_credential
+
+    provider = db(db.ai_providers.id == provider_id).select().first()
+    if not provider:
+        return jsonify({'status': 'error', 'error': 'Provider not found'}), 404
+
+    cred = db(
+        (db.provider_credentials.id == cred_id)
+        & (db.provider_credentials.provider_id == provider_id)
+    ).select().first()
+    if not cred:
+        return jsonify({'status': 'error', 'error': 'Credential not found'}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'status': 'error', 'error': 'Request body required'}), 400
+
+    update_fields: dict = {}
+
+    if 'label' in data:
+        label = data['label'].strip()
+        if not label or len(label) > 255:
+            return jsonify({'status': 'error', 'error': 'label must be 1-255 characters'}), 400
+        # Check uniqueness (exclude self)
+        conflict = db(
+            (db.provider_credentials.provider_id == provider_id)
+            & (db.provider_credentials.label == label)
+            & (db.provider_credentials.id != cred_id)
+        ).select().first()
+        if conflict:
+            return jsonify({'status': 'error', 'error': f"Label '{label}' already in use"}), 409
+        update_fields['label'] = label
+
+    if 'weight' in data:
+        weight = data['weight']
+        if not isinstance(weight, int) or weight < 1 or weight > 10000:
+            return jsonify({'status': 'error', 'error': 'weight must be an integer between 1 and 10000'}), 400
+        update_fields['weight'] = weight
+
+    if 'enabled' in data:
+        update_fields['enabled'] = bool(data['enabled'])
+
+    if 'org_id' in data:
+        update_fields['org_id'] = data['org_id']
+
+    if 'account_meta' in data:
+        update_fields['account_meta'] = data['account_meta']
+
+    if 'api_key' in data:
+        new_key = data['api_key'].strip()
+        if not new_key:
+            return jsonify({'status': 'error', 'error': 'api_key cannot be empty when provided'}), 400
+        update_fields['api_key'] = encrypt_credential(new_key)
+
+    if not update_fields:
+        return jsonify({'status': 'error', 'error': 'No valid fields to update'}), 400
+
+    db(db.provider_credentials.id == cred_id).update(**update_fields)
+    db.commit()
+
+    updated = db(db.provider_credentials.id == cred_id).select().first()
+    return jsonify({
+        'status': 'success',
+        'data': _credential_to_dict(updated),
+        'meta': {'timestamp': datetime.utcnow().isoformat() + 'Z'},
+    })
+
+
+@api_v1_bp.route('/providers/<int:provider_id>/credentials/<int:cred_id>', methods=['DELETE'])
+@require_auth
+@require_role('admin')
+def delete_provider_credential(provider_id: int, cred_id: int):
+    """Remove a credential from the pool. Requires at least one other credential to remain."""
+    provider = db(db.ai_providers.id == provider_id).select().first()
+    if not provider:
+        return jsonify({'status': 'error', 'error': 'Provider not found'}), 404
+
+    cred = db(
+        (db.provider_credentials.id == cred_id)
+        & (db.provider_credentials.provider_id == provider_id)
+    ).select().first()
+    if not cred:
+        return jsonify({'status': 'error', 'error': 'Credential not found'}), 404
+
+    # Safety guard: refuse to delete the last credential
+    total = len(db(db.provider_credentials.provider_id == provider_id).select())
+    if total <= 1:
+        return jsonify({
+            'status': 'error',
+            'error': 'Cannot delete the last credential. Add a replacement first.',
+        }), 409
+
+    db(db.provider_credentials.id == cred_id).delete()
+    db.commit()
+
+    return jsonify({
+        'status': 'success',
+        'data': {'id': cred_id},
+        'meta': {
+            'action': 'deleted',
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+        },
+    })

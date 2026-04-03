@@ -27,11 +27,13 @@ from contextlib import asynccontextmanager
 
 from shared.database.models import get_db, init_default_data
 from shared.auth.rbac import RBACManager, AuthenticationError, AuthorizationError, Permission, Role
+from shared.auth.penguin_auth import issue_token, verify_token, create_oidc_provider
 from shared.utils.llm_connectors import create_llm_connection_manager
 from shared.utils.request_router import create_request_router
 from shared.utils.mcp_interface import create_mcp_server
 from shared.utils.metrics import get_management_metrics
 from shared.utils.health_checks import WaddleAIHealthMonitor
+from shared.security.credential_encryption import encrypt_credential, decrypt_credential
 
 # Configure structured logging
 structlog.configure(
@@ -56,16 +58,16 @@ class ManagementServer:
     def __init__(self):
         self.db = None
         self.rbac = None
+        self.oidc_provider = None
         self.llm_manager = None
         self.request_router = None
         self.mcp_server = None
         self.mcp_websocket_server = None
         self.health_monitor = None
         self.metrics = management_metrics
-        
+
         # Configuration
         self.config = {
-            'jwt_secret': os.getenv('JWT_SECRET', 'your-secret-key-change-in-production'),
             'redis_url': os.getenv('REDIS_URL', 'redis://localhost:6379/1'),
             'admin_username': os.getenv('ADMIN_USERNAME', 'admin'),
             'admin_password': os.getenv('ADMIN_PASSWORD', 'admin123'),
@@ -83,10 +85,11 @@ class ManagementServer:
         init_default_data(self.db)
         
         # Initialize components
-        self.rbac = RBACManager(self.db, self.config['jwt_secret'])
+        self.rbac = RBACManager(self.db)
+        self.oidc_provider = create_oidc_provider()
         self.llm_manager = create_llm_connection_manager(self.db)
         self.request_router = create_request_router(self.llm_manager, self.db)
-        self.mcp_server = create_mcp_server(self.rbac, self.request_router, self.db)
+        self.mcp_server = create_mcp_server(self.rbac, self.request_router, self.db, self.oidc_provider)
         
         # Initialize health monitoring
         self.health_monitor = WaddleAIHealthMonitor('management')
@@ -221,6 +224,16 @@ app.add_middleware(
 templates = Jinja2Templates(directory="templates")
 
 
+# Utility functions
+def _mask_credential(value: str) -> str:
+    """Mask a credential for display - show only last 4 chars."""
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "****"
+    return f"****{value[-4:]}"
+
+
 # Authentication dependency
 async def get_current_user(request: FastAPIRequest):
     """Extract and validate user from request"""
@@ -231,12 +244,12 @@ async def get_current_user(request: FastAPIRequest):
         
         try:
             # Try JWT first
-            user_context = mgmt_server.rbac.verify_jwt_token(token)
+            user_context = verify_token(token, mgmt_server.oidc_provider)
             if user_context:
                 return user_context
         except:
             pass
-        
+
         try:
             # Try API key
             user_context = mgmt_server.rbac.verify_api_key(token)
@@ -244,12 +257,12 @@ async def get_current_user(request: FastAPIRequest):
                 return user_context
         except:
             pass
-    
+
     # Check for session cookie
     session_token = request.cookies.get("session")
     if session_token:
         try:
-            user_context = mgmt_server.rbac.verify_jwt_token(session_token)
+            user_context = verify_token(session_token, mgmt_server.oidc_provider)
             if user_context:
                 return user_context
         except:
@@ -306,7 +319,7 @@ async def login(request: FastAPIRequest):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
         # Generate JWT token
-        token = mgmt_server.rbac.generate_jwt_token(user_context)
+        token = issue_token(user_context, mgmt_server.oidc_provider)
         
         mgmt_server.metrics.record_auth_attempt("password", True)
         
@@ -459,7 +472,7 @@ async def routing_config(request: FastAPIRequest):
         user_context = await get_current_user(request)
 
         # Admin only
-        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             raise HTTPException(status_code=403, detail="Admin permission required")
 
         # Get routing instructions from Redis
@@ -496,14 +509,22 @@ async def providers(request: FastAPIRequest):
         user_context = await get_current_user(request)
 
         # Admin only
-        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             raise HTTPException(status_code=403, detail="Admin permission required")
 
         # Get connection links from database
         connection_links = mgmt_server.db(mgmt_server.db.connection_links.id > 0).select()
+        links_for_template = []
+
+        # Mask API keys for template display
+        for link in connection_links:
+            link_dict = dict(link)
+            if link_dict.get('api_key'):
+                link_dict['api_key'] = _mask_credential(decrypt_credential(link_dict.get('api_key', '')))
+            links_for_template.append(link_dict)
 
         providers_data = {
-            "connection_links": [dict(link) for link in connection_links],
+            "connection_links": links_for_template,
             "total_providers": len(connection_links),
             "enabled_providers": len([link for link in connection_links if link.enabled])
         }
@@ -525,7 +546,7 @@ async def memory_config(request: FastAPIRequest):
         user_context = await get_current_user(request)
 
         # Admin and Reporter can access
-        if not (mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE) or
+        if not (mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG) or
                 mgmt_server.rbac.check_permission(user_context, Permission.REPORT_VIEW)):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -554,7 +575,7 @@ async def redis_config(request: FastAPIRequest):
         user_context = await get_current_user(request)
 
         # Admin only
-        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             raise HTTPException(status_code=403, detail="Admin permission required")
 
         # Get Redis connection status
@@ -592,7 +613,7 @@ async def mcp_management(request: FastAPIRequest):
         user_context = await get_current_user(request)
 
         # Admin only
-        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             raise HTTPException(status_code=403, detail="Admin permission required")
 
         # Get MCP server status
@@ -621,7 +642,7 @@ async def api_keys_enhanced(request: FastAPIRequest):
         user_context = await get_current_user(request)
 
         # Get API keys based on user role
-        if mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             keys = mgmt_server.db(mgmt_server.db.api_keys.id > 0).select()
         elif mgmt_server.rbac.check_permission(user_context, Permission.RESOURCE_MANAGE):
             keys = mgmt_server.db(
@@ -723,7 +744,7 @@ async def performance_config(request: FastAPIRequest):
         user_context = await get_current_user(request)
 
         # Admin only
-        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             raise HTTPException(status_code=403, detail="Admin permission required")
 
         # Get XDP status
@@ -790,7 +811,7 @@ async def dashboard_enhanced(request: FastAPIRequest):
 @app.get("/api/organizations")
 async def list_organizations(user_context = Depends(get_current_user)):
     """List organizations (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     orgs = mgmt_server.db(mgmt_server.db.organizations.id > 0).select()
@@ -803,7 +824,7 @@ async def create_organization(
     user_context = Depends(get_current_user)
 ):
     """Create organization (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     try:
@@ -828,7 +849,7 @@ async def create_organization(
 async def list_users(user_context = Depends(get_current_user)):
     """List users"""
     # Admin sees all users, others see organization users only
-    if mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         users = mgmt_server.db(mgmt_server.db.users.id > 0).select()
     else:
         users = mgmt_server.db(
@@ -845,7 +866,7 @@ async def create_user(
 ):
     """Create user"""
     # Check permissions
-    if not (mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE) or
+    if not (mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG) or
             mgmt_server.rbac.check_permission(user_context, Permission.RESOURCE_MANAGE)):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     
@@ -876,11 +897,18 @@ async def create_user(
 @app.get("/api/connection_links")
 async def list_connection_links(user_context = Depends(get_current_user)):
     """List LLM connection links (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
-    
+
     links = mgmt_server.db(mgmt_server.db.connection_links.id > 0).select()
-    return {"connection_links": [dict(link) for link in links]}
+    response_links = [dict(link) for link in links]
+
+    # Mask API keys in response
+    for link in response_links:
+        if link.get('api_key'):
+            link['api_key'] = _mask_credential(decrypt_credential(link.get('api_key', '')))
+
+    return {"connection_links": response_links}
 
 
 @app.post("/api/connection_links")
@@ -889,7 +917,7 @@ async def create_connection_link(
     user_context = Depends(get_current_user)
 ):
     """Create LLM connection link (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     try:
@@ -899,7 +927,7 @@ async def create_connection_link(
             name=body.get("name"),
             provider=body.get("provider"),
             endpoint_url=body.get("endpoint_url"),
-            api_key=body.get("api_key"),
+            api_key=encrypt_credential(body.get("api_key", "")),
             model_list=body.get("model_list", []),
             enabled=body.get("enabled", True),
             rate_limits=body.get("rate_limits", {}),
@@ -920,7 +948,7 @@ async def create_connection_link(
 async def list_api_keys(user_context = Depends(get_current_user)):
     """List API keys based on user role"""
     # Admin sees all, Resource Manager sees org keys, Users see their own
-    if mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         keys = mgmt_server.db(mgmt_server.db.api_keys.id > 0).select()
     elif mgmt_server.rbac.check_permission(user_context, Permission.RESOURCE_MANAGE):
         keys = mgmt_server.db(
@@ -956,7 +984,7 @@ async def create_api_key(
         
         # Permission checks
         if target_user_id != user_context.user_id:
-            if not (mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE) or
+            if not (mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG) or
                     (mgmt_server.rbac.check_permission(user_context, Permission.RESOURCE_MANAGE) and
                      target_org_id == user_context.organization_id)):
                 raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -1003,7 +1031,7 @@ async def delete_api_key(key_id: int, user_context = Depends(get_current_user)):
         
         # Permission checks
         if key.user_id != user_context.user_id:
-            if not (mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE) or
+            if not (mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG) or
                     (mgmt_server.rbac.check_permission(user_context, Permission.RESOURCE_MANAGE) and
                      key.organization_id == user_context.organization_id)):
                 raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -1083,7 +1111,7 @@ async def get_usage_stats(
 @app.get("/api/system/health")
 async def system_health(user_context = Depends(get_current_user)):
     """Get system health status (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     try:
@@ -1101,7 +1129,7 @@ async def ollama_pull_model(
     user_context = Depends(get_current_user)
 ):
     """Pull model in Ollama (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     try:
@@ -1137,7 +1165,7 @@ async def ollama_remove_model(
     user_context = Depends(get_current_user)
 ):
     """Remove model from Ollama (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     try:
@@ -1165,7 +1193,7 @@ async def ollama_remove_model(
 @app.get("/api/mcp/status")
 async def mcp_status(user_context = Depends(get_current_user)):
     """Get MCP server status (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     return {
@@ -1180,7 +1208,7 @@ async def mcp_status(user_context = Depends(get_current_user)):
 @app.post("/api/mcp/start")
 async def start_mcp_server(user_context = Depends(get_current_user)):
     """Start MCP server (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     try:
@@ -1201,7 +1229,7 @@ async def start_mcp_server(user_context = Depends(get_current_user)):
 @app.post("/api/mcp/stop")
 async def stop_mcp_server(user_context = Depends(get_current_user)):
     """Stop MCP server (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
     
     try:
@@ -1219,7 +1247,7 @@ async def stop_mcp_server(user_context = Depends(get_current_user)):
 @app.get("/api/mcp/clients")
 async def list_mcp_clients(user_context = Depends(get_current_user)):
     """List active MCP clients (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
 
     if not mgmt_server.mcp_server:
@@ -1266,7 +1294,7 @@ async def set_routing_instructions(
     user_context = Depends(get_current_user)
 ):
     """Set routing instructions in Redis (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
 
     try:
@@ -1305,7 +1333,7 @@ async def test_routing_decision(
     user_context = Depends(get_current_user)
 ):
     """Test routing decision without executing request (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
 
     try:
@@ -1350,11 +1378,11 @@ async def search_conversations(
     try:
         # Permission checks
         if user_id and user_id != user_context.user_id:
-            if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+            if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
                 raise HTTPException(status_code=403, detail="Admin permission required to view other users' conversations")
 
         # Default to current user if not admin
-        if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             user_id = user_context.user_id
             org_id = user_context.organization_id
 
@@ -1395,7 +1423,7 @@ async def get_memory_stats(user_context = Depends(get_current_user)):
     """Get memory system statistics"""
     try:
         # Admin sees system-wide stats, users see their own
-        if mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+        if mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
             scope = "system"
             filter_user_id = None
         else:
@@ -1428,7 +1456,7 @@ async def get_memory_stats(user_context = Depends(get_current_user)):
 @app.get("/api/performance/xdp")
 async def get_xdp_status(user_context = Depends(get_current_user)):
     """Get XDP acceleration status and statistics (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
 
     try:
@@ -1467,7 +1495,7 @@ async def toggle_xdp(
     user_context = Depends(get_current_user)
 ):
     """Enable or disable XDP acceleration (Admin only)"""
-    if not mgmt_server.rbac.check_permission(user_context, Permission.ADMIN_MANAGE):
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
         raise HTTPException(status_code=403, detail="Admin permission required")
 
     try:

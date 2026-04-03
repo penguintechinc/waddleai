@@ -1,0 +1,148 @@
+{{- if .Values.server.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "penguincode.fullname" . }}-server
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.server.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      {{- include "penguincode.server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "penguincode.server.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "penguincode.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: server
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: grpc
+          containerPort: {{ .Values.server.service.port }}
+          protocol: {{ .Values.server.service.protocol }}
+        - name: rest
+          containerPort: 8080
+          protocol: TCP
+        envFrom:
+        {{- if .Values.configMap.enabled }}
+        - configMapRef:
+            name: {{ include "penguincode.fullname" . }}-config
+        {{- end }}
+        {{- if .Values.secrets.enabled }}
+        - secretRef:
+            name: {{ include "penguincode.fullname" . }}-secrets
+        {{- end }}
+        {{- if .Values.server.healthCheck.enabled }}
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - |
+              import grpc
+              ch = grpc.insecure_channel('localhost:{{ .Values.server.healthCheck.grpc.port }}')
+              grpc.channel_ready_future(ch).result(timeout=5)
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - |
+              import grpc
+              ch = grpc.insecure_channel('localhost:{{ .Values.server.healthCheck.grpc.port }}')
+              grpc.channel_ready_future(ch).result(timeout=5)
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        {{- end }}
+        resources:
+          {{- toYaml .Values.server.resources | nindent 12 }}
+        volumeMounts:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          mountPath: /app/.penguincode
+        {{- end }}
+      volumes:
+      {{- if .Values.persistence.enabled }}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "penguincode.fullname" . }}-data
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "penguincode.fullname" . }}-server
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.server.labels" . | nindent 4 }}
+  {{- with .Values.server.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.server.service.type }}
+  ports:
+  - port: {{ .Values.server.service.port }}
+    targetPort: grpc
+    protocol: {{ .Values.server.service.protocol }}
+    name: grpc
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: rest
+  selector:
+    {{- include "penguincode.server.selectorLabels" . | nindent 4 }}
+{{- if .Values.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "penguincode.fullname" . }}-data
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}
+{{- end }}

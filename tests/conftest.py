@@ -84,7 +84,7 @@ def admin_user_context():
 @pytest.fixture
 def rbac_manager(mock_db):
     """RBAC manager for testing"""
-    return RBACManager(mock_db, "test-secret")
+    return RBACManager(mock_db)
 
 
 @pytest.fixture

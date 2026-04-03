@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from ..grpc.client import AILBModuleClient, RouteConfig, RateLimitConfig
+from shared.security.credential_encryption import decrypt_credential
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class ProviderSyncService:
     def _provider_to_route(self, provider) -> RouteConfig:
         """Convert WaddleAI provider to AILB route configuration"""
         # Get API key from connection_links if available
-        api_key = provider.api_key if hasattr(provider, 'api_key') else ""
+        api_key = decrypt_credential(provider.api_key) if hasattr(provider, 'api_key') else ""
 
         route = RouteConfig(
             route_id=f"waddleai-{provider.id}",

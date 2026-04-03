@@ -1,0 +1,43 @@
+# Alpha environment values for penguincode
+# Minimal resources, local images, debug enabled
+
+global:
+  namespace: penguincode-alpha
+
+image:
+  repository: penguincode/server
+  pullPolicy: Never
+  tag: latest
+
+server:
+  replicas: 1
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  env:
+    PENGUINCODE_SERVER_MODE: "standalone"
+    PENGUINCODE_AUTH_ENABLED: "false"
+    PENGUINCODE_SECURITY_LEVEL: "1"
+    PENGUINCODE_VRAM_MB: "4096"
+    PENGUINCODE_MAX_CONCURRENT: "1"
+    PENGUINCODE_MAX_MODELS: "1"
+    PENGUINCODE_USE_ENV_CONFIG: "true"
+    OLLAMA_HOST: "localhost:11434"
+
+ollama:
+  enabled: false
+
+persistence:
+  enabled: false
+
+secrets:
+  enabled: false
+
+ingress:
+  enabled: false

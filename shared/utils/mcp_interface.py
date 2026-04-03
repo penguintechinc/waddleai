@@ -14,6 +14,7 @@ import aiohttp
 from websockets.server import WebSocketServerProtocol
 
 from shared.auth.rbac import RBACManager, UserContext
+from shared.auth.penguin_auth import verify_token as _aaa_verify_token
 from shared.utils.request_router import LLMRequestRouter
 
 logger = logging.getLogger(__name__)
@@ -50,10 +51,11 @@ class MCPTool:
 class MCPServer:
     """MCP server implementation with WaddleAI integration"""
     
-    def __init__(self, rbac_manager: RBACManager, request_router: LLMRequestRouter, db):
+    def __init__(self, rbac_manager: RBACManager, request_router: LLMRequestRouter, db, oidc_provider=None):
         self.rbac = rbac_manager
         self.router = request_router
         self.db = db
+        self.oidc_provider = oidc_provider
         self.clients: Dict[WebSocketServerProtocol, UserContext] = {}
         
         # Define available tools
@@ -201,7 +203,9 @@ class MCPServer:
             elif "jwt_token" in auth_data:
                 # JWT token authentication
                 jwt_token = auth_data["jwt_token"]
-                return self.rbac.verify_jwt_token(jwt_token)
+                if self.oidc_provider is not None:
+                    return _aaa_verify_token(jwt_token, self.oidc_provider)
+                return None
             else:
                 return None
                 
@@ -564,6 +568,6 @@ class MCPServer:
         return server
 
 
-def create_mcp_server(rbac_manager: RBACManager, request_router: LLMRequestRouter, db) -> MCPServer:
+def create_mcp_server(rbac_manager: RBACManager, request_router: LLMRequestRouter, db, oidc_provider=None) -> MCPServer:
     """Factory function to create MCP server"""
-    return MCPServer(rbac_manager, request_router, db)
+    return MCPServer(rbac_manager, request_router, db, oidc_provider)

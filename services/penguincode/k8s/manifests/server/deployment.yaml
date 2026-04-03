@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: penguincode-server
+  labels:
+    app: penguincode
+    component: server
+spec:
+  selector:
+    matchLabels:
+      app: penguincode
+      component: server
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: penguincode
+        component: server
+    spec:
+      serviceAccountName: penguincode
+      containers:
+      - name: server
+        image: penguincode/server:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: grpc
+          containerPort: 50051
+          protocol: TCP
+        - name: rest
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: OLLAMA_HOST
+          value: "host.docker.internal"
+        - name: OLLAMA_TIMEOUT
+          value: "120"
+        - name: PENGUINCODE_SERVER_MODE
+          value: "standalone"
+        - name: PENGUINCODE_SERVER_HOST
+          value: "0.0.0.0"
+        - name: PENGUINCODE_SERVER_PORT
+          value: "50051"
+        - name: PENGUINCODE_AUTH_ENABLED
+          value: "false"
+        - name: PENGUINCODE_MODEL_PLANNING
+          value: "deepseek-coder:6.7b"
+        - name: PENGUINCODE_MODEL_ORCHESTRATION
+          value: "llama3.2:3b"
+        - name: PENGUINCODE_MODEL_EXECUTION
+          value: "qwen2.5-coder:7b"
+        - name: PENGUINCODE_MODEL_EXPLORATION
+          value: "llama3.2:3b"
+        - name: PENGUINCODE_MODEL_RESEARCH
+          value: "llama3.2:3b"
+        - name: PENGUINCODE_MEMORY_ENABLED
+          value: "true"
+        - name: PENGUINCODE_MEMORY_STORE
+          value: "chroma"
+        - name: PENGUINCODE_EMBEDDING_MODEL
+          value: "nomic-embed-text"
+        - name: PENGUINCODE_VRAM_MB
+          value: "8192"
+        - name: PENGUINCODE_MAX_CONCURRENT
+          value: "2"
+        - name: PENGUINCODE_MAX_MODELS
+          value: "1"
+        - name: PENGUINCODE_SECURITY_LEVEL
+          value: "2"
+        - name: PENGUINCODE_TEMPERATURE
+          value: "0.7"
+        - name: PENGUINCODE_MAX_TOKENS
+          value: "4096"
+        - name: PENGUINCODE_RESEARCH_ENGINE
+          value: "duckduckgo"
+        - name: PENGUINCODE_USE_ENV_CONFIG
+          value: "true"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: rest
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: rest
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        volumeMounts:
+        - name: data
+          mountPath: /app/.penguincode
+      volumes:
+      - name: data
+        emptyDir: {}

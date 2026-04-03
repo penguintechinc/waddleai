@@ -23,15 +23,15 @@ RUN adduser --disabled-password --gecos '' waddleai
 RUN chown -R waddleai:waddleai /app
 USER waddleai
 
-# Expose port
-EXPOSE 8000
+# Expose ports (HTTP + gRPC)
+EXPOSE 8080 50051
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8000/healthz || exit 1
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" || exit 1
 
 # Set Python path to include /app for shared module imports
 ENV PYTHONPATH=/app
 
-# Run the application
-CMD ["python", "apps/proxy_server/main.py"]
+# Run the application with hypercorn
+CMD ["hypercorn", "apps.proxy_server.main:app", "--bind", "0.0.0.0:8080", "--workers", "4"]

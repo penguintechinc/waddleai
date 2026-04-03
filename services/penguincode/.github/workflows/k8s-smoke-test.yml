@@ -1,0 +1,38 @@
+name: K8s Smoke Tests
+on:
+  push:
+    branches: [main, 'v*']
+  pull_request:
+    branches: [main, 'v*']
+concurrency:
+  group: k8s-smoke-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  alpha-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: balchua/microk8s-actions@v0.3.2
+        with:
+          channel: '1.28/stable'
+          addons: '["dns","storage","rbac","ingress"]'
+      - name: Configure microk8s access
+        run: |
+          sudo usermod -a -G microk8s "$USER"
+          mkdir -p "$HOME/.kube"
+          sudo microk8s config > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - name: Build server image and import into microk8s
+        run: |
+          docker build -f Dockerfile.server -t penguincode/server:latest .
+          docker save penguincode/server:latest > /tmp/server-image.tar
+          sudo microk8s ctr image import /tmp/server-image.tar
+          rm /tmp/server-image.tar
+      - uses: azure/setup-helm@v3
+        with:
+          version: v3.13.0
+      - name: Run alpha smoke tests
+        run: make k8s-alpha-deploy
+      - name: Cleanup
+        if: always()
+        run: make k8s-cleanup

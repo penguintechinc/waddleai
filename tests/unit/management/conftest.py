@@ -11,8 +11,12 @@ from datetime import datetime, timedelta
 from typing import Dict, Generator
 from unittest.mock import MagicMock, patch
 
-import jwt
+import jwt as _jwt
 import pytest
+from functools import lru_cache
+
+from shared.auth.penguin_auth import create_oidc_provider, issue_token
+from shared.auth.rbac import Role, ROLE_PERMISSIONS, UserContext
 
 # Ensure management service is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../services/management'))
@@ -272,23 +276,41 @@ def app_mock_db(flask_app) -> MagicMock:
     return db
 
 
+@lru_cache(maxsize=1)
+def _test_oidc_provider():
+    return create_oidc_provider()
+
+
 def make_token(
     role: str = 'admin',
     user_id: int = 1,
     org_id: int = 1,
     username: str = 'testuser',
-    secret: str = 'test-secret-key-32chars-minimum!!',
+    secret: str = 'test-secret-key-32chars-minimum!!',  # unused, kept for call-site compat
     expires_hours: int = 1,
 ) -> str:
-    payload = {
-        'user_id': user_id,
-        'username': username,
-        'role': role,
-        'organization_id': org_id,
-        'exp': datetime.utcnow() + timedelta(hours=expires_hours),
-        'iat': datetime.utcnow(),
-    }
-    return jwt.encode(payload, secret, algorithm='HS256')
+    from datetime import UTC
+    provider = _test_oidc_provider()
+    if expires_hours <= 0:
+        private_key, kid = provider._keystore.get_signing_key()
+        now = datetime.now(UTC)
+        payload = {
+            'sub': str(user_id), 'iss': 'https://waddleai.localhost.local',
+            'aud': ['waddleai-api'], 'iat': int(now.timestamp()),
+            'exp': int((now + timedelta(hours=expires_hours)).timestamp()),
+            'scope': [], 'roles': [role], 'tenant': str(org_id), 'teams': [], 'ext': {},
+        }
+        return _jwt.encode(payload, private_key, algorithm='RS256', headers={'kid': kid})
+    try:
+        role_enum = Role(role)
+    except ValueError:
+        role_enum = Role.USER
+    permissions = {p.value for p in ROLE_PERMISSIONS.get(role_enum, set())}
+    user_context = UserContext(
+        user_id=user_id, username=username, role=role_enum,
+        organization_id=org_id, managed_orgs=[], permissions=permissions,
+    )
+    return issue_token(user_context, provider)
 
 
 @pytest.fixture
@@ -525,4 +547,4 @@ def sample_user_context():
 @pytest.fixture
 def rbac_manager(mock_db):
     from shared.auth.rbac import RBACManager
-    return RBACManager(mock_db, "test-secret-key")
+    return RBACManager(mock_db)

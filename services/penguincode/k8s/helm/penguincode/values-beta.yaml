@@ -1,0 +1,60 @@
+# Beta environment values for penguincode
+# Production-like setup with registry images
+
+global:
+  namespace: penguincode
+
+image:
+  repository: ghcr.io/penguintechinc/penguincode
+  pullPolicy: IfNotPresent
+  tag: latest
+
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
+server:
+  replicas: 2
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  env:
+    PENGUINCODE_SERVER_MODE: "standalone"
+    PENGUINCODE_AUTH_ENABLED: "true"
+    PENGUINCODE_SECURITY_LEVEL: "2"
+    PENGUINCODE_VRAM_MB: "8192"
+    PENGUINCODE_MAX_CONCURRENT: "2"
+    PENGUINCODE_MAX_MODELS: "1"
+    PENGUINCODE_USE_ENV_CONFIG: "true"
+
+ollama:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: longhorn
+
+secrets:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  hosts:
+    - host: penguincode.penguintech.cloud
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: penguincode-beta-tls
+      hosts:
+        - penguincode.penguintech.cloud

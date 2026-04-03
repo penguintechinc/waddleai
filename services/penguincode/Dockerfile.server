@@ -1,0 +1,64 @@
+# PenguinCode Server Dockerfile
+# Runs the gRPC server for client-server mode
+#
+# All configuration via environment variables - no config.yaml required
+# See docs/CONFIGURATION.md for full list of supported ENV variables
+
+FROM python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash penguin
+WORKDIR /app
+
+# Copy project files
+COPY pyproject.toml README.md ./
+COPY penguincode_cli/ ./penguincode_cli/
+COPY docker-entrypoint.sh /usr/local/bin/
+
+# Install dependencies and make entrypoint executable
+RUN pip install --no-cache-dir -e . && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Create data directory with proper permissions
+RUN mkdir -p /app/.penguincode && chown -R penguin:penguin /app
+
+# Switch to non-root user
+USER penguin
+
+# Expose gRPC and REST API ports
+EXPOSE 50051 8080
+
+# Default environment variables (all configurable via Docker ENV)
+ENV OLLAMA_HOST=host.docker.internal \
+    OLLAMA_TIMEOUT=120 \
+    PENGUINCODE_SERVER_HOST=0.0.0.0 \
+    PENGUINCODE_SERVER_PORT=50051 \
+    PENGUINCODE_SERVER_MODE=standalone \
+    PENGUINCODE_SECURITY_LEVEL=2 \
+    PENGUINCODE_MEMORY_ENABLED=true \
+    PENGUINCODE_MEMORY_STORE=chroma \
+    PENGUINCODE_MODEL_PLANNING=deepseek-coder:6.7b \
+    PENGUINCODE_MODEL_ORCHESTRATION=llama3.2:3b \
+    PENGUINCODE_MODEL_EXECUTION=qwen2.5-coder:7b \
+    PENGUINCODE_MODEL_EXPLORATION=llama3.2:3b \
+    PENGUINCODE_USE_ENV_CONFIG=true
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import grpc; ch = grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(ch).result(timeout=5)"
+
+# Use entrypoint script to generate config.yaml from ENV vars
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["python", "-m", "penguincode_cli.server", "--host", "0.0.0.0", "--port", "50051"]

@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from typing import Dict
 from unittest.mock import MagicMock, patch
 
-import jwt
 import pytest
 from passlib.hash import bcrypt
 

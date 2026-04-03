@@ -3,7 +3,6 @@ Unit tests for RBAC (Role-Based Access Control) system
 """
 
 import pytest
-import jwt
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch, MagicMock
 
@@ -17,10 +16,9 @@ class TestRBACManager:
     
     def test_init(self, mock_db):
         """Test RBAC manager initialization"""
-        rbac = RBACManager(mock_db, "test-secret")
+        rbac = RBACManager(mock_db)
         assert rbac.db == mock_db
-        assert rbac.jwt_secret == "test-secret"
-    
+
     def test_hash_password(self):
         """Test password hashing"""
         password = "testpassword123"
@@ -49,51 +47,6 @@ class TestRBACManager:
         api_key, key_id = rbac_manager.create_api_key(user_ctx_mock, "test-key")
         assert api_key.startswith("wa-")
         assert key_id == 1
-    
-    def test_generate_jwt_token(self, rbac_manager, sample_user_context):
-        """Test JWT token generation"""
-        token = rbac_manager.generate_jwt_token(sample_user_context)
-        
-        assert isinstance(token, str)
-        assert len(token) > 100  # JWT tokens are long
-        
-        # Decode and verify token contents
-        decoded = jwt.decode(token, rbac_manager.jwt_secret, algorithms=["HS256"])
-        assert decoded["user_id"] == sample_user_context.user_id
-        assert decoded["username"] == sample_user_context.username
-        assert decoded["role"] == sample_user_context.role.value
-        assert decoded["organization_id"] == sample_user_context.organization_id
-    
-    def test_verify_jwt_token(self, rbac_manager, sample_user_context):
-        """Test JWT token verification"""
-        token = rbac_manager.generate_jwt_token(sample_user_context)
-        verified_context = rbac_manager.verify_jwt_token(token)
-        
-        assert verified_context.user_id == sample_user_context.user_id
-        assert verified_context.username == sample_user_context.username
-        assert verified_context.role == sample_user_context.role
-        assert verified_context.organization_id == sample_user_context.organization_id
-    
-    def test_verify_jwt_token_invalid(self, rbac_manager):
-        """Test JWT token verification with invalid token"""
-        with pytest.raises(AuthenticationError):
-            rbac_manager.verify_jwt_token("invalid.token.here")
-    
-    def test_verify_jwt_token_expired(self, rbac_manager, sample_user_context):
-        """Test JWT token verification with expired token"""
-        # Create expired token
-        expired_payload = {
-            "user_id": sample_user_context.user_id,
-            "username": sample_user_context.username,
-            "role": sample_user_context.role.value,
-            "organization_id": sample_user_context.organization_id,
-            "permissions": sample_user_context.permissions,
-            "exp": datetime.utcnow() - timedelta(hours=1)  # Expired 1 hour ago
-        }
-        expired_token = jwt.encode(expired_payload, rbac_manager.jwt_secret, algorithm="HS256")
-        
-        with pytest.raises(AuthenticationError):
-            rbac_manager.verify_jwt_token(expired_token)
     
     def test_authenticate_user(self, rbac_manager, mock_db):
         """Test user authentication"""

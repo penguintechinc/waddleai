@@ -13,6 +13,8 @@ import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
+from shared.security.credential_encryption import decrypt_credential
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,7 +82,7 @@ class MarchProxyConfigGenerator:
             if provider.api_key:
                 provider_config["auth"] = {
                     "type": "api_key",
-                    "key": provider.api_key
+                    "key": decrypt_credential(provider.api_key) if provider.api_key else ""
                 }
 
             # Add model list

@@ -1,0 +1,254 @@
+{
+  "name": "ollama-assistant",
+  "displayName": "Ollama Assistant",
+  "description": "AI-powered code completion and chat using local Ollama models (llama, codellama, mistral, etc.)",
+  "version": "1.0.0",
+  "publisher": "penguintech",
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/penguintechinc/ollama-assistant"
+  },
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ollama",
+    "ai",
+    "code completion",
+    "llama",
+    "codellama",
+    "mistral",
+    "chat",
+    "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "icon": "media/icon.png",
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "ollama",
+        "displayName": "Ollama",
+        "managementCommand": "ollamaAssistant.manageModels"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollama-assistant",
+          "title": "Ollama Assistant",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ollama-assistant": [
+        {
+          "type": "webview",
+          "id": "ollamaAssistant.chatView",
+          "name": "Chat",
+          "contextualTitle": "Ollama Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ollamaAssistant.generateCode",
+        "title": "Ollama: Generate Code from Comment"
+      },
+      {
+        "command": "ollamaAssistant.explainCode",
+        "title": "Ollama: Explain Selected Code"
+      },
+      {
+        "command": "ollamaAssistant.refactorCode",
+        "title": "Ollama: Refactor Selected Code"
+      },
+      {
+        "command": "ollamaAssistant.fixCode",
+        "title": "Ollama: Fix Code Issues"
+      },
+      {
+        "command": "ollamaAssistant.selectModel",
+        "title": "Ollama: Select Model"
+      },
+      {
+        "command": "ollamaAssistant.refreshModels",
+        "title": "Ollama: Refresh Available Models"
+      },
+      {
+        "command": "ollamaAssistant.clearChat",
+        "title": "Ollama: Clear Chat History"
+      },
+      {
+        "command": "ollamaAssistant.toggleInlineCompletion",
+        "title": "Ollama: Toggle Inline Completion"
+      },
+      {
+        "command": "ollamaAssistant.manageModels",
+        "title": "Ollama: Manage Models"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ollamaAssistant.explainCode",
+          "when": "editorHasSelection",
+          "group": "ollamaAssistant@1"
+        },
+        {
+          "command": "ollamaAssistant.refactorCode",
+          "when": "editorHasSelection",
+          "group": "ollamaAssistant@2"
+        },
+        {
+          "command": "ollamaAssistant.fixCode",
+          "when": "editorHasSelection",
+          "group": "ollamaAssistant@3"
+        },
+        {
+          "command": "ollamaAssistant.generateCode",
+          "group": "ollamaAssistant@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ollamaAssistant.explainCode",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "ollamaAssistant.refactorCode",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "ollamaAssistant.fixCode",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "ollamaAssistant.generateCode",
+        "key": "ctrl+shift+g",
+        "mac": "cmd+shift+g",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "ollamaAssistant.explainCode",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorTextFocus && editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "Ollama Assistant",
+      "properties": {
+        "ollamaAssistant.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama API base URL"
+        },
+        "ollamaAssistant.defaultModel": {
+          "type": "string",
+          "default": "codellama",
+          "description": "Default model for code completion and generation"
+        },
+        "ollamaAssistant.chatModel": {
+          "type": "string",
+          "default": "llama3.1",
+          "description": "Model for chat interactions"
+        },
+        "ollamaAssistant.temperature": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Temperature for generation (0-2, lower = more deterministic)"
+        },
+        "ollamaAssistant.maxTokens": {
+          "type": "number",
+          "default": 2048,
+          "minimum": 64,
+          "maximum": 8192,
+          "description": "Maximum tokens for generation"
+        },
+        "ollamaAssistant.enableInlineCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline code completion suggestions"
+        },
+        "ollamaAssistant.inlineCompletionDebounceMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "maximum": 2000,
+          "description": "Debounce delay for inline completion requests (milliseconds)"
+        },
+        "ollamaAssistant.contextLines": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 200,
+          "description": "Number of context lines to include for completions"
+        },
+        "ollamaAssistant.timeout": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 120000,
+          "description": "Request timeout in milliseconds"
+        },
+        "ollamaAssistant.supportedLanguages": {
+          "type": "array",
+          "default": [
+            "typescript",
+            "javascript",
+            "typescriptreact",
+            "javascriptreact",
+            "python",
+            "go",
+            "rust",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "php",
+            "ruby",
+            "swift",
+            "kotlin"
+          ],
+          "description": "Languages for inline completion support"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.107.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "@vscode/vsce": "^3.7.1",
+    "eslint": "^8.54.0",
+    "ts-loader": "^9.5.0",
+    "typescript": "^5.3.0",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  }
+}

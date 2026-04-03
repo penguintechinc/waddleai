@@ -14,6 +14,7 @@ from typing import Optional
 
 from shared.database.models import get_db, init_default_data
 from shared.auth.rbac import RBACManager
+from shared.auth.penguin_auth import create_oidc_provider
 from shared.utils.llm_connectors import create_llm_connection_manager
 from shared.utils.request_router import create_request_router
 from shared.utils.mcp_interface import create_mcp_server
@@ -38,14 +39,14 @@ class MCPServerApp:
     def __init__(self):
         self.db = None
         self.rbac = None
+        self.oidc_provider = None
         self.llm_manager = None
         self.request_router = None
         self.mcp_server = None
         self.websocket_server = None
-        
+
         # Configuration
         self.config = {
-            'jwt_secret': os.getenv('JWT_SECRET', 'your-secret-key-change-in-production'),
             'mcp_host': os.getenv('MCP_HOST', 'localhost'),
             'mcp_port': int(os.getenv('MCP_PORT', '8765')),
         }
@@ -59,12 +60,13 @@ class MCPServerApp:
         init_default_data(self.db)
         
         # Initialize components
-        self.rbac = RBACManager(self.db, self.config['jwt_secret'])
+        self.rbac = RBACManager(self.db)
+        self.oidc_provider = create_oidc_provider()
         self.llm_manager = create_llm_connection_manager(self.db)
         self.request_router = create_request_router(self.llm_manager, self.db)
-        
+
         # Create MCP server
-        self.mcp_server = create_mcp_server(self.rbac, self.request_router, self.db)
+        self.mcp_server = create_mcp_server(self.rbac, self.request_router, self.db, self.oidc_provider)
         
         # Start WebSocket server
         self.websocket_server = await self.mcp_server.start_server(

@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Build extension
+        run: npm run compile
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update package.json version
+        run: |
+          npm version ${{ steps.get_version.outputs.VERSION }} --no-git-tag-version --allow-same-version
+
+      - name: Package extension
+        run: |
+          npx vsce package --out ollama-assistant-${{ steps.get_version.outputs.VERSION }}.vsix
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "## Ollama Assistant v${{ steps.get_version.outputs.VERSION }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Installation" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "1. Download \`ollama-assistant-${{ steps.get_version.outputs.VERSION }}.vsix\`" >> $GITHUB_OUTPUT
+          echo "2. In VS Code: Extensions > ... > Install from VSIX" >> $GITHUB_OUTPUT
+          echo "3. Select the downloaded file" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Requirements" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "- [Ollama](https://ollama.ai) installed and running" >> $GITHUB_OUTPUT
+          echo "- At least one model pulled (e.g., \`ollama pull codellama\`)" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Platform Support" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "This extension is platform-agnostic and works on:" >> $GITHUB_OUTPUT
+          echo "- Windows (x64, arm64)" >> $GITHUB_OUTPUT
+          echo "- macOS (x64, arm64/Apple Silicon)" >> $GITHUB_OUTPUT
+          echo "- Linux (x64, arm64)" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Ollama Assistant v${{ steps.get_version.outputs.VERSION }}
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          files: |
+            ollama-assistant-${{ steps.get_version.outputs.VERSION }}.vsix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-assistant-v${{ steps.get_version.outputs.VERSION }}
+          path: ollama-assistant-${{ steps.get_version.outputs.VERSION }}.vsix
+          retention-days: 90
+
+  # Optional: Publish to VS Code Marketplace
+  # Uncomment and add VSCE_PAT secret to enable
+  # publish-marketplace:
+  #   needs: build-and-release
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '20.x'
+  #         cache: 'npm'
+  #
+  #     - name: Install dependencies
+  #       run: npm ci
+  #
+  #     - name: Get version from tag
+  #       id: get_version
+  #       run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+  #
+  #     - name: Update package.json version
+  #       run: npm version ${{ steps.get_version.outputs.VERSION }} --no-git-tag-version --allow-same-version
+  #
+  #     - name: Publish to VS Code Marketplace
+  #       run: npx vsce publish -p ${{ secrets.VSCE_PAT }}

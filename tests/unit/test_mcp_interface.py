@@ -159,30 +159,33 @@ class TestMCPServer:
     @pytest.mark.asyncio
     async def test_authenticate_client_jwt(self, mock_db):
         """Test client authentication with JWT token"""
+        from unittest.mock import patch as _patch
+        from shared.auth.penguin_auth import create_oidc_provider
         rbac_manager = Mock()
         rbac_manager.verify_api_key.side_effect = Exception("Not an API key")
-        rbac_manager.verify_jwt_token.return_value = UserContext(
+        expected_context = UserContext(
             user_id=2, username="admin", role=Role.ADMIN, organization_id=1,
             managed_orgs=[], permissions=set()
         )
         request_router = Mock()
-        
-        server = MCPServer(rbac_manager, request_router, mock_db)
-        
-        auth_data = {"jwt_token": "jwt.token.here"}
-        user_context = await server._authenticate_client(auth_data)
-        
+        oidc_provider = create_oidc_provider()
+
+        with _patch("shared.utils.mcp_interface._aaa_verify_token", return_value=expected_context) as mock_verify:
+            server = MCPServer(rbac_manager, request_router, mock_db, oidc_provider)
+            auth_data = {"jwt_token": "jwt.token.here"}
+            user_context = await server._authenticate_client(auth_data)
+
         assert user_context is not None
         assert user_context.user_id == 2
         assert user_context.username == "admin"
-        rbac_manager.verify_jwt_token.assert_called_once_with("jwt.token.here")
+        mock_verify.assert_called_once_with("jwt.token.here", oidc_provider)
     
     @pytest.mark.asyncio
     async def test_authenticate_client_invalid(self, mock_db):
         """Test client authentication with invalid credentials"""
         rbac_manager = Mock()
         rbac_manager.verify_api_key.side_effect = Exception("Invalid API key")
-        rbac_manager.verify_jwt_token.side_effect = Exception("Invalid JWT")
+        rbac_manager.verify_api_key.side_effect = Exception("Invalid API key")
         request_router = Mock()
         
         server = MCPServer(rbac_manager, request_router, mock_db)
