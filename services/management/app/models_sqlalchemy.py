@@ -4,6 +4,7 @@ Use SQLAlchemy for schema creation and Alembic for migrations
 Use PyDAL for runtime database operations
 """
 
+import logging
 from datetime import datetime
 
 from sqlalchemy import (
@@ -23,6 +24,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
@@ -455,34 +458,44 @@ def init_schema(database_url: str):
 
     engine = create_engine(database_url)
 
-    # Enable pgvector extension (idempotent)
-    with engine.connect() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        conn.commit()
+    # Enable pgvector extension (optional — degrades gracefully without it)
+    vector_available = False
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.commit()
+        vector_available = True
+    except Exception as e:
+        logger.warning(
+            "pgvector extension not available: %s. "
+            "Vector search features (memory embeddings, RAG) will be disabled.",
+            e,
+        )
 
     # Create all tables if they don't exist
     Base.metadata.create_all(engine, checkfirst=True)
 
     # Add native vector columns and IVFFlat indexes (pgvector-specific, idempotent)
-    with engine.connect() as conn:
-        # Add vector columns if not present
-        conn.execute(text("ALTER TABLE memory_embeddings " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
-        conn.execute(text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
-        # IVFFlat indexes for cosine similarity search
-        conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_idx "
-                "ON memory_embeddings USING ivfflat (embedding vector_cosine_ops) "
-                "WITH (lists = 100)"
+    if vector_available:
+        with engine.connect() as conn:
+            # Add vector columns if not present
+            conn.execute(text("ALTER TABLE memory_embeddings " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
+            conn.execute(text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
+            # IVFFlat indexes for cosine similarity search
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_idx "
+                    "ON memory_embeddings USING ivfflat (embedding vector_cosine_ops) "
+                    "WITH (lists = 100)"
+                )
             )
-        )
-        conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS rag_documents_emb_idx "
-                "ON rag_documents USING ivfflat (embedding vector_cosine_ops) "
-                "WITH (lists = 100)"
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS rag_documents_emb_idx "
+                    "ON rag_documents USING ivfflat (embedding vector_cosine_ops) "
+                    "WITH (lists = 100)"
+                )
             )
-        )
-        conn.commit()
+            conn.commit()
 
     return engine
