@@ -56,20 +56,22 @@ def create_app(config_class=Config):
     @app.route("/readyz")
     def readyz():
         """Kubernetes-style readiness check"""
+        from . import extensions as _ext
+
         checks = {"database": False, "redis": False}
 
         try:
             from sqlalchemy import text
 
-            with db.engine.connect() as conn:
+            with _ext.db.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             checks["database"] = True
         except Exception:
             pass
 
         try:
-            if redis_client:
-                redis_client.ping()
+            if _ext.redis_client:
+                _ext.redis_client.ping()
                 checks["redis"] = True
         except Exception:
             pass
