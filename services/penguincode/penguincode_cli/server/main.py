@@ -15,7 +15,6 @@ import signal
 from concurrent import futures
 
 import grpc
-
 from penguincode_cli.config.settings import Settings, load_settings
 from penguincode_cli.proto import (
     add_AuthServiceServicer_to_server,
@@ -120,6 +119,7 @@ class PenguinCodeServer:
         license_validator = None
         try:
             from penguin_licensing import get_license_client
+
             license_validator = get_license_client()
         except ImportError:
             logger.info("penguin-licensing not installed; license validation disabled")

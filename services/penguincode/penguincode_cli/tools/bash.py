@@ -30,20 +30,36 @@ class BashTool(BaseTool):
 
         blocking_patterns = [
             # Python servers
-            "flask run", "python app.py", "python3 app.py",
-            "python manage.py runserver", "python3 manage.py runserver",
-            "uvicorn ", "gunicorn ", "hypercorn ",
+            "flask run",
+            "python app.py",
+            "python3 app.py",
+            "python manage.py runserver",
+            "python3 manage.py runserver",
+            "uvicorn ",
+            "gunicorn ",
+            "hypercorn ",
             # Node.js servers
-            "npm start", "npm run dev", "npm run serve",
-            "yarn start", "yarn dev", "yarn serve",
-            "node server", "node app.js", "node index.js",
+            "npm start",
+            "npm run dev",
+            "npm run serve",
+            "yarn start",
+            "yarn dev",
+            "yarn serve",
+            "node server",
+            "node app.js",
+            "node index.js",
             # Ruby servers
-            "rails server", "rails s",
-            "rackup", "puma ", "thin start",
+            "rails server",
+            "rails s",
+            "rackup",
+            "puma ",
+            "thin start",
             # PHP servers
-            "php artisan serve", "php -s ",
+            "php artisan serve",
+            "php -s ",
             # Docker (without detach)
-            "docker compose up", "docker-compose up",
+            "docker compose up",
+            "docker-compose up",
         ]
 
         for pattern in blocking_patterns:
@@ -108,9 +124,7 @@ class BashTool(BaseTool):
             )
 
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout_val
-                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_val)
             except TimeoutError:
                 process.kill()
                 await process.wait()

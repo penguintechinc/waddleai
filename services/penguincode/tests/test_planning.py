@@ -186,7 +186,15 @@ def test_plan_from_dict():
         "name": "Test Plan",
         "description": "Test description",
         "steps": [{"id": "s1", "description": "Step 1", "substeps": [], "completed": False}],
-        "todos": [{"id": "t1", "content": "Task 1", "status": "pending", "created_at": "2024-01-01T00:00:00", "completed_at": None}],
+        "todos": [
+            {
+                "id": "t1",
+                "content": "Task 1",
+                "status": "pending",
+                "created_at": "2024-01-01T00:00:00",
+                "completed_at": None,
+            }
+        ],
         "created_at": "2024-01-01T00:00:00",
         "updated_at": "2024-01-01T00:00:00",
     }

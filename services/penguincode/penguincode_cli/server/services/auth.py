@@ -5,7 +5,6 @@ import time
 
 import grpc
 import jwt
-
 from penguincode_cli.config.settings import AuthConfig
 from penguincode_cli.proto import (
     AuthRequest,
@@ -41,10 +40,7 @@ class AuthServiceImpl(AuthServiceServicer):
     ) -> AuthResponse:
         """Authenticate with API key or shared key and return JWT tokens."""
         # Check shared key first, then API keys
-        key_valid = (
-            (self.shared_key and request.api_key == self.shared_key)
-            or request.api_key in self.valid_api_keys
-        )
+        key_valid = (self.shared_key and request.api_key == self.shared_key) or request.api_key in self.valid_api_keys
         if not key_valid:
             await context.abort(
                 grpc.StatusCode.UNAUTHENTICATED,

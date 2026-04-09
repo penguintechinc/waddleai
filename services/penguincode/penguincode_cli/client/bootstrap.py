@@ -23,12 +23,7 @@ from typing import Any
 
 import httpx
 
-from .config_writer import (
-    write_agent_prompts,
-    write_agents_md,
-    write_opencode_json,
-    write_skills,
-)
+from .config_writer import write_agent_prompts, write_agents_md, write_opencode_json, write_skills
 from .model_manager import ensure_models
 from .org_manager import setup_github_orgs
 
@@ -114,9 +109,7 @@ async def provision(api_url: str, license_key: str) -> dict:
         if cached:
             logger.info("Using cached config from %s", _CACHE_FILE)
             return cached
-        raise RuntimeError(
-            f"Cannot reach code-api at {api_url} and no cached config available"
-        ) from e
+        raise RuntimeError(f"Cannot reach code-api at {api_url} and no cached config available") from e
 
 
 async def bootstrap(

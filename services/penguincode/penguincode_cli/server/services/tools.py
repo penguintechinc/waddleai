@@ -6,12 +6,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 import grpc
-
-from penguincode_cli.proto import (
-    ToolCallbackServiceServicer,
-    ToolRequest,
-    ToolResponse,
-)
+from penguincode_cli.proto import ToolCallbackServiceServicer, ToolRequest, ToolResponse
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +91,15 @@ class ToolCallbackServiceImpl(ToolCallbackServiceServicer):
             # Queue the request for the client
             queue = self._request_queues.get(session_id)
             if queue:
-                await queue.put(ToolRequest(
-                    request_id=request_id,
-                    session_id=session_id,
-                    tool_name=tool_name,
-                    arguments={k: str(v) for k, v in arguments.items()},
-                    timeout_seconds=timeout_seconds,
-                ))
+                await queue.put(
+                    ToolRequest(
+                        request_id=request_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        arguments={k: str(v) for k, v in arguments.items()},
+                        timeout_seconds=timeout_seconds,
+                    )
+                )
 
         try:
             # Wait for response
@@ -143,9 +140,7 @@ class ToolCallbackServiceImpl(ToolCallbackServiceServicer):
 
         try:
             # Start a task to process incoming responses
-            response_task = asyncio.create_task(
-                self._process_responses(session_id, request_iterator)
-            )
+            response_task = asyncio.create_task(self._process_responses(session_id, request_iterator))
 
             # Yield requests from the queue
             while True:

@@ -20,7 +20,7 @@ import os
 import sys
 from typing import Dict, List, Tuple
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,6 @@ _EU_MODELS: Dict[str, Tuple[str, str, float, float]] = {
 # All models are RTX 4090 optimized (24GB max) and EU/NA origin only.
 _TOOL_OVERRIDES: Dict[Tuple[str, str, str], Tuple[str, str, float, float]] = {
     # (tool_type, complexity, region)
-
     # Code-centric tools (python, go, rust, cpp, java, typescript, javascript)
     # at high complexity use the largest available models (quantized to fit 4090)
     ("python", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
@@ -96,26 +95,22 @@ _TOOL_OVERRIDES: Dict[Tuple[str, str, str], Tuple[str, str, float, float]] = {
     ("java", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
     ("typescript", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
     ("javascript", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
-
     # EU code-heavy high complexity uses Mistral-Large (best available quantized model)
     ("python", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
     ("go", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
     ("rust", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
     ("cpp", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
     ("architecture", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
-
     # Research/analysis tools stay at medium complexity (don't need huge models)
     ("web_search", "medium", "NA"): ("neural-chat:13b", "13B", 12.0, 0.60),
     ("web_search", "medium", "EU"): ("mistral:13b", "13B", 13.0, 0.62),
     ("data_analysis", "medium", "NA"): ("neural-chat:13b", "13B", 12.0, 0.60),
     ("data_analysis", "medium", "EU"): ("mistral:13b", "13B", 13.0, 0.62),
-
     # Documentation/refactor at high complexity benefit from large models
     ("documentation", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
     ("documentation", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
     ("refactor", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
     ("refactor", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
-
     # Code review and testing benefit from detailed reasoning
     ("code_review", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
     ("code_review", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
@@ -123,16 +118,13 @@ _TOOL_OVERRIDES: Dict[Tuple[str, str, str], Tuple[str, str, float, float]] = {
     ("test_write", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
     ("debug", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
     ("debug", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
-
     # DevOps at high complexity
     ("devops", "high", "NA"): ("llama3.1:70b-q4_K_M", "70B-q4", 18.0, 0.85),
     ("devops", "high", "EU"): ("mistral-large:123b-q4_K_M", "123B-q4", 24.0, 0.92),
 }
 
 
-def _resolve_model(
-    tool_type: str, complexity: str, region: str
-) -> Tuple[str, str, float, float]:
+def _resolve_model(tool_type: str, complexity: str, region: str) -> Tuple[str, str, float, float]:
     """Return (model_name, model_params, vram_gb, capability_score)."""
     key = (tool_type, complexity, region)
     if key in _TOOL_OVERRIDES:
@@ -171,9 +163,7 @@ def seed(database_url: str) -> int:
                     if exists is not None:
                         continue
 
-                    model_name, model_params, vram, cap = _resolve_model(
-                        tool_type, complexity, region
-                    )
+                    model_name, model_params, vram, cap = _resolve_model(tool_type, complexity, region)
                     entry = RoutingMatrixEntry(
                         tool_type=tool_type,
                         complexity=complexity,

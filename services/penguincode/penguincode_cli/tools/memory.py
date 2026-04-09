@@ -3,7 +3,6 @@
 from typing import Any
 
 from mem0 import Memory
-
 from penguincode_cli.config.settings import MemoryConfig
 
 
@@ -88,14 +87,9 @@ class MemoryManager:
             }
 
         else:
-            raise ValueError(
-                f"Unknown vector store: {store_type}. "
-                f"Supported: chroma, qdrant, pgvector"
-            )
+            raise ValueError(f"Unknown vector store: {store_type}. " f"Supported: chroma, qdrant, pgvector")
 
-    async def add_memory(
-        self, content: str, user_id: str, metadata: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    async def add_memory(self, content: str, user_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Store a memory from conversation/interaction.
 
@@ -121,9 +115,7 @@ class MemoryManager:
 
         return result
 
-    async def search_memories(
-        self, query: str, user_id: str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def search_memories(self, query: str, user_id: str, limit: int = 5) -> list[dict[str, Any]]:
         """
         Search relevant memories for context.
 
@@ -233,9 +225,7 @@ class MemoryManager:
 
 
 # Utility function for creating memory manager from settings
-def create_memory_manager(
-    config: MemoryConfig, ollama_url: str, llm_model: str = "llama3.2:3b"
-) -> MemoryManager:
+def create_memory_manager(config: MemoryConfig, ollama_url: str, llm_model: str = "llama3.2:3b") -> MemoryManager:
     """
     Create a MemoryManager instance.
 

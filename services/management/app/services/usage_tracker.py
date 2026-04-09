@@ -7,15 +7,16 @@ Provides LiteLLM-style usage tracking, quotas, and billing.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional, Any, Tuple
+from datetime import date, datetime, timedelta
 from enum import Enum
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 class QuotaStatus(str, Enum):
     """Quota status"""
+
     OK = "ok"
     WARNING = "warning"  # >80% used
     EXCEEDED = "exceeded"
@@ -25,6 +26,7 @@ class QuotaStatus(str, Enum):
 @dataclass
 class UsageEvent:
     """Usage event from AILB webhook"""
+
     event_id: str
     key_id: str
     request_id: str
@@ -46,6 +48,7 @@ class UsageEvent:
 @dataclass
 class DailyUsage:
     """Daily usage summary"""
+
     date: date
     key_id: Optional[int] = None
     user_id: Optional[int] = None
@@ -60,6 +63,7 @@ class DailyUsage:
 @dataclass
 class UsageStats:
     """Usage statistics"""
+
     total_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -73,6 +77,7 @@ class UsageStats:
 @dataclass
 class QuotaInfo:
     """Quota information"""
+
     status: QuotaStatus
     limit: Optional[int] = None
     used: int = 0
@@ -115,16 +120,11 @@ class UsageTrackingService:
         if event.key_id:
             virtual_key = db(db.virtual_keys.ailb_key_id == event.key_id).select().first()
             if not virtual_key and event.key_id.startswith("wa-"):
-                virtual_key = db(
-                    db.virtual_keys.key_prefix.like(f'{event.key_id[:12]}%')
-                ).select().first()
+                virtual_key = db(db.virtual_keys.key_prefix.like(f"{event.key_id[:12]}%")).select().first()
 
         # Calculate WaddleAI tokens
         waddleai_tokens = self.calculate_waddleai_tokens(
-            event.provider,
-            event.model,
-            event.input_tokens,
-            event.output_tokens
+            event.provider, event.model, event.input_tokens, event.output_tokens
         )
 
         # Store raw event
@@ -143,7 +143,7 @@ class UsageTrackingService:
             error_message=event.error_message,
             timestamp=event.timestamp,
             processed=True,
-            created_at=datetime.utcnow()
+            created_at=datetime.utcnow(),
         )
 
         # Update aggregated usage if key found
@@ -153,13 +153,7 @@ class UsageTrackingService:
         db.commit()
         return True
 
-    def calculate_waddleai_tokens(
-        self,
-        provider: str,
-        model: str,
-        input_tokens: int,
-        output_tokens: int
-    ) -> int:
+    def calculate_waddleai_tokens(self, provider: str, model: str, input_tokens: int, output_tokens: int) -> int:
         """
         Calculate WaddleAI normalized tokens from LLM tokens.
 
@@ -177,11 +171,15 @@ class UsageTrackingService:
                 return int(input_tokens / input_rate) + int(output_tokens / output_rate)
 
         # Look up conversion rate
-        rate = db(
-            (db.token_conversion_rates.provider == provider) &
-            (db.token_conversion_rates.model == model) &
-            (db.token_conversion_rates.enabled == True)
-        ).select().first()
+        rate = (
+            db(
+                (db.token_conversion_rates.provider == provider)
+                & (db.token_conversion_rates.model == model)
+                & (db.token_conversion_rates.enabled is True)
+            )
+            .select()
+            .first()
+        )
 
         if rate:
             input_rate = rate.input_rate or 10
@@ -194,7 +192,7 @@ class UsageTrackingService:
         self._conversion_rates_cache[cache_key] = {
             "input_rate": input_rate,
             "output_rate": output_rate,
-            "expires": datetime.utcnow() + timedelta(seconds=self._cache_ttl)
+            "expires": datetime.utcnow() + timedelta(seconds=self._cache_ttl),
         }
 
         return int(input_tokens / input_rate) + int(output_tokens / output_rate)
@@ -241,21 +239,15 @@ class UsageTrackingService:
         # Default fallback
         return (10, 10)
 
-    def _update_usage_aggregates(
-        self,
-        virtual_key,
-        event: UsageEvent,
-        waddleai_tokens: int
-    ):
+    def _update_usage_aggregates(self, virtual_key, event: UsageEvent, waddleai_tokens: int):
         """Update aggregated usage tables"""
         db = self.db
         today = date.today()
 
         # Get or create daily usage record
-        usage_record = db(
-            (db.token_usage.virtual_key_id == virtual_key.id) &
-            (db.token_usage.date == today)
-        ).select().first()
+        usage_record = (
+            db((db.token_usage.virtual_key_id == virtual_key.id) & (db.token_usage.date == today)).select().first()
+        )
 
         if usage_record:
             db(db.token_usage.id == usage_record.id).update(
@@ -264,7 +256,7 @@ class UsageTrackingService:
                 tokens_output_total=(usage_record.tokens_output_total or 0) + event.output_tokens,
                 request_count=(usage_record.request_count or 0) + 1,
                 cost_usd_total=(usage_record.cost_usd_total or 0) + event.cost_usd,
-                last_updated=datetime.utcnow()
+                last_updated=datetime.utcnow(),
             )
         else:
             db.token_usage.insert(
@@ -277,7 +269,7 @@ class UsageTrackingService:
                 tokens_output_total=event.output_tokens,
                 request_count=1,
                 cost_usd_total=event.cost_usd,
-                last_updated=datetime.utcnow()
+                last_updated=datetime.utcnow(),
             )
 
         # Update key last_used
@@ -299,17 +291,14 @@ class UsageTrackingService:
             model_used=event.model,
             provider_type=event.provider,
             cost_estimate_waddleai=waddleai_tokens * 0.001,
-            cost_estimate_usd=event.cost_usd
+            cost_estimate_usd=event.cost_usd,
         )
 
     def aggregate_daily_usage(self, key_id: int, target_date: date) -> DailyUsage:
         """Get aggregated daily usage for a key"""
         db = self.db
 
-        usage = db(
-            (db.token_usage.virtual_key_id == key_id) &
-            (db.token_usage.date == target_date)
-        ).select().first()
+        usage = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == target_date)).select().first()
 
         if usage:
             return DailyUsage(
@@ -321,7 +310,7 @@ class UsageTrackingService:
                 input_tokens=usage.tokens_input_total or 0,
                 output_tokens=usage.tokens_output_total or 0,
                 request_count=usage.request_count or 0,
-                cost_usd=usage.cost_usd_total or 0
+                cost_usd=usage.cost_usd_total or 0,
             )
 
         return DailyUsage(date=target_date, key_id=key_id)
@@ -331,7 +320,7 @@ class UsageTrackingService:
         key_id: Optional[int] = None,
         user_id: Optional[int] = None,
         organization_id: Optional[int] = None,
-        days: int = 30
+        days: int = 30,
     ) -> UsageStats:
         """Get usage statistics"""
         db = self.db
@@ -381,10 +370,7 @@ class UsageTrackingService:
 
         # Check daily budget
         today = date.today()
-        daily_usage = db(
-            (db.token_usage.virtual_key_id == key_id) &
-            (db.token_usage.date == today)
-        ).select().first()
+        daily_usage = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == today)).select().first()
 
         daily_cost = daily_usage.cost_usd_total if daily_usage else 0
 
@@ -395,15 +381,12 @@ class UsageTrackingService:
                 used=daily_cost,
                 remaining=0,
                 percentage=100.0,
-                resets_at=datetime.combine(today + timedelta(days=1), datetime.min.time())
+                resets_at=datetime.combine(today + timedelta(days=1), datetime.min.time()),
             )
 
         # Check monthly budget
         month_start = today.replace(day=1)
-        monthly_usage = db(
-            (db.token_usage.virtual_key_id == key_id) &
-            (db.token_usage.date >= month_start)
-        ).select()
+        monthly_usage = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date >= month_start)).select()
 
         monthly_cost = sum(u.cost_usd_total or 0 for u in monthly_usage)
 
@@ -415,7 +398,7 @@ class UsageTrackingService:
                 used=monthly_cost,
                 remaining=0,
                 percentage=100.0,
-                resets_at=datetime.combine(next_month, datetime.min.time())
+                resets_at=datetime.combine(next_month, datetime.min.time()),
             )
 
         # Calculate quota status
@@ -429,7 +412,7 @@ class UsageTrackingService:
                 limit=key.budget_limit_monthly,
                 used=monthly_cost,
                 remaining=remaining,
-                percentage=percentage
+                percentage=percentage,
             )
 
         return True, QuotaInfo(status=QuotaStatus.OK)
@@ -446,10 +429,7 @@ class UsageTrackingService:
 
         # Daily quota
         if user.token_quota_daily:
-            daily_usage = db(
-                (db.token_usage.user_id == user_id) &
-                (db.token_usage.date == today)
-            ).select()
+            daily_usage = db((db.token_usage.user_id == user_id) & (db.token_usage.date == today)).select()
             daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)
 
             if daily_tokens >= user.token_quota_daily:
@@ -458,16 +438,13 @@ class UsageTrackingService:
                     limit=user.token_quota_daily,
                     used=daily_tokens,
                     remaining=0,
-                    percentage=100.0
+                    percentage=100.0,
                 )
 
         # Monthly quota
         if user.token_quota_monthly:
             month_start = today.replace(day=1)
-            monthly_usage = db(
-                (db.token_usage.user_id == user_id) &
-                (db.token_usage.date >= month_start)
-            ).select()
+            monthly_usage = db((db.token_usage.user_id == user_id) & (db.token_usage.date >= month_start)).select()
             monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
 
             if monthly_tokens >= user.token_quota_monthly:
@@ -476,7 +453,7 @@ class UsageTrackingService:
                     limit=user.token_quota_monthly,
                     used=monthly_tokens,
                     remaining=0,
-                    percentage=100.0
+                    percentage=100.0,
                 )
 
             percentage = (monthly_tokens / user.token_quota_monthly) * 100
@@ -485,7 +462,7 @@ class UsageTrackingService:
                 limit=user.token_quota_monthly,
                 used=monthly_tokens,
                 remaining=user.token_quota_monthly - monthly_tokens,
-                percentage=percentage
+                percentage=percentage,
             )
 
         return True, QuotaInfo(status=QuotaStatus.OK)
@@ -504,8 +481,7 @@ class UsageTrackingService:
         # Monthly quota
         if org.token_quota_monthly:
             monthly_usage = db(
-                (db.token_usage.organization_id == org_id) &
-                (db.token_usage.date >= month_start)
+                (db.token_usage.organization_id == org_id) & (db.token_usage.date >= month_start)
             ).select()
             monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
 
@@ -515,7 +491,7 @@ class UsageTrackingService:
                     limit=org.token_quota_monthly,
                     used=monthly_tokens,
                     remaining=0,
-                    percentage=100.0
+                    percentage=100.0,
                 )
 
             percentage = (monthly_tokens / org.token_quota_monthly) * 100
@@ -524,7 +500,7 @@ class UsageTrackingService:
                 limit=org.token_quota_monthly,
                 used=monthly_tokens,
                 remaining=org.token_quota_monthly - monthly_tokens,
-                percentage=percentage
+                percentage=percentage,
             )
 
         return True, QuotaInfo(status=QuotaStatus.OK)

@@ -15,13 +15,7 @@ from .detector import ProjectDetector
 from .fetcher import CacheEntry, DocumentationFetcher
 from .indexer import DocumentationIndexer
 from .injector import ContextInjector
-from .models import (
-    DocChunk,
-    DocSearchResult,
-    Language,
-    Library,
-    ProjectContext,
-)
+from .models import DocChunk, DocSearchResult, Language, Library, ProjectContext
 from .sources import (
     LANGUAGE_DOCS,
     LIBRARY_DOCS,

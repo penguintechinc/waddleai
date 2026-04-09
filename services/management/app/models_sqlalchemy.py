@@ -4,20 +4,31 @@ Use SQLAlchemy for schema creation and Alembic for migrations
 Use PyDAL for runtime database operations
 """
 
+from datetime import datetime
+
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, BigInteger, Float,
-    ForeignKey, UniqueConstraint, JSON, create_engine
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    text,
 )
-from sqlalchemy import text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from datetime import datetime
 
 Base = declarative_base()
 
 
 class Organization(Base):
-    __tablename__ = 'organizations'
+    __tablename__ = "organizations"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), unique=True, nullable=False)
@@ -30,14 +41,14 @@ class Organization(Base):
 
 
 class User(Base):
-    __tablename__ = 'users'
+    __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(255), unique=True, nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False, default='user')  # admin, resource_manager, reporter, user
-    organization_id = Column(Integer, ForeignKey('organizations.id'), nullable=False)
+    role = Column(String(50), nullable=False, default="user")  # admin, resource_manager, reporter, user
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     managed_orgs = Column(JSON)  # List of organization IDs for resource managers
     created_at = Column(DateTime, default=datetime.utcnow)
     token_quota_monthly = Column(Integer, default=100000)
@@ -53,13 +64,13 @@ class User(Base):
 
 
 class APIKey(Base):
-    __tablename__ = 'api_keys'
+    __tablename__ = "api_keys"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     key_id = Column(String(255), unique=True, nullable=False)
     key_hash = Column(String(255), nullable=False)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    organization_id = Column(Integer, ForeignKey('organizations.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     name = Column(String(255), nullable=False)
     token_quota_monthly = Column(Integer)
     token_quota_daily = Column(Integer)
@@ -75,7 +86,7 @@ class APIKey(Base):
 
 
 class AIProvider(Base):
-    __tablename__ = 'ai_providers'
+    __tablename__ = "ai_providers"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), unique=True, nullable=False)
@@ -108,20 +119,21 @@ class ProviderCredential(Base):
     credentials for a provider is selected from by LLMConnectionManager
     using a CredentialSelector strategy (round-robin by default).
     """
-    __tablename__ = 'provider_credentials'
+
+    __tablename__ = "provider_credentials"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(
         Integer,
-        ForeignKey('ai_providers.id', ondelete='CASCADE'),
+        ForeignKey("ai_providers.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     label = Column(String(255), nullable=False)
     # Fernet-encrypted with enc: prefix via shared.security.credential_encryption
     api_key = Column(String(512))
-    org_id = Column(String(255))          # Optional: OpenAI org, Anthropic workspace
-    account_meta = Column(JSON)           # Arbitrary provider-specific account fields
+    org_id = Column(String(255))  # Optional: OpenAI org, Anthropic workspace
+    account_meta = Column(JSON)  # Arbitrary provider-specific account fields
     weight = Column(Integer, nullable=False, default=100)
     enabled = Column(Boolean, nullable=False, default=True)
     request_count = Column(BigInteger, nullable=False, default=0)
@@ -133,7 +145,7 @@ class ProviderCredential(Base):
 
 
 class OllamaDeployment(Base):
-    __tablename__ = 'ollama_deployments'
+    __tablename__ = "ollama_deployments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), unique=True, nullable=False)
@@ -150,13 +162,13 @@ class OllamaDeployment(Base):
 
 
 class OllamaModel(Base):
-    __tablename__ = 'ollama_models'
+    __tablename__ = "ollama_models"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    deployment_id = Column(Integer, ForeignKey('ollama_deployments.id'), nullable=False)
+    deployment_id = Column(Integer, ForeignKey("ollama_deployments.id"), nullable=False)
     model_name = Column(String(255), nullable=False)
-    model_tag = Column(String(50), default='latest')
-    status = Column(String(50), default='unknown')  # available, pulling, failed, removed
+    model_tag = Column(String(50), default="latest")
+    status = Column(String(50), default="unknown")  # available, pulling, failed, removed
     size_bytes = Column(BigInteger)
     pull_progress = Column(JSON)
     last_updated = Column(DateTime, default=datetime.utcnow)
@@ -164,11 +176,11 @@ class OllamaModel(Base):
 
 
 class VirtualKey(Base):
-    __tablename__ = 'virtual_keys'
+    __tablename__ = "virtual_keys"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    organization_id = Column(Integer, ForeignKey("organizations.id"))
     name = Column(String(255), nullable=False)
     key_prefix = Column(String(20))  # wa-xxx for display
     key_hash = Column(String(255))  # Hashed full key
@@ -187,10 +199,10 @@ class VirtualKey(Base):
 
 
 class MarchProxyAILBSync(Base):
-    __tablename__ = 'marchproxy_ailb_sync'
+    __tablename__ = "marchproxy_ailb_sync"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey('ai_providers.id'))
+    provider_id = Column(Integer, ForeignKey("ai_providers.id"))
     ailb_instance_id = Column(String(255))
     ailb_route_id = Column(String(255))
     sync_status = Column(String(50))  # synced, pending, failed, deleted
@@ -201,11 +213,11 @@ class MarchProxyAILBSync(Base):
 
 
 class AILBUsageEvent(Base):
-    __tablename__ = 'ailb_usage_events'
+    __tablename__ = "ailb_usage_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_id = Column(String(255), unique=True)
-    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
+    virtual_key_id = Column(Integer, ForeignKey("virtual_keys.id"))
     ailb_key_id = Column(String(255))
     request_id = Column(String(255))
     model = Column(String(255))
@@ -222,12 +234,12 @@ class AILBUsageEvent(Base):
 
 
 class TokenUsage(Base):
-    __tablename__ = 'token_usage'
+    __tablename__ = "token_usage"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
-    user_id = Column(Integer, ForeignKey('users.id'))
-    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    virtual_key_id = Column(Integer, ForeignKey("virtual_keys.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    organization_id = Column(Integer, ForeignKey("organizations.id"))
     date = Column(DateTime)  # Date for this usage record
     waddleai_tokens = Column(Integer, default=0)
     llm_tokens = Column(JSON)  # Breakdown by model/provider
@@ -239,11 +251,11 @@ class TokenUsage(Base):
 
 
 class UsageCache(Base):
-    __tablename__ = 'usage_cache'
+    __tablename__ = "usage_cache"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
-    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    virtual_key_id = Column(Integer, ForeignKey("virtual_keys.id"))
+    organization_id = Column(Integer, ForeignKey("organizations.id"))
     period = Column(String(20), nullable=False)  # daily, monthly
     period_start = Column(DateTime, nullable=False)
     waddleai_tokens_used = Column(Integer, default=0)
@@ -253,7 +265,7 @@ class UsageCache(Base):
 
 
 class TokenConversionRate(Base):
-    __tablename__ = 'token_conversion_rates'
+    __tablename__ = "token_conversion_rates"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider = Column(String(100), nullable=False)
@@ -266,24 +278,24 @@ class TokenConversionRate(Base):
 
 
 class RoutingRule(Base):
-    __tablename__ = 'routing_rules'
+    __tablename__ = "routing_rules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), unique=True, nullable=False)
     priority = Column(Integer, default=100)
     match_conditions = Column(JSON)  # Model patterns, user groups, etc
-    target_provider_id = Column(Integer, ForeignKey('ai_providers.id'))
-    fallback_provider_id = Column(Integer, ForeignKey('ai_providers.id'))
+    target_provider_id = Column(Integer, ForeignKey("ai_providers.id"))
+    fallback_provider_id = Column(Integer, ForeignKey("ai_providers.id"))
     load_balancing_strategy = Column(String(50))  # round_robin, least_latency, cost_optimized
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class OllamaModelRoute(Base):
-    __tablename__ = 'ollama_model_routes'
+    __tablename__ = "ollama_model_routes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    deployment_id = Column(Integer, ForeignKey('ollama_deployments.id'), nullable=False)
+    deployment_id = Column(Integer, ForeignKey("ollama_deployments.id"), nullable=False)
     model_pattern = Column(String(255), nullable=False)  # Regex pattern for model matching
     priority = Column(Integer, default=100)
     enabled = Column(Boolean, default=True)
@@ -291,12 +303,12 @@ class OllamaModelRoute(Base):
 
 
 class UsageLog(Base):
-    __tablename__ = 'usage_logs'
+    __tablename__ = "usage_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    api_key_id = Column(Integer, ForeignKey('api_keys.id'))
-    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    api_key_id = Column(Integer, ForeignKey("api_keys.id"))
+    organization_id = Column(Integer, ForeignKey("organizations.id"))
     request_id = Column(String(255))
     endpoint = Column(String(512))
     model = Column(String(255))
@@ -311,13 +323,13 @@ class UsageLog(Base):
 
 
 class SecurityLog(Base):
-    __tablename__ = 'security_logs'
+    __tablename__ = "security_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    virtual_key_id = Column(Integer, ForeignKey('virtual_keys.id'))
-    user_id = Column(Integer, ForeignKey('users.id'))
-    organization_id = Column(Integer, ForeignKey('organizations.id'))
+    virtual_key_id = Column(Integer, ForeignKey("virtual_keys.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    organization_id = Column(Integer, ForeignKey("organizations.id"))
     request_hash = Column(String(255))
     threat_type = Column(String(100))
     severity = Column(String(50))
@@ -328,34 +340,36 @@ class SecurityLog(Base):
 
 
 class EmbeddingSettings(Base):
-    __tablename__ = 'embedding_settings'
+    __tablename__ = "embedding_settings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     organization_id = Column(Integer, nullable=True)  # NULL = global default
-    backend = Column(String(50), nullable=False, default='ollama')  # ollama, openai, anthropic
-    model = Column(String(255), nullable=False, default='nomic-embed-text')
-    ollama_host = Column(String(500), default='http://localhost:11434')
+    backend = Column(String(50), nullable=False, default="ollama")  # ollama, openai, anthropic
+    model = Column(String(255), nullable=False, default="nomic-embed-text")
+    ollama_host = Column(String(500), default="http://localhost:11434")
     dimensions = Column(Integer, default=768)  # nomic=768, openai-3-small=1536
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 class MemoryEmbedding(Base):
-    __tablename__ = 'memory_embeddings'
+    __tablename__ = "memory_embeddings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, nullable=False, index=True)
     organization_id = Column(Integer, nullable=False, index=True)
     session_id = Column(String(255), nullable=False, index=True)
     content = Column(Text, nullable=False)
-    embedding_json = Column(Text)  # JSON-serialized float array; replaced by pgvector column after extension is confirmed
+    embedding_json = Column(
+        Text
+    )  # JSON-serialized float array; replaced by pgvector column after extension is confirmed
     role = Column(String(50), nullable=False)  # user, assistant
     created_at = Column(DateTime, default=datetime.utcnow)
-    metadata_ = Column('metadata', JSON, default=dict)
+    metadata_ = Column("metadata", JSON, default=dict)
 
 
 class RAGDocument(Base):
-    __tablename__ = 'rag_documents'
+    __tablename__ = "rag_documents"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     organization_id = Column(Integer, nullable=False, index=True)
@@ -364,11 +378,11 @@ class RAGDocument(Base):
     embedding_json = Column(Text)  # JSON-serialized float array
     source = Column(String(500))
     created_at = Column(DateTime, default=datetime.utcnow)
-    metadata_ = Column('metadata', JSON, default=dict)
+    metadata_ = Column("metadata", JSON, default=dict)
 
 
 class ConversationMemoryConfig(Base):
-    __tablename__ = 'conversation_memory_configs'
+    __tablename__ = "conversation_memory_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     organization_id = Column(Integer, unique=True, nullable=False)
@@ -379,19 +393,19 @@ class ConversationMemoryConfig(Base):
 
 
 class RAGConfig(Base):
-    __tablename__ = 'rag_configs'
+    __tablename__ = "rag_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     organization_id = Column(Integer, unique=True, nullable=False)
     enabled = Column(Boolean, default=True)
-    collection = Column(String(255), nullable=False, default='default')
+    collection = Column(String(255), nullable=False, default="default")
     top_k = Column(Integer, default=5)
     similarity_threshold = Column(Float, default=0.7)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class RoutingMatrixEntry(Base):
-    __tablename__ = 'routing_matrix'
+    __tablename__ = "routing_matrix"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     tool_type = Column(String(50), nullable=False)
@@ -408,13 +422,11 @@ class RoutingMatrixEntry(Base):
     # credential directly. When None, pool selection applies normally.
     credential_label = Column(String(255), nullable=True)
 
-    __table_args__ = (
-        UniqueConstraint('tool_type', 'complexity', 'region', name='uq_routing_matrix_lookup'),
-    )
+    __table_args__ = (UniqueConstraint("tool_type", "complexity", "region", name="uq_routing_matrix_lookup"),)
 
 
 class AILBUsageRecord(Base):
-    __tablename__ = 'ailb_usage_records'
+    __tablename__ = "ailb_usage_records"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(String(255), nullable=False, index=True)
@@ -438,8 +450,8 @@ def init_schema(database_url: str):
     similarity search.
     """
     # SQLAlchemy 2.0+ requires 'postgresql://' not 'postgres://'
-    if database_url.startswith('postgres://'):
-        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
 
     engine = create_engine(database_url)
 
@@ -454,25 +466,23 @@ def init_schema(database_url: str):
     # Add native vector columns and IVFFlat indexes (pgvector-specific, idempotent)
     with engine.connect() as conn:
         # Add vector columns if not present
-        conn.execute(text(
-            "ALTER TABLE memory_embeddings "
-            "ADD COLUMN IF NOT EXISTS embedding vector(768)"
-        ))
-        conn.execute(text(
-            "ALTER TABLE rag_documents "
-            "ADD COLUMN IF NOT EXISTS embedding vector(768)"
-        ))
+        conn.execute(text("ALTER TABLE memory_embeddings " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
+        conn.execute(text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
         # IVFFlat indexes for cosine similarity search
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_idx "
-            "ON memory_embeddings USING ivfflat (embedding vector_cosine_ops) "
-            "WITH (lists = 100)"
-        ))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS rag_documents_emb_idx "
-            "ON rag_documents USING ivfflat (embedding vector_cosine_ops) "
-            "WITH (lists = 100)"
-        ))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS memory_embeddings_emb_idx "
+                "ON memory_embeddings USING ivfflat (embedding vector_cosine_ops) "
+                "WITH (lists = 100)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS rag_documents_emb_idx "
+                "ON rag_documents USING ivfflat (embedding vector_cosine_ops) "
+                "WITH (lists = 100)"
+            )
+        )
         conn.commit()
 
     return engine

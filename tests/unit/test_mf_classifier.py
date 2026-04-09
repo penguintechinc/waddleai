@@ -2,10 +2,7 @@
 
 import pytest
 
-from shared.agents.mf_classifier import (
-    ClassificationResult,
-    MatrixFactorizationClassifier,
-)
+from shared.agents.mf_classifier import ClassificationResult, MatrixFactorizationClassifier
 
 
 @pytest.fixture
@@ -67,16 +64,30 @@ def test_empty_prompt(classifier: MatrixFactorizationClassifier) -> None:
 def test_all_tool_types(classifier: MatrixFactorizationClassifier) -> None:
     """Every recognised tool_type must return a valid complexity label."""
     tool_types = [
-        "bash", "python", "javascript", "typescript", "go", "rust",
-        "java", "cpp", "sql", "web_search", "file_edit", "code_review",
-        "debug", "test_write", "documentation", "refactor",
-        "architecture", "data_analysis", "devops", "general",
+        "bash",
+        "python",
+        "javascript",
+        "typescript",
+        "go",
+        "rust",
+        "java",
+        "cpp",
+        "sql",
+        "web_search",
+        "file_edit",
+        "code_review",
+        "debug",
+        "test_write",
+        "documentation",
+        "refactor",
+        "architecture",
+        "data_analysis",
+        "devops",
+        "general",
     ]
     for tool_type in tool_types:
         result = classifier.score("do something", tool_type)
-        assert result in ("low", "medium", "high"), (
-            f"Invalid result for {tool_type}: {result}"
-        )
+        assert result in ("low", "medium", "high"), f"Invalid result for {tool_type}: {result}"
 
 
 def test_unknown_tool_type(classifier: MatrixFactorizationClassifier) -> None:

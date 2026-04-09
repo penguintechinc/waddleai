@@ -4,6 +4,7 @@ Revision ID: 003_add_routing_matrix_credential_label
 Revises: 002_add_provider_credentials
 Create Date: 2026-04-02
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa

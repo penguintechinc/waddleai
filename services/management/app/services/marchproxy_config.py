@@ -10,8 +10,8 @@ Generates MarchProxy-compatible import configurations for:
 import json
 import logging
 import os
-from typing import Dict, List, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from shared.security.credential_encryption import decrypt_credential
 
@@ -44,8 +44,8 @@ class MarchProxyConfigGenerator:
                 "providers": self._generate_providers(),
                 "routes": self._generate_routes(),
                 "rate_limits": self._generate_rate_limits(),
-                "virtual_keys": self._generate_virtual_keys()
-            }
+                "virtual_keys": self._generate_virtual_keys(),
+            },
         }
 
         memory_injection = self._generate_memory_injection_config(organization_id)
@@ -57,10 +57,7 @@ class MarchProxyConfigGenerator:
     def _generate_providers(self) -> List[Dict[str, Any]]:
         """Generate provider configurations"""
         db = self.db
-        providers = db(
-            (db.ai_providers.enabled == True) &
-            (db.ai_providers.ailb_sync_enabled == True)
-        ).select()
+        providers = db((db.ai_providers.enabled is True) & (db.ai_providers.ailb_sync_enabled is True)).select()
 
         provider_list = []
 
@@ -72,17 +69,14 @@ class MarchProxyConfigGenerator:
                 "endpoint": provider.endpoint_url,
                 "priority": provider.priority or 100,
                 "enabled": provider.enabled,
-                "metadata": {
-                    "waddleai_provider_id": str(provider.id),
-                    "managed_by": "waddleai"
-                }
+                "metadata": {"waddleai_provider_id": str(provider.id), "managed_by": "waddleai"},
             }
 
             # Add API key if present
             if provider.api_key:
                 provider_config["auth"] = {
                     "type": "api_key",
-                    "key": decrypt_credential(provider.api_key) if provider.api_key else ""
+                    "key": decrypt_credential(provider.api_key) if provider.api_key else "",
                 }
 
             # Add model list
@@ -113,9 +107,9 @@ class MarchProxyConfigGenerator:
         """Generate routes for standard AI providers"""
         db = self.db
         providers = db(
-            (db.ai_providers.enabled == True) &
-            (db.ai_providers.ailb_sync_enabled == True) &
-            (db.ai_providers.provider_type != 'ollama')
+            (db.ai_providers.enabled is True)
+            & (db.ai_providers.ailb_sync_enabled is True)
+            & (db.ai_providers.provider_type != "ollama")
         ).select()
 
         routes = []
@@ -130,23 +124,16 @@ class MarchProxyConfigGenerator:
                 "destination": {
                     "type": "provider",
                     "provider_id": f"waddleai-{provider.id}",
-                    "endpoint": provider.endpoint_url
+                    "endpoint": provider.endpoint_url,
                 },
-                "metadata": {
-                    "waddleai_provider_id": str(provider.id),
-                    "provider_type": provider.provider_type
-                }
+                "metadata": {"waddleai_provider_id": str(provider.id), "provider_type": provider.provider_type},
             }
 
             # Add header-based routing for specific providers
             if provider.provider_type == "anthropic":
-                route["match_headers"] = {
-                    "anthropic-version": "*"
-                }
+                route["match_headers"] = {"anthropic-version": "*"}
             elif provider.provider_type == "openai":
-                route["match_headers"] = {
-                    "Authorization": "Bearer *"
-                }
+                route["match_headers"] = {"Authorization": "Bearer *"}
 
             routes.append(route)
 
@@ -162,9 +149,7 @@ class MarchProxyConfigGenerator:
         routes = []
 
         # Get all active Ollama deployments
-        deployments = db(
-            db.ollama_deployments.status.belongs(['running', 'pending'])
-        ).select()
+        deployments = db(db.ollama_deployments.status.belongs(["running", "pending"])).select()
 
         for deployment in deployments:
             # Get all models on this deployment
@@ -180,17 +165,13 @@ class MarchProxyConfigGenerator:
                     "destination": {
                         "type": "ollama",
                         "deployment_id": deployment.id,
-                        "endpoint": deployment.endpoint_url
+                        "endpoint": deployment.endpoint_url,
                     },
                     "match_conditions": {
                         # Match on model name in request body
-                        "body_json": {
-                            "model": model.model_name
-                        },
+                        "body_json": {"model": model.model_name},
                         # Or match on custom header
-                        "headers": {
-                            "X-Ollama-Model": model.model_name
-                        }
+                        "headers": {"X-Ollama-Model": model.model_name},
                     },
                     "metadata": {
                         "waddleai_deployment_id": str(deployment.id),
@@ -198,8 +179,8 @@ class MarchProxyConfigGenerator:
                         "model_name": model.model_name,
                         "model_tag": model.model_tag or "latest",
                         "deployment_name": deployment.name,
-                        "routing_type": "model-specific"
-                    }
+                        "routing_type": "model-specific",
+                    },
                 }
 
                 routes.append(route)
@@ -212,7 +193,7 @@ class MarchProxyConfigGenerator:
         limits = []
 
         # Get all enabled virtual keys with rate limits
-        keys = db(db.virtual_keys.enabled == True).select()
+        keys = db(db.virtual_keys.enabled is True).select()
 
         for key in keys:
             if key.rpm_limit or key.tpm_limit:
@@ -224,8 +205,8 @@ class MarchProxyConfigGenerator:
                     "metadata": {
                         "waddleai_key_id": str(key.id),
                         "user_id": str(key.user_id),
-                        "organization_id": str(key.organization_id)
-                    }
+                        "organization_id": str(key.organization_id),
+                    },
                 }
 
                 if key.rpm_limit:
@@ -250,7 +231,7 @@ class MarchProxyConfigGenerator:
         db = self.db
         keys_list = []
 
-        keys = db(db.virtual_keys.enabled == True).select()
+        keys = db(db.virtual_keys.enabled is True).select()
 
         for key in keys:
             key_config = {
@@ -261,8 +242,8 @@ class MarchProxyConfigGenerator:
                 "metadata": {
                     "waddleai_key_id": str(key.id),
                     "user_id": str(key.user_id),
-                    "organization_id": str(key.organization_id)
-                }
+                    "organization_id": str(key.organization_id),
+                },
             }
 
             # Add allowed models/providers
@@ -304,18 +285,13 @@ class MarchProxyConfigGenerator:
             return {}
 
         db = self.db
-        waddleai_mem0_endpoint = os.getenv(
-            "WADDLEAI_MEM0_ENDPOINT",
-            "http://waddleai-proxy:8080/mem0"
-        )
+        waddleai_mem0_endpoint = os.getenv("WADDLEAI_MEM0_ENDPOINT", "http://waddleai-proxy:8080/mem0")
 
         config: Dict[str, Any] = {}
 
         # Memory (conversation history) injection
         try:
-            mem_configs = db(
-                db.conversation_memory_configs.organization_id == organization_id
-            ).select()
+            mem_configs = db(db.conversation_memory_configs.organization_id == organization_id).select()
             mem_config = mem_configs.first() if mem_configs else None
         except Exception:
             mem_config = None
@@ -332,9 +308,7 @@ class MarchProxyConfigGenerator:
 
         # RAG (document retrieval) injection
         try:
-            rag_configs = db(
-                db.rag_configs.organization_id == organization_id
-            ).select()
+            rag_configs = db(db.rag_configs.organization_id == organization_id).select()
             rag_config = rag_configs.first() if rag_configs else None
         except Exception:
             rag_config = None
@@ -369,9 +343,7 @@ class MarchProxyConfigGenerator:
         db = self.db
         routing_table = {}
 
-        deployments = db(
-            db.ollama_deployments.status.belongs(['running', 'pending'])
-        ).select()
+        deployments = db(db.ollama_deployments.status.belongs(["running", "pending"])).select()
 
         for deployment in deployments:
             models = db(db.ollama_models.deployment_id == deployment.id).select()
@@ -396,7 +368,7 @@ class MarchProxyConfigGenerator:
         try:
             config = self.generate_full_config()
 
-            with open(output_path, 'w') as f:
+            with open(output_path, "w") as f:
                 json.dump(config, f, indent=2)
 
             logger.info(f"Exported MarchProxy config to {output_path}")
@@ -423,9 +395,7 @@ class MarchProxyConfigGenerator:
         # Build model-to-deployment mapping
         model_routes = {}
 
-        deployments = db(
-            db.ollama_deployments.status.belongs(['running', 'pending'])
-        ).select()
+        deployments = db(db.ollama_deployments.status.belongs(["running", "pending"])).select()
 
         for deployment in deployments:
             models = db(db.ollama_models.deployment_id == deployment.id).select()
@@ -435,14 +405,16 @@ class MarchProxyConfigGenerator:
                 if model_key not in model_routes:
                     model_routes[model_key] = []
 
-                model_routes[model_key].append({
-                    "deployment_id": deployment.id,
-                    "deployment_name": deployment.name,
-                    "endpoint": deployment.endpoint_url,
-                    "model_id": model.id,
-                    "model_tag": model.model_tag or "latest",
-                    "priority": 1  # Could be based on deployment health, load, etc.
-                })
+                model_routes[model_key].append(
+                    {
+                        "deployment_id": deployment.id,
+                        "deployment_name": deployment.name,
+                        "endpoint": deployment.endpoint_url,
+                        "model_id": model.id,
+                        "model_tag": model.model_tag or "latest",
+                        "priority": 1,  # Could be based on deployment health, load, etc.
+                    }
+                )
 
         # Generate routing config
         routing_config = {
@@ -450,11 +422,7 @@ class MarchProxyConfigGenerator:
             "routing_strategy": "model-aware",
             "model_routes": model_routes,
             "fallback_strategy": "round_robin",
-            "health_check": {
-                "enabled": True,
-                "interval_seconds": 30,
-                "unhealthy_threshold": 3
-            }
+            "health_check": {"enabled": True, "interval_seconds": 30, "unhealthy_threshold": 3},
         }
 
         return routing_config

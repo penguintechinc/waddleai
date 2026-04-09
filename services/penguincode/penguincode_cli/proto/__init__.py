@@ -1,9 +1,8 @@
 """Generated gRPC code for PenguinCode client-server communication."""
 
-from .penguincode_pb2 import (
+from .penguincode_pb2 import (  # Auth messages; Chat messages; Health messages; Tool messages
     AgentResult,
     AgentSpawn,
-    # Auth messages
     AuthRequest,
     AuthResponse,
     ChatRequest,
@@ -11,13 +10,11 @@ from .penguincode_pb2 import (
     ClientCapabilities,
     CloseSessionRequest,
     CloseSessionResponse,
-    # Chat messages
     CreateSessionRequest,
     CreateSessionResponse,
     Error,
     GetHistoryRequest,
     GetHistoryResponse,
-    # Health messages
     HealthCheckRequest,
     HealthCheckResponse,
     HistoryMessage,
@@ -25,16 +22,13 @@ from .penguincode_pb2 import (
     ServerInfo,
     StatusUpdate,
     TextChunk,
-    # Tool messages
     ToolRequest,
     ToolResponse,
     ValidateRequest,
     ValidateResponse,
 )
-from .penguincode_pb2_grpc import (
-    # Service servicers (server-side)
+from .penguincode_pb2_grpc import (  # Service servicers (server-side); Service stubs (client-side); Server registration functions
     AuthServiceServicer,
-    # Service stubs (client-side)
     AuthServiceStub,
     ChatServiceServicer,
     ChatServiceStub,
@@ -42,7 +36,6 @@ from .penguincode_pb2_grpc import (
     HealthServiceStub,
     ToolCallbackServiceServicer,
     ToolCallbackServiceStub,
-    # Server registration functions
     add_AuthServiceServicer_to_server,
     add_ChatServiceServicer_to_server,
     add_HealthServiceServicer_to_server,

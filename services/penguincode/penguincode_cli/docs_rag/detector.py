@@ -92,7 +92,11 @@ class ProjectDetector:
 
         # Check for Ansible
         ansible_indicators = ["ansible.cfg", "playbook.yml", "playbook.yaml", "site.yml", "site.yaml"]
-        if any((self.project_dir / f).exists() for f in ansible_indicators) or (self.project_dir / "roles").exists() or (self.project_dir / "inventory").exists():
+        if (
+            any((self.project_dir / f).exists() for f in ansible_indicators)
+            or (self.project_dir / "roles").exists()
+            or (self.project_dir / "inventory").exists()
+        ):
             languages.add(Language.ANSIBLE)
             libs = self._parse_ansible_requirements()
             libraries.extend(libs)
@@ -141,9 +145,7 @@ class ProjectDetector:
 
         return languages
 
-    def _parse_dependency_file(
-        self, filename: str, content: str, language: Language
-    ) -> list[Library]:
+    def _parse_dependency_file(self, filename: str, content: str, language: Language) -> list[Library]:
         """Parse a dependency file to extract libraries."""
         if filename == "pyproject.toml":
             return self._parse_pyproject_toml(content)
@@ -171,6 +173,7 @@ class ProjectDetector:
 
         try:
             import tomllib
+
             data = tomllib.loads(content)
 
             # Get dependencies from [project.dependencies]
@@ -178,33 +181,39 @@ class ProjectDetector:
             for dep in deps:
                 name, version = self._parse_python_requirement(dep)
                 if name:
-                    libraries.append(Library(
-                        name=name,
-                        language=Language.PYTHON,
-                        version=version,
-                    ))
+                    libraries.append(
+                        Library(
+                            name=name,
+                            language=Language.PYTHON,
+                            version=version,
+                        )
+                    )
 
             # Also check [tool.poetry.dependencies]
             poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
             for name, version_spec in poetry_deps.items():
                 if name.lower() != "python":
                     version = version_spec if isinstance(version_spec, str) else None
-                    libraries.append(Library(
-                        name=name,
-                        language=Language.PYTHON,
-                        version=version,
-                    ))
+                    libraries.append(
+                        Library(
+                            name=name,
+                            language=Language.PYTHON,
+                            version=version,
+                        )
+                    )
 
         except Exception:
             # Fallback: regex parsing
             dep_pattern = r'^\s*"([a-zA-Z0-9_-]+)(?:\[.*\])?(?:[<>=!~]+.*)?"\s*,?\s*$'
-            for line in content.split('\n'):
+            for line in content.split("\n"):
                 match = re.match(dep_pattern, line)
                 if match:
-                    libraries.append(Library(
-                        name=match.group(1),
-                        language=Language.PYTHON,
-                    ))
+                    libraries.append(
+                        Library(
+                            name=match.group(1),
+                            language=Language.PYTHON,
+                        )
+                    )
 
         return libraries
 
@@ -212,29 +221,31 @@ class ProjectDetector:
         """Parse requirements.txt for Python dependencies."""
         libraries = []
 
-        for line in content.split('\n'):
+        for line in content.split("\n"):
             line = line.strip()
-            if not line or line.startswith('#') or line.startswith('-'):
+            if not line or line.startswith("#") or line.startswith("-"):
                 continue
 
             name, version = self._parse_python_requirement(line)
             if name:
-                libraries.append(Library(
-                    name=name,
-                    language=Language.PYTHON,
-                    version=version,
-                ))
+                libraries.append(
+                    Library(
+                        name=name,
+                        language=Language.PYTHON,
+                        version=version,
+                    )
+                )
 
         return libraries
 
     def _parse_python_requirement(self, requirement: str) -> tuple[str | None, str | None]:
         """Parse a Python requirement string like 'package>=1.0.0'."""
         # Remove comments and extras
-        requirement = requirement.split('#')[0].strip()
-        requirement = re.sub(r'\[.*\]', '', requirement)
+        requirement = requirement.split("#")[0].strip()
+        requirement = re.sub(r"\[.*\]", "", requirement)
 
         # Match package name and optional version
-        match = re.match(r'^([a-zA-Z0-9_-]+)(?:([<>=!~]+)(.+))?$', requirement)
+        match = re.match(r"^([a-zA-Z0-9_-]+)(?:([<>=!~]+)(.+))?$", requirement)
         if match:
             name = match.group(1)
             version = match.group(3).strip() if match.group(3) else None
@@ -246,11 +257,7 @@ class ProjectDetector:
         libraries = []
 
         # Look for install_requires list
-        install_requires = re.search(
-            r'install_requires\s*=\s*\[(.*?)\]',
-            content,
-            re.DOTALL
-        )
+        install_requires = re.search(r"install_requires\s*=\s*\[(.*?)\]", content, re.DOTALL)
         if install_requires:
             deps_str = install_requires.group(1)
             # Extract quoted strings
@@ -258,11 +265,13 @@ class ProjectDetector:
             for dep in deps:
                 name, version = self._parse_python_requirement(dep)
                 if name:
-                    libraries.append(Library(
-                        name=name,
-                        language=Language.PYTHON,
-                        version=version,
-                    ))
+                    libraries.append(
+                        Library(
+                            name=name,
+                            language=Language.PYTHON,
+                            version=version,
+                        )
+                    )
 
         return libraries
 
@@ -272,28 +281,33 @@ class ProjectDetector:
 
         try:
             import json
+
             data = json.loads(content)
 
             # Get regular dependencies
             deps = data.get("dependencies", {})
             for name, version in deps.items():
-                libraries.append(Library(
-                    name=name,
-                    language=Language.JAVASCRIPT,
-                    version=version.lstrip('^~'),
-                ))
+                libraries.append(
+                    Library(
+                        name=name,
+                        language=Language.JAVASCRIPT,
+                        version=version.lstrip("^~"),
+                    )
+                )
 
             # Get dev dependencies (they're often important for tooling)
             dev_deps = data.get("devDependencies", {})
             for name, version in dev_deps.items():
                 # Skip common dev-only tools that don't need docs
-                if name.startswith('@types/'):
+                if name.startswith("@types/"):
                     continue
-                libraries.append(Library(
-                    name=name,
-                    language=Language.JAVASCRIPT,
-                    version=version.lstrip('^~'),
-                ))
+                libraries.append(
+                    Library(
+                        name=name,
+                        language=Language.JAVASCRIPT,
+                        version=version.lstrip("^~"),
+                    )
+                )
 
         except Exception:
             pass
@@ -305,25 +319,29 @@ class ProjectDetector:
         libraries = []
 
         # Match require blocks and single requires
-        require_block = re.search(r'require\s*\((.*?)\)', content, re.DOTALL)
+        require_block = re.search(r"require\s*\((.*?)\)", content, re.DOTALL)
         if require_block:
-            for line in require_block.group(1).split('\n'):
-                match = re.match(r'\s*(\S+)\s+(\S+)', line)
+            for line in require_block.group(1).split("\n"):
+                match = re.match(r"\s*(\S+)\s+(\S+)", line)
                 if match:
-                    libraries.append(Library(
-                        name=match.group(1),
-                        language=Language.GO,
-                        version=match.group(2),
-                    ))
+                    libraries.append(
+                        Library(
+                            name=match.group(1),
+                            language=Language.GO,
+                            version=match.group(2),
+                        )
+                    )
 
         # Also match single-line requires
-        single_requires = re.findall(r'^require\s+(\S+)\s+(\S+)', content, re.MULTILINE)
+        single_requires = re.findall(r"^require\s+(\S+)\s+(\S+)", content, re.MULTILINE)
         for name, version in single_requires:
-            libraries.append(Library(
-                name=name,
-                language=Language.GO,
-                version=version,
-            ))
+            libraries.append(
+                Library(
+                    name=name,
+                    language=Language.GO,
+                    version=version,
+                )
+            )
 
         return libraries
 
@@ -333,6 +351,7 @@ class ProjectDetector:
 
         try:
             import tomllib
+
             data = tomllib.loads(content)
 
             deps = data.get("dependencies", {})
@@ -344,31 +363,35 @@ class ProjectDetector:
                 else:
                     version = None
 
-                libraries.append(Library(
-                    name=name,
-                    language=Language.RUST,
-                    version=version,
-                ))
+                libraries.append(
+                    Library(
+                        name=name,
+                        language=Language.RUST,
+                        version=version,
+                    )
+                )
 
         except Exception:
             # Fallback: regex parsing
             in_deps = False
-            for line in content.split('\n'):
-                if line.strip() == '[dependencies]':
+            for line in content.split("\n"):
+                if line.strip() == "[dependencies]":
                     in_deps = True
                     continue
-                elif line.strip().startswith('['):
+                elif line.strip().startswith("["):
                     in_deps = False
                     continue
 
                 if in_deps:
                     match = re.match(r'^([a-zA-Z0-9_-]+)\s*=\s*"([^"]+)"', line)
                     if match:
-                        libraries.append(Library(
-                            name=match.group(1),
-                            language=Language.RUST,
-                            version=match.group(2),
-                        ))
+                        libraries.append(
+                            Library(
+                                name=match.group(1),
+                                language=Language.RUST,
+                                version=match.group(2),
+                            )
+                        )
 
         return libraries
 
@@ -376,18 +399,20 @@ class ProjectDetector:
         """Parse Gemfile for Ruby dependencies."""
         libraries = []
 
-        for line in content.split('\n'):
+        for line in content.split("\n"):
             line = line.strip()
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 continue
 
             # Match gem 'name' or gem "name" with optional version
             match = re.match(r"""gem\s+['"]([a-zA-Z0-9_-]+)['"]""", line)
             if match:
-                libraries.append(Library(
-                    name=match.group(1),
-                    language=Language.RUBY,
-                ))
+                libraries.append(
+                    Library(
+                        name=match.group(1),
+                        language=Language.RUBY,
+                    )
+                )
 
         return libraries
 
@@ -397,6 +422,7 @@ class ProjectDetector:
 
         try:
             import json
+
             data = json.loads(content)
 
             for section in ("require", "require-dev"):
@@ -405,11 +431,13 @@ class ProjectDetector:
                     # Skip php itself and extensions
                     if name == "php" or name.startswith("ext-"):
                         continue
-                    libraries.append(Library(
-                        name=name,
-                        language=Language.PHP,
-                        version=version.lstrip('^~'),
-                    ))
+                    libraries.append(
+                        Library(
+                            name=name,
+                            language=Language.PHP,
+                            version=version.lstrip("^~"),
+                        )
+                    )
 
         except Exception:
             pass
@@ -422,6 +450,7 @@ class ProjectDetector:
 
         try:
             import yaml
+
             data = yaml.safe_load(content)
 
             if not data:
@@ -435,31 +464,35 @@ class ProjectDetector:
                         if isinstance(spec, dict) and "sdk" in spec:
                             continue
                         version = spec if isinstance(spec, str) else None
-                        libraries.append(Library(
-                            name=name,
-                            language=Language.DART,
-                            version=version,
-                        ))
+                        libraries.append(
+                            Library(
+                                name=name,
+                                language=Language.DART,
+                                version=version,
+                            )
+                        )
 
         except ImportError:
             # Fallback: simple regex parsing
-            dep_pattern = r'^\s+([a-zA-Z0-9_]+):\s*'
+            dep_pattern = r"^\s+([a-zA-Z0-9_]+):\s*"
             in_deps = False
-            for line in content.split('\n'):
-                if line.strip() in ('dependencies:', 'dev_dependencies:'):
+            for line in content.split("\n"):
+                if line.strip() in ("dependencies:", "dev_dependencies:"):
                     in_deps = True
                     continue
-                elif line and not line.startswith(' ') and not line.startswith('\t'):
+                elif line and not line.startswith(" ") and not line.startswith("\t"):
                     in_deps = False
                     continue
 
                 if in_deps:
                     match = re.match(dep_pattern, line)
                     if match:
-                        libraries.append(Library(
-                            name=match.group(1),
-                            language=Language.DART,
-                        ))
+                        libraries.append(
+                            Library(
+                                name=match.group(1),
+                                language=Language.DART,
+                            )
+                        )
 
         except Exception:
             pass
@@ -483,26 +516,28 @@ class ProjectDetector:
                 for provider in provider_blocks:
                     if provider not in seen_providers:
                         seen_providers.add(provider)
-                        libraries.append(Library(
-                            name=provider,
-                            language=Language.HCL,
-                        ))
+                        libraries.append(
+                            Library(
+                                name=provider,
+                                language=Language.HCL,
+                            )
+                        )
 
                 # Match required_providers blocks
                 # required_providers { aws = { source = "hashicorp/aws" version = "~> 5.0" } }
                 req_providers = re.findall(
-                    r'(\w+)\s*=\s*\{[^}]*source\s*=\s*"([^"]+)"[^}]*(?:version\s*=\s*"([^"]+)")?',
-                    content,
-                    re.DOTALL
+                    r'(\w+)\s*=\s*\{[^}]*source\s*=\s*"([^"]+)"[^}]*(?:version\s*=\s*"([^"]+)")?', content, re.DOTALL
                 )
                 for name, _source, version in req_providers:
                     if name not in seen_providers:
                         seen_providers.add(name)
-                        libraries.append(Library(
-                            name=name,
-                            language=Language.HCL,
-                            version=version if version else None,
-                        ))
+                        libraries.append(
+                            Library(
+                                name=name,
+                                language=Language.HCL,
+                                version=version if version else None,
+                            )
+                        )
 
             except Exception:
                 pass
@@ -514,18 +549,18 @@ class ProjectDetector:
                 content = lock_file.read_text()
                 # Match provider "registry.terraform.io/hashicorp/aws" { version = "5.0.0" }
                 locked = re.findall(
-                    r'provider\s+"[^"]*?/([^/"]+)"\s*\{[^}]*version\s*=\s*"([^"]+)"',
-                    content,
-                    re.DOTALL
+                    r'provider\s+"[^"]*?/([^/"]+)"\s*\{[^}]*version\s*=\s*"([^"]+)"', content, re.DOTALL
                 )
                 for name, version in locked:
                     if name not in seen_providers:
                         seen_providers.add(name)
-                        libraries.append(Library(
-                            name=name,
-                            language=Language.HCL,
-                            version=version,
-                        ))
+                        libraries.append(
+                            Library(
+                                name=name,
+                                language=Language.HCL,
+                                version=version,
+                            )
+                        )
             except Exception:
                 pass
 
@@ -566,6 +601,7 @@ class ProjectDetector:
 
         try:
             import yaml
+
             data = yaml.safe_load(content)
 
             if not data:
@@ -576,47 +612,57 @@ class ProjectDetector:
             if isinstance(collections, list):
                 for coll in collections:
                     if isinstance(coll, str):
-                        libraries.append(Library(
-                            name=coll,
-                            language=Language.ANSIBLE,
-                        ))
+                        libraries.append(
+                            Library(
+                                name=coll,
+                                language=Language.ANSIBLE,
+                            )
+                        )
                     elif isinstance(coll, dict):
                         name = coll.get("name", "")
                         version = coll.get("version")
                         if name:
-                            libraries.append(Library(
-                                name=name,
-                                language=Language.ANSIBLE,
-                                version=version,
-                            ))
+                            libraries.append(
+                                Library(
+                                    name=name,
+                                    language=Language.ANSIBLE,
+                                    version=version,
+                                )
+                            )
 
             # Handle roles list
             roles = data.get("roles", [])
             if isinstance(roles, list):
                 for role in roles:
                     if isinstance(role, str):
-                        libraries.append(Library(
-                            name=role,
-                            language=Language.ANSIBLE,
-                        ))
+                        libraries.append(
+                            Library(
+                                name=role,
+                                language=Language.ANSIBLE,
+                            )
+                        )
                     elif isinstance(role, dict):
                         name = role.get("name") or role.get("src", "")
                         version = role.get("version")
                         if name:
-                            libraries.append(Library(
-                                name=name,
-                                language=Language.ANSIBLE,
-                                version=version,
-                            ))
+                            libraries.append(
+                                Library(
+                                    name=name,
+                                    language=Language.ANSIBLE,
+                                    version=version,
+                                )
+                            )
 
         except ImportError:
             # Fallback: simple regex parsing
-            coll_pattern = r'^\s*-\s*name:\s*([^\s#]+)'
+            coll_pattern = r"^\s*-\s*name:\s*([^\s#]+)"
             for match in re.finditer(coll_pattern, content, re.MULTILINE):
-                libraries.append(Library(
-                    name=match.group(1),
-                    language=Language.ANSIBLE,
-                ))
+                libraries.append(
+                    Library(
+                        name=match.group(1),
+                        language=Language.ANSIBLE,
+                    )
+                )
         except Exception:
             pass
 
@@ -628,6 +674,7 @@ class ProjectDetector:
 
         try:
             import yaml
+
             data = yaml.safe_load(content)
 
             if not data:
@@ -637,11 +684,13 @@ class ProjectDetector:
             deps = data.get("dependencies", {})
             if isinstance(deps, dict):
                 for name, version in deps.items():
-                    libraries.append(Library(
-                        name=name,
-                        language=Language.ANSIBLE,
-                        version=version if isinstance(version, str) else None,
-                    ))
+                    libraries.append(
+                        Library(
+                            name=name,
+                            language=Language.ANSIBLE,
+                            version=version if isinstance(version, str) else None,
+                        )
+                    )
 
         except Exception:
             pass

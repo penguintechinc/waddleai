@@ -5,29 +5,29 @@ import grpc
 
 from . import penguincode_pb2 as penguincode__pb2
 
-GRPC_GENERATED_VERSION = '1.69.0'
+GRPC_GENERATED_VERSION = "1.69.0"
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
 try:
     from grpc._utilities import first_version_is_lower
+
     _version_not_supported = first_version_is_lower(GRPC_VERSION, GRPC_GENERATED_VERSION)
 except ImportError:
     _version_not_supported = True
 
 if _version_not_supported:
     raise RuntimeError(
-        f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in penguincode_pb2_grpc.py depends on'
-        + f' grpcio>={GRPC_GENERATED_VERSION}.'
-        + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
-        + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
+        f"The grpc package installed is at version {GRPC_VERSION},"
+        + " but the generated code in penguincode_pb2_grpc.py depends on"
+        + f" grpcio>={GRPC_GENERATED_VERSION}."
+        + f" Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}"
+        + f" or downgrade your generated code using grpcio-tools<={GRPC_VERSION}."
     )
 
 
 class AuthServiceStub:
-    """Authentication Service
-    """
+    """Authentication Service"""
 
     def __init__(self, channel):
         """Constructor.
@@ -36,89 +36,91 @@ class AuthServiceStub:
             channel: A grpc.Channel.
         """
         self.Authenticate = channel.unary_unary(
-                '/penguincode.AuthService/Authenticate',
-                request_serializer=penguincode__pb2.AuthRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.AuthResponse.FromString,
-                _registered_method=True)
+            "/penguincode.AuthService/Authenticate",
+            request_serializer=penguincode__pb2.AuthRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.AuthResponse.FromString,
+            _registered_method=True,
+        )
         self.RefreshToken = channel.unary_unary(
-                '/penguincode.AuthService/RefreshToken',
-                request_serializer=penguincode__pb2.RefreshRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.AuthResponse.FromString,
-                _registered_method=True)
+            "/penguincode.AuthService/RefreshToken",
+            request_serializer=penguincode__pb2.RefreshRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.AuthResponse.FromString,
+            _registered_method=True,
+        )
         self.ValidateToken = channel.unary_unary(
-                '/penguincode.AuthService/ValidateToken',
-                request_serializer=penguincode__pb2.ValidateRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.ValidateResponse.FromString,
-                _registered_method=True)
+            "/penguincode.AuthService/ValidateToken",
+            request_serializer=penguincode__pb2.ValidateRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.ValidateResponse.FromString,
+            _registered_method=True,
+        )
 
 
 class AuthServiceServicer:
-    """Authentication Service
-    """
+    """Authentication Service"""
 
     def Authenticate(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def RefreshToken(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def ValidateToken(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
 
 def add_AuthServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'Authenticate': grpc.unary_unary_rpc_method_handler(
-                    servicer.Authenticate,
-                    request_deserializer=penguincode__pb2.AuthRequest.FromString,
-                    response_serializer=penguincode__pb2.AuthResponse.SerializeToString,
-            ),
-            'RefreshToken': grpc.unary_unary_rpc_method_handler(
-                    servicer.RefreshToken,
-                    request_deserializer=penguincode__pb2.RefreshRequest.FromString,
-                    response_serializer=penguincode__pb2.AuthResponse.SerializeToString,
-            ),
-            'ValidateToken': grpc.unary_unary_rpc_method_handler(
-                    servicer.ValidateToken,
-                    request_deserializer=penguincode__pb2.ValidateRequest.FromString,
-                    response_serializer=penguincode__pb2.ValidateResponse.SerializeToString,
-            ),
+        "Authenticate": grpc.unary_unary_rpc_method_handler(
+            servicer.Authenticate,
+            request_deserializer=penguincode__pb2.AuthRequest.FromString,
+            response_serializer=penguincode__pb2.AuthResponse.SerializeToString,
+        ),
+        "RefreshToken": grpc.unary_unary_rpc_method_handler(
+            servicer.RefreshToken,
+            request_deserializer=penguincode__pb2.RefreshRequest.FromString,
+            response_serializer=penguincode__pb2.AuthResponse.SerializeToString,
+        ),
+        "ValidateToken": grpc.unary_unary_rpc_method_handler(
+            servicer.ValidateToken,
+            request_deserializer=penguincode__pb2.ValidateRequest.FromString,
+            response_serializer=penguincode__pb2.ValidateResponse.SerializeToString,
+        ),
     }
-    generic_handler = grpc.method_handlers_generic_handler(
-            'penguincode.AuthService', rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler("penguincode.AuthService", rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('penguincode.AuthService', rpc_method_handlers)
+    server.add_registered_method_handlers("penguincode.AuthService", rpc_method_handlers)
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class AuthService:
-    """Authentication Service
-    """
+    """Authentication Service"""
 
     @staticmethod
-    def Authenticate(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def Authenticate(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/penguincode.AuthService/Authenticate',
+            "/penguincode.AuthService/Authenticate",
             penguincode__pb2.AuthRequest.SerializeToString,
             penguincode__pb2.AuthResponse.FromString,
             options,
@@ -129,23 +131,26 @@ class AuthService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
     @staticmethod
-    def RefreshToken(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def RefreshToken(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/penguincode.AuthService/RefreshToken',
+            "/penguincode.AuthService/RefreshToken",
             penguincode__pb2.RefreshRequest.SerializeToString,
             penguincode__pb2.AuthResponse.FromString,
             options,
@@ -156,23 +161,26 @@ class AuthService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
     @staticmethod
-    def ValidateToken(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def ValidateToken(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/penguincode.AuthService/ValidateToken',
+            "/penguincode.AuthService/ValidateToken",
             penguincode__pb2.ValidateRequest.SerializeToString,
             penguincode__pb2.ValidateResponse.FromString,
             options,
@@ -183,12 +191,12 @@ class AuthService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
 
 class ChatServiceStub:
-    """Chat Service
-    """
+    """Chat Service"""
 
     def __init__(self, channel):
         """Constructor.
@@ -197,105 +205,108 @@ class ChatServiceStub:
             channel: A grpc.Channel.
         """
         self.CreateSession = channel.unary_unary(
-                '/penguincode.ChatService/CreateSession',
-                request_serializer=penguincode__pb2.CreateSessionRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.CreateSessionResponse.FromString,
-                _registered_method=True)
+            "/penguincode.ChatService/CreateSession",
+            request_serializer=penguincode__pb2.CreateSessionRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.CreateSessionResponse.FromString,
+            _registered_method=True,
+        )
         self.Chat = channel.unary_stream(
-                '/penguincode.ChatService/Chat',
-                request_serializer=penguincode__pb2.ChatRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.ChatResponse.FromString,
-                _registered_method=True)
+            "/penguincode.ChatService/Chat",
+            request_serializer=penguincode__pb2.ChatRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.ChatResponse.FromString,
+            _registered_method=True,
+        )
         self.GetHistory = channel.unary_unary(
-                '/penguincode.ChatService/GetHistory',
-                request_serializer=penguincode__pb2.GetHistoryRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.GetHistoryResponse.FromString,
-                _registered_method=True)
+            "/penguincode.ChatService/GetHistory",
+            request_serializer=penguincode__pb2.GetHistoryRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.GetHistoryResponse.FromString,
+            _registered_method=True,
+        )
         self.CloseSession = channel.unary_unary(
-                '/penguincode.ChatService/CloseSession',
-                request_serializer=penguincode__pb2.CloseSessionRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.CloseSessionResponse.FromString,
-                _registered_method=True)
+            "/penguincode.ChatService/CloseSession",
+            request_serializer=penguincode__pb2.CloseSessionRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.CloseSessionResponse.FromString,
+            _registered_method=True,
+        )
 
 
 class ChatServiceServicer:
-    """Chat Service
-    """
+    """Chat Service"""
 
     def CreateSession(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def Chat(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def GetHistory(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def CloseSession(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
 
 def add_ChatServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'CreateSession': grpc.unary_unary_rpc_method_handler(
-                    servicer.CreateSession,
-                    request_deserializer=penguincode__pb2.CreateSessionRequest.FromString,
-                    response_serializer=penguincode__pb2.CreateSessionResponse.SerializeToString,
-            ),
-            'Chat': grpc.unary_stream_rpc_method_handler(
-                    servicer.Chat,
-                    request_deserializer=penguincode__pb2.ChatRequest.FromString,
-                    response_serializer=penguincode__pb2.ChatResponse.SerializeToString,
-            ),
-            'GetHistory': grpc.unary_unary_rpc_method_handler(
-                    servicer.GetHistory,
-                    request_deserializer=penguincode__pb2.GetHistoryRequest.FromString,
-                    response_serializer=penguincode__pb2.GetHistoryResponse.SerializeToString,
-            ),
-            'CloseSession': grpc.unary_unary_rpc_method_handler(
-                    servicer.CloseSession,
-                    request_deserializer=penguincode__pb2.CloseSessionRequest.FromString,
-                    response_serializer=penguincode__pb2.CloseSessionResponse.SerializeToString,
-            ),
+        "CreateSession": grpc.unary_unary_rpc_method_handler(
+            servicer.CreateSession,
+            request_deserializer=penguincode__pb2.CreateSessionRequest.FromString,
+            response_serializer=penguincode__pb2.CreateSessionResponse.SerializeToString,
+        ),
+        "Chat": grpc.unary_stream_rpc_method_handler(
+            servicer.Chat,
+            request_deserializer=penguincode__pb2.ChatRequest.FromString,
+            response_serializer=penguincode__pb2.ChatResponse.SerializeToString,
+        ),
+        "GetHistory": grpc.unary_unary_rpc_method_handler(
+            servicer.GetHistory,
+            request_deserializer=penguincode__pb2.GetHistoryRequest.FromString,
+            response_serializer=penguincode__pb2.GetHistoryResponse.SerializeToString,
+        ),
+        "CloseSession": grpc.unary_unary_rpc_method_handler(
+            servicer.CloseSession,
+            request_deserializer=penguincode__pb2.CloseSessionRequest.FromString,
+            response_serializer=penguincode__pb2.CloseSessionResponse.SerializeToString,
+        ),
     }
-    generic_handler = grpc.method_handlers_generic_handler(
-            'penguincode.ChatService', rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler("penguincode.ChatService", rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('penguincode.ChatService', rpc_method_handlers)
+    server.add_registered_method_handlers("penguincode.ChatService", rpc_method_handlers)
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class ChatService:
-    """Chat Service
-    """
+    """Chat Service"""
 
     @staticmethod
-    def CreateSession(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def CreateSession(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/penguincode.ChatService/CreateSession',
+            "/penguincode.ChatService/CreateSession",
             penguincode__pb2.CreateSessionRequest.SerializeToString,
             penguincode__pb2.CreateSessionResponse.FromString,
             options,
@@ -306,23 +317,26 @@ class ChatService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
     @staticmethod
-    def Chat(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def Chat(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/penguincode.ChatService/Chat',
+            "/penguincode.ChatService/Chat",
             penguincode__pb2.ChatRequest.SerializeToString,
             penguincode__pb2.ChatResponse.FromString,
             options,
@@ -333,23 +347,26 @@ class ChatService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
     @staticmethod
-    def GetHistory(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def GetHistory(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/penguincode.ChatService/GetHistory',
+            "/penguincode.ChatService/GetHistory",
             penguincode__pb2.GetHistoryRequest.SerializeToString,
             penguincode__pb2.GetHistoryResponse.FromString,
             options,
@@ -360,23 +377,26 @@ class ChatService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
     @staticmethod
-    def CloseSession(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def CloseSession(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/penguincode.ChatService/CloseSession',
+            "/penguincode.ChatService/CloseSession",
             penguincode__pb2.CloseSessionRequest.SerializeToString,
             penguincode__pb2.CloseSessionResponse.FromString,
             options,
@@ -387,12 +407,12 @@ class ChatService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
 
 class ToolCallbackServiceStub:
-    """Tool Callback Service - Bidirectional streaming
-    """
+    """Tool Callback Service - Bidirectional streaming"""
 
     def __init__(self, channel):
         """Constructor.
@@ -401,57 +421,57 @@ class ToolCallbackServiceStub:
             channel: A grpc.Channel.
         """
         self.ExecuteTools = channel.stream_stream(
-                '/penguincode.ToolCallbackService/ExecuteTools',
-                request_serializer=penguincode__pb2.ToolResponse.SerializeToString,
-                response_deserializer=penguincode__pb2.ToolRequest.FromString,
-                _registered_method=True)
+            "/penguincode.ToolCallbackService/ExecuteTools",
+            request_serializer=penguincode__pb2.ToolResponse.SerializeToString,
+            response_deserializer=penguincode__pb2.ToolRequest.FromString,
+            _registered_method=True,
+        )
 
 
 class ToolCallbackServiceServicer:
-    """Tool Callback Service - Bidirectional streaming
-    """
+    """Tool Callback Service - Bidirectional streaming"""
 
     def ExecuteTools(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
 
 def add_ToolCallbackServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'ExecuteTools': grpc.stream_stream_rpc_method_handler(
-                    servicer.ExecuteTools,
-                    request_deserializer=penguincode__pb2.ToolResponse.FromString,
-                    response_serializer=penguincode__pb2.ToolRequest.SerializeToString,
-            ),
+        "ExecuteTools": grpc.stream_stream_rpc_method_handler(
+            servicer.ExecuteTools,
+            request_deserializer=penguincode__pb2.ToolResponse.FromString,
+            response_serializer=penguincode__pb2.ToolRequest.SerializeToString,
+        ),
     }
-    generic_handler = grpc.method_handlers_generic_handler(
-            'penguincode.ToolCallbackService', rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler("penguincode.ToolCallbackService", rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('penguincode.ToolCallbackService', rpc_method_handlers)
+    server.add_registered_method_handlers("penguincode.ToolCallbackService", rpc_method_handlers)
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class ToolCallbackService:
-    """Tool Callback Service - Bidirectional streaming
-    """
+    """Tool Callback Service - Bidirectional streaming"""
 
     @staticmethod
-    def ExecuteTools(request_iterator,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def ExecuteTools(
+        request_iterator,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            '/penguincode.ToolCallbackService/ExecuteTools',
+            "/penguincode.ToolCallbackService/ExecuteTools",
             penguincode__pb2.ToolResponse.SerializeToString,
             penguincode__pb2.ToolRequest.FromString,
             options,
@@ -462,12 +482,12 @@ class ToolCallbackService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )
 
 
 class HealthServiceStub:
-    """Health Service
-    """
+    """Health Service"""
 
     def __init__(self, channel):
         """Constructor.
@@ -476,57 +496,57 @@ class HealthServiceStub:
             channel: A grpc.Channel.
         """
         self.Check = channel.unary_unary(
-                '/penguincode.HealthService/Check',
-                request_serializer=penguincode__pb2.HealthCheckRequest.SerializeToString,
-                response_deserializer=penguincode__pb2.HealthCheckResponse.FromString,
-                _registered_method=True)
+            "/penguincode.HealthService/Check",
+            request_serializer=penguincode__pb2.HealthCheckRequest.SerializeToString,
+            response_deserializer=penguincode__pb2.HealthCheckResponse.FromString,
+            _registered_method=True,
+        )
 
 
 class HealthServiceServicer:
-    """Health Service
-    """
+    """Health Service"""
 
     def Check(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
 
 def add_HealthServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'Check': grpc.unary_unary_rpc_method_handler(
-                    servicer.Check,
-                    request_deserializer=penguincode__pb2.HealthCheckRequest.FromString,
-                    response_serializer=penguincode__pb2.HealthCheckResponse.SerializeToString,
-            ),
+        "Check": grpc.unary_unary_rpc_method_handler(
+            servicer.Check,
+            request_deserializer=penguincode__pb2.HealthCheckRequest.FromString,
+            response_serializer=penguincode__pb2.HealthCheckResponse.SerializeToString,
+        ),
     }
-    generic_handler = grpc.method_handlers_generic_handler(
-            'penguincode.HealthService', rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler("penguincode.HealthService", rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('penguincode.HealthService', rpc_method_handlers)
+    server.add_registered_method_handlers("penguincode.HealthService", rpc_method_handlers)
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class HealthService:
-    """Health Service
-    """
+    """Health Service"""
 
     @staticmethod
-    def Check(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
+    def Check(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/penguincode.HealthService/Check',
+            "/penguincode.HealthService/Check",
             penguincode__pb2.HealthCheckRequest.SerializeToString,
             penguincode__pb2.HealthCheckResponse.FromString,
             options,
@@ -537,4 +557,5 @@ class HealthService:
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True)
+            _registered_method=True,
+        )

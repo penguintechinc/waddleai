@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import jwt as pyjwt
 import pytest
-
 from penguincode_cli.server.models.config_store import ConfigStore
 from penguincode_cli.server.rest_app import create_rest_app
 
@@ -13,9 +12,11 @@ from penguincode_cli.server.rest_app import create_rest_app
 # Common Mock Response Types
 # ============================================================================
 
+
 @dataclass(slots=True)
 class MockAIResponse:
     """Mock AI response for testing."""
+
     content: str
     tokens_used: int = 100
     model: str = "test-model"
@@ -26,6 +27,7 @@ class MockAIResponse:
 @dataclass(slots=True)
 class MockToolResult:
     """Mock tool execution result."""
+
     output: str
     exit_code: int = 0
     success: bool = True
@@ -35,22 +37,29 @@ class MockToolResult:
 # AI Client Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def mock_ai_client():
     """Create a mock AI client with common methods."""
     client = MagicMock()
-    client.generate = AsyncMock(return_value=MockAIResponse(
-        content="Generated content",
-        tokens_used=100,
-    ))
-    client.explain = AsyncMock(return_value=MockAIResponse(
-        content="Explanation content",
-        tokens_used=150,
-    ))
-    client.chat = AsyncMock(return_value=MockAIResponse(
-        content="Chat response",
-        tokens_used=50,
-    ))
+    client.generate = AsyncMock(
+        return_value=MockAIResponse(
+            content="Generated content",
+            tokens_used=100,
+        )
+    )
+    client.explain = AsyncMock(
+        return_value=MockAIResponse(
+            content="Explanation content",
+            tokens_used=150,
+        )
+    )
+    client.chat = AsyncMock(
+        return_value=MockAIResponse(
+            content="Chat response",
+            tokens_used=50,
+        )
+    )
     return client
 
 
@@ -58,22 +67,27 @@ def mock_ai_client():
 def mock_code_generator():
     """Create a mock code generator."""
     generator = MagicMock()
-    generator.generate_python = AsyncMock(return_value={
-        "code": "print('hello')",
-        "language": "python",
-        "files": ["main.py"],
-    })
-    generator.generate_go = AsyncMock(return_value={
-        "code": "package main\n\nfunc main() {}",
-        "language": "go",
-        "files": ["main.go"],
-    })
+    generator.generate_python = AsyncMock(
+        return_value={
+            "code": "print('hello')",
+            "language": "python",
+            "files": ["main.py"],
+        }
+    )
+    generator.generate_go = AsyncMock(
+        return_value={
+            "code": "package main\n\nfunc main() {}",
+            "language": "go",
+            "files": ["main.go"],
+        }
+    )
     return generator
 
 
 # ============================================================================
 # Orchestrator Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mock_orchestrator():
@@ -89,6 +103,7 @@ def mock_orchestrator():
 # Tool Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def mock_file_tool():
     """Create a mock file manipulation tool."""
@@ -103,16 +118,19 @@ def mock_file_tool():
 def mock_shell_tool():
     """Create a mock shell execution tool."""
     tool = MagicMock()
-    tool.execute = AsyncMock(return_value=MockToolResult(
-        output="command output",
-        exit_code=0,
-    ))
+    tool.execute = AsyncMock(
+        return_value=MockToolResult(
+            output="command output",
+            exit_code=0,
+        )
+    )
     return tool
 
 
 # ============================================================================
 # Sample Data Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def sample_flask_code():
@@ -134,14 +152,14 @@ if __name__ == "__main__":
 @pytest.fixture
 def sample_go_code():
     """Sample Go application code."""
-    return '''package main
+    return """package main
 
 import "fmt"
 
 func main() {
     fmt.Println("Hello, World!")
 }
-'''
+"""
 
 
 @pytest.fixture
@@ -168,6 +186,7 @@ def get_user(user_id: int) -> dict | None:
 # ============================================================================
 # Scenario Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def flask_website_scenario():
@@ -209,9 +228,11 @@ def go_gui_scenario():
 # Validation Helpers
 # ============================================================================
 
+
 @pytest.fixture
 def code_validator():
     """Fixture providing code validation helpers."""
+
     class CodeValidator:
         @staticmethod
         def has_required_imports(code: str, imports: list[str]) -> bool:
@@ -239,6 +260,7 @@ def code_validator():
 @pytest.fixture
 def explanation_validator():
     """Fixture providing explanation validation helpers."""
+
     class ExplanationValidator:
         @staticmethod
         def covers_topics(text: str, topics: list[str]) -> list[str]:

@@ -48,9 +48,15 @@ class TestAdminAuth:
 class TestModelsCRUD:
     async def test_models_crud(self, api_client, admin_headers):
         # PUT (create)
-        resp = await api_client.put("/api/v1/models", headers=admin_headers, json={
-            "name": "test-model:1b", "role": "smoke-test", "required": False,
-        })
+        resp = await api_client.put(
+            "/api/v1/models",
+            headers=admin_headers,
+            json={
+                "name": "test-model:1b",
+                "role": "smoke-test",
+                "required": False,
+            },
+        )
         assert resp.status_code == 200
 
         # GET list — should include new model
@@ -76,9 +82,15 @@ class TestModelsCRUD:
 
 class TestAgentsCRUD:
     async def test_agents_crud(self, api_client, admin_headers):
-        resp = await api_client.put("/api/v1/agents", headers=admin_headers, json={
-            "name": "smoke-agent", "model": "ollama/test:1b", "mode": "subagent",
-        })
+        resp = await api_client.put(
+            "/api/v1/agents",
+            headers=admin_headers,
+            json={
+                "name": "smoke-agent",
+                "model": "ollama/test:1b",
+                "mode": "subagent",
+            },
+        )
         assert resp.status_code == 200
 
         resp = await api_client.get("/api/v1/agents", headers=admin_headers)
@@ -97,9 +109,14 @@ class TestAgentsCRUD:
 
 class TestMCPServersCRUD:
     async def test_mcp_servers_crud(self, api_client, admin_headers):
-        resp = await api_client.put("/api/v1/mcp-servers", headers=admin_headers, json={
-            "name": "smoke-mcp", "command": ["test-mcp", "--stdio"],
-        })
+        resp = await api_client.put(
+            "/api/v1/mcp-servers",
+            headers=admin_headers,
+            json={
+                "name": "smoke-mcp",
+                "command": ["test-mcp", "--stdio"],
+            },
+        )
         assert resp.status_code == 200
 
         resp = await api_client.get("/api/v1/mcp-servers", headers=admin_headers)
@@ -118,9 +135,14 @@ class TestMCPServersCRUD:
 
 class TestPluginsCRUD:
     async def test_plugins_crud(self, api_client, admin_headers):
-        resp = await api_client.put("/api/v1/plugins", headers=admin_headers, json={
-            "name": "smoke-plugin", "source": "npm",
-        })
+        resp = await api_client.put(
+            "/api/v1/plugins",
+            headers=admin_headers,
+            json={
+                "name": "smoke-plugin",
+                "source": "npm",
+            },
+        )
         assert resp.status_code == 200
 
         resp = await api_client.get("/api/v1/plugins", headers=admin_headers)
@@ -136,9 +158,14 @@ class TestPluginsCRUD:
 
 class TestSkillsCRUD:
     async def test_skills_crud(self, api_client, admin_headers):
-        resp = await api_client.put("/api/v1/skills", headers=admin_headers, json={
-            "name": "smoke-skill", "description": "Test skill",
-        })
+        resp = await api_client.put(
+            "/api/v1/skills",
+            headers=admin_headers,
+            json={
+                "name": "smoke-skill",
+                "description": "Test skill",
+            },
+        )
         assert resp.status_code == 200
 
         resp = await api_client.get("/api/v1/skills", headers=admin_headers)
@@ -154,9 +181,14 @@ class TestSkillsCRUD:
 
 class TestToolsCRUD:
     async def test_tools_crud(self, api_client, admin_headers):
-        resp = await api_client.put("/api/v1/tools", headers=admin_headers, json={
-            "name": "smoke-tool", "description": "Test tool",
-        })
+        resp = await api_client.put(
+            "/api/v1/tools",
+            headers=admin_headers,
+            json={
+                "name": "smoke-tool",
+                "description": "Test tool",
+            },
+        )
         assert resp.status_code == 200
 
         resp = await api_client.get("/api/v1/tools", headers=admin_headers)
@@ -173,9 +205,14 @@ class TestToolsCRUD:
 class TestGitHubOrgsCRUD:
     async def test_github_orgs_crud(self, api_client, admin_headers):
         """github-orgs use 'org' as key field, not 'name'."""
-        resp = await api_client.put("/api/v1/github-orgs", headers=admin_headers, json={
-            "org": "penguin-inc", "default_repos": ["repo1"],
-        })
+        resp = await api_client.put(
+            "/api/v1/github-orgs",
+            headers=admin_headers,
+            json={
+                "org": "penguin-inc",
+                "default_repos": ["repo1"],
+            },
+        )
         assert resp.status_code == 200
 
         resp = await api_client.get("/api/v1/github-orgs", headers=admin_headers)
@@ -183,12 +220,14 @@ class TestGitHubOrgsCRUD:
         assert "penguin-inc" in orgs
 
         resp = await api_client.delete(
-            "/api/v1/github-orgs/penguin-inc", headers=admin_headers,
+            "/api/v1/github-orgs/penguin-inc",
+            headers=admin_headers,
         )
         assert resp.status_code == 200
 
         resp = await api_client.get(
-            "/api/v1/github-orgs/penguin-inc", headers=admin_headers,
+            "/api/v1/github-orgs/penguin-inc",
+            headers=admin_headers,
         )
         assert resp.status_code == 404
 
@@ -207,9 +246,13 @@ class TestInstructionsCRUD:
         assert ".claude/orchestration.md" in paths
 
         # PUT new instruction
-        resp = await api_client.put("/api/v1/instructions", headers=admin_headers, json={
-            "path": "custom/smoke-test.md",
-        })
+        resp = await api_client.put(
+            "/api/v1/instructions",
+            headers=admin_headers,
+            json={
+                "path": "custom/smoke-test.md",
+            },
+        )
         assert resp.status_code == 200
 
         # GET includes new one
@@ -219,7 +262,8 @@ class TestInstructionsCRUD:
 
         # DELETE
         resp = await api_client.delete(
-            "/api/v1/instructions/custom/smoke-test.md", headers=admin_headers,
+            "/api/v1/instructions/custom/smoke-test.md",
+            headers=admin_headers,
         )
         assert resp.status_code == 200
 
@@ -238,9 +282,14 @@ class TestPermissionsCRUD:
         assert perms.get("git *") == "allow"
 
         # PUT new permission
-        resp = await api_client.put("/api/v1/permissions", headers=admin_headers, json={
-            "pattern": "docker *", "policy": "deny",
-        })
+        resp = await api_client.put(
+            "/api/v1/permissions",
+            headers=admin_headers,
+            json={
+                "pattern": "docker *",
+                "policy": "deny",
+            },
+        )
         assert resp.status_code == 200
 
         # GET includes new one
@@ -257,14 +306,19 @@ class TestPermissionsCRUD:
 class TestAdminErrors:
     async def test_upsert_missing_key_returns_400(self, api_client, admin_headers):
         """PUT without required key field returns 400."""
-        resp = await api_client.put("/api/v1/models", headers=admin_headers, json={
-            "role": "missing-name-field",
-        })
+        resp = await api_client.put(
+            "/api/v1/models",
+            headers=admin_headers,
+            json={
+                "role": "missing-name-field",
+            },
+        )
         assert resp.status_code == 400
 
     async def test_delete_nonexistent_returns_404(self, api_client, admin_headers):
         """DELETE on non-existent item returns 404."""
         resp = await api_client.delete(
-            "/api/v1/models/totally-nonexistent", headers=admin_headers,
+            "/api/v1/models/totally-nonexistent",
+            headers=admin_headers,
         )
         assert resp.status_code == 404

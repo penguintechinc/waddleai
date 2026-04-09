@@ -4,19 +4,20 @@ Provides knowledge base management with multiple vector store backends
 """
 
 import asyncio
-import logging
-import json
 import hashlib
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
-from dataclasses import dataclass
+import json
+import logging
 from abc import ABC, abstractmethod
-import numpy as np
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from sentence_transformers import SentenceTransformer
 
 # Supabase import (optional)
 try:
-    from supabase import create_client, Client
+    from supabase import Client, create_client
+
     HAS_SUPABASE = True
 except ImportError:
     HAS_SUPABASE = False
@@ -24,7 +25,8 @@ except ImportError:
 # Qdrant import (optional)
 try:
     from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+    from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
+
     HAS_QDRANT = True
 except ImportError:
     HAS_QDRANT = False
@@ -33,6 +35,7 @@ except ImportError:
 try:
     import chromadb
     from chromadb.config import Settings
+
     HAS_CHROMADB = True
 except ImportError:
     HAS_CHROMADB = False
@@ -43,6 +46,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Document:
     """Document structure for RAG"""
+
     id: str
     content: str
     metadata: Dict[str, Any]
@@ -53,6 +57,7 @@ class Document:
 @dataclass
 class SearchResult:
     """Search result with relevance score"""
+
     document: Document
     score: float
     distance: float
@@ -67,11 +72,7 @@ class RAGStore(ABC):
         pass
 
     @abstractmethod
-    async def add_documents(
-        self,
-        documents: List[Document],
-        collection: str = "default"
-    ) -> bool:
+    async def add_documents(self, documents: List[Document], collection: str = "default") -> bool:
         """Add documents to the knowledge base"""
         pass
 
@@ -82,7 +83,7 @@ class RAGStore(ABC):
         collection: str = "default",
         limit: int = 5,
         min_score: float = 0.7,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResult]:
         """Search for relevant documents"""
         pass
@@ -127,7 +128,7 @@ class SupabaseVectorStore(RAGStore):
     def _init_encoder(self):
         """Initialize sentence transformer for embeddings"""
         try:
-            self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
+            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")
@@ -154,11 +155,7 @@ class SupabaseVectorStore(RAGStore):
             logger.error(f"Failed to generate embedding: {e}")
             return None
 
-    async def add_documents(
-        self,
-        documents: List[Document],
-        collection: str = "default"
-    ) -> bool:
+    async def add_documents(self, documents: List[Document], collection: str = "default") -> bool:
         """Add documents to Supabase"""
         try:
             if not self.client:
@@ -180,7 +177,7 @@ class SupabaseVectorStore(RAGStore):
                     "metadata": json.dumps(doc.metadata),
                     "collection": collection,
                     "embedding": doc.embedding,
-                    "created_at": datetime.utcnow().isoformat()
+                    "created_at": datetime.utcnow().isoformat(),
                 }
                 records.append(record)
 
@@ -201,7 +198,7 @@ class SupabaseVectorStore(RAGStore):
         collection: str = "default",
         limit: int = 5,
         min_score: float = 0.7,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResult]:
         """Search in Supabase using pgvector"""
         try:
@@ -216,32 +213,28 @@ class SupabaseVectorStore(RAGStore):
             # Build RPC call for vector similarity search
             # Note: Requires pgvector extension and similarity function
             response = self.client.rpc(
-                'match_documents',
+                "match_documents",
                 {
-                    'query_embedding': query_embedding,
-                    'match_threshold': min_score,
-                    'match_count': limit,
-                    'collection_name': collection
-                }
+                    "query_embedding": query_embedding,
+                    "match_threshold": min_score,
+                    "match_count": limit,
+                    "collection_name": collection,
+                },
             ).execute()
 
             # Convert to SearchResult objects
             results = []
             for item in response.data:
                 doc = Document(
-                    id=item['id'],
-                    content=item['content'],
-                    metadata=json.loads(item.get('metadata', '{}')),
-                    collection=collection
+                    id=item["id"],
+                    content=item["content"],
+                    metadata=json.loads(item.get("metadata", "{}")),
+                    collection=collection,
                 )
-                score = item.get('similarity', 0.0)
+                score = item.get("similarity", 0.0)
                 distance = 1.0 - score
 
-                results.append(SearchResult(
-                    document=doc,
-                    score=score,
-                    distance=distance
-                ))
+                results.append(SearchResult(document=doc, score=score, distance=distance))
 
             return results
 
@@ -255,7 +248,7 @@ class SupabaseVectorStore(RAGStore):
             if not self.client:
                 await self.initialize()
 
-            self.client.table(self.table_name).delete().eq('id', document_id).eq('collection', collection).execute()
+            self.client.table(self.table_name).delete().eq("id", document_id).eq("collection", collection).execute()
             return True
 
         except Exception as e:
@@ -268,7 +261,7 @@ class SupabaseVectorStore(RAGStore):
             if not self.client:
                 await self.initialize()
 
-            self.client.table(self.table_name).delete().eq('collection', collection).execute()
+            self.client.table(self.table_name).delete().eq("collection", collection).execute()
             return True
 
         except Exception as e:
@@ -281,8 +274,8 @@ class SupabaseVectorStore(RAGStore):
             if not self.client:
                 await self.initialize()
 
-            response = self.client.table(self.table_name).select('collection').execute()
-            collections = list(set([row['collection'] for row in response.data]))
+            response = self.client.table(self.table_name).select("collection").execute()
+            collections = list(set([row["collection"] for row in response.data]))
             return collections
 
         except Exception as e:
@@ -295,13 +288,11 @@ class SupabaseVectorStore(RAGStore):
             if not self.client:
                 await self.initialize()
 
-            response = self.client.table(self.table_name).select('*', count='exact').eq('collection', collection).execute()
+            response = (
+                self.client.table(self.table_name).select("*", count="exact").eq("collection", collection).execute()
+            )
 
-            return {
-                "collection": collection,
-                "document_count": response.count,
-                "backend": "supabase"
-            }
+            return {"collection": collection, "document_count": response.count, "backend": "supabase"}
 
         except Exception as e:
             logger.error(f"Failed to get collection stats: {e}")
@@ -311,7 +302,9 @@ class SupabaseVectorStore(RAGStore):
 class QdrantRAGStore(RAGStore):
     """Qdrant-based RAG storage"""
 
-    def __init__(self, host: str = "localhost", port: int = 6333, api_key: Optional[str] = None, prefer_grpc: bool = False):
+    def __init__(
+        self, host: str = "localhost", port: int = 6333, api_key: Optional[str] = None, prefer_grpc: bool = False
+    ):
         if not HAS_QDRANT:
             raise ImportError("qdrant-client package not installed. Install with: pip install qdrant-client")
 
@@ -329,7 +322,7 @@ class QdrantRAGStore(RAGStore):
     def _init_encoder(self):
         """Initialize sentence transformer for embeddings"""
         try:
-            self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
+            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")
@@ -339,10 +332,7 @@ class QdrantRAGStore(RAGStore):
         """Initialize Qdrant client"""
         try:
             self.client = QdrantClient(
-                host=self.host,
-                port=self.port,
-                api_key=self.api_key,
-                prefer_grpc=self.prefer_grpc
+                host=self.host, port=self.port, api_key=self.api_key, prefer_grpc=self.prefer_grpc
             )
             logger.info(f"Initialized Qdrant vector store at {self.host}:{self.port}")
         except Exception as e:
@@ -370,7 +360,7 @@ class QdrantRAGStore(RAGStore):
             if collection not in collection_names:
                 self.client.create_collection(
                     collection_name=collection,
-                    vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE)
+                    vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
                 )
                 logger.info(f"Created Qdrant collection: {collection}")
 
@@ -378,11 +368,7 @@ class QdrantRAGStore(RAGStore):
             logger.error(f"Failed to ensure collection exists: {e}")
             raise
 
-    async def add_documents(
-        self,
-        documents: List[Document],
-        collection: str = "default"
-    ) -> bool:
+    async def add_documents(self, documents: List[Document], collection: str = "default") -> bool:
         """Add documents to Qdrant"""
         try:
             if not self.client:
@@ -408,8 +394,8 @@ class QdrantRAGStore(RAGStore):
                         "doc_id": doc.id,
                         "content": doc.content,
                         "metadata": doc.metadata,
-                        "created_at": datetime.utcnow().isoformat()
-                    }
+                        "created_at": datetime.utcnow().isoformat(),
+                    },
                 )
                 points.append(point)
 
@@ -430,7 +416,7 @@ class QdrantRAGStore(RAGStore):
         collection: str = "default",
         limit: int = 5,
         min_score: float = 0.7,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResult]:
         """Search in Qdrant"""
         try:
@@ -447,10 +433,7 @@ class QdrantRAGStore(RAGStore):
             if filters:
                 conditions = []
                 for key, value in filters.items():
-                    conditions.append(FieldCondition(
-                        key=f"metadata.{key}",
-                        match=MatchValue(value=value)
-                    ))
+                    conditions.append(FieldCondition(key=f"metadata.{key}", match=MatchValue(value=value)))
                 if conditions:
                     query_filter = Filter(must=conditions)
 
@@ -460,24 +443,20 @@ class QdrantRAGStore(RAGStore):
                 query_vector=query_embedding,
                 limit=limit,
                 score_threshold=min_score,
-                query_filter=query_filter
+                query_filter=query_filter,
             )
 
             # Convert to SearchResult objects
             results = []
             for hit in search_results:
                 doc = Document(
-                    id=hit.payload.get('doc_id', ''),
-                    content=hit.payload.get('content', ''),
-                    metadata=hit.payload.get('metadata', {}),
-                    collection=collection
+                    id=hit.payload.get("doc_id", ""),
+                    content=hit.payload.get("content", ""),
+                    metadata=hit.payload.get("metadata", {}),
+                    collection=collection,
                 )
 
-                results.append(SearchResult(
-                    document=doc,
-                    score=hit.score,
-                    distance=1.0 - hit.score
-                ))
+                results.append(SearchResult(document=doc, score=hit.score, distance=1.0 - hit.score))
 
             return results
 
@@ -494,14 +473,7 @@ class QdrantRAGStore(RAGStore):
             # Delete by payload filter
             self.client.delete(
                 collection_name=collection,
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="doc_id",
-                            match=MatchValue(value=document_id)
-                        )
-                    ]
-                )
+                points_selector=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=document_id))]),
             )
             return True
 
@@ -547,7 +519,7 @@ class QdrantRAGStore(RAGStore):
                 "collection": collection,
                 "document_count": info.points_count,
                 "vector_size": info.config.params.vectors.size,
-                "backend": "qdrant"
+                "backend": "qdrant",
             }
 
         except Exception as e:
@@ -558,7 +530,9 @@ class QdrantRAGStore(RAGStore):
 class ChromaDBRAGStore(RAGStore):
     """ChromaDB-based RAG storage (separate from conversation memory)"""
 
-    def __init__(self, persist_directory: str = "./chroma_rag_data", host: Optional[str] = None, port: Optional[int] = None):
+    def __init__(
+        self, persist_directory: str = "./chroma_rag_data", host: Optional[str] = None, port: Optional[int] = None
+    ):
         if not HAS_CHROMADB:
             raise ImportError("chromadb package not installed. Install with: pip install chromadb")
 
@@ -574,7 +548,7 @@ class ChromaDBRAGStore(RAGStore):
     def _init_encoder(self):
         """Initialize sentence transformer for embeddings"""
         try:
-            self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
+            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")
@@ -589,8 +563,7 @@ class ChromaDBRAGStore(RAGStore):
             else:
                 # Persistent client
                 self.client = chromadb.PersistentClient(
-                    path=self.persist_directory,
-                    settings=Settings(anonymized_telemetry=False, allow_reset=True)
+                    path=self.persist_directory, settings=Settings(anonymized_telemetry=False, allow_reset=True)
                 )
 
             logger.info("Initialized ChromaDB RAG store")
@@ -611,11 +584,7 @@ class ChromaDBRAGStore(RAGStore):
             logger.error(f"Failed to generate embedding: {e}")
             return None
 
-    async def add_documents(
-        self,
-        documents: List[Document],
-        collection: str = "default"
-    ) -> bool:
+    async def add_documents(self, documents: List[Document], collection: str = "default") -> bool:
         """Add documents to ChromaDB"""
         try:
             if not self.client:
@@ -624,10 +593,9 @@ class ChromaDBRAGStore(RAGStore):
             # Get or create collection
             try:
                 chroma_collection = self.client.get_collection(name=collection)
-            except:
+            except Exception:
                 chroma_collection = self.client.create_collection(
-                    name=collection,
-                    metadata={"description": "WaddleAI RAG knowledge base"}
+                    name=collection, metadata={"description": "WaddleAI RAG knowledge base"}
                 )
 
             ids = []
@@ -651,12 +619,7 @@ class ChromaDBRAGStore(RAGStore):
 
             # Add to collection
             if ids:
-                chroma_collection.add(
-                    ids=ids,
-                    documents=contents,
-                    metadatas=metadatas,
-                    embeddings=embeddings
-                )
+                chroma_collection.add(ids=ids, documents=contents, metadatas=metadatas, embeddings=embeddings)
                 logger.info(f"Added {len(ids)} documents to ChromaDB collection '{collection}'")
 
             return True
@@ -671,7 +634,7 @@ class ChromaDBRAGStore(RAGStore):
         collection: str = "default",
         limit: int = 5,
         min_score: float = 0.7,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResult]:
         """Search in ChromaDB"""
         try:
@@ -681,7 +644,7 @@ class ChromaDBRAGStore(RAGStore):
             # Get collection
             try:
                 chroma_collection = self.client.get_collection(name=collection)
-            except:
+            except Exception:
                 logger.warning(f"Collection '{collection}' not found")
                 return []
 
@@ -698,31 +661,27 @@ class ChromaDBRAGStore(RAGStore):
                 query_embeddings=[query_embedding],
                 n_results=limit,
                 where=where_clause,
-                include=["documents", "metadatas", "distances"]
+                include=["documents", "metadatas", "distances"],
             )
 
             # Convert to SearchResult objects
             results = []
-            if search_results and search_results['documents']:
-                for i in range(len(search_results['documents'][0])):
-                    distance = search_results['distances'][0][i] if search_results.get('distances') else 0.0
+            if search_results and search_results["documents"]:
+                for i in range(len(search_results["documents"][0])):
+                    distance = search_results["distances"][0][i] if search_results.get("distances") else 0.0
                     score = 1.0 - distance  # Convert distance to score
 
                     if score < min_score:
                         continue
 
                     doc = Document(
-                        id=search_results['ids'][0][i],
-                        content=search_results['documents'][0][i],
-                        metadata=search_results['metadatas'][0][i],
-                        collection=collection
+                        id=search_results["ids"][0][i],
+                        content=search_results["documents"][0][i],
+                        metadata=search_results["metadatas"][0][i],
+                        collection=collection,
                     )
 
-                    results.append(SearchResult(
-                        document=doc,
-                        score=score,
-                        distance=distance
-                    ))
+                    results.append(SearchResult(document=doc, score=score, distance=distance))
 
             return results
 
@@ -779,11 +738,7 @@ class ChromaDBRAGStore(RAGStore):
             chroma_collection = self.client.get_collection(name=collection)
             count = chroma_collection.count()
 
-            return {
-                "collection": collection,
-                "document_count": count,
-                "backend": "chromadb"
-            }
+            return {"collection": collection, "document_count": count, "backend": "chromadb"}
 
         except Exception as e:
             logger.error(f"Failed to get collection stats: {e}")
@@ -814,7 +769,7 @@ def chunk_text(text: str, chunk_size: int = 512, chunk_overlap: int = 50) -> Lis
         chunks.append(chunk)
 
         # Move start forward by (chunk_size - overlap)
-        start += (chunk_size - chunk_overlap)
+        start += chunk_size - chunk_overlap
 
     return chunks
 
@@ -837,7 +792,7 @@ class RAGManager:
         metadatas: List[Dict[str, Any]],
         collection: str = "default",
         chunk_size: int = 512,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> int:
         """
         Ingest documents into RAG store with chunking
@@ -866,15 +821,10 @@ class RAGManager:
                         **metadata,
                         "chunk_index": chunk_idx,
                         "total_chunks": len(chunks),
-                        "parent_doc_id": f"{metadata.get('source', 'doc')}_{idx}"
+                        "parent_doc_id": f"{metadata.get('source', 'doc')}_{idx}",
                     }
 
-                    doc = Document(
-                        id=doc_id,
-                        content=chunk,
-                        metadata=chunk_metadata,
-                        collection=collection
-                    )
+                    doc = Document(id=doc_id, content=chunk, metadata=chunk_metadata, collection=collection)
                     all_documents.append(doc)
                     chunk_count += 1
 
@@ -892,11 +842,7 @@ class RAGManager:
             return 0
 
     async def search_knowledge_base(
-        self,
-        query: str,
-        collection: str = "default",
-        limit: int = 5,
-        min_score: float = 0.7
+        self, query: str, collection: str = "default", limit: int = 5, min_score: float = 0.7
     ) -> List[SearchResult]:
         """Search the knowledge base"""
         return await self.rag_store.search(query, collection, limit, min_score)
@@ -915,11 +861,7 @@ class RAGManager:
 
 
 def create_rag_manager(
-    backend: str = "pgvector",
-    write_db=None,
-    replica_pool=None,
-    embedding_manager=None,
-    **kwargs
+    backend: str = "pgvector", write_db=None, replica_pool=None, embedding_manager=None, **kwargs
 ) -> RAGManager:
     """
     Factory function to create RAG manager
@@ -942,6 +884,7 @@ def create_rag_manager(
     if backend == "pgvector":
         # Lazy import to avoid circular imports
         from shared.utils.embedding_manager import create_embedding_manager  # noqa: PLC0415
+
         if embedding_manager is None:
             embedding_manager = create_embedding_manager()
         rag_store = PgvectorRAGStore(
@@ -953,26 +896,26 @@ def create_rag_manager(
         if not HAS_SUPABASE:
             raise ImportError("supabase package not installed. Install with: pip install supabase")
         rag_store = SupabaseVectorStore(
-            url=kwargs.get('url', ''),
-            api_key=kwargs.get('api_key', ''),
-            table_name=kwargs.get('table_name', 'documents')
+            url=kwargs.get("url", ""),
+            api_key=kwargs.get("api_key", ""),
+            table_name=kwargs.get("table_name", "documents"),
         )
     elif backend == "qdrant":
         if not HAS_QDRANT:
             raise ImportError("qdrant-client package not installed. Install with: pip install qdrant-client")
         rag_store = QdrantRAGStore(
-            host=kwargs.get('host', 'localhost'),
-            port=kwargs.get('port', 6333),
-            api_key=kwargs.get('api_key'),
-            prefer_grpc=kwargs.get('prefer_grpc', False)
+            host=kwargs.get("host", "localhost"),
+            port=kwargs.get("port", 6333),
+            api_key=kwargs.get("api_key"),
+            prefer_grpc=kwargs.get("prefer_grpc", False),
         )
     elif backend == "chromadb":
         if not HAS_CHROMADB:
             raise ImportError("chromadb package not installed. Install with: pip install chromadb")
         rag_store = ChromaDBRAGStore(
-            persist_directory=kwargs.get('persist_directory', './chroma_rag_data'),
-            host=kwargs.get('host'),
-            port=kwargs.get('port')
+            persist_directory=kwargs.get("persist_directory", "./chroma_rag_data"),
+            host=kwargs.get("host"),
+            port=kwargs.get("port"),
         )
     else:
         raise ValueError(f"Unknown RAG backend: {backend}. Use 'pgvector', 'supabase', 'qdrant', or 'chromadb'")
@@ -1032,9 +975,7 @@ class PgvectorRAGStore(RAGStore):
             success_count = 0
             for doc in documents:
                 try:
-                    embedding = await loop.run_in_executor(
-                        None, self.embedding_manager.embed, doc.content
-                    )
+                    embedding = await loop.run_in_executor(None, self.embedding_manager.embed, doc.content)
                     embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
 
                     org_id = doc.metadata.get("organization_id", 0)
@@ -1073,9 +1014,7 @@ class PgvectorRAGStore(RAGStore):
         """Vector similarity search routed to a read replica for scalability."""
         try:
             loop = asyncio.get_event_loop()
-            embedding = await loop.run_in_executor(
-                None, self.embedding_manager.embed, query
-            )
+            embedding = await loop.run_in_executor(None, self.embedding_manager.embed, query)
             embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
 
             read_db = self._read_db()
@@ -1089,8 +1028,7 @@ class PgvectorRAGStore(RAGStore):
                 "  AND 1 - (embedding <=> %s::vector) >= %s "
                 "ORDER BY embedding <=> %s::vector "
                 "LIMIT %s",
-                (embedding_str, organization_id, collection,
-                 embedding_str, min_score, embedding_str, limit),
+                (embedding_str, organization_id, collection, embedding_str, min_score, embedding_str, limit),
             )
 
             if not rows:
@@ -1112,11 +1050,13 @@ class PgvectorRAGStore(RAGStore):
                     metadata=meta,
                     collection=collection,
                 )
-                results.append(SearchResult(
-                    document=doc,
-                    score=float(similarity),
-                    distance=float(1.0 - similarity),
-                ))
+                results.append(
+                    SearchResult(
+                        document=doc,
+                        score=float(similarity),
+                        distance=float(1.0 - similarity),
+                    )
+                )
             return results
 
         except Exception as exc:
@@ -1163,9 +1103,7 @@ class PgvectorRAGStore(RAGStore):
         """Return distinct collection names. Uses read replica."""
         try:
             read_db = self._read_db()
-            rows = read_db.executesql(
-                "SELECT DISTINCT collection FROM rag_documents ORDER BY collection"
-            )
+            rows = read_db.executesql("SELECT DISTINCT collection FROM rag_documents ORDER BY collection")
             return [row[0] for row in rows] if rows else []
         except Exception as exc:
             logger.error("PgvectorRAGStore.list_collections failed: %s", exc)

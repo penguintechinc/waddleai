@@ -2,17 +2,18 @@
 Comprehensive unit tests for UsageTrackingService
 """
 
+from datetime import date, datetime, timedelta
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, call
-from datetime import datetime, date, timedelta
 
 from services.management.app.services.usage_tracker import (
-    UsageTrackingService,
-    UsageEvent,
-    QuotaStatus,
     DailyUsage,
+    QuotaInfo,
+    QuotaStatus,
+    UsageEvent,
     UsageStats,
-    QuotaInfo
+    UsageTrackingService,
 )
 from tests.unit.management.conftest import _make_mock_db
 
@@ -38,16 +39,16 @@ def tracker(mock_db, mock_redis):
 def make_usage_event(**kwargs):
     """Helper to create UsageEvent instances with defaults"""
     defaults = {
-        'event_id': 'evt-001',
-        'key_id': 'wa-testkey',
-        'request_id': 'req-001',
-        'model': 'gpt-4',
-        'provider': 'openai',
-        'input_tokens': 100,
-        'output_tokens': 200,
-        'cost_usd': 0.005,
-        'latency_ms': 300,
-        'status': 'success'
+        "event_id": "evt-001",
+        "key_id": "wa-testkey",
+        "request_id": "req-001",
+        "model": "gpt-4",
+        "provider": "openai",
+        "input_tokens": 100,
+        "output_tokens": 200,
+        "cost_usd": 0.005,
+        "latency_ms": 300,
+        "status": "success",
     }
     defaults.update(kwargs)
     return UsageEvent(**defaults)
@@ -59,16 +60,12 @@ class TestUsageEventDataclass:
     def test_usage_event_creation(self):
         """Test creating a UsageEvent with all fields"""
         event = make_usage_event(
-            event_id='evt-123',
-            key_id='wa-key123',
-            model='gpt-4o',
-            input_tokens=150,
-            output_tokens=250
+            event_id="evt-123", key_id="wa-key123", model="gpt-4o", input_tokens=150, output_tokens=250
         )
 
-        assert event.event_id == 'evt-123'
-        assert event.key_id == 'wa-key123'
-        assert event.model == 'gpt-4o'
+        assert event.event_id == "evt-123"
+        assert event.key_id == "wa-key123"
+        assert event.model == "gpt-4o"
         assert event.input_tokens == 150
         assert event.output_tokens == 250
 
@@ -99,7 +96,7 @@ class TestCalculateWaddleaiTokens:
         tracker._conversion_rates_cache[cache_key] = {
             "input_rate": 5.0,
             "output_rate": 5.0,
-            "expires": datetime.utcnow() + timedelta(seconds=300)
+            "expires": datetime.utcnow() + timedelta(seconds=300),
         }
 
         result = tracker.calculate_waddleai_tokens("openai", "gpt-4", 100, 200)
@@ -115,7 +112,7 @@ class TestCalculateWaddleaiTokens:
         tracker._conversion_rates_cache[cache_key] = {
             "input_rate": 5.0,
             "output_rate": 5.0,
-            "expires": datetime.utcnow() - timedelta(seconds=1)  # Expired
+            "expires": datetime.utcnow() - timedelta(seconds=1),  # Expired
         }
 
         # Mock DB query to return a rate
@@ -259,7 +256,7 @@ class TestRecordUsage:
 
     def test_record_usage_with_virtual_key(self, tracker, mock_db):
         """Test recording usage with existing virtual key"""
-        event = make_usage_event(key_id='wa-key123')
+        event = make_usage_event(key_id="wa-key123")
 
         # Mock virtual key lookup - return key on first call, None for usage check
         mock_key = MagicMock()
@@ -280,7 +277,7 @@ class TestRecordUsage:
 
     def test_record_usage_without_virtual_key(self, tracker, mock_db):
         """Test recording usage when virtual key not found"""
-        event = make_usage_event(key_id='wa-unknown')
+        event = make_usage_event(key_id="wa-unknown")
 
         # Mock virtual key not found
         mock_select = MagicMock()
@@ -296,22 +293,21 @@ class TestRecordUsage:
 
     def test_record_usage_calls_calculate_waddleai_tokens(self, tracker, mock_db):
         """Test record_usage calls token conversion"""
-        event = make_usage_event(model='gpt-4o')
+        event = make_usage_event(model="gpt-4o")
 
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 
-        with patch.object(tracker, 'calculate_waddleai_tokens', return_value=50) as mock_calc:
+        with patch.object(tracker, "calculate_waddleai_tokens", return_value=50) as mock_calc:
             tracker.record_usage(event)
 
-            mock_calc.assert_called_once_with('openai', 'gpt-4o', 100, 200)
+            mock_calc.assert_called_once_with("openai", "gpt-4o", 100, 200)
 
     def test_record_usage_updates_existing_daily_usage(self, tracker, mock_db):
         """Test updating existing daily usage record"""
         event = make_usage_event()
-        today = date.today()
 
         mock_key = MagicMock()
         mock_key.id = 1
@@ -333,7 +329,7 @@ class TestRecordUsage:
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 
-        with patch.object(tracker, 'calculate_waddleai_tokens', return_value=50):
+        with patch.object(tracker, "calculate_waddleai_tokens", return_value=50):
             result = tracker.record_usage(event)
 
         # Verify the operation succeeded
@@ -355,7 +351,7 @@ class TestRecordUsage:
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 
-        with patch.object(tracker, 'calculate_waddleai_tokens', return_value=50):
+        with patch.object(tracker, "calculate_waddleai_tokens", return_value=50):
             tracker.record_usage(event)
 
         # Verify insert was called
@@ -375,7 +371,7 @@ class TestRecordUsage:
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 
-        with patch.object(tracker, 'calculate_waddleai_tokens', return_value=50):
+        with patch.object(tracker, "calculate_waddleai_tokens", return_value=50):
             tracker.record_usage(event)
 
         # Verify usage_logs insert was called

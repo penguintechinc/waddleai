@@ -56,6 +56,7 @@ Be thorough but concise. Each step should be specific enough for an agent to exe
 @dataclass
 class PlanStep:
     """A single step in a plan."""
+
     step_num: int
     agent_type: str  # "explorer" or "executor"
     description: str
@@ -66,6 +67,7 @@ class PlanStep:
 @dataclass
 class Plan:
     """A structured plan for executing a complex task."""
+
     analysis: str
     steps: list[PlanStep]
     parallel_groups: list[list[int]]  # Groups of step numbers that can run in parallel
@@ -115,10 +117,7 @@ class PlannerAgent:
         ]
 
         if context:
-            messages.append(Message(
-                role="user",
-                content=f"Context:\n{context}\n\nTask to plan:\n{task}"
-            ))
+            messages.append(Message(role="user", content=f"Context:\n{context}\n\nTask to plan:\n{task}"))
         else:
             messages.append(Message(role="user", content=f"Task to plan:\n{task}"))
 
@@ -161,7 +160,11 @@ class PlannerAgent:
                 complexity = line_stripped[11:].strip().lower()
                 if complexity not in ["simple", "moderate", "complex"]:
                     complexity = "moderate"
-            elif current_section == "analysis" and line_stripped and not line_stripped.startswith(("STEPS", "PARALLEL", "COMPLEXITY")):
+            elif (
+                current_section == "analysis"
+                and line_stripped
+                and not line_stripped.startswith(("STEPS", "PARALLEL", "COMPLEXITY"))
+            ):
                 analysis += " " + line_stripped
             elif current_section == "steps" and line_stripped:
                 step = self._parse_step(line_stripped, len(steps) + 1)
@@ -226,6 +229,7 @@ class PlannerAgent:
     def _parse_parallel_group(self, line: str) -> list[int]:
         """Parse a parallel group line."""
         import re
+
         # Expected format: "- Group 1: steps 1, 2 (can run together)"
         nums = re.findall(r"\d+", line.split(":")[1] if ":" in line else line)
         return [int(n) for n in nums]
@@ -257,10 +261,7 @@ class PlannerAgent:
                     continue
                 # All dependencies must either be already assigned
                 # or reference steps not in this plan (treat as satisfied)
-                deps_satisfied = all(
-                    d in assigned or d not in step_nums
-                    for d in s.depends_on
-                )
+                deps_satisfied = all(d in assigned or d not in step_nums for d in s.depends_on)
                 if deps_satisfied:
                     group.append(s.step_num)
 
@@ -406,6 +407,7 @@ class PlannerAgent:
                 plan_status = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("- **Created**:"):
                 from datetime import datetime, timezone
+
                 try:
                     ts_str = stripped.split(":", 1)[1].strip()
                     dt = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
@@ -424,9 +426,7 @@ class PlannerAgent:
                 analysis += (" " if analysis else "") + stripped
             elif current_section == "steps" and stripped.startswith("- ["):
                 # Format: - [1] [executor] [pending] description (depends on: 1, 2)
-                match = re.match(
-                    r"- \[(\d+)\] \[(\w+)\] \[(\w+)\] (.+)", stripped
-                )
+                match = re.match(r"- \[(\d+)\] \[(\w+)\] \[(\w+)\] (.+)", stripped)
                 if match:
                     desc = match.group(4)
                     depends_on = []
@@ -434,13 +434,15 @@ class PlannerAgent:
                     if dep_match:
                         depends_on = [int(d.strip()) for d in dep_match.group(1).split(",") if d.strip().isdigit()]
                         desc = re.sub(r"\s*\(depends on:[^)]+\)", "", desc).strip()
-                    steps.append(PlanStep(
-                        step_num=int(match.group(1)),
-                        agent_type=match.group(2),
-                        description=desc,
-                        depends_on=depends_on,
-                        status=match.group(3),
-                    ))
+                    steps.append(
+                        PlanStep(
+                            step_num=int(match.group(1)),
+                            agent_type=match.group(2),
+                            description=desc,
+                            depends_on=depends_on,
+                            status=match.group(3),
+                        )
+                    )
             elif current_section == "parallel" and stripped.startswith("- Group"):
                 nums = re.findall(r"\d+", stripped.split(":")[1] if ":" in stripped else stripped)
                 if nums:

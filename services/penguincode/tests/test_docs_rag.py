@@ -1,25 +1,12 @@
 """Tests for the documentation RAG system."""
 
-import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-
 from penguincode_cli.docs_rag.detector import ProjectDetector
-from penguincode_cli.docs_rag.models import (
-    DocChunk,
-    DocSearchResult,
-    Language,
-    Library,
-    ProjectContext,
-)
-from penguincode_cli.docs_rag.sources import (
-    LANGUAGE_DOCS,
-    LIBRARY_DOCS,
-    get_doc_source,
-    get_language_doc_source,
-)
+from penguincode_cli.docs_rag.models import DocChunk, DocSearchResult, Language, Library, ProjectContext
+from penguincode_cli.docs_rag.sources import LANGUAGE_DOCS, LIBRARY_DOCS, get_doc_source, get_language_doc_source
 
 
 class TestLanguageEnum:
@@ -262,14 +249,14 @@ class TestProjectDetector:
         """Test detecting Python from pyproject.toml."""
         with TemporaryDirectory() as tmpdir:
             pyproject = Path(tmpdir) / "pyproject.toml"
-            pyproject.write_text('''
+            pyproject.write_text("""
 [project]
 name = "myproject"
 dependencies = [
     "fastapi>=0.100.0",
     "sqlalchemy",
 ]
-''')
+""")
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
 
@@ -294,7 +281,7 @@ dependencies = [
             package = Path(tmpdir) / "package.json"
             package.write_text('{"dependencies": {"react": "^18.0.0"}}')
             tsconfig = Path(tmpdir) / "tsconfig.json"
-            tsconfig.write_text('{}')
+            tsconfig.write_text("{}")
 
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
@@ -306,7 +293,7 @@ dependencies = [
         """Test detecting Go from go.mod."""
         with TemporaryDirectory() as tmpdir:
             go_mod = Path(tmpdir) / "go.mod"
-            go_mod.write_text('''
+            go_mod.write_text("""
 module example.com/myproject
 
 go 1.21
@@ -314,7 +301,7 @@ go 1.21
 require (
     github.com/gin-gonic/gin v1.9.0
 )
-''')
+""")
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
 
@@ -324,11 +311,11 @@ require (
         """Test detecting HCL from .tf files."""
         with TemporaryDirectory() as tmpdir:
             main_tf = Path(tmpdir) / "main.tf"
-            main_tf.write_text('''
+            main_tf.write_text("""
 provider "aws" {
   region = "us-west-2"
 }
-''')
+""")
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
 
@@ -339,14 +326,14 @@ provider "aws" {
         """Test detecting Ansible from playbook.yml."""
         with TemporaryDirectory() as tmpdir:
             playbook = Path(tmpdir) / "playbook.yml"
-            playbook.write_text('''
+            playbook.write_text("""
 - name: Configure webserver
   hosts: webservers
   tasks:
     - name: Install nginx
       apt:
         name: nginx
-''')
+""")
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
 
@@ -420,10 +407,7 @@ class TestRubyDetection:
         with TemporaryDirectory() as tmpdir:
             gemfile = Path(tmpdir) / "Gemfile"
             gemfile.write_text(
-                'source "https://rubygems.org"\n'
-                'gem "rails", "~> 7.0"\n'
-                'gem "puma"\n'
-                '# gem "commented-out"\n'
+                'source "https://rubygems.org"\n' 'gem "rails", "~> 7.0"\n' 'gem "puma"\n' '# gem "commented-out"\n'
             )
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
@@ -452,8 +436,7 @@ class TestPHPDetection:
         with TemporaryDirectory() as tmpdir:
             composer = Path(tmpdir) / "composer.json"
             composer.write_text(
-                '{"require": {"laravel/framework": "^10.0"}, '
-                '"require-dev": {"phpunit/phpunit": "^10.0"}}'
+                '{"require": {"laravel/framework": "^10.0"}, ' '"require-dev": {"phpunit/phpunit": "^10.0"}}'
             )
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
@@ -466,9 +449,7 @@ class TestPHPDetection:
         """Test that PHP extensions and php itself are skipped."""
         with TemporaryDirectory() as tmpdir:
             composer = Path(tmpdir) / "composer.json"
-            composer.write_text(
-                '{"require": {"php": ">=8.1", "ext-mbstring": "*", "monolog/monolog": "^3.0"}}'
-            )
+            composer.write_text('{"require": {"php": ">=8.1", "ext-mbstring": "*", "monolog/monolog": "^3.0"}}')
             detector = ProjectDetector(tmpdir)
             ctx = detector.detect()
 
@@ -521,6 +502,7 @@ class TestREPLLanguageDetection:
     def test_detect_ruby_keywords(self):
         """Test detecting Ruby from message keywords."""
         from penguincode_cli.core.repl import REPLSession
+
         session = REPLSession.__new__(REPLSession)
         detected = session._detect_languages_in_message("How do I use rails routes?")
         assert "ruby" in detected
@@ -528,6 +510,7 @@ class TestREPLLanguageDetection:
     def test_detect_php_keywords(self):
         """Test detecting PHP from message keywords."""
         from penguincode_cli.core.repl import REPLSession
+
         session = REPLSession.__new__(REPLSession)
         detected = session._detect_languages_in_message("Fix the laravel migration")
         assert "php" in detected
@@ -535,6 +518,7 @@ class TestREPLLanguageDetection:
     def test_detect_dart_keywords(self):
         """Test detecting Dart from message keywords."""
         from penguincode_cli.core.repl import REPLSession
+
         session = REPLSession.__new__(REPLSession)
         detected = session._detect_languages_in_message("Build a flutter widget")
         assert "dart" in detected
@@ -561,9 +545,7 @@ class TestPathValidation:
 
         with TemporaryDirectory() as sandbox:
             tool = EditFileTool(working_dir=sandbox)
-            result = await tool.execute(
-                path="/etc/passwd", old_text="root", new_text="hacked"
-            )
+            result = await tool.execute(path="/etc/passwd", old_text="root", new_text="hacked")
             assert not result.success
             assert "outside working directory" in result.error
 
@@ -574,9 +556,7 @@ class TestPathValidation:
 
         with TemporaryDirectory() as sandbox:
             tool = WriteFileTool(working_dir=sandbox)
-            result = await tool.execute(
-                path=str(Path(sandbox) / "test.txt"), content="hello"
-            )
+            result = await tool.execute(path=str(Path(sandbox) / "test.txt"), content="hello")
             assert result.success
 
     @pytest.mark.asyncio
@@ -586,9 +566,7 @@ class TestPathValidation:
 
         with TemporaryDirectory() as tmpdir:
             tool = WriteFileTool()  # No working_dir
-            result = await tool.execute(
-                path=str(Path(tmpdir) / "test.txt"), content="hello"
-            )
+            result = await tool.execute(path=str(Path(tmpdir) / "test.txt"), content="hello")
             assert result.success
 
 
@@ -598,42 +576,49 @@ class TestBlockingCommandDetection:
     def test_flask_run_blocked(self):
         """Test that flask run is detected as blocking."""
         from penguincode_cli.tools.bash import BashTool
+
         assert BashTool._is_blocking_command("flask run")
         assert BashTool._is_blocking_command("flask run --port 5000")
 
     def test_python_app_blocked(self):
         """Test that python app.py is detected as blocking."""
         from penguincode_cli.tools.bash import BashTool
+
         assert BashTool._is_blocking_command("python app.py")
         assert BashTool._is_blocking_command("python3 app.py")
 
     def test_npm_start_blocked(self):
         """Test that npm start is detected as blocking."""
         from penguincode_cli.tools.bash import BashTool
+
         assert BashTool._is_blocking_command("npm start")
         assert BashTool._is_blocking_command("npm run dev")
 
     def test_rails_server_blocked(self):
         """Test that rails server is detected as blocking."""
         from penguincode_cli.tools.bash import BashTool
+
         assert BashTool._is_blocking_command("rails server")
         assert BashTool._is_blocking_command("rails s")
 
     def test_php_artisan_serve_blocked(self):
         """Test that php artisan serve is detected as blocking."""
         from penguincode_cli.tools.bash import BashTool
+
         assert BashTool._is_blocking_command("php artisan serve")
         assert BashTool._is_blocking_command("php -S localhost:8000")
 
     def test_docker_compose_up_blocked(self):
         """Test that docker compose up is blocked without -d."""
         from penguincode_cli.tools.bash import BashTool
+
         assert BashTool._is_blocking_command("docker compose up")
         assert not BashTool._is_blocking_command("docker compose up -d")
 
     def test_normal_commands_allowed(self):
         """Test that normal commands are not blocked."""
         from penguincode_cli.tools.bash import BashTool
+
         assert not BashTool._is_blocking_command("pytest")
         assert not BashTool._is_blocking_command("python -c 'print(1)'")
         assert not BashTool._is_blocking_command("npm test")
@@ -643,6 +628,7 @@ class TestBlockingCommandDetection:
     async def test_blocking_command_returns_warning(self):
         """Test that executing a blocking command returns warning instead of running."""
         from penguincode_cli.tools.bash import BashTool
+
         tool = BashTool()
         result = await tool.execute(command="flask run")
         assert result.success  # Returns success=True with warning
@@ -657,9 +643,13 @@ class TestEditLoopDetection:
         """Test that targeting the same file 4+ times triggers loop detection."""
         # This tests the Counter-based detection logic directly
         from collections import Counter
+
         recent_file_targets = [
-            "src/main.py", "src/main.py", "src/utils.py",
-            "src/main.py", "src/main.py",
+            "src/main.py",
+            "src/main.py",
+            "src/utils.py",
+            "src/main.py",
+            "src/main.py",
         ]
         last_targets = recent_file_targets[-8:]
         target_counts = Counter(last_targets)
@@ -669,8 +659,12 @@ class TestEditLoopDetection:
     def test_no_false_positive_on_different_files(self):
         """Test that editing different files doesn't trigger loop."""
         from collections import Counter
+
         recent_file_targets = [
-            "src/a.py", "src/b.py", "src/c.py", "src/d.py",
+            "src/a.py",
+            "src/b.py",
+            "src/c.py",
+            "src/d.py",
         ]
         last_targets = recent_file_targets[-8:]
         target_counts = Counter(last_targets)

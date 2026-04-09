@@ -11,12 +11,11 @@ from pathlib import Path
 
 import httpx
 import typer
-from rich.console import Console
-from rich.table import Table
-
 from penguincode_cli.config.settings import load_settings
 from penguincode_cli.core import start_repl
 from penguincode_cli.core.session import SessionManager
+from rich.console import Console
+from rich.table import Table
 
 app = typer.Typer(
     name="penguincode",
@@ -61,6 +60,7 @@ def chat(
     # Enable debug logging if requested
     if debug:
         from penguincode_cli.core.debug import LOG_FILE, enable_debug
+
         enable_debug()
         console.print(f"[yellow]Debug mode enabled - logging to {LOG_FILE}[/yellow]\n")
 
@@ -151,13 +151,15 @@ def launch(
     console.print(f"[dim]API: {api_url}[/dim]")
 
     try:
-        config = asyncio.run(bootstrap(
-            api_url=api_url,
-            license_key=license_key,
-            skip_models=skip_models,
-            skip_orgs=skip_orgs,
-            exec_opencode=not no_exec,
-        ))
+        config = asyncio.run(
+            bootstrap(
+                api_url=api_url,
+                license_key=license_key,
+                skip_models=skip_models,
+                skip_orgs=skip_orgs,
+                exec_opencode=not no_exec,
+            )
+        )
         if no_exec:
             tier = config.get("license", {}).get("tier", "community")
             agents = list(config.get("agents", {}).keys())

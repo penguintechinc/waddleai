@@ -5,49 +5,45 @@ OpenAI-compatible API proxy with routing, security, and token management
 Quart-based async HTTP server with gRPC sidecar for MarchProxy AILB.
 """
 
-import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+import sys
 
-from quart import Quart, request, jsonify, abort, Response
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
 import asyncio
-import aiohttp
-from typing import Optional, Dict, Any, List
-import json
 import time
 from datetime import datetime
-import logging
-import structlog
+from typing import Optional
 
+import aiohttp
+import structlog
+from penguin_aaa.audit.emitter import Emitter
+from penguin_aaa.middleware import AuditMiddleware, OIDCAuthMiddleware
 from penguin_dal import get_dal
-from shared.auth.rbac import RBACManager, AuthenticationError, AuthorizationError, Permission
+from prometheus_client import CONTENT_TYPE_LATEST
+from quart import Quart, Response, abort, jsonify, request
+
+from proxy.apps.proxy_server.grpc_server import ServerComponents, run_grpc_in_thread
+from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
 from shared.auth.penguin_auth import (
-    create_oidc_provider,
-    create_oidc_rp,
     build_rbac_enforcer,
     claims_to_user_context,
-    issue_token,
+    create_oidc_provider,
+    create_oidc_rp,
     verify_token,
 )
-from penguin_aaa.middleware import OIDCAuthMiddleware, AuditMiddleware
-from penguin_aaa.audit.emitter import Emitter
-from shared.security.prompt_security import create_security_scanner, Action
-from shared.utils.token_manager import create_token_manager
-from shared.utils.llm_connectors import create_llm_connection_manager
-from shared.utils.request_router import create_request_router, RoutingStrategy
-from shared.utils.memory_integration import create_memory_manager
-from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
-from shared.utils.metrics import get_proxy_metrics
+from shared.auth.rbac import AuthenticationError, Permission, RBACManager
+from shared.security.prompt_security import Action, create_security_scanner
 from shared.utils.health_checks import WaddleAIHealthMonitor
-from proxy.apps.proxy_server.grpc_server import run_grpc_in_thread, ServerComponents
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from shared.utils.llm_connectors import create_llm_connection_manager
+from shared.utils.memory_integration import create_memory_manager
+from shared.utils.metrics import get_proxy_metrics
+from shared.utils.request_router import RoutingStrategy, create_request_router
+from shared.utils.token_manager import create_token_manager
 
 # Configure structured logging
 structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="ISO"),
-        structlog.processors.JSONRenderer()
-    ],
+    processors=[structlog.processors.TimeStamper(fmt="ISO"), structlog.processors.JSONRenderer()],
     wrapper_class=structlog.stdlib.BoundLogger,
     logger_factory=structlog.stdlib.LoggerFactory(),
     cache_logger_on_first_use=True,
@@ -82,9 +78,9 @@ class ProxyServer:
 
         # Configuration
         self.config = {
-            'management_server_url': os.getenv('MANAGEMENT_SERVER_URL', 'http://localhost:8001'),
-            'security_policy': os.getenv('SECURITY_POLICY', 'balanced'),
-            'max_concurrent_requests': int(os.getenv('MAX_CONCURRENT_REQUESTS', '100')),
+            "management_server_url": os.getenv("MANAGEMENT_SERVER_URL", "http://localhost:8001"),
+            "security_policy": os.getenv("SECURITY_POLICY", "balanced"),
+            "max_concurrent_requests": int(os.getenv("MAX_CONCURRENT_REQUESTS", "100")),
         }
 
     async def startup(self):
@@ -92,7 +88,7 @@ class ProxyServer:
         logger.info("Starting WaddleAI Proxy Server")
 
         # Initialize database (pgvector-enabled PostgreSQL primary)
-        database_url = os.getenv('DATABASE_URL', 'postgresql://waddleai:password@localhost:5432/waddleai')
+        database_url = os.getenv("DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai")
         self.db = get_dal(database_url)
 
         # Initialize components
@@ -105,11 +101,12 @@ class ProxyServer:
         self.rbac_enforcer = build_rbac_enforcer()
         logger.info("penguin-aaa OIDC provider and RP initialized")
 
-        self.security_scanner = create_security_scanner(self.db, self.config['security_policy'])
+        self.security_scanner = create_security_scanner(self.db, self.config["security_policy"])
         self.token_manager = create_token_manager(self.db)
         self.llm_manager = create_llm_connection_manager(self.db)
         self.request_router = create_request_router(self.llm_manager, self.db)
         from shared.utils.memory_integration import ReadReplicaPool
+
         replica_pool = ReadReplicaPool.from_env("DATABASE_REPLICA_URL")
         self.memory_manager = create_memory_manager(
             backend="pgvector",
@@ -119,23 +116,22 @@ class ProxyServer:
 
         # Initialize HTTP session for external requests
         self.http_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=300),
-            connector=aiohttp.TCPConnector(limit=100)
+            timeout=aiohttp.ClientTimeout(total=300), connector=aiohttp.TCPConnector(limit=100)
         )
 
         # Initialize health monitoring
-        self.health_monitor = WaddleAIHealthMonitor('proxy')
-        self.health_monitor.add_database_check('database', self.db)
+        self.health_monitor = WaddleAIHealthMonitor("proxy")
+        self.health_monitor.add_database_check("database", self.db)
 
-        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-        self.health_monitor.add_redis_check('redis', redis_url)
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        self.health_monitor.add_redis_check("redis", redis_url)
 
         self.health_monitor.add_system_resources_check()
-        self.health_monitor.add_llm_providers_check('llm_providers', self.llm_manager)
+        self.health_monitor.add_llm_providers_check("llm_providers", self.llm_manager)
 
         # Add management server check
         mgmt_url = f"{self.config['management_server_url']}/healthz"
-        self.health_monitor.add_http_service_check('management_server', mgmt_url)
+        self.health_monitor.add_http_service_check("management_server", mgmt_url)
 
         # Initialize memory manager
         await self.memory_manager.initialize()
@@ -144,11 +140,11 @@ class ProxyServer:
         set_memory_manager(self.memory_manager)
 
         # Start gRPC server in a daemon thread for MarchProxy AILB
-        grpc_port = int(os.getenv('GRPC_PORT', '50051'))
+        grpc_port = int(os.getenv("GRPC_PORT", "50051"))
         components = ServerComponents(
-            routing_agent=getattr(self.request_router, 'routing_agent', None),
-            security_agent=getattr(self.security_scanner, 'security_agent', None),
-            usage_tracker=getattr(self.token_manager, 'usage_tracker', None),
+            routing_agent=getattr(self.request_router, "routing_agent", None),
+            security_agent=getattr(self.security_scanner, "security_agent", None),
+            usage_tracker=getattr(self.token_manager, "usage_tracker", None),
             memory_manager=self.memory_manager,
         )
         self.grpc_server = run_grpc_in_thread(
@@ -191,6 +187,7 @@ _PUBLIC_PATHS: set = {"/healthz", "/metrics", "/docs"}
 # Lifecycle hooks
 # ---------------------------------------------------------------------------
 
+
 @app.before_serving
 async def on_startup():
     """Initialize server components before accepting requests."""
@@ -219,6 +216,7 @@ async def on_shutdown():
 # CORS — manual after_request handler
 # ---------------------------------------------------------------------------
 
+
 @app.after_request
 async def add_cors_headers(response: Response) -> Response:
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -232,6 +230,7 @@ async def add_cors_headers(response: Response) -> Response:
 # Request metrics middleware
 # ---------------------------------------------------------------------------
 
+
 @app.before_request
 async def before_request_metrics():
     """Record request start time."""
@@ -241,7 +240,7 @@ async def before_request_metrics():
 @app.after_request
 async def after_request_metrics(response: Response) -> Response:
     """Record request duration metric."""
-    start_time = getattr(request, '_start_time', None)
+    start_time = getattr(request, "_start_time", None)
     if start_time is not None:
         duration = time.time() - start_time
         proxy_server.metrics.record_request(
@@ -256,6 +255,7 @@ async def after_request_metrics(response: Response) -> Response:
 # ---------------------------------------------------------------------------
 # Authentication helper
 # ---------------------------------------------------------------------------
+
 
 async def get_current_user():
     """Extract and validate user authentication from the current request.
@@ -300,11 +300,7 @@ async def get_current_user():
         abort(401, description="Authentication failed")
 
 
-def determine_target_model(
-    request_model: Optional[str],
-    user_context,
-    x_preferred_model: Optional[str] = None
-) -> str:
+def determine_target_model(request_model: Optional[str], user_context, x_preferred_model: Optional[str] = None) -> str:
     """
     Determine target model using hierarchy:
     1. Request model parameter (if provided)
@@ -336,9 +332,7 @@ def determine_target_model(
     # Priority 3: API key default_model
     if user_context.api_key_id:
         try:
-            api_key = proxy_server.db(
-                proxy_server.db.api_keys.id == user_context.api_key_id
-            ).select().first()
+            api_key = proxy_server.db(proxy_server.db.api_keys.id == user_context.api_key_id).select().first()
 
             if api_key and api_key.default_model:
                 logger.debug(f"Using API key default model: {api_key.default_model}")
@@ -348,9 +342,7 @@ def determine_target_model(
 
     # Priority 4: User default_model
     try:
-        user = proxy_server.db(
-            proxy_server.db.users.id == user_context.user_id
-        ).select().first()
+        user = proxy_server.db(proxy_server.db.users.id == user_context.user_id).select().first()
 
         if user and user.default_model:
             logger.debug(f"Using user default model: {user.default_model}")
@@ -360,9 +352,7 @@ def determine_target_model(
 
     # Priority 5: Organization default_model
     try:
-        org = proxy_server.db(
-            proxy_server.db.organizations.id == user_context.organization_id
-        ).select().first()
+        org = proxy_server.db(proxy_server.db.organizations.id == user_context.organization_id).select().first()
 
         if org and org.default_model:
             logger.debug(f"Using organization default model: {org.default_model}")
@@ -379,6 +369,7 @@ def determine_target_model(
 # ---------------------------------------------------------------------------
 # Health check endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.route("/healthz", methods=["GET"])
 async def health_check():
@@ -398,20 +389,18 @@ async def detailed_status():
             "database": {"status": "healthy"},
             "management_server": {"status": "unknown"},
             "security_scanner": {"status": "healthy" if proxy_server.security_scanner.policy.enabled else "disabled"},
-            "token_manager": {"status": "healthy"}
+            "token_manager": {"status": "healthy"},
         }
 
-        return jsonify({
-            "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.0.0",
-            "dependencies": dependencies,
-            "performance": {
-                "requests_per_minute": 0,
-                "avg_response_time": "0ms",
-                "error_rate": "0%"
+        return jsonify(
+            {
+                "status": "healthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "version": "1.0.0",
+                "dependencies": dependencies,
+                "performance": {"requests_per_minute": 0, "avg_response_time": "0ms", "error_rate": "0%"},
             }
-        })
+        )
     except Exception as e:
         logger.error("Health check failed", error=str(e))
         return jsonify({"status": "unhealthy", "error": str(e)}), 503
@@ -432,11 +421,12 @@ async def prometheus_metrics():
 # OpenAI Compatible API Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.route("/v1/chat/completions", methods=["POST"])
 async def chat_completions():
     """OpenAI-compatible chat completions endpoint"""
     start_time = time.time()
-    proxy_server.metrics.set_active_connections('requests_in_flight', 1)
+    proxy_server.metrics.set_active_connections("requests_in_flight", 1)
 
     user_context = await get_current_user()
     x_preferred_model = request.headers.get("X-Preferred-Model")
@@ -448,21 +438,22 @@ async def chat_completions():
         request_model = body.get("model")
 
         # Determine target model using hierarchy
-        model = determine_target_model(
-            request_model=request_model,
-            user_context=user_context,
-            x_preferred_model=x_preferred_model
-        ) or "gpt-3.5-turbo"  # Final fallback
+        model = (
+            determine_target_model(
+                request_model=request_model, user_context=user_context, x_preferred_model=x_preferred_model
+            )
+            or "gpt-3.5-turbo"
+        )  # Final fallback
 
         # Combine messages for security scanning
         prompt_text = "\n".join([msg.get("content", "") for msg in messages if msg.get("content")])
 
         # Security scanning
-        threats, sanitized_prompt = proxy_server.security_scanner.scan_prompt(
+        threats, _sanitized_prompt = proxy_server.security_scanner.scan_prompt(
             prompt_text,
             user_id=user_context.user_id,
             api_key_id=user_context.api_key_id,
-            ip_address=request.remote_addr
+            ip_address=request.remote_addr,
         )
 
         # Handle security threats
@@ -470,42 +461,54 @@ async def chat_completions():
             proxy_server.metrics.record_security_event(
                 event_type=threat.threat_type.value,
                 severity=threat.severity.value,
-                action=threat.suggested_action.value
+                action=threat.suggested_action.value,
             )
 
             if threat.suggested_action == Action.BLOCK:
-                return jsonify({
-                    "error": {
-                        "message": f"Request blocked due to security threat: {threat.description}",
-                        "type": "security_error"
-                    }
-                }), 400
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": f"Request blocked due to security threat: {threat.description}",
+                                "type": "security_error",
+                            }
+                        }
+                    ),
+                    400,
+                )
 
         # Check quota
         quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
         if not quota_ok:
-            return jsonify({
-                "error": {
-                    "message": f"Quota exceeded. Daily: {quota_info['daily']['used']}/{quota_info['daily']['limit']}, Monthly: {quota_info['monthly']['used']}/{quota_info['monthly']['limit']}",
-                    "type": "quota_exceeded"
-                }
-            }), 429
+            daily_usage = f"{quota_info['daily']['used']}/{quota_info['daily']['limit']}"
+            monthly_usage = f"{quota_info['monthly']['used']}/{quota_info['monthly']['limit']}"
+            error_msg = f"Quota exceeded. Daily: {daily_usage}, Monthly: {monthly_usage}"
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": error_msg,
+                            "type": "quota_exceeded",
+                        }
+                    }
+                ),
+                429,
+            )
 
         # Get session ID for memory (could be from headers or body)
-        session_id = body.get('session_id') or request.headers.get('X-Session-ID')
+        session_id = body.get("session_id") or request.headers.get("X-Session-ID")
 
         # Get conversation context from memory
         conversation_context = await proxy_server.memory_manager.get_conversation_context(
             user_id=user_context.user_id,
             organization_id=user_context.organization_id,
             current_messages=messages,
-            session_id=session_id
+            session_id=session_id,
         )
 
         # Enhance messages with memory context if available
         enhanced_messages = await proxy_server.memory_manager.enhance_messages_with_context(
-            messages=messages,
-            context=conversation_context
+            messages=messages, context=conversation_context
         )
 
         # Route request to appropriate LLM provider
@@ -513,18 +516,16 @@ async def chat_completions():
             response_text, routing_usage_info = await proxy_server.request_router.route_request(
                 model=model,
                 messages=enhanced_messages,
-                **{k: v for k, v in body.items() if k not in ['messages', 'model', 'session_id']}
+                **{k: v for k, v in body.items() if k not in ["messages", "model", "session_id"]},
             )
         except Exception as e:
             logger.error(f"LLM routing failed: {e}")
-            return jsonify({
-                "error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}
-            }), 503
+            return jsonify({"error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}}), 503
 
         # Extract provider and usage info from routing
-        actual_provider = routing_usage_info.get('provider', 'unknown')
-        input_tokens = routing_usage_info.get('input_tokens', 0)
-        output_tokens = routing_usage_info.get('output_tokens', 0)
+        actual_provider = routing_usage_info.get("provider", "unknown")
+        input_tokens = routing_usage_info.get("input_tokens", 0)
+        output_tokens = routing_usage_info.get("output_tokens", 0)
 
         # Process token usage with actual provider
         usage = proxy_server.token_manager.process_usage(
@@ -536,7 +537,7 @@ async def chat_completions():
             user_id=user_context.user_id,
             organization_id=user_context.organization_id,
             actual_input_tokens=input_tokens,
-            actual_output_tokens=output_tokens
+            actual_output_tokens=output_tokens,
         )
 
         # Update metrics
@@ -545,51 +546,50 @@ async def chat_completions():
             model=model,
             status="success",
             token_usage={
-                'input_tokens': input_tokens,
-                'output_tokens': output_tokens,
-                'waddleai_tokens': usage.waddleai_tokens,
-                'organization': user_context.organization_id,
-                'user': user_context.user_id
-            }
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "waddleai_tokens": usage.waddleai_tokens,
+                "organization": user_context.organization_id,
+                "user": user_context.user_id,
+            },
         )
 
         # Store conversation in memory (asynchronously, don't block response)
-        asyncio.ensure_future(proxy_server.memory_manager.add_conversation_turn(
-            user_id=user_context.user_id,
-            organization_id=user_context.organization_id,
-            messages=messages,  # Original messages without enhancement
-            response=response_text,
-            session_id=session_id,
-            metadata={
-                'model': model,
-                'provider': actual_provider,
-                'waddleai_tokens': usage.waddleai_tokens,
-                'llm_tokens_input': input_tokens,
-                'llm_tokens_output': output_tokens
-            }
-        ))
+        asyncio.ensure_future(
+            proxy_server.memory_manager.add_conversation_turn(
+                user_id=user_context.user_id,
+                organization_id=user_context.organization_id,
+                messages=messages,  # Original messages without enhancement
+                response=response_text,
+                session_id=session_id,
+                metadata={
+                    "model": model,
+                    "provider": actual_provider,
+                    "waddleai_tokens": usage.waddleai_tokens,
+                    "llm_tokens_input": input_tokens,
+                    "llm_tokens_output": output_tokens,
+                },
+            )
+        )
 
         # Return OpenAI-compatible response
-        return jsonify({
-            "id": f"chatcmpl-{int(time.time())}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": response_text
+        return jsonify(
+            {
+                "id": f"chatcmpl-{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": response_text}, "finish_reason": "stop"}
+                ],
+                "usage": {
+                    "prompt_tokens": usage.llm_tokens_input,
+                    "completion_tokens": usage.llm_tokens_output,
+                    "total_tokens": usage.llm_tokens_input + usage.llm_tokens_output,
+                    "waddleai_tokens": usage.waddleai_tokens,
                 },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": usage.llm_tokens_input,
-                "completion_tokens": usage.llm_tokens_output,
-                "total_tokens": usage.llm_tokens_input + usage.llm_tokens_output,
-                "waddleai_tokens": usage.waddleai_tokens
             }
-        })
+        )
 
     except Exception as e:
         logger.error("Chat completion failed", error=str(e), user=user_context.username)
@@ -597,17 +597,14 @@ async def chat_completions():
     finally:
         duration = time.time() - start_time
         proxy_server.metrics.record_request(
-            endpoint="/v1/chat/completions",
-            method="POST",
-            status_code=200,
-            duration=duration
+            endpoint="/v1/chat/completions", method="POST", status_code=200, duration=duration
         )
 
 
 @app.route("/v1/models", methods=["GET"])
 async def list_models():
     """List available models"""
-    user_context = await get_current_user()
+    await get_current_user()  # Authentication check
     try:
         # Get actual available models from connection links
         models = await proxy_server.llm_manager.list_all_models()
@@ -616,10 +613,7 @@ async def list_models():
         if not models:
             models = []
 
-        return jsonify({
-            "object": "list",
-            "data": models
-        })
+        return jsonify({"object": "list", "data": models})
     except Exception as e:
         logger.error("Failed to list models", error=str(e))
         return jsonify({"error": {"message": "Failed to list models", "type": "server_error"}}), 500
@@ -628,13 +622,12 @@ async def list_models():
 @app.route("/api/routing/stats", methods=["GET"])
 async def get_routing_stats():
     """Get LLM provider routing statistics"""
-    user_context = await get_current_user()
+    await get_current_user()  # Authentication check
     try:
         stats = proxy_server.request_router.get_provider_stats()
-        return jsonify({
-            "routing_strategy": proxy_server.request_router.default_strategy.value,
-            "provider_stats": stats
-        })
+        return jsonify(
+            {"routing_strategy": proxy_server.request_router.default_strategy.value, "provider_stats": stats}
+        )
     except Exception as e:
         logger.error(f"Failed to get routing stats: {e}")
         return jsonify({"error": {"message": "Failed to get routing stats", "type": "server_error"}}), 500
@@ -670,8 +663,7 @@ async def get_memory_stats():
     user_context = await get_current_user()
     try:
         stats = await proxy_server.memory_manager.get_memory_stats(
-            user_id=user_context.user_id,
-            organization_id=user_context.organization_id
+            user_id=user_context.user_id, organization_id=user_context.organization_id
         )
         return jsonify(stats)
     except Exception as e:
@@ -703,10 +695,7 @@ async def get_usage():
     """Get current API key usage stats"""
     user_context = await get_current_user()
     try:
-        stats = proxy_server.token_manager.get_usage_stats(
-            api_key_id=user_context.api_key_id,
-            days=30
-        )
+        stats = proxy_server.token_manager.get_usage_stats(api_key_id=user_context.api_key_id, days=30)
         return jsonify(stats)
     except Exception as e:
         logger.error("Failed to get usage stats", error=str(e))
@@ -719,10 +708,7 @@ async def get_quota():
     user_context = await get_current_user()
     try:
         quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
-        return jsonify({
-            "quota_ok": quota_ok,
-            **quota_info
-        })
+        return jsonify({"quota_ok": quota_ok, **quota_info})
     except Exception as e:
         logger.error("Failed to get quota info", error=str(e))
         return jsonify({"error": {"message": "Failed to get quota info", "type": "server_error"}}), 500
@@ -732,17 +718,19 @@ async def get_quota():
 # Claude Messages API endpoint (Anthropic-compatible)
 # ---------------------------------------------------------------------------
 
+
 @app.route("/v1/messages", methods=["POST"])
 async def claude_messages():
     """Anthropic Claude Messages API compatible endpoint"""
-    start_time = time.time()
-
     try:
         # Authenticate using x-api-key header or Authorization header
         x_api_key = request.headers.get("x-api-key")
         authorization = x_api_key or request.headers.get("Authorization")
         if not authorization:
-            return jsonify({"error": {"message": "x-api-key or Authorization header required", "type": "auth_error"}}), 401
+            return (
+                jsonify({"error": {"message": "x-api-key or Authorization header required", "type": "auth_error"}}),
+                401,
+            )
 
         # Remove 'Bearer ' prefix if present
         if authorization.startswith("Bearer "):
@@ -761,7 +749,6 @@ async def claude_messages():
         max_tokens = body.get("max_tokens", 1024)
         system_prompt = body.get("system", "")
         temperature = body.get("temperature", 1.0)
-        stream = body.get("stream", False)
 
         # Convert Claude Messages format to OpenAI format
         openai_messages = []
@@ -775,10 +762,7 @@ async def claude_messages():
             # Handle content array format (Claude uses array for multimodal)
             if isinstance(content, list):
                 # Concatenate text content from array
-                text_content = " ".join([
-                    item.get("text", "") for item in content
-                    if item.get("type") == "text"
-                ])
+                text_content = " ".join([item.get("text", "") for item in content if item.get("type") == "text"])
                 content = text_content
 
             openai_messages.append({"role": role, "content": content})
@@ -787,11 +771,11 @@ async def claude_messages():
         prompt_text = "\n".join([msg.get("content", "") for msg in openai_messages if msg.get("content")])
 
         # Security scanning
-        threats, sanitized_prompt = proxy_server.security_scanner.scan_prompt(
+        threats, _sanitized_prompt = proxy_server.security_scanner.scan_prompt(
             prompt_text,
             user_id=user_context.user_id,
             api_key_id=user_context.api_key_id,
-            ip_address=request.remote_addr
+            ip_address=request.remote_addr,
         )
 
         # Handle security threats
@@ -799,26 +783,39 @@ async def claude_messages():
             proxy_server.metrics.record_security_event(
                 event_type=threat.threat_type.value,
                 severity=threat.severity.value,
-                action=threat.suggested_action.value
+                action=threat.suggested_action.value,
             )
 
             if threat.suggested_action == Action.BLOCK:
-                return jsonify({
-                    "error": {
-                        "message": f"Request blocked due to security threat: {threat.description}",
-                        "type": "security_error"
-                    }
-                }), 400
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": f"Request blocked due to security threat: {threat.description}",
+                                "type": "security_error",
+                            }
+                        }
+                    ),
+                    400,
+                )
 
         # Check quota
         quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
         if not quota_ok:
-            return jsonify({
-                "error": {
-                    "message": f"Quota exceeded. Daily: {quota_info['daily']['used']}/{quota_info['daily']['limit']}, Monthly: {quota_info['monthly']['used']}/{quota_info['monthly']['limit']}",
-                    "type": "quota_exceeded"
-                }
-            }), 429
+            daily_usage = f"{quota_info['daily']['used']}/{quota_info['daily']['limit']}"
+            monthly_usage = f"{quota_info['monthly']['used']}/{quota_info['monthly']['limit']}"
+            error_msg = f"Quota exceeded. Daily: {daily_usage}, Monthly: {monthly_usage}"
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": error_msg,
+                            "type": "quota_exceeded",
+                        }
+                    }
+                ),
+                429,
+            )
 
         # Route request to appropriate LLM provider
         try:
@@ -826,18 +823,16 @@ async def claude_messages():
                 model=model,
                 messages=openai_messages,
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
             )
         except Exception as e:
             logger.error(f"LLM routing failed: {e}")
-            return jsonify({
-                "error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}
-            }), 503
+            return jsonify({"error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}}), 503
 
         # Extract provider and usage info
-        actual_provider = routing_usage_info.get('provider', 'unknown')
-        input_tokens = routing_usage_info.get('input_tokens', 0)
-        output_tokens = routing_usage_info.get('output_tokens', 0)
+        actual_provider = routing_usage_info.get("provider", "unknown")
+        input_tokens = routing_usage_info.get("input_tokens", 0)
+        output_tokens = routing_usage_info.get("output_tokens", 0)
 
         # Process token usage
         usage = proxy_server.token_manager.process_usage(
@@ -849,7 +844,7 @@ async def claude_messages():
             user_id=user_context.user_id,
             organization_id=user_context.organization_id,
             actual_input_tokens=input_tokens,
-            actual_output_tokens=output_tokens
+            actual_output_tokens=output_tokens,
         )
 
         # Update metrics
@@ -858,50 +853,46 @@ async def claude_messages():
             model=model,
             status="success",
             token_usage={
-                'input_tokens': input_tokens,
-                'output_tokens': output_tokens,
-                'waddleai_tokens': usage.waddleai_tokens,
-                'organization': user_context.organization_id,
-                'user': user_context.user_id
-            }
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "waddleai_tokens": usage.waddleai_tokens,
+                "organization": user_context.organization_id,
+                "user": user_context.user_id,
+            },
         )
 
         # Store conversation in memory (asynchronously)
-        asyncio.ensure_future(proxy_server.memory_manager.add_conversation_turn(
-            user_id=user_context.user_id,
-            organization_id=user_context.organization_id,
-            messages=openai_messages,
-            response=response_text,
-            session_id=None,
-            metadata={
-                'model': model,
-                'provider': actual_provider,
-                'waddleai_tokens': usage.waddleai_tokens,
-                'llm_tokens_input': input_tokens,
-                'llm_tokens_output': output_tokens,
-                'api_format': 'claude_messages'
-            }
-        ))
+        asyncio.ensure_future(
+            proxy_server.memory_manager.add_conversation_turn(
+                user_id=user_context.user_id,
+                organization_id=user_context.organization_id,
+                messages=openai_messages,
+                response=response_text,
+                session_id=None,
+                metadata={
+                    "model": model,
+                    "provider": actual_provider,
+                    "waddleai_tokens": usage.waddleai_tokens,
+                    "llm_tokens_input": input_tokens,
+                    "llm_tokens_output": output_tokens,
+                    "api_format": "claude_messages",
+                },
+            )
+        )
 
         # Return Claude Messages API compatible response
-        return jsonify({
-            "id": f"msg_{int(time.time() * 1000)}",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "text",
-                    "text": response_text
-                }
-            ],
-            "model": model,
-            "stop_reason": "end_turn",
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": usage.llm_tokens_input,
-                "output_tokens": usage.llm_tokens_output
+        return jsonify(
+            {
+                "id": f"msg_{int(time.time() * 1000)}",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": response_text}],
+                "model": model,
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": usage.llm_tokens_input, "output_tokens": usage.llm_tokens_output},
             }
-        })
+        )
 
     except Exception as e:
         logger.error("Claude messages API failed", error=str(e))

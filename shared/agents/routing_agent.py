@@ -105,10 +105,21 @@ class RoutingAgent:
 
         Returns one of ``"code"``, ``"ops"``, ``"data"``, or ``"general"``.
         """
-        code_tools = frozenset({
-            "python", "javascript", "typescript", "go", "rust", "java",
-            "cpp", "code_review", "debug", "test_write", "refactor",
-        })
+        code_tools = frozenset(
+            {
+                "python",
+                "javascript",
+                "typescript",
+                "go",
+                "rust",
+                "java",
+                "cpp",
+                "code_review",
+                "debug",
+                "test_write",
+                "refactor",
+            }
+        )
         ops_tools = frozenset({"bash", "devops", "file_edit"})
         data_tools = frozenset({"sql", "data_analysis"})
 

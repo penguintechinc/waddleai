@@ -40,9 +40,7 @@ class IsEmail(Validator[str, str]):
         r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$"
     )
 
-    def __init__(
-        self, normalize: bool = True, error_message: str | None = None
-    ) -> None:
+    def __init__(self, normalize: bool = True, error_message: str | None = None) -> None:
         self.normalize = normalize
         self.error_message = error_message or "Invalid email address"
 
@@ -117,9 +115,7 @@ class IsURL(Validator[str, str]):
             return ValidationResult.failure(self.error_message)
 
         if parsed.scheme.lower() not in self.allowed_schemes:
-            return ValidationResult.failure(
-                f"URL scheme must be one of: {', '.join(self.allowed_schemes)}"
-            )
+            return ValidationResult.failure(f"URL scheme must be one of: {', '.join(self.allowed_schemes)}")
 
         # Check netloc (hostname)
         if not parsed.netloc:
@@ -212,9 +208,7 @@ class IsHostname(Validator[str, str]):
 
     # RFC 1123 hostname pattern
     _HOSTNAME_PATTERN = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)$")  # Single label
-    _FULL_HOSTNAME_PATTERN = re.compile(
-        r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$"
-    )
+    _FULL_HOSTNAME_PATTERN = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$")
 
     def __init__(
         self,

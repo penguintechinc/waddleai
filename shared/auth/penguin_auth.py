@@ -2,26 +2,18 @@
 penguin-aaa integration for WaddleAI
 Provides OIDC token issuance, validation, and scope-based authorization
 """
+
 import os
+from datetime import UTC, datetime, timedelta
+from typing import List
+
 import jwt as _jwt
-from datetime import datetime, timedelta, UTC
-from dataclasses import dataclass, field
-from typing import Optional, List
-
-from penguin_aaa.authn import (
-    OIDCProvider,
-    OIDCProviderConfig,
-    OIDCRelyingParty,
-    OIDCRPConfig,
-    Claims,
-)
+from penguin_aaa.authn import Claims, OIDCProvider, OIDCProviderConfig, OIDCRelyingParty, OIDCRPConfig
+from penguin_aaa.authz.rbac import RBACEnforcer
+from penguin_aaa.authz.rbac import Role as AAARole
 from penguin_aaa.crypto.keystore import FileKeyStore, MemoryKeyStore
-from penguin_aaa.authz.rbac import RBACEnforcer, Role as AAARole
-from penguin_aaa.middleware import OIDCAuthMiddleware, AuditMiddleware
-from penguin_aaa.audit.emitter import Emitter
 
-from shared.auth.rbac import Role, ROLE_PERMISSIONS, UserContext, AuthenticationError
-
+from shared.auth.rbac import ROLE_PERMISSIONS, AuthenticationError, Role, UserContext
 
 # ---------------------------------------------------------------------------
 # Factory helpers
@@ -81,10 +73,7 @@ def user_context_to_claims(user_context: UserContext) -> Claims:
     """Convert WaddleAI UserContext to penguin-aaa Claims."""
     scopes: List[str] = []
     if isinstance(user_context.permissions, set):
-        scopes = [
-            p.value if hasattr(p, "value") else str(p)
-            for p in user_context.permissions
-        ]
+        scopes = [p.value if hasattr(p, "value") else str(p) for p in user_context.permissions]
     elif isinstance(user_context.permissions, list):
         scopes = [str(p) for p in user_context.permissions]
 
@@ -116,18 +105,10 @@ def claims_to_user_context(claims: Claims) -> UserContext:
 
     return UserContext(
         user_id=int(claims.sub) if claims.sub.isdigit() else 0,
-        username=(
-            claims.ext.get("username", claims.sub) if claims.ext else claims.sub
-        ),
+        username=(claims.ext.get("username", claims.sub) if claims.ext else claims.sub),
         role=role,
-        organization_id=(
-            int(claims.tenant)
-            if claims.tenant and claims.tenant.isdigit()
-            else 0
-        ),
-        managed_orgs=[
-            int(t) for t in (claims.teams or []) if t.isdigit()
-        ],
+        organization_id=(int(claims.tenant) if claims.tenant and claims.tenant.isdigit() else 0),
+        managed_orgs=[int(t) for t in (claims.teams or []) if t.isdigit()],
         permissions=permissions,
     )
 

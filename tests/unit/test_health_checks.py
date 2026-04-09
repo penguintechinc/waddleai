@@ -3,19 +3,21 @@ Comprehensive tests for health check system
 Tests all checker classes, status transitions, and the monitor
 """
 
-import pytest
 import asyncio
 from datetime import datetime
-from unittest.mock import Mock, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
+
 from shared.utils.health_checks import (
-    HealthStatus,
-    HealthCheckResult,
-    HealthChecker,
     DatabaseHealthChecker,
+    HealthChecker,
+    HealthCheckResult,
+    HealthStatus,
+    HTTPServiceHealthChecker,
+    LLMProviderHealthChecker,
     RedisHealthChecker,
     SystemResourcesHealthChecker,
-    LLMProviderHealthChecker,
-    HTTPServiceHealthChecker,
     WaddleAIHealthMonitor,
 )
 
@@ -99,9 +101,7 @@ class TestHealthChecker:
     async def test_check_calls_perform_check(self):
         """Test that check() calls _perform_check()"""
         checker = HealthChecker("test_checker")
-        checker._perform_check = AsyncMock(
-            return_value=(HealthStatus.HEALTHY, "OK", {})
-        )
+        checker._perform_check = AsyncMock(return_value=(HealthStatus.HEALTHY, "OK", {}))
 
         result = await checker.check()
 
@@ -128,9 +128,7 @@ class TestHealthChecker:
     async def test_check_captures_timestamp(self):
         """Test that check() captures ISO timestamp"""
         checker = HealthChecker("test")
-        checker._perform_check = AsyncMock(
-            return_value=(HealthStatus.HEALTHY, "OK", {})
-        )
+        checker._perform_check = AsyncMock(return_value=(HealthStatus.HEALTHY, "OK", {}))
 
         result = await checker.check()
 
@@ -188,13 +186,15 @@ class TestDatabaseHealthChecker:
 
         async def slow_perform():
             import time
+
             start_time = time.time()
             await asyncio.sleep(1.1)
             query_time = (time.time() - start_time) * 1000
-            return HealthStatus.DEGRADED, f"Database slow (query took {query_time:.1f}ms)", {
-                'query_time_ms': query_time,
-                'connection_pool_size': 5
-            }
+            return (
+                HealthStatus.DEGRADED,
+                f"Database slow (query took {query_time:.1f}ms)",
+                {"query_time_ms": query_time, "connection_pool_size": 5},
+            )
 
         checker._perform_check = slow_perform
         result = await checker.check()
@@ -251,14 +251,12 @@ class TestRedisHealthChecker:
         """Test Redis is HEALTHY when ping < 100ms"""
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(return_value=True)
-        mock_client.info = AsyncMock(return_value={
-            'connected_clients': 5,
-            'used_memory_human': '100M',
-            'redis_version': '7.0'
-        })
+        mock_client.info = AsyncMock(
+            return_value={"connected_clients": 5, "used_memory_human": "100M", "redis_version": "7.0"}
+        )
         mock_client.close = AsyncMock()
 
-        with patch('redis.asyncio.from_url', return_value=mock_client):
+        with patch("redis.asyncio.from_url", return_value=mock_client):
             checker = RedisHealthChecker("redis", "redis://localhost:6379")
             result = await checker.check()
 
@@ -279,10 +277,10 @@ class TestRedisHealthChecker:
             return True
 
         mock_client.ping = slow_ping
-        mock_client.info = AsyncMock(return_value={'connected_clients': 5})
+        mock_client.info = AsyncMock(return_value={"connected_clients": 5})
         mock_client.close = AsyncMock()
 
-        with patch('redis.asyncio.from_url', return_value=mock_client):
+        with patch("redis.asyncio.from_url", return_value=mock_client):
             checker = RedisHealthChecker("redis", "redis://localhost:6379")
             result = await checker.check()
 
@@ -297,7 +295,7 @@ class TestRedisHealthChecker:
         mock_client.ping = AsyncMock(return_value=False)
         mock_client.close = AsyncMock()
 
-        with patch('redis.asyncio.from_url', return_value=mock_client):
+        with patch("redis.asyncio.from_url", return_value=mock_client):
             checker = RedisHealthChecker("redis", "redis://localhost:6379")
             result = await checker.check()
 
@@ -311,7 +309,7 @@ class TestRedisHealthChecker:
         mock_client.ping = AsyncMock(side_effect=ConnectionError("Connection refused"))
         mock_client.close = AsyncMock()
 
-        with patch('redis.asyncio.from_url', return_value=mock_client):
+        with patch("redis.asyncio.from_url", return_value=mock_client):
             checker = RedisHealthChecker("redis", "redis://localhost:6379")
             result = await checker.check()
 
@@ -325,9 +323,9 @@ class TestRedisHealthChecker:
         mock_client.ping = AsyncMock(side_effect=ValueError("Test error"))
         mock_client.close = AsyncMock()
 
-        with patch('redis.asyncio.from_url', return_value=mock_client):
+        with patch("redis.asyncio.from_url", return_value=mock_client):
             checker = RedisHealthChecker("redis", "redis://localhost:6379")
-            result = await checker.check()
+            _ = await checker.check()
 
             mock_client.close.assert_called_once()
 
@@ -339,7 +337,7 @@ class TestRedisHealthChecker:
         mock_client.info = AsyncMock(return_value={})  # Empty info
         mock_client.close = AsyncMock()
 
-        with patch('redis.asyncio.from_url', return_value=mock_client):
+        with patch("redis.asyncio.from_url", return_value=mock_client):
             checker = RedisHealthChecker("redis", "redis://localhost:6379")
             result = await checker.check()
 
@@ -356,12 +354,12 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_healthy_all_green(self):
         """Test system is HEALTHY when all metrics below thresholds"""
-        with patch('psutil.cpu_percent', return_value=50.0), \
-             patch('psutil.virtual_memory') as mock_mem, \
-             patch('psutil.disk_usage') as mock_disk:
+        with patch("psutil.cpu_percent", return_value=50.0), patch("psutil.virtual_memory") as mock_mem, patch(
+            "psutil.disk_usage"
+        ) as mock_disk:
 
-            mock_mem.return_value = Mock(percent=60.0, available=500*1024**3)
-            mock_disk.return_value = Mock(percent=50.0, free=100*1024**3)
+            mock_mem.return_value = Mock(percent=60.0, available=500 * 1024**3)
+            mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
             checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
             result = await checker.check()
@@ -375,12 +373,12 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_degraded_single_issue_cpu(self):
         """Test system is DEGRADED when only CPU above threshold"""
-        with patch('psutil.cpu_percent', return_value=95.0), \
-             patch('psutil.virtual_memory') as mock_mem, \
-             patch('psutil.disk_usage') as mock_disk:
+        with patch("psutil.cpu_percent", return_value=95.0), patch("psutil.virtual_memory") as mock_mem, patch(
+            "psutil.disk_usage"
+        ) as mock_disk:
 
-            mock_mem.return_value = Mock(percent=60.0, available=500*1024**3)
-            mock_disk.return_value = Mock(percent=50.0, free=100*1024**3)
+            mock_mem.return_value = Mock(percent=60.0, available=500 * 1024**3)
+            mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
             checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
             result = await checker.check()
@@ -391,12 +389,12 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_degraded_single_issue_memory(self):
         """Test system is DEGRADED when only memory above threshold"""
-        with patch('psutil.cpu_percent', return_value=50.0), \
-             patch('psutil.virtual_memory') as mock_mem, \
-             patch('psutil.disk_usage') as mock_disk:
+        with patch("psutil.cpu_percent", return_value=50.0), patch("psutil.virtual_memory") as mock_mem, patch(
+            "psutil.disk_usage"
+        ) as mock_disk:
 
-            mock_mem.return_value = Mock(percent=95.0, available=10*1024**3)
-            mock_disk.return_value = Mock(percent=50.0, free=100*1024**3)
+            mock_mem.return_value = Mock(percent=95.0, available=10 * 1024**3)
+            mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
             checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
             result = await checker.check()
@@ -407,12 +405,12 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_degraded_single_issue_disk(self):
         """Test system is DEGRADED when disk > 95%"""
-        with patch('psutil.cpu_percent', return_value=50.0), \
-             patch('psutil.virtual_memory') as mock_mem, \
-             patch('psutil.disk_usage') as mock_disk:
+        with patch("psutil.cpu_percent", return_value=50.0), patch("psutil.virtual_memory") as mock_mem, patch(
+            "psutil.disk_usage"
+        ) as mock_disk:
 
-            mock_mem.return_value = Mock(percent=60.0, available=500*1024**3)
-            mock_disk.return_value = Mock(percent=96.0, free=5*1024**3)
+            mock_mem.return_value = Mock(percent=60.0, available=500 * 1024**3)
+            mock_disk.return_value = Mock(percent=96.0, free=5 * 1024**3)
 
             checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
             result = await checker.check()
@@ -423,12 +421,12 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_unhealthy_multiple_issues(self):
         """Test system is UNHEALTHY when multiple issues exist"""
-        with patch('psutil.cpu_percent', return_value=95.0), \
-             patch('psutil.virtual_memory') as mock_mem, \
-             patch('psutil.disk_usage') as mock_disk:
+        with patch("psutil.cpu_percent", return_value=95.0), patch("psutil.virtual_memory") as mock_mem, patch(
+            "psutil.disk_usage"
+        ) as mock_disk:
 
-            mock_mem.return_value = Mock(percent=95.0, available=10*1024**3)
-            mock_disk.return_value = Mock(percent=50.0, free=100*1024**3)
+            mock_mem.return_value = Mock(percent=95.0, available=10 * 1024**3)
+            mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
             checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
             result = await checker.check()
@@ -440,12 +438,12 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_unhealthy_cpu_memory_disk(self):
         """Test system is UNHEALTHY when all three metrics are issues"""
-        with patch('psutil.cpu_percent', return_value=95.0), \
-             patch('psutil.virtual_memory') as mock_mem, \
-             patch('psutil.disk_usage') as mock_disk:
+        with patch("psutil.cpu_percent", return_value=95.0), patch("psutil.virtual_memory") as mock_mem, patch(
+            "psutil.disk_usage"
+        ) as mock_disk:
 
-            mock_mem.return_value = Mock(percent=95.0, available=10*1024**3)
-            mock_disk.return_value = Mock(percent=96.0, free=5*1024**3)
+            mock_mem.return_value = Mock(percent=95.0, available=10 * 1024**3)
+            mock_disk.return_value = Mock(percent=96.0, free=5 * 1024**3)
 
             checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
             result = await checker.check()
@@ -455,12 +453,12 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_custom_thresholds(self):
         """Test custom CPU and memory thresholds"""
-        with patch('psutil.cpu_percent', return_value=80.0), \
-             patch('psutil.virtual_memory') as mock_mem, \
-             patch('psutil.disk_usage') as mock_disk:
+        with patch("psutil.cpu_percent", return_value=80.0), patch("psutil.virtual_memory") as mock_mem, patch(
+            "psutil.disk_usage"
+        ) as mock_disk:
 
-            mock_mem.return_value = Mock(percent=85.0, available=100*1024**3)
-            mock_disk.return_value = Mock(percent=50.0, free=100*1024**3)
+            mock_mem.return_value = Mock(percent=85.0, available=100 * 1024**3)
+            mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
             checker = SystemResourcesHealthChecker("system", cpu_threshold=85.0, memory_threshold=90.0)
             result = await checker.check()
@@ -470,7 +468,7 @@ class TestSystemResourcesHealthChecker:
     @pytest.mark.asyncio
     async def test_system_exception(self):
         """Test system check handles exceptions"""
-        with patch('psutil.cpu_percent', side_effect=OSError("psutil error")):
+        with patch("psutil.cpu_percent", side_effect=OSError("psutil error")):
             checker = SystemResourcesHealthChecker("system")
             result = await checker.check()
 
@@ -486,26 +484,30 @@ class TestLLMProviderHealthChecker:
     async def test_llm_all_healthy(self):
         """Test LLM is HEALTHY when all providers healthy"""
         mock_manager = AsyncMock()
-        mock_manager.health_check_all = AsyncMock(return_value={
-            'openai': {'status': 'healthy'},
-            'anthropic': {'status': 'healthy'},
-        })
+        mock_manager.health_check_all = AsyncMock(
+            return_value={
+                "openai": {"status": "healthy"},
+                "anthropic": {"status": "healthy"},
+            }
+        )
 
         checker = LLMProviderHealthChecker("llm", mock_manager)
         result = await checker.check()
 
         assert result.status == HealthStatus.HEALTHY
         assert "All 2 LLM providers healthy" in result.message
-        assert result.details['openai']['status'] == 'healthy'
+        assert result.details["openai"]["status"] == "healthy"
 
     @pytest.mark.asyncio
     async def test_llm_some_healthy(self):
         """Test LLM is DEGRADED when some providers healthy"""
         mock_manager = AsyncMock()
-        mock_manager.health_check_all = AsyncMock(return_value={
-            'openai': {'status': 'healthy'},
-            'anthropic': {'status': 'unhealthy', 'error': 'API down'},
-        })
+        mock_manager.health_check_all = AsyncMock(
+            return_value={
+                "openai": {"status": "healthy"},
+                "anthropic": {"status": "unhealthy", "error": "API down"},
+            }
+        )
 
         checker = LLMProviderHealthChecker("llm", mock_manager)
         result = await checker.check()
@@ -517,10 +519,12 @@ class TestLLMProviderHealthChecker:
     async def test_llm_all_unhealthy(self):
         """Test LLM is UNHEALTHY when all providers unhealthy"""
         mock_manager = AsyncMock()
-        mock_manager.health_check_all = AsyncMock(return_value={
-            'openai': {'status': 'unhealthy', 'error': 'API down'},
-            'anthropic': {'status': 'unhealthy', 'error': 'API down'},
-        })
+        mock_manager.health_check_all = AsyncMock(
+            return_value={
+                "openai": {"status": "unhealthy", "error": "API down"},
+                "anthropic": {"status": "unhealthy", "error": "API down"},
+            }
+        )
 
         checker = LLMProviderHealthChecker("llm", mock_manager)
         result = await checker.check()
@@ -558,7 +562,7 @@ class TestHTTPServiceHealthChecker:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('aiohttp.ClientSession', return_value=mock_session):
+        with patch("aiohttp.ClientSession", return_value=mock_session):
             checker = HTTPServiceHealthChecker("api", "http://localhost:8080/health")
             result = await checker.check()
 
@@ -584,7 +588,7 @@ class TestHTTPServiceHealthChecker:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('aiohttp.ClientSession', return_value=mock_session):
+        with patch("aiohttp.ClientSession", return_value=mock_session):
             checker = HTTPServiceHealthChecker("api", "http://localhost:8080/health")
             result = await checker.check()
 
@@ -604,7 +608,7 @@ class TestHTTPServiceHealthChecker:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('aiohttp.ClientSession', return_value=mock_session):
+        with patch("aiohttp.ClientSession", return_value=mock_session):
             checker = HTTPServiceHealthChecker("api", "http://localhost:8080/health")
             result = await checker.check()
 
@@ -623,7 +627,7 @@ class TestHTTPServiceHealthChecker:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('aiohttp.ClientSession', return_value=mock_session):
+        with patch("aiohttp.ClientSession", return_value=mock_session):
             checker = HTTPServiceHealthChecker("api", "http://localhost:8080/health", timeout=5)
             result = await checker.check()
 
@@ -642,7 +646,7 @@ class TestHTTPServiceHealthChecker:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('aiohttp.ClientSession', return_value=mock_session):
+        with patch("aiohttp.ClientSession", return_value=mock_session):
             checker = HTTPServiceHealthChecker("api", "http://localhost:8080/health")
             result = await checker.check()
 
@@ -662,7 +666,7 @@ class TestHTTPServiceHealthChecker:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('aiohttp.ClientSession') as mock_client_session:
+        with patch("aiohttp.ClientSession") as mock_client_session:
             mock_client_session.return_value = mock_session
             checker = HTTPServiceHealthChecker("api", "http://localhost:8080/health", timeout=30)
             result = await checker.check()
@@ -765,37 +769,41 @@ class TestWaddleAIHealthMonitor:
 
         mock_checker1 = AsyncMock(spec=HealthChecker)
         mock_checker1.name = "check1"
-        mock_checker1.check = AsyncMock(return_value=HealthCheckResult(
-            name="check1",
-            status=HealthStatus.HEALTHY,
-            message="OK",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker1.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check1",
+                status=HealthStatus.HEALTHY,
+                message="OK",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         mock_checker2 = AsyncMock(spec=HealthChecker)
         mock_checker2.name = "check2"
-        mock_checker2.check = AsyncMock(return_value=HealthCheckResult(
-            name="check2",
-            status=HealthStatus.HEALTHY,
-            message="OK",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker2.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check2",
+                status=HealthStatus.HEALTHY,
+                message="OK",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         monitor.checkers = [mock_checker1, mock_checker2]
 
         result = await monitor.check_all()
 
-        assert result['status'] == 'healthy'
-        assert result['service'] == 'service'
-        assert result['checks']['healthy'] == 2
-        assert result['checks']['degraded'] == 0
-        assert result['checks']['unhealthy'] == 0
-        assert 'check1' in result['results']
-        assert 'check2' in result['results']
+        assert result["status"] == "healthy"
+        assert result["service"] == "service"
+        assert result["checks"]["healthy"] == 2
+        assert result["checks"]["degraded"] == 0
+        assert result["checks"]["unhealthy"] == 0
+        assert "check1" in result["results"]
+        assert "check2" in result["results"]
 
     @pytest.mark.asyncio
     async def test_check_all_with_degraded(self):
@@ -804,34 +812,38 @@ class TestWaddleAIHealthMonitor:
 
         mock_checker1 = AsyncMock(spec=HealthChecker)
         mock_checker1.name = "check1"
-        mock_checker1.check = AsyncMock(return_value=HealthCheckResult(
-            name="check1",
-            status=HealthStatus.HEALTHY,
-            message="OK",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker1.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check1",
+                status=HealthStatus.HEALTHY,
+                message="OK",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         mock_checker2 = AsyncMock(spec=HealthChecker)
         mock_checker2.name = "check2"
-        mock_checker2.check = AsyncMock(return_value=HealthCheckResult(
-            name="check2",
-            status=HealthStatus.DEGRADED,
-            message="Slow",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker2.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check2",
+                status=HealthStatus.DEGRADED,
+                message="Slow",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         monitor.checkers = [mock_checker1, mock_checker2]
 
         result = await monitor.check_all()
 
-        assert result['status'] == 'degraded'
-        assert result['checks']['healthy'] == 1
-        assert result['checks']['degraded'] == 1
-        assert result['checks']['unhealthy'] == 0
+        assert result["status"] == "degraded"
+        assert result["checks"]["healthy"] == 1
+        assert result["checks"]["degraded"] == 1
+        assert result["checks"]["unhealthy"] == 0
 
     @pytest.mark.asyncio
     async def test_check_all_with_unhealthy(self):
@@ -840,32 +852,36 @@ class TestWaddleAIHealthMonitor:
 
         mock_checker1 = AsyncMock(spec=HealthChecker)
         mock_checker1.name = "check1"
-        mock_checker1.check = AsyncMock(return_value=HealthCheckResult(
-            name="check1",
-            status=HealthStatus.HEALTHY,
-            message="OK",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker1.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check1",
+                status=HealthStatus.HEALTHY,
+                message="OK",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         mock_checker2 = AsyncMock(spec=HealthChecker)
         mock_checker2.name = "check2"
-        mock_checker2.check = AsyncMock(return_value=HealthCheckResult(
-            name="check2",
-            status=HealthStatus.UNHEALTHY,
-            message="Failed",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker2.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check2",
+                status=HealthStatus.UNHEALTHY,
+                message="Failed",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         monitor.checkers = [mock_checker1, mock_checker2]
 
         result = await monitor.check_all()
 
-        assert result['status'] == 'unhealthy'
-        assert result['checks']['unhealthy'] == 1
+        assert result["status"] == "unhealthy"
+        assert result["checks"]["unhealthy"] == 1
 
     @pytest.mark.asyncio
     async def test_check_all_stores_last_results(self):
@@ -874,21 +890,23 @@ class TestWaddleAIHealthMonitor:
 
         mock_checker = AsyncMock(spec=HealthChecker)
         mock_checker.name = "check1"
-        mock_checker.check = AsyncMock(return_value=HealthCheckResult(
-            name="check1",
-            status=HealthStatus.HEALTHY,
-            message="OK",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check1",
+                status=HealthStatus.HEALTHY,
+                message="OK",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         monitor.checkers = [mock_checker]
 
         await monitor.check_all()
 
-        assert 'check1' in monitor.last_results
-        assert monitor.last_results['check1'].name == 'check1'
+        assert "check1" in monitor.last_results
+        assert monitor.last_results["check1"].name == "check1"
 
     @pytest.mark.asyncio
     async def test_check_all_handles_exception(self):
@@ -903,9 +921,9 @@ class TestWaddleAIHealthMonitor:
 
         result = await monitor.check_all()
 
-        assert result['checks']['unhealthy'] == 1
-        assert 'check1' in result['results']
-        assert result['results']['check1']['status'] == 'unhealthy'
+        assert result["checks"]["unhealthy"] == 1
+        assert "check1" in result["results"]
+        assert result["results"]["check1"]["status"] == "unhealthy"
 
     @pytest.mark.asyncio
     async def test_check_single_found(self):
@@ -914,22 +932,24 @@ class TestWaddleAIHealthMonitor:
 
         mock_checker = AsyncMock(spec=HealthChecker)
         mock_checker.name = "check1"
-        mock_checker.check = AsyncMock(return_value=HealthCheckResult(
-            name="check1",
-            status=HealthStatus.HEALTHY,
-            message="OK",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check1",
+                status=HealthStatus.HEALTHY,
+                message="OK",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         monitor.checkers = [mock_checker]
 
         result = await monitor.check_single("check1")
 
         assert result is not None
-        assert result['name'] == 'check1'
-        assert result['status'] == 'healthy'
+        assert result["name"] == "check1"
+        assert result["status"] == "healthy"
 
     @pytest.mark.asyncio
     async def test_check_single_not_found(self):
@@ -951,20 +971,22 @@ class TestWaddleAIHealthMonitor:
 
         mock_checker = AsyncMock(spec=HealthChecker)
         mock_checker.name = "check1"
-        mock_checker.check = AsyncMock(return_value=HealthCheckResult(
-            name="check1",
-            status=HealthStatus.HEALTHY,
-            message="OK",
-            details={},
-            timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
-        ))
+        mock_checker.check = AsyncMock(
+            return_value=HealthCheckResult(
+                name="check1",
+                status=HealthStatus.HEALTHY,
+                message="OK",
+                details={},
+                timestamp="2025-01-01T00:00:00",
+                duration_ms=10.0,
+            )
+        )
 
         monitor.checkers = [mock_checker]
 
         await monitor.check_single("check1")
 
-        assert 'check1' in monitor.last_results
+        assert "check1" in monitor.last_results
 
     def test_get_last_results_empty(self):
         """Test get_last_results when no checks performed"""
@@ -972,10 +994,10 @@ class TestWaddleAIHealthMonitor:
 
         result = monitor.get_last_results()
 
-        assert result['service'] == 'service'
-        assert result['status'] == 'unknown'
-        assert 'No health checks performed' in result['message']
-        assert result['results'] == {}
+        assert result["service"] == "service"
+        assert result["status"] == "unknown"
+        assert "No health checks performed" in result["message"]
+        assert result["results"] == {}
 
     def test_get_last_results_with_results(self):
         """Test get_last_results with stored results"""
@@ -987,7 +1009,7 @@ class TestWaddleAIHealthMonitor:
             message="OK",
             details={},
             timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
+            duration_ms=10.0,
         )
         result2 = HealthCheckResult(
             name="check2",
@@ -995,18 +1017,18 @@ class TestWaddleAIHealthMonitor:
             message="Slow",
             details={},
             timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
+            duration_ms=10.0,
         )
 
         monitor.last_results = {"check1": result1, "check2": result2}
 
         results = monitor.get_last_results()
 
-        assert results['status'] == 'degraded'
-        assert 'check1' in results['results']
-        assert 'check2' in results['results']
-        assert results['results']['check1']['status'] == 'healthy'
-        assert results['results']['check2']['status'] == 'degraded'
+        assert results["status"] == "degraded"
+        assert "check1" in results["results"]
+        assert "check2" in results["results"]
+        assert results["results"]["check1"]["status"] == "healthy"
+        assert results["results"]["check2"]["status"] == "degraded"
 
     def test_get_last_results_all_unhealthy(self):
         """Test get_last_results with unhealthy check"""
@@ -1018,14 +1040,14 @@ class TestWaddleAIHealthMonitor:
             message="Failed",
             details={},
             timestamp="2025-01-01T00:00:00",
-            duration_ms=10.0
+            duration_ms=10.0,
         )
 
         monitor.last_results = {"check1": result}
 
         results = monitor.get_last_results()
 
-        assert results['status'] == 'unhealthy'
+        assert results["status"] == "unhealthy"
 
 
 if __name__ == "__main__":

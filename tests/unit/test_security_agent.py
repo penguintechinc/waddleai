@@ -1,16 +1,10 @@
 """Unit tests for SecurityAgent (external dependencies mocked)."""
 
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import AsyncMock, Mock, patch, MagicMock
-from dataclasses import dataclass
-from typing import List, Optional
 
-from shared.agents.security_agent import (
-    SecurityAgent,
-    SecurityDecision,
-    _TOOL_SENSITIVITY,
-)
-
+from shared.agents.security_agent import _TOOL_SENSITIVITY, SecurityAgent, SecurityDecision
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -124,6 +118,7 @@ def test_regex_risk_score_with_threats() -> None:
     mock_threat.suggested_action.name = "BLOCK"
     # Match the Action.BLOCK comparison
     from shared.security.prompt_security import Action
+
     mock_threat.suggested_action = Action.BLOCK
     mock_threat.matched_patterns = ["rm -rf /"]
     mock_threat.threat_type = Mock()

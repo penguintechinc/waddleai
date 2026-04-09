@@ -5,4 +5,4 @@ Provides gRPC clients for MarchProxy AILB ModuleService
 
 from .client import AILBModuleClient
 
-__all__ = ['AILBModuleClient']
+__all__ = ["AILBModuleClient"]

@@ -12,6 +12,7 @@ from .models import Language
 @dataclass
 class DocSource:
     """Documentation source configuration."""
+
     base_url: str
     doc_format: str = "html"  # html, markdown, rst
     sitemap_url: str | None = None
@@ -146,7 +147,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
         base_url="https://boto3.amazonaws.com/v1/documentation/api/latest/",
         api_docs_path="reference/services/",
     ),
-
     # JavaScript/TypeScript libraries
     "react": DocSource(
         base_url="https://react.dev/",
@@ -190,7 +190,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
         api_docs_path="api/",
         guide_path="guide/",
     ),
-
     # Go libraries
     "gin": DocSource(
         base_url="https://gin-gonic.com/docs/",
@@ -205,7 +204,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
     "gorm": DocSource(
         base_url="https://gorm.io/docs/",
     ),
-
     # Rust libraries
     "tokio": DocSource(
         base_url="https://tokio.rs/tokio/",
@@ -223,7 +221,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
     "reqwest": DocSource(
         base_url="https://docs.rs/reqwest/latest/reqwest/",
     ),
-
     # OpenTofu/Terraform providers
     "aws": DocSource(
         base_url="https://registry.terraform.io/providers/hashicorp/aws/latest/docs",
@@ -265,7 +262,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
     "tls": DocSource(
         base_url="https://registry.terraform.io/providers/hashicorp/tls/latest/docs",
     ),
-
     # Ansible collections
     "ansible.builtin": DocSource(
         base_url="https://docs.ansible.com/ansible/latest/collections/ansible/builtin/",
@@ -306,7 +302,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
     "kubernetes.core": DocSource(
         base_url="https://docs.ansible.com/ansible/latest/collections/kubernetes/core/",
     ),
-
     # Ruby libraries
     "rails": DocSource(
         base_url="https://guides.rubyonrails.org/",
@@ -325,7 +320,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
         base_url="https://bundler.io/docs.html",
         guide_path="guides/",
     ),
-
     # PHP libraries
     "laravel": DocSource(
         base_url="https://laravel.com/docs/",
@@ -342,7 +336,6 @@ LIBRARY_DOCS: dict[str, DocSource] = {
         base_url="https://twig.symfony.com/doc/3.x/",
         api_docs_path="api.html",
     ),
-
     # Flutter/Dart libraries
     "flutter": DocSource(
         base_url="https://docs.flutter.dev/",
@@ -368,16 +361,16 @@ LIBRARY_DOCS: dict[str, DocSource] = {
 def get_doc_source(library_name: str) -> DocSource | None:
     """Get documentation source for a library."""
     # Normalize library name (lowercase, handle common variations)
-    normalized = library_name.lower().replace('-', '_').replace('.', '_')
+    normalized = library_name.lower().replace("-", "_").replace(".", "_")
 
     # Direct lookup
     if normalized in LIBRARY_DOCS:
         return LIBRARY_DOCS[normalized]
 
     # Try without common prefixes
-    for prefix in ['python_', 'py_', 'node_', 'go_', 'rust_']:
+    for prefix in ["python_", "py_", "node_", "go_", "rust_"]:
         if normalized.startswith(prefix):
-            without_prefix = normalized[len(prefix):]
+            without_prefix = normalized[len(prefix) :]
             if without_prefix in LIBRARY_DOCS:
                 return LIBRARY_DOCS[without_prefix]
 
@@ -389,11 +382,7 @@ def get_language_doc_source(language: Language) -> DocSource | None:
     return LANGUAGE_DOCS.get(language)
 
 
-def get_priority_docs_for_project(
-    detected_libraries: list,
-    priority_list: list,
-    max_count: int = 20
-) -> list:
+def get_priority_docs_for_project(detected_libraries: list, priority_list: list, max_count: int = 20) -> list:
     """
     Get prioritized list of libraries to index.
 
@@ -409,16 +398,10 @@ def get_priority_docs_for_project(
     priority_set = {name.lower() for name in priority_list}
 
     # Priority libraries that are detected
-    priority_detected = [
-        lib for lib in detected_libraries
-        if lib.name.lower() in priority_set
-    ]
+    priority_detected = [lib for lib in detected_libraries if lib.name.lower() in priority_set]
 
     # Non-priority libraries that are detected
-    other_detected = [
-        lib for lib in detected_libraries
-        if lib.name.lower() not in priority_set
-    ]
+    other_detected = [lib for lib in detected_libraries if lib.name.lower() not in priority_set]
 
     # Combine, respecting max count
     result = priority_detected + other_detected

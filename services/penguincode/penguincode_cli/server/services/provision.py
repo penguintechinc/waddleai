@@ -7,9 +7,8 @@ license tier, client platform, and GPU capabilities.
 import logging
 from typing import Any
 
-from quart import Blueprint, jsonify, request
-
 from penguincode_cli.server.models.config_store import ConfigStore
+from quart import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +96,7 @@ def _filter_by_tier(provision: dict, tier: str) -> dict:
     Community tier only gets foreman + executor + explorer (3 agents).
     """
     if tier == "community":
-        provision["agents"] = {
-            k: v for k, v in provision["agents"].items()
-            if k in COMMUNITY_AGENTS
-        }
+        provision["agents"] = {k: v for k, v in provision["agents"].items() if k in COMMUNITY_AGENTS}
         # Remove non-community MCP servers
         provision["mcp_servers"] = []
         provision["plugins"] = []
@@ -117,7 +113,14 @@ def _filter_models_by_gpu(models: list[dict], vram_mb: int) -> list[dict]:
     for m in models:
         entry = dict(m)
         # If client VRAM is small, mark large models as not required
-        if vram_mb < 4096 and "13b" in m["name"] or vram_mb < 8192 and "34b" in m["name"] or vram_mb < 16384 and "70b" in m["name"]:
+        if (
+            vram_mb < 4096
+            and "13b" in m["name"]
+            or vram_mb < 8192
+            and "34b" in m["name"]
+            or vram_mb < 16384
+            and "70b" in m["name"]
+        ):
             entry["required"] = False
         filtered.append(entry)
     return filtered
@@ -161,7 +164,8 @@ async def provision():
     # 4. Filter models by GPU
     if vram_mb > 0:
         response["ollama"]["models"] = _filter_models_by_gpu(
-            response["ollama"]["models"], vram_mb,
+            response["ollama"]["models"],
+            vram_mb,
         )
 
     logger.info(

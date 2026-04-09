@@ -6,13 +6,11 @@ Manages Ollama deployments in two modes:
 - Orchestrated: Directly manage containers via Docker API
 """
 
-import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 import httpx
 import yaml
@@ -22,13 +20,15 @@ logger = logging.getLogger(__name__)
 
 class DeploymentMode(str, Enum):
     """Ollama deployment management mode"""
-    MANUAL = "manual"           # Generate configs only
+
+    MANUAL = "manual"  # Generate configs only
     ORCHESTRATED = "orchestrated"  # Manage containers directly
-    BOTH = "both"               # Support both modes
+    BOTH = "both"  # Support both modes
 
 
 class DeploymentStatus(str, Enum):
     """Ollama deployment status"""
+
     PENDING = "pending"
     RUNNING = "running"
     STOPPED = "stopped"
@@ -39,6 +39,7 @@ class DeploymentStatus(str, Enum):
 
 class HealthStatus(str, Enum):
     """Ollama health status"""
+
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
     UNKNOWN = "unknown"
@@ -47,6 +48,7 @@ class HealthStatus(str, Enum):
 @dataclass
 class OllamaDeploymentConfig:
     """Configuration for an Ollama deployment"""
+
     name: str
     endpoint_url: str = "http://localhost:11434"
     deployment_type: str = "docker"  # docker, kubernetes, external
@@ -63,6 +65,7 @@ class OllamaDeploymentConfig:
 @dataclass
 class OllamaModel:
     """Ollama model information"""
+
     name: str
     size: int = 0
     digest: str = ""
@@ -73,6 +76,7 @@ class OllamaModel:
 @dataclass
 class PullStatus:
     """Model pull operation status"""
+
     model: str
     status: str
     progress: float = 0.0
@@ -89,10 +93,7 @@ class OllamaDeploymentManager:
     """
 
     def __init__(
-        self,
-        db,
-        mode: DeploymentMode = DeploymentMode.BOTH,
-        docker_host: str = "unix:///var/run/docker.sock"
+        self, db, mode: DeploymentMode = DeploymentMode.BOTH, docker_host: str = "unix:///var/run/docker.sock"
     ):
         self.db = db
         self.mode = mode
@@ -105,6 +106,7 @@ class OllamaDeploymentManager:
         if self._docker_client is None and self.mode != DeploymentMode.MANUAL:
             try:
                 import docker
+
                 self._docker_client = docker.from_env()
             except Exception as e:
                 logger.warning(f"Failed to initialize Docker client: {e}")
@@ -127,18 +129,12 @@ class OllamaDeploymentManager:
             endpoint_url=config.endpoint_url,
             deployment_type=config.deployment_type,
             docker_compose_config=self._generate_docker_config(config),
-            gpu_config={
-                "gpu_count": config.gpu_count,
-                "gpu_ids": config.gpu_ids
-            },
-            resource_limits={
-                "cpu_limit": config.cpu_limit,
-                "memory_limit": config.memory_limit
-            },
+            gpu_config={"gpu_count": config.gpu_count, "gpu_ids": config.gpu_ids},
+            resource_limits={"cpu_limit": config.cpu_limit, "memory_limit": config.memory_limit},
             status="pending",
             health_status="unknown",
             auto_start=config.auto_start,
-            created_at=datetime.utcnow()
+            created_at=datetime.utcnow(),
         )
         db.commit()
 
@@ -147,14 +143,10 @@ class OllamaDeploymentManager:
             "success": True,
             "deployment_id": deployment_id,
             "name": config.name,
-            "message": "Deployment created successfully"
+            "message": "Deployment created successfully",
         }
 
-    def update_deployment(
-        self,
-        deployment_id: int,
-        config: OllamaDeploymentConfig
-    ) -> Dict[str, Any]:
+    def update_deployment(self, deployment_id: int, config: OllamaDeploymentConfig) -> Dict[str, Any]:
         """Update an existing Ollama deployment"""
         db = self.db
 
@@ -167,24 +159,14 @@ class OllamaDeploymentManager:
             endpoint_url=config.endpoint_url,
             deployment_type=config.deployment_type,
             docker_compose_config=self._generate_docker_config(config),
-            gpu_config={
-                "gpu_count": config.gpu_count,
-                "gpu_ids": config.gpu_ids
-            },
-            resource_limits={
-                "cpu_limit": config.cpu_limit,
-                "memory_limit": config.memory_limit
-            },
-            auto_start=config.auto_start
+            gpu_config={"gpu_count": config.gpu_count, "gpu_ids": config.gpu_ids},
+            resource_limits={"cpu_limit": config.cpu_limit, "memory_limit": config.memory_limit},
+            auto_start=config.auto_start,
         )
         db.commit()
 
         logger.info(f"Updated Ollama deployment: {config.name}")
-        return {
-            "success": True,
-            "deployment_id": deployment_id,
-            "message": "Deployment updated successfully"
-        }
+        return {"success": True, "deployment_id": deployment_id, "message": "Deployment updated successfully"}
 
     def delete_deployment(self, deployment_id: int) -> Dict[str, Any]:
         """Delete an Ollama deployment"""
@@ -206,10 +188,7 @@ class OllamaDeploymentManager:
         db.commit()
 
         logger.info(f"Deleted Ollama deployment: {deployment.name}")
-        return {
-            "success": True,
-            "message": "Deployment deleted successfully"
-        }
+        return {"success": True, "message": "Deployment deleted successfully"}
 
     # Config Generation (Manual Mode)
 
@@ -219,15 +198,9 @@ class OllamaDeploymentManager:
             "image": "ollama/ollama:latest",
             "container_name": f"waddleai-ollama-{config.name}",
             "ports": [f"{config.port}:11434"],
-            "environment": {
-                "OLLAMA_HOST": "0.0.0.0",
-                **config.environment
-            },
-            "volumes": [
-                f"ollama-{config.name}-data:/root/.ollama",
-                *[f"{k}:{v}" for k, v in config.volumes.items()]
-            ],
-            "restart": "unless-stopped"
+            "environment": {"OLLAMA_HOST": "0.0.0.0", **config.environment},
+            "volumes": [f"ollama-{config.name}-data:/root/.ollama", *[f"{k}:{v}" for k, v in config.volumes.items()]],
+            "restart": "unless-stopped",
         }
 
         # Add GPU support if configured
@@ -235,11 +208,7 @@ class OllamaDeploymentManager:
             service_config["deploy"] = {
                 "resources": {
                     "reservations": {
-                        "devices": [{
-                            "driver": "nvidia",
-                            "count": config.gpu_count,
-                            "capabilities": ["gpu"]
-                        }]
+                        "devices": [{"driver": "nvidia", "count": config.gpu_count, "capabilities": ["gpu"]}]
                     }
                 }
             }
@@ -266,12 +235,8 @@ class OllamaDeploymentManager:
 
         compose = {
             "version": "3.8",
-            "services": {
-                f"ollama-{deployment.name}": deployment.docker_compose_config
-            },
-            "volumes": {
-                f"ollama-{deployment.name}-data": {}
-            }
+            "services": {f"ollama-{deployment.name}": deployment.docker_compose_config},
+            "volumes": {f"ollama-{deployment.name}-data": {}},
         }
 
         return yaml.dump(compose, default_flow_style=False, sort_keys=False)
@@ -290,8 +255,9 @@ class OllamaDeploymentManager:
 
         # Parse port from endpoint URL
         from urllib.parse import urlparse
+
         parsed = urlparse(deployment.endpoint_url)
-        port = parsed.port or 11434
+        _ = parsed.port or 11434
 
         # Deployment manifest
         k8s_deployment = {
@@ -300,47 +266,33 @@ class OllamaDeploymentManager:
             "metadata": {
                 "name": f"ollama-{deployment.name}",
                 "namespace": "waddleai",
-                "labels": {
-                    "app": f"ollama-{deployment.name}",
-                    "managed-by": "waddleai"
-                }
+                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai"},
             },
             "spec": {
                 "replicas": 1,
-                "selector": {
-                    "matchLabels": {
-                        "app": f"ollama-{deployment.name}"
-                    }
-                },
+                "selector": {"matchLabels": {"app": f"ollama-{deployment.name}"}},
                 "template": {
-                    "metadata": {
-                        "labels": {
-                            "app": f"ollama-{deployment.name}"
-                        }
-                    },
+                    "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
                     "spec": {
-                        "containers": [{
-                            "name": "ollama",
-                            "image": "ollama/ollama:latest",
-                            "ports": [{"containerPort": 11434}],
-                            "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],
-                            "volumeMounts": [{
+                        "containers": [
+                            {
+                                "name": "ollama",
+                                "image": "ollama/ollama:latest",
+                                "ports": [{"containerPort": 11434}],
+                                "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],
+                                "volumeMounts": [{"name": "ollama-data", "mountPath": "/root/.ollama"}],
+                                "resources": {"limits": {}},
+                            }
+                        ],
+                        "volumes": [
+                            {
                                 "name": "ollama-data",
-                                "mountPath": "/root/.ollama"
-                            }],
-                            "resources": {
-                                "limits": {}
+                                "persistentVolumeClaim": {"claimName": f"ollama-{deployment.name}-pvc"},
                             }
-                        }],
-                        "volumes": [{
-                            "name": "ollama-data",
-                            "persistentVolumeClaim": {
-                                "claimName": f"ollama-{deployment.name}-pvc"
-                            }
-                        }]
-                    }
-                }
-            }
+                        ],
+                    },
+                },
+            },
         }
 
         # Add resource limits
@@ -356,37 +308,16 @@ class OllamaDeploymentManager:
         k8s_service = {
             "apiVersion": "v1",
             "kind": "Service",
-            "metadata": {
-                "name": f"ollama-{deployment.name}",
-                "namespace": "waddleai"
-            },
-            "spec": {
-                "selector": {
-                    "app": f"ollama-{deployment.name}"
-                },
-                "ports": [{
-                    "port": 11434,
-                    "targetPort": 11434
-                }]
-            }
+            "metadata": {"name": f"ollama-{deployment.name}", "namespace": "waddleai"},
+            "spec": {"selector": {"app": f"ollama-{deployment.name}"}, "ports": [{"port": 11434, "targetPort": 11434}]},
         }
 
         # PVC manifest
         k8s_pvc = {
             "apiVersion": "v1",
             "kind": "PersistentVolumeClaim",
-            "metadata": {
-                "name": f"ollama-{deployment.name}-pvc",
-                "namespace": "waddleai"
-            },
-            "spec": {
-                "accessModes": ["ReadWriteOnce"],
-                "resources": {
-                    "requests": {
-                        "storage": "50Gi"
-                    }
-                }
-            }
+            "metadata": {"name": f"ollama-{deployment.name}-pvc", "namespace": "waddleai"},
+            "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "50Gi"}}},
         }
 
         # Combine all manifests
@@ -416,38 +347,23 @@ class OllamaDeploymentManager:
             "metadata": {
                 "name": f"ollama-{deployment.name}-lb",
                 "namespace": "waddleai",
-                "labels": {
-                    "app": f"ollama-{deployment.name}",
-                    "managed-by": "waddleai",
-                    "service-type": "ollama"
-                },
+                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai", "service-type": "ollama"},
                 "annotations": {
                     # MetalLB configuration
                     "metallb.universe.tf/allow-shared-ip": f"ollama-{deployment.name}",
                     # Model routing information
                     "waddleai.io/models": ",".join(model_names),
                     "waddleai.io/deployment-id": str(deployment_id),
-                    "waddleai.io/deployment-name": deployment.name
-                }
+                    "waddleai.io/deployment-name": deployment.name,
+                },
             },
             "spec": {
                 "type": "LoadBalancer",
-                "selector": {
-                    "app": f"ollama-{deployment.name}"
-                },
-                "ports": [{
-                    "name": "ollama-api",
-                    "protocol": "TCP",
-                    "port": 11434,
-                    "targetPort": 11434
-                }],
+                "selector": {"app": f"ollama-{deployment.name}"},
+                "ports": [{"name": "ollama-api", "protocol": "TCP", "port": 11434, "targetPort": 11434}],
                 "sessionAffinity": "ClientIP",
-                "sessionAffinityConfig": {
-                    "clientIP": {
-                        "timeoutSeconds": 3600
-                    }
-                }
-            }
+                "sessionAffinityConfig": {"clientIP": {"timeoutSeconds": 3600}},
+            },
         }
 
         return yaml.dump(service, default_flow_style=False)
@@ -489,7 +405,7 @@ class OllamaDeploymentManager:
                         "app": f"ollama-{deployment.name}",
                         "managed-by": "waddleai",
                         "service-type": "ollama",
-                        "model": model.model_name
+                        "model": model.model_name,
                     },
                     "annotations": {
                         # MetalLB configuration - unique IP per model
@@ -499,27 +415,16 @@ class OllamaDeploymentManager:
                         "waddleai.io/model-tag": model.model_tag or "latest",
                         "waddleai.io/deployment-id": str(deployment_id),
                         "waddleai.io/deployment-name": deployment.name,
-                        "waddleai.io/model-id": str(model.id)
-                    }
+                        "waddleai.io/model-id": str(model.id),
+                    },
                 },
                 "spec": {
                     "type": "LoadBalancer",
-                    "selector": {
-                        "app": f"ollama-{deployment.name}"
-                    },
-                    "ports": [{
-                        "name": "ollama-api",
-                        "protocol": "TCP",
-                        "port": 11434,
-                        "targetPort": 11434
-                    }],
+                    "selector": {"app": f"ollama-{deployment.name}"},
+                    "ports": [{"name": "ollama-api", "protocol": "TCP", "port": 11434, "targetPort": 11434}],
                     "sessionAffinity": "ClientIP",
-                    "sessionAffinityConfig": {
-                        "clientIP": {
-                            "timeoutSeconds": 3600
-                        }
-                    }
-                }
+                    "sessionAffinityConfig": {"clientIP": {"timeoutSeconds": 3600}},
+                },
             }
 
             services.append(service)
@@ -534,7 +439,7 @@ class OllamaDeploymentManager:
         """
         db = self.db
 
-        deployments = db(db.ollama_deployments.status.belongs(['running', 'pending'])).select()
+        deployments = db(db.ollama_deployments.status.belongs(["running", "pending"])).select()
 
         all_services = []
 
@@ -544,6 +449,7 @@ class OllamaDeploymentManager:
             if model_services_yaml:
                 # Parse and add to list
                 import yaml
+
                 services = list(yaml.safe_load_all(model_services_yaml))
                 all_services.extend(services)
 
@@ -586,7 +492,7 @@ class OllamaDeploymentManager:
                     "detach": True,
                     "environment": config.get("environment", {}),
                     "ports": {"11434/tcp": deployment.endpoint_url.split(":")[-1] or 11434},
-                    "restart_policy": {"Name": "unless-stopped"}
+                    "restart_policy": {"Name": "unless-stopped"},
                 }
 
                 # Add volumes
@@ -601,10 +507,7 @@ class OllamaDeploymentManager:
                 self.docker_client.containers.run(**run_params)
 
             # Update status
-            db(db.ollama_deployments.id == deployment_id).update(
-                status="running",
-                health_status="healthy"
-            )
+            db(db.ollama_deployments.id == deployment_id).update(status="running", health_status="healthy")
             db.commit()
 
             logger.info(f"Started Ollama deployment: {deployment.name}")
@@ -612,10 +515,7 @@ class OllamaDeploymentManager:
 
         except Exception as e:
             logger.error(f"Failed to start deployment: {e}")
-            db(db.ollama_deployments.id == deployment_id).update(
-                status="error",
-                health_status="unhealthy"
-            )
+            db(db.ollama_deployments.id == deployment_id).update(status="error", health_status="unhealthy")
             db.commit()
             return {"success": False, "error": str(e)}
 
@@ -637,10 +537,7 @@ class OllamaDeploymentManager:
             container = self.docker_client.containers.get(container_name)
             container.stop()
 
-            db(db.ollama_deployments.id == deployment_id).update(
-                status="stopped",
-                health_status="unknown"
-            )
+            db(db.ollama_deployments.id == deployment_id).update(status="stopped", health_status="unknown")
             db.commit()
 
             logger.info(f"Stopped Ollama deployment: {deployment.name}")
@@ -694,8 +591,7 @@ class OllamaDeploymentManager:
 
                 # Update health status
                 db(db.ollama_deployments.id == deployment_id).update(
-                    health_status="healthy" if healthy else "unhealthy",
-                    last_health_check=datetime.utcnow()
+                    health_status="healthy" if healthy else "unhealthy", last_health_check=datetime.utcnow()
                 )
                 db.commit()
 
@@ -703,19 +599,14 @@ class OllamaDeploymentManager:
                     "healthy": healthy,
                     "status": "healthy" if healthy else "unhealthy",
                     "endpoint": deployment.endpoint_url,
-                    "checked_at": datetime.utcnow().isoformat()
+                    "checked_at": datetime.utcnow().isoformat(),
                 }
         except Exception as e:
             db(db.ollama_deployments.id == deployment_id).update(
-                health_status="unhealthy",
-                last_health_check=datetime.utcnow()
+                health_status="unhealthy", last_health_check=datetime.utcnow()
             )
             db.commit()
-            return {
-                "healthy": False,
-                "status": "error",
-                "error": str(e)
-            }
+            return {"healthy": False, "status": "error", "error": str(e)}
 
     # Model Management
 
@@ -736,13 +627,15 @@ class OllamaDeploymentManager:
                 data = response.json()
                 models = []
                 for m in data.get("models", []):
-                    models.append(OllamaModel(
-                        name=m.get("name", ""),
-                        size=m.get("size", 0),
-                        digest=m.get("digest", ""),
-                        modified_at=m.get("modified_at", ""),
-                        details=m.get("details", {})
-                    ))
+                    models.append(
+                        OllamaModel(
+                            name=m.get("name", ""),
+                            size=m.get("size", 0),
+                            digest=m.get("digest", ""),
+                            modified_at=m.get("modified_at", ""),
+                            details=m.get("details", {}),
+                        )
+                    )
                 return models
         except Exception as e:
             logger.error(f"Failed to list models: {e}")
@@ -762,44 +655,29 @@ class OllamaDeploymentManager:
 
         try:
             with httpx.Client(timeout=3600.0) as client:  # Long timeout for model pulls
-                response = client.post(
-                    f"{deployment.endpoint_url}/api/pull",
-                    json={"name": model_name},
-                    timeout=3600.0
-                )
+                response = client.post(f"{deployment.endpoint_url}/api/pull", json={"name": model_name}, timeout=3600.0)
 
                 if response.status_code == 200:
                     # Track model in database
-                    existing = db(
-                        (db.ollama_models.deployment_id == deployment_id) &
-                        (db.ollama_models.name == model_name)
-                    ).select().first()
+                    existing = (
+                        db((db.ollama_models.deployment_id == deployment_id) & (db.ollama_models.name == model_name))
+                        .select()
+                        .first()
+                    )
 
                     if not existing:
                         db.ollama_models.insert(
-                            deployment_id=deployment_id,
-                            name=model_name,
-                            size=0,
-                            pulled_at=datetime.utcnow()
+                            deployment_id=deployment_id, name=model_name, size=0, pulled_at=datetime.utcnow()
                         )
 
                     db(db.ollama_deployments.id == deployment_id).update(status="running")
                     db.commit()
 
-                    return PullStatus(
-                        model=model_name,
-                        status="completed",
-                        progress=100.0,
-                        completed=True
-                    )
+                    return PullStatus(model=model_name, status="completed", progress=100.0, completed=True)
                 else:
                     db(db.ollama_deployments.id == deployment_id).update(status="running")
                     db.commit()
-                    return PullStatus(
-                        model=model_name,
-                        status="error",
-                        error=f"HTTP {response.status_code}"
-                    )
+                    return PullStatus(model=model_name, status="error", error=f"HTTP {response.status_code}")
 
         except Exception as e:
             logger.error(f"Failed to pull model: {e}")
@@ -817,16 +695,12 @@ class OllamaDeploymentManager:
 
         try:
             with httpx.Client(timeout=60.0) as client:
-                response = client.delete(
-                    f"{deployment.endpoint_url}/api/delete",
-                    json={"name": model_name}
-                )
+                response = client.delete(f"{deployment.endpoint_url}/api/delete", json={"name": model_name})
 
                 if response.status_code == 200:
                     # Remove from database
                     db(
-                        (db.ollama_models.deployment_id == deployment_id) &
-                        (db.ollama_models.name == model_name)
+                        (db.ollama_models.deployment_id == deployment_id) & (db.ollama_models.name == model_name)
                     ).delete()
                     db.commit()
                     return True

@@ -5,20 +5,21 @@ Supports Redis-based natural language routing instructions and routing LLM integ
 """
 
 import logging
-import asyncio
-import random
 import os
-import redis.asyncio as aioredis
-from typing import Dict, Any, List, Optional, Tuple
+import random
 from dataclasses import dataclass
-from enum import Enum
 from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
+
+import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
 
 class RoutingStrategy(Enum):
     """Routing strategies for LLM requests"""
+
     ROUND_ROBIN = "round_robin"
     COST_OPTIMIZED = "cost_optimized"
     LATENCY_OPTIMIZED = "latency_optimized"
@@ -30,6 +31,7 @@ class RoutingStrategy(Enum):
 @dataclass
 class ProviderStats:
     """Statistics for a provider"""
+
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
@@ -43,6 +45,7 @@ class ProviderStats:
 @dataclass
 class ModelConfig:
     """Configuration for model routing"""
+
     model_name: str
     preferred_providers: List[str]
     cost_per_token: Dict[str, float]  # Provider -> cost per token
@@ -80,8 +83,11 @@ class LLMRequestRouter:
         # Initialize provider stats
         self._initialize_provider_stats()
 
-        logger.info(f"Initialized LLMRequestRouter with routing_llm={self.routing_llm_model}, intelligent_routing={self.use_intelligent_routing}, rag_enabled={self.enable_rag}")
-    
+        logger.info(
+            f"Initialized LLMRequestRouter with routing_llm={self.routing_llm_model}, "
+            f"intelligent_routing={self.use_intelligent_routing}, rag_enabled={self.enable_rag}"
+        )
+
     def _load_model_configs(self):
         """Load model configurations from database"""
         try:
@@ -93,7 +99,7 @@ class LLMRequestRouter:
                     cost_per_token={"openai": 0.00003},
                     max_tokens=8192,
                     context_length=8192,
-                    capabilities=["chat", "completion", "reasoning"]
+                    capabilities=["chat", "completion", "reasoning"],
                 ),
                 "gpt-3.5-turbo": ModelConfig(
                     model_name="gpt-3.5-turbo",
@@ -101,7 +107,7 @@ class LLMRequestRouter:
                     cost_per_token={"openai": 0.0000015},
                     max_tokens=4096,
                     context_length=4096,
-                    capabilities=["chat", "completion"]
+                    capabilities=["chat", "completion"],
                 ),
                 "claude-3-opus-20240229": ModelConfig(
                     model_name="claude-3-opus-20240229",
@@ -109,7 +115,7 @@ class LLMRequestRouter:
                     cost_per_token={"anthropic": 0.000015},
                     max_tokens=200000,
                     context_length=200000,
-                    capabilities=["chat", "reasoning", "analysis"]
+                    capabilities=["chat", "reasoning", "analysis"],
                 ),
                 "claude-3-sonnet-20240229": ModelConfig(
                     model_name="claude-3-sonnet-20240229",
@@ -117,7 +123,7 @@ class LLMRequestRouter:
                     cost_per_token={"anthropic": 0.000003},
                     max_tokens=200000,
                     context_length=200000,
-                    capabilities=["chat", "reasoning"]
+                    capabilities=["chat", "reasoning"],
                 ),
                 "llama3": ModelConfig(
                     model_name="llama3",
@@ -125,12 +131,12 @@ class LLMRequestRouter:
                     cost_per_token={"ollama": 0.0},  # Local is free
                     max_tokens=4096,
                     context_length=4096,
-                    capabilities=["chat", "completion"]
-                )
+                    capabilities=["chat", "completion"],
+                ),
             }
         except Exception as e:
             logger.error(f"Failed to load model configs: {e}")
-    
+
     def _initialize_provider_stats(self):
         """Initialize statistics for all providers"""
         for provider_name in self.llm_manager.connectors:
@@ -140,10 +146,7 @@ class LLMRequestRouter:
                 self.round_robin_counters[provider_name] = 0
 
     async def enrich_request_with_rag_context(
-        self,
-        messages: List[Dict[str, str]],
-        collection: Optional[str] = None,
-        top_k: Optional[int] = None
+        self, messages: List[Dict[str, str]], collection: Optional[str] = None, top_k: Optional[int] = None
     ) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
         """
         Enrich request messages with RAG context from knowledge base
@@ -161,7 +164,7 @@ class LLMRequestRouter:
 
         try:
             # Extract query from user messages
-            user_messages = [msg['content'] for msg in messages if msg.get('role') == 'user']
+            user_messages = [msg["content"] for msg in messages if msg.get("role") == "user"]
             if not user_messages:
                 return messages, {}
 
@@ -171,10 +174,7 @@ class LLMRequestRouter:
 
             # Search knowledge base
             search_results = await self.rag_manager.search_knowledge_base(
-                query=query,
-                collection=collection,
-                limit=top_k,
-                min_score=0.7
+                query=query, collection=collection, limit=top_k, min_score=0.7
             )
 
             if not search_results:
@@ -184,9 +184,7 @@ class LLMRequestRouter:
             # Build context from results
             context_parts = []
             for idx, result in enumerate(search_results):
-                context_parts.append(
-                    f"[Document {idx+1}] (Relevance: {result.score:.2f})\n{result.document.content}"
-                )
+                context_parts.append(f"[Document {idx+1}] (Relevance: {result.score:.2f})\n{result.document.content}")
 
             rag_context = "\n\n".join(context_parts)
 
@@ -195,30 +193,33 @@ class LLMRequestRouter:
             context_injected = False
 
             for msg in messages:
-                if msg.get('role') == 'system' and not context_injected:
+                if msg.get("role") == "system" and not context_injected:
                     # Add to existing system message
-                    enriched_content = msg['content'] + f"\n\n## Relevant Knowledge Base Context:\n{rag_context}"
-                    enriched_messages.append({
-                        'role': 'system',
-                        'content': enriched_content
-                    })
+                    enriched_content = msg["content"] + f"\n\n## Relevant Knowledge Base Context:\n{rag_context}"
+                    enriched_messages.append({"role": "system", "content": enriched_content})
                     context_injected = True
                 else:
                     enriched_messages.append(msg)
 
             # If no system message, inject before first user message
             if not context_injected:
-                enriched_messages.insert(0, {
-                    'role': 'system',
-                    'content': f"## Relevant Knowledge Base Context:\n{rag_context}\n\nUse the above context to help answer the user's question."
-                })
+                enriched_messages.insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": (
+                            f"## Relevant Knowledge Base Context:\n{rag_context}\n\n"
+                            "Use the above context to help answer the user's question."
+                        ),
+                    },
+                )
 
             rag_metadata = {
                 "rag_enabled": True,
                 "rag_documents_found": len(search_results),
                 "rag_collection": collection,
                 "rag_query": query,
-                "rag_scores": [r.score for r in search_results]
+                "rag_scores": [r.score for r in search_results],
             }
 
             logger.info(f"Enriched request with {len(search_results)} RAG documents from collection '{collection}'")
@@ -234,7 +235,7 @@ class LLMRequestRouter:
         messages: List[Dict[str, str]],
         strategy: Optional[RoutingStrategy] = None,
         user_preferences: Optional[Dict[str, Any]] = None,
-        **kwargs
+        **kwargs,
     ) -> Tuple[str, Any]:
         """
         Route a request to the best available provider
@@ -254,226 +255,215 @@ class LLMRequestRouter:
             raise ValueError(f"No available providers for model {model}")
 
         # Select provider based on strategy
-        selected_provider = self._select_provider(
-            model,
-            available_providers,
-            routing_strategy,
-            user_preferences
-        )
+        selected_provider = self._select_provider(model, available_providers, routing_strategy, user_preferences)
 
         # Execute request with fallback (using enriched messages)
         response, usage_info = await self._execute_with_fallback(
-            selected_provider,
-            available_providers,
-            model,
-            enriched_messages,
-            **kwargs
+            selected_provider, available_providers, model, enriched_messages, **kwargs
         )
 
         # Add RAG metadata to usage info
         if rag_metadata:
-            usage_info['rag_metadata'] = rag_metadata
+            usage_info["rag_metadata"] = rag_metadata
 
         return response, usage_info
-    
+
     def _get_available_providers(self, model: str) -> List[str]:
         """Get list of available providers for a model"""
         available = []
-        
+
         for provider_name, connector in self.llm_manager.connectors.items():
             # Check if provider supports the model
             if model in connector.model_list or not connector.model_list:
                 # Check if provider is healthy
                 stats = self.provider_stats.get(provider_name, ProviderStats())
-                
+
                 # Skip if too many consecutive failures
                 if stats.consecutive_failures >= 3:
                     continue
-                
+
                 # Skip if recent failures and no recent success
-                if (stats.last_failure and 
-                    (not stats.last_success or stats.last_failure > stats.last_success) and
-                    (datetime.utcnow() - stats.last_failure) < timedelta(minutes=5)):
+                if (
+                    stats.last_failure
+                    and (not stats.last_success or stats.last_failure > stats.last_success)
+                    and (datetime.utcnow() - stats.last_failure) < timedelta(minutes=5)
+                ):
                     continue
-                
+
                 available.append(provider_name)
-        
+
         return available
-    
+
     def _select_provider(
         self,
         model: str,
         available_providers: List[str],
         strategy: RoutingStrategy,
-        user_preferences: Optional[Dict[str, Any]] = None
+        user_preferences: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Select provider based on routing strategy"""
-        
+
         if strategy == RoutingStrategy.ROUND_ROBIN:
             return self._round_robin_selection(model, available_providers)
-        
+
         elif strategy == RoutingStrategy.COST_OPTIMIZED:
             return self._cost_optimized_selection(model, available_providers)
-        
+
         elif strategy == RoutingStrategy.LATENCY_OPTIMIZED:
             return self._latency_optimized_selection(available_providers)
-        
+
         elif strategy == RoutingStrategy.LOAD_BALANCED:
             return self._load_balanced_selection(available_providers)
-        
+
         elif strategy == RoutingStrategy.FAILOVER:
             return self._failover_selection(model, available_providers)
-        
+
         elif strategy == RoutingStrategy.RANDOM:
             return random.choice(available_providers)
-        
+
         else:
             # Default to first available
             return available_providers[0]
-    
+
     def _round_robin_selection(self, model: str, providers: List[str]) -> str:
         """Round robin provider selection"""
         if not providers:
             raise ValueError("No providers available")
-        
+
         # Use model-specific counter
         counter_key = f"{model}_rr"
         if counter_key not in self.round_robin_counters:
             self.round_robin_counters[counter_key] = 0
-        
+
         selected_index = self.round_robin_counters[counter_key] % len(providers)
         self.round_robin_counters[counter_key] += 1
-        
+
         return providers[selected_index]
-    
+
     def _cost_optimized_selection(self, model: str, providers: List[str]) -> str:
         """Select provider with lowest cost"""
         model_config = self.model_configs.get(model)
         if not model_config:
             return providers[0]
-        
-        min_cost = float('inf')
+
+        min_cost = float("inf")
         best_provider = providers[0]
-        
+
         for provider in providers:
-            cost = model_config.cost_per_token.get(provider, float('inf'))
+            cost = model_config.cost_per_token.get(provider, float("inf"))
             if cost < min_cost:
                 min_cost = cost
                 best_provider = provider
-        
+
         return best_provider
-    
+
     def _latency_optimized_selection(self, providers: List[str]) -> str:
         """Select provider with lowest average latency"""
-        min_latency = float('inf')
+        min_latency = float("inf")
         best_provider = providers[0]
-        
+
         for provider in providers:
             stats = self.provider_stats.get(provider, ProviderStats())
             if stats.avg_latency_ms < min_latency:
                 min_latency = stats.avg_latency_ms
                 best_provider = provider
-        
+
         return best_provider
-    
+
     def _load_balanced_selection(self, providers: List[str]) -> str:
         """Select provider with least load"""
-        min_load = float('inf')
+        min_load = float("inf")
         best_provider = providers[0]
-        
+
         for provider in providers:
             stats = self.provider_stats.get(provider, ProviderStats())
             # Use recent requests as load metric
             load_score = stats.total_requests - stats.successful_requests + (stats.consecutive_failures * 10)
-            
+
             if load_score < min_load:
                 min_load = load_score
                 best_provider = provider
-        
+
         return best_provider
-    
+
     def _failover_selection(self, model: str, providers: List[str]) -> str:
         """Select provider based on failover priority"""
         model_config = self.model_configs.get(model)
         if not model_config:
             return providers[0]
-        
+
         # Use preferred providers first
         for preferred in model_config.preferred_providers:
             if preferred in providers:
                 return preferred
-        
+
         # Fall back to first available
         return providers[0]
-    
+
     async def _execute_with_fallback(
         self,
         primary_provider: str,
         available_providers: List[str],
         model: str,
         messages: List[Dict[str, str]],
-        **kwargs
+        **kwargs,
     ) -> Tuple[str, Any]:
         """Execute request with automatic fallback to other providers"""
-        
+
         # Try primary provider first
         providers_to_try = [primary_provider]
-        
+
         # Add other providers for fallback (excluding primary)
         fallback_providers = [p for p in available_providers if p != primary_provider]
         providers_to_try.extend(fallback_providers)
-        
+
         last_error = None
-        
+
         for provider_name in providers_to_try:
             try:
                 connector = self.llm_manager.get_connector(provider_name)
                 if not connector:
                     continue
-                
+
                 # Execute request
                 start_time = datetime.utcnow()
-                response, usage_info = await connector.chat_completion(
-                    messages=messages,
-                    model=model,
-                    **kwargs
-                )
+                response, usage_info = await connector.chat_completion(messages=messages, model=model, **kwargs)
                 end_time = datetime.utcnow()
-                
+
                 # Update statistics
                 latency = (end_time - start_time).total_seconds() * 1000
                 self._update_provider_stats(provider_name, success=True, latency=latency)
-                
+
                 # Add provider info to usage
-                usage_info['provider'] = provider_name
-                usage_info['routing_strategy'] = self.default_strategy.value
-                
+                usage_info["provider"] = provider_name
+                usage_info["routing_strategy"] = self.default_strategy.value
+
                 logger.info(f"Successfully routed request to {provider_name} for model {model}")
                 return response, usage_info
-                
+
             except Exception as e:
                 logger.warning(f"Provider {provider_name} failed for model {model}: {e}")
                 self._update_provider_stats(provider_name, success=False)
                 last_error = e
                 continue
-        
+
         # All providers failed
         logger.error(f"All providers failed for model {model}")
         raise Exception(f"All providers failed. Last error: {last_error}")
-    
+
     def _update_provider_stats(self, provider_name: str, success: bool, latency: float = 0):
         """Update provider statistics"""
         if provider_name not in self.provider_stats:
             self.provider_stats[provider_name] = ProviderStats()
-        
+
         stats = self.provider_stats[provider_name]
         stats.total_requests += 1
-        
+
         if success:
             stats.successful_requests += 1
             stats.last_success = datetime.utcnow()
             stats.consecutive_failures = 0
-            
+
             # Update average latency (exponential moving average)
             if stats.avg_latency_ms == 0:
                 stats.avg_latency_ms = latency
@@ -483,32 +473,32 @@ class LLMRequestRouter:
             stats.failed_requests += 1
             stats.last_failure = datetime.utcnow()
             stats.consecutive_failures += 1
-    
+
     def get_provider_stats(self) -> Dict[str, Dict[str, Any]]:
         """Get current provider statistics"""
         stats_dict = {}
         for provider_name, stats in self.provider_stats.items():
             stats_dict[provider_name] = {
-                'total_requests': stats.total_requests,
-                'successful_requests': stats.successful_requests,
-                'failed_requests': stats.failed_requests,
-                'success_rate': stats.successful_requests / max(stats.total_requests, 1),
-                'avg_latency_ms': stats.avg_latency_ms,
-                'consecutive_failures': stats.consecutive_failures,
-                'last_success': stats.last_success.isoformat() if stats.last_success else None,
-                'last_failure': stats.last_failure.isoformat() if stats.last_failure else None,
+                "total_requests": stats.total_requests,
+                "successful_requests": stats.successful_requests,
+                "failed_requests": stats.failed_requests,
+                "success_rate": stats.successful_requests / max(stats.total_requests, 1),
+                "avg_latency_ms": stats.avg_latency_ms,
+                "consecutive_failures": stats.consecutive_failures,
+                "last_success": stats.last_success.isoformat() if stats.last_success else None,
+                "last_failure": stats.last_failure.isoformat() if stats.last_failure else None,
             }
         return stats_dict
-    
+
     async def health_check_providers(self):
         """Periodic health check of all providers"""
         logger.info("Running provider health checks")
-        
+
         health_results = await self.llm_manager.health_check_all()
-        
+
         for provider_name, result in health_results.items():
-            is_healthy = result.get('status') == 'healthy'
-            
+            is_healthy = result.get("status") == "healthy"
+
             if provider_name in self.provider_stats:
                 if is_healthy:
                     # Reset consecutive failures on successful health check
@@ -517,7 +507,7 @@ class LLMRequestRouter:
                 else:
                     self.provider_stats[provider_name].consecutive_failures += 1
                     self.provider_stats[provider_name].last_failure = datetime.utcnow()
-    
+
     def set_routing_strategy(self, strategy: RoutingStrategy):
         """Set the default routing strategy"""
         self.default_strategy = strategy
@@ -529,10 +519,13 @@ class LLMRequestRouter:
             if self.redis_client:
                 instructions = await self.redis_client.get("routing:instructions")
                 if instructions:
-                    return instructions.decode('utf-8') if isinstance(instructions, bytes) else instructions
+                    return instructions.decode("utf-8") if isinstance(instructions, bytes) else instructions
 
             # Default fallback instructions
-            return "Route to fastest available LLM. Use codellama or Claude for programming tasks. Use GPT-4 for complex reasoning. Use local Ollama for simple queries."
+            return (
+                "Route to fastest available LLM. Use codellama or Claude for programming tasks. "
+                "Use GPT-4 for complex reasoning. Use local Ollama for simple queries."
+            )
 
         except Exception as e:
             logger.error(f"Failed to get routing instructions from Redis: {e}")
@@ -555,32 +548,35 @@ class LLMRequestRouter:
     def _classify_request_type(self, messages: List[Dict[str, str]]) -> str:
         """Classify request type for better routing"""
         if not messages:
-            return 'general_chat'
+            return "general_chat"
 
-        last_message = messages[-1].get('content', '').lower()
+        last_message = messages[-1].get("content", "").lower()
 
         # Programming keywords
-        if any(kw in last_message for kw in ['code', 'function', 'debug', 'programming', 'python', 'javascript', 'java', 'c++', 'rust', 'go']):
-            return 'programming'
+        if any(
+            kw in last_message
+            for kw in ["code", "function", "debug", "programming", "python", "javascript", "java", "c++", "rust", "go"]
+        ):
+            return "programming"
 
         # Data analysis keywords
-        elif any(kw in last_message for kw in ['analyze', 'data', 'statistics', 'chart', 'graph', 'dataset']):
-            return 'analysis'
+        elif any(kw in last_message for kw in ["analyze", "data", "statistics", "chart", "graph", "dataset"]):
+            return "analysis"
 
         # Explanation keywords
-        elif any(kw in last_message for kw in ['explain', 'what is', 'how does', 'why', 'define']):
-            return 'explanation'
+        elif any(kw in last_message for kw in ["explain", "what is", "how does", "why", "define"]):
+            return "explanation"
 
         # Complex reasoning
-        elif any(kw in last_message for kw in ['complex', 'advanced', 'detailed', 'comprehensive', 'thorough']):
-            return 'complex_reasoning'
+        elif any(kw in last_message for kw in ["complex", "advanced", "detailed", "comprehensive", "thorough"]):
+            return "complex_reasoning"
 
         # Simple query
         elif len(last_message) < 50:
-            return 'simple_query'
+            return "simple_query"
 
         else:
-            return 'general_chat'
+            return "general_chat"
 
     def _summarize_request(self, messages: List[Dict[str, str]]) -> str:
         """Summarize request for routing decision"""
@@ -588,7 +584,7 @@ class LLMRequestRouter:
             return "Empty request"
 
         # Extract user messages
-        user_messages = [msg.get('content', '') for msg in messages if msg.get('role') == 'user']
+        user_messages = [msg.get("content", "") for msg in messages if msg.get("role") == "user"]
 
         if not user_messages:
             return "No user messages"
@@ -635,7 +631,7 @@ class LLMRequestRouter:
                 messages=[{"role": "user", "content": prompt}],
                 model=self.routing_llm_model,
                 max_tokens=50,
-                temperature=0.1
+                temperature=0.1,
             )
 
             # Extract LLM name from response
@@ -657,7 +653,9 @@ class LLMRequestRouter:
             logger.error(f"Routing LLM call failed: {e}")
             return "default"
 
-    async def _intelligent_routing_decision(self, messages: List[Dict[str, str]], user_preferences: Optional[Dict[str, Any]] = None) -> str:
+    async def _intelligent_routing_decision(
+        self, messages: List[Dict[str, str]], user_preferences: Optional[Dict[str, Any]] = None
+    ) -> str:
         """Make intelligent routing decision using routing LLM"""
         try:
             # Get routing instructions from Redis
@@ -701,7 +699,7 @@ Reply with ONLY the LLM provider name (anthropic, openai, ollama, etc.), nothing
         messages: List[Dict[str, str]],
         strategy: Optional[RoutingStrategy] = None,
         user_preferences: Optional[Dict[str, Any]] = None,
-        **kwargs
+        **kwargs,
     ) -> Tuple[str, Any]:
         """
         Route request using intelligent routing with LLM decision
@@ -715,7 +713,7 @@ Reply with ONLY the LLM provider name (anthropic, openai, ollama, etc.), nothing
         if self.use_intelligent_routing and model == "auto":
             # Use intelligent routing
             routing_decision = await self._intelligent_routing_decision(messages, user_preferences)
-            routing_reasoning = f"Intelligent routing based on request type and Redis instructions"
+            routing_reasoning = "Intelligent routing based on request type and Redis instructions"
 
             # If routing LLM returned a valid provider, use it
             if routing_decision and routing_decision != "default":
@@ -727,39 +725,47 @@ Reply with ONLY the LLM provider name (anthropic, openai, ollama, etc.), nothing
                 else:
                     # Fallback to strategy-based selection
                     logger.warning(f"Routing LLM suggested {routing_decision}, but it's not available. Using fallback.")
-                    selected_provider = self._select_provider(model, available_providers, strategy or self.default_strategy, user_preferences)
+                    selected_provider = self._select_provider(
+                        model, available_providers, strategy or self.default_strategy, user_preferences
+                    )
                     routing_decision = selected_provider
                     routing_reasoning = f"Fallback to {selected_provider} (routing LLM suggestion unavailable)"
             else:
                 # Fallback to strategy-based selection
                 available_providers = self._get_available_providers(model)
-                selected_provider = self._select_provider(model, available_providers, strategy or self.default_strategy, user_preferences)
+                selected_provider = self._select_provider(
+                    model, available_providers, strategy or self.default_strategy, user_preferences
+                )
                 routing_decision = selected_provider
                 routing_reasoning = "Strategy-based routing (intelligent routing unavailable)"
         else:
             # Use traditional strategy-based routing
             available_providers = self._get_available_providers(model)
-            selected_provider = self._select_provider(model, available_providers, strategy or self.default_strategy, user_preferences)
+            selected_provider = self._select_provider(
+                model, available_providers, strategy or self.default_strategy, user_preferences
+            )
             routing_decision = selected_provider
             routing_reasoning = f"Strategy-based routing: {self.default_strategy.value}"
 
         # Execute request with fallback
         response, usage_info = await self._execute_with_fallback(
             selected_provider,
-            available_providers if 'available_providers' in locals() else self._get_available_providers(model),
+            available_providers if "available_providers" in locals() else self._get_available_providers(model),
             model,
             messages,
-            **kwargs
+            **kwargs,
         )
 
         # Add routing information to usage_info
-        usage_info['routing_decision'] = routing_decision
-        usage_info['routing_reasoning'] = routing_reasoning
-        usage_info['request_type'] = self._classify_request_type(messages)
+        usage_info["routing_decision"] = routing_decision
+        usage_info["routing_reasoning"] = routing_reasoning
+        usage_info["request_type"] = self._classify_request_type(messages)
 
         return response, usage_info
 
 
-def create_request_router(llm_manager, db, redis_client: Optional[aioredis.Redis] = None, rag_manager=None) -> LLMRequestRouter:
+def create_request_router(
+    llm_manager, db, redis_client: Optional[aioredis.Redis] = None, rag_manager=None
+) -> LLMRequestRouter:
     """Factory function to create request router with optional RAG manager"""
     return LLMRequestRouter(llm_manager, db, redis_client, rag_manager)

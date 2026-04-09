@@ -156,7 +156,7 @@ async def test_generate_streaming(ollama_client):
 
     mock_response.aiter_lines = mock_aiter_lines
 
-    with patch.object(ollama_client._client, 'stream') as mock_stream:
+    with patch.object(ollama_client._client, "stream") as mock_stream:
         mock_stream.return_value.__aenter__.return_value = mock_response
 
         responses = []
@@ -177,11 +177,14 @@ async def test_chat_method(ollama_client):
     mock_response.raise_for_status = MagicMock()
 
     async def mock_aiter_lines():
-        yield '{"model":"test","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"Hi"},"done":true}'
+        yield (
+            '{"model":"test","created_at":"2024-01-01T00:00:00Z",'
+            '"message":{"role":"assistant","content":"Hi"},"done":true}'
+        )
 
     mock_response.aiter_lines = mock_aiter_lines
 
-    with patch.object(ollama_client._client, 'stream') as mock_stream:
+    with patch.object(ollama_client._client, "stream") as mock_stream:
         mock_stream.return_value.__aenter__.return_value = mock_response
 
         responses = []
@@ -209,7 +212,7 @@ async def test_list_models(ollama_client):
         ]
     }
 
-    with patch.object(ollama_client._client, 'get', return_value=mock_response):
+    with patch.object(ollama_client._client, "get", return_value=mock_response):
         models = await ollama_client.list_models()
         assert len(models) == 1
         assert models[0].name == "llama3.2:latest"
@@ -221,7 +224,7 @@ async def test_check_health_success(ollama_client):
     mock_response = MagicMock()
     mock_response.status_code = 200
 
-    with patch.object(ollama_client._client, 'get', return_value=mock_response):
+    with patch.object(ollama_client._client, "get", return_value=mock_response):
         is_healthy = await ollama_client.check_health()
         assert is_healthy is True
 
@@ -229,6 +232,6 @@ async def test_check_health_success(ollama_client):
 @pytest.mark.asyncio
 async def test_check_health_failure(ollama_client):
     """Test check_health when server is unhealthy."""
-    with patch.object(ollama_client._client, 'get', side_effect=Exception("Connection error")):
+    with patch.object(ollama_client._client, "get", side_effect=Exception("Connection error")):
         is_healthy = await ollama_client.check_health()
         assert is_healthy is False

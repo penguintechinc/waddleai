@@ -8,7 +8,7 @@ complexity level ("low", "medium", or "high").
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Literal
 
 # ---------------------------------------------------------------------------
@@ -16,25 +16,93 @@ from typing import Dict, List, Literal
 # ---------------------------------------------------------------------------
 
 CODE_KEYWORDS: List[str] = [
-    "function", "class", "def", "return", "import", "from", "const", "let",
-    "var", "async", "await", "interface", "struct", "impl", "enum", "trait",
-    "lambda", "yield", "decorator", "metaclass", "generic", "template",
-    "inheritance", "polymorphism", "abstraction", "encapsulation",
+    "function",
+    "class",
+    "def",
+    "return",
+    "import",
+    "from",
+    "const",
+    "let",
+    "var",
+    "async",
+    "await",
+    "interface",
+    "struct",
+    "impl",
+    "enum",
+    "trait",
+    "lambda",
+    "yield",
+    "decorator",
+    "metaclass",
+    "generic",
+    "template",
+    "inheritance",
+    "polymorphism",
+    "abstraction",
+    "encapsulation",
 ]
 
 SYSTEM_KEYWORDS: List[str] = [
-    "sudo", "chmod", "chown", "systemctl", "docker", "kubectl", "helm",
-    "iptables", "crontab", "mount", "umount", "ssh", "scp", "rsync",
-    "nginx", "apache", "firewall", "selinux", "apparmor", "awk", "sed",
-    "grep", "find", "xargs", "pipe", "redirect", "daemon", "service",
+    "sudo",
+    "chmod",
+    "chown",
+    "systemctl",
+    "docker",
+    "kubectl",
+    "helm",
+    "iptables",
+    "crontab",
+    "mount",
+    "umount",
+    "ssh",
+    "scp",
+    "rsync",
+    "nginx",
+    "apache",
+    "firewall",
+    "selinux",
+    "apparmor",
+    "awk",
+    "sed",
+    "grep",
+    "find",
+    "xargs",
+    "pipe",
+    "redirect",
+    "daemon",
+    "service",
 ]
 
 SQL_KEYWORDS: List[str] = [
-    "select", "insert", "update", "delete", "create", "alter", "drop",
-    "join", "where", "group by", "having", "order by", "union",
-    "subquery", "index", "trigger", "procedure", "transaction",
-    "rollback", "commit", "foreign key", "constraint", "partition",
-    "window function", "cte", "recursive", "materialized view",
+    "select",
+    "insert",
+    "update",
+    "delete",
+    "create",
+    "alter",
+    "drop",
+    "join",
+    "where",
+    "group by",
+    "having",
+    "order by",
+    "union",
+    "subquery",
+    "index",
+    "trigger",
+    "procedure",
+    "transaction",
+    "rollback",
+    "commit",
+    "foreign key",
+    "constraint",
+    "partition",
+    "window function",
+    "cte",
+    "recursive",
+    "materialized view",
 ]
 
 # ---------------------------------------------------------------------------
@@ -149,10 +217,7 @@ class MatrixFactorizationClassifier:
         features = self._extract_features(prompt)
         tool_bias = TOOL_TYPE_WEIGHTS.get(tool_type.lower(), 0.0)
 
-        weighted_sum = sum(
-            features[name] * weight
-            for name, weight in self.FEATURE_WEIGHTS.items()
-        )
+        weighted_sum = sum(features[name] * weight for name, weight in self.FEATURE_WEIGHTS.items())
         raw = max(0.0, min(1.0, weighted_sum + tool_bias))
 
         if raw < self.LOW_THRESHOLD:
@@ -186,9 +251,7 @@ class MatrixFactorizationClassifier:
             "sql_density": self._keyword_density(self._sql_re, prompt, word_count),
             "nesting": self._nesting_depth(prompt),
             "line_complexity": self._line_complexity(line_count, word_count),
-            "question_complexity": self._keyword_density(
-                self._question_re, prompt, word_count
-            ),
+            "question_complexity": self._keyword_density(self._question_re, prompt, word_count),
         }
 
     # ------------------------------------------------------------------

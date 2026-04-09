@@ -1,14 +1,10 @@
 """Unit tests for RoutingMatrix (database interactions mocked)."""
 
-import pytest
 from unittest.mock import Mock
 
-from shared.agents.routing_matrix import (
-    RouteDecision,
-    RoutingMatrix,
-    RoutingMatrixEntry,
-    _DEFAULT_MODEL,
-)
+import pytest
+
+from shared.agents.routing_matrix import _DEFAULT_MODEL, RouteDecision, RoutingMatrix, RoutingMatrixEntry
 
 
 @pytest.fixture

@@ -75,17 +75,11 @@ class IsLength(Validator[str, str]):
         length = len(value)
 
         if length < self.min_length:
-            msg = (
-                self.error_message
-                or f"Value must be at least {self.min_length} characters"
-            )
+            msg = self.error_message or f"Value must be at least {self.min_length} characters"
             return ValidationResult.failure(msg)
 
         if self.max_length is not None and length > self.max_length:
-            msg = (
-                self.error_message
-                or f"Value must be at most {self.max_length} characters"
-            )
+            msg = self.error_message or f"Value must be at most {self.max_length} characters"
             return ValidationResult.failure(msg)
 
         return ValidationResult.success(value)
@@ -167,9 +161,7 @@ class IsAlphanumeric(Validator[str, str]):
             return ValidationResult.failure("Value cannot be empty")
 
         if not self._pattern.match(value):
-            msg = (
-                self.error_message or "Value must contain only alphanumeric characters"
-            )
+            msg = self.error_message or "Value must contain only alphanumeric characters"
             return ValidationResult.failure(msg)
 
         return ValidationResult.success(value)
@@ -245,10 +237,7 @@ class IsIn(Validator[str, str]):
         check_value = value if self.case_sensitive else value.lower()
 
         if check_value not in self._options:
-            msg = (
-                self.error_message
-                or f"Value must be one of: {', '.join(self._original_options)}"
-            )
+            msg = self.error_message or f"Value must be one of: {', '.join(self._original_options)}"
             return ValidationResult.failure(msg)
 
         return ValidationResult.success(value)

@@ -4,9 +4,7 @@ Covers: ConfigStore CRUD, provisioning response building, tier-based
 feature gating, and GPU-aware model filtering.
 """
 
-
 import pytest
-
 from penguincode_cli.server.models.config_store import ConfigStore
 
 
@@ -37,12 +35,14 @@ class TestConfigStoreCRUD:
         assert "nomic-embed-text" in names
 
     async def test_upsert_and_get_model(self, store):
-        await store.upsert_model({
-            "name": "test-model:1b",
-            "role": "tester",
-            "required": False,
-            "vram_estimate_mb": 512,
-        })
+        await store.upsert_model(
+            {
+                "name": "test-model:1b",
+                "role": "tester",
+                "required": False,
+                "vram_estimate_mb": 512,
+            }
+        )
         model = await store.get_model("test-model:1b")
         assert model is not None
         assert model["role"] == "tester"
@@ -68,12 +68,14 @@ class TestConfigStoreCRUD:
         assert "tester" in names
 
     async def test_upsert_skill(self, store):
-        await store.upsert_skill({
-            "name": "custom-skill",
-            "description": "A test skill",
-            "content_md": "# Test\nContent here.",
-            "permissions": ["read"],
-        })
+        await store.upsert_skill(
+            {
+                "name": "custom-skill",
+                "description": "A test skill",
+                "content_md": "# Test\nContent here.",
+                "permissions": ["read"],
+            }
+        )
         skill = await store.get_skill("custom-skill")
         assert skill is not None
         assert skill["description"] == "A test skill"

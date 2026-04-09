@@ -5,22 +5,24 @@ Synchronizes AI providers from WaddleAI to MarchProxy AILB.
 Handles route creation, updates, and deletion.
 """
 
-import json
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Any
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
-from ..grpc.client import AILBModuleClient, RouteConfig, RateLimitConfig
 from shared.security.credential_encryption import decrypt_credential
+
+from ..grpc.client import AILBModuleClient, RateLimitConfig, RouteConfig
 
 logger = logging.getLogger(__name__)
 
 
 class SyncStatus(str, Enum):
     """Sync status states"""
+
     PENDING = "pending"
     SYNCED = "synced"
     FAILED = "failed"
@@ -30,6 +32,7 @@ class SyncStatus(str, Enum):
 @dataclass
 class SyncResult:
     """Result of a sync operation"""
+
     success: bool
     provider_id: int
     route_id: Optional[str] = None
@@ -76,7 +79,7 @@ class ProviderSyncService:
             "model_list": provider.model_list or [],
             "rate_limits": provider.rate_limits or {},
             "priority": provider.priority,
-            "enabled": provider.enabled
+            "enabled": provider.enabled,
         }
         config_str = json.dumps(config_data, sort_keys=True)
         return hashlib.sha256(config_str.encode()).hexdigest()[:16]
@@ -84,7 +87,7 @@ class ProviderSyncService:
     def _provider_to_route(self, provider) -> RouteConfig:
         """Convert WaddleAI provider to AILB route configuration"""
         # Get API key from connection_links if available
-        api_key = decrypt_credential(provider.api_key) if hasattr(provider, 'api_key') else ""
+        api_key = decrypt_credential(provider.api_key) if hasattr(provider, "api_key") else ""
 
         route = RouteConfig(
             route_id=f"waddleai-{provider.id}",
@@ -95,8 +98,8 @@ class ProviderSyncService:
                 "provider_type": provider.provider_type,
                 "provider_name": provider.name,
                 "models": json.dumps(provider.model_list or []),
-                "config_hash": self._generate_config_hash(provider)
-            }
+                "config_hash": self._generate_config_hash(provider),
+            },
         )
 
         # Set protocol based on endpoint
@@ -140,10 +143,7 @@ class ProviderSyncService:
         provider = db(db.ai_providers.id == provider_id).select().first()
         if not provider:
             return SyncResult(
-                success=False,
-                provider_id=provider_id,
-                status=SyncStatus.FAILED,
-                error="Provider not found"
+                success=False, provider_id=provider_id, status=SyncStatus.FAILED, error="Provider not found"
             )
 
         # Check if provider is enabled for AILB sync
@@ -152,7 +152,7 @@ class ProviderSyncService:
                 success=False,
                 provider_id=provider_id,
                 status=SyncStatus.PENDING,
-                message="AILB sync not enabled for this provider"
+                message="AILB sync not enabled for this provider",
             )
 
         # Get or create sync record
@@ -171,15 +171,12 @@ class ProviderSyncService:
                     provider_id=provider_id,
                     route_id=sync_record.ailb_route_id,
                     status=SyncStatus.SYNCED,
-                    message="Config unchanged"
+                    message="Config unchanged",
                 )
 
             # Sync to AILB
             if self.ailb_client and self.ailb_client.is_connected():
-                result = self.ailb_client.update_routes(
-                    routes=[route],
-                    instance_id=self._instance_id
-                )
+                result = self.ailb_client.update_routes(routes=[route], instance_id=self._instance_id)
                 if not result.get("success"):
                     raise Exception(result.get("message", "Unknown error"))
 
@@ -193,7 +190,7 @@ class ProviderSyncService:
                     sync_status="synced",
                     last_synced=now,
                     config_hash=config_hash,
-                    sync_error=None
+                    sync_error=None,
                 )
             else:
                 db.marchproxy_ailb_sync.insert(
@@ -202,7 +199,7 @@ class ProviderSyncService:
                     ailb_route_id=route_id,
                     sync_status="synced",
                     last_synced=now,
-                    config_hash=config_hash
+                    config_hash=config_hash,
                 )
 
             db.commit()
@@ -213,7 +210,7 @@ class ProviderSyncService:
                 provider_id=provider_id,
                 route_id=route_id,
                 status=SyncStatus.SYNCED,
-                message="Provider synced successfully"
+                message="Provider synced successfully",
             )
 
         except Exception as e:
@@ -221,26 +218,15 @@ class ProviderSyncService:
 
             # Update sync record with error
             if sync_record:
-                db(db.marchproxy_ailb_sync.id == sync_record.id).update(
-                    sync_status="failed",
-                    sync_error=str(e)
-                )
+                db(db.marchproxy_ailb_sync.id == sync_record.id).update(sync_status="failed", sync_error=str(e))
             else:
                 db.marchproxy_ailb_sync.insert(
-                    provider_id=provider_id,
-                    ailb_instance_id=self._instance_id,
-                    sync_status="failed",
-                    sync_error=str(e)
+                    provider_id=provider_id, ailb_instance_id=self._instance_id, sync_status="failed", sync_error=str(e)
                 )
 
             db.commit()
 
-            return SyncResult(
-                success=False,
-                provider_id=provider_id,
-                status=SyncStatus.FAILED,
-                error=str(e)
-            )
+            return SyncResult(success=False, provider_id=provider_id, status=SyncStatus.FAILED, error=str(e))
 
     def sync_all_providers(self) -> Dict[int, SyncResult]:
         """
@@ -253,10 +239,7 @@ class ProviderSyncService:
         results = {}
 
         # Get all enabled providers with AILB sync enabled
-        providers = db(
-            (db.ai_providers.enabled == True) &
-            (db.ai_providers.ailb_sync_enabled == True)
-        ).select()
+        providers = db((db.ai_providers.enabled is True) & (db.ai_providers.ailb_sync_enabled is True)).select()
 
         for provider in providers:
             results[provider.id] = self.sync_provider(provider.id)
@@ -283,15 +266,10 @@ class ProviderSyncService:
             # Delete route from AILB
             if self.ailb_client and self.ailb_client.is_connected():
                 if sync_record.ailb_route_id:
-                    self.ailb_client.delete_route(
-                        route_id=sync_record.ailb_route_id,
-                        instance_id=self._instance_id
-                    )
+                    self.ailb_client.delete_route(route_id=sync_record.ailb_route_id, instance_id=self._instance_id)
 
             # Update sync record
-            db(db.marchproxy_ailb_sync.id == sync_record.id).update(
-                sync_status="deleted"
-            )
+            db(db.marchproxy_ailb_sync.id == sync_record.id).update(sync_status="deleted")
             db.commit()
 
             logger.info(f"Removed provider {provider_id} from AILB")
@@ -315,19 +293,11 @@ class ProviderSyncService:
 
         sync_record = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
         if not sync_record:
-            return {
-                "synced": False,
-                "status": "not_found",
-                "message": "No sync record found"
-            }
+            return {"synced": False, "status": "not_found", "message": "No sync record found"}
 
         provider = db(db.ai_providers.id == provider_id).select().first()
         if not provider:
-            return {
-                "synced": False,
-                "status": "provider_not_found",
-                "message": "Provider not found"
-            }
+            return {"synced": False, "status": "provider_not_found", "message": "Provider not found"}
 
         # Check config hash
         current_hash = self._generate_config_hash(provider)
@@ -340,7 +310,7 @@ class ProviderSyncService:
             "last_synced": sync_record.last_synced.isoformat() if sync_record.last_synced else None,
             "config_changed": config_changed,
             "sync_error": sync_record.sync_error,
-            "needs_resync": config_changed or sync_record.sync_status != "synced"
+            "needs_resync": config_changed or sync_record.sync_status != "synced",
         }
 
     def get_pending_syncs(self) -> List[int]:
@@ -349,10 +319,7 @@ class ProviderSyncService:
 
         # Providers without sync record
         synced_ids = [r.provider_id for r in db(db.marchproxy_ailb_sync.id > 0).select()]
-        all_providers = db(
-            (db.ai_providers.enabled == True) &
-            (db.ai_providers.ailb_sync_enabled == True)
-        ).select()
+        all_providers = db((db.ai_providers.enabled is True) & (db.ai_providers.ailb_sync_enabled is True)).select()
 
         pending = []
         for provider in all_providers:
@@ -397,15 +364,13 @@ class ProviderSyncService:
                         "waddleai_key_id": str(key_id),
                         "tpm_limit": str(key.tpm_limit or 10000),
                         "user_id": str(key.user_id),
-                        "organization_id": str(key.organization_id)
-                    }
+                        "organization_id": str(key.organization_id),
+                    },
                 )
                 self.ailb_client.set_rate_limit(rate_limit, self._instance_id)
 
             # Update sync status
-            db(db.virtual_keys.id == key_id).update(
-                ailb_sync_status="synced"
-            )
+            db(db.virtual_keys.id == key_id).update(ailb_sync_status="synced")
             db.commit()
 
             logger.info(f"Synced virtual key {key_id} to AILB")
@@ -413,9 +378,7 @@ class ProviderSyncService:
 
         except Exception as e:
             logger.error(f"Failed to sync virtual key {key_id}: {e}")
-            db(db.virtual_keys.id == key_id).update(
-                ailb_sync_status="failed"
-            )
+            db(db.virtual_keys.id == key_id).update(ailb_sync_status="failed")
             db.commit()
             return False
 
@@ -424,7 +387,7 @@ class ProviderSyncService:
         db = self.db
         results = {}
 
-        keys = db(db.virtual_keys.enabled == True).select()
+        keys = db(db.virtual_keys.enabled is True).select()
         for key in keys:
             results[key.id] = self.sync_virtual_key(key.id)
 
@@ -451,10 +414,7 @@ class ProviderSyncService:
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
         if not deployment:
             return SyncResult(
-                success=False,
-                provider_id=deployment_id,
-                status=SyncStatus.FAILED,
-                error="Deployment not found"
+                success=False, provider_id=deployment_id, status=SyncStatus.FAILED, error="Deployment not found"
             )
 
         # Get all models on this deployment
@@ -466,7 +426,7 @@ class ProviderSyncService:
                 success=False,
                 provider_id=deployment_id,
                 status=SyncStatus.FAILED,
-                error="No models assigned to deployment"
+                error="No models assigned to deployment",
             )
 
         try:
@@ -478,10 +438,7 @@ class ProviderSyncService:
 
             # Sync all model routes to AILB
             if self.ailb_client and self.ailb_client.is_connected():
-                result = self.ailb_client.update_routes(
-                    routes=routes,
-                    instance_id=self._instance_id
-                )
+                result = self.ailb_client.update_routes(routes=routes, instance_id=self._instance_id)
                 if not result.get("success"):
                     raise Exception(result.get("message", "Unknown error"))
 
@@ -491,16 +448,11 @@ class ProviderSyncService:
                 route_id = f"ollama-{deployment_id}-{model.model_name}"
 
                 # Check if sync record exists
-                sync_record = db(
-                    db.ollama_model_routes.model_id == model.id
-                ).select().first()
+                sync_record = db(db.ollama_model_routes.model_id == model.id).select().first()
 
                 if sync_record:
                     db(db.ollama_model_routes.id == sync_record.id).update(
-                        ailb_route_id=route_id,
-                        sync_status="synced",
-                        last_synced=now,
-                        sync_error=None
+                        ailb_route_id=route_id, sync_status="synced", last_synced=now, sync_error=None
                     )
                 else:
                     db.ollama_model_routes.insert(
@@ -509,7 +461,7 @@ class ProviderSyncService:
                         ailb_instance_id=self._instance_id,
                         ailb_route_id=route_id,
                         sync_status="synced",
-                        last_synced=now
+                        last_synced=now,
                     )
 
             db.commit()
@@ -519,17 +471,12 @@ class ProviderSyncService:
                 success=True,
                 provider_id=deployment_id,
                 status=SyncStatus.SYNCED,
-                message=f"Synced {len(models)} model routes"
+                message=f"Synced {len(models)} model routes",
             )
 
         except Exception as e:
             logger.error(f"Failed to sync Ollama deployment {deployment_id}: {e}")
-            return SyncResult(
-                success=False,
-                provider_id=deployment_id,
-                status=SyncStatus.FAILED,
-                error=str(e)
-            )
+            return SyncResult(success=False, provider_id=deployment_id, status=SyncStatus.FAILED, error=str(e))
 
     def _ollama_model_to_route(self, deployment, model) -> RouteConfig:
         """
@@ -541,7 +488,7 @@ class ProviderSyncService:
         from urllib.parse import urlparse
 
         parsed = urlparse(deployment.endpoint_url)
-        host = parsed.netloc.split(':')[0] if ':' in parsed.netloc else parsed.netloc
+        host = parsed.netloc.split(":")[0] if ":" in parsed.netloc else parsed.netloc
         port = parsed.port or 11434
 
         # Create model-specific route
@@ -562,8 +509,8 @@ class ProviderSyncService:
                 "model_name": model.model_name,
                 "model_tag": model.model_tag or "latest",
                 "provider_type": "ollama",
-                "routing_type": "model-specific"
-            }
+                "routing_type": "model-specific",
+            },
         )
 
         return route
@@ -580,8 +527,7 @@ class ProviderSyncService:
 
         # Get all deployments with models
         deployments = db(
-            (db.ollama_deployments.status.belongs(['running', 'pending'])) &
-            (db.ollama_deployments.id > 0)
+            (db.ollama_deployments.status.belongs(["running", "pending"])) & (db.ollama_deployments.id > 0)
         ).select()
 
         for deployment in deployments:
@@ -613,10 +559,7 @@ class ProviderSyncService:
             # Delete route from AILB
             if self.ailb_client and self.ailb_client.is_connected():
                 if sync_record.ailb_route_id:
-                    self.ailb_client.delete_route(
-                        route_id=sync_record.ailb_route_id,
-                        instance_id=self._instance_id
-                    )
+                    self.ailb_client.delete_route(route_id=sync_record.ailb_route_id, instance_id=self._instance_id)
 
             # Delete sync record
             db(db.ollama_model_routes.id == sync_record.id).delete()
@@ -643,19 +586,11 @@ class ProviderSyncService:
 
         sync_record = db(db.ollama_model_routes.model_id == model_id).select().first()
         if not sync_record:
-            return {
-                "synced": False,
-                "status": "not_synced",
-                "message": "No sync record found"
-            }
+            return {"synced": False, "status": "not_synced", "message": "No sync record found"}
 
         model = db(db.ollama_models.id == model_id).select().first()
         if not model:
-            return {
-                "synced": False,
-                "status": "model_not_found",
-                "message": "Model not found"
-            }
+            return {"synced": False, "status": "model_not_found", "message": "Model not found"}
 
         return {
             "synced": sync_record.sync_status == "synced",
@@ -665,5 +600,5 @@ class ProviderSyncService:
             "last_synced": sync_record.last_synced.isoformat() if sync_record.last_synced else None,
             "sync_error": sync_record.sync_error,
             "model_name": model.model_name,
-            "model_tag": model.model_tag
+            "model_tag": model.model_tag,
         }

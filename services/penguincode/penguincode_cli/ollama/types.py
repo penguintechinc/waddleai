@@ -25,10 +25,7 @@ class Message:
         """Create Message from a dictionary."""
         tool_calls = None
         if data.get("tool_calls"):
-            tool_calls = [
-                ToolCall(function=tc.get("function", {}))
-                for tc in data["tool_calls"]
-            ]
+            tool_calls = [ToolCall(function=tc.get("function", {})) for tc in data["tool_calls"]]
         return cls(
             role=data.get("role", "user"),
             content=data.get("content", ""),

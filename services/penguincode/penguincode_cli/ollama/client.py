@@ -5,15 +5,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from .types import (
-    ChatRequest,
-    ChatResponse,
-    GenerateRequest,
-    GenerateResponse,
-    Message,
-    ModelInfo,
-    ToolCall,
-)
+from .types import ChatRequest, ChatResponse, GenerateRequest, GenerateResponse, Message, ModelInfo, ToolCall
 
 
 class OllamaClient:
@@ -143,10 +135,7 @@ class OllamaClient:
                         # Parse tool_calls if present
                         tool_calls = None
                         if "tool_calls" in msg_data and msg_data["tool_calls"]:
-                            tool_calls = [
-                                ToolCall(function=tc.get("function", {}))
-                                for tc in msg_data["tool_calls"]
-                            ]
+                            tool_calls = [ToolCall(function=tc.get("function", {})) for tc in msg_data["tool_calls"]]
                         data["message"] = Message(
                             role=msg_data.get("role", "assistant"),
                             content=msg_data.get("content", ""),
@@ -155,9 +144,17 @@ class OllamaClient:
                         )
                     # Filter to known ChatResponse fields to handle API changes
                     known_fields = {
-                        "model", "created_at", "message", "done", "done_reason",
-                        "total_duration", "load_duration", "prompt_eval_count",
-                        "prompt_eval_duration", "eval_count", "eval_duration",
+                        "model",
+                        "created_at",
+                        "message",
+                        "done",
+                        "done_reason",
+                        "total_duration",
+                        "load_duration",
+                        "prompt_eval_count",
+                        "prompt_eval_duration",
+                        "eval_count",
+                        "eval_duration",
                     }
                     filtered_data = {k: v for k, v in data.items() if k in known_fields}
                     yield ChatResponse(**filtered_data)

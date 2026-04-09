@@ -8,17 +8,13 @@ Usage:
 Idempotent — already-encrypted values (prefixed with 'enc:') are skipped.
 """
 
-import sys
 import os
+import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from shared.security.credential_encryption import (
-    encrypt_credential,
-    is_encrypted,
-    get_encryption_config,
-)
 from shared.database.models import get_db
+from shared.security.credential_encryption import encrypt_credential, get_encryption_config, is_encrypted
 
 
 def migrate() -> None:
@@ -34,7 +30,7 @@ def migrate() -> None:
     skipped = 0
 
     for link in links:
-        api_key = link.api_key or ''
+        api_key = link.api_key or ""
         if not api_key or is_encrypted(api_key):
             skipped += 1
             continue
@@ -47,5 +43,5 @@ def migrate() -> None:
     print(f"Migration complete: {migrated} encrypted, {skipped} skipped (already encrypted or empty)")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     migrate()

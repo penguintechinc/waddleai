@@ -9,7 +9,6 @@ The refactor agent specializes in:
 It can read files and write refactored code.
 """
 
-
 from penguincode_cli.ollama import OllamaClient
 
 from .base import AgentConfig, AgentResult, BaseAgent, Permission

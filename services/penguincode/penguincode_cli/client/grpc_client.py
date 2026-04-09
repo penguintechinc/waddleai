@@ -5,7 +5,6 @@ import logging
 from collections.abc import AsyncIterator
 
 import grpc
-
 from penguincode_cli.config.settings import ClientConfig, ServerConfig
 from penguincode_cli.proto import (
     AuthRequest,
@@ -118,9 +117,7 @@ class GRPCClient(IChatService):
             raise RuntimeError("Not connected to server")
 
         try:
-            response = await self._auth_stub.Authenticate(
-                AuthRequest(api_key=api_key, client_id=client_id)
-            )
+            response = await self._auth_stub.Authenticate(AuthRequest(api_key=api_key, client_id=client_id))
 
             # Store token
             self.token_manager.store_token(
@@ -302,9 +299,7 @@ class GRPCClient(IChatService):
             return
 
         self._tool_response_queue = asyncio.Queue()
-        self._tool_callback_task = asyncio.create_task(
-            self._tool_callback_loop()
-        )
+        self._tool_callback_task = asyncio.create_task(self._tool_callback_loop())
 
     async def _tool_callback_loop(self) -> None:
         """Handle tool callback requests from server."""

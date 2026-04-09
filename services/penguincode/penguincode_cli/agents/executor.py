@@ -1,6 +1,5 @@
 """Executor agent - handles code mutations, file writes, and bash execution."""
 
-
 from penguincode_cli.ollama import OllamaClient
 
 from .base import AgentConfig, AgentResult, BaseAgent, Permission

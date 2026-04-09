@@ -46,11 +46,14 @@ class TokenManager:
 
             # Save with restricted permissions
             with open(self.token_path, "w") as f:
-                json.dump({
-                    "access_token": self._access_token,
-                    "refresh_token": self._refresh_token,
-                    "expires_at": self._expires_at,
-                }, f)
+                json.dump(
+                    {
+                        "access_token": self._access_token,
+                        "refresh_token": self._refresh_token,
+                        "expires_at": self._expires_at,
+                    },
+                    f,
+                )
 
             # Set file permissions to owner-only
             os.chmod(self.token_path, 0o600)

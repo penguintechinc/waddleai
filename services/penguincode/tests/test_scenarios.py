@@ -14,9 +14,11 @@ import pytest
 # Mock Response Fixtures
 # ============================================================================
 
+
 @dataclass(slots=True)
 class MockAIResponse:
     """Mock AI response for testing."""
+
     content: str
     tokens_used: int = 100
     model: str = "test-model"
@@ -26,6 +28,7 @@ class MockAIResponse:
 @dataclass(slots=True)
 class MockCodeGeneration:
     """Mock code generation result."""
+
     code: str
     language: str
     explanation: str
@@ -35,6 +38,7 @@ class MockCodeGeneration:
 @dataclass(slots=True)
 class MockExplanation:
     """Mock explanation result."""
+
     summary: str
     key_points: list[str]
     examples: list[str]
@@ -44,6 +48,7 @@ class MockExplanation:
 # ============================================================================
 # Scenario Validators
 # ============================================================================
+
 
 class ScenarioValidator:
     """Validates scenario responses meet expected criteria."""
@@ -128,6 +133,7 @@ class ScenarioValidator:
 # Scenario 1: Build a Python Flask Website Showing Penguins
 # ============================================================================
 
+
 class TestFlaskPenguinWebsite:
     """Tests for Flask penguin website generation scenario."""
 
@@ -209,9 +215,7 @@ if __name__ == "__main__":
         )
 
         # Simulate the generation request
-        result = await mock_ai.generate(
-            prompt="build a python flask website which shows off penguins"
-        )
+        result = await mock_ai.generate(prompt="build a python flask website which shows off penguins")
 
         assert result.success is True
         assert "flask" in result.content.lower()
@@ -221,6 +225,7 @@ if __name__ == "__main__":
 # ============================================================================
 # Scenario 2: SQLAlchemy vs PyDAL Comparison
 # ============================================================================
+
 
 class TestDatabaseLibraryComparison:
     """Tests for SQLAlchemy vs PyDAL explanation scenario."""
@@ -308,9 +313,7 @@ focused on portability across databases with a more Pythonic API.""",
             tokens_used=300,
         )
 
-        result = await mock_ai.explain(
-            prompt="tell me about the difference between SQLAlchemy and PyDAL in python"
-        )
+        result = await mock_ai.explain(prompt="tell me about the difference between SQLAlchemy and PyDAL in python")
 
         assert result.success is True
         assert "sqlalchemy" in result.content.lower()
@@ -321,6 +324,7 @@ focused on portability across databases with a more Pythonic API.""",
 # Scenario 3: Go Cross-Platform GUI Application
 # ============================================================================
 
+
 class TestGoCrossPlatformGUI:
     """Tests for Go GUI application generation scenario."""
 
@@ -328,37 +332,37 @@ class TestGoCrossPlatformGUI:
     def mock_go_gui_response(self) -> MockCodeGeneration:
         """Generate mock Go GUI application code."""
         return MockCodeGeneration(
-            code='''package main
+            code="""package main
 
 import (
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/widget"
+    "fyne.io/fyne/v2"
+    "fyne.io/fyne/v2/app"
+    "fyne.io/fyne/v2/container"
+    "fyne.io/fyne/v2/widget"
 )
 
 func main() {
-	// Create application
-	myApp := app.New()
-	myWindow := myApp.NewWindow("Hello World")
+    // Create application
+    myApp := app.New()
+    myWindow := myApp.NewWindow("Hello World")
 
-	// Create hello world label
-	hello := widget.NewLabel("Hello World!")
-	hello.TextStyle = fyne.TextStyle{Bold: true}
+    // Create hello world label
+    hello := widget.NewLabel("Hello World!")
+    hello.TextStyle = fyne.TextStyle{Bold: true}
 
-	// Create content container
-	content := container.NewVBox(
-		hello,
-		widget.NewButton("Click Me", func() {
-			hello.SetText("Hello from Penguin!")
-		}),
-	)
+    // Create content container
+    content := container.NewVBox(
+        hello,
+        widget.NewButton("Click Me", func() {
+            hello.SetText("Hello from Penguin!")
+        }),
+    )
 
-	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(300, 200))
-	myWindow.ShowAndRun()
+    myWindow.SetContent(content)
+    myWindow.Resize(fyne.NewSize(300, 200))
+    myWindow.ShowAndRun()
 }
-''',
+""",
             language="go",
             explanation="A cross-platform Go GUI application using Fyne that works on Mac, Windows, and Linux.",
             files_created=["main.go", "go.mod"],
@@ -367,12 +371,12 @@ func main() {
     @pytest.fixture
     def mock_go_mod_response(self) -> str:
         """Generate mock go.mod file."""
-        return '''module hello-world-gui
+        return """module hello-world-gui
 
 go 1.24
 
 require fyne.io/fyne/v2 v2.5.0
-'''
+"""
 
     def test_go_response_has_valid_structure(self, mock_go_gui_response):
         """Test Go GUI response has valid structure."""
@@ -409,9 +413,11 @@ require fyne.io/fyne/v2 v2.5.0
 
     def test_go_mod_has_gui_dependency(self, mock_go_mod_response):
         """Test go.mod includes GUI library dependency."""
-        assert "fyne" in mock_go_mod_response.lower() or \
-               "gio" in mock_go_mod_response.lower() or \
-               "walk" in mock_go_mod_response.lower()
+        assert (
+            "fyne" in mock_go_mod_response.lower()
+            or "gio" in mock_go_mod_response.lower()
+            or "walk" in mock_go_mod_response.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_go_gui_generation_flow(self, mock_go_gui_response):
@@ -435,6 +441,7 @@ require fyne.io/fyne/v2 v2.5.0
 # Integration Tests - Full Scenario Processing
 # ============================================================================
 
+
 class TestScenarioIntegration:
     """Integration tests for complete scenario processing."""
 
@@ -456,9 +463,7 @@ class TestScenarioIntegration:
             "files": ["app.py"],
         }
 
-        result = await mock_orchestrator.process(
-            "build a python flask website which shows off penguins"
-        )
+        result = await mock_orchestrator.process("build a python flask website which shows off penguins")
 
         assert result["type"] == "code_generation"
         assert result["language"] == "python"
@@ -473,9 +478,7 @@ class TestScenarioIntegration:
             "key_points": ["ORM vs DAL", "Query syntax", "Migrations"],
         }
 
-        result = await mock_orchestrator.process(
-            "tell me about the difference between SQLAlchemy and PyDAL"
-        )
+        result = await mock_orchestrator.process("tell me about the difference between SQLAlchemy and PyDAL")
 
         assert result["type"] == "explanation"
         assert "sqlalchemy" in result["summary"].lower()
@@ -486,13 +489,11 @@ class TestScenarioIntegration:
         mock_orchestrator.process.return_value = {
             "type": "code_generation",
             "language": "go",
-            "code": "package main\n\nimport \"fyne.io/fyne/v2\"",
+            "code": 'package main\n\nimport "fyne.io/fyne/v2"',
             "files": ["main.go", "go.mod"],
         }
 
-        result = await mock_orchestrator.process(
-            "write a golang app which pops open a hello world window"
-        )
+        result = await mock_orchestrator.process("write a golang app which pops open a hello world window")
 
         assert result["type"] == "code_generation"
         assert result["language"] == "go"
@@ -502,27 +503,50 @@ class TestScenarioIntegration:
 # Prompt Classification Tests
 # ============================================================================
 
+
 class TestPromptClassification:
     """Tests for classifying user prompts into scenario types."""
 
     @pytest.fixture
     def classifier(self):
         """Create mock prompt classifier."""
+
         class MockClassifier:
             # Order matters - more specific patterns checked first
             PATTERN_ORDER = ["debugging", "explanation", "code_generation"]
             PATTERNS = {
                 "debugging": [
-                    "fix", "error", "bug", "issue", "problem", "not working",
-                    "broken", "fails", "crash", "debug"
+                    "fix",
+                    "error",
+                    "bug",
+                    "issue",
+                    "problem",
+                    "not working",
+                    "broken",
+                    "fails",
+                    "crash",
+                    "debug",
                 ],
                 "explanation": [
-                    "tell me about", "explain", "what is", "difference between",
-                    "compare", "how does", "why", "describe"
+                    "tell me about",
+                    "explain",
+                    "what is",
+                    "difference between",
+                    "compare",
+                    "how does",
+                    "why",
+                    "describe",
                 ],
                 "code_generation": [
-                    "build", "create", "write", "make", "generate",
-                    "implement", "develop", "app", "website"
+                    "build",
+                    "create",
+                    "write",
+                    "make",
+                    "generate",
+                    "implement",
+                    "develop",
+                    "app",
+                    "website",
                 ],
             }
 
@@ -561,6 +585,7 @@ class TestPromptClassification:
 # Response Quality Tests
 # ============================================================================
 
+
 class TestResponseQuality:
     """Tests for response quality metrics."""
 
@@ -593,7 +618,7 @@ def index():
     def test_code_follows_style_guidelines(self):
         """Test that code follows style guidelines."""
         # Python code should have proper structure
-        python_code = '''from flask import Flask
+        python_code = """from flask import Flask
 
 app = Flask(__name__)
 
@@ -601,17 +626,17 @@ app = Flask(__name__)
 @app.route("/")
 def index():
     return "Hello"
-'''
+"""
         # Check for proper spacing around functions
         lines = python_code.split("\n")
         assert any(line == "" for line in lines)  # Has blank lines
 
         # Go code should have proper structure
-        go_code = '''package main
+        go_code = """package main
 
 func main() {
     println("Hello World")
 }
-'''
+"""
         assert "package main" in go_code
         assert "func main()" in go_code

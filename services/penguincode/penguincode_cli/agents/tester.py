@@ -9,7 +9,6 @@ The tester agent specializes in:
 It can read files, run tests via bash, and delegate writes to executor.
 """
 
-
 from penguincode_cli.ollama import OllamaClient
 
 from .base import AgentConfig, AgentResult, BaseAgent, Permission

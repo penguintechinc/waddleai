@@ -5,10 +5,12 @@ These tests run against a live Ollama instance at OLLAMA_BASE_URL
 (default: http://localhost:11434). All tests are skipped when Ollama
 is not running.
 """
-import pytest
-import httpx
+
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
+import httpx
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -16,6 +18,7 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
 
 def _skip_if_unavailable(ollama_available: bool) -> None:
     if not ollama_available:
@@ -30,6 +33,7 @@ def _skip_if_no_model(model: str) -> None:
 # ---------------------------------------------------------------------------
 # API surface tests
 # ---------------------------------------------------------------------------
+
 
 def test_ollama_tags_endpoint_returns_200(
     ollama_available: bool,
@@ -216,8 +220,9 @@ def test_ollama_llm_connector_can_list_models(
     _skip_if_unavailable(ollama_available)
 
     # Import from the shared utils module (path added by conftest.py in parent)
-    from shared.utils.llm_connectors import OllamaConnector  # type: ignore[import]
     import asyncio
+
+    from shared.utils.llm_connectors import OllamaConnector  # type: ignore[import]
 
     config: Dict[str, Any] = {
         "enabled": True,
@@ -238,8 +243,9 @@ def test_ollama_llm_connector_health_check(
     """OllamaConnector.health_check() should report status=healthy."""
     _skip_if_unavailable(ollama_available)
 
-    from shared.utils.llm_connectors import OllamaConnector  # type: ignore[import]
     import asyncio
+
+    from shared.utils.llm_connectors import OllamaConnector  # type: ignore[import]
 
     config: Dict[str, Any] = {
         "enabled": True,

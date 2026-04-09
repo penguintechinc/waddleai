@@ -8,15 +8,7 @@ from enum import Enum
 from typing import Any
 
 from penguincode_cli.ollama import Message, OllamaClient
-from penguincode_cli.tools import (
-    BashTool,
-    EditFileTool,
-    GlobTool,
-    GrepTool,
-    ReadFileTool,
-    ToolResult,
-    WriteFileTool,
-)
+from penguincode_cli.tools import BashTool, EditFileTool, GlobTool, GrepTool, ReadFileTool, ToolResult, WriteFileTool
 from penguincode_cli.ui import console
 
 
@@ -188,16 +180,13 @@ class BaseAgent(ABC):
                             # Check if this looks like a tool call
                             if "name" in data and ("arguments" in data or "parameters" in data):
                                 tool_calls.append(data)
-                            elif isinstance(data, dict) and any(
-                                key in self.tools for key in data
-                            ):
+                            elif isinstance(data, dict) and any(key in self.tools for key in data):
                                 # Handle {tool_name: {args}}
                                 for name, args in data.items():
                                     if name in self.tools:
-                                        tool_calls.append({
-                                            "name": name,
-                                            "arguments": args if isinstance(args, dict) else {}
-                                        })
+                                        tool_calls.append(
+                                            {"name": name, "arguments": args if isinstance(args, dict) else {}}
+                                        )
                         except json.JSONDecodeError:
                             pass
 
@@ -232,10 +221,18 @@ class BaseAgent(ABC):
         # Write tool detection
         if "write" in self.tools:
             write_patterns = [
-                "create the file", "create a file", "creating file",
-                "write the file", "write to file", "writing to",
-                "let me create", "i'll create", "i will create",
-                "save to file", "saving to", "output to file",
+                "create the file",
+                "create a file",
+                "creating file",
+                "write the file",
+                "write to file",
+                "writing to",
+                "let me create",
+                "i'll create",
+                "i will create",
+                "save to file",
+                "saving to",
+                "output to file",
             ]
             if any(p in response_lower for p in write_patterns):
                 # Try to extract file path and content from context
@@ -247,9 +244,15 @@ class BaseAgent(ABC):
         # Read tool detection
         if "read" in self.tools:
             read_patterns = [
-                "read the file", "reading file", "let me read",
-                "check the file", "look at the file", "examine the file",
-                "open the file", "view the file", "see what's in",
+                "read the file",
+                "reading file",
+                "let me read",
+                "check the file",
+                "look at the file",
+                "examine the file",
+                "open the file",
+                "view the file",
+                "see what's in",
             ]
             if any(p in response_lower for p in read_patterns):
                 args = self._extract_path_arg(response_text, task)
@@ -260,9 +263,16 @@ class BaseAgent(ABC):
         # Bash tool detection
         if "bash" in self.tools:
             bash_patterns = [
-                "run the command", "execute the command", "running:",
-                "let me run", "i'll run", "i will run", "execute:",
-                "run this:", "running this", "shell command",
+                "run the command",
+                "execute the command",
+                "running:",
+                "let me run",
+                "i'll run",
+                "i will run",
+                "execute:",
+                "run this:",
+                "running this",
+                "shell command",
             ]
             if any(p in response_lower for p in bash_patterns):
                 args = self._extract_bash_args(response_text, task)
@@ -273,8 +283,12 @@ class BaseAgent(ABC):
         # Grep tool detection
         if "grep" in self.tools:
             grep_patterns = [
-                "search for", "searching for", "let me search",
-                "find occurrences", "look for", "grep for",
+                "search for",
+                "searching for",
+                "let me search",
+                "find occurrences",
+                "look for",
+                "grep for",
             ]
             if any(p in response_lower for p in grep_patterns):
                 args = self._extract_grep_args(response_text, task)
@@ -285,8 +299,12 @@ class BaseAgent(ABC):
         # Glob tool detection
         if "glob" in self.tools:
             glob_patterns = [
-                "find files", "list files", "find all", "locate files",
-                "files matching", "files with extension",
+                "find files",
+                "list files",
+                "find all",
+                "locate files",
+                "files matching",
+                "files with extension",
             ]
             if any(p in response_lower for p in glob_patterns):
                 args = self._extract_glob_args(response_text, task)
@@ -297,8 +315,12 @@ class BaseAgent(ABC):
         # Edit tool detection
         if "edit" in self.tools:
             edit_patterns = [
-                "edit the file", "modify the file", "change the",
-                "replace the", "update the file", "editing",
+                "edit the file",
+                "modify the file",
+                "change the",
+                "replace the",
+                "update the file",
+                "editing",
             ]
             if any(p in response_lower for p in edit_patterns):
                 args = self._extract_edit_args(response_text, task)
@@ -337,7 +359,7 @@ class BaseAgent(ABC):
             if match:
                 candidate = match.group(1)
                 # Skip common non-file words
-                if candidate.lower() not in ['the', 'a', 'an', 'this', 'that', 'file', 'named', 'called']:
+                if candidate.lower() not in ["the", "a", "an", "this", "that", "file", "named", "called"]:
                     path = candidate
                     break
 
@@ -346,7 +368,7 @@ class BaseAgent(ABC):
                 match = re.search(pattern, response, re.IGNORECASE)
                 if match:
                     candidate = match.group(1)
-                    if candidate.lower() not in ['the', 'a', 'an', 'this', 'that', 'file', 'named', 'called']:
+                    if candidate.lower() not in ["the", "a", "an", "this", "that", "file", "named", "called"]:
                         path = candidate
                         break
 
@@ -372,7 +394,7 @@ class BaseAgent(ABC):
         if not content:
             content_patterns = [
                 r'(?:content|containing|with)[:\s]+[`"\']([^`"\']+)[`"\']',
-                r'(?:content|text)[:\s]+(.+?)(?:\n|$)',
+                r"(?:content|text)[:\s]+(.+?)(?:\n|$)",
             ]
             for pattern in content_patterns:
                 match = re.search(pattern, task, re.IGNORECASE | re.DOTALL)
@@ -384,6 +406,7 @@ class BaseAgent(ABC):
         if not content:
             if "timestamp" in task_lower or "epoch" in task_lower:
                 import time
+
                 content = str(int(time.time()))
             elif "hello world" in task_lower:
                 content = "hello world"
@@ -400,8 +423,8 @@ class BaseAgent(ABC):
 
         path_patterns = [
             r'[`"\']([^\s`"\']+\.\w+)[`"\']',
-            r'file[:\s]+([^\s]+\.\w+)',
-            r'(?:read|check|examine)\s+([^\s]+\.\w+)',
+            r"file[:\s]+([^\s]+\.\w+)",
+            r"(?:read|check|examine)\s+([^\s]+\.\w+)",
         ]
 
         for pattern in path_patterns:
@@ -421,22 +444,22 @@ class BaseAgent(ABC):
         import re
 
         # Look for command in code blocks or after keywords
-        code_block = re.search(r'```(?:bash|sh)?\s*\n([^`]+)\n```', response)
+        code_block = re.search(r"```(?:bash|sh)?\s*\n([^`]+)\n```", response)
         if code_block:
             return {"command": code_block.group(1).strip()}
 
         # Look for inline commands
         cmd_patterns = [
-            r'`([^`]+)`',
-            r'command[:\s]+(.+?)(?:\n|$)',
-            r'run[:\s]+(.+?)(?:\n|$)',
+            r"`([^`]+)`",
+            r"command[:\s]+(.+?)(?:\n|$)",
+            r"run[:\s]+(.+?)(?:\n|$)",
         ]
 
         for pattern in cmd_patterns:
             match = re.search(pattern, response, re.IGNORECASE)
             if match:
                 cmd = match.group(1).strip()
-                if cmd and not cmd.startswith(('I ', 'The ', 'This ')):
+                if cmd and not cmd.startswith(("I ", "The ", "This ")):
                     return {"command": cmd}
 
         return None
@@ -616,11 +639,13 @@ class BaseAgent(ABC):
                         tool_signature = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
 
                         result = await self._execute_tool_call(tc)
-                        tool_calls_log.append({
-                            "tool": tool_name,
-                            "arguments": tool_args,
-                            "result": result[:500] if len(result) > 500 else result
-                        })
+                        tool_calls_log.append(
+                            {
+                                "tool": tool_name,
+                                "arguments": tool_args,
+                                "result": result[:500] if len(result) > 500 else result,
+                            }
+                        )
                         tool_results.append(result)
 
                         # Track if this result is an error
@@ -646,7 +671,6 @@ class BaseAgent(ABC):
 
                     # Detect if we're in a loop (same call repeated OR repeating cycle)
                     is_looping = False
-                    loop_message = ""
 
                     if len(recent_tool_calls) >= max_repeat_detection:
                         last_calls = recent_tool_calls[-max_repeat_detection:]
@@ -671,14 +695,11 @@ class BaseAgent(ABC):
                     if not is_looping and len(recent_file_targets) >= 4:
                         last_targets = recent_file_targets[-8:]
                         from collections import Counter
+
                         target_counts = Counter(last_targets)
                         for target, count in target_counts.items():
                             if count >= 4:
                                 is_looping = True
-                                loop_message = (
-                                    "You are repeating the same edit on the same file. "
-                                    "Stop editing this file and move on to the next step."
-                                )
                                 break
 
                     # Build tool response message
@@ -692,8 +713,8 @@ class BaseAgent(ABC):
                         console.print("  [yellow]⚠️ Loop detected - escalating to orchestrator[/yellow]")
 
                         # Build escalation context with all the details the orchestrator needs
-                        last_error = tool_results[-1] if tool_results else 'Unknown error'
-                        failed_command = recent_tool_calls[-1] if recent_tool_calls else 'Unknown command'
+                        last_error = tool_results[-1] if tool_results else "Unknown error"
+                        failed_command = recent_tool_calls[-1] if recent_tool_calls else "Unknown command"
 
                         escalation_context = f"""EXECUTOR STUCK - NEEDS ORCHESTRATOR HELP
 
@@ -734,9 +755,11 @@ The executor attempted the same operation {max_repeat_detection} times without s
                         )
 
                     elif consecutive_errors >= max_consecutive_errors:
-                        tool_response += f"\n\n⚠️ REPEATED ERRORS ({consecutive_errors}): Stop and analyze the errors before continuing.\n"
+                        tool_response += f"\n\n⚠️ REPEATED ERRORS ({consecutive_errors}): Stop and analyze the errors before continuing.\n"  # noqa: E501
                         tool_response += "What is the actual problem? Fix it before retrying the same approach.\n"
-                        console.print(f"  [yellow]⚠️ {consecutive_errors} consecutive errors - injecting guidance[/yellow]")
+                        console.print(
+                            f"  [yellow]⚠️ {consecutive_errors} consecutive errors - injecting guidance[/yellow]"
+                        )
 
                     messages.append(Message(role="user", content=f"Tool results:\n{tool_response}"))
                     continue

@@ -1,6 +1,5 @@
 """Google Custom Search using MCP server (if available)."""
 
-
 from penguincode_cli.tools.mcp.client import MCPClient
 
 from .base import BaseSearchEngine, SearchEngineError, SearchResult
@@ -65,9 +64,7 @@ class GoogleMCPEngine(BaseSearchEngine):
             return results
 
         except Exception as e:
-            raise SearchEngineError(
-                f"Google MCP search failed (MCP server may not be available): {e}"
-            ) from e
+            raise SearchEngineError(f"Google MCP search failed (MCP server may not be available): {e}") from e
 
     async def cleanup(self):
         """Stop MCP server."""

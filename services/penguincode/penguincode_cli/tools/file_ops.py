@@ -58,9 +58,7 @@ class ReadFileTool(BaseTool):
 
             # Add line numbers
             if start_line:
-                numbered_lines = [
-                    f"{i + start_line:6d}→{line.rstrip()}" for i, line in enumerate(lines)
-                ]
+                numbered_lines = [f"{i + start_line:6d}→{line.rstrip()}" for i, line in enumerate(lines)]
             else:
                 numbered_lines = [f"{i + 1:6d}→{line.rstrip()}" for i, line in enumerate(lines)]
 
@@ -292,11 +290,7 @@ class GrepTool(BaseTool):
                 files = [search_path]
             elif search_path.is_dir():
                 # Search all text files in directory recursively
-                files = [
-                    f
-                    for f in search_path.rglob("*")
-                    if f.is_file() and not self._should_ignore(f)
-                ]
+                files = [f for f in search_path.rglob("*") if f.is_file() and not self._should_ignore(f)]
             else:
                 return ToolResult(
                     success=False,
@@ -310,9 +304,7 @@ class GrepTool(BaseTool):
                     break
 
                 try:
-                    async with aiofiles.open(
-                        file_path, encoding="utf-8", errors="replace"
-                    ) as f:
+                    async with aiofiles.open(file_path, encoding="utf-8", errors="replace") as f:
                         lines = await f.readlines()
 
                     for line_num, line in enumerate(lines, 1):
@@ -327,9 +319,7 @@ class GrepTool(BaseTool):
 
             # Format results
             if matches:
-                result_lines = [
-                    f"{file}:{line_num}: {line}" for file, line_num, line in matches
-                ]
+                result_lines = [f"{file}:{line_num}: {line}" for file, line_num, line in matches]
                 result_text = "\n".join(result_lines)
             else:
                 result_text = f"No matches found for pattern: {pattern}"

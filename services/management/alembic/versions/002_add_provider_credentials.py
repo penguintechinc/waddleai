@@ -4,8 +4,9 @@ Revision ID: 002_add_provider_credentials
 Revises: 001_baseline
 Create Date: 2026-04-02
 """
-from typing import Sequence, Union
+
 from datetime import datetime
+from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
@@ -48,10 +49,7 @@ def upgrade() -> None:
     # 2. Migrate existing api_key values into provider_credentials as label='default'
     connection = op.get_bind()
     providers = connection.execute(
-        sa.text(
-            "SELECT id, api_key FROM ai_providers "
-            "WHERE api_key IS NOT NULL AND api_key != ''"
-        )
+        sa.text("SELECT id, api_key FROM ai_providers " "WHERE api_key IS NOT NULL AND api_key != ''")
     ).fetchall()
     now = datetime.utcnow()
     for row in providers:
@@ -86,9 +84,7 @@ def downgrade() -> None:
     ).fetchall()
     for row in rows:
         connection.execute(
-            sa.text(
-                "UPDATE ai_providers SET api_key = :key WHERE id = :pid"
-            ),
+            sa.text("UPDATE ai_providers SET api_key = :key WHERE id = :pid"),
             {"key": row[1], "pid": row[0]},
         )
     op.drop_index("ix_provider_credentials_provider_id", "provider_credentials")

@@ -9,7 +9,6 @@ The debugger agent specializes in:
 It can read files, search for patterns, run commands, and apply fixes.
 """
 
-
 from penguincode_cli.ollama import OllamaClient
 
 from .base import AgentConfig, AgentResult, BaseAgent, Permission

@@ -1,9 +1,7 @@
 """Web search and fetch tools for PenguinCode."""
 
-
 import httpx
 from bs4 import BeautifulSoup
-
 from penguincode_cli.config.settings import ResearchConfig
 
 from .engines.base import SearchResult

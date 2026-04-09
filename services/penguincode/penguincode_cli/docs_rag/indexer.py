@@ -114,8 +114,7 @@ class DocumentationIndexer:
             )
 
             self._collection = self._chroma_client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"hnsw:space": "cosine"}
+                name=self.collection_name, metadata={"hnsw:space": "cosine"}
             )
             return self._collection
 
@@ -153,17 +152,19 @@ class DocumentationIndexer:
 
         while start < len(words):
             end = min(start + words_per_chunk, len(words))
-            chunk_text = ' '.join(words[start:end])
+            chunk_text = " ".join(words[start:end])
 
             chunk_id = hashlib.md5(
                 f"{metadata.get('library', 'unknown')}_{chunk_num}_{chunk_text[:50]}".encode()
             ).hexdigest()
 
-            chunks.append(DocChunk(
-                content=chunk_text,
-                metadata={**metadata, "chunk_num": str(chunk_num)},
-                chunk_id=chunk_id,
-            ))
+            chunks.append(
+                DocChunk(
+                    content=chunk_text,
+                    metadata={**metadata, "chunk_num": str(chunk_num)},
+                    chunk_id=chunk_id,
+                )
+            )
 
             chunk_num += 1
             start = end - overlap_words if end < len(words) else end
@@ -232,6 +233,7 @@ class DocumentationIndexer:
                     if not embedding_error_shown:
                         embedding_error_shown = True
                         import sys
+
                         print(f"  Embedding error: {e}", file=sys.stderr)
                         print(f"  Hint: Run 'ollama pull {self.embedding_model}'", file=sys.stderr)
                     continue
@@ -298,6 +300,7 @@ class DocumentationIndexer:
                     if not embedding_error_shown:
                         embedding_error_shown = True
                         import sys
+
                         print(f"  Embedding error: {e}", file=sys.stderr)
                         print(f"  Hint: Run 'ollama pull {self.embedding_model}'", file=sys.stderr)
                     continue
@@ -342,13 +345,9 @@ class DocumentationIndexer:
             if libraries or languages:
                 conditions = []
                 if libraries:
-                    conditions.append({
-                        "library": {"$in": [lib.lower() for lib in libraries]}
-                    })
+                    conditions.append({"library": {"$in": [lib.lower() for lib in libraries]}})
                 if languages:
-                    conditions.append({
-                        "language": {"$in": [lang.lower() for lang in languages]}
-                    })
+                    conditions.append({"language": {"$in": [lang.lower() for lang in languages]}})
 
                 where_filter = conditions[0] if len(conditions) == 1 else {"$or": conditions}
 
@@ -359,22 +358,24 @@ class DocumentationIndexer:
             )
 
             search_results = []
-            if results and results['documents']:
-                for i, doc in enumerate(results['documents'][0]):
-                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
-                    distance = results['distances'][0][i] if results.get('distances') else 0
+            if results and results["documents"]:
+                for i, doc in enumerate(results["documents"][0]):
+                    metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+                    distance = results["distances"][0][i] if results.get("distances") else 0
 
                     # Convert distance to relevance (lower distance = higher relevance)
                     relevance = 1.0 - min(distance, 1.0)
 
-                    search_results.append(DocSearchResult(
-                        content=doc,
-                        library=metadata.get("library", ""),
-                        section=metadata.get("section", ""),
-                        relevance_score=relevance,
-                        url=metadata.get("url", ""),
-                        language=metadata.get("language", ""),
-                    ))
+                    search_results.append(
+                        DocSearchResult(
+                            content=doc,
+                            library=metadata.get("library", ""),
+                            section=metadata.get("section", ""),
+                            relevance_score=relevance,
+                            url=metadata.get("url", ""),
+                            language=metadata.get("language", ""),
+                        )
+                    )
 
             return search_results
 
@@ -388,13 +389,11 @@ class DocumentationIndexer:
 
         try:
             # Get IDs for this library
-            results = collection.get(
-                where={"library": library_name}
-            )
+            results = collection.get(where={"library": library_name})
 
-            if results and results['ids']:
-                collection.delete(ids=results['ids'])
-                removed = len(results['ids'])
+            if results and results["ids"]:
+                collection.delete(ids=results["ids"])
+                removed = len(results["ids"])
             else:
                 removed = 0
 
@@ -414,13 +413,11 @@ class DocumentationIndexer:
         lang_key = language.value
 
         try:
-            results = collection.get(
-                where={"library": f"_lang_{language.value}"}
-            )
+            results = collection.get(where={"library": f"_lang_{language.value}"})
 
-            if results and results['ids']:
-                collection.delete(ids=results['ids'])
-                removed = len(results['ids'])
+            if results and results["ids"]:
+                collection.delete(ids=results["ids"])
+                removed = len(results["ids"])
             else:
                 removed = 0
 

@@ -9,7 +9,6 @@ Requires: Ollama running locally with llama3.2:latest available.
 import httpx
 import pytest
 import pytest_asyncio
-
 from penguincode_cli.agents.chat import ChatAgent
 from penguincode_cli.agents.intent import detect_user_intent, estimate_complexity
 from penguincode_cli.config.settings import Settings, load_settings
@@ -98,16 +97,12 @@ class TestFlaskScenarioLive:
         """Verify intent detection routes this to the right agent."""
         intent = detect_user_intent(self.PROMPT)
         # "build a" triggers planner
-        assert intent in ("spawn_planner", "spawn_executor"), (
-            f"Expected planner or executor intent, got {intent}"
-        )
+        assert intent in ("spawn_planner", "spawn_executor"), f"Expected planner or executor intent, got {intent}"
 
     async def test_complexity_estimation(self):
         """Multi-file website should be moderate or complex."""
         complexity = estimate_complexity(self.PROMPT)
-        assert complexity in ("moderate", "complex"), (
-            f"Expected moderate/complex, got {complexity}"
-        )
+        assert complexity in ("moderate", "complex"), f"Expected moderate/complex, got {complexity}"
 
     async def test_ollama_generates_flask_code(self, ollama):
         """Ollama should generate valid Flask code for this prompt."""
@@ -134,9 +129,7 @@ class TestFlaskScenarioLive:
 
         has_templates = "render_template" in response_lower
         has_html = "<html" in response_lower or "html" in response_lower
-        assert has_templates or has_html, (
-            "Response has neither render_template nor HTML content"
-        )
+        assert has_templates or has_html, "Response has neither render_template nor HTML content"
 
 
 # ===========================================================================
@@ -155,9 +148,7 @@ class TestDatabaseComparisonLive:
     async def test_complexity_estimation(self):
         """Explanation tasks should be simple or moderate."""
         complexity = estimate_complexity(self.PROMPT)
-        assert complexity in ("simple", "moderate"), (
-            f"Expected simple/moderate, got {complexity}"
-        )
+        assert complexity in ("simple", "moderate"), f"Expected simple/moderate, got {complexity}"
 
     async def test_ollama_covers_both_libraries(self, ollama):
         """Response must mention both SQLAlchemy and PyDAL."""
@@ -183,9 +174,7 @@ class TestDatabaseComparisonLive:
         # Should mention at least 2 of these core concepts
         concepts = ["orm", "query", "migration", "model", "table", "session", "dal"]
         found = [c for c in concepts if c in response_lower]
-        assert len(found) >= 2, (
-            f"Response only covered {found} out of expected concepts {concepts}"
-        )
+        assert len(found) >= 2, f"Response only covered {found} out of expected concepts {concepts}"
 
     async def test_ollama_provides_examples(self, ollama):
         """Response should include code examples or syntax comparisons."""
@@ -199,9 +188,7 @@ class TestDatabaseComparisonLive:
         has_code_block = "```" in response
         has_import = "import" in response
         has_syntax = "db." in response or "session." in response or "query" in response.lower()
-        assert has_code_block or has_import or has_syntax, (
-            "Response lacks code examples or syntax demonstrations"
-        )
+        assert has_code_block or has_import or has_syntax, "Response lacks code examples or syntax demonstrations"
 
 
 # ===========================================================================
@@ -215,16 +202,12 @@ class TestGoGUILive:
     async def test_intent_detection(self):
         """Should route to planner or executor (code generation)."""
         intent = detect_user_intent(self.PROMPT)
-        assert intent in ("spawn_planner", "spawn_executor"), (
-            f"Expected planner or executor, got {intent}"
-        )
+        assert intent in ("spawn_planner", "spawn_executor"), f"Expected planner or executor, got {intent}"
 
     async def test_complexity_estimation(self):
         """Cross-platform GUI app should be moderate or complex."""
         complexity = estimate_complexity(self.PROMPT)
-        assert complexity in ("moderate", "complex"), (
-            f"Expected moderate/complex, got {complexity}"
-        )
+        assert complexity in ("moderate", "complex"), f"Expected moderate/complex, got {complexity}"
 
     async def test_ollama_generates_go_code(self, ollama):
         """Ollama should produce valid Go code with main package."""
@@ -248,10 +231,7 @@ class TestGoGUILive:
 
         gui_libs = ["fyne", "gio", "walk", "qt", "gtk", "webview", "wails", "lorca"]
         found = [lib for lib in gui_libs if lib in response_lower]
-        assert found, (
-            f"Response doesn't reference any known Go GUI library. "
-            f"Checked: {gui_libs}"
-        )
+        assert found, f"Response doesn't reference any known Go GUI library. " f"Checked: {gui_libs}"
 
     async def test_ollama_displays_hello_world(self, ollama):
         """Response should display a 'hello world' message."""
@@ -264,9 +244,7 @@ class TestGoGUILive:
 
         assert "hello" in response_lower, "Response missing 'hello' text"
         # "world" or "window" — either proves UI output
-        assert "world" in response_lower or "window" in response_lower, (
-            "Response missing 'world' or 'window' reference"
-        )
+        assert "world" in response_lower or "window" in response_lower, "Response missing 'world' or 'window' reference"
 
     async def test_ollama_includes_go_mod(self, ollama):
         """Response should mention go.mod or module dependency setup."""
@@ -280,6 +258,6 @@ class TestGoGUILive:
         has_go_mod = "go.mod" in response_lower or "go mod" in response_lower
         has_module = "module " in response_lower
         has_require = "require " in response_lower
-        assert has_go_mod or has_module or has_require, (
-            "Response missing go.mod / module declaration / require directive"
-        )
+        assert (
+            has_go_mod or has_module or has_require
+        ), "Response missing go.mod / module declaration / require directive"

@@ -1,14 +1,14 @@
 """Tests for credential encryption module."""
 
-import os
 import pytest
+
 from shared.security.credential_encryption import (
-    encrypt_credential,
-    decrypt_credential,
-    is_encrypted,
-    get_encryption_config,
-    _derive_key,
     EncryptionConfig,
+    _derive_key,
+    decrypt_credential,
+    encrypt_credential,
+    get_encryption_config,
+    is_encrypted,
 )
 
 
@@ -24,7 +24,7 @@ def encryption_config():
 @pytest.fixture
 def disabled_config():
     """Encryption disabled config."""
-    return EncryptionConfig(key=b'', enabled=False)
+    return EncryptionConfig(key=b"", enabled=False)
 
 
 class TestEncryptDecrypt:
@@ -61,7 +61,7 @@ class TestEncryptDecrypt:
             decrypt_credential(encrypted, wrong_config)
 
     def test_encrypted_without_key_fails(self):
-        disabled = EncryptionConfig(key=b'', enabled=False)
+        disabled = EncryptionConfig(key=b"", enabled=False)
         with pytest.raises(ValueError, match="CREDENTIAL_ENCRYPTION_KEY not set"):
             decrypt_credential("enc:someciphertext", disabled)
 

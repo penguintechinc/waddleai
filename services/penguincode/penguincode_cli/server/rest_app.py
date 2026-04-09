@@ -6,12 +6,11 @@ that can be used standalone or embedded alongside the gRPC server.
 
 import logging
 
-from quart import Quart
-from quart.logging import default_handler
-
 from penguincode_cli.server.models.config_store import ConfigStore
 from penguincode_cli.server.services.admin import admin_bp, init_admin
 from penguincode_cli.server.services.provision import init_provision, provision_bp
+from quart import Quart
+from quart.logging import default_handler
 
 logger = logging.getLogger(__name__)
 

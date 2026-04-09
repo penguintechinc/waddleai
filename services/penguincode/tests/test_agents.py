@@ -28,9 +28,7 @@ class MockAgent(BaseAgent):
 
     @property
     def permissions(self) -> AgentPermissions:
-        return AgentPermissions(
-            can_read=True, can_write=False, can_execute=False, can_web_search=False
-        )
+        return AgentPermissions(can_read=True, can_write=False, can_execute=False, can_web_search=False)
 
     async def _execute_task(self, task: str, context: dict) -> str:
         return f"Executed: {task}"

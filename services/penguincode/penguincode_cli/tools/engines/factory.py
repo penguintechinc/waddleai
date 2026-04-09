@@ -1,6 +1,5 @@
 """Factory for creating search engine instances."""
 
-
 from penguincode_cli.config.settings import ResearchConfig
 
 from .base import BaseSearchEngine
@@ -40,9 +39,7 @@ def get_search_engine(config: ResearchConfig) -> BaseSearchEngine:
     # Direct engine implementations
     if engine_name == "duckduckgo":
         ddg_config = config.engines.duckduckgo
-        return DuckDuckGoEngine(
-            safesearch=ddg_config.safesearch, region=ddg_config.region
-        )
+        return DuckDuckGoEngine(safesearch=ddg_config.safesearch, region=ddg_config.region)
 
     elif engine_name == "sciraai":
         scira_config = config.engines.sciraai
@@ -62,8 +59,7 @@ def get_search_engine(config: ResearchConfig) -> BaseSearchEngine:
 
     else:
         raise ValueError(
-            f"Unknown search engine: {engine_name}. "
-            f"Supported: duckduckgo, sciraai, searxng, fireplexity, google"
+            f"Unknown search engine: {engine_name}. " f"Supported: duckduckgo, sciraai, searxng, fireplexity, google"
         )
 
 

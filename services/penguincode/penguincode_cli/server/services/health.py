@@ -1,13 +1,8 @@
 """Health check service implementation."""
 
 import grpc
-
 from penguincode_cli.config.settings import Settings
-from penguincode_cli.proto import (
-    HealthCheckRequest,
-    HealthCheckResponse,
-    HealthServiceServicer,
-)
+from penguincode_cli.proto import HealthCheckRequest, HealthCheckResponse, HealthServiceServicer
 
 
 class HealthServiceImpl(HealthServiceServicer):
@@ -33,6 +28,7 @@ class HealthServiceImpl(HealthServiceServicer):
         ollama_connected = False
         try:
             import httpx
+
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{self.settings.ollama.api_url}/api/tags",

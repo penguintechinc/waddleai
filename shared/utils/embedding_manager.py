@@ -11,7 +11,7 @@ Supports three backends:
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -125,8 +125,7 @@ class EmbeddingManager:
             import ollama  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
-                "ollama package is required for Ollama embeddings. "
-                "Install it with: pip install ollama"
+                "ollama package is required for Ollama embeddings. " "Install it with: pip install ollama"
             ) from exc
 
         client = ollama.Client(host=self.config.ollama_host)
@@ -141,8 +140,7 @@ class EmbeddingManager:
             from openai import OpenAI  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
-                "openai package is required for OpenAI embeddings. "
-                "Install it with: pip install openai"
+                "openai package is required for OpenAI embeddings. " "Install it with: pip install openai"
             ) from exc
 
         api_key = self.config.api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -165,8 +163,7 @@ class EmbeddingManager:
             import anthropic  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
-                "anthropic package is required for Anthropic embeddings. "
-                "Install it with: pip install anthropic"
+                "anthropic package is required for Anthropic embeddings. " "Install it with: pip install anthropic"
             ) from exc
 
         api_key = self.config.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -193,10 +190,7 @@ class EmbeddingManager:
         embedding = json.loads(raw)
 
         if len(embedding) != self.config.dimensions:
-            raise RuntimeError(
-                f"Anthropic returned {len(embedding)} dimensions, "
-                f"expected {self.config.dimensions}"
-            )
+            raise RuntimeError(f"Anthropic returned {len(embedding)} dimensions, " f"expected {self.config.dimensions}")
 
         return embedding
 

@@ -1,17 +1,14 @@
 """Tests for MCP tool discovery, wrapper, manager, and agent injection."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from penguincode_cli.config.settings import AuthConfig, MCPConfig, MCPServerConfig
-from penguincode_cli.tools.base import ToolResult
 from penguincode_cli.tools.mcp.manager import MCPToolManager, convert_mcp_to_ollama_schema
 from penguincode_cli.tools.mcp.wrapper import MCPToolWrapper
 
-
 # ── MCPToolWrapper ─────────────────────────────────────────────────
+
 
 class TestMCPToolWrapper:
     """Test MCPToolWrapper — delegates to MCP client and normalises results."""
@@ -26,9 +23,7 @@ class TestMCPToolWrapper:
     @pytest.mark.asyncio
     async def test_execute_delegates_to_client(self):
         mock_client = AsyncMock()
-        mock_client.call_tool.return_value = {
-            "content": [{"type": "text", "text": "hello world"}]
-        }
+        mock_client.call_tool.return_value = {"content": [{"type": "text", "text": "hello world"}]}
 
         wrapper = MCPToolWrapper("srv", "tool1", "desc", mock_client)
         result = await wrapper.execute(query="test")
@@ -90,6 +85,7 @@ class TestMCPToolWrapper:
 
 # ── Schema conversion ──────────────────────────────────────────────
 
+
 class TestConvertMCPToOllamaSchema:
     """Test MCP→Ollama tool schema conversion."""
 
@@ -144,6 +140,7 @@ class TestConvertMCPToOllamaSchema:
 
 # ── MCPToolManager ─────────────────────────────────────────────────
 
+
 class TestMCPToolManager:
     """Test MCPToolManager lifecycle, discovery, and merging."""
 
@@ -162,18 +159,18 @@ class TestMCPToolManager:
 
     @pytest.mark.asyncio
     async def test_disabled_config_returns_empty(self):
-        config = MCPConfig(enabled=False, servers=[
-            MCPServerConfig(name="srv", command="echo")
-        ])
+        config = MCPConfig(enabled=False, servers=[MCPServerConfig(name="srv", command="echo")])
         manager = MCPToolManager(config)
         tools, defs = await manager.get_tools()
         assert tools == {}
 
     @pytest.mark.asyncio
     async def test_disabled_server_skipped(self):
-        config = self._make_config([
-            MCPServerConfig(name="disabled_srv", enabled=False, command="echo"),
-        ])
+        config = self._make_config(
+            [
+                MCPServerConfig(name="disabled_srv", enabled=False, command="echo"),
+            ]
+        )
         manager = MCPToolManager(config)
         tools, defs = await manager.get_tools()
         assert tools == {}
@@ -181,9 +178,11 @@ class TestMCPToolManager:
     @pytest.mark.asyncio
     async def test_discovery_with_mock_server(self):
         """Mock a successful discovery flow."""
-        config = self._make_config([
-            MCPServerConfig(name="test", transport="http", url="http://fake"),
-        ])
+        config = self._make_config(
+            [
+                MCPServerConfig(name="test", transport="http", url="http://fake"),
+            ]
+        )
         manager = MCPToolManager(config)
 
         # Mock the internal discovery
@@ -193,7 +192,8 @@ class TestMCPToolManager:
         mock_defs = [{"type": "function", "function": {"name": "mcp_test_search"}}]
 
         with patch.object(
-            manager, "_discover_all_tools",
+            manager,
+            "_discover_all_tools",
             new_callable=AsyncMock,
             side_effect=lambda: setattr(manager, "_tools", mock_tools) or setattr(manager, "_tool_defs", mock_defs),
         ):
@@ -214,10 +214,12 @@ class TestMCPToolManager:
     @pytest.mark.asyncio
     async def test_graceful_degradation(self):
         """A broken server shouldn't prevent other servers from working."""
-        config = self._make_config([
-            MCPServerConfig(name="broken", transport="http", url="http://broken"),
-            MCPServerConfig(name="good", transport="http", url="http://good"),
-        ])
+        config = self._make_config(
+            [
+                MCPServerConfig(name="broken", transport="http", url="http://broken"),
+                MCPServerConfig(name="good", transport="http", url="http://good"),
+            ]
+        )
         manager = MCPToolManager(config)
 
         async def mock_discover(cfg):
@@ -260,6 +262,7 @@ class TestMCPToolManager:
 
 
 # ── BaseAgent MCP injection ────────────────────────────────────────
+
 
 class TestBaseAgentMCPInjection:
     """Test that mcp_tools param injects into tools dict and definitions."""
@@ -352,6 +355,7 @@ class TestBaseAgentMCPInjection:
 
 # ── Shared-key auth ────────────────────────────────────────────────
 
+
 class TestSharedKeyAuth:
     """Test shared_key is accepted as valid auth credential."""
 
@@ -365,12 +369,14 @@ class TestSharedKeyAuth:
 
     def test_auth_config_parser_handles_shared_key(self):
         from penguincode_cli.config.settings import Settings
+
         data = {"enabled": True, "shared_key": "mykey"}
         config = Settings._parse_auth_config(data)
         assert config.shared_key == "mykey"
 
     def test_client_config_parser_handles_shared_key(self):
         from penguincode_cli.config.settings import Settings
+
         data = {"server_url": "http://api", "shared_key": "mykey"}
         config = Settings._parse_client_config(data)
         assert config.shared_key == "mykey"
@@ -378,8 +384,6 @@ class TestSharedKeyAuth:
     @pytest.mark.asyncio
     async def test_auth_service_accepts_shared_key(self):
         """AuthServiceImpl should accept shared_key as valid credential."""
-        from unittest.mock import AsyncMock, MagicMock
-
         config = AuthConfig(
             enabled=True,
             jwt_secret="testsecret",
@@ -418,10 +422,7 @@ class TestSharedKeyAuth:
 
         # Construct the check logic as it appears in Authenticate
         def is_valid(api_key):
-            return (
-                (service.shared_key and api_key == service.shared_key)
-                or api_key in service.valid_api_keys
-            )
+            return (service.shared_key and api_key == service.shared_key) or api_key in service.valid_api_keys
 
         assert is_valid("team-secret") is True
         assert is_valid("api-key-1") is True
@@ -429,6 +430,7 @@ class TestSharedKeyAuth:
 
 
 # ── OrgConfigClient ────────────────────────────────────────────────
+
 
 class TestOrgConfigClient:
     """Test OrgConfigClient fetch methods with mock server."""
@@ -537,6 +539,7 @@ class TestOrgConfigClient:
 
 
 # ── MCP Client enhancements ────────────────────────────────────────
+
 
 class TestMCPClientEnhancements:
     """Test incrementing IDs and headers on HTTPMCPClient."""

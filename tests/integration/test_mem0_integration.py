@@ -8,10 +8,12 @@ is not running.
 The tests are idempotent: any collections or points created are cleaned
 up at the end of each test.
 """
+
 import uuid
-import pytest
+from typing import Any, Dict, List
+
 import httpx
-from typing import Any, Dict, List, Optional
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -34,6 +36,7 @@ def _delete_collection_if_exists(base_url: str, name: str) -> None:
 # ---------------------------------------------------------------------------
 # Qdrant health & collections
 # ---------------------------------------------------------------------------
+
 
 def test_qdrant_health_check(
     qdrant_available: bool,
@@ -150,11 +153,7 @@ def test_qdrant_retrieve_point_by_id(
         )
         httpx.put(
             f"{qdrant_base_url}/collections/{collection_name}/points",
-            json={
-                "points": [
-                    {"id": 42, "vector": [1.0, 0.0, 0.0, 0.0], "payload": {"tag": "retrieve-test"}}
-                ]
-            },
+            json={"points": [{"id": 42, "vector": [1.0, 0.0, 0.0, 0.0], "payload": {"tag": "retrieve-test"}}]},
             timeout=10.0,
         )
 
@@ -176,14 +175,16 @@ def test_qdrant_retrieve_point_by_id(
 # WaddleAI memory_integration module
 # ---------------------------------------------------------------------------
 
+
 def test_memory_integration_module_importable() -> None:
     """shared.utils.memory_integration should import without errors."""
     from shared.utils.memory_integration import (  # type: ignore[import]
-        MemoryEntry,
-        MemoryStore,
         ChromaDBMemoryStore,
         ConversationContext,
+        MemoryEntry,
+        MemoryStore,
     )
+
     assert MemoryEntry is not None
     assert MemoryStore is not None
     assert ChromaDBMemoryStore is not None
@@ -193,6 +194,7 @@ def test_memory_integration_module_importable() -> None:
 def test_memory_entry_dataclass_construction() -> None:
     """MemoryEntry dataclass should be constructable with required fields."""
     from datetime import datetime
+
     from shared.utils.memory_integration import MemoryEntry  # type: ignore[import]
 
     entry = MemoryEntry(
@@ -214,10 +216,7 @@ def test_memory_entry_dataclass_construction() -> None:
 
 def test_mem0_memory_store_import_and_has_mem0_flag() -> None:
     """Mem0MemoryStore should be importable and expose HAS_MEM0 flag."""
-    from shared.utils.memory_integration import (  # type: ignore[import]
-        Mem0MemoryStore,
-        HAS_MEM0,
-    )
+    from shared.utils.memory_integration import HAS_MEM0, Mem0MemoryStore  # type: ignore[import]
 
     assert isinstance(HAS_MEM0, bool)
     # The class itself is always importable; instantiation fails if not installed
@@ -226,10 +225,7 @@ def test_mem0_memory_store_import_and_has_mem0_flag() -> None:
 
 def test_mem0_memory_store_raises_when_package_missing() -> None:
     """Mem0MemoryStore.__init__ raises ImportError if mem0ai is not installed."""
-    from shared.utils.memory_integration import (  # type: ignore[import]
-        Mem0MemoryStore,
-        HAS_MEM0,
-    )
+    from shared.utils.memory_integration import HAS_MEM0, Mem0MemoryStore  # type: ignore[import]
 
     if HAS_MEM0:
         pytest.skip("mem0ai is installed – ImportError path not reachable")

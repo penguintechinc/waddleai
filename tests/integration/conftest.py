@@ -1,7 +1,9 @@
 """Integration test fixtures - tests against live local services."""
+
 import os
-import pytest
+
 import httpx
+import pytest
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 QDRANT_BASE_URL = os.getenv("QDRANT_BASE_URL", "http://localhost:6333")

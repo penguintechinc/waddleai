@@ -36,8 +36,7 @@ class Session:
             "created_at": self.created_at,
             "project_dir": self.project_dir,
             "messages": [
-                {"role": msg.role, "content": msg.content, "timestamp": msg.timestamp}
-                for msg in self.messages
+                {"role": msg.role, "content": msg.content, "timestamp": msg.timestamp} for msg in self.messages
             ],
             "metadata": self.metadata,
         }
@@ -122,9 +121,7 @@ class SessionManager:
         Returns:
             List of session metadata dictionaries
         """
-        session_files = sorted(
-            self.session_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
-        )
+        session_files = sorted(self.session_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
 
         sessions = []
         for session_file in session_files[:limit]:

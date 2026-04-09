@@ -9,18 +9,11 @@ Free-tier deployments are limited to a single distinct user.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import (
-    BigInteger,
-    Column,
-    DateTime,
-    Float,
-    Integer,
-    String,
-)
+from sqlalchemy import Column, DateTime, Float, Integer, String
 from sqlalchemy.orm import declarative_base
 
 logger = logging.getLogger(__name__)
@@ -50,15 +43,10 @@ class AILBUsageRecord(Base):  # type: ignore[misc]
     timestamp: datetime = Column(  # type: ignore[assignment]
         DateTime, nullable=False, default=datetime.utcnow, index=True
     )
-    created_at: datetime = Column(  # type: ignore[assignment]
-        DateTime, nullable=False, default=datetime.utcnow
-    )
+    created_at: datetime = Column(DateTime, nullable=False, default=datetime.utcnow)  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return (
-            f"<AILBUsageRecord user={self.user_id} model={self.model} "
-            f"tokens={self.total_tokens}>"
-        )
+        return f"<AILBUsageRecord user={self.user_id} model={self.model} " f"tokens={self.total_tokens}>"
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +195,7 @@ class UsageTracker:
         if self._license_client is None:
             return False
         try:
-            return bool(
-                self._license_client.has_feature("premium_usage_tracking")
-            )
+            return bool(self._license_client.has_feature("premium_usage_tracking"))
         except Exception as exc:
             logger.warning("License check failed: %s", exc)
             return False
@@ -218,17 +204,14 @@ class UsageTracker:
     # Quota checks
     # ------------------------------------------------------------------
 
-    def _check_free_tier_user_cap(
-        self, user_id: str
-    ) -> tuple[bool, str]:
+    def _check_free_tier_user_cap(self, user_id: str) -> tuple[bool, str]:
         """Enforce the free-tier single-user limit.
 
         Returns ``(exceeded, message)``.
         """
         try:
             rows = self._db.executesql(
-                "SELECT DISTINCT user_id FROM ailb_usage_records "
-                "LIMIT %s",
+                "SELECT DISTINCT user_id FROM ailb_usage_records " "LIMIT %s",
                 (_FREE_TIER_MAX_USERS + 1,),
             )
             existing_users = {str(r[0]) for r in rows} if rows else set()
@@ -238,8 +221,7 @@ class UsageTracker:
 
             if len(existing_users) >= _FREE_TIER_MAX_USERS:
                 return True, (
-                    f"Free tier limited to {_FREE_TIER_MAX_USERS} user(s). "
-                    "Upgrade your license for unlimited users."
+                    f"Free tier limited to {_FREE_TIER_MAX_USERS} user(s). " "Upgrade your license for unlimited users."
                 )
             return False, ""
         except Exception as exc:
@@ -247,9 +229,7 @@ class UsageTracker:
             # Fail open — allow the request rather than blocking on error
             return False, ""
 
-    def _check_user_quota(
-        self, user_id: str
-    ) -> tuple[bool, str]:
+    def _check_user_quota(self, user_id: str) -> tuple[bool, str]:
         """Check per-user monthly token quota (premium feature).
 
         The quota is read from the ``users`` table
@@ -261,8 +241,7 @@ class UsageTracker:
         try:
             # Read the user's monthly quota
             user_rows = self._db.executesql(
-                "SELECT token_quota_monthly FROM users WHERE id = %s "
-                "OR username = %s LIMIT 1",
+                "SELECT token_quota_monthly FROM users WHERE id = %s " "OR username = %s LIMIT 1",
                 (user_id, user_id),
             )
             if not user_rows or user_rows[0][0] is None:

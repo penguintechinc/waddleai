@@ -5,7 +5,6 @@ injection into agent prompts. Only injects relevant docs
 for libraries actually used in the project.
 """
 
-
 from .indexer import DocumentationIndexer
 from .models import DocSearchResult, ProjectContext
 
@@ -135,8 +134,13 @@ class ContextInjector:
 
         # Skip for greetings and meta queries
         skip_patterns = [
-            "hello", "hi ", "hey ", "thanks", "bye",
-            "help", "what can you",
+            "hello",
+            "hi ",
+            "hey ",
+            "thanks",
+            "bye",
+            "help",
+            "what can you",
             "/",  # Commands
         ]
         query_lower = query.lower()
@@ -145,10 +149,22 @@ class ContextInjector:
 
         # Inject for code-related queries
         code_patterns = [
-            "how to", "how do i", "what is", "explain",
-            "error", "bug", "fix", "implement",
-            "example", "usage", "api", "function",
-            "class", "method", "import", "install",
+            "how to",
+            "how do i",
+            "what is",
+            "explain",
+            "error",
+            "bug",
+            "fix",
+            "implement",
+            "example",
+            "usage",
+            "api",
+            "function",
+            "class",
+            "method",
+            "import",
+            "install",
         ]
         if any(p in query_lower for p in code_patterns):
             return True

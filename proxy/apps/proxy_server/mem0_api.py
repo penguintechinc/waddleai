@@ -17,10 +17,9 @@ Endpoints (mem0 REST API subset):
 """
 
 import logging
-from typing import Optional, Dict, Any
 from datetime import datetime
 
-from quart import Blueprint, request, jsonify, abort
+from quart import Blueprint, abort, jsonify, request
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +97,14 @@ async def add_memories():
         if success:
             stored += 1
 
-    return jsonify({
-        "status": "success",
-        "stored": stored,
-        "user_id": str(user_id_raw),
-        "session_id": session_id,
-    })
+    return jsonify(
+        {
+            "status": "success",
+            "stored": stored,
+            "user_id": str(user_id_raw),
+            "session_id": session_id,
+        }
+    )
 
 
 @mem0_bp.route("/memories/search", methods=["POST"])

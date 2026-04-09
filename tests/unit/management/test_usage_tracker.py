@@ -2,17 +2,15 @@
 Unit tests for usage tracking service
 """
 
-import pytest
-from datetime import datetime, date, timedelta
-from unittest.mock import MagicMock, patch
+from datetime import date
 
 from services.management.app.services.usage_tracker import (
-    UsageTrackingService,
-    UsageEvent,
     DailyUsage,
-    UsageStats,
-    QuotaStatus,
     QuotaInfo,
+    QuotaStatus,
+    UsageEvent,
+    UsageStats,
+    UsageTrackingService,
 )
 
 
@@ -21,13 +19,13 @@ class MockDB:
 
     def __init__(self):
         self.data = {
-            'virtual_keys': [],
-            'ailb_usage_events': [],
-            'token_usage': [],
-            'usage_logs': [],
-            'token_conversion_rates': [],
-            'users': [],
-            'organizations': []
+            "virtual_keys": [],
+            "ailb_usage_events": [],
+            "token_usage": [],
+            "usage_logs": [],
+            "token_conversion_rates": [],
+            "users": [],
+            "organizations": [],
         }
         self._committed = False
 
@@ -51,9 +49,9 @@ class MockTable:
         self.db = db
 
     def insert(self, **kwargs):
-        record = {'id': len(self.db.data[self.name]) + 1, **kwargs}
+        record = {"id": len(self.db.data[self.name]) + 1, **kwargs}
         self.db.data[self.name].append(record)
-        return record['id']
+        return record["id"]
 
     def __getattr__(self, name):
         return MockField(self.name, name)
@@ -150,7 +148,7 @@ class TestUsageEvent:
             output_tokens=200,
             cost_usd=0.01,
             latency_ms=500,
-            status="success"
+            status="success",
         )
         assert event.event_id == "evt_123"
         assert event.model == "gpt-4o"
@@ -171,7 +169,7 @@ class TestUsageEvent:
             cost_usd=0.0,
             latency_ms=100,
             status="error",
-            error_message="Rate limited"
+            error_message="Rate limited",
         )
         assert event.status == "error"
         assert event.error_message == "Rate limited"
@@ -182,12 +180,7 @@ class TestDailyUsage:
 
     def test_create_daily_usage(self):
         """Test creating daily usage"""
-        usage = DailyUsage(
-            date=date.today(),
-            key_id=1,
-            waddleai_tokens=1000,
-            request_count=50
-        )
+        usage = DailyUsage(date=date.today(), key_id=1, waddleai_tokens=1000, request_count=50)
         assert usage.waddleai_tokens == 1000
         assert usage.request_count == 50
 
@@ -218,25 +211,13 @@ class TestQuotaInfo:
 
     def test_quota_info_ok(self):
         """Test OK quota status"""
-        info = QuotaInfo(
-            status=QuotaStatus.OK,
-            limit=10000,
-            used=5000,
-            remaining=5000,
-            percentage=50.0
-        )
+        info = QuotaInfo(status=QuotaStatus.OK, limit=10000, used=5000, remaining=5000, percentage=50.0)
         assert info.status == QuotaStatus.OK
         assert info.percentage == 50.0
 
     def test_quota_info_exceeded(self):
         """Test exceeded quota status"""
-        info = QuotaInfo(
-            status=QuotaStatus.EXCEEDED,
-            limit=10000,
-            used=10000,
-            remaining=0,
-            percentage=100.0
-        )
+        info = QuotaInfo(status=QuotaStatus.EXCEEDED, limit=10000, used=10000, remaining=0, percentage=100.0)
         assert info.status == QuotaStatus.EXCEEDED
 
 
@@ -255,9 +236,7 @@ class TestUsageTrackingService:
         service = UsageTrackingService(db)
 
         # GPT-4 has 5:1 conversion rate
-        tokens = service.calculate_waddleai_tokens(
-            "openai", "gpt-4o", 100, 100
-        )
+        tokens = service.calculate_waddleai_tokens("openai", "gpt-4o", 100, 100)
         # 100/5 + 100/5 = 40
         assert tokens == 40
 
@@ -267,9 +246,7 @@ class TestUsageTrackingService:
         service = UsageTrackingService(db)
 
         # GPT-3.5 has 15:1 conversion rate
-        tokens = service.calculate_waddleai_tokens(
-            "openai", "gpt-3.5-turbo", 150, 150
-        )
+        tokens = service.calculate_waddleai_tokens("openai", "gpt-3.5-turbo", 150, 150)
         # 150/15 + 150/15 = 20
         assert tokens == 20
 
@@ -279,9 +256,7 @@ class TestUsageTrackingService:
         service = UsageTrackingService(db)
 
         # Opus has 3:1 conversion rate (expensive)
-        tokens = service.calculate_waddleai_tokens(
-            "anthropic", "claude-3-opus-20240229", 90, 90
-        )
+        tokens = service.calculate_waddleai_tokens("anthropic", "claude-3-opus-20240229", 90, 90)
         # 90/3 + 90/3 = 60
         assert tokens == 60
 
@@ -291,9 +266,7 @@ class TestUsageTrackingService:
         service = UsageTrackingService(db)
 
         # Haiku has 20:1 conversion rate (cheap)
-        tokens = service.calculate_waddleai_tokens(
-            "anthropic", "claude-3-haiku-20240307", 200, 200
-        )
+        tokens = service.calculate_waddleai_tokens("anthropic", "claude-3-haiku-20240307", 200, 200)
         # 200/20 + 200/20 = 20
         assert tokens == 20
 
@@ -303,9 +276,7 @@ class TestUsageTrackingService:
         service = UsageTrackingService(db)
 
         # Ollama has 100:1 conversion rate (free/cheap)
-        tokens = service.calculate_waddleai_tokens(
-            "ollama", "llama3.2", 1000, 1000
-        )
+        tokens = service.calculate_waddleai_tokens("ollama", "llama3.2", 1000, 1000)
         # 1000/100 + 1000/100 = 20
         assert tokens == 20
 

@@ -3,17 +3,16 @@ WaddleAI Management Server Extensions
 Flask-Security-Too, penguin-dal, Redis initialization
 """
 
-import os
 import logging
 from datetime import datetime
 from typing import Optional
 
-from flask import Flask, current_app
-from flask_security import Security, UserMixin, RoleMixin
+import redis
+from flask import Flask
+from flask_security import RoleMixin, Security, UserMixin
 from flask_security.datastore import UserDatastore
 from penguin_dal.db import DB
 from penguin_dal.flask_ext import init_dal
-import redis
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +32,9 @@ class PyDALUserDatastore(UserDatastore):
         """Find user by any field"""
         query = None
         for key, value in kwargs.items():
-            if key == 'id':
-                key = 'id'
-            condition = (self.db.users[key] == value)
+            if key == "id":
+                key = "id"
+            condition = self.db.users[key] == value
             query = condition if query is None else (query & condition)
 
         if query is None:
@@ -54,11 +53,12 @@ class PyDALUserDatastore(UserDatastore):
     def create_user(self, **kwargs):
         """Create a new user"""
         from passlib.hash import bcrypt
-        password = kwargs.pop('password', None)
-        if password:
-            kwargs['password_hash'] = bcrypt.hash(password)
 
-        kwargs['created_at'] = datetime.utcnow()
+        password = kwargs.pop("password", None)
+        if password:
+            kwargs["password_hash"] = bcrypt.hash(password)
+
+        kwargs["created_at"] = datetime.utcnow()
         user_id = self.db.users.insert(**kwargs)
         self.db.commit()
         return self.find_user(id=user_id)
@@ -76,7 +76,7 @@ class PyDALUserDatastore(UserDatastore):
 
     def remove_role_from_user(self, user, role):
         """Remove role from user"""
-        self.db(self.db.users.id == user.id).update(role='user')
+        self.db(self.db.users.id == user.id).update(role="user")
         self.db.commit()
         return True
 
@@ -157,6 +157,7 @@ class PyDALUser(UserMixin):
     def verify_password(self, password):
         """Verify password"""
         from passlib.hash import bcrypt
+
         return bcrypt.verify(password, self._row.password_hash)
 
 
@@ -184,14 +185,16 @@ class PyDALRole(RoleMixin):
 def init_db(app: Flask) -> DB:
     """Initialize database with SQLAlchemy for schema, penguin-dal for runtime operations"""
     import time
+
     from app.models_sqlalchemy import init_schema
+
     global db
 
     # Wait for DNS to be ready (common issue in Kubernetes with --preload)
     logger.info("Waiting for DNS to initialize...")
     time.sleep(5)
 
-    db_url = app.config['DATABASE_URL']
+    db_url = app.config["DATABASE_URL"]
     logger.info(f"Connecting to database: {db_url.split('@')[-1] if '@' in db_url else db_url}")
 
     max_retries = 10
@@ -224,7 +227,7 @@ def init_redis(app: Flask) -> Optional[redis.Redis]:
     """Initialize Redis connection"""
     global redis_client
 
-    redis_url = app.config.get('REDIS_URL')
+    redis_url = app.config.get("REDIS_URL")
     if not redis_url:
         logger.warning("Redis URL not configured, running without Redis")
         return None
@@ -269,44 +272,45 @@ def init_extensions(app: Flask):
 
 def init_default_data(db: DB):
     """Initialize default data for the database"""
-    from passlib.hash import bcrypt
     import secrets
 
+    from passlib.hash import bcrypt
+
     # Create default organization
-    if not db(db.organizations.name == 'default').select():
+    if not db(db.organizations.name == "default").select():
         org_id = db.organizations.insert(
-            name='default',
-            description='Default organization for initial setup',
+            name="default",
+            description="Default organization for initial setup",
             token_quota_monthly=1000000,
-            token_quota_daily=100000
+            token_quota_daily=100000,
         )
         logger.info("Created default organization")
     else:
-        org_id = db(db.organizations.name == 'default').select().first().id
+        org_id = db(db.organizations.name == "default").select().first().id
 
     # Create admin user if doesn't exist
-    if not db(db.users.username == 'admin').select():
+    if not db(db.users.username == "admin").select():
         admin_id = db.users.insert(
-            username='admin',
-            email='admin@localhost.local',
-            password_hash=bcrypt.hash('admin123'),
-            role='admin',
+            username="admin",
+            email="admin@localhost.local",
+            password_hash=bcrypt.hash("admin123"),
+            role="admin",
             organization_id=org_id,
             token_quota_monthly=999999999,
-            token_quota_daily=999999
+            token_quota_daily=999999,
         )
 
         # Create admin virtual key
-        api_key = 'wa-' + secrets.token_urlsafe(32)
+        api_key = "wa-" + secrets.token_urlsafe(32)
         db.virtual_keys.insert(
             user_id=admin_id,
             organization_id=org_id,
-            name='Admin Master Key',
-            key_prefix='wa-admin',
+            name="Admin Master Key",
+            key_prefix="wa-admin",
             key_hash=bcrypt.hash(api_key),
             tpm_limit=1000000,
             rpm_limit=10000,
-            enabled=True
+            enabled=True,
         )
 
         logger.info(f"Created admin user. API Key: {api_key}")
@@ -314,33 +318,34 @@ def init_default_data(db: DB):
 
     # Default token conversion rates
     default_rates = [
-        ('openai', 'gpt-4o', 10, 20, 0.0025),
-        ('openai', 'gpt-4o-mini', 30, 40, 0.0001),
-        ('openai', 'gpt-4-turbo', 10, 20, 0.001),
-        ('openai', 'gpt-4', 10, 20, 0.003),
-        ('openai', 'gpt-3.5-turbo', 20, 30, 0.0005),
-        ('anthropic', 'claude-3-5-sonnet-latest', 12, 18, 0.003),
-        ('anthropic', 'claude-3-opus-20240229', 8, 15, 0.015),
-        ('anthropic', 'claude-3-sonnet-20240229', 12, 18, 0.003),
-        ('anthropic', 'claude-3-haiku-20240307', 25, 35, 0.00025),
-        ('ollama', 'llama3.2', 50, 50, 0.0),
-        ('ollama', 'llama3.1', 50, 50, 0.0),
-        ('ollama', 'mistral', 45, 45, 0.0),
-        ('gemini', 'gemini-1.5-pro', 12, 18, 0.00125),
-        ('gemini', 'gemini-1.5-flash', 30, 40, 0.000075),
-        ('cohere', 'command-r-plus', 15, 20, 0.003),
-        ('cohere', 'command-r', 25, 30, 0.0005),
+        ("openai", "gpt-4o", 10, 20, 0.0025),
+        ("openai", "gpt-4o-mini", 30, 40, 0.0001),
+        ("openai", "gpt-4-turbo", 10, 20, 0.001),
+        ("openai", "gpt-4", 10, 20, 0.003),
+        ("openai", "gpt-3.5-turbo", 20, 30, 0.0005),
+        ("anthropic", "claude-3-5-sonnet-latest", 12, 18, 0.003),
+        ("anthropic", "claude-3-opus-20240229", 8, 15, 0.015),
+        ("anthropic", "claude-3-sonnet-20240229", 12, 18, 0.003),
+        ("anthropic", "claude-3-haiku-20240307", 25, 35, 0.00025),
+        ("ollama", "llama3.2", 50, 50, 0.0),
+        ("ollama", "llama3.1", 50, 50, 0.0),
+        ("ollama", "mistral", 45, 45, 0.0),
+        ("gemini", "gemini-1.5-pro", 12, 18, 0.00125),
+        ("gemini", "gemini-1.5-flash", 30, 40, 0.000075),
+        ("cohere", "command-r-plus", 15, 20, 0.003),
+        ("cohere", "command-r", 25, 30, 0.0005),
     ]
 
     for provider, model, input_rate, output_rate, cost in default_rates:
-        if not db((db.token_conversion_rates.provider == provider) &
-                  (db.token_conversion_rates.model == model)).select():
+        if not db(
+            (db.token_conversion_rates.provider == provider) & (db.token_conversion_rates.model == model)
+        ).select():
             db.token_conversion_rates.insert(
                 provider=provider,
                 model=model,
                 input_rate=input_rate,
                 output_rate=output_rate,
-                base_cost_per_waddleai_token=cost
+                base_cost_per_waddleai_token=cost,
             )
 
     db.commit()

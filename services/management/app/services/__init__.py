@@ -8,12 +8,8 @@ Business logic and service layer for:
 - MarchProxy AILB integration
 """
 
-from .provider_sync import ProviderSyncService
 from .ollama_manager import OllamaDeploymentManager
+from .provider_sync import ProviderSyncService
 from .usage_tracker import UsageTrackingService
 
-__all__ = [
-    'ProviderSyncService',
-    'OllamaDeploymentManager',
-    'UsageTrackingService'
-]
+__all__ = ["ProviderSyncService", "OllamaDeploymentManager", "UsageTrackingService"]

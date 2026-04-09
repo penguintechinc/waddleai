@@ -38,9 +38,7 @@ class MCPToolWrapper(BaseTool):
     async def execute(self, **kwargs) -> ToolResult:
         """Call the MCP tool and return a normalised ToolResult."""
         try:
-            result = await self.mcp_client.call_tool(
-                self.original_tool_name, kwargs
-            )
+            result = await self.mcp_client.call_tool(self.original_tool_name, kwargs)
             # MCP responses are typically:
             # {"content": [{"type": "text", "text": "..."}]}
             text = self._extract_text(result)

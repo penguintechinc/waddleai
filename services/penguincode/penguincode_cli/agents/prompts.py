@@ -110,15 +110,10 @@ AGENT_TOOLS = [
             "description": "Delegate to explorer agent for reading files, searching code, or understanding the codebase.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "Detailed task for the explorer"
-                    }
-                },
-                "required": ["task"]
-            }
-        }
+                "properties": {"task": {"type": "string", "description": "Detailed task for the explorer"}},
+                "required": ["task"],
+            },
+        },
     },
     {
         "type": "function",
@@ -127,15 +122,10 @@ AGENT_TOOLS = [
             "description": "Delegate to executor agent for creating files, editing code, or running commands.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "Detailed task for the executor"
-                    }
-                },
-                "required": ["task"]
-            }
-        }
+                "properties": {"task": {"type": "string", "description": "Detailed task for the executor"}},
+                "required": ["task"],
+            },
+        },
     },
     {
         "type": "function",
@@ -145,14 +135,11 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "The research task or question to investigate"
-                    }
+                    "task": {"type": "string", "description": "The research task or question to investigate"}
                 },
-                "required": ["task"]
-            }
-        }
+                "required": ["task"],
+            },
+        },
     },
     {
         "type": "function",
@@ -161,14 +148,9 @@ AGENT_TOOLS = [
             "description": "Delegate to planner agent to break down a complex task into steps. Use for multi-step tasks, refactoring, or features requiring design.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "The complex task to plan"
-                    }
-                },
-                "required": ["task"]
-            }
-        }
+                "properties": {"task": {"type": "string", "description": "The complex task to plan"}},
+                "required": ["task"],
+            },
+        },
     },
 ]

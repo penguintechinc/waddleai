@@ -14,7 +14,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # Namespace prefix for skill cross-references
 SKILL_NAMESPACE = "waddlepowers:"
 
@@ -41,7 +40,7 @@ class SkillLoader:
     # External skill directories to auto-import from (in scan order).
     # Later entries override earlier ones on name collision.
     EXTERNAL_SKILL_DIRS: list[tuple[str, ...]] = [
-        (".claude", "skills"),           # Claude Code
+        (".claude", "skills"),  # Claude Code
         (".config", "opencode", "skills"),  # OpenCode
     ]
 
@@ -114,11 +113,7 @@ class SkillLoader:
         # For subdirectory skills, append supporting .md files
         if skill_dir:
             for support_file in sorted(skill_dir.iterdir()):
-                if (
-                    support_file.is_file()
-                    and support_file.suffix == ".md"
-                    and support_file.name != "SKILL.md"
-                ):
+                if support_file.is_file() and support_file.suffix == ".md" and support_file.name != "SKILL.md":
                     try:
                         support_content = support_file.read_text(encoding="utf-8")
                         content += f"\n\n---\n\n# {support_file.stem}\n\n{support_content}"
@@ -132,10 +127,7 @@ class SkillLoader:
                         if sub_file.is_file() and sub_file.suffix == ".md":
                             try:
                                 sub_content = sub_file.read_text(encoding="utf-8")
-                                content += (
-                                    f"\n\n---\n\n# {sub_entry.name}/{sub_file.stem}"
-                                    f"\n\n{sub_content}"
-                                )
+                                content += f"\n\n---\n\n# {sub_entry.name}/{sub_file.stem}" f"\n\n{sub_content}"
                             except OSError:
                                 continue
 

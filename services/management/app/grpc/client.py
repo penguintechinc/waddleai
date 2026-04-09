@@ -5,12 +5,13 @@ This client communicates with the MarchProxy AILB module via gRPC
 to manage AI provider routes, rate limits, and configuration.
 """
 
-import grpc
-from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Any, AsyncIterator
-from datetime import datetime
 import json
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import grpc
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RouteConfig:
     """AI provider route configuration"""
+
     route_id: str
     protocol: str = "PROTOCOL_HTTPS"
     source_pattern: str = "*"
@@ -32,6 +34,7 @@ class RouteConfig:
 @dataclass
 class RateLimitConfig:
     """Rate limit configuration for virtual keys"""
+
     limit_id: str
     target: str
     requests_per_minute: int = 60
@@ -45,6 +48,7 @@ class RateLimitConfig:
 @dataclass
 class ModuleStatus:
     """AILB module status response"""
+
     instance_id: str
     health_status: str
     message: str
@@ -58,6 +62,7 @@ class ModuleStatus:
 @dataclass
 class ModuleMetrics:
     """AILB module metrics"""
+
     instance_id: str
     total_requests: int = 0
     successful_requests: int = 0
@@ -88,7 +93,7 @@ class AILBModuleClient:
         port: int = 50051,
         use_tls: bool = False,
         tls_cert_path: Optional[str] = None,
-        timeout: int = 30
+        timeout: int = 30,
     ):
         self.host = host
         self.port = port
@@ -107,22 +112,22 @@ class AILBModuleClient:
         """Establish connection to AILB module"""
         try:
             if self.use_tls and self.tls_cert_path:
-                with open(self.tls_cert_path, 'rb') as f:
-                    credentials = grpc.ssl_channel_credentials(f.read())
+                with open(self.tls_cert_path, "rb") as f:
+                    grpc.ssl_channel_credentials(f.read())
                 self._channel = grpc.insecure_channel(
                     self.address,
                     options=[
-                        ('grpc.max_receive_message_length', 50 * 1024 * 1024),
-                        ('grpc.max_send_message_length', 50 * 1024 * 1024),
-                    ]
+                        ("grpc.max_receive_message_length", 50 * 1024 * 1024),
+                        ("grpc.max_send_message_length", 50 * 1024 * 1024),
+                    ],
                 )
             else:
                 self._channel = grpc.insecure_channel(
                     self.address,
                     options=[
-                        ('grpc.max_receive_message_length', 50 * 1024 * 1024),
-                        ('grpc.max_send_message_length', 50 * 1024 * 1024),
-                    ]
+                        ("grpc.max_receive_message_length", 50 * 1024 * 1024),
+                        ("grpc.max_send_message_length", 50 * 1024 * 1024),
+                    ],
                 )
 
             # Import generated stubs (will be generated from proto files)
@@ -170,7 +175,7 @@ class AILBModuleClient:
                 version="1.0.0",
                 current_connections=0,
                 max_connections=10000,
-                traffic_weight=100
+                traffic_weight=100,
             )
         except grpc.RpcError as e:
             logger.error(f"gRPC error getting status: {e}")
@@ -209,12 +214,8 @@ class AILBModuleClient:
                 "status": "HEALTH_STATUS_HEALTHY",
                 "healthy": True,
                 "message": "All checks passed",
-                "checks": {
-                    "connection": "ok",
-                    "routes": "ok",
-                    "rate_limits": "ok"
-                },
-                "checked_at": datetime.utcnow().isoformat()
+                "checks": {"connection": "ok", "routes": "ok", "rate_limits": "ok"},
+                "checked_at": datetime.utcnow().isoformat(),
             }
         except grpc.RpcError as e:
             logger.error(f"gRPC error in health check: {e}")
@@ -239,10 +240,7 @@ class AILBModuleClient:
             return []
 
     def update_routes(
-        self,
-        routes: List[RouteConfig],
-        instance_id: str = "",
-        replace_all: bool = False
+        self, routes: List[RouteConfig], instance_id: str = "", replace_all: bool = False
     ) -> Dict[str, Any]:
         """Update routes in AILB"""
         if not self._connected:
@@ -259,11 +257,7 @@ class AILBModuleClient:
             # response = self._stub.UpdateRoutes(request, timeout=self.timeout)
 
             logger.info(f"Updated {len(routes)} routes in AILB")
-            return {
-                "success": True,
-                "message": f"Updated {len(routes)} routes",
-                "routes_updated": len(routes)
-            }
+            return {"success": True, "message": f"Updated {len(routes)} routes", "routes_updated": len(routes)}
         except grpc.RpcError as e:
             logger.error(f"gRPC error updating routes: {e}")
             return {"success": False, "message": str(e)}
@@ -340,7 +334,7 @@ class AILBModuleClient:
                 successful_requests=0,
                 failed_requests=0,
                 active_connections=0,
-                avg_latency_ms=0.0
+                avg_latency_ms=0.0,
             )
         except grpc.RpcError as e:
             logger.error(f"gRPC error getting metrics: {e}")
@@ -359,7 +353,7 @@ class AILBModuleClient:
                 "failed_requests": 0,
                 "active_connections": 0,
                 "avg_latency_ms": 0.0,
-                "providers": {}
+                "providers": {},
             }
         except grpc.RpcError as e:
             logger.error(f"gRPC error getting stats: {e}")
@@ -374,22 +368,13 @@ class AILBModuleClient:
 
         try:
             # TODO: Implement actual gRPC call
-            return {
-                "version": "1.0",
-                "module_type": "AILB",
-                "providers": [],
-                "routes": [],
-                "rate_limits": []
-            }
+            return {"version": "1.0", "module_type": "AILB", "providers": [], "routes": [], "rate_limits": []}
         except grpc.RpcError as e:
             logger.error(f"gRPC error getting config: {e}")
             return {}
 
     def update_config(
-        self,
-        config: Dict[str, Any],
-        instance_id: str = "",
-        validate_only: bool = False
+        self, config: Dict[str, Any], instance_id: str = "", validate_only: bool = False
     ) -> Dict[str, Any]:
         """Update AILB configuration"""
         if not self._connected:
@@ -403,14 +388,11 @@ class AILBModuleClient:
                     "success": True,
                     "message": "Configuration valid",
                     "validation_passed": True,
-                    "validation_errors": []
+                    "validation_errors": [],
                 }
 
             logger.info("Configuration updated successfully")
-            return {
-                "success": True,
-                "message": "Configuration updated"
-            }
+            return {"success": True, "message": "Configuration updated"}
         except grpc.RpcError as e:
             logger.error(f"gRPC error updating config: {e}")
             return {"success": False, "message": str(e)}
@@ -424,13 +406,14 @@ class AILBModuleClient:
         endpoint_url: str,
         api_key: str = "",
         models: List[str] = None,
-        priority: int = 100
+        priority: int = 100,
     ) -> RouteConfig:
         """Create a route configuration for an AI provider"""
         route_id = f"waddleai-provider-{provider_id}"
 
         # Parse endpoint URL
         from urllib.parse import urlparse
+
         parsed = urlparse(endpoint_url)
 
         headers = {}
@@ -446,7 +429,7 @@ class AILBModuleClient:
         metadata = {
             "waddleai_provider_id": str(provider_id),
             "provider_type": provider_type,
-            "models": json.dumps(models or [])
+            "models": json.dumps(models or []),
         }
 
         return RouteConfig(
@@ -457,15 +440,11 @@ class AILBModuleClient:
             path_pattern=parsed.path or "/",
             priority=priority,
             headers=headers,
-            metadata=metadata
+            metadata=metadata,
         )
 
     def create_key_rate_limit(
-        self,
-        key_id: int,
-        key_prefix: str,
-        rpm_limit: int = 60,
-        tpm_limit: int = 10000
+        self, key_id: int, key_prefix: str, rpm_limit: int = 60, tpm_limit: int = 10000
     ) -> RateLimitConfig:
         """Create a rate limit configuration for a virtual key"""
         return RateLimitConfig(
@@ -474,10 +453,7 @@ class AILBModuleClient:
             requests_per_minute=rpm_limit,
             burst_size=max(10, rpm_limit // 6),
             enabled=True,
-            metadata={
-                "waddleai_key_id": str(key_id),
-                "tpm_limit": str(tpm_limit)
-            }
+            metadata={"waddleai_key_id": str(key_id), "tpm_limit": str(tpm_limit)},
         )
 
     # Context manager support
@@ -494,9 +470,9 @@ class AILBModuleClient:
 def create_ailb_client(app_config: Dict[str, Any]) -> AILBModuleClient:
     """Create AILB client from Flask application config"""
     return AILBModuleClient(
-        host=app_config.get('MARCHPROXY_AILB_HOST', 'localhost'),
-        port=app_config.get('MARCHPROXY_AILB_GRPC_PORT', 50051),
-        use_tls=app_config.get('MARCHPROXY_AILB_TLS_ENABLED', False),
-        tls_cert_path=app_config.get('MARCHPROXY_AILB_TLS_CERT_PATH'),
-        timeout=30
+        host=app_config.get("MARCHPROXY_AILB_HOST", "localhost"),
+        port=app_config.get("MARCHPROXY_AILB_GRPC_PORT", 50051),
+        use_tls=app_config.get("MARCHPROXY_AILB_TLS_ENABLED", False),
+        tls_cert_path=app_config.get("MARCHPROXY_AILB_TLS_CERT_PATH"),
+        timeout=30,
     )

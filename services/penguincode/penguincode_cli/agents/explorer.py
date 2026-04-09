@@ -1,6 +1,5 @@
 """Explorer agent - handles codebase navigation and exploration."""
 
-
 from penguincode_cli.ollama import OllamaClient
 
 from .base import AgentConfig, AgentResult, BaseAgent, Permission

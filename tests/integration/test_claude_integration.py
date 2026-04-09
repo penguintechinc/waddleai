@@ -6,9 +6,11 @@ All tests are skipped when the key is absent to avoid CI failures.
 
 Model used: claude-3-haiku-20240307 (fastest / cheapest for integration checks).
 """
+
 import os
+from typing import Dict, List
+
 import pytest
-from typing import Any, Dict, List, Optional
 
 pytestmark = pytest.mark.integration
 
@@ -26,9 +28,11 @@ def _skip_if_no_key() -> None:
 # SDK import and instantiation
 # ---------------------------------------------------------------------------
 
+
 def test_anthropic_sdk_importable() -> None:
     """The anthropic package should be importable."""
     import anthropic  # noqa: F401  # type: ignore[import]
+
     assert hasattr(anthropic, "Anthropic")
 
 
@@ -44,6 +48,7 @@ def test_anthropic_client_instantiates_with_key() -> None:
 # ---------------------------------------------------------------------------
 # Basic message round-trips
 # ---------------------------------------------------------------------------
+
 
 def test_claude_simple_message_response() -> None:
     """Send a single user message and verify top-level response structure."""
@@ -116,6 +121,7 @@ def test_claude_response_model_field_matches_requested() -> None:
 # Streaming
 # ---------------------------------------------------------------------------
 
+
 def test_claude_streaming_response_yields_text() -> None:
     """Streaming mode should yield text delta events."""
     _skip_if_no_key()
@@ -140,6 +146,7 @@ def test_claude_streaming_response_yields_text() -> None:
 # ---------------------------------------------------------------------------
 # Multi-turn conversation
 # ---------------------------------------------------------------------------
+
 
 def test_claude_multi_turn_conversation() -> None:
     """Multi-turn message list should work without errors."""
@@ -166,11 +173,10 @@ def test_claude_multi_turn_conversation() -> None:
 # Provider config helpers (pure-Python, no API call)
 # ---------------------------------------------------------------------------
 
+
 def test_providers_resolve_model_alias() -> None:
     """resolve_model_alias should map known aliases to canonical model names."""
-    from services.management.app.services.providers import (  # type: ignore[import]
-        resolve_model_alias,
-    )
+    from services.management.app.services.providers import resolve_model_alias  # type: ignore[import]
 
     assert resolve_model_alias("claude-haiku") == "claude-3-haiku-20240307"
     assert resolve_model_alias("claude-opus") == "claude-3-opus-20240229"
@@ -180,10 +186,7 @@ def test_providers_resolve_model_alias() -> None:
 
 def test_providers_get_provider_for_model_anthropic() -> None:
     """get_provider_for_model should return ANTHROPIC for claude models."""
-    from services.management.app.services.providers import (  # type: ignore[import]
-        ProviderType,
-        get_provider_for_model,
-    )
+    from services.management.app.services.providers import ProviderType, get_provider_for_model  # type: ignore[import]
 
     provider = get_provider_for_model("claude-3-haiku-20240307")
     assert provider == ProviderType.ANTHROPIC

@@ -9,7 +9,6 @@ The researcher agent specializes in:
 It is read-only and cannot execute commands or write files.
 """
 
-
 from penguincode_cli.config.settings import ResearchConfig
 from penguincode_cli.ollama import OllamaClient
 from penguincode_cli.tools.base import ToolResult
@@ -62,18 +61,15 @@ WEB_TOOL_DEFINITIONS = {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    },
+                    "query": {"type": "string", "description": "The search query"},
                     "max_results": {
                         "type": "integer",
-                        "description": "Maximum number of results to return (default: 5)"
-                    }
+                        "description": "Maximum number of results to return (default: 5)",
+                    },
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["query"],
+            },
+        },
     },
     "web_fetch": {
         "type": "function",
@@ -82,15 +78,10 @@ WEB_TOOL_DEFINITIONS = {
             "description": "Fetch and extract text content from a web URL.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The URL to fetch"
-                    }
-                },
-                "required": ["url"]
-            }
-        }
+                "properties": {"url": {"type": "string", "description": "The URL to fetch"}},
+                "required": ["url"],
+            },
+        },
     },
 }
 
@@ -262,10 +253,17 @@ class ResearcherAgent(BaseAgent):
 
         # Web search detection
         search_patterns = [
-            "search the web", "searching the web", "web search",
-            "let me search", "i'll search", "i will search",
-            "google for", "look up", "find information",
-            "search for documentation", "look for docs",
+            "search the web",
+            "searching the web",
+            "web search",
+            "let me search",
+            "i'll search",
+            "i will search",
+            "google for",
+            "look up",
+            "find information",
+            "search for documentation",
+            "look for docs",
         ]
         if any(p in response_lower for p in search_patterns):
             # Extract query from task or response
@@ -276,9 +274,14 @@ class ResearcherAgent(BaseAgent):
 
         # Web fetch detection
         fetch_patterns = [
-            "fetch the url", "fetching url", "get the page",
-            "visit the url", "open the link", "read the page",
-            "fetch from", "get content from",
+            "fetch the url",
+            "fetching url",
+            "get the page",
+            "visit the url",
+            "open the link",
+            "read the page",
+            "fetch from",
+            "get content from",
         ]
         if any(p in response_lower for p in fetch_patterns):
             url = self._extract_url(response_text, task)
@@ -303,7 +306,7 @@ class ResearcherAgent(BaseAgent):
         query = task
         for prefix in ["search for", "find", "look up", "research", "how to", "what is"]:
             if query.lower().startswith(prefix):
-                query = query[len(prefix):].strip()
+                query = query[len(prefix) :].strip()
                 break
 
         return query if query else None

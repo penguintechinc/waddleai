@@ -12,20 +12,14 @@ TOOL_DEFINITIONS = {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "The path to the file to read (absolute or relative to working directory)"
+                        "description": "The path to the file to read (absolute or relative to working directory)",
                     },
-                    "start_line": {
-                        "type": "integer",
-                        "description": "Optional start line number (1-indexed)"
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "description": "Optional end line number (1-indexed, inclusive)"
-                    }
+                    "start_line": {"type": "integer", "description": "Optional start line number (1-indexed)"},
+                    "end_line": {"type": "integer", "description": "Optional end line number (1-indexed, inclusive)"},
                 },
-                "required": ["path"]
-            }
-        }
+                "required": ["path"],
+            },
+        },
     },
     "write": {
         "type": "function",
@@ -35,18 +29,12 @@ TOOL_DEFINITIONS = {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The path to the file to write"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to write to the file"
-                    }
+                    "path": {"type": "string", "description": "The path to the file to write"},
+                    "content": {"type": "string", "description": "The content to write to the file"},
                 },
-                "required": ["path", "content"]
-            }
-        }
+                "required": ["path", "content"],
+            },
+        },
     },
     "edit": {
         "type": "function",
@@ -56,26 +44,17 @@ TOOL_DEFINITIONS = {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The path to the file to edit"
-                    },
-                    "old_text": {
-                        "type": "string",
-                        "description": "The exact text to find and replace"
-                    },
-                    "new_text": {
-                        "type": "string",
-                        "description": "The new text to replace with"
-                    },
+                    "path": {"type": "string", "description": "The path to the file to edit"},
+                    "old_text": {"type": "string", "description": "The exact text to find and replace"},
+                    "new_text": {"type": "string", "description": "The new text to replace with"},
                     "replace_all": {
                         "type": "boolean",
-                        "description": "Whether to replace all occurrences (default: false, only first)"
-                    }
+                        "description": "Whether to replace all occurrences (default: false, only first)",
+                    },
                 },
-                "required": ["path", "old_text", "new_text"]
-            }
-        }
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
     },
     "grep": {
         "type": "function",
@@ -85,22 +64,19 @@ TOOL_DEFINITIONS = {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "The search pattern (supports regex)"
-                    },
+                    "pattern": {"type": "string", "description": "The search pattern (supports regex)"},
                     "path": {
                         "type": "string",
-                        "description": "The file or directory to search in (default: current directory)"
+                        "description": "The file or directory to search in (default: current directory)",
                     },
                     "case_sensitive": {
                         "type": "boolean",
-                        "description": "Whether search is case-sensitive (default: true)"
-                    }
+                        "description": "Whether search is case-sensitive (default: true)",
+                    },
                 },
-                "required": ["pattern"]
-            }
-        }
+                "required": ["pattern"],
+            },
+        },
     },
     "glob": {
         "type": "function",
@@ -112,16 +88,16 @@ TOOL_DEFINITIONS = {
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "The glob pattern (e.g., '**/*.py' for all Python files)"
+                        "description": "The glob pattern (e.g., '**/*.py' for all Python files)",
                     },
                     "path": {
                         "type": "string",
-                        "description": "The base directory to search in (default: current directory)"
-                    }
+                        "description": "The base directory to search in (default: current directory)",
+                    },
                 },
-                "required": ["pattern"]
-            }
-        }
+                "required": ["pattern"],
+            },
+        },
     },
     "bash": {
         "type": "function",
@@ -131,17 +107,11 @@ TOOL_DEFINITIONS = {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The bash command to execute"
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Optional timeout in seconds (default: 30)"
-                    }
+                    "command": {"type": "string", "description": "The bash command to execute"},
+                    "timeout": {"type": "integer", "description": "Optional timeout in seconds (default: 30)"},
                 },
-                "required": ["command"]
-            }
-        }
+                "required": ["command"],
+            },
+        },
     },
 }

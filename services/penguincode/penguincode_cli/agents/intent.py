@@ -18,63 +18,131 @@ def detect_user_intent(user_message: str) -> str | None:
     msg_lower = user_message.lower()
 
     # Explicit plan requests -> planner (must come before research and executor)
-    if any(kw in msg_lower for kw in [
-        "create a plan", "make a plan", "write a plan", "design a plan",
-        "plan how ", "plan out ", "plan for ", "plan to ",
-    ]):
+    if any(
+        kw in msg_lower
+        for kw in [
+            "create a plan",
+            "make a plan",
+            "write a plan",
+            "design a plan",
+            "plan how ",
+            "plan out ",
+            "plan for ",
+            "plan to ",
+        ]
+    ):
         return "spawn_planner"
 
     # Research patterns - check before executor to avoid false positives
     # (e.g., "documentation for pytest" shouldn't trigger "pytest" -> executor)
-    if any(kw in msg_lower for kw in [
-        "how do i ", "how to ", "what is ", "explain ",
-        "tell me about ", "difference between ", "compare ",
-        "documentation", "docs for ", "tutorial ",
-        "research ", "look up ",
-    ]):
+    if any(
+        kw in msg_lower
+        for kw in [
+            "how do i ",
+            "how to ",
+            "what is ",
+            "explain ",
+            "tell me about ",
+            "difference between ",
+            "compare ",
+            "documentation",
+            "docs for ",
+            "tutorial ",
+            "research ",
+            "look up ",
+        ]
+    ):
         return "spawn_researcher"
 
     # Complex task patterns -> planner
-    if any(kw in msg_lower for kw in [
-        "implement ", "build a ", "create a system",
-        "refactor ", "redesign ", "architect ",
-    ]):
+    if any(
+        kw in msg_lower
+        for kw in [
+            "implement ",
+            "build a ",
+            "create a system",
+            "refactor ",
+            "redesign ",
+            "architect ",
+        ]
+    ):
         return "spawn_planner"
 
     # File creation/writing patterns -> executor
     # Check for "write/create ... file/script" pattern with anything in between
-    if re.search(r'\b(create|write|make|add)\s+(?:a\s+)?(?:\w+\s+)?(file|script)\b', msg_lower):
+    if re.search(r"\b(create|write|make|add)\s+(?:a\s+)?(?:\w+\s+)?(file|script)\b", msg_lower):
         return "spawn_executor"
     # Check for file extension patterns like "testing.py", "hello.sh"
-    if re.search(r'\b\w+\.(py|js|ts|sh|bash|rb|go|rs|java|c|cpp|h|txt|json|yaml|yml|md|html|css)\b', msg_lower):  # noqa: SIM102
+    if re.search(
+        r"\b\w+\.(py|js|ts|sh|bash|rb|go|rs|java|c|cpp|h|txt|json|yaml|yml|md|html|css)\b", msg_lower
+    ):  # noqa: SIM102
         # Has a file extension mentioned - likely wants to create/edit
         if any(kw in msg_lower for kw in ["write", "create", "make", "add", "generate"]):
             return "spawn_executor"
-    if any(kw in msg_lower for kw in [
-        "save to file", "save file", "new file", "touch ", "echo ",
-    ]):
+    if any(
+        kw in msg_lower
+        for kw in [
+            "save to file",
+            "save file",
+            "new file",
+            "touch ",
+            "echo ",
+        ]
+    ):
         return "spawn_executor"
 
     # Code execution patterns -> executor
-    if any(kw in msg_lower for kw in [
-        "run ", "execute ", "install ", "build ", "compile ",
-        "test ", "pytest", "npm ", "pip ", "cargo ",
-    ]):
+    if any(
+        kw in msg_lower
+        for kw in [
+            "run ",
+            "execute ",
+            "install ",
+            "build ",
+            "compile ",
+            "test ",
+            "pytest",
+            "npm ",
+            "pip ",
+            "cargo ",
+        ]
+    ):
         return "spawn_executor"
 
     # File editing patterns -> executor
-    if any(kw in msg_lower for kw in [
-        "edit ", "modify ", "change ", "update ", "fix ",
-        "add to ", "remove from ", "delete from ",
-    ]):
+    if any(
+        kw in msg_lower
+        for kw in [
+            "edit ",
+            "modify ",
+            "change ",
+            "update ",
+            "fix ",
+            "add to ",
+            "remove from ",
+            "delete from ",
+        ]
+    ):
         return "spawn_executor"
 
     # Reading/exploring patterns -> explorer
-    if any(kw in msg_lower for kw in [
-        "read ", "show ", "display ", "what's in ", "what is in ",
-        "find ", "search ", "look for ", "where is ",
-        "list ", "ls ", "cat ",
-    ]):
+    if any(
+        kw in msg_lower
+        for kw in [
+            "read ",
+            "show ",
+            "display ",
+            "what's in ",
+            "what is in ",
+            "find ",
+            "search ",
+            "look for ",
+            "where is ",
+            "list ",
+            "ls ",
+            "cat ",
+        ]
+    ):
         return "spawn_explorer"
 
     return None
@@ -115,10 +183,17 @@ def suggest_skill(user_message: str) -> str | None:
         return "deployment-rollback"
 
     # --- Build Failures (before testing to catch "build fail" patterns) ---
-    if any(kw in msg for kw in [
-        "build fail", "build error", "won't compile", "compile error",
-        "build is fail", "build broke",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "build fail",
+            "build error",
+            "won't compile",
+            "compile error",
+            "build is fail",
+            "build broke",
+        ]
+    ):
         return "troubleshooting-build-failures"
 
     # --- Testing ---
@@ -128,47 +203,92 @@ def suggest_skill(user_message: str) -> str | None:
         return "integration-testing"
     if any(kw in msg for kw in ["load test", "benchmark", "performance test", "perf test"]):
         return "performance-testing"
-    if any(kw in msg for kw in [
-        "api test", "endpoint test", "status code", "test the api",
-        "test api endpoint", "test endpoint",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "api test",
+            "endpoint test",
+            "status code",
+            "test the api",
+            "test api endpoint",
+            "test endpoint",
+        ]
+    ):
         return "testing-api-endpoints"
     if any(kw in msg for kw in ["unit test", "write test", "mock", "pytest"]):
         return "writing-unit-tests"
-    if any(kw in msg for kw in [
-        "tdd", "test first", "test coverage", "add tests", "missing tests",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "tdd",
+            "test first",
+            "test coverage",
+            "add tests",
+            "missing tests",
+        ]
+    ):
         return "test-driven-development"
 
     # --- Docker / Containers ---
-    if any(kw in msg for kw in [
-        "docker build", "dockerfile", "multi-arch", "buildx", "container image",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "docker build",
+            "dockerfile",
+            "multi-arch",
+            "buildx",
+            "container image",
+        ]
+    ):
         return "building-docker-images"
     if any(kw in msg for kw in ["docker-compose", "docker compose", "dev environment"]):
         return "docker-compose-development"
     if any(kw in msg for kw in ["container log", "docker exec", "container debug"]):
         return "debugging-containers"
-    if any(kw in msg for kw in [
-        "container security", "image scan", "trivy", "scan container",
-        "container vulnerabilit",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "container security",
+            "image scan",
+            "trivy",
+            "scan container",
+            "container vulnerabilit",
+        ]
+    ):
         return "container-security"
 
     # --- Security (after container-security for specificity) ---
-    if any(kw in msg for kw in [
-        "security scan", "sast", "secret detection", "vulnerability scan",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "security scan",
+            "sast",
+            "secret detection",
+            "vulnerability scan",
+        ]
+    ):
         return "security-scanning"
 
     # --- Kubernetes ---
-    if any(kw in msg for kw in [
-        "deploy to k8s", "kubectl apply", "kubernetes deploy", "k8s deploy",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "deploy to k8s",
+            "kubectl apply",
+            "kubernetes deploy",
+            "k8s deploy",
+        ]
+    ):
         return "deploying-to-kubernetes"
-    if any(kw in msg for kw in [
-        "k8s debug", "pod log", "kubectl describe", "crashloop",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "k8s debug",
+            "pod log",
+            "kubectl describe",
+            "crashloop",
+        ]
+    ):
         return "kubernetes-debugging"
     if any(kw in msg for kw in ["hpa", "autoscal", "k8s scale", "replica"]):
         return "kubernetes-scaling"
@@ -176,22 +296,41 @@ def suggest_skill(user_message: str) -> str | None:
         return "helm-chart-management"
 
     # --- CI/CD (use word-boundary-aware patterns) ---
-    if any(kw in msg for kw in [
-        "ci/cd", "ci pipeline", "github action", "workflow", "ci check",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "ci/cd",
+            "ci pipeline",
+            "github action",
+            "workflow",
+            "ci check",
+        ]
+    ):
         return "github-actions-workflows"
-    if any(kw in msg for kw in [
-        "release", "version bump", "changelog", "tag release",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "release",
+            "version bump",
+            "changelog",
+            "tag release",
+        ]
+    ):
         return "release-management"
 
     # --- Code Quality ---
     if any(kw in msg for kw in ["lint", "format", "flake8", "eslint", "prettier"]):
         return "linting-and-formatting"
-    if any(kw in msg for kw in [
-        "dependency", "upgrade dep", "audit dep", "outdated package",
-        "audit the dep",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "dependency",
+            "upgrade dep",
+            "audit dep",
+            "outdated package",
+            "audit the dep",
+        ]
+    ):
         return "dependency-management"
     if any(kw in msg for kw in ["docstring", "api doc", "readme", "documentation"]):
         return "documentation-generation"
@@ -209,10 +348,17 @@ def suggest_skill(user_message: str) -> str | None:
         return "ssl-certificate-management"
 
     # --- Workflow (specific patterns before broad) ---
-    if any(kw in msg for kw in [
-        "api design", "rest api", "endpoint design", "design the api",
-        "design an api", "design our api",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "api design",
+            "rest api",
+            "endpoint design",
+            "design the api",
+            "design an api",
+            "design our api",
+        ]
+    ):
         return "api-design"
     if any(kw in msg for kw in ["scaffold", "boilerplate", "generate code"]):
         return "code-generation"
@@ -224,19 +370,38 @@ def suggest_skill(user_message: str) -> str | None:
         return "pair-programming"
 
     # --- Original Skills (broadest matchers last) ---
-    if any(kw in msg for kw in [
-        "brainstorm", "what should", "how should", "approach",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "brainstorm",
+            "what should",
+            "how should",
+            "approach",
+        ]
+    ):
         return "brainstorming"
-    if any(kw in msg for kw in [
-        "debug", "bug", "broken", "not working", "crash",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "debug",
+            "bug",
+            "broken",
+            "not working",
+            "crash",
+        ]
+    ):
         return "systematic-debugging"
     if any(kw in msg for kw in ["plan", "break down", "steps to", "roadmap"]):
         return "writing-plans"
-    if any(kw in msg for kw in [
-        "code review", "review my", "check my code", "review this",
-    ]):
+    if any(
+        kw in msg
+        for kw in [
+            "code review",
+            "review my",
+            "check my code",
+            "review this",
+        ]
+    ):
         return "code-review"
 
     return None
@@ -252,23 +417,49 @@ def estimate_complexity(task: str) -> str:
 
     # Simple tasks - single file, basic operations
     simple_patterns = [
-        "read ", "show ", "display ", "print ", "cat ",
-        "find file", "list files", "what is", "where is",
-        "add comment", "fix typo", "rename variable",
-        "simple", "quick", "just ",
+        "read ",
+        "show ",
+        "display ",
+        "print ",
+        "cat ",
+        "find file",
+        "list files",
+        "what is",
+        "where is",
+        "add comment",
+        "fix typo",
+        "rename variable",
+        "simple",
+        "quick",
+        "just ",
     ]
     if any(p in task_lower for p in simple_patterns):
         return "simple"
 
     # Complex tasks - multi-file, refactoring, features, full apps
     complex_patterns = [
-        "refactor", "restructure", "redesign", "architect",
-        "implement feature", "add feature", "create system",
-        "multiple files", "across the codebase", "all files",
-        "migrate", "upgrade", "overhaul",
-        "website", "web app", "application",
-        "full stack", "fullstack", "frontend and backend",
-        "finish my ", "build my ", "complete the ",
+        "refactor",
+        "restructure",
+        "redesign",
+        "architect",
+        "implement feature",
+        "add feature",
+        "create system",
+        "multiple files",
+        "across the codebase",
+        "all files",
+        "migrate",
+        "upgrade",
+        "overhaul",
+        "website",
+        "web app",
+        "application",
+        "full stack",
+        "fullstack",
+        "frontend and backend",
+        "finish my ",
+        "build my ",
+        "complete the ",
     ]
     if any(p in task_lower for p in complex_patterns):
         return "complex"

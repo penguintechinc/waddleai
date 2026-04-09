@@ -8,13 +8,7 @@ passthrough through the full stack.
 import json
 
 import pytest
-
-from penguincode_cli.client.config_writer import (
-    write_agent_prompts,
-    write_agents_md,
-    write_opencode_json,
-    write_skills,
-)
+from penguincode_cli.client.config_writer import write_agent_prompts, write_agents_md, write_opencode_json, write_skills
 
 
 @pytest.fixture(autouse=True)
@@ -155,15 +149,26 @@ class TestAdminPropagation:
     async def test_admin_changes_propagate(self, api_client, admin_headers, tmp_path):
         """Admin adds model + skill → next provision includes them."""
         # Add a custom model
-        resp = await api_client.put("/api/v1/models", headers=admin_headers, json={
-            "name": "custom-smoke:3b", "role": "smoke-test", "required": False,
-        })
+        resp = await api_client.put(
+            "/api/v1/models",
+            headers=admin_headers,
+            json={
+                "name": "custom-smoke:3b",
+                "role": "smoke-test",
+                "required": False,
+            },
+        )
         assert resp.status_code == 200
 
         # Add a custom skill
-        resp = await api_client.put("/api/v1/skills", headers=admin_headers, json={
-            "name": "smoke-skill", "description": "Added via admin",
-        })
+        resp = await api_client.put(
+            "/api/v1/skills",
+            headers=admin_headers,
+            json={
+                "name": "smoke-skill",
+                "description": "Added via admin",
+            },
+        )
         assert resp.status_code == 200
 
         # Provision picks up changes
@@ -176,9 +181,15 @@ class TestAdminPropagation:
 
     async def test_plugin_passthrough(self, api_client, admin_headers, tmp_path):
         """Add plugin via admin → provision includes it (non-community only)."""
-        resp = await api_client.put("/api/v1/plugins", headers=admin_headers, json={
-            "name": "smoke-plugin", "source": "npm", "config": {"key": "val"},
-        })
+        resp = await api_client.put(
+            "/api/v1/plugins",
+            headers=admin_headers,
+            json={
+                "name": "smoke-plugin",
+                "source": "npm",
+                "config": {"key": "val"},
+            },
+        )
         assert resp.status_code == 200
 
         # Community tier strips plugins, but the store still has them
@@ -190,9 +201,14 @@ class TestAdminPropagation:
 
     async def test_github_orgs_passthrough(self, api_client, admin_headers, tmp_path):
         """Add org via admin → available in store."""
-        resp = await api_client.put("/api/v1/github-orgs", headers=admin_headers, json={
-            "org": "smoke-org", "default_repos": ["repo-a"],
-        })
+        resp = await api_client.put(
+            "/api/v1/github-orgs",
+            headers=admin_headers,
+            json={
+                "org": "smoke-org",
+                "default_repos": ["repo-a"],
+            },
+        )
         assert resp.status_code == 200
 
         resp = await api_client.get("/api/v1/github-orgs", headers=admin_headers)

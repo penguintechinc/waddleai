@@ -18,10 +18,12 @@ logger = logging.getLogger(__name__)
 
 def _opencode_dir() -> Path:
     """Return the OpenCode config directory."""
-    return Path(os.environ.get(
-        "OPENCODE_CONFIG_DIR",
-        str(Path.home() / ".config" / "opencode"),
-    ))
+    return Path(
+        os.environ.get(
+            "OPENCODE_CONFIG_DIR",
+            str(Path.home() / ".config" / "opencode"),
+        )
+    )
 
 
 def write_opencode_json(config: dict) -> Path:
@@ -96,8 +98,7 @@ def write_agents_md(config: dict) -> Path:
         "",
         "## Subagent Output Rules (ALL agents MUST follow)",
         "",
-        "- MUST return: error messages, brief summary (1-3 sentences), "
-        "file paths changed, pass/fail status.",
+        "- MUST return: error messages, brief summary (1-3 sentences), " "file paths changed, pass/fail status.",
         "- MUST NOT return: full file contents, verbose explanations, "
         "raw command output (unless errors), unchanged files.",
         "",
@@ -108,8 +109,7 @@ def write_agents_md(config: dict) -> Path:
         "",
         "## Escalation",
         "",
-        "- If a subagent fails twice on the same task, escalate to its "
-        "escalation-variant model.",
+        "- If a subagent fails twice on the same task, escalate to its " "escalation-variant model.",
         "- If escalation also fails, report to user.",
         "",
         "## Registered Agents",
@@ -140,10 +140,7 @@ def write_agent_prompts(config: dict) -> Path:
         prompt_path = agents_dir / f"{name}.md"
         # Only write if file doesn't already exist (user may customise)
         if not prompt_path.exists():
-            content = (
-                f"# {name.title()} Agent\n\n"
-                f"{agent.get('description', '')}\n"
-            )
+            content = f"# {name.title()} Agent\n\n" f"{agent.get('description', '')}\n"
             prompt_path.write_text(content)
             logger.info("Wrote agent prompt %s", prompt_path)
 
@@ -163,10 +160,7 @@ def write_skills(config: dict) -> Path:
 
         content = skill.get("content_md", "")
         if not content:
-            content = (
-                f"# {name.replace('-', ' ').title()}\n\n"
-                f"{skill.get('description', '')}\n"
-            )
+            content = f"# {name.replace('-', ' ').title()}\n\n" f"{skill.get('description', '')}\n"
 
         skill_path.write_text(content)
         logger.info("Wrote skill %s", skill_path)

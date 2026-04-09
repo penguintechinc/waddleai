@@ -4,12 +4,6 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style
-from rich.table import Table
-
 from penguincode_cli.config.settings import (
     Settings,
     get_config_value,
@@ -21,6 +15,11 @@ from penguincode_cli.config.settings import (
 from penguincode_cli.ollama import OllamaClient
 from penguincode_cli.skills import SkillLoader
 from penguincode_cli.ui import console, print_error, print_info, print_success
+from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
+from rich.table import Table
 
 from .session import SessionManager
 
@@ -174,17 +173,19 @@ class REPLSession:
                 existing = {s.name for s in self.settings.mcp.servers}
                 for srv in org["mcp_servers"]:
                     if isinstance(srv, dict) and srv.get("name") and srv["name"] not in existing:
-                        self.settings.mcp.servers.append(MCPServerConfig(
-                            name=srv["name"],
-                            enabled=srv.get("enabled", True),
-                            transport=srv.get("transport", "stdio"),
-                            command=srv.get("command", ""),
-                            args=srv.get("args", []),
-                            url=srv.get("url", ""),
-                            env=srv.get("env", {}),
-                            headers=srv.get("headers", {}),
-                            timeout=srv.get("timeout", 30),
-                        ))
+                        self.settings.mcp.servers.append(
+                            MCPServerConfig(
+                                name=srv["name"],
+                                enabled=srv.get("enabled", True),
+                                transport=srv.get("transport", "stdio"),
+                                command=srv.get("command", ""),
+                                args=srv.get("args", []),
+                                url=srv.get("url", ""),
+                                env=srv.get("env", {}),
+                                headers=srv.get("headers", {}),
+                                timeout=srv.get("timeout", 30),
+                            )
+                        )
                         existing.add(srv["name"])
                 print_info(f"Org config: merged {len(org['mcp_servers'])} MCP server(s)")
 
@@ -260,9 +261,7 @@ class REPLSession:
 
             # Cleanup unused library docs
             if self.project_context:
-                removed = self.docs_fetcher.cleanup_unused_libraries(
-                    self.project_context.libraries
-                )
+                removed = self.docs_fetcher.cleanup_unused_libraries(self.project_context.libraries)
                 if removed:
                     print_info(f"Removed docs for unused libraries: {', '.join(removed.keys())}")
 
@@ -485,8 +484,7 @@ class REPLSession:
         console.print("\n[bold cyan]Available Agents:[/bold cyan]\n")
         for name, agent in self.agents.items():
             console.print(
-                f"  [green]{name}[/green]: {agent.config.description} "
-                f"[dim](model: {agent.config.model})[/dim]"
+                f"  [green]{name}[/green]: {agent.config.description} " f"[dim](model: {agent.config.model})[/dim]"
             )
         console.print()
 
@@ -546,14 +544,14 @@ class REPLSession:
 
             if self.chat_agent:
                 self.chat_agent.activate_skill(
-                    skill_name, combined, chain=chain_names,
+                    skill_name,
+                    combined,
+                    chain=chain_names,
                     model=chain[0].model,
                 )
             self.active_skill = skill_name
             model_msg = f" (model: {chain[0].model})" if chain[0].model else ""
-            print_success(
-                f"Skill chain activated: {' → '.join(chain_names)}{model_msg}"
-            )
+            print_success(f"Skill chain activated: {' → '.join(chain_names)}{model_msg}")
             return
 
         # Activate a single skill
@@ -579,8 +577,6 @@ class REPLSession:
 
     def handle_config_command(self, args: str) -> None:
         """Handle /config command for viewing and modifying runtime settings."""
-        import yaml as _yaml
-
         if not args:
             self._show_config_summary()
             return
@@ -637,7 +633,7 @@ class REPLSession:
         s = self.settings
         console.print("\n[bold cyan]PenguinCode Configuration[/bold cyan]\n")
         console.print(f"[yellow]Ollama URL:[/yellow]    {s.ollama.api_url}")
-        console.print(f"[yellow]Models:[/yellow]")
+        console.print("[yellow]Models:[/yellow]")
         console.print(f"  orchestration: {s.models.orchestration}")
         console.print(f"  execution:     {s.models.execution}")
         console.print(f"  planning:      {s.models.planning}")
@@ -659,19 +655,17 @@ class REPLSession:
 
         # Mask sensitive values
         sensitive_keys = {"jwt_secret", "jwt_token", "api_key", "firecrawl_api_key"}
+
         def _mask(d):
             if isinstance(d, dict):
-                return {
-                    k: ("****" if k in sensitive_keys and v else _mask(v))
-                    for k, v in d.items()
-                }
+                return {k: ("****" if k in sensitive_keys and v else _mask(v)) for k, v in d.items()}
             if isinstance(d, list):
                 return [_mask(item) for item in d]
             return d
 
         masked = _mask(data)
         output = _yaml.dump(masked, default_flow_style=False, sort_keys=False)
-        console.print(f"\n[bold cyan]Full Configuration:[/bold cyan]\n")
+        console.print("\n[bold cyan]Full Configuration:[/bold cyan]\n")
         console.print(output)
 
     async def handle_read(self, path: str) -> None:
@@ -845,8 +839,12 @@ class REPLSession:
         if library_name:
             # Index specific library
             lib = next(
-                (lib_item for lib_item in self.project_context.libraries if lib_item.name.lower() == library_name.lower()),
-                None
+                (
+                    lib_item
+                    for lib_item in self.project_context.libraries
+                    if lib_item.name.lower() == library_name.lower()
+                ),
+                None,
             )
             if not lib:
                 print_error(f"Library '{library_name}' not detected in project")
@@ -935,9 +933,7 @@ class REPLSession:
             return
 
         # Cleanup cache
-        cache_removed = self.docs_fetcher.cleanup_unused_libraries(
-            self.project_context.libraries
-        )
+        cache_removed = self.docs_fetcher.cleanup_unused_libraries(self.project_context.libraries)
 
         # Cleanup index
         index_removed = await self.docs_indexer.cleanup_unused(
@@ -1010,13 +1006,9 @@ class REPLSession:
 
             # Inject documentation context if available
             if self.context_injector and self.project_context:
-                should_inject = await self.context_injector.should_inject_context(
-                    message, self.project_context
-                )
+                should_inject = await self.context_injector.should_inject_context(message, self.project_context)
                 if should_inject:
-                    context = await self.context_injector.get_relevant_context(
-                        message, self.project_context
-                    )
+                    context = await self.context_injector.get_relevant_context(message, self.project_context)
                     if context:
                         # Augment the chat agent's system prompt temporarily
                         original_prompt = self.chat_agent.system_prompt
@@ -1029,7 +1021,7 @@ class REPLSession:
             response = await self.chat_agent.process(message)
 
             # Restore original prompt if modified
-            if hasattr(self, '_original_prompt'):
+            if hasattr(self, "_original_prompt"):
                 self.chat_agent.system_prompt = self._original_prompt
 
             # Display the response
@@ -1049,16 +1041,20 @@ class REPLSession:
         """Run the REPL loop."""
         console.print("[bold cyan]PenguinCode Chat[/bold cyan]")
         console.print(f"Project: {self.project_dir}")
-        console.print(f"Models: orchestration={self.settings.models.orchestration}, execution={self.settings.models.execution}")
+        console.print(
+            f"Models: orchestration={self.settings.models.orchestration}, execution={self.settings.models.execution}"
+        )
         console.print("\nType [bold]/help[/bold] for commands, [bold]/exit[/bold] to quit\n")
 
         # Set up prompt_toolkit session with history and styling
         history_file = Path.home() / ".config" / "penguincode" / "history"
         history_file.parent.mkdir(parents=True, exist_ok=True)
 
-        prompt_style = Style.from_dict({
-            'prompt': 'bold ansigreen',
-        })
+        prompt_style = Style.from_dict(
+            {
+                "prompt": "bold ansigreen",
+            }
+        )
 
         session: PromptSession = PromptSession(
             history=FileHistory(str(history_file)),
@@ -1073,14 +1069,8 @@ class REPLSession:
         while True:
             try:
                 # Get user input with full readline support
-                prompt_text = (
-                    f"You ({self.active_skill}): "
-                    if self.active_skill
-                    else "You: "
-                )
-                user_input = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: session.prompt(prompt_text)
-                )
+                prompt_text = f"You ({self.active_skill}): " if self.active_skill else "You: "
+                user_input = await asyncio.get_event_loop().run_in_executor(None, lambda: session.prompt(prompt_text))
 
                 # Reset interrupt count on successful input
                 interrupt_count = 0

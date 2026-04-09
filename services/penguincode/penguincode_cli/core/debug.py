@@ -52,10 +52,7 @@ def _init_logging() -> None:
     file_handler.setLevel(logging.DEBUG)  # Handler accepts all, logger filters
 
     # Format with timestamp and level
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     file_handler.setFormatter(formatter)
     _logger.addHandler(file_handler)
 
@@ -129,8 +126,8 @@ def log_llm_request(model: str, messages: list, tools: list = None) -> None:
     if _debug_enabled:
         _logger.debug(f"  Messages ({len(messages)}):")
         for i, msg in enumerate(messages):
-            role = getattr(msg, 'role', 'unknown')
-            content = getattr(msg, 'content', str(msg))
+            role = getattr(msg, "role", "unknown")
+            content = getattr(msg, "content", str(msg))
             # Truncate long content
             if len(content) > 500:
                 content = content[:500] + "..."

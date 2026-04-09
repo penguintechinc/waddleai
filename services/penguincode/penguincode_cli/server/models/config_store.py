@@ -253,19 +253,50 @@ def _default_skills() -> list[SkillDef]:
         # --- Original OpenCode Skills ---
         SkillDef("brainstorming", "Explore user intent, requirements and design before implementation", "", ["read"]),
         SkillDef("code-review", "Review work before merging to verify it meets requirements", "", ["read"]),
-        SkillDef("dispatching-parallel-agents", "Dispatch 2+ independent tasks to parallel subagents", "", ["read", "write", "edit", "bash"]),
-        SkillDef("executing-plans", "Execute implementation plans with review checkpoints", "", ["read", "write", "edit", "bash"]),
-        SkillDef("finishing-a-development-branch", "Finalize a branch when implementation is complete and tests pass", "", ["read", "bash"]),
-        SkillDef("receiving-code-review", "Process code review feedback before implementing changes", "", ["read", "write", "edit"]),
-        SkillDef("subagent-driven-development", "Execute plans with independent tasks via subagents", "", ["read", "write", "edit", "bash"]),
+        SkillDef(
+            "dispatching-parallel-agents",
+            "Dispatch 2+ independent tasks to parallel subagents",
+            "",
+            ["read", "write", "edit", "bash"],
+        ),
+        SkillDef(
+            "executing-plans",
+            "Execute implementation plans with review checkpoints",
+            "",
+            ["read", "write", "edit", "bash"],
+        ),
+        SkillDef(
+            "finishing-a-development-branch",
+            "Finalize a branch when implementation is complete and tests pass",
+            "",
+            ["read", "bash"],
+        ),
+        SkillDef(
+            "receiving-code-review",
+            "Process code review feedback before implementing changes",
+            "",
+            ["read", "write", "edit"],
+        ),
+        SkillDef(
+            "subagent-driven-development",
+            "Execute plans with independent tasks via subagents",
+            "",
+            ["read", "write", "edit", "bash"],
+        ),
         SkillDef("systematic-debugging", "Root-cause analysis before proposing fixes", "", ["read", "bash"]),
-        SkillDef("test-driven-development", "Write tests before implementation code", "", ["read", "write", "edit", "bash"]),
+        SkillDef(
+            "test-driven-development", "Write tests before implementation code", "", ["read", "write", "edit", "bash"]
+        ),
         SkillDef("using-git-worktrees", "Create isolated workspaces for feature development", "", ["read", "bash"]),
-        SkillDef("verification-before-completion", "Run verification before claiming work is done", "", ["read", "bash"]),
+        SkillDef(
+            "verification-before-completion", "Run verification before claiming work is done", "", ["read", "bash"]
+        ),
         SkillDef("writing-plans", "Create detailed implementation plans from specs", "", ["read", "write"]),
         SkillDef("writing-skills", "Create, edit, or verify skill definitions", "", ["read", "write"]),
         # --- Git Operations ---
-        SkillDef("committing-changes", "Pre-commit checks, security scanning, and conventional commits", "", ["read", "bash"]),
+        SkillDef(
+            "committing-changes", "Pre-commit checks, security scanning, and conventional commits", "", ["read", "bash"]
+        ),
         SkillDef("pushing-to-github", "Push workflow, PR creation with gh CLI", "", ["read", "bash"]),
         SkillDef("branching-strategy", "Branch naming conventions, feature/hotfix flows", "", ["read"]),
         SkillDef("resolving-merge-conflicts", "Conflict resolution workflow", "", ["read", "write", "edit", "bash"]),
@@ -279,7 +310,9 @@ def _default_skills() -> list[SkillDef]:
         SkillDef("writing-unit-tests", "Unit test best practices, mocking", "", ["read", "write", "edit", "bash"]),
         SkillDef("testing-api-endpoints", "API contract testing, status codes", "", ["read", "write", "edit", "bash"]),
         # --- Docker/Containers ---
-        SkillDef("building-docker-images", "Multi-arch builds, layer optimization", "", ["read", "write", "edit", "bash"]),
+        SkillDef(
+            "building-docker-images", "Multi-arch builds, layer optimization", "", ["read", "write", "edit", "bash"]
+        ),
         SkillDef("docker-compose-development", "Local dev environment setup", "", ["read", "write", "edit", "bash"]),
         SkillDef("debugging-containers", "Logs, exec, inspect, networking", "", ["read", "bash"]),
         SkillDef("container-security", "Image scanning, non-root, secrets", "", ["read", "bash"]),
@@ -289,24 +322,36 @@ def _default_skills() -> list[SkillDef]:
         SkillDef("kubernetes-scaling", "HPA, VPA, resource limits", "", ["read", "write", "edit", "bash"]),
         SkillDef("helm-chart-management", "Chart creation, values, upgrades", "", ["read", "write", "edit", "bash"]),
         # --- CI/CD ---
-        SkillDef("github-actions-workflows", "Workflow creation, debugging, secrets", "", ["read", "write", "edit", "bash"]),
+        SkillDef(
+            "github-actions-workflows", "Workflow creation, debugging, secrets", "", ["read", "write", "edit", "bash"]
+        ),
         SkillDef("release-management", "Version bumping, changelog, tags", "", ["read", "write", "edit", "bash"]),
         SkillDef("deployment-rollback", "Rollback procedures, canary checks", "", ["read", "bash"]),
         # --- Code Quality ---
         SkillDef("linting-and-formatting", "Language-specific linters, autofix", "", ["read", "bash"]),
         SkillDef("dependency-management", "Updating, auditing, pinning deps", "", ["read", "bash"]),
         SkillDef("documentation-generation", "Docstrings, API docs, README", "", ["read", "write"]),
-        SkillDef("refactoring-safely", "Incremental refactoring with test coverage", "", ["read", "write", "edit", "bash"]),
+        SkillDef(
+            "refactoring-safely", "Incremental refactoring with test coverage", "", ["read", "write", "edit", "bash"]
+        ),
         # --- Infrastructure ---
-        SkillDef("database-migrations", "Schema changes, rollback, data integrity", "", ["read", "write", "edit", "bash"]),
-        SkillDef("environment-configuration", "Env vars, .env files, secrets management", "", ["read", "write", "edit"]),
-        SkillDef("monitoring-and-logging", "Observability setup, structured logging", "", ["read", "write", "edit", "bash"]),
+        SkillDef(
+            "database-migrations", "Schema changes, rollback, data integrity", "", ["read", "write", "edit", "bash"]
+        ),
+        SkillDef(
+            "environment-configuration", "Env vars, .env files, secrets management", "", ["read", "write", "edit"]
+        ),
+        SkillDef(
+            "monitoring-and-logging", "Observability setup, structured logging", "", ["read", "write", "edit", "bash"]
+        ),
         SkillDef("ssl-certificate-management", "Cert creation, renewal, Let's Encrypt", "", ["read", "bash"]),
         # --- Workflow ---
         SkillDef("onboarding-new-project", "Project setup, understanding codebase", "", ["read"]),
         SkillDef("troubleshooting-build-failures", "Build debugging, dependency resolution", "", ["read", "bash"]),
         SkillDef("api-design", "REST/gRPC API design, versioning", "", ["read", "write"]),
-        SkillDef("creating-microservices", "Service scaffold, Docker, CI template", "", ["read", "write", "edit", "bash"]),
+        SkillDef(
+            "creating-microservices", "Service scaffold, Docker, CI template", "", ["read", "write", "edit", "bash"]
+        ),
         SkillDef("code-generation", "Scaffolding, boilerplate generation", "", ["read", "write", "edit", "bash"]),
         SkillDef("pair-programming", "Collaborative coding, explain-as-you-go", "", ["read"]),
         SkillDef("incident-response", "Production incident handling, postmortem", "", ["read", "bash"]),
@@ -354,10 +399,12 @@ class ConfigStore:
 
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            data_dir = Path(os.environ.get(
-                "PENGUINCODE_DATA_DIR",
-                str(Path.home() / ".penguincode"),
-            ))
+            data_dir = Path(
+                os.environ.get(
+                    "PENGUINCODE_DATA_DIR",
+                    str(Path.home() / ".penguincode"),
+                )
+            )
             data_dir.mkdir(parents=True, exist_ok=True)
             db_path = str(data_dir / "config.db")
         self._db_path = db_path
@@ -390,7 +437,8 @@ class ConfigStore:
             await self._upsert("skills", skill.name, asdict(skill))
         for path in _default_instructions():
             await self._db.execute(
-                "INSERT OR IGNORE INTO instructions (path) VALUES (?)", (path,),
+                "INSERT OR IGNORE INTO instructions (path) VALUES (?)",
+                (path,),
             )
         for pattern, policy in _default_permissions().items():
             await self._db.execute(
@@ -417,7 +465,8 @@ class ConfigStore:
         assert self._db is not None
         key_col = "org" if table == "github_orgs" else "name"
         row = await self._db.execute_fetchall(
-            f"SELECT data FROM {table} WHERE {key_col} = ?", (key,),
+            f"SELECT data FROM {table} WHERE {key_col} = ?",
+            (key,),
         )
         if row:
             return json.loads(row[0][0])
@@ -432,7 +481,8 @@ class ConfigStore:
         assert self._db is not None
         key_col = "org" if table == "github_orgs" else "name"
         cursor = await self._db.execute(
-            f"DELETE FROM {table} WHERE {key_col} = ?", (key,),
+            f"DELETE FROM {table} WHERE {key_col} = ?",
+            (key,),
         )
         await self._db.commit()
         return cursor.rowcount > 0
@@ -552,14 +602,16 @@ class ConfigStore:
     async def add_instruction(self, path: str) -> None:
         assert self._db is not None
         await self._db.execute(
-            "INSERT OR IGNORE INTO instructions (path) VALUES (?)", (path,),
+            "INSERT OR IGNORE INTO instructions (path) VALUES (?)",
+            (path,),
         )
         await self._db.commit()
 
     async def remove_instruction(self, path: str) -> bool:
         assert self._db is not None
         cursor = await self._db.execute(
-            "DELETE FROM instructions WHERE path = ?", (path,),
+            "DELETE FROM instructions WHERE path = ?",
+            (path,),
         )
         await self._db.commit()
         return cursor.rowcount > 0
@@ -584,7 +636,8 @@ class ConfigStore:
     async def remove_permission(self, pattern: str) -> bool:
         assert self._db is not None
         cursor = await self._db.execute(
-            "DELETE FROM permissions WHERE pattern = ?", (pattern,),
+            "DELETE FROM permissions WHERE pattern = ?",
+            (pattern,),
         )
         await self._db.commit()
         return cursor.rowcount > 0
@@ -594,7 +647,8 @@ class ConfigStore:
     async def kv_get(self, key: str) -> str | None:
         assert self._db is not None
         rows = await self._db.execute_fetchall(
-            "SELECT value FROM kv WHERE key = ?", (key,),
+            "SELECT value FROM kv WHERE key = ?",
+            (key,),
         )
         return rows[0][0] if rows else None
 

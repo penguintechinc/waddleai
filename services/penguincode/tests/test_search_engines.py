@@ -1,7 +1,6 @@
 """Unit tests for search engines."""
 
 import pytest
-
 from penguincode_cli.config.settings import (
     DuckDuckGoEngineConfig,
     EnginesConfig,
@@ -23,9 +22,7 @@ class TestSearchResult:
 
     def test_search_result_creation(self):
         """Test creating a search result."""
-        result = SearchResult(
-            title="Test Title", url="https://example.com", snippet="Test snippet", source="test"
-        )
+        result = SearchResult(title="Test Title", url="https://example.com", snippet="Test snippet", source="test")
 
         assert result.title == "Test Title"
         assert result.url == "https://example.com"
@@ -34,9 +31,7 @@ class TestSearchResult:
 
     def test_search_result_to_dict(self):
         """Test converting search result to dictionary."""
-        result = SearchResult(
-            title="Test", url="https://example.com", snippet="Snippet", source="test"
-        )
+        result = SearchResult(title="Test", url="https://example.com", snippet="Snippet", source="test")
 
         result_dict = result.to_dict()
 
@@ -143,9 +138,7 @@ class TestEngineFactory:
         config = ResearchConfig(
             engine="duckduckgo",
             use_mcp=False,
-            engines=EnginesConfig(
-                duckduckgo=DuckDuckGoEngineConfig(safesearch="moderate", region="wt-wt")
-            ),
+            engines=EnginesConfig(duckduckgo=DuckDuckGoEngineConfig(safesearch="moderate", region="wt-wt")),
         )
 
         engine = get_search_engine(config)
@@ -158,9 +151,7 @@ class TestEngineFactory:
         config = ResearchConfig(
             engine="google",
             use_mcp=False,
-            engines=EnginesConfig(
-                google=GoogleEngineConfig(api_key="test_key", cx_id="test_cx")
-            ),
+            engines=EnginesConfig(google=GoogleEngineConfig(api_key="test_key", cx_id="test_cx")),
         )
 
         engine = get_search_engine(config)
@@ -173,9 +164,7 @@ class TestEngineFactory:
         config = ResearchConfig(
             engine="sciraai",
             use_mcp=False,
-            engines=EnginesConfig(
-                sciraai=SciraAIEngineConfig(api_key="test_key", endpoint="https://api.scira.ai")
-            ),
+            engines=EnginesConfig(sciraai=SciraAIEngineConfig(api_key="test_key", endpoint="https://api.scira.ai")),
         )
 
         engine = get_search_engine(config)
@@ -188,9 +177,7 @@ class TestEngineFactory:
         config = ResearchConfig(
             engine="searxng",
             use_mcp=False,
-            engines=EnginesConfig(
-                searxng=SearXNGEngineConfig(url="https://searx.be", categories=["general"])
-            ),
+            engines=EnginesConfig(searxng=SearXNGEngineConfig(url="https://searx.be", categories=["general"])),
         )
 
         engine = get_search_engine(config)

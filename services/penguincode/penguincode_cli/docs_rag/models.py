@@ -45,9 +45,7 @@ class ProjectContext:
     languages: list[Language] = field(default_factory=list)
     libraries: list[Library] = field(default_factory=list)
     dependency_files: dict[str, str] = field(default_factory=dict)  # path -> content
-    detection_timestamp: str = field(
-        default_factory=lambda: datetime.now().isoformat()
-    )
+    detection_timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     @property
     def language_names(self) -> list[str]:

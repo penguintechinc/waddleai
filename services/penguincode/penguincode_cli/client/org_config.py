@@ -4,7 +4,6 @@ import asyncio
 import logging
 
 import httpx
-
 from penguincode_cli.client.auth import TokenManager
 
 logger = logging.getLogger(__name__)

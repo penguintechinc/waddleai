@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Optional
 
 import grpc
 import structlog
-
 from grpc_proto.marchproxy import waddleai_pb2, waddleai_pb2_grpc
+
 from shared.agents import RoutingAgent, SecurityAgent, UsageTracker
 from shared.agents.usage_tracker import UsageReport as AgentUsageReport
 from shared.utils.memory_integration import WaddleAIMemoryManager
@@ -215,9 +215,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
                 )
             )
 
-            proto_memories = _memory_entries_to_proto(
-                conv_context.relevant_memories
-            )
+            proto_memories = _memory_entries_to_proto(conv_context.relevant_memories)
 
             return waddleai_pb2.GetContextResponse(
                 memories=proto_memories,
@@ -424,9 +422,7 @@ def _memory_entries_to_proto(
     for entry in entries:
         metadata_dict: Dict[str, str] = {}
         if hasattr(entry, "metadata") and isinstance(entry.metadata, dict):
-            metadata_dict = {
-                str(k): str(v) for k, v in entry.metadata.items()
-            }
+            metadata_dict = {str(k): str(v) for k, v in entry.metadata.items()}
 
         created_at_str = ""
         if hasattr(entry, "created_at"):

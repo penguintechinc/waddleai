@@ -1,13 +1,11 @@
 """Tests for tools module - BaseTool, ToolRegistry, ReadTool, GlobTool, GrepTool."""
 
-
 import pytest
 
 pytest.importorskip("penguincode_cli.tools.search")
 
-from penguincode_cli.tools.search import GlobTool, GrepTool
-
 from penguincode_cli.tools.base import BaseTool, ToolPermission, ToolRegistry, ToolResult
+from penguincode_cli.tools.search import GlobTool, GrepTool
 
 
 class MockTool(BaseTool):

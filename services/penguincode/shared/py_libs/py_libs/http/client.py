@@ -9,7 +9,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
@@ -129,8 +129,7 @@ class HTTPClient:
             float: Delay in seconds
         """
         delay = min(
-            self.config.retry.base_delay
-            * (self.config.retry.exponential_base**attempt),
+            self.config.retry.base_delay * (self.config.retry.exponential_base**attempt),
             self.config.retry.max_delay,
         )
 
@@ -171,10 +170,7 @@ class HTTPClient:
 
         if self._circuit_state.state == CircuitState.HALF_OPEN:
             self._circuit_state.success_count += 1
-            if (
-                self._circuit_state.success_count
-                >= self.config.circuit_breaker.success_threshold
-            ):
+            if self._circuit_state.success_count >= self.config.circuit_breaker.success_threshold:
                 logger.info("Circuit breaker closing after successful requests")
                 self._circuit_state.state = CircuitState.CLOSED
                 self._circuit_state.failure_count = 0
@@ -194,13 +190,8 @@ class HTTPClient:
             self._circuit_state.failure_count = 0
         elif self._circuit_state.state == CircuitState.CLOSED:
             self._circuit_state.failure_count += 1
-            if (
-                self._circuit_state.failure_count
-                >= self.config.circuit_breaker.failure_threshold
-            ):
-                logger.warning(
-                    f"Circuit breaker opening after {self._circuit_state.failure_count} failures"
-                )
+            if self._circuit_state.failure_count >= self.config.circuit_breaker.failure_threshold:
+                logger.warning(f"Circuit breaker opening after {self._circuit_state.failure_count} failures")
                 self._circuit_state.state = CircuitState.OPEN
 
     def _prepare_headers(self, headers: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -255,34 +246,25 @@ class HTTPClient:
 
         for attempt in range(self.config.retry.max_retries + 1):
             try:
-                logger.debug(
-                    f"HTTP {method} {url} (attempt {attempt + 1}/{self.config.retry.max_retries + 1})"
-                )
+                logger.debug(f"HTTP {method} {url} (attempt {attempt + 1}/{self.config.retry.max_retries + 1})")
 
                 response = self._client.request(method, url, **kwargs)
                 response.raise_for_status()
 
-                logger.debug(
-                    f"HTTP {method} {url} -> {response.status_code} ({len(response.content)} bytes)"
-                )
+                logger.debug(f"HTTP {method} {url} -> {response.status_code} ({len(response.content)} bytes)")
 
                 self._record_success()
                 return response
 
             except (httpx.HTTPError, httpx.RequestError) as e:
                 last_exception = e
-                logger.warning(
-                    f"HTTP {method} {url} failed (attempt {attempt + 1}): {e}"
-                )
+                logger.warning(f"HTTP {method} {url} failed (attempt {attempt + 1}): {e}")
 
                 self._record_failure()
 
                 # Don't retry on client errors (4xx) except 429 (rate limit)
                 if isinstance(e, httpx.HTTPStatusError):
-                    if (
-                        400 <= e.response.status_code < 500
-                        and e.response.status_code != 429
-                    ):
+                    if 400 <= e.response.status_code < 500 and e.response.status_code != 429:
                         raise
 
                 # If this was the last attempt, raise

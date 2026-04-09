@@ -277,9 +277,9 @@ class ClientConfig:
     server_url: str = ""  # Remote server URL (e.g., "grpc://server:50051")
     shared_key: str = ""  # Shared secret for auto-auth with server
     token_path: str = "~/.penguincode/token"  # Where to store JWT token
-    local_tools: list = field(default_factory=lambda: [
-        "read", "write", "edit", "bash", "grep", "glob"
-    ])  # Tools that execute locally on client
+    local_tools: list = field(
+        default_factory=lambda: ["read", "write", "edit", "bash", "grep", "glob"]
+    )  # Tools that execute locally on client
 
 
 @dataclass
@@ -310,38 +310,67 @@ class DocsRagConfig:
     auto_index_on_detect: bool = False  # Require explicit /docs index
     auto_index_on_request: bool = True  # Index on-demand when docs needed
     # Manual language configuration (dict of language -> bool)
-    languages_manual: dict = field(default_factory=lambda: {
-        "python": False,
-        "javascript": False,
-        "typescript": False,
-        "go": False,
-        "rust": False,
-        "hcl": False,      # Terraform/OpenTofu
-        "ansible": False,
-        "ruby": False,
-        "php": False,
-        "dart": False,
-    })
+    languages_manual: dict = field(
+        default_factory=lambda: {
+            "python": False,
+            "javascript": False,
+            "typescript": False,
+            "go": False,
+            "rust": False,
+            "hcl": False,  # Terraform/OpenTofu
+            "ansible": False,
+            "ruby": False,
+            "php": False,
+            "dart": False,
+        }
+    )
     # User-specified libraries to always index (e.g., ["fastapi", "pytest"])
     libraries_manual: list = field(default_factory=list)
     # Library priority - index these first if detected
-    priority_libraries: list = field(default_factory=lambda: [
-        # Python
-        "fastapi", "django", "flask", "sqlalchemy", "pydantic",
-        "requests", "aiohttp", "pytest", "numpy", "pandas",
-        # JavaScript/TypeScript
-        "react", "vue", "next", "express", "axios", "prisma",
-        # Go
-        "gin", "echo", "fiber", "gorm",
-        # Rust
-        "tokio", "serde", "actix-web", "diesel",
-        # Ruby
-        "rails", "sinatra", "rspec",
-        # PHP
-        "laravel", "symfony", "phpunit",
-        # Flutter/Dart
-        "flutter", "riverpod", "bloc",
-    ])
+    priority_libraries: list = field(
+        default_factory=lambda: [
+            # Python
+            "fastapi",
+            "django",
+            "flask",
+            "sqlalchemy",
+            "pydantic",
+            "requests",
+            "aiohttp",
+            "pytest",
+            "numpy",
+            "pandas",
+            # JavaScript/TypeScript
+            "react",
+            "vue",
+            "next",
+            "express",
+            "axios",
+            "prisma",
+            # Go
+            "gin",
+            "echo",
+            "fiber",
+            "gorm",
+            # Rust
+            "tokio",
+            "serde",
+            "actix-web",
+            "diesel",
+            # Ruby
+            "rails",
+            "sinatra",
+            "rspec",
+            # PHP
+            "laravel",
+            "symfony",
+            "phpunit",
+            # Flutter/Dart
+            "flutter",
+            "riverpod",
+            "bloc",
+        ]
+    )
 
 
 @dataclass
@@ -378,9 +407,7 @@ class Settings:
         return cls(
             ollama=OllamaConfig(**data.get("ollama", {})),
             models=ModelsConfig(**data.get("models", {})),
-            agents={
-                name: AgentConfig(**config) for name, config in data.get("agents", {}).items()
-            },
+            agents={name: AgentConfig(**config) for name, config in data.get("agents", {}).items()},
             defaults=DefaultsConfig(**data.get("defaults", {})),
             security=SecurityConfig(**data.get("security", {})),
             history=HistoryConfig(**data.get("history", {})),
@@ -480,7 +507,6 @@ class Settings:
             priority_libraries=data.get("priority_libraries", DocsRagConfig().priority_libraries),
         )
 
-
     @staticmethod
     def _parse_mcp_config(data: dict[str, Any]) -> MCPConfig:
         """Parse MCP server configuration."""
@@ -488,18 +514,20 @@ class Settings:
         servers_data = data.get("servers") or []  # Handle None from YAML
         for server_data in servers_data:
             if isinstance(server_data, dict) and "name" in server_data:
-                servers.append(MCPServerConfig(
-                    name=server_data["name"],
-                    enabled=server_data.get("enabled", True),
-                    transport=server_data.get("transport", "stdio"),
-                    command=server_data.get("command", ""),
-                    args=server_data.get("args", []),
-                    url=server_data.get("url", ""),
-                    env=server_data.get("env", {}),
-                    headers=server_data.get("headers", {}),
-                    timeout=server_data.get("timeout", 30),
-                    startup_timeout=server_data.get("startup_timeout", 10),
-                ))
+                servers.append(
+                    MCPServerConfig(
+                        name=server_data["name"],
+                        enabled=server_data.get("enabled", True),
+                        transport=server_data.get("transport", "stdio"),
+                        command=server_data.get("command", ""),
+                        args=server_data.get("args", []),
+                        url=server_data.get("url", ""),
+                        env=server_data.get("env", {}),
+                        headers=server_data.get("headers", {}),
+                        timeout=server_data.get("timeout", 30),
+                        startup_timeout=server_data.get("startup_timeout", 10),
+                    )
+                )
         return MCPConfig(
             enabled=data.get("enabled", True),
             servers=servers,
@@ -561,6 +589,7 @@ def load_settings(config_path: str = "config.yaml") -> Settings:
 # ---------------------------------------------------------------------------
 # Config utility functions for /config command
 # ---------------------------------------------------------------------------
+
 
 def get_config_value(settings: Settings, dotpath: str) -> Any:
     """Traverse Settings with dot notation to get a value.
@@ -625,6 +654,7 @@ def settings_to_dict(settings: Settings) -> dict[str, Any]:
         Dict representation of all settings
     """
     from dataclasses import asdict
+
     return asdict(settings)
 
 

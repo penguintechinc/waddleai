@@ -13,6 +13,7 @@ import pytest
 @dataclass(slots=True)
 class ScenarioExpectation:
     """Expected outcome for a scenario."""
+
     prompt: str
     category: str
     language: str | None = None
@@ -63,6 +64,7 @@ class TestFlaskWebsiteVariations:
     @pytest.fixture
     def mock_response_generator(self):
         """Create mock that generates appropriate Flask responses."""
+
         def generator(prompt: str) -> dict:
             return {
                 "type": "code_generation",
@@ -86,6 +88,7 @@ if __name__ == "__main__":
 ''',
                 "files": ["app.py", "templates/gallery.html"],
             }
+
         return generator
 
     @pytest.mark.parametrize("scenario", FLASK_WEBSITE_PROMPTS)
@@ -103,9 +106,7 @@ if __name__ == "__main__":
 
     @pytest.mark.parametrize("scenario", FLASK_WEBSITE_PROMPTS)
     @pytest.mark.asyncio
-    async def test_flask_generation_produces_valid_code(
-        self, scenario, mock_response_generator
-    ):
+    async def test_flask_generation_produces_valid_code(self, scenario, mock_response_generator):
         """Test that generation produces valid Flask code."""
         response = mock_response_generator(scenario.prompt)
 
@@ -153,6 +154,7 @@ class TestDatabaseComparisonVariations:
     @pytest.fixture
     def mock_explanation_generator(self):
         """Create mock that generates appropriate explanations."""
+
         def generator(prompt: str) -> dict:
             return {
                 "type": "explanation",
@@ -172,6 +174,7 @@ PyDAL is a Database Abstraction Layer focused on portability and simplicity.""",
                     "PyDAL": {"type": "DAL", "complexity": "Low"},
                 },
             }
+
         return generator
 
     @pytest.mark.parametrize("scenario", DATABASE_COMPARISON_PROMPTS)
@@ -240,27 +243,28 @@ class TestGoGUIVariations:
     @pytest.fixture
     def mock_go_generator(self):
         """Create mock that generates appropriate Go code."""
+
         def generator(prompt: str) -> dict:
             return {
                 "type": "code_generation",
                 "language": "go",
-                "code": '''package main
+                "code": """package main
 
 import (
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/widget"
+    "fyne.io/fyne/v2"
+    "fyne.io/fyne/v2/app"
+    "fyne.io/fyne/v2/widget"
 )
 
 func main() {
-	myApp := app.New()
-	myWindow := myApp.NewWindow("Hello World")
+    myApp := app.New()
+    myWindow := myApp.NewWindow("Hello World")
 
-	myWindow.SetContent(widget.NewLabel("Hello World!"))
-	myWindow.Resize(fyne.NewSize(300, 200))
-	myWindow.ShowAndRun()
+    myWindow.SetContent(widget.NewLabel("Hello World!"))
+    myWindow.Resize(fyne.NewSize(300, 200))
+    myWindow.ShowAndRun()
 }
-''',
+""",
                 "files": ["main.go", "go.mod"],
                 "build_instructions": [
                     "go mod init hello-gui",
@@ -268,6 +272,7 @@ func main() {
                     "go build",
                 ],
             }
+
         return generator
 
     @pytest.mark.parametrize("scenario", GO_GUI_PROMPTS)
@@ -297,6 +302,7 @@ func main() {
 # Edge Cases and Error Handling
 # ============================================================================
 
+
 class TestEdgeCases:
     """Test edge cases and unusual inputs."""
 
@@ -307,11 +313,14 @@ class TestEdgeCases:
         result = empty_prompt.strip()
         assert result == ""
 
-    @pytest.mark.parametrize("ambiguous_prompt", [
-        "help me with code",
-        "do something with python",
-        "make it work",
-    ])
+    @pytest.mark.parametrize(
+        "ambiguous_prompt",
+        [
+            "help me with code",
+            "do something with python",
+            "make it work",
+        ],
+    )
     def test_ambiguous_prompts_classified(self, ambiguous_prompt):
         """Test that ambiguous prompts get some classification."""
         # These should not crash the classifier
@@ -319,11 +328,14 @@ class TestEdgeCases:
         # At minimum, should be a string
         assert isinstance(prompt_lower, str)
 
-    @pytest.mark.parametrize("multi_language_prompt", [
-        "create a python backend and react frontend",
-        "build a Go API with JavaScript client",
-        "make a flask app that calls a rust library",
-    ])
+    @pytest.mark.parametrize(
+        "multi_language_prompt",
+        [
+            "create a python backend and react frontend",
+            "build a Go API with JavaScript client",
+            "make a flask app that calls a rust library",
+        ],
+    )
     def test_multi_language_prompts_recognized(self, multi_language_prompt):
         """Test that multi-language prompts are recognized."""
         prompt_lower = multi_language_prompt.lower()
@@ -337,6 +349,7 @@ class TestEdgeCases:
 # Response Validation Tests
 # ============================================================================
 
+
 class TestResponseValidation:
     """Test response validation logic."""
 
@@ -346,13 +359,13 @@ class TestResponseValidation:
         return {
             "type": "code_generation",
             "language": "python",
-            "code": '''from flask import Flask
+            "code": """from flask import Flask
 app = Flask(__name__)
 
 @app.route("/")
 def index():
     return "Hello Penguins!"
-''',
+""",
             "files": ["app.py"],
         }
 
@@ -362,12 +375,12 @@ def index():
         return {
             "type": "code_generation",
             "language": "go",
-            "code": '''package main
+            "code": """package main
 
 func main() {
     println("Hello")
 }
-''',
+""",
             "files": ["main.go"],
         }
 
@@ -391,27 +404,28 @@ func main() {
         for field in required_fields:
             assert field in flask_response
 
-    @pytest.mark.parametrize("invalid_response", [
-        {},
-        {"type": "code_generation"},
-        {"code": "print('hello')"},
-        {"language": "python", "code": ""},
-    ])
+    @pytest.mark.parametrize(
+        "invalid_response",
+        [
+            {},
+            {"type": "code_generation"},
+            {"code": "print('hello')"},
+            {"language": "python", "code": ""},
+        ],
+    )
     def test_incomplete_responses_detected(self, invalid_response):
         """Test that incomplete responses are detected."""
         required_fields = ["type", "language", "code", "files"]
         missing = [f for f in required_fields if f not in invalid_response]
         # Should detect missing fields or empty code
-        has_issue = (
-            len(missing) > 0 or
-            not invalid_response.get("code", "").strip()
-        )
+        has_issue = len(missing) > 0 or not invalid_response.get("code", "").strip()
         assert has_issue
 
 
 # ============================================================================
 # Mock AI Interaction Tests
 # ============================================================================
+
 
 class TestMockAIInteraction:
     """Test mock AI interaction patterns."""

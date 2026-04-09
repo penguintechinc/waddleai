@@ -8,9 +8,8 @@ import functools
 import logging
 
 import jwt as pyjwt
-from quart import Blueprint, jsonify, request
-
 from penguincode_cli.server.models.config_store import ConfigStore
+from quart import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +86,9 @@ def _crud_routes(
         return jsonify({"ok": True, key_field: body[key_field]})
 
     @admin_bp.route(
-        f"/{entity}/<key>", methods=["DELETE"], endpoint=f"delete_{entity}",
+        f"/{entity}/<key>",
+        methods=["DELETE"],
+        endpoint=f"delete_{entity}",
     )
     @require_admin
     async def delete(key: str):
@@ -98,7 +99,9 @@ def _crud_routes(
         return jsonify({"ok": True})
 
     @admin_bp.route(
-        f"/{entity}/<key>", methods=["GET"], endpoint=f"get_{entity}",
+        f"/{entity}/<key>",
+        methods=["GET"],
+        endpoint=f"get_{entity}",
     )
     @require_admin
     async def get_one(key: str):

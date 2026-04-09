@@ -3,94 +3,88 @@
 # source: penguincode.proto
 # Protobuf Python Version: 5.29.0
 """Generated protocol buffer code."""
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
 
-_runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC,
-    5,
-    29,
-    0,
-    '',
-    'penguincode.proto'
-)
+_runtime_version.ValidateProtobufRuntimeVersion(_runtime_version.Domain.PUBLIC, 5, 29, 0, "", "penguincode.proto")
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-
-
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11penguincode.proto\x12\x0bpenguincode\"1\n\x0b\x41uthRequest\x12\x0f\n\x07\x61pi_key\x18\x01 \x01(\t\x12\x11\n\tclient_id\x18\x02 \x01(\t\"O\n\x0c\x41uthResponse\x12\x14\n\x0c\x61\x63\x63\x65ss_token\x18\x01 \x01(\t\x12\x12\n\nexpires_in\x18\x02 \x01(\x03\x12\x15\n\rrefresh_token\x18\x03 \x01(\t\"\'\n\x0eRefreshRequest\x12\x15\n\rrefresh_token\x18\x01 \x01(\t\"\'\n\x0fValidateRequest\x12\x14\n\x0c\x61\x63\x63\x65ss_token\x18\x01 \x01(\t\"B\n\x10ValidateResponse\x12\r\n\x05valid\x18\x01 \x01(\x08\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x0e\n\x06scopes\x18\x03 \x03(\t\"b\n\x14\x43reateSessionRequest\x12\x13\n\x0bproject_dir\x18\x01 \x01(\t\x12\x35\n\x0c\x63\x61pabilities\x18\x02 \x01(\x0b\x32\x1f.penguincode.ClientCapabilities\"?\n\x12\x43lientCapabilities\x12\x17\n\x0f\x61vailable_tools\x18\x01 \x03(\t\x12\x10\n\x08platform\x18\x02 \x01(\t\"Y\n\x15\x43reateSessionResponse\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12,\n\x0bserver_info\x18\x02 \x01(\x0b\x32\x17.penguincode.ServerInfo\"Q\n\nServerInfo\x12\x0f\n\x07version\x18\x01 \x01(\t\x12\x18\n\x10\x61vailable_models\x18\x02 \x03(\t\x12\x18\n\x10ollama_connected\x18\x03 \x01(\x08\"2\n\x0b\x43hatRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"\xad\x02\n\x0c\x43hatResponse\x12&\n\x04text\x18\x01 \x01(\x0b\x32\x16.penguincode.TextChunkH\x00\x12\x30\n\x0ctool_request\x18\x02 \x01(\x0b\x32\x18.penguincode.ToolRequestH\x00\x12.\n\x0b\x61gent_spawn\x18\x03 \x01(\x0b\x32\x17.penguincode.AgentSpawnH\x00\x12\x30\n\x0c\x61gent_result\x18\x04 \x01(\x0b\x32\x18.penguincode.AgentResultH\x00\x12+\n\x06status\x18\x05 \x01(\x0b\x32\x19.penguincode.StatusUpdateH\x00\x12#\n\x05\x65rror\x18\x06 \x01(\x0b\x32\x12.penguincode.ErrorH\x00\x42\x0f\n\rresponse_type\".\n\tTextChunk\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t\x12\x10\n\x08is_final\x18\x02 \x01(\x08\".\n\nAgentSpawn\x12\x12\n\nagent_type\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t\"W\n\x0b\x41gentResult\x12\x12\n\nagent_type\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x0e\n\x06output\x18\x03 \x01(\t\x12\x13\n\x0b\x64uration_ms\x18\x04 \x01(\x03\"/\n\x0cStatusUpdate\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\";\n\x05\x45rror\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x13\n\x0brecoverable\x18\x03 \x01(\x08\"6\n\x11GetHistoryRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05limit\x18\x02 \x01(\x05\"C\n\x12GetHistoryResponse\x12-\n\x08messages\x18\x01 \x03(\x0b\x32\x1b.penguincode.HistoryMessage\"B\n\x0eHistoryMessage\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\x11\n\ttimestamp\x18\x03 \x01(\t\")\n\x13\x43loseSessionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"\'\n\x14\x43loseSessionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\xcf\x01\n\x0bToolRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x12\n\nsession_id\x18\x02 \x01(\t\x12\x11\n\ttool_name\x18\x03 \x01(\t\x12:\n\targuments\x18\x04 \x03(\x0b\x32\'.penguincode.ToolRequest.ArgumentsEntry\x12\x17\n\x0ftimeout_seconds\x18\x05 \x01(\x05\x1a\x30\n\x0e\x41rgumentsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"P\n\x0cToolResponse\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\t\x12\r\n\x05\x65rror\x18\x04 \x01(\t\"\x14\n\x12HealthCheckRequest\"j\n\x13HealthCheckResponse\x12\x0f\n\x07healthy\x18\x01 \x01(\x08\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x18\n\x10ollama_connected\x18\x03 \x01(\x08\x12\x17\n\x0f\x61\x63tive_sessions\x18\x04 \x01(\x05\x32\xe8\x01\n\x0b\x41uthService\x12\x43\n\x0c\x41uthenticate\x12\x18.penguincode.AuthRequest\x1a\x19.penguincode.AuthResponse\x12\x46\n\x0cRefreshToken\x12\x1b.penguincode.RefreshRequest\x1a\x19.penguincode.AuthResponse\x12L\n\rValidateToken\x12\x1c.penguincode.ValidateRequest\x1a\x1d.penguincode.ValidateResponse2\xc8\x02\n\x0b\x43hatService\x12V\n\rCreateSession\x12!.penguincode.CreateSessionRequest\x1a\".penguincode.CreateSessionResponse\x12=\n\x04\x43hat\x12\x18.penguincode.ChatRequest\x1a\x19.penguincode.ChatResponse0\x01\x12M\n\nGetHistory\x12\x1e.penguincode.GetHistoryRequest\x1a\x1f.penguincode.GetHistoryResponse\x12S\n\x0c\x43loseSession\x12 .penguincode.CloseSessionRequest\x1a!.penguincode.CloseSessionResponse2^\n\x13ToolCallbackService\x12G\n\x0c\x45xecuteTools\x12\x19.penguincode.ToolResponse\x1a\x18.penguincode.ToolRequest(\x01\x30\x01\x32[\n\rHealthService\x12J\n\x05\x43heck\x12\x1f.penguincode.HealthCheckRequest\x1a .penguincode.HealthCheckResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n\x11penguincode.proto\x12\x0bpenguincode"1\n\x0b\x41uthRequest\x12\x0f\n\x07\x61pi_key\x18\x01 \x01(\t\x12\x11\n\tclient_id\x18\x02 \x01(\t"O\n\x0c\x41uthResponse\x12\x14\n\x0c\x61\x63\x63\x65ss_token\x18\x01 \x01(\t\x12\x12\n\nexpires_in\x18\x02 \x01(\x03\x12\x15\n\rrefresh_token\x18\x03 \x01(\t"\'\n\x0eRefreshRequest\x12\x15\n\rrefresh_token\x18\x01 \x01(\t"\'\n\x0fValidateRequest\x12\x14\n\x0c\x61\x63\x63\x65ss_token\x18\x01 \x01(\t"B\n\x10ValidateResponse\x12\r\n\x05valid\x18\x01 \x01(\x08\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x0e\n\x06scopes\x18\x03 \x03(\t"b\n\x14\x43reateSessionRequest\x12\x13\n\x0bproject_dir\x18\x01 \x01(\t\x12\x35\n\x0c\x63\x61pabilities\x18\x02 \x01(\x0b\x32\x1f.penguincode.ClientCapabilities"?\n\x12\x43lientCapabilities\x12\x17\n\x0f\x61vailable_tools\x18\x01 \x03(\t\x12\x10\n\x08platform\x18\x02 \x01(\t"Y\n\x15\x43reateSessionResponse\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12,\n\x0bserver_info\x18\x02 \x01(\x0b\x32\x17.penguincode.ServerInfo"Q\n\nServerInfo\x12\x0f\n\x07version\x18\x01 \x01(\t\x12\x18\n\x10\x61vailable_models\x18\x02 \x03(\t\x12\x18\n\x10ollama_connected\x18\x03 \x01(\x08"2\n\x0b\x43hatRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t"\xad\x02\n\x0c\x43hatResponse\x12&\n\x04text\x18\x01 \x01(\x0b\x32\x16.penguincode.TextChunkH\x00\x12\x30\n\x0ctool_request\x18\x02 \x01(\x0b\x32\x18.penguincode.ToolRequestH\x00\x12.\n\x0b\x61gent_spawn\x18\x03 \x01(\x0b\x32\x17.penguincode.AgentSpawnH\x00\x12\x30\n\x0c\x61gent_result\x18\x04 \x01(\x0b\x32\x18.penguincode.AgentResultH\x00\x12+\n\x06status\x18\x05 \x01(\x0b\x32\x19.penguincode.StatusUpdateH\x00\x12#\n\x05\x65rror\x18\x06 \x01(\x0b\x32\x12.penguincode.ErrorH\x00\x42\x0f\n\rresponse_type".\n\tTextChunk\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t\x12\x10\n\x08is_final\x18\x02 \x01(\x08".\n\nAgentSpawn\x12\x12\n\nagent_type\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t"W\n\x0b\x41gentResult\x12\x12\n\nagent_type\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x0e\n\x06output\x18\x03 \x01(\t\x12\x13\n\x0b\x64uration_ms\x18\x04 \x01(\x03"/\n\x0cStatusUpdate\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t";\n\x05\x45rror\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x13\n\x0brecoverable\x18\x03 \x01(\x08"6\n\x11GetHistoryRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05limit\x18\x02 \x01(\x05"C\n\x12GetHistoryResponse\x12-\n\x08messages\x18\x01 \x03(\x0b\x32\x1b.penguincode.HistoryMessage"B\n\x0eHistoryMessage\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\x11\n\ttimestamp\x18\x03 \x01(\t")\n\x13\x43loseSessionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t"\'\n\x14\x43loseSessionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08"\xcf\x01\n\x0bToolRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x12\n\nsession_id\x18\x02 \x01(\t\x12\x11\n\ttool_name\x18\x03 \x01(\t\x12:\n\targuments\x18\x04 \x03(\x0b\x32\'.penguincode.ToolRequest.ArgumentsEntry\x12\x17\n\x0ftimeout_seconds\x18\x05 \x01(\x05\x1a\x30\n\x0e\x41rgumentsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01"P\n\x0cToolResponse\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\t\x12\r\n\x05\x65rror\x18\x04 \x01(\t"\x14\n\x12HealthCheckRequest"j\n\x13HealthCheckResponse\x12\x0f\n\x07healthy\x18\x01 \x01(\x08\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x18\n\x10ollama_connected\x18\x03 \x01(\x08\x12\x17\n\x0f\x61\x63tive_sessions\x18\x04 \x01(\x05\x32\xe8\x01\n\x0b\x41uthService\x12\x43\n\x0c\x41uthenticate\x12\x18.penguincode.AuthRequest\x1a\x19.penguincode.AuthResponse\x12\x46\n\x0cRefreshToken\x12\x1b.penguincode.RefreshRequest\x1a\x19.penguincode.AuthResponse\x12L\n\rValidateToken\x12\x1c.penguincode.ValidateRequest\x1a\x1d.penguincode.ValidateResponse2\xc8\x02\n\x0b\x43hatService\x12V\n\rCreateSession\x12!.penguincode.CreateSessionRequest\x1a".penguincode.CreateSessionResponse\x12=\n\x04\x43hat\x12\x18.penguincode.ChatRequest\x1a\x19.penguincode.ChatResponse0\x01\x12M\n\nGetHistory\x12\x1e.penguincode.GetHistoryRequest\x1a\x1f.penguincode.GetHistoryResponse\x12S\n\x0c\x43loseSession\x12 .penguincode.CloseSessionRequest\x1a!.penguincode.CloseSessionResponse2^\n\x13ToolCallbackService\x12G\n\x0c\x45xecuteTools\x12\x19.penguincode.ToolResponse\x1a\x18.penguincode.ToolRequest(\x01\x30\x01\x32[\n\rHealthService\x12J\n\x05\x43heck\x12\x1f.penguincode.HealthCheckRequest\x1a .penguincode.HealthCheckResponseb\x06proto3'
+)
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'penguincode_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "penguincode_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
-  _globals['_TOOLREQUEST_ARGUMENTSENTRY']._loaded_options = None
-  _globals['_TOOLREQUEST_ARGUMENTSENTRY']._serialized_options = b'8\001'
-  _globals['_AUTHREQUEST']._serialized_start=34
-  _globals['_AUTHREQUEST']._serialized_end=83
-  _globals['_AUTHRESPONSE']._serialized_start=85
-  _globals['_AUTHRESPONSE']._serialized_end=164
-  _globals['_REFRESHREQUEST']._serialized_start=166
-  _globals['_REFRESHREQUEST']._serialized_end=205
-  _globals['_VALIDATEREQUEST']._serialized_start=207
-  _globals['_VALIDATEREQUEST']._serialized_end=246
-  _globals['_VALIDATERESPONSE']._serialized_start=248
-  _globals['_VALIDATERESPONSE']._serialized_end=314
-  _globals['_CREATESESSIONREQUEST']._serialized_start=316
-  _globals['_CREATESESSIONREQUEST']._serialized_end=414
-  _globals['_CLIENTCAPABILITIES']._serialized_start=416
-  _globals['_CLIENTCAPABILITIES']._serialized_end=479
-  _globals['_CREATESESSIONRESPONSE']._serialized_start=481
-  _globals['_CREATESESSIONRESPONSE']._serialized_end=570
-  _globals['_SERVERINFO']._serialized_start=572
-  _globals['_SERVERINFO']._serialized_end=653
-  _globals['_CHATREQUEST']._serialized_start=655
-  _globals['_CHATREQUEST']._serialized_end=705
-  _globals['_CHATRESPONSE']._serialized_start=708
-  _globals['_CHATRESPONSE']._serialized_end=1009
-  _globals['_TEXTCHUNK']._serialized_start=1011
-  _globals['_TEXTCHUNK']._serialized_end=1057
-  _globals['_AGENTSPAWN']._serialized_start=1059
-  _globals['_AGENTSPAWN']._serialized_end=1105
-  _globals['_AGENTRESULT']._serialized_start=1107
-  _globals['_AGENTRESULT']._serialized_end=1194
-  _globals['_STATUSUPDATE']._serialized_start=1196
-  _globals['_STATUSUPDATE']._serialized_end=1243
-  _globals['_ERROR']._serialized_start=1245
-  _globals['_ERROR']._serialized_end=1304
-  _globals['_GETHISTORYREQUEST']._serialized_start=1306
-  _globals['_GETHISTORYREQUEST']._serialized_end=1360
-  _globals['_GETHISTORYRESPONSE']._serialized_start=1362
-  _globals['_GETHISTORYRESPONSE']._serialized_end=1429
-  _globals['_HISTORYMESSAGE']._serialized_start=1431
-  _globals['_HISTORYMESSAGE']._serialized_end=1497
-  _globals['_CLOSESESSIONREQUEST']._serialized_start=1499
-  _globals['_CLOSESESSIONREQUEST']._serialized_end=1540
-  _globals['_CLOSESESSIONRESPONSE']._serialized_start=1542
-  _globals['_CLOSESESSIONRESPONSE']._serialized_end=1581
-  _globals['_TOOLREQUEST']._serialized_start=1584
-  _globals['_TOOLREQUEST']._serialized_end=1791
-  _globals['_TOOLREQUEST_ARGUMENTSENTRY']._serialized_start=1743
-  _globals['_TOOLREQUEST_ARGUMENTSENTRY']._serialized_end=1791
-  _globals['_TOOLRESPONSE']._serialized_start=1793
-  _globals['_TOOLRESPONSE']._serialized_end=1873
-  _globals['_HEALTHCHECKREQUEST']._serialized_start=1875
-  _globals['_HEALTHCHECKREQUEST']._serialized_end=1895
-  _globals['_HEALTHCHECKRESPONSE']._serialized_start=1897
-  _globals['_HEALTHCHECKRESPONSE']._serialized_end=2003
-  _globals['_AUTHSERVICE']._serialized_start=2006
-  _globals['_AUTHSERVICE']._serialized_end=2238
-  _globals['_CHATSERVICE']._serialized_start=2241
-  _globals['_CHATSERVICE']._serialized_end=2569
-  _globals['_TOOLCALLBACKSERVICE']._serialized_start=2571
-  _globals['_TOOLCALLBACKSERVICE']._serialized_end=2665
-  _globals['_HEALTHSERVICE']._serialized_start=2667
-  _globals['_HEALTHSERVICE']._serialized_end=2758
+    DESCRIPTOR._loaded_options = None
+    _globals["_TOOLREQUEST_ARGUMENTSENTRY"]._loaded_options = None
+    _globals["_TOOLREQUEST_ARGUMENTSENTRY"]._serialized_options = b"8\001"
+    _globals["_AUTHREQUEST"]._serialized_start = 34
+    _globals["_AUTHREQUEST"]._serialized_end = 83
+    _globals["_AUTHRESPONSE"]._serialized_start = 85
+    _globals["_AUTHRESPONSE"]._serialized_end = 164
+    _globals["_REFRESHREQUEST"]._serialized_start = 166
+    _globals["_REFRESHREQUEST"]._serialized_end = 205
+    _globals["_VALIDATEREQUEST"]._serialized_start = 207
+    _globals["_VALIDATEREQUEST"]._serialized_end = 246
+    _globals["_VALIDATERESPONSE"]._serialized_start = 248
+    _globals["_VALIDATERESPONSE"]._serialized_end = 314
+    _globals["_CREATESESSIONREQUEST"]._serialized_start = 316
+    _globals["_CREATESESSIONREQUEST"]._serialized_end = 414
+    _globals["_CLIENTCAPABILITIES"]._serialized_start = 416
+    _globals["_CLIENTCAPABILITIES"]._serialized_end = 479
+    _globals["_CREATESESSIONRESPONSE"]._serialized_start = 481
+    _globals["_CREATESESSIONRESPONSE"]._serialized_end = 570
+    _globals["_SERVERINFO"]._serialized_start = 572
+    _globals["_SERVERINFO"]._serialized_end = 653
+    _globals["_CHATREQUEST"]._serialized_start = 655
+    _globals["_CHATREQUEST"]._serialized_end = 705
+    _globals["_CHATRESPONSE"]._serialized_start = 708
+    _globals["_CHATRESPONSE"]._serialized_end = 1009
+    _globals["_TEXTCHUNK"]._serialized_start = 1011
+    _globals["_TEXTCHUNK"]._serialized_end = 1057
+    _globals["_AGENTSPAWN"]._serialized_start = 1059
+    _globals["_AGENTSPAWN"]._serialized_end = 1105
+    _globals["_AGENTRESULT"]._serialized_start = 1107
+    _globals["_AGENTRESULT"]._serialized_end = 1194
+    _globals["_STATUSUPDATE"]._serialized_start = 1196
+    _globals["_STATUSUPDATE"]._serialized_end = 1243
+    _globals["_ERROR"]._serialized_start = 1245
+    _globals["_ERROR"]._serialized_end = 1304
+    _globals["_GETHISTORYREQUEST"]._serialized_start = 1306
+    _globals["_GETHISTORYREQUEST"]._serialized_end = 1360
+    _globals["_GETHISTORYRESPONSE"]._serialized_start = 1362
+    _globals["_GETHISTORYRESPONSE"]._serialized_end = 1429
+    _globals["_HISTORYMESSAGE"]._serialized_start = 1431
+    _globals["_HISTORYMESSAGE"]._serialized_end = 1497
+    _globals["_CLOSESESSIONREQUEST"]._serialized_start = 1499
+    _globals["_CLOSESESSIONREQUEST"]._serialized_end = 1540
+    _globals["_CLOSESESSIONRESPONSE"]._serialized_start = 1542
+    _globals["_CLOSESESSIONRESPONSE"]._serialized_end = 1581
+    _globals["_TOOLREQUEST"]._serialized_start = 1584
+    _globals["_TOOLREQUEST"]._serialized_end = 1791
+    _globals["_TOOLREQUEST_ARGUMENTSENTRY"]._serialized_start = 1743
+    _globals["_TOOLREQUEST_ARGUMENTSENTRY"]._serialized_end = 1791
+    _globals["_TOOLRESPONSE"]._serialized_start = 1793
+    _globals["_TOOLRESPONSE"]._serialized_end = 1873
+    _globals["_HEALTHCHECKREQUEST"]._serialized_start = 1875
+    _globals["_HEALTHCHECKREQUEST"]._serialized_end = 1895
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_start = 1897
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_end = 2003
+    _globals["_AUTHSERVICE"]._serialized_start = 2006
+    _globals["_AUTHSERVICE"]._serialized_end = 2238
+    _globals["_CHATSERVICE"]._serialized_start = 2241
+    _globals["_CHATSERVICE"]._serialized_end = 2569
+    _globals["_TOOLCALLBACKSERVICE"]._serialized_start = 2571
+    _globals["_TOOLCALLBACKSERVICE"]._serialized_end = 2665
+    _globals["_HEALTHSERVICE"]._serialized_start = 2667
+    _globals["_HEALTHSERVICE"]._serialized_end = 2758
 # @@protoc_insertion_point(module_scope)

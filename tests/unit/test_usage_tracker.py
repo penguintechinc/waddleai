@@ -1,15 +1,10 @@
 """Unit tests for UsageTracker (database interactions mocked)."""
 
+from unittest.mock import Mock
+
 import pytest
-from unittest.mock import AsyncMock, Mock
 
-from shared.agents.usage_tracker import (
-    UsageAck,
-    UsageReport,
-    UsageTracker,
-    _FREE_TIER_MAX_USERS,
-)
-
+from shared.agents.usage_tracker import _FREE_TIER_MAX_USERS, UsageAck, UsageReport, UsageTracker
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -139,9 +134,7 @@ def test_free_tier_db_error_fails_open(mock_db: Mock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_record_usage_success(
-    mock_db: Mock, sample_report: UsageReport
-) -> None:
+async def test_record_usage_success(mock_db: Mock, sample_report: UsageReport) -> None:
     """Successful insert should return accepted=True."""
     mock_db.executesql = Mock(return_value=[])
     tracker = UsageTracker(mock_db)
@@ -152,14 +145,10 @@ async def test_record_usage_success(
 
 
 @pytest.mark.asyncio
-async def test_record_usage_db_error(
-    mock_db: Mock, sample_report: UsageReport
-) -> None:
+async def test_record_usage_db_error(mock_db: Mock, sample_report: UsageReport) -> None:
     """Database insert failure should return accepted=False."""
     # First call (free tier check) succeeds; second call (insert) fails
-    mock_db.executesql = Mock(
-        side_effect=[[], RuntimeError("insert failed")]
-    )
+    mock_db.executesql = Mock(side_effect=[[], RuntimeError("insert failed")])
     tracker = UsageTracker(mock_db)
     ack = await tracker.record_usage(sample_report)
     assert ack.accepted is False
@@ -192,8 +181,11 @@ async def test_record_usage_free_tier_blocked(mock_db: Mock) -> None:
 def test_usage_report_is_frozen() -> None:
     """UsageReport should be immutable."""
     report = UsageReport(
-        user_id="u1", model="m1",
-        input_tokens=10, output_tokens=5, total_tokens=15,
+        user_id="u1",
+        model="m1",
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
     )
     with pytest.raises(AttributeError):
         report.user_id = "u2"  # type: ignore[misc]

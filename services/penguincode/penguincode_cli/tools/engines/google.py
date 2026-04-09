@@ -1,6 +1,5 @@
 """Google Custom Search engine implementation."""
 
-
 import httpx
 
 from .base import (
@@ -68,9 +67,7 @@ class GoogleEngine(BaseSearchEngine):
                 elif response.status_code == 429:
                     raise SearchEngineRateLimitError("Google API rate limit exceeded")
                 elif response.status_code != 200:
-                    raise SearchEngineError(
-                        f"Google API error: {response.status_code} - {response.text}"
-                    )
+                    raise SearchEngineError(f"Google API error: {response.status_code} - {response.text}")
 
                 data = response.json()
                 results = []

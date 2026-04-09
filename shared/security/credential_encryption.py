@@ -3,17 +3,19 @@ Application-level Fernet encryption for provider credentials.
 Encrypts API keys before DB storage, decrypts transparently at read time.
 """
 
-import os
 import base64
 import hashlib
-from typing import Optional
-from cryptography.fernet import Fernet, InvalidToken
+import os
 from dataclasses import dataclass
+from typing import Optional
+
+from cryptography.fernet import Fernet, InvalidToken
 
 
 @dataclass(slots=True)
 class EncryptionConfig:
     """Configuration for credential encryption."""
+
     key: bytes
     enabled: bool
 
@@ -24,7 +26,7 @@ def _derive_key(secret: str) -> bytes:
     Uses SHA-256 to produce a 32-byte key, then base64-encodes it
     for Fernet compatibility.
     """
-    digest = hashlib.sha256(secret.encode('utf-8')).digest()
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
 
 
@@ -34,9 +36,9 @@ def get_encryption_config() -> EncryptionConfig:
     Reads CREDENTIAL_ENCRYPTION_KEY env var. If not set, encryption
     is disabled (credentials stored as-is for backward compatibility).
     """
-    secret = os.environ.get('CREDENTIAL_ENCRYPTION_KEY', '')
+    secret = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
     if not secret:
-        return EncryptionConfig(key=b'', enabled=False)
+        return EncryptionConfig(key=b"", enabled=False)
     return EncryptionConfig(key=_derive_key(secret), enabled=True)
 
 
@@ -52,7 +54,7 @@ def encrypt_credential(plaintext: str, config: Optional[EncryptionConfig] = None
         return plaintext
 
     f = Fernet(config.key)
-    encrypted = f.encrypt(plaintext.encode('utf-8'))
+    encrypted = f.encrypt(plaintext.encode("utf-8"))
     return f"enc:{encrypted.decode('utf-8')}"
 
 
@@ -64,19 +66,19 @@ def decrypt_credential(stored: str, config: Optional[EncryptionConfig] = None) -
     """
     if config is None:
         config = get_encryption_config()
-    if not stored or not stored.startswith('enc:'):
+    if not stored or not stored.startswith("enc:"):
         return stored
     if not config.enabled:
         raise ValueError("Encrypted credential found but CREDENTIAL_ENCRYPTION_KEY not set")
 
-    encrypted_bytes = stored[4:].encode('utf-8')
+    encrypted_bytes = stored[4:].encode("utf-8")
     f = Fernet(config.key)
     try:
-        return f.decrypt(encrypted_bytes).decode('utf-8')
+        return f.decrypt(encrypted_bytes).decode("utf-8")
     except InvalidToken:
         raise ValueError("Failed to decrypt credential — wrong encryption key?")
 
 
 def is_encrypted(value: str) -> bool:
     """Check if a value is already encrypted."""
-    return bool(value) and value.startswith('enc:')
+    return bool(value) and value.startswith("enc:")

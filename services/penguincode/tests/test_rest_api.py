@@ -5,8 +5,6 @@ GPU-aware model filtering, and response structure validation.
 All tests use Quart's test_client — no running server required.
 """
 
-
-
 # ---------------------------------------------------------------------------
 # Health endpoint
 # ---------------------------------------------------------------------------
@@ -71,13 +69,9 @@ class TestProvisionBasic:
             "verification-before-completion",
             "code-review",
         }
-        assert core_skills.issubset(skill_names), (
-            f"Missing core skills: {core_skills - skill_names}"
-        )
+        assert core_skills.issubset(skill_names), f"Missing core skills: {core_skills - skill_names}"
         # All 47 default skills should be returned (see _default_skills in config_store)
-        assert len(skill_names) >= 47, (
-            f"Expected at least 47 skills, got {len(skill_names)}"
-        )
+        assert len(skill_names) >= 47, f"Expected at least 47 skills, got {len(skill_names)}"
 
     async def test_provision_includes_permissions(self, api_client):
         """Response includes default bash permissions."""
@@ -107,9 +101,12 @@ class TestProvisionBasic:
 class TestProvisionGPU:
     async def test_provision_gpu_filtering(self, api_client):
         """With vram_mb=3000, 13b models marked not-required."""
-        resp = await api_client.post("/api/v1/provision", json={
-            "gpu_info": {"vram_mb": 3000},
-        })
+        resp = await api_client.post(
+            "/api/v1/provision",
+            json={
+                "gpu_info": {"vram_mb": 3000},
+            },
+        )
         data = await resp.get_json()
         by_name = {m["name"]: m for m in data["ollama"]["models"]}
         assert by_name["codellama:7b"]["required"] is True
@@ -117,9 +114,12 @@ class TestProvisionGPU:
 
     async def test_provision_large_gpu(self, api_client):
         """With vram_mb=16384, all models stay at original required status."""
-        resp = await api_client.post("/api/v1/provision", json={
-            "gpu_info": {"vram_mb": 16384},
-        })
+        resp = await api_client.post(
+            "/api/v1/provision",
+            json={
+                "gpu_info": {"vram_mb": 16384},
+            },
+        )
         data = await resp.get_json()
         by_name = {m["name"]: m for m in data["ollama"]["models"]}
         # 7b should stay required; 13b was originally not-required (escalation)
@@ -137,8 +137,15 @@ class TestProvisionStructure:
         resp = await api_client.post("/api/v1/provision", json={})
         data = await resp.get_json()
         expected_keys = {
-            "license", "ollama", "agents", "mcp_servers", "plugins",
-            "skills", "custom_tools", "github_orgs", "permissions",
+            "license",
+            "ollama",
+            "agents",
+            "mcp_servers",
+            "plugins",
+            "skills",
+            "custom_tools",
+            "github_orgs",
+            "permissions",
             "instructions",
         }
         assert expected_keys.issubset(set(data.keys()))

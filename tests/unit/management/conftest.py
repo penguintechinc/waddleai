@@ -5,110 +5,145 @@ Route-test fixtures (flask_app, client, auth_headers, etc.) are defined inline
 here because pytest_plugins is not allowed in non-top-level conftest files.
 """
 
-import sys
 import os
+import sys
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Dict, Generator
 from unittest.mock import MagicMock, patch
 
 import jwt as _jwt
 import pytest
-from functools import lru_cache
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
-from shared.auth.rbac import Role, ROLE_PERMISSIONS, UserContext
+from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
 
 # Ensure management service is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../services/management'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../services/management"))
 
 
 # ---------------------------------------------------------------------------
 # Flask route-test infrastructure
 # ---------------------------------------------------------------------------
 
+
 class _DBField:
     """Represents a DB field that supports comparison operators."""
+
     def __gt__(self, other):
         return _DBQuery()
+
     def __lt__(self, other):
         return _DBQuery()
+
     def __ge__(self, other):
         return _DBQuery()
+
     def __le__(self, other):
         return _DBQuery()
+
     def __eq__(self, other):
         return _DBQuery()
+
     def __ne__(self, other):
         return _DBQuery()
+
     def __and__(self, other):
         return _DBQuery()
+
     def __or__(self, other):
         return _DBQuery()
+
     def __add__(self, other):
         return _DBQuery()
+
     def __sub__(self, other):
         return _DBQuery()
+
     def __radd__(self, other):
         return _DBQuery()
+
     def __rsub__(self, other):
         return _DBQuery()
+
     def like(self, pattern):
         return _DBQuery()
+
     def isin(self, values):
         return _DBQuery()
+
     def contains(self, value):
         return _DBQuery()
+
     def startswith(self, prefix):
         return _DBQuery()
+
     def endswith(self, suffix):
         return _DBQuery()
+
     def belongs(self, *args):
         return _DBQuery()
 
 
 class _DBQuery:
     """Represents a query object."""
+
     def __gt__(self, other):
         return _DBQuery()
+
     def __lt__(self, other):
         return _DBQuery()
+
     def __ge__(self, other):
         return _DBQuery()
+
     def __le__(self, other):
         return _DBQuery()
+
     def __eq__(self, other):
         return _DBQuery()
+
     def __ne__(self, other):
         return _DBQuery()
+
     def __and__(self, other):
         return _DBQuery()
+
     def __or__(self, other):
         return _DBQuery()
+
     def __rand__(self, other):
         return _DBQuery()
+
     def __ror__(self, other):
         return _DBQuery()
+
     def __iand__(self, other):
         return _DBQuery()
+
     def __ior__(self, other):
         return _DBQuery()
+
     def update(self, **kwargs):
         return MagicMock(return_value=0)
+
     def delete(self):
         return MagicMock(return_value=0)
+
     def select(self):
         return MagicMock(first=MagicMock(return_value=None))
 
 
 class _DBTable:
     """Represents a DB table that returns fields."""
+
     def __init__(self):
         self.insert = MagicMock(return_value=1)
         self.update = MagicMock(return_value=0)
         self.delete = MagicMock(return_value=0)
 
     def __getattr__(self, name):
-        if name in ['insert', 'update', 'delete']:
+        if name in ["insert", "update", "delete"]:
             return object.__getattribute__(self, name)
         return _DBField()
 
@@ -123,8 +158,9 @@ class _DBTable:
 
 class _ComparisonAwareMock(MagicMock):
     """A MagicMock that handles DB-like field access."""
+
     def __getattr__(self, name):
-        if name in ['commit', 'return_value', 'side_effect', '_spec_signature']:
+        if name in ["commit", "return_value", "side_effect", "_spec_signature"]:
             return super().__getattr__(name)
         return _DBTable()
 
@@ -155,10 +191,21 @@ def _make_mock_db() -> MagicMock:
 
     def _getattr(self, name):
         # Use original for internal attributes and special methods, return DBTable for db.table access
-        internal_attrs = ['side_effect', 'return_value', 'commit', 'reset_mock', 'assert_called',
-                          'assert_called_once', 'assert_called_with', '_mock_name', '_spec_signature',
-                          '_mock_parent', '_mock_called', '_table_cache']
-        if name.startswith('_') or name in internal_attrs:
+        internal_attrs = [
+            "side_effect",
+            "return_value",
+            "commit",
+            "reset_mock",
+            "assert_called",
+            "assert_called_once",
+            "assert_called_with",
+            "_mock_name",
+            "_spec_signature",
+            "_mock_parent",
+            "_mock_called",
+            "_table_cache",
+        ]
+        if name.startswith("_") or name in internal_attrs:
             try:
                 return original_getattr(self, name)
             except AttributeError:
@@ -197,17 +244,17 @@ def make_select_result(rows: list) -> MagicMock:
 
 
 ROUTE_MODULES = [
-    'services.management.app.api.v1.auth',
-    'services.management.app.api.v1.users',
-    'services.management.app.api.v1.organizations',
-    'services.management.app.api.v1.providers',
-    'services.management.app.api.v1.ollama',
-    'services.management.app.api.v1.ollama_models',
-    'services.management.app.api.v1.ailb',
-    'services.management.app.api.v1.keys',
-    'services.management.app.api.v1.usage',
-    'services.management.app.api.v1.quotas',
-    'services.management.app.api.v1.webhooks',
+    "services.management.app.api.v1.auth",
+    "services.management.app.api.v1.users",
+    "services.management.app.api.v1.organizations",
+    "services.management.app.api.v1.providers",
+    "services.management.app.api.v1.ollama",
+    "services.management.app.api.v1.ollama_models",
+    "services.management.app.api.v1.ailb",
+    "services.management.app.api.v1.keys",
+    "services.management.app.api.v1.usage",
+    "services.management.app.api.v1.quotas",
+    "services.management.app.api.v1.webhooks",
 ]
 
 
@@ -219,26 +266,29 @@ def flask_app():
 
     def _noop_init_extensions(app):
         import services.management.app.extensions as ext_mod
+
         ext_mod.db = mock_db
         ext_mod.redis_client = mock_redis
         ext_mod.security = MagicMock()
 
-    with patch('services.management.app.init_extensions', side_effect=_noop_init_extensions):
+    with patch("services.management.app.init_extensions", side_effect=_noop_init_extensions):
         from services.management.app import create_app
         from services.management.app.config import TestingConfig
 
         app = create_app(TestingConfig)
-        app.config.update({
-            'TESTING': True,
-            'JWT_SECRET_KEY': 'test-secret-key-32chars-minimum!!',
-            'WTF_CSRF_ENABLED': False,
-            'ENABLE_USAGE_WEBHOOKS': True,
-            'ENABLE_OLLAMA_MANAGEMENT': True,
-            'OLLAMA_MANAGEMENT_MODE': 'both',
-            'WEBHOOK_SECRET': '',
-        })
+        app.config.update(
+            {
+                "TESTING": True,
+                "JWT_SECRET_KEY": "test-secret-key-32chars-minimum!!",
+                "WTF_CSRF_ENABLED": False,
+                "ENABLE_USAGE_WEBHOOKS": True,
+                "ENABLE_OLLAMA_MANAGEMENT": True,
+                "OLLAMA_MANAGEMENT_MODE": "both",
+                "WEBHOOK_SECRET": "",
+            }
+        )
 
-        patchers = [patch(f'{m}.db', mock_db) for m in ROUTE_MODULES]
+        patchers = [patch(f"{m}.db", mock_db) for m in ROUTE_MODULES]
         for p in patchers:
             p.start()
 
@@ -282,77 +332,89 @@ def _test_oidc_provider():
 
 
 def make_token(
-    role: str = 'admin',
+    role: str = "admin",
     user_id: int = 1,
     org_id: int = 1,
-    username: str = 'testuser',
-    secret: str = 'test-secret-key-32chars-minimum!!',  # unused, kept for call-site compat
+    username: str = "testuser",
+    secret: str = "test-secret-key-32chars-minimum!!",  # unused, kept for call-site compat
     expires_hours: int = 1,
 ) -> str:
     from datetime import UTC
+
     provider = _test_oidc_provider()
     if expires_hours <= 0:
         private_key, kid = provider._keystore.get_signing_key()
         now = datetime.now(UTC)
         payload = {
-            'sub': str(user_id), 'iss': 'https://waddleai.localhost.local',
-            'aud': ['waddleai-api'], 'iat': int(now.timestamp()),
-            'exp': int((now + timedelta(hours=expires_hours)).timestamp()),
-            'scope': [], 'roles': [role], 'tenant': str(org_id), 'teams': [], 'ext': {},
+            "sub": str(user_id),
+            "iss": "https://waddleai.localhost.local",
+            "aud": ["waddleai-api"],
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=expires_hours)).timestamp()),
+            "scope": [],
+            "roles": [role],
+            "tenant": str(org_id),
+            "teams": [],
+            "ext": {},
         }
-        return _jwt.encode(payload, private_key, algorithm='RS256', headers={'kid': kid})
+        return _jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": kid})
     try:
         role_enum = Role(role)
     except ValueError:
         role_enum = Role.USER
     permissions = {p.value for p in ROLE_PERMISSIONS.get(role_enum, set())}
     user_context = UserContext(
-        user_id=user_id, username=username, role=role_enum,
-        organization_id=org_id, managed_orgs=[], permissions=permissions,
+        user_id=user_id,
+        username=username,
+        role=role_enum,
+        organization_id=org_id,
+        managed_orgs=[],
+        permissions=permissions,
     )
     return issue_token(user_context, provider)
 
 
 @pytest.fixture
 def admin_token() -> str:
-    return make_token(role='admin')
+    return make_token(role="admin")
 
 
 @pytest.fixture
 def user_token() -> str:
-    return make_token(role='user', user_id=2)
+    return make_token(role="user", user_id=2)
 
 
 @pytest.fixture
 def resource_manager_token() -> str:
-    return make_token(role='resource_manager', user_id=3)
+    return make_token(role="resource_manager", user_id=3)
 
 
 @pytest.fixture
 def auth_headers(admin_token: str) -> Dict[str, str]:
-    return {'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'}
+    return {"Authorization": f"Bearer {admin_token}", "Content-Type": "application/json"}
 
 
 @pytest.fixture
 def user_auth_headers(user_token: str) -> Dict[str, str]:
-    return {'Authorization': f'Bearer {user_token}', 'Content-Type': 'application/json'}
+    return {"Authorization": f"Bearer {user_token}", "Content-Type": "application/json"}
 
 
 @pytest.fixture
 def rm_auth_headers(resource_manager_token: str) -> Dict[str, str]:
-    return {'Authorization': f'Bearer {resource_manager_token}', 'Content-Type': 'application/json'}
+    return {"Authorization": f"Bearer {resource_manager_token}", "Content-Type": "application/json"}
 
 
 def make_mock_user(
     user_id: int = 1,
-    username: str = 'admin',
-    email: str = 'admin@example.com',
-    role: str = 'admin',
+    username: str = "admin",
+    email: str = "admin@example.com",
+    role: str = "admin",
     org_id: int = 1,
     enabled: bool = True,
-    password: str = 'password123',
+    password: str = "password123",
 ) -> MagicMock:
     from passlib.hash import bcrypt as _bcrypt
+
     user = MagicMock()
     user.id = user_id
     user.username = username
@@ -373,11 +435,11 @@ def make_mock_user(
     return user
 
 
-def make_mock_org(org_id: int = 1, name: str = 'default', enabled: bool = True) -> MagicMock:
+def make_mock_org(org_id: int = 1, name: str = "default", enabled: bool = True) -> MagicMock:
     org = MagicMock()
     org.id = org_id
     org.name = name
-    org.description = 'Test org'
+    org.description = "Test org"
     org.token_quota_daily = 100000
     org.token_quota_monthly = 1000000
     org.default_model = None
@@ -390,13 +452,13 @@ def make_mock_key(
     key_id: int = 1,
     user_id: int = 1,
     org_id: int = 1,
-    name: str = 'Test Key',
+    name: str = "Test Key",
     enabled: bool = True,
 ) -> MagicMock:
     key = MagicMock()
     key.id = key_id
     key.name = name
-    key.key_prefix = 'wa-testke...'
+    key.key_prefix = "wa-testke..."
     key.user_id = user_id
     key.organization_id = org_id
     key.allowed_models = None
@@ -406,7 +468,7 @@ def make_mock_key(
     key.tpm_limit = 10000
     key.rpm_limit = 60
     key.enabled = enabled
-    key.ailb_sync_status = 'pending'
+    key.ailb_sync_status = "pending"
     key.ailb_key_id = None
     key.expires_at = None
     key.last_used = None
@@ -416,8 +478,8 @@ def make_mock_key(
 
 def make_mock_provider(
     provider_id: int = 1,
-    name: str = 'Test OpenAI',
-    provider_type: str = 'openai',
+    name: str = "Test OpenAI",
+    provider_type: str = "openai",
     enabled: bool = True,
     ailb_sync_enabled: bool = True,
 ) -> MagicMock:
@@ -425,9 +487,9 @@ def make_mock_provider(
     provider.id = provider_id
     provider.name = name
     provider.provider_type = provider_type
-    provider.endpoint_url = 'https://api.openai.com/v1'
-    provider.api_key = 'sk-test'
-    provider.model_list = ['gpt-4o', 'gpt-3.5-turbo']
+    provider.endpoint_url = "https://api.openai.com/v1"
+    provider.api_key = "sk-test"
+    provider.model_list = ["gpt-4o", "gpt-3.5-turbo"]
     provider.rate_limits = {}
     provider.enabled = enabled
     provider.priority = 100
@@ -442,6 +504,7 @@ def make_mock_provider(
 # ---------------------------------------------------------------------------
 # Legacy standalone fixtures (non-route tests)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def standalone_mock_db() -> MagicMock:
@@ -478,6 +541,7 @@ def mock_ailb_client() -> MagicMock:
 @pytest.fixture
 def sample_usage_event():
     from services.management.app.services.usage_tracker import UsageEvent
+
     return UsageEvent(
         event_id="evt_test_123",
         key_id="wa-test-key",
@@ -509,6 +573,7 @@ def sample_provider_config() -> dict:
 @pytest.fixture
 def sample_ollama_config():
     from services.management.app.services.ollama_manager import OllamaDeploymentConfig
+
     return OllamaDeploymentConfig(
         name="test-ollama",
         endpoint_url="http://localhost:11434",
@@ -520,7 +585,8 @@ def sample_ollama_config():
 
 @pytest.fixture
 def admin_user_context():
-    from shared.auth.rbac import UserContext, Role, ROLE_PERMISSIONS
+    from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
+
     return UserContext(
         user_id=1,
         username="admin",
@@ -533,7 +599,8 @@ def admin_user_context():
 
 @pytest.fixture
 def sample_user_context():
-    from shared.auth.rbac import UserContext, Role, ROLE_PERMISSIONS
+    from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
+
     return UserContext(
         user_id=2,
         username="testuser",
@@ -547,4 +614,5 @@ def sample_user_context():
 @pytest.fixture
 def rbac_manager(mock_db):
     from shared.auth.rbac import RBACManager
+
     return RBACManager(mock_db)

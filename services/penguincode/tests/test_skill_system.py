@@ -8,7 +8,6 @@ Validates:
 - ConfigStore: default skills list matches discovered skills
 """
 
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,16 +17,16 @@ import pytest
 # Safe imports — skip entire module if core API has changed
 # ---------------------------------------------------------------------------
 try:
-    from penguincode_cli.skills.loader import SKILL_NAMESPACE, SkillInfo, SkillLoader
-    from penguincode_cli.agents.intent import suggest_skill, detect_user_intent, estimate_complexity
+    from penguincode_cli.agents.intent import detect_user_intent, estimate_complexity, suggest_skill
     from penguincode_cli.config.settings import (
         Settings,
         get_config_value,
+        save_settings,
         set_config_value,
         settings_to_dict,
-        save_settings,
     )
     from penguincode_cli.server.models.config_store import _default_skills
+    from penguincode_cli.skills.loader import SKILL_NAMESPACE, SkillInfo, SkillLoader
 except ImportError as exc:
     pytest.skip(f"Skill system API changed: {exc}", allow_module_level=True)
 
@@ -35,6 +34,7 @@ except ImportError as exc:
 # ============================================================================
 # Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def loader():
@@ -64,6 +64,7 @@ def mock_ollama_client():
 # 1. SkillLoader — Discovery
 # ============================================================================
 
+
 class TestSkillLoaderDiscovery:
     """Verify skill discovery finds all expected skills."""
 
@@ -92,12 +93,19 @@ class TestSkillLoaderDiscovery:
     def test_original_13_skills_present(self, loader):
         """Verify all 13 original OpenCode skills survived the migration."""
         original = [
-            "brainstorming", "code-review", "dispatching-parallel-agents",
-            "executing-plans", "finishing-a-development-branch",
-            "receiving-code-review", "subagent-driven-development",
-            "systematic-debugging", "test-driven-development",
-            "using-git-worktrees", "verification-before-completion",
-            "writing-plans", "writing-skills",
+            "brainstorming",
+            "code-review",
+            "dispatching-parallel-agents",
+            "executing-plans",
+            "finishing-a-development-branch",
+            "receiving-code-review",
+            "subagent-driven-development",
+            "systematic-debugging",
+            "test-driven-development",
+            "using-git-worktrees",
+            "verification-before-completion",
+            "writing-plans",
+            "writing-skills",
         ]
         skills = loader.list_all()
         for name in original:
@@ -107,29 +115,51 @@ class TestSkillLoaderDiscovery:
         """Verify all 38 new PenguinCode skills are present."""
         new_skills = [
             # Git
-            "committing-changes", "pushing-to-github", "branching-strategy",
-            "resolving-merge-conflicts", "cherry-picking", "git-bisect-debugging",
+            "committing-changes",
+            "pushing-to-github",
+            "branching-strategy",
+            "resolving-merge-conflicts",
+            "cherry-picking",
+            "git-bisect-debugging",
             # Testing
-            "smoke-testing", "integration-testing", "performance-testing",
-            "security-scanning", "writing-unit-tests", "testing-api-endpoints",
+            "smoke-testing",
+            "integration-testing",
+            "performance-testing",
+            "security-scanning",
+            "writing-unit-tests",
+            "testing-api-endpoints",
             # Docker
-            "building-docker-images", "docker-compose-development",
-            "debugging-containers", "container-security",
+            "building-docker-images",
+            "docker-compose-development",
+            "debugging-containers",
+            "container-security",
             # Kubernetes
-            "deploying-to-kubernetes", "kubernetes-debugging",
-            "kubernetes-scaling", "helm-chart-management",
+            "deploying-to-kubernetes",
+            "kubernetes-debugging",
+            "kubernetes-scaling",
+            "helm-chart-management",
             # CI/CD
-            "github-actions-workflows", "release-management", "deployment-rollback",
+            "github-actions-workflows",
+            "release-management",
+            "deployment-rollback",
             # Code Quality
-            "linting-and-formatting", "dependency-management",
-            "documentation-generation", "refactoring-safely",
+            "linting-and-formatting",
+            "dependency-management",
+            "documentation-generation",
+            "refactoring-safely",
             # Infrastructure
-            "database-migrations", "environment-configuration",
-            "monitoring-and-logging", "ssl-certificate-management",
+            "database-migrations",
+            "environment-configuration",
+            "monitoring-and-logging",
+            "ssl-certificate-management",
             # Workflow
-            "onboarding-new-project", "troubleshooting-build-failures",
-            "api-design", "creating-microservices", "code-generation",
-            "pair-programming", "incident-response",
+            "onboarding-new-project",
+            "troubleshooting-build-failures",
+            "api-design",
+            "creating-microservices",
+            "code-generation",
+            "pair-programming",
+            "incident-response",
         ]
         skills = loader.list_all()
         for name in new_skills:
@@ -140,13 +170,10 @@ class TestSkillLoaderDiscovery:
         # Create a user skill dir with a skill that overrides brainstorming
         user_dir = tmp_path / "skills" / "brainstorming"
         user_dir.mkdir(parents=True)
-        (user_dir / "SKILL.md").write_text(
-            "---\nname: brainstorming\ndescription: Custom override\n---\n# Custom"
-        )
+        (user_dir / "SKILL.md").write_text("---\nname: brainstorming\ndescription: Custom override\n---\n# Custom")
 
         sl = SkillLoader()
         # Monkey-patch the user dir
-        original_discover = sl.discover
 
         def patched_discover():
             sl._skills.clear()
@@ -168,16 +195,12 @@ class TestSkillLoaderDiscovery:
         # Create a fake Claude Code skill
         claude_dir = tmp_path / ".claude" / "skills" / "my-claude-skill"
         claude_dir.mkdir(parents=True)
-        (claude_dir / "SKILL.md").write_text(
-            "---\nname: my-claude-skill\ndescription: From Claude Code\n---\n# Hello"
-        )
+        (claude_dir / "SKILL.md").write_text("---\nname: my-claude-skill\ndescription: From Claude Code\n---\n# Hello")
 
         # Create a fake OpenCode skill
         oc_dir = tmp_path / ".config" / "opencode" / "skills" / "my-oc-skill"
         oc_dir.mkdir(parents=True)
-        (oc_dir / "SKILL.md").write_text(
-            "---\nname: my-oc-skill\ndescription: From OpenCode\n---\n# World"
-        )
+        (oc_dir / "SKILL.md").write_text("---\nname: my-oc-skill\ndescription: From OpenCode\n---\n# World")
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -201,16 +224,12 @@ class TestSkillLoaderDiscovery:
         # External (Claude Code) skill
         claude_dir = tmp_path / ".claude" / "skills" / "shared-skill"
         claude_dir.mkdir(parents=True)
-        (claude_dir / "SKILL.md").write_text(
-            "---\nname: shared-skill\ndescription: Claude version\n---\n# V1"
-        )
+        (claude_dir / "SKILL.md").write_text("---\nname: shared-skill\ndescription: Claude version\n---\n# V1")
 
         # User custom skill with same name
         user_dir = tmp_path / ".config" / "penguincode" / "skills" / "shared-skill"
         user_dir.mkdir(parents=True)
-        (user_dir / "SKILL.md").write_text(
-            "---\nname: shared-skill\ndescription: User version\n---\n# V2"
-        )
+        (user_dir / "SKILL.md").write_text("---\nname: shared-skill\ndescription: User version\n---\n# V2")
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -235,6 +254,7 @@ class TestSkillLoaderDiscovery:
 # ============================================================================
 # 2. SkillLoader — Frontmatter Parsing
 # ============================================================================
+
 
 class TestSkillFrontmatter:
     """Verify frontmatter parsing including model field."""
@@ -275,48 +295,54 @@ class TestSkillFrontmatter:
 # 3. SkillLoader — Model Override
 # ============================================================================
 
+
 class TestSkillModelOverride:
     """Verify model override is correctly parsed from skills."""
 
     def test_code_skills_have_model(self, loader):
         """Skills that execute code should specify a model."""
         code_skills = [
-            "committing-changes", "pushing-to-github", "smoke-testing",
-            "building-docker-images", "deploying-to-kubernetes",
-            "linting-and-formatting", "incident-response",
+            "committing-changes",
+            "pushing-to-github",
+            "smoke-testing",
+            "building-docker-images",
+            "deploying-to-kubernetes",
+            "linting-and-formatting",
+            "incident-response",
         ]
         for name in code_skills:
             skill = loader.get(name)
             assert skill is not None, f"Skill '{name}' not found"
-            assert skill.model == "qwen2.5-coder:7b", (
-                f"Skill '{name}' should have model qwen2.5-coder:7b, got {skill.model}"
-            )
+            assert (
+                skill.model == "qwen2.5-coder:7b"
+            ), f"Skill '{name}' should have model qwen2.5-coder:7b, got {skill.model}"
 
     def test_advisory_skills_no_model(self, loader):
         """Advisory/planning skills should use default model."""
         advisory_skills = [
-            "brainstorming", "branching-strategy", "documentation-generation",
-            "api-design", "onboarding-new-project", "pair-programming",
+            "brainstorming",
+            "branching-strategy",
+            "documentation-generation",
+            "api-design",
+            "onboarding-new-project",
+            "pair-programming",
         ]
         for name in advisory_skills:
             skill = loader.get(name)
             assert skill is not None, f"Skill '{name}' not found"
-            assert skill.model is None, (
-                f"Advisory skill '{name}' should have no model override, got {skill.model}"
-            )
+            assert skill.model is None, f"Advisory skill '{name}' should have no model override, got {skill.model}"
 
     def test_model_override_count(self, loader):
         """Verify expected number of skills have model overrides."""
         skills_with_model = [s for s in loader.list_all().values() if s.model]
         # 33 code-execution skills have model override
-        assert len(skills_with_model) >= 30, (
-            f"Expected >= 30 skills with model override, got {len(skills_with_model)}"
-        )
+        assert len(skills_with_model) >= 30, f"Expected >= 30 skills with model override, got {len(skills_with_model)}"
 
 
 # ============================================================================
 # 4. SkillLoader — Cross-References & Chains
 # ============================================================================
+
 
 class TestSkillReferencesAndChains:
     """Verify waddlepowers: cross-references and chain resolution."""
@@ -388,12 +414,14 @@ class TestSkillReferencesAndChains:
 # 5. ChatAgent — Model Swap
 # ============================================================================
 
+
 class TestChatAgentModelSwap:
     """Verify ChatAgent model save/restore on skill activation."""
 
     def _make_chat_agent(self, mock_ollama_client):
         """Create a ChatAgent with minimal dependencies."""
         from penguincode_cli.agents.chat import ChatAgent
+
         settings = Settings()
         return ChatAgent(
             ollama_client=mock_ollama_client,
@@ -464,6 +492,7 @@ class TestChatAgentModelSwap:
 # ============================================================================
 # 6. Intent — suggest_skill() Keyword Matching
 # ============================================================================
+
 
 class TestSuggestSkill:
     """Verify suggest_skill returns correct skill for keyword patterns."""
@@ -545,6 +574,7 @@ class TestSuggestSkill:
 # 7. Intent — detect_user_intent()
 # ============================================================================
 
+
 class TestDetectUserIntent:
     """Verify intent detection routes to correct agent types."""
 
@@ -568,6 +598,7 @@ class TestDetectUserIntent:
 # 8. Intent — estimate_complexity()
 # ============================================================================
 
+
 class TestEstimateComplexity:
     """Verify complexity estimation for model tier selection."""
 
@@ -586,6 +617,7 @@ class TestEstimateComplexity:
 # ============================================================================
 # 9. Config — get/set/save utilities
 # ============================================================================
+
 
 class TestConfigUtilities:
     """Verify /config command utilities."""
@@ -643,6 +675,7 @@ class TestConfigUtilities:
         assert Path(path).exists()
         # Verify it's valid YAML
         import yaml
+
         with open(path) as f:
             data = yaml.safe_load(f)
         assert data["models"]["execution"] == "qwen2.5-coder:7b"
@@ -660,6 +693,7 @@ class TestConfigUtilities:
 # 10. ConfigStore — Default Skills Sync
 # ============================================================================
 
+
 class TestConfigStoreSkillsSync:
     """Verify config_store default skills match discovered skills."""
 
@@ -672,25 +706,21 @@ class TestConfigStoreSkillsSync:
         defaults = {s.name for s in _default_skills()}
         discovered = set(loader.list_all().keys())
         missing_from_defaults = discovered - defaults
-        assert missing_from_defaults == set(), (
-            f"Skills discovered but not in config_store defaults: {missing_from_defaults}"
-        )
+        assert (
+            missing_from_defaults == set()
+        ), f"Skills discovered but not in config_store defaults: {missing_from_defaults}"
 
     def test_default_skills_all_discoverable(self, loader):
         """Every config_store default should be discoverable."""
         defaults = {s.name for s in _default_skills()}
         discovered = set(loader.list_all().keys())
         missing_from_discovery = defaults - discovered
-        assert missing_from_discovery == set(), (
-            f"Skills in config_store but not discovered: {missing_from_discovery}"
-        )
+        assert missing_from_discovery == set(), f"Skills in config_store but not discovered: {missing_from_discovery}"
 
     def test_default_skills_have_permissions(self):
         """All default skills should have at least one permission."""
         for skill in _default_skills():
-            assert len(skill.permissions) > 0, (
-                f"Skill '{skill.name}' has no permissions"
-            )
+            assert len(skill.permissions) > 0, f"Skill '{skill.name}' has no permissions"
 
     def test_default_skills_names_unique(self):
         names = [s.name for s in _default_skills()]
@@ -700,6 +730,7 @@ class TestConfigStoreSkillsSync:
 # ============================================================================
 # 11. SkillInfo — Dataclass Behavior
 # ============================================================================
+
 
 class TestSkillInfoDataclass:
     """Verify SkillInfo dataclass fields and defaults."""
@@ -711,15 +742,21 @@ class TestSkillInfoDataclass:
 
     def test_with_model(self):
         info = SkillInfo(
-            name="test", description="desc", content="# content",
-            path=Path("/tmp/test"), model="custom:7b",
+            name="test",
+            description="desc",
+            content="# content",
+            path=Path("/tmp/test"),
+            model="custom:7b",
         )
         assert info.model == "custom:7b"
 
     def test_with_references(self):
         info = SkillInfo(
-            name="test", description="desc", content="# content",
-            path=Path("/tmp/test"), references=["dep1", "dep2"],
+            name="test",
+            description="desc",
+            content="# content",
+            path=Path("/tmp/test"),
+            references=["dep1", "dep2"],
         )
         assert info.references == ["dep1", "dep2"]
 
@@ -727,6 +764,7 @@ class TestSkillInfoDataclass:
 # ============================================================================
 # 12. Namespace Constant
 # ============================================================================
+
 
 class TestNamespace:
     """Verify the skill namespace constant."""
@@ -740,6 +778,5 @@ class TestNamespace:
             if skill.references:
                 for ref in skill.references:
                     assert f"waddlepowers:{ref}" in skill.content, (
-                        f"Skill '{name}' lists ref '{ref}' but "
-                        f"'waddlepowers:{ref}' not found in content"
+                        f"Skill '{name}' lists ref '{ref}' but " f"'waddlepowers:{ref}' not found in content"
                     )

@@ -30,12 +30,7 @@ from penguincode_cli.tools.mcp import MCPToolManager
 from penguincode_cli.ui import console
 
 from .intent import detect_user_intent, estimate_complexity, suggest_skill
-from .prompts import (
-    AGENT_TOOLS,
-    CHAT_SYSTEM_PROMPT,
-    ESCALATION_PROMPT,
-    REVIEW_PROMPT,
-)
+from .prompts import AGENT_TOOLS, CHAT_SYSTEM_PROMPT, ESCALATION_PROMPT, REVIEW_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +91,8 @@ class ChatAgent:
     # Context management constants
     # These are percentages of the model's context window
     CONTEXT_THRESHOLD_PERCENT = 70  # Compact when history exceeds this % of context
-    CONTEXT_RESERVE_PERCENT = 30    # Reserve this % for new messages + response
-    MAX_MEMORY_RESULTS = 5          # Max memories to inject
+    CONTEXT_RESERVE_PERCENT = 30  # Reserve this % for new messages + response
+    MAX_MEMORY_RESULTS = 5  # Max memories to inject
     # Approximate chars per token (for estimation)
     CHARS_PER_TOKEN = 4
 
@@ -159,7 +154,8 @@ class ChatAgent:
         # For lite mode, always create fresh with lite model
         if lite:
             from .explorer import ExplorerAgent
-            model = getattr(self.settings.models, 'exploration_lite', self.settings.models.orchestration)
+
+            model = getattr(self.settings.models, "exploration_lite", self.settings.models.orchestration)
             return ExplorerAgent(
                 ollama_client=self.client,
                 working_dir=self.project_dir,
@@ -170,7 +166,8 @@ class ChatAgent:
         # Standard explorer (cached)
         if self._explorer_agent is None:
             from .explorer import ExplorerAgent
-            model = getattr(self.settings.models, 'exploration', self.settings.models.orchestration)
+
+            model = getattr(self.settings.models, "exploration", self.settings.models.orchestration)
             self._explorer_agent = ExplorerAgent(
                 ollama_client=self.client,
                 working_dir=self.project_dir,
@@ -189,7 +186,8 @@ class ChatAgent:
         # For lite mode, always create fresh with lite model
         if lite:
             from .executor import ExecutorAgent
-            model = getattr(self.settings.models, 'execution_lite', self.settings.models.execution)
+
+            model = getattr(self.settings.models, "execution_lite", self.settings.models.execution)
             console.print(f"[dim](using lite model: {model})[/dim]")
             return ExecutorAgent(
                 ollama_client=self.client,
@@ -201,6 +199,7 @@ class ChatAgent:
         # Standard executor (cached)
         if self._executor_agent is None:
             from .executor import ExecutorAgent
+
             self._executor_agent = ExecutorAgent(
                 ollama_client=self.client,
                 working_dir=self.project_dir,
@@ -213,6 +212,7 @@ class ChatAgent:
         """Lazy-load planner agent."""
         if self._planner_agent is None:
             from .planner import PlannerAgent
+
             self._planner_agent = PlannerAgent(
                 ollama_client=self.client,
                 model=self.settings.models.planning,
@@ -223,8 +223,9 @@ class ChatAgent:
         """Lazy-load researcher agent."""
         if self._researcher_agent is None:
             from .researcher import ResearcherAgent
+
             # Get research model from settings, fallback to orchestration model
-            model = getattr(self.settings.models, 'research', self.settings.models.orchestration)
+            model = getattr(self.settings.models, "research", self.settings.models.orchestration)
             self._researcher_agent = ResearcherAgent(
                 ollama_client=self.client,
                 research_config=self.settings.research,
@@ -306,10 +307,7 @@ class ChatAgent:
             await self.agent_semaphore.acquire()
             try:
                 # Run with timeout
-                result = await asyncio.wait_for(
-                    agent.run(task),
-                    timeout=self.agent_timeout
-                )
+                result = await asyncio.wait_for(agent.run(task), timeout=self.agent_timeout)
 
                 # Check for escalation request
                 if result.needs_escalation:
@@ -338,8 +336,7 @@ class ChatAgent:
             return False, f"Agent failed: {str(e)}"
 
     async def _spawn_agents_parallel(
-        self,
-        tasks: list[tuple[str, str]]  # List of (agent_type, task)
+        self, tasks: list[tuple[str, str]]  # List of (agent_type, task)
     ) -> list[tuple[bool, str]]:
         """
         Spawn multiple agents in parallel, respecting max_concurrent_agents.
@@ -357,10 +354,7 @@ class ChatAgent:
             return index, success, output
 
         # Create tasks
-        coroutines = [
-            run_task(agent_type, task, i)
-            for i, (agent_type, task) in enumerate(tasks)
-        ]
+        coroutines = [run_task(agent_type, task, i) for i, (agent_type, task) in enumerate(tasks)]
 
         # Run with concurrency control (semaphore is checked in _spawn_agent)
         results_unordered = await asyncio.gather(*coroutines, return_exceptions=True)
@@ -420,7 +414,7 @@ class ChatAgent:
                 all_outputs.append(f"### Step {step.step_num}: {step.description}\n{output}")
 
                 # Persist step status to disk
-                if hasattr(plan, 'plan_file') and plan.plan_file:
+                if hasattr(plan, "plan_file") and plan.plan_file:
                     planner = self._get_planner_agent()
                     step_status = "completed" if success else "failed"
                     planner.update_plan_step(plan, step.step_num, step_status)
@@ -432,11 +426,7 @@ class ChatAgent:
         return await self._review_plan_execution(user_request, plan, combined, step_results)
 
     async def _review_plan_execution(
-        self,
-        user_request: str,
-        plan,
-        combined_output: str,
-        step_results: dict[int, tuple[bool, str]]
+        self, user_request: str, plan, combined_output: str, step_results: dict[int, tuple[bool, str]]
     ) -> str:
         """Review the results of plan execution."""
         failed_steps = [num for num, (success, _) in step_results.items() if not success]
@@ -446,11 +436,7 @@ class ChatAgent:
 
         # Use foreman to review and potentially fix
         return await self._review_and_supervise(
-            user_request,
-            "plan_execution",
-            combined_output,
-            len(failed_steps) == 0,
-            round_num=1
+            user_request, "plan_execution", combined_output, len(failed_steps) == 0, round_num=1
         )
 
     def _parse_tool_calls(self, response_text: str) -> list[dict]:
@@ -491,7 +477,9 @@ class ChatAgent:
 
         return tool_calls
 
-    async def _call_llm(self, messages: list[Message], use_tools: bool = True, timeout: float = 60.0) -> tuple[str, list[dict]]:
+    async def _call_llm(
+        self, messages: list[Message], use_tools: bool = True, timeout: float = 60.0
+    ) -> tuple[str, list[dict]]:
         """Call the LLM and return response text and tool calls.
 
         Note: Most local models don't support Ollama's native tool calling API.
@@ -510,15 +498,27 @@ class ChatAgent:
         # See: https://ollama.com/blog/tool-support for implementation details
         native_tool_models = {
             # Llama family
-            "llama3.1", "llama3.2", "llama3.3", "llama4",
+            "llama3.1",
+            "llama3.2",
+            "llama3.3",
+            "llama4",
             # Mistral family
-            "mistral", "mistral-nemo", "mistral-small", "mistral-large", "mixtral",
+            "mistral",
+            "mistral-nemo",
+            "mistral-small",
+            "mistral-large",
+            "mixtral",
             # Cohere Command-R family
-            "command-r", "command-r-plus", "command-r7b",
+            "command-r",
+            "command-r-plus",
+            "command-r7b",
             # Qwen family
-            "qwen2.5", "qwen2.5-coder", "qwen3",
+            "qwen2.5",
+            "qwen2.5-coder",
+            "qwen3",
             # Others
-            "firefunction-v2", "hermes3",
+            "firefunction-v2",
+            "hermes3",
         }
         model_base = self.model.split(":")[0].lower()
         supports_native_tools = any(m in model_base for m in native_tool_models)
@@ -547,11 +547,21 @@ class ChatAgent:
                         if hasattr(msg, "tool_calls") and msg.tool_calls:
                             # Convert ToolCall objects to dict format
                             for tc in msg.tool_calls:
-                                func = tc.function if hasattr(tc, 'function') else tc
-                                tool_calls.append({
-                                    "name": func.get("name", "") if isinstance(func, dict) else getattr(func, "name", ""),
-                                    "arguments": func.get("arguments", {}) if isinstance(func, dict) else getattr(func, "arguments", {}),
-                                })
+                                func = tc.function if hasattr(tc, "function") else tc
+                                tool_calls.append(
+                                    {
+                                        "name": (
+                                            func.get("name", "")
+                                            if isinstance(func, dict)
+                                            else getattr(func, "name", "")
+                                        ),
+                                        "arguments": (
+                                            func.get("arguments", {})
+                                            if isinstance(func, dict)
+                                            else getattr(func, "arguments", {})
+                                        ),
+                                    }
+                                )
         except TimeoutError:
             warning("LLM response timed out after %s seconds", timeout)
             console.print("[yellow]LLM response timed out[/yellow]")
@@ -579,28 +589,64 @@ class ChatAgent:
                 tool_calls = [{"name": "spawn_researcher", "arguments": {"task": ""}}]
             elif "spawn_explorer" in response_lower or "explorer agent" in response_lower:
                 tool_calls = [{"name": "spawn_explorer", "arguments": {"task": ""}}]
-            elif "spawn_executor" in response_lower or "executor agent" in response_lower or any(kw in response_lower for kw in [
-                "create the file", "write the file", "create a file",
-                "write to file", "creating file", "writing file",
-                "let me create", "i'll create", "i will create",
-                "let me write", "i'll write", "i will write",
-                "execute", "run the command", "run command",
-                "add the file", "make the file",
-            ]):
+            elif (
+                "spawn_executor" in response_lower
+                or "executor agent" in response_lower
+                or any(
+                    kw in response_lower
+                    for kw in [
+                        "create the file",
+                        "write the file",
+                        "create a file",
+                        "write to file",
+                        "creating file",
+                        "writing file",
+                        "let me create",
+                        "i'll create",
+                        "i will create",
+                        "let me write",
+                        "i'll write",
+                        "i will write",
+                        "execute",
+                        "run the command",
+                        "run command",
+                        "add the file",
+                        "make the file",
+                    ]
+                )
+            ):
                 tool_calls = [{"name": "spawn_executor", "arguments": {"task": ""}}]
             # Detect read/search oriented language that needs explorer
-            elif any(kw in response_lower for kw in [
-                "let me search", "let me look", "let me find",
-                "searching for", "looking for", "i'll search",
-                "read the file", "check the file", "examine",
-            ]):
+            elif any(
+                kw in response_lower
+                for kw in [
+                    "let me search",
+                    "let me look",
+                    "let me find",
+                    "searching for",
+                    "looking for",
+                    "i'll search",
+                    "read the file",
+                    "check the file",
+                    "examine",
+                ]
+            ):
                 tool_calls = [{"name": "spawn_explorer", "arguments": {"task": ""}}]
             # Detect research/documentation lookup language
-            elif any(kw in response_lower for kw in [
-                "search the web", "web search", "look up documentation",
-                "find documentation", "research this", "let me research",
-                "i'll look up", "search online", "check the docs",
-            ]):
+            elif any(
+                kw in response_lower
+                for kw in [
+                    "search the web",
+                    "web search",
+                    "look up documentation",
+                    "find documentation",
+                    "research this",
+                    "let me research",
+                    "i'll look up",
+                    "search online",
+                    "check the docs",
+                ]
+            ):
                 tool_calls = [{"name": "spawn_researcher", "arguments": {"task": ""}}]
 
         return response_text, tool_calls
@@ -624,7 +670,7 @@ class ChatAgent:
 
         # Check if this is an escalation request from the agent
         if agent_output.startswith("ESCALATION_NEEDED:"):
-            escalation_context = agent_output[len("ESCALATION_NEEDED:"):]
+            escalation_context = agent_output[len("ESCALATION_NEEDED:") :]
             return await self._handle_escalation(user_request, escalation_context, round_num)
 
         # Build review prompt
@@ -664,15 +710,11 @@ class ChatAgent:
                 if name == "spawn_explorer":
                     console.print("[yellow]> Foreman requesting explorer follow-up[/yellow]")
                     success, output = await self._spawn_agent("explorer", task)
-                    return await self._review_and_supervise(
-                        user_request, "explorer", output, success, round_num + 1
-                    )
+                    return await self._review_and_supervise(user_request, "explorer", output, success, round_num + 1)
                 elif name == "spawn_executor":
                     console.print("[yellow]> Foreman requesting executor follow-up[/yellow]")
                     success, output = await self._spawn_agent("executor", task)
-                    return await self._review_and_supervise(
-                        user_request, "executor", output, success, round_num + 1
-                    )
+                    return await self._review_and_supervise(user_request, "executor", output, success, round_num + 1)
 
             # No follow-up needed - return the review summary or original output
             return response_text if response_text else agent_output
@@ -741,17 +783,13 @@ class ChatAgent:
                 elif name == "spawn_explorer":
                     console.print("[cyan]> Orchestrator gathering more info first[/cyan]")
                     success, output = await self._spawn_agent("explorer", task)
-                    return await self._review_and_supervise(
-                        user_request, "explorer", output, success, round_num + 1
-                    )
+                    return await self._review_and_supervise(user_request, "explorer", output, success, round_num + 1)
 
                 elif name == "spawn_executor":
                     console.print("[cyan]> Orchestrator retrying with reformulated task[/cyan]")
                     # Force full model for retry after escalation
                     success, output = await self._spawn_agent("executor", task, force_full=True)
-                    return await self._review_and_supervise(
-                        user_request, "executor", output, success, round_num + 1
-                    )
+                    return await self._review_and_supervise(user_request, "executor", output, success, round_num + 1)
 
             # If orchestrator just responds with text, return it
             if response_text:
@@ -792,8 +830,7 @@ class ChatAgent:
         system_content = self.system_prompt
         if self.skill_content:
             system_content = (
-                f"# Active Skill: {self.active_skill}\n\n"
-                f"{self.skill_content}\n\n---\n\n{system_content}"
+                f"# Active Skill: {self.active_skill}\n\n" f"{self.skill_content}\n\n---\n\n{system_content}"
             )
         if context:
             system_content = f"{context}---\n\n{system_content}"
@@ -817,7 +854,9 @@ class ChatAgent:
 
             # Debug: show what we got back
             if response_text:
-                console.print(f"[dim]LLM response: {response_text[:100]}{'...' if len(response_text) > 100 else ''}[/dim]")
+                console.print(
+                    f"[dim]LLM response: {response_text[:100]}{'...' if len(response_text) > 100 else ''}[/dim]"
+                )
 
             # If no tool calls from LLM, try to detect intent from user message
             if not tool_calls:
@@ -863,7 +902,9 @@ class ChatAgent:
                             plan.user_request = user_message
                             planner.save_plan(plan, self.project_dir)
 
-                            console.print(f"\n[bold]Plan created ({plan.complexity} complexity, {len(plan.steps)} steps)[/bold]")
+                            console.print(
+                                f"\n[bold]Plan created ({plan.complexity} complexity, {len(plan.steps)} steps)[/bold]"
+                            )
                             console.print(f"[dim]{plan.analysis}[/dim]\n")
 
                             final_response = await self._execute_plan(plan, user_message)
@@ -1000,11 +1041,12 @@ class ChatAgent:
         to_keep = self.conversation_history[-keep_count:]
 
         # Build summary prompt
-        history_text = "\n".join([
-            f"{msg.role}: {msg.content[:500]}..."
-            if len(msg.content) > 500 else f"{msg.role}: {msg.content}"
-            for msg in to_summarize
-        ])
+        history_text = "\n".join(
+            [
+                f"{msg.role}: {msg.content[:500]}..." if len(msg.content) > 500 else f"{msg.role}: {msg.content}"
+                for msg in to_summarize
+            ]
+        )
 
         summary_prompt = f"""Summarize this conversation history concisely, preserving key facts, decisions, and context:
 
@@ -1108,9 +1150,7 @@ If there are important facts (e.g., user preferences, project decisions, file lo
         except Exception:
             pass  # Memory extraction is best-effort
 
-    def _build_context_with_memories(
-        self, memories: list[str], summary: str = ""
-    ) -> str:
+    def _build_context_with_memories(self, memories: list[str], summary: str = "") -> str:
         """Build context string from memories and summary.
 
         Args:

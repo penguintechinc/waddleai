@@ -3,23 +3,21 @@ Unit tests for provider abstraction layer
 """
 
 import pytest
+
 from services.management.app.services.providers import (
-    ProviderType,
-    ProviderConfig,
-    OpenAIConfig,
-    AnthropicConfig,
-    OllamaConfig,
-    GeminiConfig,
-    BedrockConfig,
-    AzureOpenAIConfig,
-    CohereConfig,
-    RateLimits,
-    MODEL_ALIASES,
     DEFAULT_MODELS,
-    DEFAULT_ENDPOINTS,
+    AnthropicConfig,
+    AzureOpenAIConfig,
+    BedrockConfig,
+    CohereConfig,
+    GeminiConfig,
+    OllamaConfig,
+    OpenAIConfig,
+    ProviderType,
+    RateLimits,
     create_provider_config,
-    resolve_model_alias,
     get_provider_for_model,
+    resolve_model_alias,
 )
 
 
@@ -164,9 +162,7 @@ class TestProviderConfigs:
 
     def test_bedrock_config(self):
         """Test Bedrock config"""
-        config = BedrockConfig(
-            name="test-bedrock", provider_type=ProviderType.BEDROCK, aws_region="us-west-2"
-        )
+        config = BedrockConfig(name="test-bedrock", provider_type=ProviderType.BEDROCK, aws_region="us-west-2")
         assert config.provider_type == ProviderType.BEDROCK
         assert "us-west-2" in config.endpoint_url
 
@@ -192,21 +188,14 @@ class TestCreateProviderConfig:
 
     def test_create_openai_config(self):
         """Test creating OpenAI config via factory"""
-        config = create_provider_config(
-            "openai",
-            "my-openai",
-            api_key="sk-test"
-        )
+        config = create_provider_config("openai", "my-openai", api_key="sk-test")
         assert isinstance(config, OpenAIConfig)
         assert config.name == "my-openai"
         assert config.api_key == "sk-test"
 
     def test_create_anthropic_config(self):
         """Test creating Anthropic config via factory"""
-        config = create_provider_config(
-            "anthropic",
-            "my-anthropic"
-        )
+        config = create_provider_config("anthropic", "my-anthropic")
         assert isinstance(config, AnthropicConfig)
 
     def test_invalid_provider_type(self):
@@ -228,11 +217,6 @@ class TestRateLimits:
 
     def test_custom_rate_limits(self):
         """Test custom rate limit values"""
-        limits = RateLimits(
-            tpm_limit=50000,
-            rpm_limit=100,
-            daily_limit=1000000,
-            monthly_limit=10000000
-        )
+        limits = RateLimits(tpm_limit=50000, rpm_limit=100, daily_limit=1000000, monthly_limit=10000000)
         assert limits.tpm_limit == 50000
         assert limits.rpm_limit == 100

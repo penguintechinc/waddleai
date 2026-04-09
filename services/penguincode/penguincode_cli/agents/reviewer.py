@@ -9,7 +9,6 @@ The reviewer agent specializes in:
 It is read-only and cannot execute commands or write files.
 """
 
-
 from penguincode_cli.ollama import OllamaClient
 
 from .base import AgentConfig, AgentResult, BaseAgent, Permission

@@ -76,8 +76,10 @@ class TestAgentToolDefinitions:
         assert tool["type"] == "function"
         assert "task" in tool["function"]["parameters"]["properties"]
         assert "task" in tool["function"]["parameters"]["required"]
-        assert "creating files" in tool["function"]["description"].lower() or \
-               "editing code" in tool["function"]["description"].lower()
+        assert (
+            "creating files" in tool["function"]["description"].lower()
+            or "editing code" in tool["function"]["description"].lower()
+        )
 
     def test_spawn_explorer_definition(self):
         """Test spawn_explorer tool definition."""
@@ -85,8 +87,10 @@ class TestAgentToolDefinitions:
 
         assert tool["type"] == "function"
         assert "task" in tool["function"]["parameters"]["properties"]
-        assert "reading files" in tool["function"]["description"].lower() or \
-               "searching" in tool["function"]["description"].lower()
+        assert (
+            "reading files" in tool["function"]["description"].lower()
+            or "searching" in tool["function"]["description"].lower()
+        )
 
     def test_spawn_researcher_definition(self):
         """Test spawn_researcher tool definition."""
@@ -94,8 +98,7 @@ class TestAgentToolDefinitions:
 
         assert tool["type"] == "function"
         assert "task" in tool["function"]["parameters"]["properties"]
-        assert "web" in tool["function"]["description"].lower() or \
-               "research" in tool["function"]["description"].lower()
+        assert "web" in tool["function"]["description"].lower() or "research" in tool["function"]["description"].lower()
 
     def test_spawn_planner_definition(self):
         """Test spawn_planner tool definition."""
@@ -103,8 +106,7 @@ class TestAgentToolDefinitions:
 
         assert tool["type"] == "function"
         assert "task" in tool["function"]["parameters"]["properties"]
-        assert "complex" in tool["function"]["description"].lower() or \
-               "plan" in tool["function"]["description"].lower()
+        assert "complex" in tool["function"]["description"].lower() or "plan" in tool["function"]["description"].lower()
 
 
 class TestToolCallParsing:
@@ -115,11 +117,7 @@ class TestToolCallParsing:
         """Create a ChatAgent with mocked dependencies."""
         mock_client = MagicMock()
         settings = MockSettings()
-        return ChatAgent(
-            ollama_client=mock_client,
-            settings=settings,
-            project_dir="/test/project"
-        )
+        return ChatAgent(ollama_client=mock_client, settings=settings, project_dir="/test/project")
 
     def test_parse_json_tool_call_executor(self, chat_agent):
         """Test parsing JSON tool call for executor."""
@@ -177,15 +175,12 @@ class TestIntentDetection:
         """Create a ChatAgent with mocked dependencies."""
         mock_client = MagicMock()
         settings = MockSettings()
-        return ChatAgent(
-            ollama_client=mock_client,
-            settings=settings,
-            project_dir="/test/project"
-        )
+        return ChatAgent(ollama_client=mock_client, settings=settings, project_dir="/test/project")
 
     @pytest.mark.asyncio
     async def test_detect_executor_intent_create_file(self, chat_agent):
         """Test detecting executor intent from 'create file' language."""
+
         # Mock the LLM to return natural language without tool calls
         async def mock_chat(*args, **kwargs):
             @dataclass
@@ -211,6 +206,7 @@ class TestIntentDetection:
     @pytest.mark.asyncio
     async def test_detect_explorer_intent_read_file(self, chat_agent):
         """Test detecting explorer intent from 'read file' language."""
+
         async def mock_chat(*args, **kwargs):
             @dataclass
             class MockMessage:
@@ -235,6 +231,7 @@ class TestIntentDetection:
     @pytest.mark.asyncio
     async def test_detect_researcher_intent_web_search(self, chat_agent):
         """Test detecting researcher intent from 'web search' language."""
+
         async def mock_chat(*args, **kwargs):
             @dataclass
             class MockMessage:
@@ -259,6 +256,7 @@ class TestIntentDetection:
     @pytest.mark.asyncio
     async def test_detect_planner_intent(self, chat_agent):
         """Test detecting planner intent from explicit mention."""
+
         async def mock_chat(*args, **kwargs):
             @dataclass
             class MockMessage:
@@ -289,11 +287,7 @@ class TestAgentSpawning:
         """Create a ChatAgent with mocked dependencies."""
         mock_client = MagicMock()
         settings = MockSettings()
-        agent = ChatAgent(
-            ollama_client=mock_client,
-            settings=settings,
-            project_dir="/test/project"
-        )
+        agent = ChatAgent(ollama_client=mock_client, settings=settings, project_dir="/test/project")
         return agent
 
     @pytest.mark.asyncio
@@ -301,12 +295,9 @@ class TestAgentSpawning:
         """Test spawning executor agent."""
         # Mock the executor agent
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=MagicMock(
-            success=True,
-            output="File created successfully"
-        ))
+        mock_executor.run = AsyncMock(return_value=MagicMock(success=True, output="File created successfully"))
 
-        with patch.object(chat_agent, '_get_executor_agent', return_value=mock_executor):
+        with patch.object(chat_agent, "_get_executor_agent", return_value=mock_executor):
             success, output = await chat_agent._spawn_agent("executor", "create test.txt")
 
         assert success is True
@@ -317,12 +308,9 @@ class TestAgentSpawning:
     async def test_spawn_explorer_agent(self, chat_agent):
         """Test spawning explorer agent."""
         mock_explorer = AsyncMock()
-        mock_explorer.run = AsyncMock(return_value=MagicMock(
-            success=True,
-            output="Found 5 Python files"
-        ))
+        mock_explorer.run = AsyncMock(return_value=MagicMock(success=True, output="Found 5 Python files"))
 
-        with patch.object(chat_agent, '_get_explorer_agent', return_value=mock_explorer):
+        with patch.object(chat_agent, "_get_explorer_agent", return_value=mock_explorer):
             success, output = await chat_agent._spawn_agent("explorer", "find Python files")
 
         assert success is True
@@ -332,12 +320,9 @@ class TestAgentSpawning:
     async def test_spawn_researcher_agent(self, chat_agent):
         """Test spawning researcher agent."""
         mock_researcher = AsyncMock()
-        mock_researcher.run = AsyncMock(return_value=MagicMock(
-            success=True,
-            output="Found documentation for FastAPI"
-        ))
+        mock_researcher.run = AsyncMock(return_value=MagicMock(success=True, output="Found documentation for FastAPI"))
 
-        with patch.object(chat_agent, '_get_researcher_agent', return_value=mock_researcher):
+        with patch.object(chat_agent, "_get_researcher_agent", return_value=mock_researcher):
             success, output = await chat_agent._spawn_agent("researcher", "search FastAPI docs")
 
         assert success is True
@@ -347,12 +332,11 @@ class TestAgentSpawning:
     async def test_spawn_planner_agent(self, chat_agent):
         """Test spawning planner agent."""
         mock_planner = AsyncMock()
-        mock_planner.run = AsyncMock(return_value=MagicMock(
-            success=True,
-            output="Plan: 1. Design API 2. Implement 3. Test"
-        ))
+        mock_planner.run = AsyncMock(
+            return_value=MagicMock(success=True, output="Plan: 1. Design API 2. Implement 3. Test")
+        )
 
-        with patch.object(chat_agent, '_get_planner_agent', return_value=mock_planner):
+        with patch.object(chat_agent, "_get_planner_agent", return_value=mock_planner):
             success, output = await chat_agent._spawn_agent("planner", "plan authentication feature")
 
         assert success is True
@@ -375,11 +359,7 @@ class TestAgentLazyLoading:
         """Create a ChatAgent with mocked dependencies."""
         mock_client = MagicMock()
         settings = MockSettings()
-        return ChatAgent(
-            ollama_client=mock_client,
-            settings=settings,
-            project_dir="/test/project"
-        )
+        return ChatAgent(ollama_client=mock_client, settings=settings, project_dir="/test/project")
 
     def test_agents_not_loaded_initially(self, chat_agent):
         """Test that agents are None before first use."""
@@ -390,7 +370,7 @@ class TestAgentLazyLoading:
 
     def test_get_explorer_agent_creates_instance(self, chat_agent):
         """Test that _get_explorer_agent creates an ExplorerAgent."""
-        with patch('penguincode_cli.agents.explorer.ExplorerAgent') as MockExplorer:
+        with patch("penguincode_cli.agents.explorer.ExplorerAgent") as MockExplorer:
             MockExplorer.return_value = MagicMock()
             agent = chat_agent._get_explorer_agent()
 
@@ -399,7 +379,7 @@ class TestAgentLazyLoading:
 
     def test_get_executor_agent_creates_instance(self, chat_agent):
         """Test that _get_executor_agent creates an ExecutorAgent."""
-        with patch('penguincode_cli.agents.executor.ExecutorAgent') as MockExecutor:
+        with patch("penguincode_cli.agents.executor.ExecutorAgent") as MockExecutor:
             MockExecutor.return_value = MagicMock()
             agent = chat_agent._get_executor_agent()
 
@@ -408,7 +388,7 @@ class TestAgentLazyLoading:
 
     def test_get_planner_agent_creates_instance(self, chat_agent):
         """Test that _get_planner_agent creates a PlannerAgent."""
-        with patch('penguincode_cli.agents.planner.PlannerAgent') as MockPlanner:
+        with patch("penguincode_cli.agents.planner.PlannerAgent") as MockPlanner:
             MockPlanner.return_value = MagicMock()
             agent = chat_agent._get_planner_agent()
 
@@ -417,7 +397,7 @@ class TestAgentLazyLoading:
 
     def test_get_researcher_agent_creates_instance(self, chat_agent):
         """Test that _get_researcher_agent creates a ResearcherAgent."""
-        with patch('penguincode_cli.agents.researcher.ResearcherAgent') as MockResearcher:
+        with patch("penguincode_cli.agents.researcher.ResearcherAgent") as MockResearcher:
             MockResearcher.return_value = MagicMock()
             agent = chat_agent._get_researcher_agent()
 
@@ -426,7 +406,7 @@ class TestAgentLazyLoading:
 
     def test_agents_cached_after_creation(self, chat_agent):
         """Test that agents are cached and reused."""
-        with patch('penguincode_cli.agents.explorer.ExplorerAgent') as MockExplorer:
+        with patch("penguincode_cli.agents.explorer.ExplorerAgent") as MockExplorer:
             mock_instance = MagicMock()
             MockExplorer.return_value = mock_instance
 
@@ -448,11 +428,7 @@ class TestUserIntentDetection:
         """Create a ChatAgent with mocked dependencies."""
         mock_client = MagicMock()
         settings = MockSettings()
-        return ChatAgent(
-            ollama_client=mock_client,
-            settings=settings,
-            project_dir="/test/project"
-        )
+        return ChatAgent(ollama_client=mock_client, settings=settings, project_dir="/test/project")
 
     def test_detect_file_creation_intent(self, chat_agent):
         """Test detecting executor intent from file creation request."""
@@ -524,11 +500,7 @@ class TestComplexityEstimation:
         """Create a ChatAgent with mocked dependencies."""
         mock_client = MagicMock()
         settings = MockSettings()
-        return ChatAgent(
-            ollama_client=mock_client,
-            settings=settings,
-            project_dir="/test/project"
-        )
+        return ChatAgent(ollama_client=mock_client, settings=settings, project_dir="/test/project")
 
     def test_simple_task_read(self, chat_agent):
         """Test that 'read file' is classified as simple."""
@@ -564,15 +536,12 @@ class TestEndToEndOrchestration:
         """Create a ChatAgent with mocked dependencies."""
         mock_client = MagicMock()
         settings = MockSettings()
-        return ChatAgent(
-            ollama_client=mock_client,
-            settings=settings,
-            project_dir="/test/project"
-        )
+        return ChatAgent(ollama_client=mock_client, settings=settings, project_dir="/test/project")
 
     @pytest.mark.asyncio
     async def test_process_routes_to_executor(self, chat_agent):
         """Test that file creation request routes to executor."""
+
         # Mock LLM to return spawn_executor tool call
         async def mock_chat(*args, **kwargs):
             @dataclass
@@ -594,17 +563,14 @@ class TestEndToEndOrchestration:
 
         # Mock executor agent
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=MagicMock(
-            success=True,
-            output="Created test.py"
-        ))
+        mock_executor.run = AsyncMock(return_value=MagicMock(success=True, output="Created test.py"))
 
         # Mock review to just return the output
         async def mock_review(*args, **kwargs):
             return args[2]  # Return agent_output directly
 
-        with patch.object(chat_agent, '_get_executor_agent', return_value=mock_executor):
-            with patch.object(chat_agent, '_review_and_supervise', mock_review):
+        with patch.object(chat_agent, "_get_executor_agent", return_value=mock_executor):
+            with patch.object(chat_agent, "_review_and_supervise", mock_review):
                 await chat_agent.process("Create a file called test.py")
 
         # Verify executor was called
@@ -613,6 +579,7 @@ class TestEndToEndOrchestration:
     @pytest.mark.asyncio
     async def test_process_routes_to_researcher(self, chat_agent):
         """Test that documentation request routes to researcher."""
+
         # Mock LLM to return spawn_researcher tool call
         async def mock_chat(*args, **kwargs):
             @dataclass
@@ -634,16 +601,15 @@ class TestEndToEndOrchestration:
 
         # Mock researcher agent
         mock_researcher = AsyncMock()
-        mock_researcher.run = AsyncMock(return_value=MagicMock(
-            success=True,
-            output="Found FastAPI documentation at..."
-        ))
+        mock_researcher.run = AsyncMock(
+            return_value=MagicMock(success=True, output="Found FastAPI documentation at...")
+        )
 
         async def mock_review(*args, **kwargs):
             return args[2]
 
-        with patch.object(chat_agent, '_get_researcher_agent', return_value=mock_researcher):
-            with patch.object(chat_agent, '_review_and_supervise', mock_review):
+        with patch.object(chat_agent, "_get_researcher_agent", return_value=mock_researcher):
+            with patch.object(chat_agent, "_review_and_supervise", mock_review):
                 await chat_agent.process("How do I use FastAPI dependency injection?")
 
         mock_researcher.run.assert_called_once()

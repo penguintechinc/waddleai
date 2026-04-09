@@ -9,7 +9,6 @@ The docs agent specializes in:
 It can read files and write documentation.
 """
 
-
 from penguincode_cli.ollama import OllamaClient
 
 from .base import AgentConfig, AgentResult, BaseAgent, Permission

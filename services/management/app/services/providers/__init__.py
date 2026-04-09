@@ -12,12 +12,13 @@ Unified interface for managing AI providers:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 
 class ProviderType(str, Enum):
     """Supported AI provider types"""
+
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
@@ -38,7 +39,6 @@ MODEL_ALIASES = {
     "gpt4o": "gpt-4o",
     "gpt-4o-mini": "gpt-4o-mini",
     "o1": "o1-preview",
-
     # Anthropic / Claude aliases
     "claude": "claude-3-5-sonnet-latest",
     "claude-opus": "claude-3-opus-20240229",
@@ -46,12 +46,10 @@ MODEL_ALIASES = {
     "claude-haiku": "claude-3-haiku-20240307",
     "claude3": "claude-3-5-sonnet-latest",
     "claude-3": "claude-3-5-sonnet-latest",
-
     # Gemini aliases
     "gemini": "gemini-1.5-pro",
     "gemini-pro": "gemini-1.5-pro",
     "gemini-flash": "gemini-1.5-flash",
-
     # Cohere aliases
     "command": "command-r-plus",
     "command-r": "command-r",
@@ -59,20 +57,12 @@ MODEL_ALIASES = {
 
 # Default models by provider
 DEFAULT_MODELS = {
-    ProviderType.OPENAI: [
-        "gpt-4o",
-        "gpt-4o-mini",
-        "gpt-4-turbo",
-        "gpt-4",
-        "gpt-3.5-turbo",
-        "o1-preview",
-        "o1-mini"
-    ],
+    ProviderType.OPENAI: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1-preview", "o1-mini"],
     ProviderType.ANTHROPIC: [
         "claude-3-5-sonnet-latest",
         "claude-3-opus-20240229",
         "claude-3-sonnet-20240229",
-        "claude-3-haiku-20240307"
+        "claude-3-haiku-20240307",
     ],
     ProviderType.OLLAMA: [
         # User-managed, common defaults
@@ -82,32 +72,23 @@ DEFAULT_MODELS = {
         "mixtral",
         "codellama",
         "phi3",
-        "qwen2.5"
+        "qwen2.5",
     ],
-    ProviderType.GEMINI: [
-        "gemini-1.5-pro",
-        "gemini-1.5-flash",
-        "gemini-1.0-pro"
-    ],
+    ProviderType.GEMINI: ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"],
     ProviderType.BEDROCK: [
         "anthropic.claude-3-5-sonnet-20241022-v2:0",
         "anthropic.claude-3-opus-20240229-v1:0",
         "anthropic.claude-3-sonnet-20240229-v1:0",
         "anthropic.claude-3-haiku-20240307-v1:0",
         "amazon.titan-text-premier-v1:0",
-        "meta.llama3-1-70b-instruct-v1:0"
+        "meta.llama3-1-70b-instruct-v1:0",
     ],
     ProviderType.AZURE_OPENAI: [
         # Deployment-specific, these are common deployment names
         "gpt-4",
-        "gpt-35-turbo"
+        "gpt-35-turbo",
     ],
-    ProviderType.COHERE: [
-        "command-r-plus",
-        "command-r",
-        "command",
-        "embed-english-v3.0"
-    ]
+    ProviderType.COHERE: ["command-r-plus", "command-r", "command", "embed-english-v3.0"],
 }
 
 # Provider endpoint defaults
@@ -124,8 +105,9 @@ DEFAULT_ENDPOINTS = {
 @dataclass
 class RateLimits:
     """Rate limit configuration"""
+
     tpm_limit: int = 10000  # Tokens per minute
-    rpm_limit: int = 60     # Requests per minute
+    rpm_limit: int = 60  # Requests per minute
     daily_limit: Optional[int] = None
     monthly_limit: Optional[int] = None
 
@@ -133,6 +115,7 @@ class RateLimits:
 @dataclass
 class ProviderConfig:
     """Base configuration for all AI providers"""
+
     provider_type: ProviderType
     name: str
     enabled: bool = True
@@ -148,6 +131,7 @@ class ProviderConfig:
 @dataclass
 class OpenAIConfig(ProviderConfig):
     """OpenAI / ChatGPT specific configuration"""
+
     organization_id: Optional[str] = None
     project_id: Optional[str] = None
 
@@ -162,6 +146,7 @@ class OpenAIConfig(ProviderConfig):
 @dataclass
 class AnthropicConfig(ProviderConfig):
     """Anthropic / Claude specific configuration"""
+
     anthropic_version: str = "2024-01-01"
 
     def __post_init__(self):
@@ -175,6 +160,7 @@ class AnthropicConfig(ProviderConfig):
 @dataclass
 class OllamaConfig(ProviderConfig):
     """Ollama (local LLMs) specific configuration"""
+
     deployment_id: Optional[int] = None  # Link to ollama_deployments table
     gpu_layers: int = -1  # -1 for auto
 
@@ -189,6 +175,7 @@ class OllamaConfig(ProviderConfig):
 @dataclass
 class GeminiConfig(ProviderConfig):
     """Google Gemini / Vertex AI specific configuration"""
+
     project_id: Optional[str] = None
     location: str = "us-central1"
     use_vertex_ai: bool = False
@@ -207,6 +194,7 @@ class GeminiConfig(ProviderConfig):
 @dataclass
 class BedrockConfig(ProviderConfig):
     """AWS Bedrock specific configuration"""
+
     aws_region: str = "us-east-1"
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
@@ -223,6 +211,7 @@ class BedrockConfig(ProviderConfig):
 @dataclass
 class AzureOpenAIConfig(ProviderConfig):
     """Azure OpenAI Service specific configuration"""
+
     azure_endpoint: str = ""  # e.g., "https://my-resource.openai.azure.com/"
     api_version: str = "2024-02-01"
     deployment_name: str = ""  # Azure deployment name
@@ -259,11 +248,7 @@ PROVIDER_CONFIG_CLASSES = {
 }
 
 
-def create_provider_config(
-    provider_type: str,
-    name: str,
-    **kwargs
-) -> ProviderConfig:
+def create_provider_config(provider_type: str, name: str, **kwargs) -> ProviderConfig:
     """Factory function to create provider configuration"""
     ptype = ProviderType(provider_type)
     config_class = PROVIDER_CONFIG_CLASSES.get(ptype)
@@ -302,21 +287,21 @@ def get_provider_for_model(model: str) -> Optional[ProviderType]:
 
 
 __all__ = [
-    'ProviderType',
-    'ProviderConfig',
-    'OpenAIConfig',
-    'AnthropicConfig',
-    'OllamaConfig',
-    'GeminiConfig',
-    'BedrockConfig',
-    'AzureOpenAIConfig',
-    'CohereConfig',
-    'RateLimits',
-    'MODEL_ALIASES',
-    'DEFAULT_MODELS',
-    'DEFAULT_ENDPOINTS',
-    'PROVIDER_CONFIG_CLASSES',
-    'create_provider_config',
-    'resolve_model_alias',
-    'get_provider_for_model',
+    "ProviderType",
+    "ProviderConfig",
+    "OpenAIConfig",
+    "AnthropicConfig",
+    "OllamaConfig",
+    "GeminiConfig",
+    "BedrockConfig",
+    "AzureOpenAIConfig",
+    "CohereConfig",
+    "RateLimits",
+    "MODEL_ALIASES",
+    "DEFAULT_MODELS",
+    "DEFAULT_ENDPOINTS",
+    "PROVIDER_CONFIG_CLASSES",
+    "create_provider_config",
+    "resolve_model_alias",
+    "get_provider_for_model",
 ]

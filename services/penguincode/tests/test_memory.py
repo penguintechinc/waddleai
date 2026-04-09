@@ -11,13 +11,12 @@ try:
         QdrantStoreConfig,
     )
     from penguincode_cli.tools.memory import MemoryManager, create_memory_manager
+
     # Probe: verify MemoryManager works with the config pattern used in these tests
     _probe_config = MemoryConfig(
         enabled=True,
         vector_store="chroma",
-        stores=MemoryStoresConfig(
-            chroma=ChromaStoreConfig(path="/tmp/_probe", collection="probe")
-        ),
+        stores=MemoryStoresConfig(chroma=ChromaStoreConfig(path="/tmp/_probe", collection="probe")),
     )
     _probe_mgr = MemoryManager(_probe_config, ollama_url="http://localhost:11434")
     _probe_mgr._get_vector_store_config(_probe_config)
@@ -45,9 +44,7 @@ class TestMemoryConfig:
 
     def test_pgvector_store_config(self):
         """Test PGVector store configuration."""
-        config = PGVectorStoreConfig(
-            connection_string="postgresql://localhost/testdb", table="test_memory"
-        )
+        config = PGVectorStoreConfig(connection_string="postgresql://localhost/testdb", table="test_memory")
 
         assert config.connection_string == "postgresql://localhost/testdb"
         assert config.table == "test_memory"
@@ -57,9 +54,7 @@ class TestMemoryConfig:
         stores = MemoryStoresConfig(
             chroma=ChromaStoreConfig(path="./.test/memory", collection="test"),
             qdrant=QdrantStoreConfig(url="http://localhost:6333", collection="test"),
-            pgvector=PGVectorStoreConfig(
-                connection_string="postgresql://localhost/testdb", table="test"
-            ),
+            pgvector=PGVectorStoreConfig(connection_string="postgresql://localhost/testdb", table="test"),
         )
 
         assert stores.chroma.path == "./.test/memory"
@@ -68,9 +63,7 @@ class TestMemoryConfig:
 
     def test_memory_config(self):
         """Test memory configuration."""
-        config = MemoryConfig(
-            enabled=True, vector_store="chroma", embedding_model="nomic-embed-text"
-        )
+        config = MemoryConfig(enabled=True, vector_store="chroma", embedding_model="nomic-embed-text")
 
         assert config.enabled is True
         assert config.vector_store == "chroma"
@@ -93,9 +86,7 @@ class TestMemoryManager:
         config = MemoryConfig(
             enabled=True,
             vector_store="chroma",
-            stores=MemoryStoresConfig(
-                chroma=ChromaStoreConfig(path="./.test/memory", collection="test")
-            ),
+            stores=MemoryStoresConfig(chroma=ChromaStoreConfig(path="./.test/memory", collection="test")),
         )
         manager = MemoryManager(config, ollama_url="http://localhost:11434")
 
@@ -110,9 +101,7 @@ class TestMemoryManager:
         config = MemoryConfig(
             enabled=True,
             vector_store="qdrant",
-            stores=MemoryStoresConfig(
-                qdrant=QdrantStoreConfig(url="http://localhost:6333", collection="test")
-            ),
+            stores=MemoryStoresConfig(qdrant=QdrantStoreConfig(url="http://localhost:6333", collection="test")),
         )
         manager = MemoryManager(config, ollama_url="http://localhost:11434")
 
@@ -128,9 +117,7 @@ class TestMemoryManager:
             enabled=True,
             vector_store="pgvector",
             stores=MemoryStoresConfig(
-                pgvector=PGVectorStoreConfig(
-                    connection_string="postgresql://localhost/testdb", table="test"
-                )
+                pgvector=PGVectorStoreConfig(connection_string="postgresql://localhost/testdb", table="test")
             ),
         )
         # Use a disabled manager to skip Memory.from_config(), then test the config method directly
@@ -180,9 +167,7 @@ class TestMemoryManagerFactory:
         """Test creating memory manager via factory."""
         config = MemoryConfig(enabled=True, vector_store="chroma")
 
-        manager = create_memory_manager(
-            config, ollama_url="http://localhost:11434", llm_model="llama3.2:3b"
-        )
+        manager = create_memory_manager(config, ollama_url="http://localhost:11434", llm_model="llama3.2:3b")
 
         assert isinstance(manager, MemoryManager)
         assert manager.config == config

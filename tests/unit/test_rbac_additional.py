@@ -2,15 +2,19 @@
 Additional unit tests for RBAC - covering uncovered code paths
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-import functools
-from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime, timedelta
 
 from shared.auth.rbac import (
-    RBACManager, Role, Permission, UserContext, ROLE_PERMISSIONS,
-    AuthenticationError, AuthorizationError,
-    hash_password, verify_password
+    ROLE_PERMISSIONS,
+    AuthenticationError,
+    AuthorizationError,
+    Permission,
+    RBACManager,
+    Role,
+    UserContext,
+    hash_password,
 )
 
 
@@ -36,7 +40,7 @@ def admin_user_context():
         organization_id=1,
         managed_orgs=[1, 2, 3],
         permissions=ROLE_PERMISSIONS[Role.ADMIN],
-        api_key_id=None
+        api_key_id=None,
     )
 
 
@@ -50,7 +54,7 @@ def resource_manager_context():
         organization_id=1,
         managed_orgs=[2, 3],  # Manages orgs 2 and 3
         permissions=["analytics:read", "org:read", "org:write"],
-        api_key_id=None
+        api_key_id=None,
     )
 
 
@@ -64,7 +68,7 @@ def reporter_context():
         organization_id=1,
         managed_orgs=[2],  # Only manages org 2
         permissions=["analytics:read", "reports:read"],
-        api_key_id=None
+        api_key_id=None,
     )
 
 
@@ -78,7 +82,7 @@ def regular_user_context():
         organization_id=1,
         managed_orgs=[],
         permissions=["proxy:use", "api:read"],
-        api_key_id=None
+        api_key_id=None,
     )
 
 
@@ -92,12 +96,7 @@ class TestAuthenticateApiKey:
 
         # Mock user
         mock_user = MagicMock(
-            id=5,
-            username="api_user",
-            role="user",
-            organization_id=1,
-            enabled=True,
-            managed_orgs=None
+            id=5, username="api_user", role="user", organization_id=1, enabled=True, managed_orgs=None
         )
 
         # Mock API key record
@@ -124,7 +123,7 @@ class TestAuthenticateApiKey:
 
         mock_db.side_effect = [mock_first_call, mock_second_call]
 
-        with patch('shared.auth.rbac.bcrypt.verify', return_value=True):
+        with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             context = rbac_manager.authenticate_api_key(api_key)
 
         assert context.user_id == 5
@@ -183,10 +182,7 @@ class TestAuthenticateApiKey:
         mock_key_record.key_hash = hashed_key
         mock_key_record.update_record = MagicMock()
 
-        mock_user = MagicMock(
-            enabled=False,  # User disabled
-            role="user"
-        )
+        mock_user = MagicMock(enabled=False, role="user")  # User disabled
 
         mock_select_keys = MagicMock()
         mock_select_keys.__iter__.return_value = iter([mock_key_record])
@@ -203,7 +199,7 @@ class TestAuthenticateApiKey:
 
         mock_db.side_effect = [mock_first_call, mock_second_call]
 
-        with patch('shared.auth.rbac.bcrypt.verify', return_value=True):
+        with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             with pytest.raises(AuthenticationError) as exc_info:
                 rbac_manager.authenticate_api_key(api_key)
 
@@ -214,11 +210,7 @@ class TestAuthenticateApiKey:
         api_key = "wa-key-secret"
         hashed_key = hash_password(api_key)
 
-        mock_key_record = MagicMock(
-            user_id=999,
-            key_hash=hashed_key,
-            update_record=MagicMock()
-        )
+        mock_key_record = MagicMock(user_id=999, key_hash=hashed_key, update_record=MagicMock())
 
         mock_select_keys = MagicMock()
         mock_select_keys.__iter__.return_value = iter([mock_key_record])
@@ -235,7 +227,7 @@ class TestAuthenticateApiKey:
 
         mock_db.side_effect = [mock_first_call, mock_second_call]
 
-        with patch('shared.auth.rbac.bcrypt.verify', return_value=True):
+        with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             with pytest.raises(AuthenticationError) as exc_info:
                 rbac_manager.authenticate_api_key(api_key)
 
@@ -300,31 +292,21 @@ class TestCheckPermissionResourceManager:
     def test_check_permission_resource_manager_allowed_org(self, rbac_manager, resource_manager_context):
         """Test RESOURCE_MANAGER can access managed organization"""
         # Resource manager manages orgs 2 and 3
-        result = rbac_manager.check_permission(
-            resource_manager_context,
-            Permission.ANALYTICS_READ,
-            resource_org_id=2
-        )
+        result = rbac_manager.check_permission(resource_manager_context, Permission.ANALYTICS_READ, resource_org_id=2)
 
         assert result is True
 
     def test_check_permission_resource_manager_denied_org(self, rbac_manager, resource_manager_context):
         """Test RESOURCE_MANAGER cannot access unmanaged organization"""
         # Resource manager manages orgs 2 and 3, not org 5
-        result = rbac_manager.check_permission(
-            resource_manager_context,
-            Permission.ANALYTICS_READ,
-            resource_org_id=5
-        )
+        result = rbac_manager.check_permission(resource_manager_context, Permission.ANALYTICS_READ, resource_org_id=5)
 
         assert result is False
 
     def test_check_permission_resource_manager_no_base_permission(self, rbac_manager, resource_manager_context):
         """Test RESOURCE_MANAGER lacks base permission"""
         result = rbac_manager.check_permission(
-            resource_manager_context,
-            Permission.SYSTEM_CONFIG,  # Resource manager doesn't have this
-            resource_org_id=2
+            resource_manager_context, Permission.SYSTEM_CONFIG, resource_org_id=2  # Resource manager doesn't have this
         )
 
         assert result is False
@@ -336,22 +318,14 @@ class TestCheckPermissionReporter:
     def test_check_permission_reporter_allowed_org(self, rbac_manager, reporter_context):
         """Test REPORTER can access managed organization"""
         # Reporter manages org 2
-        result = rbac_manager.check_permission(
-            reporter_context,
-            Permission.ANALYTICS_READ,
-            resource_org_id=2
-        )
+        result = rbac_manager.check_permission(reporter_context, Permission.ANALYTICS_READ, resource_org_id=2)
 
         assert result is True
 
     def test_check_permission_reporter_denied_org(self, rbac_manager, reporter_context):
         """Test REPORTER cannot access unmanaged organization"""
         # Reporter only manages org 2, not org 3
-        result = rbac_manager.check_permission(
-            reporter_context,
-            Permission.ANALYTICS_READ,
-            resource_org_id=3
-        )
+        result = rbac_manager.check_permission(reporter_context, Permission.ANALYTICS_READ, resource_org_id=3)
 
         assert result is False
 
@@ -362,31 +336,21 @@ class TestCheckPermissionUser:
     def test_check_permission_user_own_resource(self, rbac_manager, regular_user_context):
         """Test USER can access own resource"""
         # User 4 accessing their own resource
-        result = rbac_manager.check_permission(
-            regular_user_context,
-            Permission.PROXY_USE,
-            resource_user_id=4
-        )
+        result = rbac_manager.check_permission(regular_user_context, Permission.PROXY_USE, resource_user_id=4)
 
         assert result is True
 
     def test_check_permission_user_other_resource(self, rbac_manager, regular_user_context):
         """Test USER cannot access other user's resource"""
         # User 4 trying to access user 5's resource
-        result = rbac_manager.check_permission(
-            regular_user_context,
-            Permission.PROXY_USE,
-            resource_user_id=5
-        )
+        result = rbac_manager.check_permission(regular_user_context, Permission.PROXY_USE, resource_user_id=5)
 
         assert result is False
 
     def test_check_permission_user_lacks_permission(self, rbac_manager, regular_user_context):
         """Test USER fails if missing base permission"""
         result = rbac_manager.check_permission(
-            regular_user_context,
-            Permission.SYSTEM_CONFIG,  # USER doesn't have this
-            resource_user_id=4
+            regular_user_context, Permission.SYSTEM_CONFIG, resource_user_id=4  # USER doesn't have this
         )
 
         assert result is False
@@ -405,7 +369,7 @@ class TestCheckPermissionStringPermission:
             organization_id=1,
             managed_orgs=[],
             permissions=["proxy:use", "api:read"],  # Strings, not Permission enums
-            api_key_id=None
+            api_key_id=None,
         )
 
         result = rbac_manager.check_permission(context, "proxy:use")
@@ -421,7 +385,7 @@ class TestCheckPermissionStringPermission:
             organization_id=1,
             managed_orgs=[],
             permissions=["proxy:use"],
-            api_key_id=None
+            api_key_id=None,
         )
 
         result = rbac_manager.check_permission(context, "system:config")
@@ -434,6 +398,7 @@ class TestRequirePermissionDecorator:
 
     def test_require_permission_success(self, rbac_manager, admin_user_context):
         """Test decorator allows function call with permission"""
+
         @rbac_manager.require_permission(Permission.SYSTEM_CONFIG)
         def protected_function(user_context=None):
             return "success"
@@ -444,6 +409,7 @@ class TestRequirePermissionDecorator:
 
     def test_require_permission_no_user_context(self, rbac_manager):
         """Test decorator raises error when no user_context provided"""
+
         @rbac_manager.require_permission(Permission.SYSTEM_CONFIG)
         def protected_function(user_context=None):
             return "success"
@@ -455,6 +421,7 @@ class TestRequirePermissionDecorator:
 
     def test_require_permission_insufficient_permission(self, rbac_manager, regular_user_context):
         """Test decorator raises error when permission insufficient"""
+
         @rbac_manager.require_permission(Permission.SYSTEM_CONFIG)
         def protected_function(user_context=None):
             return "success"
@@ -466,10 +433,8 @@ class TestRequirePermissionDecorator:
 
     def test_require_permission_with_resource_org(self, rbac_manager, resource_manager_context):
         """Test decorator with resource_org_id parameter"""
-        @rbac_manager.require_permission(
-            Permission.ANALYTICS_READ,
-            resource_org_id=2
-        )
+
+        @rbac_manager.require_permission(Permission.ANALYTICS_READ, resource_org_id=2)
         def protected_function(user_context=None):
             return "success"
 
@@ -479,10 +444,8 @@ class TestRequirePermissionDecorator:
 
     def test_require_permission_resource_org_denied(self, rbac_manager, resource_manager_context):
         """Test decorator denies when resource org not managed"""
-        @rbac_manager.require_permission(
-            Permission.ANALYTICS_READ,
-            resource_org_id=99  # Not managed by this user
-        )
+
+        @rbac_manager.require_permission(Permission.ANALYTICS_READ, resource_org_id=99)  # Not managed by this user
         def protected_function(user_context=None):
             return "success"
 
@@ -491,6 +454,7 @@ class TestRequirePermissionDecorator:
 
     def test_require_permission_preserves_function_metadata(self, rbac_manager):
         """Test decorator preserves function name and docstring"""
+
         @rbac_manager.require_permission(Permission.PROXY_USE)
         def my_protected_function(user_context=None):
             """This is a protected function"""
@@ -501,6 +465,7 @@ class TestRequirePermissionDecorator:
 
     def test_require_permission_passes_args_kwargs(self, rbac_manager, admin_user_context):
         """Test decorator correctly passes arguments and kwargs"""
+
         @rbac_manager.require_permission(Permission.SYSTEM_CONFIG)
         def func_with_args(a, b, c=None, user_context=None):
             return {"a": a, "b": b, "c": c}
@@ -532,7 +497,7 @@ class TestCreateApiKey:
         api_key, key_id = rbac_manager.create_api_key(admin_user_context, "mykey")
 
         # Format should be wa-{uuid/random}-{random}
-        parts = api_key.split('-')
+        parts = api_key.split("-")
         assert len(parts) >= 3
         assert parts[0] == "wa"
 
@@ -549,8 +514,8 @@ class TestCreateApiKey:
         # Get the call arguments
         call_kwargs = mock_insert.call_args[1] if mock_insert.call_args[1] else {}
         # The key_hash should be hashed (not plaintext)
-        if 'key_hash' in call_kwargs:
-            assert call_kwargs['key_hash'] != api_key
+        if "key_hash" in call_kwargs:
+            assert call_kwargs["key_hash"] != api_key
 
     def test_create_api_key_associates_with_user(self, rbac_manager, mock_db, admin_user_context):
         """Test create_api_key associates key with user"""
@@ -562,7 +527,7 @@ class TestCreateApiKey:
 
         # Verify user_id was passed to insert
         call_kwargs = mock_insert.call_args[1] if mock_insert.call_args[1] else {}
-        assert call_kwargs.get('user_id') == admin_user_context.user_id
+        assert call_kwargs.get("user_id") == admin_user_context.user_id
 
 
 class TestCheckPermissionAdminBypass:
@@ -572,9 +537,7 @@ class TestCheckPermissionAdminBypass:
         """Test ADMIN can access any organization regardless of managed_orgs"""
         # Admin doesn't need to have org in managed_orgs
         result = rbac_manager.check_permission(
-            admin_user_context,
-            Permission.SYSTEM_CONFIG,
-            resource_org_id=999  # Not in their managed_orgs
+            admin_user_context, Permission.SYSTEM_CONFIG, resource_org_id=999  # Not in their managed_orgs
         )
 
         assert result is True
@@ -582,9 +545,7 @@ class TestCheckPermissionAdminBypass:
     def test_admin_can_access_any_user(self, rbac_manager, admin_user_context):
         """Test ADMIN can access any user's resource"""
         result = rbac_manager.check_permission(
-            admin_user_context,
-            Permission.USER_READ,
-            resource_user_id=999  # Different user
+            admin_user_context, Permission.USER_READ, resource_user_id=999  # Different user
         )
 
         assert result is True
@@ -611,20 +572,14 @@ class TestIntegrationScenarios:
         """Test workflow: user accesses own data"""
         # User checks their quota
         allowed = rbac_manager.check_permission(
-            regular_user_context,
-            Permission.PROXY_USE,
-            resource_user_id=regular_user_context.user_id
+            regular_user_context, Permission.PROXY_USE, resource_user_id=regular_user_context.user_id
         )
 
         assert allowed is True
 
     def test_workflow_user_denied_other_data(self, rbac_manager, regular_user_context):
         """Test workflow: user denied access to other user data"""
-        allowed = rbac_manager.check_permission(
-            regular_user_context,
-            Permission.PROXY_USE,
-            resource_user_id=999
-        )
+        allowed = rbac_manager.check_permission(regular_user_context, Permission.PROXY_USE, resource_user_id=999)
 
         assert allowed is False
 
@@ -632,9 +587,7 @@ class TestIntegrationScenarios:
         """Test workflow: resource manager views org reports"""
         # Manager accesses reports for managed org
         allowed = rbac_manager.check_permission(
-            resource_manager_context,
-            Permission.ANALYTICS_READ,
-            resource_org_id=2  # In managed_orgs
+            resource_manager_context, Permission.ANALYTICS_READ, resource_org_id=2  # In managed_orgs
         )
 
         assert allowed is True
@@ -642,9 +595,7 @@ class TestIntegrationScenarios:
     def test_workflow_manager_denied_unmanaged_org(self, rbac_manager, resource_manager_context):
         """Test workflow: manager denied unmanaged org"""
         allowed = rbac_manager.check_permission(
-            resource_manager_context,
-            Permission.ANALYTICS_READ,
-            resource_org_id=1  # Not in managed_orgs
+            resource_manager_context, Permission.ANALYTICS_READ, resource_org_id=1  # Not in managed_orgs
         )
 
         assert allowed is False

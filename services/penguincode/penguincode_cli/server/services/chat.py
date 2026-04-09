@@ -7,7 +7,6 @@ import uuid
 from collections.abc import AsyncIterator
 
 import grpc
-
 from penguincode_cli.agents import ChatAgent
 from penguincode_cli.config.settings import Settings
 from penguincode_cli.ollama import OllamaClient
@@ -226,11 +225,13 @@ class ChatServiceImpl(ChatServiceServicer):
 
         messages = []
         for msg in history[-limit:]:
-            messages.append(HistoryMessage(
-                role=msg.role,
-                content=msg.content,
-                timestamp="",  # TODO: Add timestamps to Message
-            ))
+            messages.append(
+                HistoryMessage(
+                    role=msg.role,
+                    content=msg.content,
+                    timestamp="",  # TODO: Add timestamps to Message
+                )
+            )
 
         return GetHistoryResponse(messages=messages)
 

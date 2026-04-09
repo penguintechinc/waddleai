@@ -1,6 +1,5 @@
 """SearXNG search engine using MCP server."""
 
-
 from penguincode_cli.tools.mcp.client import MCPClient
 
 from .base import BaseSearchEngine, SearchEngineError, SearchResult

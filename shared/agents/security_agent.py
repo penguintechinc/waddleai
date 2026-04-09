@@ -15,11 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional
 
-from shared.security.prompt_security import (
-    Action,
-    PromptSecurityScanner,
-    ThreatDetection,
-)
+from shared.security.prompt_security import Action, PromptSecurityScanner, ThreatDetection
 from shared.utils.rag_integration import PgvectorRAGStore, SearchResult
 
 logger = logging.getLogger(__name__)
@@ -101,9 +97,7 @@ class SecurityAgent:
         # ------------------------------------------------------------------
         # Layer 1 — regex-based scanner
         # ------------------------------------------------------------------
-        scanner_threats, _sanitized = self._scanner.scan_prompt(
-            raw_command, user_id=user_id
-        )
+        scanner_threats, _sanitized = self._scanner.scan_prompt(raw_command, user_id=user_id)
         regex_score = self._regex_risk_score(scanner_threats)
 
         # ------------------------------------------------------------------
@@ -117,11 +111,7 @@ class SecurityAgent:
         sensitivity = _TOOL_SENSITIVITY.get(tool_type.lower(), 0.40)
 
         # Weighted combination: regex (0.5) + rag (0.3) + sensitivity (0.2)
-        combined = (
-            regex_score * 0.50
-            + rag_score * 0.30
-            + sensitivity * 0.20
-        )
+        combined = regex_score * 0.50 + rag_score * 0.30 + sensitivity * 0.20
         risk_score = round(min(combined, 1.0), 4)
 
         blocked = risk_score >= 0.8
@@ -131,15 +121,17 @@ class SecurityAgent:
 
         # Build explanation
         explanation = self._build_explanation(
-            regex_score, rag_score, sensitivity, risk_score, blocked,
-            scanner_threats, rag_matches, tool_type,
+            regex_score,
+            rag_score,
+            sensitivity,
+            risk_score,
+            blocked,
+            scanner_threats,
+            rag_matches,
+            tool_type,
         )
 
-        matched_pattern_strings = [
-            p
-            for t in scanner_threats
-            for p in t.matched_patterns
-        ] + [
+        matched_pattern_strings = [p for t in scanner_threats for p in t.matched_patterns] + [
             r.document.content[:120] for r in rag_matches
         ]
 
@@ -163,16 +155,10 @@ class SecurityAgent:
             return 0.0
 
         max_confidence = max(t.confidence for t in threats)
-        blocked_count = sum(
-            1 for t in threats if t.suggested_action == Action.BLOCK
-        )
+        blocked_count = sum(1 for t in threats if t.suggested_action == Action.BLOCK)
         threat_count_factor = min(len(threats) / 5.0, 1.0)
 
-        score = (
-            max_confidence * 0.50
-            + (blocked_count / max(len(threats), 1)) * 0.30
-            + threat_count_factor * 0.20
-        )
+        score = max_confidence * 0.50 + (blocked_count / max(len(threats), 1)) * 0.30 + threat_count_factor * 0.20
         return min(score, 1.0)
 
     async def _rag_risk_score(
@@ -256,16 +242,11 @@ class SecurityAgent:
         )
 
         if scanner_threats:
-            types = ", ".join(
-                sorted({t.threat_type.value for t in scanner_threats})
-            )
+            types = ", ".join(sorted({t.threat_type.value for t in scanner_threats}))
             parts.append(f"Regex detections: {types}.")
 
         if rag_matches:
             top_sim = rag_matches[0].score
-            parts.append(
-                f"RAG matches: {len(rag_matches)} "
-                f"(top similarity={top_sim:.2f})."
-            )
+            parts.append(f"RAG matches: {len(rag_matches)} " f"(top similarity={top_sim:.2f}).")
 
         return " ".join(parts)

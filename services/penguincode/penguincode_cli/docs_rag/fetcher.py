@@ -23,6 +23,7 @@ from .sources import DocSource, get_doc_source, get_language_doc_source
 @dataclass
 class CacheEntry:
     """Metadata for a cached documentation file."""
+
     url: str
     fetch_time: str
     ttl_days: int
@@ -67,9 +68,7 @@ class DocumentationFetcher:
             try:
                 with open(self.index_path) as f:
                     data = json.load(f)
-                return {
-                    k: CacheEntry(**v) for k, v in data.items()
-                }
+                return {k: CacheEntry(**v) for k, v in data.items()}
             except Exception:
                 pass
         return {}
@@ -121,17 +120,11 @@ class DocumentationFetcher:
 
     def get_expired_entries(self) -> list[CacheEntry]:
         """Get list of expired cache entries."""
-        return [
-            entry for entry in self.cache_index.values()
-            if entry.is_expired()
-        ]
+        return [entry for entry in self.cache_index.values() if entry.is_expired()]
 
     def get_entries_for_library(self, library_name: str) -> list[CacheEntry]:
         """Get all cache entries for a library."""
-        return [
-            entry for entry in self.cache_index.values()
-            if entry.library.lower() == library_name.lower()
-        ]
+        return [entry for entry in self.cache_index.values() if entry.library.lower() == library_name.lower()]
 
     def expunge_expired(self) -> int:
         """Remove expired cache entries. Returns count of removed entries."""
@@ -179,19 +172,12 @@ class DocumentationFetcher:
         self._save_cache_index()
         return removed
 
-    def check_library_still_needed(
-        self,
-        library_name: str,
-        current_libraries: list[Library]
-    ) -> bool:
+    def check_library_still_needed(self, library_name: str, current_libraries: list[Library]) -> bool:
         """Check if a library is still in the project dependencies."""
         current_names = {lib.name.lower() for lib in current_libraries}
         return library_name.lower() in current_names
 
-    def cleanup_unused_libraries(
-        self,
-        current_libraries: list[Library]
-    ) -> dict[str, int]:
+    def cleanup_unused_libraries(self, current_libraries: list[Library]) -> dict[str, int]:
         """
         Remove cached docs for libraries no longer in the project.
 
@@ -303,9 +289,7 @@ class DocumentationFetcher:
 
                 # Fetch and convert
                 try:
-                    content = await self._fetch_and_convert(
-                        session, url, library_name, language
-                    )
+                    content = await self._fetch_and_convert(session, url, library_name, language)
                     if content:
                         docs.append(content)
                         pages_fetched += 1
@@ -346,18 +330,18 @@ class DocumentationFetcher:
     def _html_to_markdown(self, html: str, url: str) -> str | None:
         """Convert HTML to markdown, extracting main content."""
         try:
-            soup = BeautifulSoup(html, 'html.parser')
+            soup = BeautifulSoup(html, "html.parser")
 
             # Remove scripts, styles, nav, footer
-            for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header']):
+            for tag in soup.find_all(["script", "style", "nav", "footer", "header"]):
                 tag.decompose()
 
             # Try to find main content area
             main = (
-                soup.find('main') or
-                soup.find('article') or
-                soup.find('div', class_=re.compile(r'content|main|doc')) or
-                soup.find('body')
+                soup.find("main")
+                or soup.find("article")
+                or soup.find("div", class_=re.compile(r"content|main|doc"))
+                or soup.find("body")
             )
 
             if not main:
@@ -367,27 +351,27 @@ class DocumentationFetcher:
             lines = []
             lines.append(f"# Source: {url}\n")
 
-            for element in main.find_all(['h1', 'h2', 'h3', 'h4', 'p', 'pre', 'code', 'li']):
+            for element in main.find_all(["h1", "h2", "h3", "h4", "p", "pre", "code", "li"]):
                 text = element.get_text(strip=True)
                 if not text:
                     continue
 
-                if element.name == 'h1':
+                if element.name == "h1":
                     lines.append(f"\n# {text}\n")
-                elif element.name == 'h2':
+                elif element.name == "h2":
                     lines.append(f"\n## {text}\n")
-                elif element.name == 'h3':
+                elif element.name == "h3":
                     lines.append(f"\n### {text}\n")
-                elif element.name == 'h4':
+                elif element.name == "h4":
                     lines.append(f"\n#### {text}\n")
-                elif element.name in ('pre', 'code'):
+                elif element.name in ("pre", "code"):
                     lines.append(f"\n```\n{text}\n```\n")
-                elif element.name == 'li':
+                elif element.name == "li":
                     lines.append(f"- {text}")
                 else:
                     lines.append(text)
 
-            content = '\n'.join(lines)
+            content = "\n".join(lines)
 
             # Skip if too short (likely error page)
             if len(content) < 200:
