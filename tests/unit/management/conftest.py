@@ -251,10 +251,12 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.ollama",
     "services.management.app.api.v1.ollama_models",
     "services.management.app.api.v1.ailb",
+    "services.management.app.api.v1.ailb_memory",
     "services.management.app.api.v1.keys",
     "services.management.app.api.v1.usage",
     "services.management.app.api.v1.quotas",
     "services.management.app.api.v1.webhooks",
+    "services.management.app.api.v1.routing_matrix",
 ]
 
 
@@ -271,7 +273,15 @@ def flask_app():
         ext_mod.redis_client = mock_redis
         ext_mod.security = MagicMock()
 
-    with patch("services.management.app.init_extensions", side_effect=_noop_init_extensions):
+    # Ensure the app's OIDC provider uses the same keypair as test tokens.
+    # Both use lru_cache + MemoryKeyStore (random RSA keypair on first call).
+    # Without this patch, tokens signed by the test provider are rejected by the app.
+    test_provider = _test_oidc_provider()
+
+    with (
+        patch("services.management.app.init_extensions", side_effect=_noop_init_extensions),
+        patch("services.management.app.api.v1.auth._get_oidc_provider", return_value=test_provider),
+    ):
         from services.management.app import create_app
         from services.management.app.config import TestingConfig
 

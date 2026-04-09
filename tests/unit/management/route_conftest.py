@@ -76,7 +76,16 @@ def flask_app():
         "services.management.app.api.v1.webhooks",
     ]
 
-    with patch("services.management.app.init_extensions", side_effect=_noop_init_extensions):
+    # Ensure the app's OIDC provider uses the same keypair as the test token fixtures.
+    # Both _get_oidc_provider() in auth.py and _test_oidc_provider() here use
+    # lru_cache + MemoryKeyStore, which generates a random RSA keypair on first call.
+    # Without this patch, tokens signed by the test provider are rejected by the app.
+    test_provider = _test_oidc_provider()
+
+    with (
+        patch("services.management.app.init_extensions", side_effect=_noop_init_extensions),
+        patch("services.management.app.api.v1.auth._get_oidc_provider", return_value=test_provider),
+    ):
         from services.management.app import create_app
         from services.management.app.config import TestingConfig
 

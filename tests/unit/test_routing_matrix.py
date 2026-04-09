@@ -1,8 +1,10 @@
 """Unit tests for RoutingMatrix (database interactions mocked)."""
 
-from unittest.mock import Mock
-
 import pytest
+
+pytest.importorskip("sentence_transformers")
+
+from unittest.mock import Mock
 
 from shared.agents.routing_matrix import _DEFAULT_MODEL, RouteDecision, RoutingMatrix, RoutingMatrixEntry
 

@@ -1,8 +1,10 @@
 """Unit tests for UsageTracker (database interactions mocked)."""
 
-from unittest.mock import Mock
-
 import pytest
+
+pytest.importorskip("sentence_transformers")
+
+from unittest.mock import Mock
 
 from shared.agents.usage_tracker import _FREE_TIER_MAX_USERS, UsageAck, UsageReport, UsageTracker
 

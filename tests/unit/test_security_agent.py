@@ -1,8 +1,10 @@
 """Unit tests for SecurityAgent (external dependencies mocked)."""
 
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
-
 import pytest
+
+pytest.importorskip("sentence_transformers")
+
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from shared.agents.security_agent import _TOOL_SENSITIVITY, SecurityAgent, SecurityDecision
 

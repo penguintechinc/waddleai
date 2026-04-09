@@ -2,6 +2,8 @@
 
 import pytest
 
+pytest.importorskip("sentence_transformers")
+
 from shared.agents.mf_classifier import ClassificationResult, MatrixFactorizationClassifier
 
 
