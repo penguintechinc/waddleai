@@ -64,6 +64,51 @@ class TestReadyzEndpoint:
             assert resp.status_code == 503
 
 
+class TestLivezEndpoint:
+    """Tests for GET /livez"""
+
+    def test_livez_always_200(self, client):
+        """Livez endpoint always returns 200 while process is alive."""
+        resp = client.get("/livez")
+        assert resp.status_code == 200
+        assert resp.data == b"alive"
+
+    def test_livez_independent_of_db(self, client):
+        """Livez returns 200 regardless of DB/Redis state."""
+        resp = client.get("/livez")
+        assert resp.status_code == 200
+
+
+class TestMetricsEndpoint:
+    """Tests for GET /metrics"""
+
+    def test_metrics_returns_200(self, client):
+        """Metrics endpoint returns 200."""
+        resp = client.get("/metrics")
+        assert resp.status_code == 200
+
+    def test_metrics_prometheus_format(self, client):
+        """Metrics response contains Prometheus text format markers."""
+        resp = client.get("/metrics")
+        body = resp.data.decode()
+        assert "# HELP" in body
+        assert "# TYPE" in body
+
+    def test_metrics_contains_core_gauges(self, client):
+        """Metrics includes expected gauge names."""
+        resp = client.get("/metrics")
+        body = resp.data.decode()
+        assert "waddleai_up" in body
+        assert "waddleai_db_up" in body
+        assert "waddleai_redis_up" in body
+        assert "waddleai_uptime_seconds" in body
+
+    def test_metrics_content_type(self, client):
+        """Metrics content-type is Prometheus text format."""
+        resp = client.get("/metrics")
+        assert "text/plain" in resp.content_type
+
+
 class TestErrorHandlers:
     """Tests for Flask error handlers"""
 

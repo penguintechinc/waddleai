@@ -4,12 +4,17 @@ Manages AI providers, Ollama deployments, usage tracking, and MarchProxy AILB in
 """
 
 import logging
+import os
+import time
 
-from flask import Flask
+from flask import Flask, Response
 from flask_cors import CORS
 
 from .config import Config
 from .extensions import db, init_extensions, redis_client, security
+
+# Process start time for uptime metric
+_START_TIME = time.time()
 
 
 def create_app(config_class=Config):
@@ -78,6 +83,57 @@ def create_app(config_class=Config):
 
         all_ready = all(checks.values())
         return {"ready": all_ready, "checks": checks}, 200 if all_ready else 503
+
+    @app.route("/livez")
+    def livez():
+        """Kubernetes-style liveness check — always 200 while process is running"""
+        return "alive", 200
+
+    @app.route("/metrics")
+    def metrics():
+        """Basic Prometheus-format metrics endpoint"""
+        from . import extensions as _ext
+
+        db_up = 0
+        redis_up = 0
+
+        try:
+            from sqlalchemy import text
+
+            with _ext.db.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            db_up = 1
+        except Exception:
+            pass
+
+        try:
+            if _ext.redis_client:
+                _ext.redis_client.ping()
+                redis_up = 1
+        except Exception:
+            pass
+
+        uptime_seconds = time.time() - _START_TIME
+        pid = os.getpid()
+
+        lines = [
+            "# HELP waddleai_up Management service availability",
+            "# TYPE waddleai_up gauge",
+            "waddleai_up 1",
+            "# HELP waddleai_uptime_seconds Seconds since process start",
+            "# TYPE waddleai_uptime_seconds counter",
+            f"waddleai_uptime_seconds {uptime_seconds:.2f}",
+            "# HELP waddleai_db_up Database connectivity (1=up, 0=down)",
+            "# TYPE waddleai_db_up gauge",
+            f"waddleai_db_up {db_up}",
+            "# HELP waddleai_redis_up Redis connectivity (1=up, 0=down)",
+            "# TYPE waddleai_redis_up gauge",
+            f"waddleai_redis_up {redis_up}",
+            "# HELP waddleai_process_pid Worker process ID",
+            "# TYPE waddleai_process_pid gauge",
+            f"waddleai_process_pid {pid}",
+        ]
+        return Response("\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4")
 
     app.logger.info("WaddleAI Management Server initialized successfully")
     return app
