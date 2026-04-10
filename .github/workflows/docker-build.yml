@@ -189,10 +189,12 @@ jobs:
   security-scan:
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
     strategy:
       matrix:
         service: [proxy, management]
-    
+
     steps:
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
@@ -258,7 +260,7 @@ jobs:
                 condition: service_healthy
 
           db:
-            image: postgres:15-bookworm@sha256:4cde74b1c8e6e34df4b25319b576bec7d1efbace15e1cce4dd7a75ccc8dd7f77
+            image: postgres:15-bookworm@sha256:550245350d614cd36d1a8e90d76c6f6608172659312e53417becbbe722aa4179
             environment:
               POSTGRES_DB: waddleai_test
               POSTGRES_USER: test
@@ -270,7 +272,7 @@ jobs:
               retries: 10
 
           redis:
-            image: redis:7-bookworm@sha256:ee13953704498a60f47dfc97683f619e01af1a16e285cfa1a9bc23f93e43c9ca
+            image: redis:7-bookworm@sha256:24ea35ee039d7345bef2377611e3b1a615231746de4cfea74c1414575ee56167
             healthcheck:
               test: ["CMD", "redis-cli", "ping"]
               interval: 5s
