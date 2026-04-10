@@ -6,6 +6,8 @@ on:
     paths:
       - 'proxy/**'
       - 'management/**'
+      - 'services/**'
+      - 'shared/**'
       - '.version'
       - '.github/workflows/docker-build.yml'
     tags: [ 'v*' ]
@@ -14,6 +16,8 @@ on:
     paths:
       - 'proxy/**'
       - 'management/**'
+      - 'services/**'
+      - 'shared/**'
       - '.version'
       - '.github/workflows/docker-build.yml'
 
