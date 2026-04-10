@@ -198,7 +198,7 @@ jobs:
         image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.ref_name }}
         format: 'sarif'
         output: 'trivy-results-${{ matrix.service }}.sarif'
-        trivy-version: 'v0.69.3'
+        version: 'v0.69.3'
 
     - name: Upload Trivy scan results to GitHub Security tab
       uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
@@ -263,7 +263,7 @@ jobs:
     
     - name: Start services
       run: |
-        docker-compose -f docker-compose.test.yml up -d
+        docker compose -f docker-compose.test.yml up -d
         sleep 30  # Wait for services to start
     
     - name: Test proxy health endpoint
@@ -288,7 +288,7 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
-        docker-compose -f docker-compose.test.yml down -v
+        docker compose -f docker-compose.test.yml down -v
 
   release:
     needs: [test, build-and-push, security-scan, integration-test]
@@ -326,7 +326,9 @@ jobs:
     needs: [test, build-and-push, security-scan, integration-test]
     runs-on: ubuntu-latest
     if: always()
-    
+    permissions:
+      packages: write
+
     steps:
     - name: Delete untagged images
       uses: actions/github-script@v6
