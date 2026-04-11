@@ -11,7 +11,10 @@ replicas:
 images:
   - name: waddleai/management
     newName: ghcr.io/penguintechinc/waddleai/management
-    newTag: beta-1775849532
+    newTag: beta-1775889793
+  - name: waddleai/webui
+    newName: ghcr.io/penguintechinc/waddleai/webui
+    newTag: beta-1775889794
 configMapGenerator:
   - name: waddleai-config
     behavior: merge
