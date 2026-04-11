@@ -80,8 +80,17 @@
 }
 
 .form-group input::placeholder {
-  color: #b8960f;
-  opacity: 0.7;
+  color: #d4af37;
+  opacity: 0.85;
+}
+
+.form-group input:-webkit-autofill,
+.form-group input:-webkit-autofill:hover,
+.form-group input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #d4af37;
+  -webkit-box-shadow: 0 0 0 1000px #1a1a2e inset;
+  box-shadow: 0 0 0 1000px #1a1a2e inset;
+  border-color: #d4af37;
 }
 
 .form-group input:focus {

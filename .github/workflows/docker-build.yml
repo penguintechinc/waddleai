@@ -107,6 +107,10 @@ jobs:
     strategy:
       matrix:
         service: [proxy, management]
+        include:
+          - service: webui
+            context: ./services/webui
+            dockerfile: ./services/webui/Dockerfile
 
     steps:
     - name: Checkout code
@@ -174,8 +178,8 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
-        context: .
-        file: ./${{ matrix.service }}/Dockerfile
+        context: ${{ matrix.context || '.' }}
+        file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
@@ -193,7 +197,7 @@ jobs:
       security-events: write
     strategy:
       matrix:
-        service: [proxy, management]
+        service: [proxy, management, webui]
 
     steps:
     - name: Run Trivy vulnerability scanner
