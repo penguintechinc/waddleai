@@ -5,9 +5,17 @@ WORKDIR /docs
 # Install dependencies
 RUN pip install --no-cache-dir mkdocs mkdocs-material pymdown-extensions mkdocs-mermaid2-plugin
 
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash appuser
+
 # Copy documentation files
-COPY docs/ /docs/docs/
-COPY mkdocs.yml /docs/
+COPY --chown=appuser:appuser docs/ /docs/docs/
+COPY --chown=appuser:appuser mkdocs.yml /docs/
+
+# Set ownership of writable dirs
+RUN chown -R appuser:appuser /docs
+
+USER appuser
 
 # Expose MkDocs development server port
 EXPOSE 8080
