@@ -204,19 +204,12 @@ def refresh_token():
 @api_v1_bp.route("/auth/verify", methods=["GET"])
 @require_auth
 def verify_auth():
-    user_id = g.user["user_id"]
-    user = db(db.users.id == user_id).select().first()
-
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-
     return jsonify(
         {
             "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "role": user.role,
+                "id": g.user["user_id"],
+                "username": g.user["username"],
+                "role": g.user["role"],
             }
         }
     )
