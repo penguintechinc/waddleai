@@ -201,6 +201,27 @@ def refresh_token():
     return jsonify({"access_token": token, "token_type": "bearer", "expires_in": 86400})
 
 
+@api_v1_bp.route("/auth/verify", methods=["GET"])
+@require_auth
+def verify_auth():
+    user_id = g.user["user_id"]
+    user = db(db.users.id == user_id).select().first()
+
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    return jsonify(
+        {
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "role": user.role,
+            }
+        }
+    )
+
+
 @api_v1_bp.route("/auth/me", methods=["GET"])
 @require_auth
 def get_current_user():
