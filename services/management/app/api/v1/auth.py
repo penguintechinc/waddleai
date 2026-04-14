@@ -56,7 +56,7 @@ def verify_token(token: str) -> dict | None:
 def verify_api_key(api_key: str) -> dict:
     """Verify API key and return user context"""
     # Check virtual_keys table
-    keys = db(db.virtual_keys.enabled is True).select()
+    keys = db(db.virtual_keys.enabled == True).select()
     for key in keys:
         if bcrypt.verify(api_key, key.key_hash):
             user = db(db.users.id == key.user_id).select().first()

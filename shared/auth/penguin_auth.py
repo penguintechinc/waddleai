@@ -33,7 +33,7 @@ def create_oidc_provider() -> OIDCProvider:
 
     key_file = os.getenv("SIGNING_KEY_FILE")
     if key_file and os.path.exists(key_file):
-        keystore = FileKeyStore(key_file=key_file)
+        keystore = FileKeyStore(path=key_file)
     else:
         keystore = MemoryKeyStore(algorithm="RS256")
 
