@@ -5,6 +5,7 @@ Provides OIDC token issuance, validation, and scope-based authorization
 
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import List
 
 import jwt as _jwt
@@ -33,7 +34,7 @@ def create_oidc_provider() -> OIDCProvider:
 
     key_file = os.getenv("SIGNING_KEY_FILE")
     if key_file and os.path.exists(key_file):
-        keystore = FileKeyStore(path=key_file)
+        keystore = FileKeyStore(path=Path(key_file))
     else:
         keystore = MemoryKeyStore(algorithm="RS256")
 
