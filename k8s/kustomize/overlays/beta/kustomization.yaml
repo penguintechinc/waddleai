@@ -11,7 +11,7 @@ replicas:
 images:
   - name: waddleai/management
     newName: ghcr.io/penguintechinc/waddleai/management
-    newTag: beta-1775889793
+    newTag: beta-1776182785
   - name: waddleai/webui
     newName: ghcr.io/penguintechinc/waddleai/webui
     newTag: beta-1775889794
