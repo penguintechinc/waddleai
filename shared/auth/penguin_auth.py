@@ -88,6 +88,7 @@ def user_context_to_claims(user_context: UserContext) -> Claims:
         roles=[user_context.role.value],
         tenant=str(user_context.organization_id),
         teams=[str(org) for org in (user_context.managed_orgs or [])],
+        ext={"username": user_context.username},
     )
 
 
