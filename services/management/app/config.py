@@ -6,6 +6,48 @@ import os
 from datetime import timedelta
 
 
+def _build_database_url() -> str:
+    """Build DATABASE_URL from environment variables"""
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url
+
+    # If DATABASE_URL not set, construct from DB_TYPE and individual variables
+    db_type = os.getenv("DB_TYPE", "sqlite").lower()
+
+    if db_type == "postgresql":
+        db_user = os.getenv("POSTGRES_USER", os.getenv("DB_USER", ""))
+        db_pass = os.getenv("POSTGRES_PASSWORD", os.getenv("DB_PASS", ""))
+        db_host = os.getenv("POSTGRES_HOST", "localhost")
+        db_port = os.getenv("POSTGRES_PORT", "5432")
+        db_name = os.getenv("POSTGRES_DB", "waddleai")
+
+        if db_user and db_pass:
+            return f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
+        else:
+            return f"postgresql://{db_host}:{db_port}/{db_name}"
+
+    elif db_type == "mysql":
+        db_user = os.getenv("MYSQL_USER", os.getenv("DB_USER", ""))
+        db_pass = os.getenv("MYSQL_PASSWORD", os.getenv("DB_PASS", ""))
+        db_host = os.getenv("MYSQL_HOST", "localhost")
+        db_port = os.getenv("MYSQL_PORT", "3306")
+        db_name = os.getenv("MYSQL_DATABASE", os.getenv("DB_NAME", "waddleai"))
+
+        if db_user and db_pass:
+            return f"mysql+pymysql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
+        else:
+            return f"mysql+pymysql://{db_host}:{db_port}/{db_name}"
+
+    else:  # sqlite
+        db_path = os.getenv("SQLITE_PATH", "waddleai.db")
+        # SQLite requires 3 slashes for relative paths
+        if db_path.startswith("/"):
+            return f"sqlite:///{db_path}"
+        else:
+            return f"sqlite:///{db_path}"
+
+
 class Config:
     """Base configuration"""
 
@@ -14,7 +56,7 @@ class Config:
     DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
     # Database settings (PyDAL)
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite://waddleai.db")
+    DATABASE_URL = _build_database_url()
 
     # Redis settings
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
