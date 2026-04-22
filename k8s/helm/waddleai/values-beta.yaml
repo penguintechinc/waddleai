@@ -78,9 +78,9 @@ redis:
     enabled: true
     size: 10Gi
 
-# Ingress - Enabled for Beta
+# Ingress - Disabled for Beta (replaced by HTTPRoute)
 ingress:
-  enabled: true
+  enabled: false
   className: nginx
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
@@ -104,6 +104,16 @@ ingress:
     - secretName: waddleai-tls
       hosts:
         - waddleai.penguintech.cloud
+
+httproute:
+  enabled: true
+  gatewayName: shared
+  gatewayNamespace: gateway
+  host: "waddleai.penguintech.cloud"
+  rules:
+    - path: /api
+      service: "waddleai-management"
+      port: 8001
 
 # Pod Disruption Budget - Enabled for Beta
 podDisruptionBudget:
