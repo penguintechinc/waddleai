@@ -11,6 +11,7 @@ from services.management.app.services.providers import (
     BedrockConfig,
     CohereConfig,
     GeminiConfig,
+    LlamaCppConfig,
     OllamaConfig,
     OpenAIConfig,
     ProviderType,
@@ -35,6 +36,10 @@ class TestProviderTypes:
         assert ProviderType.OPENAI.value == "openai"
         assert ProviderType.ANTHROPIC.value == "anthropic"
         assert ProviderType.OLLAMA.value == "ollama"
+
+    def test_llamacpp_provider_type_exists(self):
+        """Test llama.cpp provider type"""
+        assert ProviderType.LLAMACPP == "llamacpp"
 
 
 class TestModelAliases:
@@ -87,6 +92,12 @@ class TestDefaultModels:
         models = DEFAULT_MODELS[ProviderType.OLLAMA]
         assert "llama3.2" in models
         assert "mistral" in models
+
+    def test_llamacpp_default_models_populated(self):
+        """Test llama.cpp default models"""
+        models = DEFAULT_MODELS[ProviderType.LLAMACPP]
+        assert "llama-3.2-3b-instruct" in models
+        assert len(models) >= 4
 
 
 class TestProviderForModel:
@@ -149,6 +160,13 @@ class TestProviderConfigs:
         config = OllamaConfig(name="test-ollama", provider_type=ProviderType.OLLAMA)
         assert config.provider_type == ProviderType.OLLAMA
         assert config.endpoint_url == "http://localhost:11434"
+
+    def test_llamacpp_config_sets_provider_type(self):
+        """Test llama.cpp config with defaults"""
+        config = LlamaCppConfig(name="test-llama", provider_type=ProviderType.LLAMACPP)
+        assert config.provider_type == ProviderType.LLAMACPP
+        assert config.model_name == ""
+        assert config.deployment_id is None
 
     def test_gemini_config_vertex_ai(self):
         """Test Gemini config with Vertex AI"""

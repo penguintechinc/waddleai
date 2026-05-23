@@ -22,6 +22,7 @@ class ProviderType(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
+    LLAMACPP = "llamacpp"
     GEMINI = "gemini"
     BEDROCK = "bedrock"
     AZURE_OPENAI = "azure_openai"
@@ -73,6 +74,16 @@ DEFAULT_MODELS = {
         "codellama",
         "phi3",
         "qwen2.5",
+    ],
+    ProviderType.LLAMACPP: [
+        "llama-3.2-3b-instruct",
+        "llama-3.1-8b-instruct",
+        "llama-3.1-70b-instruct",
+        "mistral-7b-instruct",
+        "mixtral-8x7b-instruct",
+        "codellama-13b-instruct",
+        "phi-3.5-mini-instruct",
+        "qwen2.5-7b-instruct",
     ],
     ProviderType.GEMINI: ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"],
     ProviderType.BEDROCK: [
@@ -173,6 +184,21 @@ class OllamaConfig(ProviderConfig):
 
 
 @dataclass
+class LlamaCppConfig(ProviderConfig):
+    """llama.cpp (llama-server) specific configuration"""
+
+    deployment_id: Optional[int] = None  # links to llamacpp_deployments table
+    model_name: str = ""
+
+    def __post_init__(self):
+        self.provider_type = ProviderType.LLAMACPP
+        if not self.endpoint_url:
+            self.endpoint_url = "http://localhost:8080"
+        if not self.model_list:
+            self.model_list = DEFAULT_MODELS[ProviderType.LLAMACPP].copy()
+
+
+@dataclass
 class GeminiConfig(ProviderConfig):
     """Google Gemini / Vertex AI specific configuration"""
 
@@ -241,6 +267,7 @@ PROVIDER_CONFIG_CLASSES = {
     ProviderType.OPENAI: OpenAIConfig,
     ProviderType.ANTHROPIC: AnthropicConfig,
     ProviderType.OLLAMA: OllamaConfig,
+    ProviderType.LLAMACPP: LlamaCppConfig,
     ProviderType.GEMINI: GeminiConfig,
     ProviderType.BEDROCK: BedrockConfig,
     ProviderType.AZURE_OPENAI: AzureOpenAIConfig,
@@ -292,6 +319,7 @@ __all__ = [
     "OpenAIConfig",
     "AnthropicConfig",
     "OllamaConfig",
+    "LlamaCppConfig",
     "GeminiConfig",
     "BedrockConfig",
     "AzureOpenAIConfig",
