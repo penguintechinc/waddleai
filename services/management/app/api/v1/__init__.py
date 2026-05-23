@@ -12,6 +12,7 @@ from . import (
     ailb_memory,
     auth,
     keys,
+    llamacpp,
     ollama,
     ollama_models,
     organizations,

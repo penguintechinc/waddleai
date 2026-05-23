@@ -248,6 +248,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.users",
     "services.management.app.api.v1.organizations",
     "services.management.app.api.v1.providers",
+    "services.management.app.api.v1.llamacpp",
     "services.management.app.api.v1.ollama",
     "services.management.app.api.v1.ollama_models",
     "services.management.app.api.v1.ailb",
