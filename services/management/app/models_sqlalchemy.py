@@ -164,6 +164,38 @@ class OllamaDeployment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class LlamaCppDeployment(Base):
+    __tablename__ = "llamacpp_deployments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    deployment_type = Column(String(50), nullable=False, default="kubernetes")  # kubernetes, remote
+    status = Column(String(50), nullable=False, default="pending")  # pending, deploying, running, stopped, error
+    status_message = Column(Text)
+
+    # Model
+    model_name = Column(String(255), nullable=False)
+    model_url = Column(String(512))       # GGUF download URL (kubernetes mode)
+    model_filename = Column(String(255))  # filename inside volume
+
+    # Inference params
+    n_ctx = Column(Integer, default=4096)
+    n_gpu_layers = Column(Integer, default=-1)  # -1 = all layers on GPU
+    gpu_count = Column(Integer, default=1)
+
+    # Connection
+    endpoint_url = Column(String(512))    # set by manager after deploy, or provided directly for remote
+
+    # Kubernetes
+    k8s_namespace = Column(String(255), default="waddleai")
+    k8s_daemonset_name = Column(String(255))
+    node_selector = Column(JSON)   # e.g. {"waddleai/gpu-tier": "a100"}
+    node_affinity = Column(JSON)   # optional advanced scheduling
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class OllamaModel(Base):
     __tablename__ = "ollama_models"
 
