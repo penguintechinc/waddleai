@@ -479,13 +479,13 @@ class LlamaCppConnector(LLMConnector):
         super().__init__(name, config)
         self.model_name: str = config.get("model_name", "")
         self._session: Optional[aiohttp.ClientSession] = None
+        self._headers = {}
+        if config.get("api_key"):
+            self._headers["Authorization"] = f"Bearer {config['api_key']}"
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            headers = {}
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-            self._session = aiohttp.ClientSession(headers=headers)
+            self._session = aiohttp.ClientSession(headers=self._headers)
         return self._session
 
     async def chat_completion(
@@ -502,6 +502,8 @@ class LlamaCppConnector(LLMConnector):
                 if response.status != 200:
                     raise Exception(f"llama-server error: {response.status}")
                 data = await response.json()
+                if not data.get("choices"):
+                    raise Exception("llama-server returned empty choices")
                 content = data["choices"][0]["message"]["content"]
                 usage = data.get("usage", {})
                 usage["provider"] = "llamacpp"
@@ -523,8 +525,8 @@ class LlamaCppConnector(LLMConnector):
                 if response.status == 200:
                     data = await response.json()
                     return len(data.get("tokens", []))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"LlamaCpp /tokenize failed: {e}")
         logger.warning("LlamaCpp /tokenize unavailable — falling back to tiktoken estimate")
         try:
             enc = tiktoken.get_encoding("cl100k_base")
