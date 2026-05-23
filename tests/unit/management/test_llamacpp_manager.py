@@ -143,7 +143,7 @@ def test_register_remote_healthy_sets_running(manager, remote_deployment, mock_d
         mock_req.get.return_value.status_code = 200
         manager.register_remote(remote_deployment)
 
-    mock_db(mock_db.llamacpp_deployments.id == remote_deployment.id).update.assert_called_once()
+    mock_db(mock_db.llamacpp_deployments.id == remote_deployment.id).update.assert_called_once_with(status="running")
 
 
 def test_register_remote_unhealthy_raises(manager, remote_deployment):

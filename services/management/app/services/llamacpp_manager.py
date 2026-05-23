@@ -8,7 +8,6 @@ Manages llama-server instances in two modes:
 
 import logging
 import re
-from typing import Any, Dict, Optional
 
 import requests
 import yaml
@@ -22,6 +21,7 @@ def get_k8s_apps_client():
     try:
         k8s_config.load_incluster_config()
     except Exception:
+        logger.debug("Not running in-cluster, falling back to kubeconfig")
         k8s_config.load_kube_config()
     return client.AppsV1Api()
 
@@ -32,6 +32,7 @@ def get_k8s_core_client():
     try:
         k8s_config.load_incluster_config()
     except Exception:
+        logger.debug("Not running in-cluster, falling back to kubeconfig")
         k8s_config.load_kube_config()
     return client.CoreV1Api()
 
@@ -124,20 +125,28 @@ class LlamaCppManager:
         svc_doc = next(d for d in docs if d["kind"] == "Service")
 
         namespace = deployment.k8s_namespace or "waddleai"
+        ds_name = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
         apps_client = get_k8s_apps_client()
 
-        apps_client.create_namespaced_daemon_set(
-            namespace=namespace,
-            body=ds_doc,
-        )
+        try:
+            apps_client.create_namespaced_daemon_set(
+                namespace=namespace,
+                body=ds_doc,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create DaemonSet {ds_name}: {e}")
+            raise
 
         core_client = get_k8s_core_client()
-        core_client.create_namespaced_service(
-            namespace=namespace,
-            body=svc_doc,
-        )
+        try:
+            core_client.create_namespaced_service(
+                namespace=namespace,
+                body=svc_doc,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create Service for {ds_name}: {e}")
+            raise
 
-        ds_name = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
         svc_endpoint = f"http://{ds_name}-svc.{namespace}:8080"
         db = self.db
         db(db.llamacpp_deployments.id == deployment.id).update(
