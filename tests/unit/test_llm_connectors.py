@@ -2,21 +2,37 @@
 Unit tests for LLM connectors system
 """
 
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, MagicMock, patch
 
 import pytest
+
+
+class AsyncContextManagerMock:
+    """Helper to mock async context managers (aiohttp responses)."""
+    def __init__(self, mock_response):
+        self._mock = mock_response
+    async def __aenter__(self):
+        return self._mock
+    async def __aexit__(self, *args):
+        pass
 
 try:
     from shared.utils.llm_connectors import (
         AnthropicConnector,
-        ConnectionLink,
-        LLMManager,
+        LlamaCppConnector,
         OllamaConnector,
         OpenAIConnector,
-        create_llm_manager,
+        LLMConnectionManager,
+        create_llm_connection_manager,
     )
 except ImportError as e:
     pytest.skip(f"Skipping: shared.utils.llm_connectors not available ({e})", allow_module_level=True)
+
+
+# Aliases for compatibility with tests
+ConnectionLink = dict  # Tests use dict for link objects
+LLMManager = LLMConnectionManager
+create_llm_manager = create_llm_connection_manager
 
 
 class TestConnectionLink:
@@ -492,3 +508,134 @@ class TestLLMManagerFactory:
         assert isinstance(manager, LLMManager)
         assert manager.db == mock_db
         assert isinstance(manager.connectors, dict)
+
+
+class TestLlamaCppConnector:
+    """Tests for LlamaCppConnector"""
+
+    @pytest.fixture
+    def connector(self):
+        from shared.utils.llm_connectors import LlamaCppConnector
+        config = {
+            "endpoint_url": "http://localhost:8080",
+            "model_name": "llama-3.2-3b-instruct",
+            "model_list": ["llama-3.2-3b-instruct"],
+            "api_key": None,
+        }
+        return LlamaCppConnector("test-llama", config)
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_success(self, connector):
+        mock_response_data = {
+            "choices": [{"message": {"content": "Hello!"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "model": "llama-3.2-3b-instruct",
+        }
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=mock_response_data)
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.post = MagicMock(return_value=AsyncContextManagerMock(mock_resp))
+
+        with patch.object(connector, "_session", mock_session):
+            content, usage = await connector.chat_completion(
+                [{"role": "user", "content": "Hi"}], "llama-3.2-3b-instruct"
+            )
+
+        assert content == "Hello!"
+        assert usage["prompt_tokens"] == 10
+        assert usage["provider"] == "llamacpp"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_server_error(self, connector):
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.post = MagicMock(return_value=AsyncContextManagerMock(mock_resp))
+
+        with patch.object(connector, "_session", mock_session):
+            with pytest.raises(Exception, match="llama-server error: 500"):
+                await connector.chat_completion(
+                    [{"role": "user", "content": "Hi"}], "llama-3.2-3b-instruct"
+                )
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_exact_via_tokenize(self, connector):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"tokens": [1, 2, 3, 4, 5]})
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.post = MagicMock(return_value=AsyncContextManagerMock(mock_resp))
+
+        with patch.object(connector, "_session", mock_session):
+            count = await connector.count_tokens("hello world", "llama-3.2-3b-instruct")
+
+        assert count == 5
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_fallback_to_tiktoken_on_failure(self, connector):
+        mock_resp = AsyncMock()
+        mock_resp.status = 503
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.post = MagicMock(return_value=AsyncContextManagerMock(mock_resp))
+
+        with patch.object(connector, "_session", mock_session):
+            count = await connector.count_tokens("hello world", "llama-3.2-3b-instruct")
+
+        assert count > 0  # tiktoken fallback returned something
+
+    @pytest.mark.asyncio
+    async def test_list_models_returns_loaded_model(self, connector):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "object": "list",
+            "data": [{"id": "llama-3.2-3b-instruct", "object": "model"}],
+        })
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.get = MagicMock(return_value=AsyncContextManagerMock(mock_resp))
+
+        with patch.object(connector, "_session", mock_session):
+            models = await connector.list_models()
+
+        assert len(models) == 1
+        assert models[0]["id"] == "llama-3.2-3b-instruct"
+        assert models[0]["provider"] == "llamacpp"
+
+    @pytest.mark.asyncio
+    async def test_health_check_healthy(self, connector):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"status": "ok"})
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.get = MagicMock(return_value=AsyncContextManagerMock(mock_resp))
+
+        with patch.object(connector, "_session", mock_session):
+            result = await connector.health_check()
+
+        assert result["status"] == "healthy"
+        assert result["provider"] == "llamacpp"
+
+    @pytest.mark.asyncio
+    async def test_health_check_unhealthy(self, connector):
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.get = MagicMock(side_effect=Exception("connection refused"))
+
+        with patch.object(connector, "_session", mock_session):
+            result = await connector.health_check()
+
+        assert result["status"] == "unhealthy"
+        assert "connection refused" in result["error"]

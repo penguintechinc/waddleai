@@ -1,6 +1,6 @@
 """
 LLM Provider Connection Management
-Handles connections to OpenAI, Anthropic, and Ollama providers
+Handles connections to OpenAI, Anthropic, Ollama, and llama.cpp (llama-server) providers
 """
 
 import logging
@@ -468,6 +468,124 @@ class OllamaConnector(LLMConnector):
             await self.session.close()
 
 
+class LlamaCppConnector(LLMConnector):
+    """llama-server (llama.cpp) connector.
+
+    Connects to a running llama-server instance via its OpenAI-compatible HTTP API.
+    Uses /tokenize for exact token counts; falls back to tiktoken on failure.
+    """
+
+    def __init__(self, name: str, config: Dict[str, Any]):
+        super().__init__(name, config)
+        self.model_name: str = config.get("model_name", "")
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            self._session = aiohttp.ClientSession(headers=headers)
+        return self._session
+
+    async def chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> Tuple[str, Dict[str, Any]]:
+        session = self._get_session()
+        payload = {"model": model or self.model_name, "messages": messages, **kwargs}
+        try:
+            async with session.post(
+                f"{self.endpoint_url}/v1/chat/completions",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"llama-server error: {response.status}")
+                data = await response.json()
+                content = data["choices"][0]["message"]["content"]
+                usage = data.get("usage", {})
+                usage["provider"] = "llamacpp"
+                usage["model"] = model
+                return content, usage
+        except Exception as e:
+            logger.error(f"LlamaCpp completion failed: {e}")
+            raise
+
+    async def count_tokens(self, text: str, model: str) -> int:
+        """Return exact token count via /tokenize; fall back to tiktoken on failure."""
+        session = self._get_session()
+        try:
+            async with session.post(
+                f"{self.endpoint_url}/tokenize",
+                json={"content": text},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return len(data.get("tokens", []))
+        except Exception:
+            pass
+        logger.warning("LlamaCpp /tokenize unavailable — falling back to tiktoken estimate")
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+            return len(enc.encode(text))
+        except Exception:
+            return len(text.split())
+
+    async def list_models(self) -> List[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            async with session.get(
+                f"{self.endpoint_url}/v1/models",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                if response.status != 200:
+                    return []
+                data = await response.json()
+                return [
+                    {
+                        "id": m.get("id", self.model_name),
+                        "object": "model",
+                        "provider": "llamacpp",
+                        "owned_by": "llamacpp",
+                    }
+                    for m in data.get("data", [])
+                ]
+        except Exception as e:
+            logger.error(f"Failed to list llama-server models: {e}")
+            return []
+
+    async def health_check(self) -> Dict[str, Any]:
+        session = self._get_session()
+        try:
+            async with session.get(
+                f"{self.endpoint_url}/health",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                if response.status == 200:
+                    return {
+                        "status": "healthy",
+                        "provider": "llamacpp",
+                        "endpoint": self.endpoint_url,
+                        "model": self.model_name,
+                    }
+                return {
+                    "status": "unhealthy",
+                    "provider": "llamacpp",
+                    "error": f"HTTP {response.status}",
+                }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "provider": "llamacpp",
+                "error": str(e),
+            }
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+
 class LLMConnectionManager:
     """Manages all LLM provider connections"""
 
@@ -509,6 +627,8 @@ class LLMConnectionManager:
                     connector = AnthropicConnector(link.name, config)
                 elif link.provider == "ollama":
                     connector = OllamaConnector(link.name, config)
+                elif link.provider == "llamacpp":
+                    connector = LlamaCppConnector(link.name, config)
                 else:
                     logger.warning(f"Unknown provider: {link.provider}")
                     continue
