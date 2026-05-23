@@ -81,6 +81,7 @@ def create_llamacpp_deployment():
         node_selector=data.get("node_selector"),
         node_affinity=data.get("node_affinity"),
     )
+    db.commit()
     return jsonify({"deployment_id": dep_id, "message": "Deployment created"}), 201
 
 
@@ -112,6 +113,7 @@ def update_llamacpp_deployment(deployment_id):
     updates = {k: v for k, v in data.items() if k in allowed}
     if updates:
         db(db.llamacpp_deployments.id == deployment_id).update(**updates)
+        db.commit()
     return jsonify({"message": "Deployment updated"}), 200
 
 
@@ -136,6 +138,7 @@ def delete_llamacpp_deployment(deployment_id):
             logger.warning(f"Error during forced removal of {dep.name}: {e}")
 
     db(db.llamacpp_deployments.id == deployment_id).delete()
+    db.commit()
     return jsonify({"message": "Deployment deleted"}), 200
 
 
@@ -175,6 +178,7 @@ def remove_llamacpp(deployment_id):
             mgr.remove_daemonset(dep, force=True)
         else:
             db(db.llamacpp_deployments.id == deployment_id).update(status="stopped")
+            db.commit()
     except Exception as e:
         return jsonify({"error": str(e)}), 503
 
