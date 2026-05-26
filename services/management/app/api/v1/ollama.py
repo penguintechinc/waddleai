@@ -292,26 +292,23 @@ def restart_ollama_deployment(deployment_id):
 @require_role("admin")
 def check_ollama_health(deployment_id):
     """Health check for Ollama deployment"""
-    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+    from ...services.ollama_manager import OllamaDeploymentManager
 
+    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
-    # TODO: Implement actual health check via HTTP to Ollama API
-    # For now, return mock response
-    health_status = "healthy"
-
-    db(db.ollama_deployments.id == deployment_id).update(
-        health_status=health_status, last_health_check=datetime.utcnow()
-    )
-    db.commit()
+    manager = OllamaDeploymentManager(db)
+    result = manager.health_check(deployment_id)
 
     return jsonify(
         {
             "deployment_id": deployment_id,
             "endpoint_url": deployment.endpoint_url,
-            "health_status": health_status,
-            "checked_at": datetime.utcnow().isoformat(),
+            "health_status": result.get("status", "unknown"),
+            "healthy": result.get("healthy", False),
+            "checked_at": result.get("checked_at", datetime.utcnow().isoformat()),
+            "error": result.get("error"),
         }
     )
 
@@ -341,8 +338,9 @@ def get_ollama_logs(deployment_id):
 @require_role("admin")
 def pull_ollama_model(deployment_id):
     """Pull a model to Ollama deployment"""
-    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+    from ...services.ollama_manager import OllamaDeploymentManager
 
+    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
@@ -352,39 +350,21 @@ def pull_ollama_model(deployment_id):
 
     model_name = data["model"]
     model_tag = data.get("tag", "latest")
+    full_model = f"{model_name}:{model_tag}" if model_tag != "latest" else model_name
 
-    # Check if model already exists
-    existing = (
-        db(
-            (db.ollama_models.deployment_id == deployment_id)
-            & (db.ollama_models.model_name == model_name)
-            & (db.ollama_models.model_tag == model_tag)
-        )
-        .select()
-        .first()
-    )
+    manager = OllamaDeploymentManager(db)
+    result = manager.pull_model(deployment_id, full_model)
 
-    if existing:
-        # Update status to pulling
-        db(db.ollama_models.id == existing.id).update(status="pulling", last_updated=datetime.utcnow())
-    else:
-        # Create new model record
-        db.ollama_models.insert(
-            deployment_id=deployment_id,
-            model_name=model_name,
-            model_tag=model_tag,
-            status="pulling",
-            last_updated=datetime.utcnow(),
-        )
-    db.commit()
+    if result.error:
+        return jsonify({"error": result.error, "model": full_model, "status": result.status}), 500
 
-    # TODO: Implement actual Ollama API call to pull model
     return jsonify(
         {
             "deployment_id": deployment_id,
-            "model": f"{model_name}:{model_tag}",
-            "status": "pulling",
-            "message": "Model pull initiated",
+            "model": full_model,
+            "status": result.status,
+            "completed": result.completed,
+            "message": "Model pulled successfully" if result.completed else "Model pull initiated",
         }
     )
 
@@ -446,22 +426,34 @@ def export_docker_compose(deployment_id):
 @require_auth
 @require_role("admin")
 def export_k8s_manifest(deployment_id):
-    """Export Kubernetes manifest for Ollama deployment"""
-    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+    """Export Kubernetes manifest for Ollama deployment.
 
+    Returns DaemonSet + shared RWX PVC for kubernetes-daemonset type,
+    or single-replica Deployment for kubernetes type.
+    """
+    from ...services.ollama_manager import OllamaDeploymentManager
+
+    deployment = db(db.ollama_deployments.id == deployment_id).select().first()
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
-    manifest = generate_k8s_manifest(
-        name=deployment.name, gpu_config=deployment.gpu_config or {}, resource_limits=deployment.resource_limits or {}
-    )
-
-    manifest_yaml = yaml.dump_all(manifest, default_flow_style=False)
+    if deployment.deployment_type == "kubernetes-daemonset":
+        manager = OllamaDeploymentManager(db)
+        manifest_yaml = manager.generate_daemonset_manifest(deployment_id)
+        filename = f"ollama-{deployment.name}-daemonset.yml"
+    else:
+        manifest = generate_k8s_manifest(
+            name=deployment.name,
+            gpu_config=deployment.gpu_config or {},
+            resource_limits=deployment.resource_limits or {},
+        )
+        manifest_yaml = yaml.dump_all(manifest, default_flow_style=False)
+        filename = f"ollama-{deployment.name}-k8s.yml"
 
     return Response(
         manifest_yaml,
         mimetype="text/yaml",
-        headers={"Content-Disposition": f"attachment; filename=ollama-{deployment.name}-k8s.yml"},
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

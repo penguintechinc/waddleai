@@ -1,0 +1,6 @@
+apiVersion: v2
+name: amd-rocm-plugin
+description: AMD ROCm GPU device plugin for Kubernetes — exposes amd.com/gpu resources to the scheduler
+type: application
+version: 6.4.0
+appVersion: "6.4.0"

@@ -196,8 +196,9 @@ redis:
   enabled: true
   replicaCount: 1
   image:
-    repository: redis
-    tag: "7-alpine"
+    repository: valkey/valkey
+    tag: "8-bookworm"
+    digest: "sha256:fea8b3e67b15729d4bb70589eb03367bab9ad1ee89c876f54327fc7c6e618571"
     pullPolicy: IfNotPresent
 
   service:
@@ -219,7 +220,7 @@ redis:
     storageClass: ""
 
   args:
-    - redis-server
+    - valkey-server
     - --appendonly
     - "yes"
 
@@ -244,6 +245,14 @@ redis:
     periodSeconds: 5
     timeoutSeconds: 3
     failureThreshold: 3
+
+# HTTPRoute Configuration (Cilium Gateway API)
+httproute:
+  enabled: false
+  gatewayName: shared
+  gatewayNamespace: gateway
+  host: ""
+  rules: []
 
 # Ingress configuration
 ingress:
@@ -311,3 +320,128 @@ networkPolicy:
   policyTypes:
     - Ingress
     - Egress
+
+# Secret management
+# Set manage: false to skip chart-managed secret (use externally created secret instead)
+secrets:
+  manage: true
+  postgresPassword: "changeme-postgres-password"
+  jwtSecret: "changeme-jwt-secret-min-32-characters-required"
+  flaskSecretKey: "changeme-flask-secret-key"
+  webhookSecret: "changeme-webhook-secret"
+
+# Ollama GPU Inference Engine
+# Deployed as DaemonSet on nodes labeled gpu=true (e.g. svr01, svr02)
+# Models are shared via a ReadWriteMany PVC — pulled once, served from all GPU nodes
+ollama:
+  enabled: false
+  image:
+    repository: ollama/ollama
+    tag: "0.7.1"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 11434
+    targetPort: 11434
+
+  # Label GPU nodes: kubectl label node <nodename> gpu=true
+  nodeSelector:
+    gpu: "true"
+
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+  gpu:
+    enabled: true
+    type: nvidia
+    count: 1
+
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "2000m"
+    limits:
+      memory: "16Gi"
+      cpu: "4000m"
+
+  # Shared RWX PVC — models downloaded once, mounted on all GPU nodes
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClass: ""
+    accessMode: ReadWriteMany
+
+  # Optional: list of model names to pull on pod startup
+  # e.g. ["llama3:8b", "mistral:7b"]
+  models: []
+
+  env:
+    OLLAMA_HOST: "0.0.0.0"
+    OLLAMA_KEEP_ALIVE: "24h"
+    OLLAMA_MAX_LOADED_MODELS: "2"
+    OLLAMA_NUM_PARALLEL: "2"
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 5
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# GPU Device Plugins (sub-charts — all disabled by default)
+# Enable the plugin matching your GPU hardware.
+
+# NVIDIA GPU Operator — full stack: GFD, container toolkit, device plugin.
+# Requires: helm repo add nvidia https://helm.ngc.nvidia.com/nvidia && helm dep update
+# Set driver.enabled=false when NVIDIA drivers are already installed on nodes.
+nvidia-gpu-operator:
+  enabled: false
+  operator:
+    defaultRuntime: containerd
+  driver:
+    enabled: false
+  toolkit:
+    enabled: true
+  devicePlugin:
+    enabled: true
+  gfd:
+    enabled: true
+  dcgm:
+    enabled: false
+  dcgmExporter:
+    enabled: false
+  migManager:
+    enabled: false
+  nodeStatusExporter:
+    enabled: false
+  validator:
+    enabled: true
+
+# AMD ROCm device plugin — exposes amd.com/gpu resources
+amd-rocm-plugin:
+  enabled: false
+  namespace: kube-system
+  nodeSelector: {}
+
+# Intel GPU device plugin — exposes gpu.intel.com/i915 resources
+intel-gpu-plugin:
+  enabled: false
+  namespace: kube-system
+  nodeSelector: {}
+  sharedDevNum: 1

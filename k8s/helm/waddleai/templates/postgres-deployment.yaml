@@ -41,6 +41,8 @@ spec:
               value: {{ .Values.postgres.env.POSTGRES_DB }}
             - name: POSTGRES_USER
               value: {{ .Values.postgres.env.POSTGRES_USER }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
             {{- range .Values.postgres.secretEnv }}
             - name: {{ .name }}
               valueFrom:

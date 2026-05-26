@@ -14,8 +14,8 @@ global:
 management:
   replicaCount: 2
   image:
-    repository: waddleai/management
-    tag: beta-latest
+    repository: management
+    tag: beta-1776182785
     pullPolicy: Always
 
   resources:
@@ -32,10 +32,10 @@ management:
 
 # WebUI Service - Beta
 webui:
-  replicaCount: 2
+  replicaCount: 1
   image:
-    repository: waddleai/webui
-    tag: beta-latest
+    repository: webui
+    tag: beta-1776182767
     pullPolicy: Always
 
   resources:
@@ -61,6 +61,7 @@ postgres:
   persistence:
     enabled: true
     size: 20Gi
+    storageClass: "nest-block"
 
 # Redis - Beta
 redis:
@@ -77,6 +78,7 @@ redis:
   persistence:
     enabled: true
     size: 10Gi
+    storageClass: "nest-block"
 
 # Ingress - Disabled for Beta (replaced by HTTPRoute)
 ingress:
@@ -114,6 +116,9 @@ httproute:
     - path: /api
       service: "waddleai-management"
       port: 8001
+    - path: /
+      service: "waddleai-webui"
+      port: 8080
 
 # Pod Disruption Budget - Enabled for Beta
 podDisruptionBudget:
@@ -133,3 +138,86 @@ affinity:
                 values:
                   - waddleai
           topologyKey: kubernetes.io/hostname
+
+# Ollama - Beta (targets svr01-dal2 and svr02-dal2 — GPU compute nodes)
+# svr03-dal2 has a basic GPU but is primarily a storage server; excluded via ollama=true label.
+# Pre-requisites on cluster:
+#   kubectl label node svr01-dal2 gpu=true ollama=true
+#   kubectl label node svr02-dal2 gpu=true ollama=true
+#   kubectl label node svr03-dal2 gpu=true  (gets device plugin but NOT ollama)
+ollama:
+  enabled: true
+  image:
+    repository: ollama/ollama
+    tag: "0.7.1"
+    pullPolicy: IfNotPresent
+
+  nodeSelector:
+    ollama: "true"
+
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+  gpu:
+    enabled: true
+    type: nvidia
+    count: 1
+
+  resources:
+    requests:
+      memory: "16Gi"
+      cpu: "4000m"
+    limits:
+      memory: "32Gi"
+      cpu: "8000m"
+
+  persistence:
+    enabled: false
+    # hostPath mounts local node storage — avoids CephFS dependency, faster for large models
+    hostPath: /var/lib/ollama/models
+
+  env:
+    OLLAMA_HOST: "0.0.0.0"
+    OLLAMA_KEEP_ALIVE: "24h"
+    OLLAMA_MAX_LOADED_MODELS: "3"
+    OLLAMA_NUM_PARALLEL: "4"
+
+  models: []
+
+# GPU Device Plugins - Beta
+# NVIDIA GPU Operator targets svr01-dal2 and svr02-dal2 (labeled gpu=true)
+# driver.enabled=false — NVIDIA drivers already present on nodes
+nvidia-gpu-operator:
+  enabled: true
+  operator:
+    defaultRuntime: containerd
+  driver:
+    enabled: false
+  toolkit:
+    enabled: true
+  devicePlugin:
+    enabled: true
+    config:
+      default: "any"
+  gfd:
+    enabled: true
+    nodeSelector:
+      gpu: "true"
+  dcgm:
+    enabled: false
+  dcgmExporter:
+    enabled: false
+  migManager:
+    enabled: false
+  nodeStatusExporter:
+    enabled: false
+  validator:
+    enabled: true
+
+amd-rocm-plugin:
+  enabled: false
+
+intel-gpu-plugin:
+  enabled: false

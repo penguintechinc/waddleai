@@ -6,6 +6,7 @@ Manages AI providers, Ollama deployments, usage tracking, and MarchProxy AILB in
 import logging
 import os
 import time
+from datetime import datetime
 
 from flask import Flask, Response
 from flask_cors import CORS
@@ -15,6 +16,49 @@ from .extensions import db, init_extensions, redis_client, security
 
 # Process start time for uptime metric
 _START_TIME = time.time()
+
+
+def _auto_register_k8s_ollama(app):
+    """
+    Auto-register the in-cluster Ollama DaemonSet when OLLAMA_HOST is set by Helm.
+
+    When ollama.enabled=true in the Helm chart, OLLAMA_HOST is injected pointing
+    to the waddleai-ollama ClusterIP Service. This registers it as a managed
+    kubernetes-daemonset deployment so WaddleAI can track health and models.
+    """
+    ollama_host = os.environ.get("OLLAMA_HOST")
+    mode = app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
+
+    if not ollama_host or mode == "manual":
+        return
+
+    with app.app_context():
+        try:
+            from .extensions import db as _db
+
+            existing = _db(_db.ollama_deployments.endpoint_url == ollama_host).select().first()
+            if existing:
+                return
+
+            _db.ollama_deployments.insert(
+                name="k8s-gpu-pool",
+                endpoint_url=ollama_host,
+                deployment_type="kubernetes-daemonset",
+                gpu_config={
+                    "gpu_count": 1,
+                    "node_selector": {"gpu": "true"},
+                    "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
+                },
+                resource_limits={"cpu_limit": "4", "memory_limit": "16Gi", "shared_storage_size": "200Gi"},
+                status="running",
+                health_status="unknown",
+                auto_start=False,
+                created_at=datetime.utcnow(),
+            )
+            _db.commit()
+            app.logger.info(f"Auto-registered in-cluster Ollama DaemonSet at {ollama_host}")
+        except Exception as e:
+            app.logger.warning(f"Failed to auto-register Ollama deployment: {e}")
 
 
 def create_app(config_class=Config):
@@ -49,6 +93,9 @@ def create_app(config_class=Config):
 
     # Register error handlers
     register_error_handlers(app)
+
+    # Auto-register in-cluster Ollama when deployed via Helm with ollama.enabled=true
+    _auto_register_k8s_ollama(app)
 
     # Health check endpoint
     @app.route("/healthz")

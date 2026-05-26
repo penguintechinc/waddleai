@@ -1,0 +1,58 @@
+{{- if .Values.enabled }}
+# ROOT EXCEPTION (approved): AMD ROCm device plugin requires privileged access to
+# /dev/kfd (kernel fusion driver) and /dev/dri (direct rendering interface) to
+# expose amd.com/gpu resources to the Kubernetes scheduler.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: amd-rocm-plugin
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: amd-rocm-plugin
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: amd-rocm-plugin
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: amd-rocm-plugin
+    spec:
+      serviceAccountName: amd-rocm-plugin
+      priorityClassName: system-node-critical
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: amd-rocm-plugin
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: kfd
+              mountPath: /dev/kfd
+            - name: dri
+              mountPath: /dev/dri
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: kfd
+          hostPath:
+            path: /dev/kfd
+        - name: dri
+          hostPath:
+            path: /dev/dri
+{{- end }}

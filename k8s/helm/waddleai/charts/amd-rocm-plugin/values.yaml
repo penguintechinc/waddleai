@@ -1,0 +1,24 @@
+enabled: false
+
+namespace: kube-system
+
+image:
+  repository: rocm/k8s-device-plugin
+  tag: "6.4.0"
+  pullPolicy: IfNotPresent
+
+# Only schedule on nodes with AMD GPU hardware
+nodeSelector: {}
+
+tolerations:
+  - key: amd.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

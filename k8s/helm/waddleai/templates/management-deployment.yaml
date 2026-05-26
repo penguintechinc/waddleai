@@ -67,6 +67,10 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .key }}
             {{- end }}
+            {{- if .Values.ollama.enabled }}
+            - name: OLLAMA_HOST
+              value: "http://{{ include "waddleai.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"
+            {{- end }}
           {{- if .Values.management.livenessProbe.enabled }}
           livenessProbe:
             httpGet:

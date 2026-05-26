@@ -51,7 +51,7 @@ class OllamaDeploymentConfig:
 
     name: str
     endpoint_url: str = "http://localhost:11434"
-    deployment_type: str = "docker"  # docker, kubernetes, external
+    deployment_type: str = "docker"  # docker, kubernetes, kubernetes-daemonset, external
     port: int = 11434
     gpu_count: int = 0
     gpu_ids: List[str] = field(default_factory=list)
@@ -60,6 +60,15 @@ class OllamaDeploymentConfig:
     auto_start: bool = True
     environment: Dict[str, str] = field(default_factory=dict)
     volumes: Dict[str, str] = field(default_factory=dict)
+    # Kubernetes DaemonSet fields
+    node_selector: Dict[str, str] = field(default_factory=lambda: {"gpu": "true"})
+    tolerations: List[Dict] = field(default_factory=lambda: [
+        {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
+    ])
+    shared_storage_size: str = "200Gi"
+    pvc_access_mode: str = "ReadWriteMany"
+    storage_class: str = ""
+    namespace: str = "waddleai"
 
 
 @dataclass
@@ -457,6 +466,141 @@ class OllamaDeploymentManager:
             return ""
 
         return "---\n".join(yaml.dump(s, default_flow_style=False) for s in all_services)
+
+    def generate_daemonset_manifest(self, deployment_id: int) -> str:
+        """
+        Generate Kubernetes DaemonSet manifest for multi-GPU-node Ollama deployment.
+
+        Creates DaemonSet (one pod per GPU node) + shared ReadWriteMany PVC
+        so models are stored once and served from all GPU nodes.
+        """
+        db = self.db
+
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return ""
+
+        gpu_config = deployment.gpu_config or {}
+        resource_limits = deployment.resource_limits or {}
+        gpu_count = gpu_config.get("gpu_count", gpu_config.get("count", 1))
+        node_selector = gpu_config.get("node_selector", {"gpu": "true"})
+        tolerations = gpu_config.get("tolerations", [
+            {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
+        ])
+        storage_size = resource_limits.get("shared_storage_size", "200Gi")
+        storage_class = gpu_config.get("storage_class", "")
+        namespace = deployment.namespace if hasattr(deployment, "namespace") else "waddleai"
+
+        pvc = {
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {
+                "name": f"ollama-{deployment.name}-models",
+                "namespace": namespace,
+                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai"},
+            },
+            "spec": {
+                "accessModes": ["ReadWriteMany"],
+                "resources": {"requests": {"storage": storage_size}},
+            },
+        }
+        if storage_class:
+            pvc["spec"]["storageClassName"] = storage_class
+
+        container = {
+            "name": "ollama",
+            "image": "ollama/ollama:0.7.1",
+            "ports": [{"containerPort": 11434, "name": "http"}],
+            "env": [
+                {"name": "OLLAMA_HOST", "value": "0.0.0.0"},
+                {"name": "OLLAMA_MODELS", "value": "/models"},
+                {"name": "HOME", "value": "/tmp"},
+            ],
+            "volumeMounts": [
+                {"name": "ollama-models", "mountPath": "/models"},
+                {"name": "tmp", "mountPath": "/tmp"},
+            ],
+            "resources": {
+                "requests": {
+                    "memory": resource_limits.get("memory_limit", "16Gi"),
+                    "cpu": resource_limits.get("cpu_limit", "4"),
+                    "nvidia.com/gpu": str(gpu_count),
+                },
+                "limits": {
+                    "memory": resource_limits.get("memory_limit", "16Gi"),
+                    "cpu": resource_limits.get("cpu_limit", "4"),
+                    "nvidia.com/gpu": str(gpu_count),
+                },
+            },
+            "securityContext": {
+                "runAsNonRoot": True,
+                "runAsUser": 1000,
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": False,
+                "capabilities": {"drop": ["ALL"]},
+            },
+            "livenessProbe": {
+                "httpGet": {"path": "/", "port": 11434},
+                "initialDelaySeconds": 60,
+                "periodSeconds": 30,
+                "timeoutSeconds": 15,
+                "failureThreshold": 5,
+            },
+            "readinessProbe": {
+                "httpGet": {"path": "/", "port": 11434},
+                "initialDelaySeconds": 30,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            },
+        }
+
+        daemonset = {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {
+                "name": f"ollama-{deployment.name}",
+                "namespace": namespace,
+                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai"},
+            },
+            "spec": {
+                "selector": {"matchLabels": {"app": f"ollama-{deployment.name}"}},
+                "template": {
+                    "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
+                    "spec": {
+                        "securityContext": {"fsGroup": 1000, "runAsNonRoot": True, "runAsUser": 1000},
+                        "nodeSelector": node_selector,
+                        "tolerations": tolerations,
+                        "containers": [container],
+                        "volumes": [
+                            {
+                                "name": "ollama-models",
+                                "persistentVolumeClaim": {"claimName": f"ollama-{deployment.name}-models"},
+                            },
+                            {"name": "tmp", "emptyDir": {}},
+                        ],
+                    },
+                },
+            },
+        }
+
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": f"ollama-{deployment.name}",
+                "namespace": namespace,
+                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai"},
+            },
+            "spec": {
+                "type": "ClusterIP",
+                "selector": {"app": f"ollama-{deployment.name}"},
+                "ports": [{"name": "http", "port": 11434, "targetPort": 11434, "protocol": "TCP"}],
+            },
+        }
+
+        manifests = [pvc, daemonset, service]
+        return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
 
     # Container Management (Orchestrated Mode)
 

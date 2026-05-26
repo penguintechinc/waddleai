@@ -93,5 +93,16 @@ Image name for postgres
 Image name for redis
 */}}
 {{- define "waddleai.redis.image" -}}
+{{- if .Values.redis.image.digest -}}
+{{- printf "%s@%s" .Values.redis.image.repository .Values.redis.image.digest }}
+{{- else -}}
 {{- printf "%s:%s" .Values.redis.image.repository .Values.redis.image.tag }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Image name for ollama
+*/}}
+{{- define "waddleai.ollama.image" -}}
+{{- printf "%s:%s" .Values.ollama.image.repository .Values.ollama.image.tag }}
 {{- end }}

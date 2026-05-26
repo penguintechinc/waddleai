@@ -1,0 +1,24 @@
+enabled: false
+
+namespace: kube-system
+
+image:
+  repository: intel/intel-gpu-plugin
+  tag: "0.31.0"
+  pullPolicy: IfNotPresent
+
+# Only schedule on nodes with Intel GPU/iGPU hardware
+nodeSelector: {}
+
+tolerations: []
+
+# Shared device allocation allows multiple containers to share one GPU
+sharedDevNum: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

@@ -35,7 +35,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
     - name: Generate epoch64 timestamp
       id: timestamp
@@ -62,43 +62,43 @@ jobs:
         fi
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
       with:
         python-version: ${{ matrix.python-version }}
-    
+
     - name: Cache pip dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r services/management/requirements.txt
         pip install pytest pytest-asyncio pytest-cov bandit
-    
+
     - name: Run unit tests
       run: |
         python -m pytest tests/unit/ -v --cov=shared --cov-report=xml --cov-report=html
       env:
         PYTHONPATH: ${{ github.workspace }}
-    
+
     - name: Run security check (bandit)
       run: |
         bandit -r proxy management shared -ll -f json -o bandit-results.json || true
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6
       with:
         file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
 
-  build-and-push:
+  build-platform:
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -107,6 +107,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        platform: [linux/amd64, linux/arm64]
         service: [proxy, management]
         include:
           - service: webui
@@ -115,7 +116,98 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      with:
+        fetch-depth: 0
+
+    - name: Generate epoch64 timestamp
+      id: timestamp
+      run: |
+        EPOCH64=$(date +%s)
+        echo "epoch64=$EPOCH64" >> $GITHUB_OUTPUT
+
+    - name: Check version file
+      id: version
+      run: |
+        if [ -f .version ]; then
+          VERSION=$(cat .version | tr -d '[:space:]')
+          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+
+          if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "semver=0.0.0" >> $GITHUB_OUTPUT
+          echo "changed=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Determine arch suffix
+      id: arch
+      run: |
+        ARCH=${{ matrix.platform }}
+        SUFFIX=${ARCH#linux/}
+        echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
+
+    - name: Extract metadata for Docker
+      id: meta
+      uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+        tags: |
+          type=raw,value=${{ steps.version.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed == 'true' }}
+          type=raw,value=${{ steps.version.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
+          type=raw,value=beta-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
+          type=raw,value=gamma-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
+          type=raw,value=alpha-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
+          type=sha,prefix=ci-${{ steps.arch.outputs.suffix }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
+
+    - name: Build and push Docker image for ${{ matrix.platform }}
+      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7
+      with:
+        context: ${{ matrix.context || '.' }}
+        file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
+        platforms: ${{ matrix.platform }}
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha,scope=${{ matrix.service }}-${{ steps.arch.outputs.suffix }}
+        cache-to: type=gha,scope=${{ matrix.service }}-${{ steps.arch.outputs.suffix }},mode=max
+        build-args: |
+          BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          VCS_REF=${{ github.sha }}
+
+  merge-manifests:
+    needs: build-platform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [proxy, management, webui]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
       with:
         fetch-depth: 0
 
@@ -144,55 +236,43 @@ jobs:
         fi
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
+      uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4
+
     - name: Log in to Container Registry
-      if: github.event_name != 'pull_request'
-      uses: docker/login-action@v3
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Extract metadata (tags, labels) for Docker
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
-        tags: |
-          # Regular builds (no .version change)
-          type=raw,value=beta-${{ steps.timestamp.outputs.epoch64 }},enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
-          type=raw,value=gamma-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
-          type=raw,value=alpha-${{ steps.timestamp.outputs.epoch64 }},enable=${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
 
-          # Version builds (.version changed)
-          type=raw,value=v${{ steps.version.outputs.semver }}-beta,enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed == 'true' }}
-          type=raw,value=v${{ steps.version.outputs.semver }}-gamma,enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
+    - name: Determine manifest tags
+      id: tags
+      run: |
+        TAGS=""
+        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          TAG="${{ github.ref_name }}"
+          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${TAG} --tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:latest"
+        elif [[ "${{ github.ref }}" == refs/heads/v* && "${{ steps.version.outputs.changed }}" == "true" ]]; then
+          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:v${{ steps.version.outputs.semver }}-beta --tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}"
+        elif [[ "${{ github.ref }}" == refs/heads/v* ]]; then
+          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}"
+        elif [[ "${{ github.ref }}" == refs/heads/main && "${{ steps.version.outputs.changed }}" == "true" ]]; then
+          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:v${{ steps.version.outputs.semver }}-gamma --tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:gamma-${{ steps.timestamp.outputs.epoch64 }}"
+        elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
+          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:gamma-${{ steps.timestamp.outputs.epoch64 }}"
+        else
+          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:alpha-${{ steps.timestamp.outputs.epoch64 }}"
+        fi
+        echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
-          # Always-present sha tag for security-scan and integration-test
-          type=sha,prefix=ci-,format=long,enable=${{ github.event_name != 'pull_request' }}
-
-          # Release tags
-          type=semver,pattern={{version}}
-          type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-    
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: ${{ matrix.context || '.' }}
-        file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
-        platforms: linux/amd64,linux/arm64
-        push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        build-args: |
-          BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-          VCS_REF=${{ github.sha }}
+    - name: Create and push manifest
+      run: |
+        docker buildx imagetools create ${{ steps.tags.outputs.tags }} \
+          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-amd64 \
+          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-arm64
 
   security-scan:
-    needs: build-and-push
+    needs: merge-manifests
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -202,32 +282,32 @@ jobs:
 
     steps:
     - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
       if: github.event_name != 'pull_request'
       with:
-        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:ci-${{ github.sha }}
+        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:ci-amd64-${{ github.sha }}
         format: 'sarif'
         output: 'trivy-results-${{ matrix.service }}.sarif'
         version: 'v0.69.3'
 
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@ff0a06e83cb2de871e5a09832bc6a81e7276941f  # v3
+      uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
       if: github.event_name != 'pull_request'
       with:
         sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
 
   integration-test:
-    needs: build-and-push
+    needs: merge-manifests
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-    continue-on-error: true  # Full-stack integration requires postgres/redis; failures are non-blocking
+    continue-on-error: true
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -238,7 +318,7 @@ jobs:
         cat << EOF > docker-compose.test.yml
         services:
           proxy:
-            image: ${{ env.REGISTRY }}/${{ github.repository }}/proxy:ci-${{ github.sha }}
+            image: ${{ env.REGISTRY }}/${{ github.repository }}/proxy:ci-amd64-${{ github.sha }}
             ports:
               - "8000:8000"
             environment:
@@ -249,7 +329,7 @@ jobs:
                 condition: service_healthy
 
           management:
-            image: ${{ env.REGISTRY }}/${{ github.repository }}/management:ci-${{ github.sha }}
+            image: ${{ env.REGISTRY }}/${{ github.repository }}/management:ci-amd64-${{ github.sha }}
             ports:
               - "8001:8001"
             environment:
@@ -288,7 +368,7 @@ jobs:
     - name: Start services
       run: |
         docker compose -f docker-compose.test.yml up -d
-        sleep 45  # Wait for services to start
+        sleep 45
 
     - name: Test management health endpoints
       run: |
@@ -315,28 +395,27 @@ jobs:
         docker compose -f docker-compose.test.yml down -v
 
   release:
-    needs: [test, build-and-push, security-scan, integration-test]
+    needs: [test, security-scan, integration-test]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
       with:
         fetch-depth: 0
-    
+
     - name: Generate changelog
       id: changelog
       run: |
-        # Simple changelog generation from git log
         echo "## What's Changed" > CHANGELOG.md
         git log --pretty=format:"* %s (%h)" $(git describe --tags --abbrev=0 HEAD^)..HEAD >> CHANGELOG.md
         echo "" >> CHANGELOG.md
         echo "" >> CHANGELOG.md
         echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$(git describe --tags --abbrev=0 HEAD^)...${GITHUB_REF_NAME}" >> CHANGELOG.md
-    
+
     - name: Create Release
-      uses: actions/create-release@v1
+      uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e  # v1.1.4
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
@@ -347,7 +426,7 @@ jobs:
         prerelease: false
 
   cleanup:
-    needs: [test, build-and-push, security-scan, integration-test]
+    needs: [test, security-scan, integration-test]
     runs-on: ubuntu-latest
     if: always()
     permissions:
@@ -355,7 +434,7 @@ jobs:
 
     steps:
     - name: Delete untagged images
-      uses: actions/github-script@v6
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
       with:
         script: |
           const response = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
@@ -363,7 +442,7 @@ jobs:
             package_name: 'waddleai/proxy',
             org: context.repo.owner,
           });
-          
+
           for (const version of response.data) {
             if (version.metadata.container.tags.length === 0) {
               console.log(`Deleting untagged version: ${version.id}`);
