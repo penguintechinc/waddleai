@@ -3,7 +3,9 @@ WaddleAI Management Server
 Web-based administration portal with RBAC configuration
 """
 
+import json
 import os
+import re
 import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -466,7 +468,7 @@ async def routing_config(request: FastAPIRequest):
             r = redis.from_url(redis_url, decode_responses=True)
             routing_data = {
                 "instructions": r.get("routing:instructions") or "No routing instructions configured",
-                "routing_llm": r.get("routing:llm_model") or "llama3.2:1b",
+                "routing_llm": r.get("routing:llm_model") or "gemma4:2b",
             }
         except Exception as e:
             logger.error(f"Failed to get routing data: {e}")
@@ -1216,7 +1218,7 @@ async def get_routing_instructions(user_context=Depends(get_current_user)):
 
         return {
             "instructions": instructions or "No routing instructions configured",
-            "routing_llm": routing_llm or "llama3.2:1b",
+            "routing_llm": routing_llm or "gemma4:2b",
             "source": "redis",
         }
     except Exception as e:
@@ -1233,7 +1235,7 @@ async def set_routing_instructions(request: FastAPIRequest, user_context=Depends
     try:
         body = await request.json()
         instructions = body.get("instructions")
-        routing_llm = body.get("routing_llm", "llama3.2:1b")
+        routing_llm = body.get("routing_llm", "gemma4:2b")
 
         if not instructions:
             raise HTTPException(status_code=400, detail="instructions field required")
@@ -1426,6 +1428,772 @@ async def toggle_xdp(request: FastAPIRequest, user_context=Depends(get_current_u
     except Exception as e:
         logger.error(f"Failed to toggle XDP: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to toggle XDP: {str(e)}")
+
+
+# Content Filter Management Routes
+@app.get("/api/v1/security/filters")
+async def list_content_filters(
+    user_context=Depends(get_current_user),
+    enabled: Optional[bool] = None,
+    rule_type: Optional[str] = None,
+):
+    """List content filter rules (org-scoped + global)"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Query rules: org rules + global (organization_id IS NULL)
+        query = (
+            (mgmt_server.db.content_filter_rules.organization_id == user_context.organization_id)
+            | (mgmt_server.db.content_filter_rules.organization_id == None)
+        )
+
+        rules = mgmt_server.db(query).select()
+
+        # Apply filters
+        if enabled is not None:
+            rules = [r for r in rules if r.enabled == enabled]
+        if rule_type is not None:
+            rules = [r for r in rules if r.rule_type == rule_type]
+
+        return {
+            "filters": [
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "description": r.description,
+                    "rule_type": r.rule_type,
+                    "target": r.target,
+                    "action": r.action,
+                    "enabled": r.enabled,
+                    "organization_id": r.organization_id,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rules
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list content filters: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list filters")
+
+
+@app.post("/api/v1/security/filters")
+async def create_content_filter(request: FastAPIRequest, user_context=Depends(get_current_user)):
+    """Create new content filter rule"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        body = await request.json()
+
+        # Validation
+        name = body.get("name", "").strip()
+        if not name or len(name) > 100:
+            raise HTTPException(status_code=400, detail="Name required and must be 1-100 chars")
+
+        rule_type = body.get("rule_type", "").strip()
+        if rule_type not in ("custom_string", "custom_regex"):
+            raise HTTPException(status_code=400, detail="rule_type must be 'custom_string' or 'custom_regex'")
+
+        target = body.get("target", "both").strip()
+        if target not in ("input", "output", "both"):
+            raise HTTPException(status_code=400, detail="target must be 'input', 'output', or 'both'")
+
+        action = body.get("action", "log").strip()
+        if action not in ("block", "redact", "log"):
+            raise HTTPException(status_code=400, detail="action must be 'block', 'redact', or 'log'")
+
+        pattern = body.get("pattern", "").strip()
+        if not pattern:
+            raise HTTPException(status_code=400, detail="pattern is required")
+
+        # Validate regex if rule_type is custom_regex
+        if rule_type == "custom_regex":
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(e)}")
+
+        # Check organization_id: null requires admin, set requires admin or user's org
+        org_id = body.get("organization_id")
+        if org_id is None:
+            # Global rule requires admin
+            if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+                raise HTTPException(status_code=403, detail="Admin required for global rules")
+        else:
+            # Org rule: must match user's org or be admin
+            if org_id != user_context.organization_id and not mgmt_server.rbac.check_permission(
+                user_context, Permission.SYSTEM_CONFIG
+            ):
+                raise HTTPException(status_code=403, detail="Cannot create rules for other organizations")
+
+        redact_with = body.get("redact_with", "[REDACTED]").strip()
+        if not redact_with or len(redact_with) > 100:
+            redact_with = "[REDACTED]"
+
+        # Create rule
+        rule_id = mgmt_server.db.content_filter_rules.insert(
+            name=name,
+            description=body.get("description", "").strip(),
+            rule_type=rule_type,
+            target=target,
+            pattern=pattern,
+            action=action,
+            redact_with=redact_with,
+            enabled=body.get("enabled", True),
+            organization_id=org_id,
+            created_by=user_context.user_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+
+        logger.info(f"Created content filter rule {rule_id} by user {user_context.user_id}")
+
+        return {"id": rule_id, "status": "created"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create content filter: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create filter")
+
+
+@app.put("/api/v1/security/filters/{rule_id}")
+async def update_content_filter(
+    rule_id: int, request: FastAPIRequest, user_context=Depends(get_current_user)
+):
+    """Update existing content filter rule"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Get existing rule
+        rule = mgmt_server.db(mgmt_server.db.content_filter_rules.id == rule_id).select().first()
+        if not rule:
+            raise HTTPException(status_code=404, detail="Filter rule not found")
+
+        # Check authorization: can only update org rules if in that org, or global if admin
+        if rule.organization_id is not None and rule.organization_id != user_context.organization_id:
+            if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+                raise HTTPException(status_code=403, detail="Cannot update rules from other organizations")
+
+        body = await request.json()
+
+        # Prepare update fields
+        updates = {}
+
+        if "name" in body:
+            name = body["name"].strip()
+            if not name or len(name) > 100:
+                raise HTTPException(status_code=400, detail="Name must be 1-100 chars")
+            updates["name"] = name
+
+        if "description" in body:
+            updates["description"] = body["description"].strip()
+
+        if "rule_type" in body:
+            rule_type = body["rule_type"].strip()
+            if rule_type not in ("custom_string", "custom_regex"):
+                raise HTTPException(status_code=400, detail="rule_type must be 'custom_string' or 'custom_regex'")
+            updates["rule_type"] = rule_type
+
+        if "target" in body:
+            target = body["target"].strip()
+            if target not in ("input", "output", "both"):
+                raise HTTPException(status_code=400, detail="target must be 'input', 'output', or 'both'")
+            updates["target"] = target
+
+        if "action" in body:
+            action = body["action"].strip()
+            if action not in ("block", "redact", "log"):
+                raise HTTPException(status_code=400, detail="action must be 'block', 'redact', or 'log'")
+            updates["action"] = action
+
+        if "pattern" in body:
+            pattern = body["pattern"].strip()
+            if not pattern:
+                raise HTTPException(status_code=400, detail="pattern is required")
+            # Validate regex if applicable
+            rule_type_for_validation = updates.get("rule_type", rule.rule_type)
+            if rule_type_for_validation == "custom_regex":
+                try:
+                    re.compile(pattern)
+                except re.error as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(e)}")
+            updates["pattern"] = pattern
+
+        if "redact_with" in body:
+            redact_with = body["redact_with"].strip()
+            if redact_with and len(redact_with) <= 100:
+                updates["redact_with"] = redact_with
+
+        if "enabled" in body:
+            updates["enabled"] = bool(body["enabled"])
+
+        updates["updated_at"] = datetime.utcnow()
+
+        # Update rule
+        mgmt_server.db(mgmt_server.db.content_filter_rules.id == rule_id).update(**updates)
+
+        logger.info(f"Updated content filter rule {rule_id} by user {user_context.user_id}")
+
+        return {"id": rule_id, "status": "updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update content filter: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update filter")
+
+
+@app.delete("/api/v1/security/filters/{rule_id}")
+async def delete_content_filter(rule_id: int, user_context=Depends(get_current_user)):
+    """Delete content filter rule"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Get rule
+        rule = mgmt_server.db(mgmt_server.db.content_filter_rules.id == rule_id).select().first()
+        if not rule:
+            raise HTTPException(status_code=404, detail="Filter rule not found")
+
+        # Check authorization
+        if rule.organization_id is not None and rule.organization_id != user_context.organization_id:
+            if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+                raise HTTPException(status_code=403, detail="Cannot delete rules from other organizations")
+
+        # Delete rule
+        mgmt_server.db(mgmt_server.db.content_filter_rules.id == rule_id).delete()
+
+        logger.info(f"Deleted content filter rule {rule_id} by user {user_context.user_id}")
+
+        return {"id": rule_id, "status": "deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete content filter: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete filter")
+
+
+@app.post("/api/v1/security/filters/test")
+async def test_content_filter_pattern(request: FastAPIRequest, user_context=Depends(get_current_user)):
+    """Test a content filter pattern against sample text"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        body = await request.json()
+
+        text = body.get("text", "")
+        if not text:
+            raise HTTPException(status_code=400, detail="text is required")
+
+        rule_type = body.get("rule_type", "").strip()
+        if rule_type not in ("custom_string", "custom_regex"):
+            raise HTTPException(status_code=400, detail="rule_type must be 'custom_string' or 'custom_regex'")
+
+        pattern = body.get("pattern", "").strip()
+        if not pattern:
+            raise HTTPException(status_code=400, detail="pattern is required")
+
+        action = body.get("action", "redact").strip()
+        if action not in ("block", "redact", "log"):
+            raise HTTPException(status_code=400, detail="action must be 'block', 'redact', or 'log'")
+
+        redact_with = body.get("redact_with", "[REDACTED]").strip()
+
+        # Test pattern
+        matched = False
+        matches = []
+        redacted_text = text
+
+        if rule_type == "custom_regex":
+            try:
+                compiled_pattern = re.compile(pattern)
+                found_matches = compiled_pattern.findall(text)
+                if found_matches:
+                    matched = True
+                    matches = found_matches[:10]  # Limit to first 10 matches
+                    if action == "redact":
+                        redacted_text = compiled_pattern.sub(redact_with, text)
+            except re.error as e:
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(e)}")
+        else:  # custom_string
+            if pattern in text:
+                matched = True
+                matches = [pattern]
+                if action == "redact":
+                    redacted_text = text.replace(pattern, redact_with)
+
+        return {
+            "matched": matched,
+            "matches": matches,
+            "redacted_text": redacted_text if action == "redact" else text,
+            "action": action,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to test content filter: {e}")
+        raise HTTPException(status_code=500, detail="Failed to test filter")
+
+
+@app.get("/api/v1/security/filters/audit")
+async def get_content_filter_audit_log(
+    user_context=Depends(get_current_user),
+    page: int = 1,
+    per_page: int = 50,
+    phase: Optional[str] = None,
+    action: Optional[str] = None,
+    user_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    """Get content filter audit log (paginated)"""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.ANALYTICS_READ):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Validate pagination
+        page = max(1, page)
+        per_page = max(1, min(per_page, 200))  # Max 200 per page
+
+        # Build query
+        query = mgmt_server.db.content_filter_audit_log.id > 0
+
+        # Filter by phase
+        if phase and phase in ("input", "output"):
+            query = query & (mgmt_server.db.content_filter_audit_log.phase == phase)
+
+        # Filter by action
+        if action and action in ("allow", "block", "redact", "log"):
+            query = query & (mgmt_server.db.content_filter_audit_log.action_taken == action)
+
+        # Filter by user_id
+        if user_id is not None:
+            query = query & (mgmt_server.db.content_filter_audit_log.user_id == user_id)
+
+        # Filter by date range
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                query = query & (mgmt_server.db.content_filter_audit_log.timestamp >= start_dt)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format (use ISO format)")
+
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date)
+                query = query & (mgmt_server.db.content_filter_audit_log.timestamp <= end_dt)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format (use ISO format)")
+
+        # Count total
+        total = mgmt_server.db(query).count()
+
+        # Get paginated results
+        offset = (page - 1) * per_page
+        logs = mgmt_server.db(query).select(orderby=~mgmt_server.db.content_filter_audit_log.timestamp, limitby=(offset, offset + per_page))
+
+        return {
+            "logs": [
+                {
+                    "id": log.id,
+                    "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                    "phase": log.phase,
+                    "user_id": log.user_id,
+                    "organization_id": log.organization_id,
+                    "action_taken": log.action_taken,
+                    "text_sample": log.text_sample,
+                    "auditor_used": log.auditor_used,
+                    "violations_json": log.violations_json,
+                }
+                for log in logs
+            ],
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "pages": (total + per_page - 1) // per_page,
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get audit log: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve audit log")
+
+
+@app.get("/api/v1/security/filters/builtin")
+async def list_builtin_filters(user_context=Depends(get_current_user)):
+    """List available built-in PII/PCI pattern names with enabled/disabled status."""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        from shared.security.content_filter import ContentFilter
+
+        builtin_patterns = ContentFilter.BUILTIN_PATTERNS
+
+        # Load disabled sets: union of global + org-specific
+        disabled: set[str] = set()
+        scopes = [None] if not user_context.organization_id else [user_context.organization_id, None]
+        for scope in scopes:
+            row = mgmt_server.db(
+                (mgmt_server.db.content_filter_config.key == "disabled_builtins")
+                & (mgmt_server.db.content_filter_config.organization_id == scope)
+            ).select().first()
+            if row and row.value:
+                try:
+                    disabled.update(json.loads(row.value))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        return {
+            "builtin": [
+                {
+                    "name": name,
+                    "description": config["description"],
+                    "confidence": config["confidence"],
+                    "enabled": name not in disabled,
+                }
+                for name, config in builtin_patterns.items()
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list builtin filters: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list builtin filters")
+
+
+@app.get("/api/v1/security/filters/config/auditor-prompt")
+async def get_auditor_prompt(user_context=Depends(get_current_user)):
+    """Get the custom auditor system prompt body for this org (or global default)."""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        # Try org-specific first
+        row = mgmt_server.db(
+            (mgmt_server.db.content_filter_config.key == "auditor_system_prompt")
+            & (mgmt_server.db.content_filter_config.organization_id == user_context.organization_id)
+        ).select().first()
+
+        if row is None:
+            # Fall back to global
+            row = mgmt_server.db(
+                (mgmt_server.db.content_filter_config.key == "auditor_system_prompt")
+                & (mgmt_server.db.content_filter_config.organization_id == None)
+            ).select().first()
+
+        return {
+            "prompt": row.value if row else None,
+            "scope": "org" if (row and row.organization_id is not None) else "global",
+            "note": (
+                "This is the customizable body of the auditor system prompt. "
+                "A security preamble is always prepended and cannot be modified."
+            ),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get auditor prompt: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve auditor prompt")
+
+
+@app.put("/api/v1/security/filters/config/auditor-prompt")
+async def set_auditor_prompt(request: FastAPIRequest, user_context=Depends(get_current_user)):
+    """Set the custom auditor system prompt body. Admins can set global; others set org-scoped."""
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        body = await request.json()
+        prompt_value = body.get("prompt", "").strip()
+
+        # Admins can set global (organization_id=None) or org-specific
+        # Non-admins always set org-specific
+        is_admin = user_context.role == "admin"
+        set_global = is_admin and body.get("global", False)
+        target_org_id = None if set_global else user_context.organization_id
+
+        if len(prompt_value) > 10000:
+            raise HTTPException(status_code=400, detail="Prompt body must not exceed 10,000 characters")
+
+        # Upsert: update if exists, insert if not
+        existing = mgmt_server.db(
+            (mgmt_server.db.content_filter_config.key == "auditor_system_prompt")
+            & (mgmt_server.db.content_filter_config.organization_id == target_org_id)
+        ).select().first()
+
+        from datetime import datetime as dt
+
+        if existing:
+            mgmt_server.db(
+                mgmt_server.db.content_filter_config.id == existing.id
+            ).update(
+                value=prompt_value if prompt_value else None,
+                updated_at=dt.utcnow(),
+            )
+        else:
+            mgmt_server.db.content_filter_config.insert(
+                key="auditor_system_prompt",
+                value=prompt_value if prompt_value else None,
+                organization_id=target_org_id,
+                created_by=user_context.user_id,
+                updated_at=dt.utcnow(),
+            )
+
+        mgmt_server.db.commit()
+
+        return {
+            "status": "ok",
+            "scope": "global" if set_global else "org",
+            "message": "Auditor system prompt updated. Changes take effect within 60 seconds.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to set auditor prompt: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update auditor prompt")
+
+
+
+@app.put("/api/v1/security/filters/builtin/{pattern_name}")
+async def toggle_builtin_filter(
+    pattern_name: str,
+    request: FastAPIRequest,
+    user_context=Depends(get_current_user),
+):
+    """
+    Enable or disable a built-in PII/PCI pattern.
+
+    Admins can set global overrides (applies to all orgs) via {"global": true}.
+    Non-admins (or admins without global flag) set org-scoped overrides.
+    Takes effect within 60 seconds (cache TTL).
+    """
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from shared.security.content_filter import ContentFilter
+
+    if pattern_name not in ContentFilter.BUILTIN_PATTERNS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown built-in pattern: '{pattern_name}'. "
+                   f"Valid names: {', '.join(sorted(ContentFilter.BUILTIN_PATTERNS))}",
+        )
+
+    try:
+        body = await request.json()
+        enabled = bool(body.get("enabled", True))
+
+        is_admin = user_context.role == "admin"
+        set_global = is_admin and bool(body.get("global", False))
+        target_org_id = None if set_global else user_context.organization_id
+
+        # Load current disabled list for this scope
+        row = mgmt_server.db(
+            (mgmt_server.db.content_filter_config.key == "disabled_builtins")
+            & (mgmt_server.db.content_filter_config.organization_id == target_org_id)
+        ).select().first()
+
+        current_disabled: set[str] = set()
+        if row and row.value:
+            try:
+                current_disabled = set(json.loads(row.value))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Toggle the pattern
+        if enabled:
+            current_disabled.discard(pattern_name)
+        else:
+            current_disabled.add(pattern_name)
+
+        new_value = json.dumps(sorted(current_disabled))
+
+        from datetime import datetime as _dt
+        if row:
+            mgmt_server.db(
+                mgmt_server.db.content_filter_config.id == row.id
+            ).update(value=new_value, updated_at=_dt.utcnow())
+        else:
+            mgmt_server.db.content_filter_config.insert(
+                key="disabled_builtins",
+                value=new_value,
+                organization_id=target_org_id,
+                created_by=user_context.id,
+                updated_at=_dt.utcnow(),
+            )
+
+        mgmt_server.db.commit()
+
+        return {
+            "pattern": pattern_name,
+            "enabled": enabled,
+            "scope": "global" if set_global else "org",
+            "disabled_list": sorted(current_disabled),
+            "message": (
+                f"Pattern '{pattern_name}' {'enabled' if enabled else 'disabled'}. "
+                "Changes take effect within 60 seconds."
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle builtin filter '{pattern_name}': {e}")
+        raise HTTPException(status_code=500, detail="Failed to toggle filter")
+
+
+
+
+@app.get("/api/v1/security/filters/ner")
+async def list_ner_entities(user_context=Depends(get_current_user)):
+    """
+    List NER entity types with enabled/disabled status and default actions.
+
+    Returns the active NER backend mode (presidio, transformers, or none).
+    """
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    try:
+        from shared.security.ner_filter import ENTITY_CONFIG as NER_CONFIG
+
+        # Load disabled sets: union of global + org-specific
+        disabled: set[str] = set()
+        scopes = [None] if not user_context.organization_id else [user_context.organization_id, None]
+        for scope in scopes:
+            row = mgmt_server.db(
+                (mgmt_server.db.content_filter_config.key == "disabled_ner_entities")
+                & (mgmt_server.db.content_filter_config.organization_id == scope)
+            ).select().first()
+            if row and row.value:
+                try:
+                    disabled.update(json.loads(row.value))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Get NER backend mode from content filter if available
+        ner_mode = "unknown"
+        try:
+            if mgmt_server.content_filter and mgmt_server.content_filter.ner_filter:
+                ner_mode = mgmt_server.content_filter.ner_filter.mode
+            else:
+                ner_mode = "none"
+        except AttributeError:
+            ner_mode = "none"
+
+        return {
+            "ner_backend": ner_mode,
+            "entities": [
+                {
+                    "entity_type": entity_type,
+                    "default_action": action,
+                    "confidence_weight": weight,
+                    "enabled": entity_type not in disabled,
+                }
+                for entity_type, (action, weight) in NER_CONFIG.items()
+            ],
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list NER entities: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list NER entity types")
+
+
+@app.put("/api/v1/security/filters/ner/{entity_type}")
+async def toggle_ner_entity(
+    entity_type: str,
+    request: FastAPIRequest,
+    user_context=Depends(get_current_user),
+):
+    """
+    Enable or disable a NER entity type.
+
+    Admins can set global overrides via {"global": true}.
+    Changes take effect within 60 seconds (cache TTL).
+    """
+    if not mgmt_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from shared.security.ner_filter import ENTITY_CONFIG as NER_CONFIG
+
+    if entity_type not in NER_CONFIG:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown NER entity type: '{entity_type}'. "
+                   f"Valid types: {', '.join(sorted(NER_CONFIG))}",
+        )
+
+    try:
+        body = await request.json()
+        enabled = bool(body.get("enabled", True))
+
+        is_admin = user_context.role == "admin"
+        set_global = is_admin and bool(body.get("global", False))
+        target_org_id = None if set_global else user_context.organization_id
+
+        # Load current disabled list for this scope
+        row = mgmt_server.db(
+            (mgmt_server.db.content_filter_config.key == "disabled_ner_entities")
+            & (mgmt_server.db.content_filter_config.organization_id == target_org_id)
+        ).select().first()
+
+        current_disabled: set[str] = set()
+        if row and row.value:
+            try:
+                current_disabled = set(json.loads(row.value))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if enabled:
+            current_disabled.discard(entity_type)
+        else:
+            current_disabled.add(entity_type)
+
+        new_value = json.dumps(sorted(current_disabled))
+
+        from datetime import datetime as _dt
+        if row:
+            mgmt_server.db(
+                mgmt_server.db.content_filter_config.id == row.id
+            ).update(value=new_value, updated_at=_dt.utcnow())
+        else:
+            mgmt_server.db.content_filter_config.insert(
+                key="disabled_ner_entities",
+                value=new_value,
+                organization_id=target_org_id,
+                created_by=user_context.id,
+                updated_at=_dt.utcnow(),
+            )
+
+        mgmt_server.db.commit()
+
+        return {
+            "entity_type": entity_type,
+            "enabled": enabled,
+            "scope": "global" if set_global else "org",
+            "disabled_list": sorted(current_disabled),
+            "message": (
+                f"NER entity '{entity_type}' {'enabled' if enabled else 'disabled'}. "
+                "Changes take effect within 60 seconds."
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle NER entity '{entity_type}': {e}")
+        raise HTTPException(status_code=500, detail="Failed to toggle NER entity")
 
 
 if __name__ == "__main__":

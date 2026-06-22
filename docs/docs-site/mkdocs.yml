@@ -50,6 +50,7 @@ nav:
     - Organizations: administration/organization-setup.md
     - Quota Management: administration/quota-management.md
     - Security Policies: administration/security-policies.md
+    - AI Security Recommendations: administration/ai-security-recommendations.md
     - Monitoring: administration/monitoring.md
   - Deployment:
     - Docker Compose: deployment/docker-compose.md

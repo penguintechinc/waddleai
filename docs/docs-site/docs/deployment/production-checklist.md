@@ -295,6 +295,54 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   - HIPAA requirements if applicable
   - Document security controls
 
+### AI-Specific Security Audit (LLM Proxy)
+
+> See [AI Security Recommendations](../administration/ai-security-recommendations.md) for full details.
+
+- [ ] **Output guardrails deployed**
+  - Output sanitization layer active on all LLM response paths
+  - PII patterns blocked (email, credit card, API keys, passwords)
+  - Output guardrail sits downstream of Redis cache (not just pre-LLM)
+  - Verified: cached responses also pass through output filtering
+
+- [ ] **Memory injection hardened against indirect prompt injection**
+  - Past conversations injected via mem0/ChromaDB use structured delimiters
+  - Injected context marked as data-only (not executable instructions)
+  - System prompt explicitly instructs model to ignore instructions in retrieved context
+  - ChromaDB queries filtered by `user_id` AND `organization_id` (no cross-tenant retrieval)
+
+- [ ] **Semantic cache poisoning mitigated**
+  - Cache keys use `Hash(TenantID + OrgID + UserRole)` namespace prefix
+  - Similarity threshold set to ≥0.96 (not default 0.80–0.90)
+  - Short TTL configured for cached LLM responses (≤30 minutes)
+  - Anomaly alert: trigger if >20 distinct queries hit same cached entry within 1 hour
+
+- [ ] **AI workload runtime hardening (Kubernetes)**
+  - Pod Security Standards: `Restricted` profile enforced on AI workload namespaces
+  - `securityContext.capabilities.drop: [ALL]` on all proxy/management pods
+  - `readOnlyRootFilesystem: true` on LLM-adjacent containers
+  - Kyverno policies block privileged AI pods from deploying
+  - Cilium Tetragon TracingPolicy deployed: alert/kill on unexpected shell spawning
+
+- [ ] **LLM provider credential security**
+  - Provider API keys (OpenAI, Anthropic) not hardcoded in container env vars
+  - Secrets managed via Vault, K8s Secrets with Sealed Secrets, or SPIFFE/SPIRE
+  - Consider egress credential proxy (Infisical Agent Vault pattern) for AI workloads
+  - API keys rotated regularly; old keys revoked
+
+- [ ] **Model extraction rate limiting**
+  - Anomaly detection for high-volume, diverse query patterns from single API key
+  - Daily query caps per key prevent bulk model extraction attempts
+  - Response fingerprinting to detect systematic probing
+
+- [ ] **OWASP LLM Top 10 coverage verified**
+  - [ ] LLM01: Prompt Injection — input guardrails active
+  - [ ] LLM02: Insecure Output Handling — output guardrails active
+  - [ ] LLM04: Model DoS — token bomb limits enforced
+  - [ ] LLM06: Sensitive Information Disclosure — PII masking in output
+  - [ ] LLM08: Excessive Agency — human-in-the-loop for high-risk actions
+  - [ ] LLM09: Overreliance — monitoring and alerting for anomalous decisions
+
 ### Backup and Recovery
 
 - [ ] **Automated backups**

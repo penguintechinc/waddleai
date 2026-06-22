@@ -477,6 +477,54 @@ class AILBUsageRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ContentFilterRule(Base):
+    __tablename__ = "content_filter_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    rule_type = Column(String(20), nullable=False)  # 'builtin_pii', 'custom_string', 'custom_regex'
+    target = Column(String(10), nullable=False, default="both")  # 'input', 'output', 'both'
+    pattern = Column(Text, nullable=False)
+    action = Column(String(10), nullable=False, default="log")  # 'block', 'redact', 'log'
+    redact_with = Column(String(100), nullable=True, default="[REDACTED]")
+    enabled = Column(Boolean, nullable=False, default=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        sa.Index("idx_cfr_org_enabled", "organization_id", "enabled"),
+        sa.Index("idx_cfr_target", "target"),
+    )
+
+
+class ContentFilterAuditLog(Base):
+    __tablename__ = "content_filter_audit_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    phase = Column(String(10), nullable=False)  # 'input', 'output'
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
+    api_key_id = Column(Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True)
+    ip_address = Column(String(45), nullable=True)
+    action_taken = Column(String(10), nullable=False)  # 'allow', 'block', 'redact', 'log'
+    violations_json = Column(JSON, nullable=True)
+    text_sample = Column(Text, nullable=True)  # First 200 chars for audit
+    auditor_used = Column(Boolean, nullable=False, default=False)
+    auditor_decision = Column(String(10), nullable=True)  # 'block', 'allow', NULL if not invoked
+    request_id = Column(String(64), nullable=True)  # For correlation with proxy logs
+
+    __table_args__ = (
+        sa.Index("idx_cfal_timestamp", "timestamp"),
+        sa.Index("idx_cfal_user", "user_id", "timestamp"),
+        sa.Index("idx_cfal_org", "organization_id", "timestamp"),
+        sa.Index("idx_cfal_action", "action_taken"),
+    )
+
+
 def init_schema(database_url: str):
     """Initialize database schema using SQLAlchemy.
 

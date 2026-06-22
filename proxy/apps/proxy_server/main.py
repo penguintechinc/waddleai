@@ -33,6 +33,7 @@ from shared.auth.penguin_auth import (
     verify_token,
 )
 from shared.auth.rbac import AuthenticationError, Permission, RBACManager
+from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import Action, create_security_scanner
 from shared.utils.health_checks import WaddleAIHealthMonitor
 from shared.utils.llm_connectors import create_llm_connection_manager
@@ -62,6 +63,7 @@ class ProxyServer:
         self.db = None
         self.rbac = None
         self.security_scanner = None
+        self.content_filter = None
         self.token_manager = None
         self.llm_manager = None
         self.request_router = None
@@ -102,6 +104,11 @@ class ProxyServer:
         logger.info("penguin-aaa OIDC provider and RP initialized")
 
         self.security_scanner = create_security_scanner(self.db, self.config["security_policy"])
+        self.content_filter = ContentFilter(
+            db=self.db,
+            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            auditor_model=os.getenv("SECURITY_AUDITOR_MODEL", "shieldgemma:2b"),
+        )
         self.token_manager = create_token_manager(self.db)
         self.llm_manager = create_llm_connection_manager(self.db)
         self.request_router = create_request_router(self.llm_manager, self.db)
@@ -477,6 +484,30 @@ async def chat_completions():
                     400,
                 )
 
+        # Content filter — input phase (PII/PCI patterns + custom rules)
+        input_filter_result = await proxy_server.content_filter.filter_input(
+            text=prompt_text,
+            user_id=user_context.user_id,
+            org_id=user_context.organization_id,
+            ip=request.remote_addr,
+        )
+        if not input_filter_result.allowed:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "Request blocked by content filter",
+                            "type": "content_filter_block",
+                            "violations": [v.rule_name for v in input_filter_result.violations],
+                        }
+                    }
+                ),
+                400,
+            )
+        # Use filtered text if redactions were applied
+        if input_filter_result.action == "redact":
+            prompt_text = input_filter_result.filtered_text
+
         # Check quota
         quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
         if not quota_ok:
@@ -571,6 +602,32 @@ async def chat_completions():
                 },
             )
         )
+
+        # Content filter — output phase (PII/PCI in LLM response + custom rules)
+        output_filter_result = await proxy_server.content_filter.filter_output(
+            text=response_text,
+            user_id=user_context.user_id,
+            org_id=user_context.organization_id,
+        )
+        if not output_filter_result.allowed:
+            logger.warning(
+                "LLM response blocked by output filter",
+                user=user_context.user_id,
+                violations=[v.rule_name for v in output_filter_result.violations],
+            )
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "Response blocked by content filter",
+                            "type": "content_filter_output_block",
+                        }
+                    }
+                ),
+                400,
+            )
+        # Use redacted version if PII was found
+        response_text = output_filter_result.filtered_text
 
         # Return OpenAI-compatible response
         return jsonify(

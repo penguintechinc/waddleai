@@ -201,8 +201,21 @@ Cost: $0.015 (calculated)
 2. **Network Layer**: TLS/SSL encryption
 3. **Application Layer**: API key authentication, RBAC
 4. **Content Layer**: Prompt injection detection, content filtering
-5. **Rate Limiting**: XDP + application-level rate limits
-6. **Quota Enforcement**: Daily/monthly token limits
+5. **Output Layer**: Output guardrails — PII/credential masking on LLM responses
+6. **Rate Limiting**: XDP + application-level rate limits
+7. **Quota Enforcement**: Daily/monthly token limits
+
+### AI-Specific Security Considerations
+
+WaddleAI's LLM proxy architecture introduces threat vectors beyond traditional web security. The three highest-priority AI-specific risks are:
+
+| Threat | Component at Risk | Status |
+|--------|------------------|--------|
+| **Indirect Prompt Injection** | mem0/ChromaDB memory injection | Requires hardening |
+| **Semantic Cache Poisoning** | Redis routing cache | Requires hardening |
+| **Insecure Output Handling** | All LLM response paths | Requires output guardrail layer |
+
+> **See [AI Security Recommendations](administration/ai-security-recommendations.md)** for full threat model, OWASP LLM Top 10 mapping, implementation patterns, and Kubernetes hardening guidance (Cilium Tetragon, Kyverno, SPIFFE/SPIRE).
 
 ### RBAC Roles
 

@@ -230,6 +230,50 @@ def define_tables(db):
         Field("security_check_passed", "boolean", default=True),
     )
 
+    # Content Filter Rules
+    db.define_table(
+        "content_filter_rules",
+        Field("name", "string", required=True),
+        Field("description", "text"),
+        Field("rule_type", "string", required=True),  # 'builtin_pii', 'custom_string', 'custom_regex'
+        Field("target", "string", default="both"),  # 'input', 'output', 'both'
+        Field("pattern", "text", required=True),
+        Field("action", "string", default="log"),  # 'block', 'redact', 'log'
+        Field("redact_with", "string", default="[REDACTED]"),
+        Field("enabled", "boolean", default=True),
+        Field("organization_id", "reference organizations"),
+        Field("created_by", "reference users"),
+        Field("created_at", "datetime", default=datetime.utcnow),
+        Field("updated_at", "datetime", default=datetime.utcnow),
+    )
+
+    # Content Filter Audit Log
+    db.define_table(
+        "content_filter_audit_log",
+        Field("timestamp", "datetime", default=datetime.utcnow),
+        Field("phase", "string", required=True),  # 'input', 'output'
+        Field("user_id", "reference users"),
+        Field("organization_id", "reference organizations"),
+        Field("api_key_id", "reference api_keys"),
+        Field("ip_address", "string"),
+        Field("action_taken", "string", required=True),  # 'allow', 'block', 'redact', 'log'
+        Field("violations_json", "json"),
+        Field("text_sample", "text"),  # First 200 chars for audit
+        Field("auditor_used", "boolean", default=False),
+        Field("auditor_decision", "string"),  # 'block', 'allow', NULL if not invoked
+        Field("request_id", "string"),  # For correlation with proxy logs
+    )
+
+    # Content Filter Configuration (key-value store for auditor settings)
+    db.define_table(
+        "content_filter_config",
+        Field("key", "string", required=True),
+        Field("value", "text"),
+        Field("organization_id", "reference organizations"),
+        Field("created_by", "reference users"),
+        Field("updated_at", "datetime", default=datetime.utcnow),
+    )
+
     return db
 
 
