@@ -63,6 +63,7 @@ nav:
     - VS Code Extension: integrations/vscode-extension.md
     - Open WebUI: integrations/open-webui.md
     - Ollama Setup: integrations/ollama-setup.md
+    - Llama.cpp Setup: integrations/llamacpp-setup.md
     - Anthropic Config: integrations/anthropic-config.md
     - OpenAI Config: integrations/openai-config.md
     - Memory Systems: integrations/memory-systems.md
