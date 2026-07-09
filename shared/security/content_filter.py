@@ -246,9 +246,17 @@ class ContentFilter:
         # Per-org cache of disabled NER entity types
         self._ner_disable_cache: dict[int | None, tuple[float, set[str]]] = {}
 
-        # NER filter — initialized once at startup (model load is slow)
+        # NER filter — initialized once at startup (model load is slow).
+        #
+        # Skipped entirely under WADDLEAI_STUB_UPSTREAM=1: the transformers
+        # fallback backend calls transformers.pipeline(), which downloads a
+        # model from the HuggingFace Hub on first use -- a network call that
+        # hangs/stalls indefinitely in the sandboxed contract-test harness
+        # (no internet egress). This tier is about PII detection accuracy,
+        # not the response envelope shape being snapshotted, so it is safe to
+        # skip; the built-in regex + custom-rule tiers still run.
         self.ner_filter: Any = None
-        if _NER_AVAILABLE and NERFilter is not None:
+        if _NER_AVAILABLE and NERFilter is not None and os.getenv("WADDLEAI_STUB_UPSTREAM") != "1":
             try:
                 spacy_model = os.getenv("NER_SPACY_MODEL", "en_core_web_lg")
                 self.ner_filter = NERFilter(spacy_model=spacy_model)

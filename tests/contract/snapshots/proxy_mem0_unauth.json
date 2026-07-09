@@ -1,0 +1,6 @@
+{
+  "body": {
+    "error": "Missing or invalid Bearer token"
+  },
+  "status": 401
+}

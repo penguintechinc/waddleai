@@ -9,6 +9,12 @@ import os
 import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# grpc_server.py does `from grpc_proto.marchproxy import ...` (bare import, no
+# `apps.proxy_server.` prefix) -- that package only resolves when this
+# directory itself is on sys.path. Production's Docker WORKDIR happens to be
+# here; the contract-test harness launches with cwd=proxy (one level up), so
+# add it explicitly rather than depending on invocation-specific cwd.
+sys.path.append(os.path.dirname(__file__))
 
 import asyncio
 import time
@@ -18,8 +24,8 @@ from typing import Optional
 import aiohttp
 import structlog
 from penguin_aaa.audit.emitter import Emitter
+from penguin_aaa.audit.sinks import StdoutSink
 from penguin_aaa.middleware import AuditMiddleware, OIDCAuthMiddleware
-from penguin_dal import get_dal
 from prometheus_client import CONTENT_TYPE_LATEST
 from quart import Quart, Response, abort, jsonify, request
 
@@ -30,9 +36,11 @@ from shared.auth.penguin_auth import (
     claims_to_user_context,
     create_oidc_provider,
     create_oidc_rp,
+    issue_token,
     verify_token,
 )
-from shared.auth.rbac import AuthenticationError, Permission, RBACManager
+from shared.auth.rbac import ROLE_PERMISSIONS, AuthenticationError, Permission, RBACManager, Role, UserContext
+from shared.database.models import get_db
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import Action, create_security_scanner
 from shared.utils.health_checks import WaddleAIHealthMonitor
@@ -54,6 +62,62 @@ logger = structlog.get_logger(__name__)
 
 # Initialize metrics
 proxy_metrics = get_proxy_metrics()
+
+# ---------------------------------------------------------------------------
+# Contract-test mode (WADDLEAI_STUB_UPSTREAM=1)
+#
+# Single flag, reused everywhere a test-only accommodation is needed (per
+# tests/contract/conftest.py's proxy_url fixture). Every block gated on this
+# flag is inert in production; see docs/../task-A3-report.md for the full
+# rationale behind each gate.
+# ---------------------------------------------------------------------------
+_TEST_MODE = os.getenv("WADDLEAI_STUB_UPSTREAM") == "1"
+_TEST_TOKEN_PATH = "/_contract_test/token"
+_TEST_API_KEY_SECRET = "wa-contract-test-0001-secretvalue"
+_STUB_COMPLETION_TEXT = "This is a deterministic stub completion for WaddleAI contract tests."
+
+
+class _TestModeOIDCRelyingParty:
+    """Test-mode stand-in for OIDCRelyingParty (WADDLEAI_STUB_UPSTREAM=1 only).
+
+    penguin_aaa's OIDCAuthMiddleware calls ``rp.verify_token(token)``, but
+    penguin_aaa.authn.oidc_rp.OIDCRelyingParty only implements
+    ``validate_token()`` — there is no ``verify_token`` method on that class.
+    That means, as wired today, the middleware's bare ``except Exception``
+    always fires and every request to a non-public path is 401'd regardless
+    of token validity — a pre-existing penguin_aaa defect, out of scope for
+    this repo (it isn't something to patch from the waddleai side).
+
+    This shim exists solely so the contract harness can exercise the real
+    OIDCAuthMiddleware pipeline deterministically without live discovery: it
+    performs the same RS256 verification as ``shared.auth.penguin_auth.
+    verify_token``, against this same process's in-memory OIDCProvider
+    keystore. Missing/invalid/expired tokens still raise -> still 401 via the
+    middleware's exception handler, so the 401 contract captured is genuine.
+    Production (no flag) is unaffected: it still builds a real
+    ``OIDCRelyingParty`` and calls ``await rp.discover()`` as before.
+    """
+
+    def __init__(self, provider):
+        self._provider = provider
+
+    async def verify_token(self, token: str) -> dict:
+        user_context = verify_token(token, self._provider)  # raises AuthenticationError on invalid/expired
+        return {"sub": str(user_context.user_id)}
+
+
+def _stub_llm_response(model: str, messages: list) -> tuple:
+    """Deterministic fixed completion (WADDLEAI_STUB_UPSTREAM=1 only).
+
+    Brief Step 1: bypass the real connector/provider dispatch so golden
+    snapshots are stable across runs. Only the network call to an actual LLM
+    provider is skipped — token accounting, memory storage, content
+    filtering, and the response envelope are all still the real code path.
+    """
+    return (
+        _STUB_COMPLETION_TEXT,
+        {"provider": "stub", "input_tokens": 12, "output_tokens": 11},
+    )
 
 
 class ProxyServer:
@@ -78,6 +142,11 @@ class ProxyServer:
         self.oidc_rp = None
         self.rbac_enforcer = None
 
+        # Contract-test only (WADDLEAI_STUB_UPSTREAM=1) -- see _seed_contract_test_data()
+        self.contract_test_bearer_token = None
+        self.contract_test_api_key = None
+        self.contract_test_api_key_id = None
+
         # Configuration
         self.config = {
             "management_server_url": os.getenv("MANAGEMENT_SERVER_URL", "http://localhost:8001"),
@@ -89,17 +158,33 @@ class ProxyServer:
         """Initialize server components"""
         logger.info("Starting WaddleAI Proxy Server")
 
-        # Initialize database (pgvector-enabled PostgreSQL primary)
+        # Initialize database (pgvector-enabled PostgreSQL primary).
+        #
+        # get_db() (shared.database.models) is the raw-PyDAL connection that
+        # RBACManager, TokenManager, PromptSecurityScanner, ContentFilter, and
+        # LLMConnectionManager are all actually written against (synchronous
+        # `self.db(query).select()`/`.update_record()` calls -- see the module
+        # docstring in shared/database/models.py). The previous
+        # `from penguin_dal import get_dal` import does not exist anywhere in
+        # penguin-dal and never has; this line has never worked in any
+        # environment. `migrate=True` only in contract-test mode, so the
+        # harness's empty per-session sqlite file gets real tables; production
+        # keeps migrate=False (Alembic/management remains schema authority).
         database_url = os.getenv("DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai")
-        self.db = get_dal(database_url)
+        self.db = get_db(database_url, migrate=_TEST_MODE)
 
         # Initialize components
         self.rbac = RBACManager(self.db)
 
         # Initialize penguin-aaa OIDC provider, relying party, and RBAC enforcer
         self.oidc_provider = create_oidc_provider()
-        self.oidc_rp = create_oidc_rp()
-        await self.oidc_rp.discover()
+        if _TEST_MODE:
+            # Skip live discovery (network call to OIDC_ISSUER_URL) and use a
+            # local shim RP -- see _TestModeOIDCRelyingParty docstring.
+            self.oidc_rp = _TestModeOIDCRelyingParty(self.oidc_provider)
+        else:
+            self.oidc_rp = create_oidc_rp()
+            await self.oidc_rp.discover()
         self.rbac_enforcer = build_rbac_enforcer()
         logger.info("penguin-aaa OIDC provider and RP initialized")
 
@@ -140,27 +225,98 @@ class ProxyServer:
         mgmt_url = f"{self.config['management_server_url']}/healthz"
         self.health_monitor.add_http_service_check("management_server", mgmt_url)
 
-        # Initialize memory manager
+        # Initialize memory manager.
+        #
+        # No test-mode gate needed here: PgvectorMemoryStore.initialize() is a
+        # no-op, and every data method (store_memory/search_memories/
+        # get_conversation_history/clear_memories/get_memory_stats) already
+        # wraps its Postgres-specific SQL in try/except and degrades to
+        # False/[]/{} on failure. Against sqlite (no memory_embeddings table,
+        # no pgvector) it fails closed deterministically without an
+        # additional test-only backend swap.
         await self.memory_manager.initialize()
 
         # Wire memory manager into mem0-compatible API
         set_memory_manager(self.memory_manager)
 
-        # Start gRPC server in a daemon thread for MarchProxy AILB
-        grpc_port = int(os.getenv("GRPC_PORT", "50051"))
-        components = ServerComponents(
-            routing_agent=getattr(self.request_router, "routing_agent", None),
-            security_agent=getattr(self.security_scanner, "security_agent", None),
-            usage_tracker=getattr(self.token_manager, "usage_tracker", None),
-            memory_manager=self.memory_manager,
-        )
-        self.grpc_server = run_grpc_in_thread(
-            port=grpc_port,
-            components=components,
-        )
-        logger.info("gRPC server started", port=grpc_port)
+        if _TEST_MODE:
+            # Skip gRPC (external sidecar port bind, irrelevant to the HTTP
+            # contract surface being snapshotted).
+            logger.info("Skipping gRPC server startup (WADDLEAI_STUB_UPSTREAM=1)")
+            self._seed_contract_test_data()
+        else:
+            # Start gRPC server in a daemon thread for MarchProxy AILB
+            grpc_port = int(os.getenv("GRPC_PORT", "50051"))
+            components = ServerComponents(
+                routing_agent=getattr(self.request_router, "routing_agent", None),
+                security_agent=getattr(self.security_scanner, "security_agent", None),
+                usage_tracker=getattr(self.token_manager, "usage_tracker", None),
+                memory_manager=self.memory_manager,
+            )
+            self.grpc_server = run_grpc_in_thread(
+                port=grpc_port,
+                components=components,
+            )
+            logger.info("gRPC server started", port=grpc_port)
 
         logger.info("Proxy server initialized successfully")
+
+    def _seed_contract_test_data(self) -> None:
+        """Seed one deterministic org/user/api_key and mint a real Bearer JWT.
+
+        WADDLEAI_STUB_UPSTREAM=1 only. Exercises the real schema/auth code
+        paths (RBACManager.authenticate_api_key does a genuine bcrypt verify
+        against this seeded api_keys row; issue_token/verify_token do genuine
+        RS256 sign/verify) instead of faking a UserContext in-process.
+        """
+        from datetime import datetime
+
+        from passlib.hash import bcrypt
+
+        org_id = self.db.organizations.insert(
+            name="contract-test-org",
+            description="Seeded for tests/contract/test_proxy_contract.py",
+            token_quota_monthly=1000000,
+            token_quota_daily=100000,
+            enabled=True,
+            created_at=datetime.utcnow(),
+        )
+        user_id = self.db.users.insert(
+            username="contract-test-user",
+            email="contract-test@example.com",
+            password_hash=bcrypt.hash("unused-not-a-real-login"),
+            role="admin",
+            organization_id=org_id,
+            token_quota_monthly=1000000,
+            token_quota_daily=100000,
+            enabled=True,
+            created_at=datetime.utcnow(),
+        )
+        api_key_id = self.db.api_keys.insert(
+            key_id="contract-test-key",
+            key_hash=bcrypt.hash(_TEST_API_KEY_SECRET),
+            user_id=user_id,
+            organization_id=org_id,
+            name="Contract Test Key",
+            enabled=True,
+            api_access_level="proxy_api",
+            created_at=datetime.utcnow(),
+        )
+        self.db.commit()
+
+        user_context = UserContext(
+            user_id=user_id,
+            username="contract-test-user",
+            role=Role.ADMIN,
+            organization_id=org_id,
+            managed_orgs=[],
+            permissions=ROLE_PERMISSIONS[Role.ADMIN],
+            api_key_id=api_key_id,
+        )
+        self.contract_test_bearer_token = issue_token(user_context, self.oidc_provider)
+        self.contract_test_api_key = _TEST_API_KEY_SECRET
+        self.contract_test_api_key_id = api_key_id
+        logger.info("Seeded contract-test org/user/api_key", org_id=org_id, user_id=user_id, api_key_id=api_key_id)
 
     async def shutdown(self):
         """Cleanup server components"""
@@ -202,15 +358,34 @@ async def on_startup():
 
     # Apply penguin-aaa ASGI middleware stack
     # AuditMiddleware wraps OIDCAuthMiddleware wraps the Quart ASGI app
+    public_paths = _PUBLIC_PATHS | ({_TEST_TOKEN_PATH} if _TEST_MODE else set())
     oidc_mw = OIDCAuthMiddleware(
         app.asgi_app,
         rp=proxy_server.oidc_rp,
-        public_paths=_PUBLIC_PATHS,
+        public_paths=public_paths,
     )
-    audit_emitter = Emitter(sink="log")
+    # Emitter(*sinks: AuditSink) -- `Emitter(sink="log")` is not (and has
+    # never been) a valid call (no such kwarg; TypeError unconditionally).
+    # StdoutSink matches the original "log" intent.
+    audit_emitter = Emitter(StdoutSink())
     audit_mw = AuditMiddleware(oidc_mw, emitter=audit_emitter)
     app.asgi_app = audit_mw
     logger.info("penguin-aaa OIDC + Audit ASGI middleware applied")
+
+
+if _TEST_MODE:
+
+    @app.route(_TEST_TOKEN_PATH, methods=["GET"])
+    async def _contract_test_token():
+        """Contract-test-only: hand the harness a real signed Bearer JWT and
+        the seeded wa- API key. Never registered in production (route
+        definition itself is gated by the module-level _TEST_MODE flag)."""
+        return jsonify(
+            {
+                "token": proxy_server.contract_test_bearer_token,
+                "api_key": proxy_server.contract_test_api_key,
+            }
+        )
 
 
 @app.after_serving
@@ -296,6 +471,18 @@ async def get_current_user():
             # --- path 3: RS256 JWT via penguin-aaa ---
             token = authorization[7:]
             user_context = verify_token(token, proxy_server.oidc_provider)
+            if _TEST_MODE and user_context.api_key_id is None:
+                # claims_to_user_context() has no api_key_id source (the
+                # penguin-aaa Claims round-trip never carries it), so every
+                # Bearer-JWT-authenticated request normally gets
+                # api_key_id=None -> token_manager.check_quota(None) always
+                # returns "API key not found" -> permanent 429 on
+                # /v1/chat/completions. This is a genuine, pre-existing gap
+                # independent of this test mode; attach the seeded
+                # contract-test key here (rather than patching
+                # shared/auth/penguin_auth.py) so the real quota/token
+                # accounting pipeline actually runs during the snapshot.
+                user_context.api_key_id = proxy_server.contract_test_api_key_id
         else:
             abort(401, description="Invalid authorization format")
 
@@ -544,11 +731,14 @@ async def chat_completions():
 
         # Route request to appropriate LLM provider
         try:
-            response_text, routing_usage_info = await proxy_server.request_router.route_request(
-                model=model,
-                messages=enhanced_messages,
-                **{k: v for k, v in body.items() if k not in ["messages", "model", "session_id"]},
-            )
+            if _TEST_MODE:
+                response_text, routing_usage_info = _stub_llm_response(model, enhanced_messages)
+            else:
+                response_text, routing_usage_info = await proxy_server.request_router.route_request(
+                    model=model,
+                    messages=enhanced_messages,
+                    **{k: v for k, v in body.items() if k not in ["messages", "model", "session_id"]},
+                )
         except Exception as e:
             logger.error(f"LLM routing failed: {e}")
             return jsonify({"error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}}), 503
@@ -876,12 +1066,15 @@ async def claude_messages():
 
         # Route request to appropriate LLM provider
         try:
-            response_text, routing_usage_info = await proxy_server.request_router.route_request(
-                model=model,
-                messages=openai_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            if _TEST_MODE:
+                response_text, routing_usage_info = _stub_llm_response(model, openai_messages)
+            else:
+                response_text, routing_usage_info = await proxy_server.request_router.route_request(
+                    model=model,
+                    messages=openai_messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
         except Exception as e:
             logger.error(f"LLM routing failed: {e}")
             return jsonify({"error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}}), 503

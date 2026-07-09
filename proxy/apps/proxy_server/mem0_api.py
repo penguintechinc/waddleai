@@ -42,6 +42,13 @@ def get_memory_manager():
     return _memory_manager
 
 
+# Note: every handler below reaches the underlying MemoryStore via
+# `manager.memory_store` (WaddleAIMemoryManager's actual attribute name --
+# see shared/utils/memory_integration.py). Previously read `manager.store`,
+# which does not exist on WaddleAIMemoryManager and raised AttributeError
+# unconditionally on every call in every environment.
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -93,7 +100,7 @@ async def add_memories():
             embedding=None,
             created_at=datetime.utcnow(),
         )
-        success = await manager.store.store_memory(entry)
+        success = await manager.memory_store.store_memory(entry)
         if success:
             stored += 1
 
@@ -135,7 +142,7 @@ async def search_memories():
     org_id = organization_id or 0
     session_id = agent_id or run_id or None
 
-    entries = await manager.store.search_memories(
+    entries = await manager.memory_store.search_memories(
         query=query,
         user_id=user_id_int,
         organization_id=org_id,
@@ -178,7 +185,7 @@ async def list_memories():
     org_id = int(organization_id_raw) if organization_id_raw else 0
     session_id = agent_id or run_id or ""
 
-    entries = await manager.store.get_conversation_history(
+    entries = await manager.memory_store.get_conversation_history(
         user_id=user_id_int,
         organization_id=org_id,
         session_id=session_id,
@@ -217,7 +224,7 @@ async def delete_memory(memory_id: str):
 
     # Delete via raw SQL (direct write to primary)
     try:
-        manager.store.write_db.executesql(
+        manager.memory_store.write_db.executesql(
             "DELETE FROM memory_embeddings WHERE id = %s AND user_id = %s AND organization_id = %s",
             (int(memory_id), user_id_int, org_id),
         )
@@ -245,7 +252,7 @@ async def clear_memories():
     org_id = int(organization_id_raw) if organization_id_raw else 0
     session_id = agent_id or run_id or None
 
-    success = await manager.store.clear_memories(
+    success = await manager.memory_store.clear_memories(
         user_id=user_id_int,
         organization_id=org_id,
         session_id=session_id,
