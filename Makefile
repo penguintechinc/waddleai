@@ -1,5 +1,5 @@
 .PHONY: dev test test-unit test-integration test-e2e test-functional test-security \
-        smoke-test lint build docker-build docker-push deploy-dev deploy-prod \
+        test-contract smoke-test lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit
 
 dev:
@@ -40,6 +40,10 @@ test-e2e:
 
 test-functional:
 	@echo "No functional tests defined"
+
+test-contract:
+	@echo "Running contract snapshot tests..."
+	python3 -m pytest tests/contract -v --no-cov
 
 test-security:
 	@echo "=== Security Scans ==="

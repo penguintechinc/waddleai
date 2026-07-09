@@ -138,5 +138,8 @@ class TestingConfig(Config):
 
     TESTING = True
     DEBUG = True
-    DATABASE_URL = "sqlite://test_waddleai.db"
+    # Bug fix: literal was "sqlite://test_waddleai.db" (missing slash -> invalid
+    # SQLAlchemy URL, raises ArgumentError). Also now honors DATABASE_URL env var
+    # (e.g. set by the contract-snapshot harness) like the base Config does.
+    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///test_waddleai.db")
     REDIS_URL = "redis://localhost:6379/1"

@@ -15,6 +15,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -495,8 +496,8 @@ class ContentFilterRule(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
-        sa.Index("idx_cfr_org_enabled", "organization_id", "enabled"),
-        sa.Index("idx_cfr_target", "target"),
+        Index("idx_cfr_org_enabled", "organization_id", "enabled"),
+        Index("idx_cfr_target", "target"),
     )
 
 
@@ -518,10 +519,10 @@ class ContentFilterAuditLog(Base):
     request_id = Column(String(64), nullable=True)  # For correlation with proxy logs
 
     __table_args__ = (
-        sa.Index("idx_cfal_timestamp", "timestamp"),
-        sa.Index("idx_cfal_user", "user_id", "timestamp"),
-        sa.Index("idx_cfal_org", "organization_id", "timestamp"),
-        sa.Index("idx_cfal_action", "action_taken"),
+        Index("idx_cfal_timestamp", "timestamp"),
+        Index("idx_cfal_user", "user_id", "timestamp"),
+        Index("idx_cfal_org", "organization_id", "timestamp"),
+        Index("idx_cfal_action", "action_taken"),
     )
 
 

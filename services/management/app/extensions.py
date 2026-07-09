@@ -208,7 +208,7 @@ def init_db(app: Flask) -> DB:
             logger.info("Database schema initialized")
 
             # Step 2: Connect with penguin-dal for runtime operations (auto-reflects schema)
-            db = init_dal(app)
+            db = init_dal(app, uri=db_url, pool_size=int(app.config.get("DB_POOL_SIZE", 10)))
 
             logger.info(f"Database initialized successfully on attempt {attempt}")
             return db
