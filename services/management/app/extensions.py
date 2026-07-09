@@ -283,6 +283,8 @@ def init_default_data(db: DB):
             description="Default organization for initial setup",
             token_quota_monthly=1000000,
             token_quota_daily=100000,
+            enabled=True,
+            created_at=datetime.utcnow(),
         )
         logger.info("Created default organization")
     else:
@@ -298,6 +300,8 @@ def init_default_data(db: DB):
             organization_id=org_id,
             token_quota_monthly=999999999,
             token_quota_daily=999999,
+            enabled=True,
+            created_at=datetime.utcnow(),
         )
 
         # Create admin virtual key
