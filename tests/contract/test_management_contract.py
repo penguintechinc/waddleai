@@ -71,6 +71,12 @@ def test_auth_login_bad_creds(management_url):
     assert_snapshot("mgmt_auth_login_bad", status=r.status_code, body=r.json())
 
 
+def test_error_400_missing_field(management_url):
+    # Test 400 error format: POST /auth/login with missing required field
+    r = httpx.post(f"{management_url}/api/v1/auth/login", json={"username": "admin"})  # missing password
+    assert_snapshot("mgmt_error_400", status=r.status_code, body=r.json())
+
+
 def test_auth_me(management_url):
     r = httpx.get(f"{management_url}/api/v1/auth/me", headers=_login(management_url))
     assert_snapshot("mgmt_auth_me", status=r.status_code, body=_drop_keys(r.json(), "last_login_at"))
@@ -83,7 +89,11 @@ def test_auth_verify(management_url):
 
 def test_auth_refresh(management_url):
     r = httpx.post(f"{management_url}/api/v1/auth/refresh", headers=_login(management_url))
-    assert_snapshot("mgmt_auth_refresh", status=r.status_code, body=r.json())
+    body = r.json()
+    # access_token is dynamically generated; pop it to match login test pattern
+    access_token = body.pop("access_token")
+    assert isinstance(access_token, str) and len(access_token) > 0
+    assert_snapshot("mgmt_auth_refresh", status=r.status_code, body=body)
 
 
 def test_auth_logout(management_url):
@@ -143,7 +153,8 @@ def test_quotas_list(management_url):
 
 def test_usage_summary(management_url):
     r = httpx.get(f"{management_url}/api/v1/usage/summary", headers=_login(management_url))
-    assert_snapshot("mgmt_usage_summary", status=r.status_code, body=r.json())
+    # Drop date/month fields (date.today()-derived, changes every day)
+    assert_snapshot("mgmt_usage_summary", status=r.status_code, body=_drop_keys(r.json(), "date", "month"))
 
 
 # ---------------------------------------------------------------------------

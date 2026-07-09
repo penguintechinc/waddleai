@@ -29,14 +29,19 @@ def _wait(url, timeout=30):
     raise RuntimeError(f"server at {url} never became ready")
 
 
-def _launch(module_app, port, cwd, extra_env=None):
+def _launch(module_app, port, cwd, db_dir=None, extra_env=None):
     # PYTHONPATH=REPO: both services import the top-level `shared` package
     # (e.g. `from shared.auth...`), which is only importable when the repo
     # root is on sys.path -- matches how the real container images set
     # PYTHONPATH=/app after COPYing shared/ alongside the service, and how
     # CI sets PYTHONPATH=${{ github.workspace }} for the same reason.
+    #
+    # cwd: service directory (for module imports, env setup).
+    # db_dir: if provided, database file lives in this tmpdir (isolated per
+    # session); otherwise DB is at cwd/contract.db (legacy, non-contract tests).
+    db_path = db_dir if db_dir else cwd
     env = {**os.environ, "DB_TYPE": "sqlite",
-           "DATABASE_URL": f"sqlite:///{cwd}/contract.db",
+           "DATABASE_URL": f"sqlite:///{db_path}/contract.db",
            "FLASK_ENV": "testing", "RELEASE_MODE": "false",
            "CACHE_HOST": "", "REDIS_URL": "",
            "PYTHONPATH": str(REPO)}
@@ -52,17 +57,18 @@ def _launch(module_app, port, cwd, extra_env=None):
 
 @pytest.fixture(scope="session")
 def management_url(tmp_path_factory):
-    cwd = tmp_path_factory.mktemp("mgmt")
+    db_tmpdir = tmp_path_factory.mktemp("mgmt_db")
     # Pre-migration this points at wsgi:app; after Task B-final it is asgi:app (same object).
     entry = "asgi:app" if (REPO / "services/management/asgi.py").exists() else "wsgi:app"
-    proc = _launch(entry, _port := _free_port(), REPO / "services/management")
+    proc = _launch(entry, _port := _free_port(), REPO / "services/management", db_dir=str(db_tmpdir))
     yield f"http://127.0.0.1:{_port}"
     proc.terminate()
 
 
 @pytest.fixture(scope="session")
 def proxy_url(tmp_path_factory):
+    db_tmpdir = tmp_path_factory.mktemp("proxy_db")
     proc = _launch("apps.proxy_server.main:app", _port := _free_port(), REPO / "proxy",
-                   {"WADDLEAI_STUB_UPSTREAM": "1"})
+                   db_dir=str(db_tmpdir), extra_env={"WADDLEAI_STUB_UPSTREAM": "1"})
     yield f"http://127.0.0.1:{_port}"
     proc.terminate()
