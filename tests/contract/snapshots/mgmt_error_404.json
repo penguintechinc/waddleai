@@ -1,0 +1,7 @@
+{
+  "body": {
+    "error": "Not Found",
+    "message": "Resource not found"
+  },
+  "status": 404
+}

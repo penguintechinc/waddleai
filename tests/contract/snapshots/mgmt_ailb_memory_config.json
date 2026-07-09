@@ -1,0 +1,10 @@
+{
+  "body": {
+    "configured": false,
+    "enabled": false,
+    "max_messages": 20,
+    "organization_id": 1,
+    "similarity_threshold": 0.7
+  },
+  "status": 200
+}

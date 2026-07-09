@@ -1,0 +1,19 @@
+{
+  "body": {
+    "organizations": [
+      {
+        "created_at": "<VOLATILE>",
+        "default_model": null,
+        "description": "Default organization for initial setup",
+        "enabled": true,
+        "id": "<VOLATILE>",
+        "name": "default",
+        "token_quota_daily": 100000,
+        "token_quota_monthly": 1000000,
+        "user_count": 1
+      }
+    ],
+    "total": 1
+  },
+  "status": 200
+}

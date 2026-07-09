@@ -1,0 +1,10 @@
+{
+  "body": {
+    "user": {
+      "id": "<VOLATILE>",
+      "role": "admin",
+      "username": "admin"
+    }
+  },
+  "status": 200
+}

@@ -1,0 +1,6 @@
+{
+  "body": {
+    "error": "Invalid credentials"
+  },
+  "status": 401
+}

@@ -1,0 +1,37 @@
+{
+  "body": {
+    "quotas": [
+      {
+        "enabled": true,
+        "id": "<VOLATILE>",
+        "name": "default",
+        "token_quota_daily": 100000,
+        "token_quota_monthly": 1000000,
+        "type": "organization"
+      },
+      {
+        "enabled": true,
+        "id": "<VOLATILE>",
+        "name": "admin",
+        "organization_id": 1,
+        "token_quota_daily": 999999,
+        "token_quota_monthly": 999999999,
+        "type": "user"
+      },
+      {
+        "budget_limit_daily": null,
+        "budget_limit_monthly": null,
+        "enabled": true,
+        "id": "<VOLATILE>",
+        "name": "Admin Master Key",
+        "organization_id": 1,
+        "rpm_limit": 10000,
+        "tpm_limit": 1000000,
+        "type": "key",
+        "user_id": 1
+      }
+    ],
+    "total": 3
+  },
+  "status": 200
+}
