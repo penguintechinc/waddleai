@@ -216,6 +216,62 @@ def test_mem0_memories_clear(proxy_url):
     assert_snapshot("proxy_mem0_clear", status=r.status_code, body=r.text)
 
 
+# regression: cross-org mem0 access (review finding #1)
+def test_mem0_memories_search_cross_org_denied(proxy_url):
+    """Cross-org mem0 search should be rejected with 403 organization mismatch."""
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories/search",
+        headers=_bearer_headers(proxy_url),
+        json={"query": "find relevant memories", "user_id": "1", "organization_id": 9999},
+    )
+    assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+    assert "organization mismatch" in r.json().get("error", "").lower()
+
+
+def test_mem0_memories_list_cross_org_denied(proxy_url):
+    """Cross-org mem0 list should be rejected with 403 organization mismatch."""
+    r = httpx.get(
+        f"{proxy_url}/mem0/memories",
+        params={"user_id": "1", "organization_id": "9999"},
+        headers=_bearer_headers(proxy_url),
+    )
+    assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+    assert "organization mismatch" in r.json().get("error", "").lower()
+
+
+def test_mem0_memories_delete_cross_org_denied(proxy_url):
+    """Cross-org mem0 delete should be rejected with 403 organization mismatch."""
+    r = httpx.delete(
+        f"{proxy_url}/mem0/memories/test-id",
+        params={"user_id": "1", "organization_id": "9999"},
+        headers=_bearer_headers(proxy_url),
+    )
+    assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+    assert "organization mismatch" in r.json().get("error", "").lower()
+
+
+def test_mem0_memories_clear_cross_org_denied(proxy_url):
+    """Cross-org mem0 clear should be rejected with 403 organization mismatch."""
+    r = httpx.delete(
+        f"{proxy_url}/mem0/memories",
+        params={"user_id": "1", "organization_id": "9999"},
+        headers=_bearer_headers(proxy_url),
+    )
+    assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+    assert "organization mismatch" in r.json().get("error", "").lower()
+
+
+def test_mem0_memories_post_cross_org_denied(proxy_url):
+    """Cross-org mem0 add should be rejected with 403 organization mismatch."""
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories",
+        headers=_bearer_headers(proxy_url),
+        json={"messages": [{"role": "user", "content": "test"}], "user_id": "1", "organization_id": 9999},
+    )
+    assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+    assert "organization mismatch" in r.json().get("error", "").lower()
+
+
 # ---------------------------------------------------------------------------
 # Auth Matrix Tests — wa- virtual keys + x-api-key via OIDC middleware
 # ---------------------------------------------------------------------------
