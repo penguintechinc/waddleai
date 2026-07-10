@@ -2,11 +2,12 @@
 WaddleAI Management API v1 - Authentication Endpoints
 """
 
+import asyncio
 from datetime import datetime
 from functools import lru_cache, wraps
 
-from flask import g, jsonify, request
 from passlib.hash import bcrypt
+from quart import g, jsonify, request
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
 from shared.auth.penguin_auth import verify_token as _aaa_verify_token
@@ -75,7 +76,7 @@ def require_auth(f):
     """Decorator to require authentication"""
 
     @wraps(f)
-    def decorated_function(*args, **kwargs):
+    async def decorated_function(*args, **kwargs):
         auth_header = request.headers.get("Authorization")
 
         if not auth_header:
@@ -85,16 +86,20 @@ def require_auth(f):
         if auth_header.startswith("Bearer "):
             token = auth_header.split(" ")[1]
 
-            # Try JWT first
+            # Try JWT first (CPU-only, no DB access -- safe to call directly)
             payload = verify_token(token)
             if payload:
                 g.user = payload
+                if asyncio.iscoroutinefunction(f):
+                    return await f(*args, **kwargs)
                 return f(*args, **kwargs)
 
-            # Try API key
-            user_ctx = verify_api_key(token)
+            # Try API key (does DB lookups -- offload to a thread)
+            user_ctx = await asyncio.to_thread(verify_api_key, token)
             if user_ctx:
                 g.user = user_ctx
+                if asyncio.iscoroutinefunction(f):
+                    return await f(*args, **kwargs)
                 return f(*args, **kwargs)
 
         return jsonify({"error": "Invalid or expired token"}), 401
@@ -107,7 +112,7 @@ def require_role(*roles):
 
     def decorator(f):
         @wraps(f)
-        def decorated_function(*args, **kwargs):
+        async def decorated_function(*args, **kwargs):
             if not hasattr(g, "user") or not g.user:
                 return jsonify({"error": "Authentication required"}), 401
 
@@ -115,6 +120,8 @@ def require_role(*roles):
             if user_role not in roles:
                 return jsonify({"error": "Insufficient permissions", "required_roles": roles}), 403
 
+            if asyncio.iscoroutinefunction(f):
+                return await f(*args, **kwargs)
             return f(*args, **kwargs)
 
         return decorated_function
@@ -123,9 +130,9 @@ def require_role(*roles):
 
 
 @api_v1_bp.route("/auth/login", methods=["POST"])
-def login():
+async def login():
     """User login endpoint"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -137,7 +144,7 @@ def login():
         return jsonify({"error": "Username and password required"}), 400
 
     # Find user
-    user = db(db.users.username == username).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.username == username).select().first())
 
     if not user:
         return jsonify({"error": "Invalid credentials"}), 401
@@ -150,14 +157,19 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
 
     # Update login tracking
-    db(db.users.id == user.id).update(
-        last_login_at=user.current_login_at,
-        current_login_at=datetime.utcnow(),
-        last_login_ip=user.current_login_ip,
-        current_login_ip=request.remote_addr,
-        login_count=(user.login_count or 0) + 1,
-    )
-    db.commit()
+    remote_addr = request.remote_addr
+
+    def _update_login():
+        db(db.users.id == user.id).update(
+            last_login_at=user.current_login_at,
+            current_login_at=datetime.utcnow(),
+            last_login_ip=user.current_login_ip,
+            current_login_ip=remote_addr,
+            login_count=(user.login_count or 0) + 1,
+        )
+        db.commit()
+
+    await asyncio.to_thread(_update_login)
 
     # Create token
     token = create_token(user_id=user.id, username=user.username, role=user.role, organization_id=user.organization_id)
@@ -180,7 +192,7 @@ def login():
 
 @api_v1_bp.route("/auth/logout", methods=["POST"])
 @require_auth
-def logout():
+async def logout():
     """User logout endpoint"""
     # In a stateless JWT system, logout is handled client-side
     # Server can optionally blacklist the token in Redis
@@ -189,7 +201,7 @@ def logout():
 
 @api_v1_bp.route("/auth/refresh", methods=["POST"])
 @require_auth
-def refresh_token():
+async def refresh_token():
     """Refresh JWT token"""
     user = g.user
 
@@ -203,7 +215,7 @@ def refresh_token():
 
 @api_v1_bp.route("/auth/verify", methods=["GET"])
 @require_auth
-def verify_auth():
+async def verify_auth():
     return jsonify(
         {
             "user": {
@@ -217,15 +229,15 @@ def verify_auth():
 
 @api_v1_bp.route("/auth/me", methods=["GET"])
 @require_auth
-def get_current_user():
+async def get_current_user():
     """Get current user info"""
     user_id = g.user["user_id"]
-    user = db(db.users.id == user_id).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    org = db(db.organizations.id == user.organization_id).select().first()
+    org = await asyncio.to_thread(lambda: db(db.organizations.id == user.organization_id).select().first())
 
     return jsonify(
         {
@@ -245,9 +257,9 @@ def get_current_user():
 
 @api_v1_bp.route("/auth/change-password", methods=["POST"])
 @require_auth
-def change_password():
+async def change_password():
     """Change user password"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -262,7 +274,7 @@ def change_password():
         return jsonify({"error": "New password must be at least 8 characters"}), 400
 
     user_id = g.user["user_id"]
-    user = db(db.users.id == user_id).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
@@ -272,7 +284,10 @@ def change_password():
         return jsonify({"error": "Current password is incorrect"}), 401
 
     # Update password
-    db(db.users.id == user_id).update(password_hash=bcrypt.hash(new_password))
-    db.commit()
+    def _update_password():
+        db(db.users.id == user_id).update(password_hash=bcrypt.hash(new_password))
+        db.commit()
+
+    await asyncio.to_thread(_update_password)
 
     return jsonify({"message": "Password changed successfully"})
