@@ -57,6 +57,10 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            - name: CACHE_HOST
+              value: "{{ include "waddleai.fullname" . }}-valkey"
+            - name: CACHE_PORT
+              value: "6379"
             - name: REDIS_URL
               value: "redis://{{ include "waddleai.fullname" . }}-valkey:6379/0"
             - name: MANAGEMENT_SERVER_URL

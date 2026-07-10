@@ -11,6 +11,7 @@ has been removed.
 import logging
 from datetime import datetime
 from typing import Optional
+from urllib.parse import quote
 
 import redis
 from penguin_dal.db import DB
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Global instances
 db: Optional[DB] = None
 redis_client: Optional[redis.Redis] = None
+cache_client: Optional[redis.Redis] = None  # Alias for redis_client
 
 
 def init_db(app: Quart) -> DB:
@@ -65,34 +67,63 @@ def init_db(app: Quart) -> DB:
                 raise
 
 
-def init_redis(app: Quart) -> Optional[redis.Redis]:
-    """Initialize Redis connection"""
-    global redis_client
+def init_cache(app: Quart) -> Optional[redis.Redis]:
+    """Initialize cache (Valkey/Redis) connection with CACHE_* env precedence"""
+    global redis_client, cache_client
 
-    redis_url = app.config.get("REDIS_URL")
-    if not redis_url:
-        logger.warning("Redis URL not configured, running without Redis")
+    # Precedence: CACHE_HOST > REDIS_URL
+    cache_host = app.config.get("CACHE_HOST")
+    if cache_host:
+        # Build redis-protocol URL from CACHE_* components
+        cache_port = app.config.get("CACHE_PORT", 6379)
+        cache_user = app.config.get("CACHE_USER", "")
+        cache_pass = app.config.get("CACHE_PASS", "")
+
+        # Build URL with optional user:pass@ segment (URL-encode password)
+        if cache_user and cache_pass:
+            # URL-encode password to handle special characters
+            encoded_pass = quote(cache_pass, safe="")
+            cache_url = f"redis://{cache_user}:{encoded_pass}@{cache_host}:{cache_port}/0"
+        elif cache_user:
+            cache_url = f"redis://{cache_user}@{cache_host}:{cache_port}/0"
+        else:
+            cache_url = f"redis://{cache_host}:{cache_port}/0"
+    else:
+        # Fall back to REDIS_URL (deprecated)
+        cache_url = app.config.get("REDIS_URL")
+        if cache_url:
+            logger.warning("REDIS_URL is deprecated; set CACHE_HOST/CACHE_PORT (honored for one release)")
+
+    if not cache_url:
+        logger.warning("Cache URL not configured, running without cache")
         return None
 
     try:
-        redis_client = redis.from_url(redis_url, decode_responses=True)
+        redis_client = redis.from_url(cache_url, decode_responses=True)
         redis_client.ping()
-        logger.info("Redis connection established")
+        # Also set cache_client alias to same object
+        cache_client = redis_client
+        logger.info("Cache connection established")
         return redis_client
     except Exception as e:
-        logger.warning(f"Failed to connect to Redis: {e}")
+        logger.warning(f"Failed to connect to cache: {e}")
         return None
+
+
+# Backward-compat shim for external callers using old name
+init_redis = init_cache
 
 
 def init_extensions(app: Quart):
     """Initialize all extensions"""
-    global db, redis_client
+    global db, redis_client, cache_client
 
     # Initialize database
     db = init_db(app)
 
-    # Initialize Redis
-    redis_client = init_redis(app)
+    # Initialize cache
+    redis_client = init_cache(app)
+    cache_client = redis_client  # Ensure alias is set
 
     # Initialize default data
     init_default_data(db)

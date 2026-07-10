@@ -58,7 +58,13 @@ class Config:
     # Database settings (PyDAL)
     DATABASE_URL = _build_database_url()
 
-    # Redis settings
+    # Cache settings (house-standard CACHE_* env)
+    CACHE_HOST = os.getenv("CACHE_HOST", "")
+    CACHE_PORT = int(os.getenv("CACHE_PORT", "6379"))
+    CACHE_USER = os.getenv("CACHE_USER", "")
+    CACHE_PASS = os.getenv("CACHE_PASS", "")
+
+    # Redis settings (deprecated alias for CACHE_* — honored for one release)
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     # JWT settings
