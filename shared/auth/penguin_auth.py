@@ -81,9 +81,14 @@ class LocalOIDCRelyingParty:
         self._provider = provider
 
     async def verify_token(self, raw_token: str) -> dict:
-        """Validate a self-issued token; raises AuthenticationError on failure."""
+        """Validate a self-issued token; raises AuthenticationError on failure.
+
+        Returns a full claims dict (see user_context_to_claims_dict) carrying
+        the complete user context, enabling downstream code to reconstruct
+        the UserContext without re-running token verification.
+        """
         user_context = verify_token(raw_token, self._provider)
-        return {"sub": str(user_context.user_id)}
+        return user_context_to_claims_dict(user_context)
 
 
 def create_local_oidc_rp(provider: OIDCProvider) -> LocalOIDCRelyingParty:
@@ -156,6 +161,63 @@ def claims_to_user_context(claims: Claims) -> UserContext:
         role=role,
         organization_id=(int(claims.tenant) if claims.tenant and claims.tenant.isdigit() else 0),
         managed_orgs=[int(t) for t in (claims.teams or []) if t.isdigit()],
+        permissions=permissions,
+        api_key_id=api_key_id,
+    )
+
+
+def user_context_to_claims_dict(uc: UserContext) -> dict:
+    """Convert WaddleAI UserContext to a plain JSON-safe claims dict.
+
+    This dict carries the full context and is safe for AuditMiddleware
+    (which reads scope["state"]["claims"] as a plain dict and calls .get()).
+    """
+    scopes: List[str] = []
+    if isinstance(uc.permissions, set):
+        scopes = [p.value if hasattr(p, "value") else str(p) for p in uc.permissions]
+    elif isinstance(uc.permissions, list):
+        scopes = [p.value if hasattr(p, "value") else str(p) for p in uc.permissions]
+
+    return {
+        "sub": str(uc.user_id),
+        "username": uc.username,
+        "roles": [uc.role.value],
+        "scope": scopes,
+        "tenant": str(uc.organization_id),
+        "teams": [str(o) for o in (uc.managed_orgs or [])],
+        "api_key_id": (str(uc.api_key_id) if uc.api_key_id is not None else None),
+    }
+
+
+def claims_dict_to_user_context(d: dict) -> UserContext:
+    """Rebuild WaddleAI UserContext from a plain claims dict.
+
+    Inverse of user_context_to_claims_dict; used by get_current_user
+    to reconstruct the full context from middleware-populated claims
+    without re-running bcrypt/verify.
+    """
+    role_str = (d.get("roles") or ["user"])[0]
+    try:
+        role = Role(role_str)
+    except ValueError:
+        role = Role.USER
+
+    # Rebuild permission set from scopes
+    permissions: set = set()
+    for scope in d.get("scope", []):
+        permissions.add(scope)
+
+    raw_api_key_id = d.get("api_key_id")
+    api_key_id = (
+        int(raw_api_key_id) if raw_api_key_id is not None and str(raw_api_key_id).isdigit() else None
+    )
+
+    return UserContext(
+        user_id=int(d.get("sub", "0")) if str(d.get("sub", "0")).isdigit() else 0,
+        username=d.get("username", d.get("sub", "unknown")),
+        role=role,
+        organization_id=(int(d.get("tenant", "0")) if str(d.get("tenant", "0")).isdigit() else 0),
+        managed_orgs=[int(t) for t in (d.get("teams", [])) if str(t).isdigit()],
         permissions=permissions,
         api_key_id=api_key_id,
     )

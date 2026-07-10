@@ -101,14 +101,10 @@ def test_chat_completions_malformed_body(proxy_url):
 # ---------------------------------------------------------------------------
 # /v1/messages (Anthropic-compatible)
 #
-# claude_messages() authenticates via x-api-key (falling back to
-# Authorization) through RBACManager.authenticate_api_key -- an entirely
-# separate mechanism from get_current_user()'s OIDC path used by
-# /v1/chat/completions and /v1/models. It still sits behind the same
-# OIDCAuthMiddleware ASGI gate (requires "Bearer " on the real Authorization
-# header), so a genuine request needs both headers: Authorization: Bearer
-# <jwt> to satisfy the ASGI gate, and x-api-key: <wa-...> to satisfy the
-# route's own auth.
+# claude_messages() now uses unified get_current_user() authentication.
+# The OIDCAuthMiddleware's api_key_verifier handles x-api-key and wa- keys
+# uniformly (alongside Bearer JWT). Single header required (Bearer JWT,
+# x-api-key, or raw wa- key).
 # ---------------------------------------------------------------------------
 
 
@@ -218,3 +214,90 @@ def test_mem0_memories_clear(proxy_url):
         headers=_bearer_headers(proxy_url),
     )
     assert_snapshot("proxy_mem0_clear", status=r.status_code, body=r.text)
+
+
+# ---------------------------------------------------------------------------
+# Auth Matrix Tests — wa- virtual keys + x-api-key via OIDC middleware
+# ---------------------------------------------------------------------------
+
+
+def test_chat_completions_auth_bearer_jwt(proxy_url):
+    """Bearer JWT auth (regression) — existing path unchanged."""
+    r = httpx.post(
+        f"{proxy_url}/v1/chat/completions",
+        headers=_bearer_headers(proxy_url),
+        json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "test"}]},
+    )
+    assert r.status_code == 200, f"Bearer JWT auth failed: {r.json()}"
+
+
+def test_chat_completions_auth_xapikey_alone(proxy_url):
+    """x-api-key header alone (no Authorization) — new via middleware."""
+    _, api_key = _auth(proxy_url)
+    r = httpx.post(
+        f"{proxy_url}/v1/chat/completions",
+        headers={"x-api-key": api_key},
+        json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "test"}]},
+    )
+    assert r.status_code == 200, f"x-api-key auth failed: {r.json()}"
+
+
+def test_chat_completions_auth_raw_wa_key(proxy_url):
+    """Authorization: <wa-key> (raw, no Bearer prefix) — new via middleware."""
+    _, api_key = _auth(proxy_url)
+    r = httpx.post(
+        f"{proxy_url}/v1/chat/completions",
+        headers={"Authorization": api_key},
+        json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "test"}]},
+    )
+    assert r.status_code == 200, f"raw wa- key auth failed: {r.json()}"
+
+
+def test_chat_completions_auth_bearer_wa_key(proxy_url):
+    """Authorization: Bearer <wa-key> (key in bearer slot) — new via middleware."""
+    _, api_key = _auth(proxy_url)
+    r = httpx.post(
+        f"{proxy_url}/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "test"}]},
+    )
+    assert r.status_code == 200, f"Bearer wa- key auth failed: {r.json()}"
+
+
+def test_chat_completions_auth_bad_key(proxy_url):
+    """Bad/garbage key → 401."""
+    r = httpx.post(
+        f"{proxy_url}/v1/chat/completions",
+        headers={"x-api-key": "wa-invalid-key-badvalue"},
+        json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "test"}]},
+    )
+    assert r.status_code == 401, f"Bad key should fail: got {r.status_code}"
+
+
+def test_messages_auth_xapikey_alone(proxy_url):
+    """Claude Messages: x-api-key alone (no Bearer JWT) — was broken, now fixed."""
+    _, api_key = _auth(proxy_url)
+    r = httpx.post(
+        f"{proxy_url}/v1/messages",
+        headers={"x-api-key": api_key},
+        json={
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "test"}],
+        },
+    )
+    assert r.status_code == 200, f"Messages x-api-key auth failed: {r.json()}"
+
+
+def test_messages_auth_bad_key(proxy_url):
+    """Claude Messages: bad key → 401."""
+    r = httpx.post(
+        f"{proxy_url}/v1/messages",
+        headers={"x-api-key": "wa-invalid-bad-secret"},
+        json={
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "test"}],
+        },
+    )
+    assert r.status_code == 401, f"Bad key should fail: got {r.status_code}"

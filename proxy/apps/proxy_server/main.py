@@ -33,10 +33,12 @@ from proxy.apps.proxy_server.grpc_server import ServerComponents, run_grpc_in_th
 from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
+    claims_dict_to_user_context,
     claims_to_user_context,
     create_local_oidc_rp,
     create_oidc_provider,
     issue_token,
+    user_context_to_claims_dict,
     verify_token,
 )
 from shared.auth.rbac import ROLE_PERMISSIONS, AuthenticationError, Permission, RBACManager, Role, UserContext
@@ -310,6 +312,24 @@ class ProxyServer:
 # Global server instance
 proxy_server = ProxyServer()
 
+
+# API key verifier for penguin-aaa OIDCAuthMiddleware (defined at module level)
+async def _api_key_verifier(credential: str) -> dict:
+    """Verify an API key and return a claims dict for the OIDC middleware.
+
+    Returns a plain dict (AuditMiddleware reads scope["state"]["claims"].get("sub"))
+    carrying the full user context. Raises AuthenticationError on an invalid key,
+    which the middleware catches and turns into a 401.
+
+    ``authenticate_api_key`` is called synchronously: it uses the shared PyDAL
+    DAL (thread-local connections) and performs a write (last_used), so offloading
+    to asyncio.to_thread would open a second thread-local SQLite connection whose
+    uncommitted write locks the file. This matches the proxy's original proven
+    auth path; a true async offload would need a dedicated per-worker DAL (follow-up).
+    """
+    uc = proxy_server.rbac.authenticate_api_key(credential)
+    return user_context_to_claims_dict(uc)
+
 # Quart app
 app = Quart(__name__)
 
@@ -333,10 +353,14 @@ async def on_startup():
     # Apply penguin-aaa ASGI middleware stack
     # AuditMiddleware wraps OIDCAuthMiddleware wraps the Quart ASGI app
     public_paths = _PUBLIC_PATHS | ({_TEST_TOKEN_PATH} if _TEST_MODE else set())
+
+    # Wire the module-level _api_key_verifier for wa- virtual keys and x-api-key headers.
+    # It offloads blocking authenticate_api_key to thread pool and returns full claims dict.
     oidc_mw = OIDCAuthMiddleware(
         app.asgi_app,
         rp=proxy_server.oidc_rp,
         public_paths=public_paths,
+        api_key_verifier=_api_key_verifier,
     )
     # Emitter(*sinks: AuditSink) -- `Emitter(sink="log")` is not (and has
     # never been) a valid call (no such kwarg; TypeError unconditionally).
@@ -417,26 +441,21 @@ async def get_current_user():
     """Extract and validate user authentication from the current request.
 
     Authentication strategy:
-      1. If the OIDC middleware already validated a Bearer JWT the claims are
-         available on ``request.scope["aaa_claims"]``.  Convert them to a
-         ``UserContext`` for backward compatibility.
-      2. API-key authentication (``sk-`` / ``wa-`` prefixed) is handled by
-         the legacy ``RBACManager`` because penguin-aaa does not manage API
-         keys.
-      3. Verify RS256 JWT via penguin-aaa when the OIDC middleware did not
-         populate claims (e.g. direct Bearer token requests).
+      1. Fast path: middleware-populated claims dict at scope["state"]["claims"]
+         → reconstruct UserContext without re-verification.
+      2. Fallback: raw API key (wa-/sk-) in Authorization → authenticate_api_key
+         (blocking, wrapped in asyncio.to_thread).
+      3. Fallback: Bearer JWT → verify_token.
     """
-    # --- path 1: claims populated by OIDCAuthMiddleware ---
-    # NOTE: This path is currently inert. The penguin_aaa ASGI middleware stores claims at
-    # scope["state"]["claims"], not scope["aaa_claims"], so this condition never fires.
-    # DO NOT rewire this to read from scope["state"]["claims"] without first ensuring
-    # LocalOIDCRelyingParty.verify_token returns a full Claims object; currently it returns
-    # a stripped dict (e.g. {"sub": ...}), which would crash claims_to_user_context().
-    aaa_claims = request.scope.get("aaa_claims") if hasattr(request, "scope") else None
-    if aaa_claims is not None:
-        user_context = claims_to_user_context(aaa_claims)
-        return user_context
+    # --- path 1: claims populated by OIDCAuthMiddleware (fast path) ---
+    # LocalOIDCRelyingParty.verify_token now returns full claims dict, or api_key_verifier
+    # returns a full claims dict. Both are AuditMiddleware-safe (plain dict with "sub" key).
+    state = request.scope.get("state") if hasattr(request, "scope") else None
+    claims_d = state.get("claims") if isinstance(state, dict) else None
+    if isinstance(claims_d, dict) and claims_d:
+        return claims_dict_to_user_context(claims_d)
 
+    # Read header once into locals (no Quart objects in to_thread closures)
     authorization = request.headers.get("Authorization")
 
     if not authorization:
@@ -444,11 +463,18 @@ async def get_current_user():
 
     try:
         if authorization.startswith("sk-") or authorization.startswith("wa-"):
-            # --- path 2: API key (penguin-aaa does not handle these) ---
+            # --- path 2: raw API key (penguin-aaa middleware does not intercept these) ---
+            # Called synchronously on the event-loop thread. authenticate_api_key
+            # uses the shared PyDAL DAL, whose connections are thread-local AND it
+            # performs a write (last_used); offloading to asyncio.to_thread would
+            # open a second thread-local SQLite connection whose uncommitted write
+            # locks the file. A true async offload needs a dedicated per-worker DAL
+            # (follow-up); the brief cost of a bcrypt+query on the loop matches the
+            # original proven behavior.
             user_context = proxy_server.rbac.authenticate_api_key(authorization)
         elif authorization.startswith("Bearer "):
             # --- path 3: RS256 JWT via penguin-aaa ---
-            token = authorization[7:]
+            token = authorization[7:]  # Local var, not from request
             user_context = verify_token(token, proxy_server.oidc_provider)
         else:
             abort(401, description="Invalid authorization format")
@@ -982,24 +1008,8 @@ async def get_quota():
 async def claude_messages():
     """Anthropic Claude Messages API compatible endpoint"""
     try:
-        # Authenticate using x-api-key header or Authorization header
-        x_api_key = request.headers.get("x-api-key")
-        authorization = x_api_key or request.headers.get("Authorization")
-        if not authorization:
-            return (
-                jsonify({"error": {"message": "x-api-key or Authorization header required", "type": "auth_error"}}),
-                401,
-            )
-
-        # Remove 'Bearer ' prefix if present
-        if authorization.startswith("Bearer "):
-            authorization = authorization[7:]
-
-        # Authenticate user
-        try:
-            user_context = proxy_server.rbac.authenticate_api_key(authorization)
-        except AuthenticationError as e:
-            return jsonify({"error": {"message": str(e), "type": "auth_error"}}), 401
+        # Unified authentication via get_current_user (Bearer JWT, x-api-key, or raw wa- key)
+        user_context = await get_current_user()
 
         # Parse request body
         body = await request.get_json()
