@@ -103,7 +103,11 @@ Image name for webui service
 Image name for postgres
 */}}
 {{- define "waddleai.postgres.image" -}}
+{{- if .Values.postgres.image.digest -}}
+{{- printf "%s@%s" .Values.postgres.image.repository .Values.postgres.image.digest }}
+{{- else -}}
 {{- printf "%s:%s" .Values.postgres.image.repository .Values.postgres.image.tag }}
+{{- end -}}
 {{- end }}
 
 {{/*
