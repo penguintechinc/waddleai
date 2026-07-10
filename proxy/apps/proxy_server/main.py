@@ -547,10 +547,17 @@ async def readiness_check():
     """Kubernetes readiness probe endpoint.
 
     Returns 200 when the proxy is ready to accept traffic, 503 otherwise.
+
+    CRITICAL: Readiness must ONLY gate on the hard local dependency (database).
+    Control-plane services (management_server) and system state (resources, llm_providers)
+    are operational signals and must NOT trigger pod removal from Service rotation.
+    A transient control-plane outage must not cause cascading data-plane outage.
+
     - If health_monitor is not yet initialized, returns 503 with initializing reason.
-    - Otherwise runs all health checks and maps status to HTTP code:
-      - "healthy" or "degraded" (can still serve with cache) → 200
-      - "unhealthy" (hard dependency failure) → 503
+    - Otherwise runs all health checks and returns full summary as JSON body (observability).
+    - HTTP code decision: gate on DATABASE check only:
+      - database status "healthy" → 200 (proxy can serve)
+      - database status not "healthy" → 503 (hard dep failure)
     - Unexpected errors also return 503 to fail safe.
     """
     if proxy_server.health_monitor is None:
@@ -558,14 +565,14 @@ async def readiness_check():
 
     try:
         summary = await proxy_server.health_monitor.check_all()
-        status = summary.get("status")
 
-        # Accept both "healthy" and "degraded" as ready states
-        # (proxy can serve with cache degraded, DB is the hard dependency)
-        if status in ("healthy", "degraded"):
-            return jsonify(summary), 200
-        else:
-            return jsonify(summary), 503
+        # Gate readiness only on the database (hard local dependency).
+        # Extract database check result and examine its status.
+        db = (summary.get("results") or {}).get("database", {})
+        ready = db.get("status") == "healthy"
+
+        # Return full summary for observability, but HTTP code reflects only DB status
+        return jsonify(summary), 200 if ready else 503
     except Exception as e:
         logger.error("readiness_check exception", error=str(e))
         return jsonify({"ready": False, "reason": str(e)}), 503
