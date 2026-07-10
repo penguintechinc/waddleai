@@ -34,8 +34,8 @@ from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_to_user_context,
+    create_local_oidc_rp,
     create_oidc_provider,
-    create_oidc_rp,
     issue_token,
     verify_token,
 )
@@ -75,35 +75,6 @@ _TEST_MODE = os.getenv("WADDLEAI_STUB_UPSTREAM") == "1"
 _TEST_TOKEN_PATH = "/_contract_test/token"
 _TEST_API_KEY_SECRET = "wa-contract-test-0001-secretvalue"
 _STUB_COMPLETION_TEXT = "This is a deterministic stub completion for WaddleAI contract tests."
-
-
-class _TestModeOIDCRelyingParty:
-    """Test-mode stand-in for OIDCRelyingParty (WADDLEAI_STUB_UPSTREAM=1 only).
-
-    penguin_aaa's OIDCAuthMiddleware calls ``rp.verify_token(token)``, but
-    penguin_aaa.authn.oidc_rp.OIDCRelyingParty only implements
-    ``validate_token()`` — there is no ``verify_token`` method on that class.
-    That means, as wired today, the middleware's bare ``except Exception``
-    always fires and every request to a non-public path is 401'd regardless
-    of token validity — a pre-existing penguin_aaa defect, out of scope for
-    this repo (it isn't something to patch from the waddleai side).
-
-    This shim exists solely so the contract harness can exercise the real
-    OIDCAuthMiddleware pipeline deterministically without live discovery: it
-    performs the same RS256 verification as ``shared.auth.penguin_auth.
-    verify_token``, against this same process's in-memory OIDCProvider
-    keystore. Missing/invalid/expired tokens still raise -> still 401 via the
-    middleware's exception handler, so the 401 contract captured is genuine.
-    Production (no flag) is unaffected: it still builds a real
-    ``OIDCRelyingParty`` and calls ``await rp.discover()`` as before.
-    """
-
-    def __init__(self, provider):
-        self._provider = provider
-
-    async def verify_token(self, token: str) -> dict:
-        user_context = verify_token(token, self._provider)  # raises AuthenticationError on invalid/expired
-        return {"sub": str(user_context.user_id)}
 
 
 def _stub_llm_response(model: str, messages: list) -> tuple:
@@ -177,14 +148,16 @@ class ProxyServer:
         self.rbac = RBACManager(self.db)
 
         # Initialize penguin-aaa OIDC provider, relying party, and RBAC enforcer
+        #
+        # WaddleAI issues and validates its own RS256 tokens (self-contained
+        # keystore, no external issuer/JWKS), so the ASGI middleware's RP is
+        # a LocalOIDCRelyingParty validating against this same provider --
+        # see shared.auth.penguin_auth.LocalOIDCRelyingParty docstring.
+        # create_oidc_rp()/OIDCRelyingParty (external-issuer JWKS discovery)
+        # remain available for a future external-IdP/SSO integration
+        # (Pro tier, enterprise-only, license-gated) but are not wired in here.
         self.oidc_provider = create_oidc_provider()
-        if _TEST_MODE:
-            # Skip live discovery (network call to OIDC_ISSUER_URL) and use a
-            # local shim RP -- see _TestModeOIDCRelyingParty docstring.
-            self.oidc_rp = _TestModeOIDCRelyingParty(self.oidc_provider)
-        else:
-            self.oidc_rp = create_oidc_rp()
-            await self.oidc_rp.discover()
+        self.oidc_rp = create_local_oidc_rp(self.oidc_provider)
         self.rbac_enforcer = build_rbac_enforcer()
         logger.info("penguin-aaa OIDC provider and RP initialized")
 
@@ -471,18 +444,6 @@ async def get_current_user():
             # --- path 3: RS256 JWT via penguin-aaa ---
             token = authorization[7:]
             user_context = verify_token(token, proxy_server.oidc_provider)
-            if _TEST_MODE and user_context.api_key_id is None:
-                # claims_to_user_context() has no api_key_id source (the
-                # penguin-aaa Claims round-trip never carries it), so every
-                # Bearer-JWT-authenticated request normally gets
-                # api_key_id=None -> token_manager.check_quota(None) always
-                # returns "API key not found" -> permanent 429 on
-                # /v1/chat/completions. This is a genuine, pre-existing gap
-                # independent of this test mode; attach the seeded
-                # contract-test key here (rather than patching
-                # shared/auth/penguin_auth.py) so the real quota/token
-                # accounting pipeline actually runs during the snapshot.
-                user_context.api_key_id = proxy_server.contract_test_api_key_id
         else:
             abort(401, description="Invalid authorization format")
 

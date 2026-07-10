@@ -56,6 +56,41 @@ def create_oidc_rp() -> OIDCRelyingParty:
     return OIDCRelyingParty(config)
 
 
+class LocalOIDCRelyingParty:
+    """Relying party for WaddleAI's own self-issued RS256 tokens.
+
+    WaddleAI's proxy is self-contained: ``create_oidc_provider()`` builds an
+    in-memory/file keystore that both issues (``issue_token``) and validates
+    (``verify_token``) tokens for this same process -- there is no external
+    OIDC issuer and no published JWKS endpoint. ``penguin_aaa.authn.oidc_rp
+    .OIDCRelyingParty`` validates tokens by fetching JWKS from an external
+    issuer's discovery document over HTTP, which cannot work against a
+    self-issued token: there is nothing to discover. This class gives
+    ``penguin_aaa.middleware.asgi.OIDCAuthMiddleware`` (which requires an
+    object exposing ``async def verify_token(raw_token) -> Claims``) a
+    relying party that validates self-issued tokens the same way
+    ``get_current_user()``'s Bearer-JWT path already does, against the same
+    provider keystore -- no network call, no external issuer.
+
+    ``create_oidc_rp()``/``OIDCRelyingParty`` remain available for a future
+    external-IdP/SSO integration (Pro tier, enterprise-only, license-gated)
+    but are not wired into the proxy's ASGI middleware.
+    """
+
+    def __init__(self, provider: OIDCProvider) -> None:
+        self._provider = provider
+
+    async def verify_token(self, raw_token: str) -> dict:
+        """Validate a self-issued token; raises AuthenticationError on failure."""
+        user_context = verify_token(raw_token, self._provider)
+        return {"sub": str(user_context.user_id)}
+
+
+def create_local_oidc_rp(provider: OIDCProvider) -> LocalOIDCRelyingParty:
+    """Create the relying party used by the proxy's ASGI OIDC middleware."""
+    return LocalOIDCRelyingParty(provider)
+
+
 def build_rbac_enforcer() -> RBACEnforcer:
     """Build penguin-aaa RBACEnforcer from WaddleAI role/permission mappings."""
     enforcer = RBACEnforcer()
@@ -88,7 +123,12 @@ def user_context_to_claims(user_context: UserContext) -> Claims:
         roles=[user_context.role.value],
         tenant=str(user_context.organization_id),
         teams=[str(org) for org in (user_context.managed_orgs or [])],
-        ext={"username": user_context.username},
+        ext={
+            "username": user_context.username,
+            "api_key_id": (
+                str(user_context.api_key_id) if user_context.api_key_id is not None else None
+            ),
+        },
     )
 
 
@@ -105,6 +145,11 @@ def claims_to_user_context(claims: Claims) -> UserContext:
     for scope in claims.scope or []:
         permissions.add(scope)
 
+    raw_api_key_id = claims.ext.get("api_key_id") if claims.ext else None
+    api_key_id = (
+        int(raw_api_key_id) if raw_api_key_id is not None and str(raw_api_key_id).isdigit() else None
+    )
+
     return UserContext(
         user_id=int(claims.sub) if claims.sub.isdigit() else 0,
         username=(claims.ext.get("username", claims.sub) if claims.ext else claims.sub),
@@ -112,6 +157,7 @@ def claims_to_user_context(claims: Claims) -> UserContext:
         organization_id=(int(claims.tenant) if claims.tenant and claims.tenant.isdigit() else 0),
         managed_orgs=[int(t) for t in (claims.teams or []) if t.isdigit()],
         permissions=permissions,
+        api_key_id=api_key_id,
     )
 
 
