@@ -211,6 +211,24 @@ def test_ailb_memory_config(management_url):
     assert_snapshot("mgmt_ailb_memory_config", status=r.status_code, body=r.json())
 
 
+def test_memory_config_rag(management_url):
+    # Ported legacy memory-config admin surface parity (task C1): RAG
+    # injection config GET, same organization-scoped shape as memory-config.
+    r = httpx.get(
+        f"{management_url}/api/v1/ailb/rag-config",
+        params={"organization_id": 1},
+        headers=_login(management_url),
+    )
+    assert_snapshot("mgmt_memory_config_rag", status=r.status_code, body=r.json())
+
+
+def test_memory_config_embedding(management_url):
+    # Ported legacy memory-config admin surface parity (task C1): embedding
+    # backend config GET, global default (no organization_id).
+    r = httpx.get(f"{management_url}/api/v1/ailb/embedding-config", headers=_login(management_url))
+    assert_snapshot("mgmt_memory_config_embedding", status=r.status_code, body=r.json())
+
+
 # ---------------------------------------------------------------------------
 # routing_matrix
 # ---------------------------------------------------------------------------
@@ -219,6 +237,15 @@ def test_ailb_memory_config(management_url):
 def test_routing_matrix_list(management_url):
     r = httpx.get(f"{management_url}/api/v1/routing-matrix/", headers=_login(management_url))
     assert_snapshot("mgmt_routing_matrix_list", status=r.status_code, body=r.json())
+
+
+def test_routing_config_instructions(management_url):
+    # Ported legacy routing-config admin surface parity (task C1): routing-LLM
+    # instructions + selected model, Redis-backed (REDIS_URL="" in the
+    # contract harness, so this exercises the graceful "not configured"
+    # default path -- same default text the legacy plane used).
+    r = httpx.get(f"{management_url}/api/v1/routing-matrix/instructions", headers=_login(management_url))
+    assert_snapshot("mgmt_routing_config_instructions", status=r.status_code, body=r.json())
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,11 @@
+{
+  "body": {
+    "collection": "default",
+    "configured": false,
+    "enabled": false,
+    "organization_id": 1,
+    "similarity_threshold": 0.7,
+    "top_k": 5
+  },
+  "status": 200
+}

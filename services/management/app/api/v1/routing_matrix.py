@@ -4,18 +4,36 @@ WaddleAI Management API v1 - Routing Matrix Endpoints
 CRUD operations for the AI model routing matrix. The routing matrix maps
 (tool_type, complexity, region) tuples to recommended models with capability
 scores, VRAM requirements, and parameter counts.
+
+Also hosts the routing-LLM "instructions" surface (freeform natural-language
+guidance + selected routing model, Redis-backed) that was previously served
+by the legacy FastAPI management plane's `/routing-config` page. This is a
+distinct feature from the routing matrix above: the matrix is a deterministic
+(tool_type, complexity, region) -> model table, while `instructions`/`test`
+configure and exercise the natural-language routing LLM consumed by
+`shared.utils.request_router.LLMRequestRouter` via the same `routing:*`
+Redis keys.
 """
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from quart import Blueprint, jsonify, request
 
+from ... import extensions as _ext
 from ...extensions import db
 from .auth import require_auth, require_role
 
+logger = logging.getLogger(__name__)
+
 routing_matrix_bp = Blueprint("routing_matrix", __name__, url_prefix="/api/v1/routing-matrix")
+
+# Defaults mirror the legacy management plane's fallback text exactly, so
+# behavior is unchanged for callers that never configured routing instructions.
+_DEFAULT_ROUTING_INSTRUCTIONS = "No routing instructions configured"
+_DEFAULT_ROUTING_LLM = "gemma4:2b"
 
 # Default routing matrix spec used by the /seed endpoint
 DEFAULT_ROUTING_MATRIX: List[Dict[str, Any]] = [
@@ -486,6 +504,137 @@ async def seed_routing_matrix() -> tuple:
                     "updated": updated,
                     "total": created + updated,
                 },
+                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
+        ),
+        200,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routing LLM instructions (ported from legacy /routing-config admin page)
+# ---------------------------------------------------------------------------
+
+
+@routing_matrix_bp.route("/instructions", methods=["GET"])
+@require_auth
+async def get_routing_instructions() -> tuple:
+    """Get the current routing-LLM instructions + selected model from Redis.
+
+    Any authenticated user may read this (matches legacy: the HTML page's
+    backing API required only login, not admin, for GET).
+    """
+
+    def _fetch():
+        if not _ext.redis_client:
+            return None, None
+        try:
+            return (
+                _ext.redis_client.get("routing:instructions"),
+                _ext.redis_client.get("routing:llm_model"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive, Redis I/O failure
+            logger.error("Failed to read routing instructions from Redis: %s", exc)
+            return None, None
+
+    instructions, routing_llm = await asyncio.to_thread(_fetch)
+
+    return (
+        jsonify(
+            {
+                "status": "success",
+                "data": {
+                    "instructions": instructions or _DEFAULT_ROUTING_INSTRUCTIONS,
+                    "routing_llm": routing_llm or _DEFAULT_ROUTING_LLM,
+                },
+                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
+        ),
+        200,
+    )
+
+
+@routing_matrix_bp.route("/instructions", methods=["POST"])
+@require_auth
+@require_role("admin")
+async def set_routing_instructions() -> tuple:
+    """Set routing-LLM instructions + model in Redis (admin only).
+
+    Admin-only mirrors legacy's Permission.SYSTEM_CONFIG check, which only
+    the admin role holds (resource_manager/reporter/user do not) -- so this
+    intentionally uses @require_role("admin") rather than the
+    ("admin", "resource_manager") pair used by the routing-matrix CRUD routes
+    above.
+    """
+    data: Optional[Dict[str, Any]] = await request.get_json()
+    if not data or not data.get("instructions"):
+        return jsonify({"status": "error", "error": "instructions field required"}), 400
+
+    instructions: str = data["instructions"]
+    routing_llm: str = data.get("routing_llm", _DEFAULT_ROUTING_LLM)
+
+    def _persist() -> bool:
+        if not _ext.redis_client:
+            return False
+        try:
+            _ext.redis_client.set("routing:instructions", instructions)
+            _ext.redis_client.set("routing:llm_model", routing_llm)
+            return True
+        except Exception as exc:  # pragma: no cover - defensive, Redis I/O failure
+            logger.error("Failed to persist routing instructions to Redis: %s", exc)
+            return False
+
+    persisted = await asyncio.to_thread(_persist)
+
+    if not persisted:
+        return jsonify({"status": "error", "error": "Routing instructions store (Redis) unavailable"}), 503
+
+    logger.info("Updated routing instructions (length=%d, llm=%s)", len(instructions), routing_llm)
+
+    return (
+        jsonify(
+            {
+                "status": "success",
+                "data": {"instructions_length": len(instructions), "routing_llm": routing_llm},
+                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
+        ),
+        200,
+    )
+
+
+@routing_matrix_bp.route("/test", methods=["POST"])
+@require_auth
+@require_role("admin")
+async def test_routing_decision() -> tuple:
+    """Test a routing decision for a sample prompt (admin only).
+
+    Ported as-is from the legacy management plane: legacy's own
+    implementation was already a static illustrative response ("For now,
+    return a mock response") rather than a live call into the routing LLM,
+    so this preserves identical (mocked) fidelity for WebUI parity. Wiring
+    this to a real routing-LLM call is a separate follow-up, not part of
+    this admin-surface parity task.
+    """
+    data: Optional[Dict[str, Any]] = await request.get_json()
+    prompt: str = (data or {}).get("prompt", "")
+    if not prompt:
+        return jsonify({"status": "error", "error": "prompt field required"}), 400
+
+    result = {
+        "prompt": prompt,
+        "routing_decision": "claude-3-sonnet",
+        "routing_reasoning": "Programming task detected - routing to Claude Sonnet for code generation",
+        "request_type": "programming",
+        "confidence": 0.85,
+        "alternative_models": ["gpt-4", "llama-70b"],
+    }
+
+    return (
+        jsonify(
+            {
+                "status": "success",
+                "data": result,
                 "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
             }
         ),
