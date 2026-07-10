@@ -107,13 +107,13 @@ Image name for postgres
 {{- end }}
 
 {{/*
-Image name for redis
+Image name for valkey
 */}}
-{{- define "waddleai.redis.image" -}}
-{{- if .Values.redis.image.digest -}}
-{{- printf "%s@%s" .Values.redis.image.repository .Values.redis.image.digest }}
+{{- define "waddleai.valkey.image" -}}
+{{- if .Values.valkey.image.digest -}}
+{{- printf "%s@%s" .Values.valkey.image.repository .Values.valkey.image.digest }}
 {{- else -}}
-{{- printf "%s:%s" .Values.redis.image.repository .Values.redis.image.tag }}
+{{- printf "%s:%s" .Values.valkey.image.repository .Values.valkey.image.tag }}
 {{- end -}}
 {{- end }}
 

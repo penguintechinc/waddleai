@@ -71,8 +71,8 @@ postgres:
     enabled: true
     size: 5Gi
 
-# Redis - Alpha
-redis:
+# Valkey - Alpha
+valkey:
   replicaCount: 1
 
   resources:

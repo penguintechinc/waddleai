@@ -83,8 +83,8 @@ postgres:
     size: 20Gi
     storageClass: "nest-block"
 
-# Redis - Beta
-redis:
+# Valkey - Beta
+valkey:
   replicaCount: 1
 
   resources:

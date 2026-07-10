@@ -248,8 +248,8 @@ postgres:
     timeoutSeconds: 3
     failureThreshold: 3
 
-# Redis Cache
-redis:
+# Valkey Cache
+valkey:
   enabled: true
   replicaCount: 1
   image:
@@ -285,7 +285,7 @@ redis:
     enabled: true
     exec:
       command:
-        - redis-cli
+        - valkey-cli
         - ping
     initialDelaySeconds: 10
     periodSeconds: 10
@@ -296,7 +296,7 @@ redis:
     enabled: true
     exec:
       command:
-        - redis-cli
+        - valkey-cli
         - ping
     initialDelaySeconds: 5
     periodSeconds: 5

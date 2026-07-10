@@ -30,9 +30,9 @@ spec:
         - name: wait-for-postgres
           image: busybox:1.36
           command: ['sh', '-c', 'until nc -z {{ include "waddleai.fullname" . }}-postgres 5432; do echo waiting for postgres; sleep 2; done;']
-        - name: wait-for-redis
+        - name: wait-for-valkey
           image: busybox:1.36
-          command: ['sh', '-c', 'until nc -z {{ include "waddleai.fullname" . }}-redis 6379; do echo waiting for redis; sleep 2; done;']
+          command: ['sh', '-c', 'until nc -z {{ include "waddleai.fullname" . }}-valkey 6379; do echo waiting for valkey; sleep 2; done;']
       containers:
         - name: proxy
           securityContext:
@@ -58,7 +58,7 @@ spec:
               value: {{ $value | quote }}
             {{- end }}
             - name: REDIS_URL
-              value: "redis://{{ include "waddleai.fullname" . }}-redis:6379/0"
+              value: "redis://{{ include "waddleai.fullname" . }}-valkey:6379/0"
             - name: MANAGEMENT_SERVER_URL
               value: "http://{{ include "waddleai.fullname" . }}-management:{{ .Values.management.service.port }}"
             {{- if .Values.ollama.enabled }}

@@ -1,0 +1,84 @@
+{{- if .Values.valkey.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "waddleai.fullname" . }}-valkey
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+spec:
+  replicas: {{ .Values.valkey.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: valkey
+  template:
+    metadata:
+      labels:
+        {{- include "waddleai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: valkey
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: valkey
+          image: {{ include "waddleai.valkey.image" . }}
+          imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
+          {{- if .Values.valkey.args }}
+          args:
+            {{- toYaml .Values.valkey.args | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: valkey
+              containerPort: {{ .Values.valkey.service.targetPort }}
+              protocol: TCP
+          {{- if .Values.valkey.livenessProbe.enabled }}
+          livenessProbe:
+            exec:
+              command:
+                {{- toYaml .Values.valkey.livenessProbe.exec.command | nindent 16 }}
+            initialDelaySeconds: {{ .Values.valkey.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.valkey.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.valkey.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.valkey.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.valkey.readinessProbe.enabled }}
+          readinessProbe:
+            exec:
+              command:
+                {{- toYaml .Values.valkey.readinessProbe.exec.command | nindent 16 }}
+            initialDelaySeconds: {{ .Values.valkey.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.valkey.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.valkey.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.valkey.readinessProbe.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.valkey.resources | nindent 12 }}
+          volumeMounts:
+            - name: valkey-data
+              mountPath: /data
+      volumes:
+        - name: valkey-data
+          {{- if .Values.valkey.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "waddleai.fullname" . }}-valkey-pvc
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
