@@ -125,5 +125,9 @@ Image name for valkey
 Image name for ollama
 */}}
 {{- define "waddleai.ollama.image" -}}
+{{- if .Values.ollama.image.digest -}}
+{{- printf "%s@%s" .Values.ollama.image.repository .Values.ollama.image.digest }}
+{{- else -}}
 {{- printf "%s:%s" .Values.ollama.image.repository .Values.ollama.image.tag }}
+{{- end -}}
 {{- end }}

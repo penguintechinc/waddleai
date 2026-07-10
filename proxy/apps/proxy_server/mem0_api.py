@@ -16,6 +16,7 @@ Endpoints (mem0 REST API subset):
     DELETE /mem0/memories          — Clear all memories for a user
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -224,10 +225,10 @@ async def delete_memory(memory_id: str):
 
     # Delete via raw SQL (direct write to primary)
     try:
-        manager.memory_store.write_db.executesql(
+        await asyncio.to_thread(lambda: manager.memory_store.write_db.executesql(
             "DELETE FROM memory_embeddings WHERE id = %s AND user_id = %s AND organization_id = %s",
             (int(memory_id), user_id_int, org_id),
-        )
+        ))
         return jsonify({"status": "deleted", "id": memory_id})
     except Exception as exc:
         logger.error("Failed to delete memory %s: %s", memory_id, exc)

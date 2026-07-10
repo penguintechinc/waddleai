@@ -427,6 +427,11 @@ async def get_current_user():
          populate claims (e.g. direct Bearer token requests).
     """
     # --- path 1: claims populated by OIDCAuthMiddleware ---
+    # NOTE: This path is currently inert. The penguin_aaa ASGI middleware stores claims at
+    # scope["state"]["claims"], not scope["aaa_claims"], so this condition never fires.
+    # DO NOT rewire this to read from scope["state"]["claims"] without first ensuring
+    # LocalOIDCRelyingParty.verify_token returns a full Claims object; currently it returns
+    # a stripped dict (e.g. {"sub": ...}), which would crash claims_to_user_context().
     aaa_claims = request.scope.get("aaa_claims") if hasattr(request, "scope") else None
     if aaa_claims is not None:
         user_context = claims_to_user_context(aaa_claims)
