@@ -194,8 +194,8 @@ postgres:
   replicaCount: 1
   image:
     repository: postgres
-    tag: "15"
-    digest: "sha256:bcab099bfaab33333a73a2ebe8c1d615c9f4c2402dd43452f989a36c6da9a5ba"
+    tag: "17-bookworm"
+    digest: "sha256:5530681ea5d3e2ed4ce396f9b5cb443efbac6baf2a8a19c0c0635e40ae7eadce"
     pullPolicy: IfNotPresent
 
   service:
