@@ -187,15 +187,18 @@ class ProxyServer:
         self.health_monitor = WaddleAIHealthMonitor("proxy")
         self.health_monitor.add_database_check("database", self.db)
 
+        # Add redis check (skip in test mode if REDIS_URL not configured)
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        self.health_monitor.add_redis_check("redis", redis_url)
+        if redis_url:  # Skip if empty (typical in test mode)
+            self.health_monitor.add_redis_check("redis", redis_url)
 
         self.health_monitor.add_system_resources_check()
         self.health_monitor.add_llm_providers_check("llm_providers", self.llm_manager)
 
-        # Add management server check
-        mgmt_url = f"{self.config['management_server_url']}/healthz"
-        self.health_monitor.add_http_service_check("management_server", mgmt_url)
+        # Add management server check (skip in test mode - no mgmt server running)
+        if not _TEST_MODE:
+            mgmt_url = f"{self.config['management_server_url']}/healthz"
+            self.health_monitor.add_http_service_check("management_server", mgmt_url)
 
         # Initialize memory manager.
         #
@@ -314,7 +317,7 @@ app = Quart(__name__)
 app.register_blueprint(mem0_bp)
 
 # Public paths excluded from OIDC middleware authentication
-_PUBLIC_PATHS: set = {"/healthz", "/metrics", "/docs"}
+_PUBLIC_PATHS: set = {"/healthz", "/livez", "/readyz", "/metrics", "/docs"}
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +531,44 @@ def determine_target_model(request_model: Optional[str], user_context, x_preferr
 async def health_check():
     """Kubernetes-style health check"""
     return "healthy"
+
+
+@app.route("/livez", methods=["GET"])
+async def liveness_check():
+    """Kubernetes liveness probe endpoint.
+
+    Returns 200 while the process runs. No dependency checks.
+    """
+    return "alive"
+
+
+@app.route("/readyz", methods=["GET"])
+async def readiness_check():
+    """Kubernetes readiness probe endpoint.
+
+    Returns 200 when the proxy is ready to accept traffic, 503 otherwise.
+    - If health_monitor is not yet initialized, returns 503 with initializing reason.
+    - Otherwise runs all health checks and maps status to HTTP code:
+      - "healthy" or "degraded" (can still serve with cache) → 200
+      - "unhealthy" (hard dependency failure) → 503
+    - Unexpected errors also return 503 to fail safe.
+    """
+    if proxy_server.health_monitor is None:
+        return jsonify({"ready": False, "reason": "initializing"}), 503
+
+    try:
+        summary = await proxy_server.health_monitor.check_all()
+        status = summary.get("status")
+
+        # Accept both "healthy" and "degraded" as ready states
+        # (proxy can serve with cache degraded, DB is the hard dependency)
+        if status in ("healthy", "degraded"):
+            return jsonify(summary), 200
+        else:
+            return jsonify(summary), 503
+    except Exception as e:
+        logger.error("readiness_check exception", error=str(e))
+        return jsonify({"ready": False, "reason": str(e)}), 503
 
 
 @app.route("/api/status", methods=["GET"])
