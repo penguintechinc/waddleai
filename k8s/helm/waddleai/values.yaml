@@ -309,6 +309,11 @@ httproute:
   gatewayName: shared
   gatewayNamespace: gateway
   host: ""
+  # Example rules (populate + set enabled:true per environment; see values-beta.yaml):
+  #   - path: /v1/      { service: waddleai-proxy, port: 8080, timeoutSeconds: 600 }
+  #   - path: /mem0/    { service: waddleai-proxy, port: 8080 }
+  #   - path: /api      { service: waddleai-management, port: 8001 }
+  #   - path: /         { service: waddleai-webui, port: 8080 }
   rules: []
 
 # Ingress configuration

@@ -133,6 +133,13 @@ httproute:
   gatewayNamespace: gateway
   host: "waddleai.penguintech.cloud"
   rules:
+    - path: /v1/
+      service: "waddleai-proxy"
+      port: 8080
+      timeoutSeconds: 600
+    - path: /mem0/
+      service: "waddleai-proxy"
+      port: 8080
     - path: /api
       service: "waddleai-management"
       port: 8001
