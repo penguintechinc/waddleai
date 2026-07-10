@@ -30,23 +30,23 @@ class TestUsageWebhook:
             "status": "success",
         }
 
-    def test_usage_webhook_success_no_key(self, client, app_mock_db: MagicMock) -> None:
+    async def test_usage_webhook_success_no_key(self, client, app_mock_db: MagicMock) -> None:
         """New event with unknown key is accepted and stored."""
         # No existing event → None; no virtual key match → None
         app_mock_db.return_value.select.return_value.first.return_value = None
         app_mock_db.return_value.select.return_value = make_select_result([])
         app_mock_db.ailb_usage_events.insert.return_value = 1
 
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/usage",
             json=self._valid_payload(),
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["status"] == "accepted"
         assert data["processed"] is False
 
-    def test_usage_webhook_success_with_key(self, client, app_mock_db: MagicMock) -> None:
+    async def test_usage_webhook_success_with_key(self, client, app_mock_db: MagicMock) -> None:
         """Known key event is accepted and processed."""
         key = make_mock_key()
         # Duplicate check → None; ailb_key_id lookup → key
@@ -61,50 +61,50 @@ class TestUsageWebhook:
         app_mock_db.token_usage.insert.return_value = 1
         app_mock_db.usage_logs.insert.return_value = 1
 
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/usage",
             json=self._valid_payload(),
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["status"] == "accepted"
 
-    def test_usage_webhook_duplicate_event(self, client, app_mock_db: MagicMock) -> None:
+    async def test_usage_webhook_duplicate_event(self, client, app_mock_db: MagicMock) -> None:
         """Duplicate event_id returns duplicate status."""
         existing_event = MagicMock()
         app_mock_db.return_value.select.return_value.first.return_value = existing_event
 
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/usage",
             json=self._valid_payload(),
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["status"] == "duplicate"
 
-    def test_usage_webhook_missing_event_id(self, client) -> None:
+    async def test_usage_webhook_missing_event_id(self, client) -> None:
         """Missing event_id returns 400."""
         payload = self._valid_payload()
         del payload["event_id"]
 
-        resp = client.post("/api/v1/webhooks/ailb/usage", json=payload)
+        resp = await client.post("/api/v1/webhooks/ailb/usage", json=payload)
         assert resp.status_code == 400
 
-    def test_usage_webhook_no_body(self, client) -> None:
+    async def test_usage_webhook_no_body(self, client) -> None:
         """Empty body returns 400."""
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/usage",
             data="",
-            content_type="application/json",
+            headers={"Content-Type": "application/json"},
         )
         assert resp.status_code == 400
 
-    def test_usage_webhook_disabled(self, client, flask_app) -> None:
+    async def test_usage_webhook_disabled(self, client, flask_app) -> None:
         """Webhooks disabled returns 403."""
         original = flask_app.config.get("ENABLE_USAGE_WEBHOOKS", True)
         flask_app.config["ENABLE_USAGE_WEBHOOKS"] = False
         try:
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/webhooks/ailb/usage",
                 json=self._valid_payload(),
             )
@@ -131,32 +131,32 @@ class TestHealthWebhook:
             "timestamp": "2025-01-01T12:00:00Z",
         }
 
-    def test_health_webhook_success(self, client) -> None:
+    async def test_health_webhook_success(self, client) -> None:
         """Valid health update returns accepted."""
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/health",
             json=self._health_payload(),
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["status"] == "accepted"
         assert data["instance_id"] == "ailb-001"
 
-    def test_health_webhook_no_body(self, client) -> None:
+    async def test_health_webhook_no_body(self, client) -> None:
         """Empty body returns 400."""
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/health",
             data="",
-            content_type="application/json",
+            headers={"Content-Type": "application/json"},
         )
         assert resp.status_code == 400
 
-    def test_health_webhook_disabled(self, client, flask_app) -> None:
+    async def test_health_webhook_disabled(self, client, flask_app) -> None:
         """Webhooks disabled returns 403."""
         original = flask_app.config.get("ENABLE_USAGE_WEBHOOKS", True)
         flask_app.config["ENABLE_USAGE_WEBHOOKS"] = False
         try:
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/webhooks/ailb/health",
                 json=self._health_payload(),
             )
@@ -201,41 +201,41 @@ class TestBatchWebhook:
             ]
         }
 
-    def test_batch_webhook_success(self, client, app_mock_db: MagicMock) -> None:
+    async def test_batch_webhook_success(self, client, app_mock_db: MagicMock) -> None:
         """Valid batch of events returns completed status."""
         # Both events: no duplicate, no matching key
         app_mock_db.return_value.select.return_value.first.return_value = None
         app_mock_db.return_value.select.return_value = make_select_result([])
         app_mock_db.ailb_usage_events.insert.return_value = 1
 
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/batch",
             json=self._batch_payload(),
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["status"] == "completed"
         assert "results" in data
         assert data["results"]["accepted"] == 2
 
-    def test_batch_webhook_no_events_key(self, client) -> None:
+    async def test_batch_webhook_no_events_key(self, client) -> None:
         """Missing events array returns 400."""
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/batch",
             json={"not_events": []},
         )
         assert resp.status_code == 400
 
-    def test_batch_webhook_no_body(self, client) -> None:
+    async def test_batch_webhook_no_body(self, client) -> None:
         """Empty body returns 400."""
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/batch",
             data="",
-            content_type="application/json",
+            headers={"Content-Type": "application/json"},
         )
         assert resp.status_code == 400
 
-    def test_batch_webhook_with_duplicates(self, client, app_mock_db: MagicMock) -> None:
+    async def test_batch_webhook_with_duplicates(self, client, app_mock_db: MagicMock) -> None:
         """Duplicate events in batch are counted separately."""
         existing_event = MagicMock()
         empty = make_select_result([])
@@ -244,21 +244,21 @@ class TestBatchWebhook:
         app_mock_db.return_value.select.side_effect = [dup_sel, empty, empty, empty, empty]
         app_mock_db.ailb_usage_events.insert.return_value = 1
 
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/webhooks/ailb/batch",
             json=self._batch_payload(),
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["results"]["duplicates"] == 1
         assert data["results"]["accepted"] == 1
 
-    def test_batch_webhook_disabled(self, client, flask_app) -> None:
+    async def test_batch_webhook_disabled(self, client, flask_app) -> None:
         """Webhooks disabled returns 403."""
         original = flask_app.config.get("ENABLE_USAGE_WEBHOOKS", True)
         flask_app.config["ENABLE_USAGE_WEBHOOKS"] = False
         try:
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/webhooks/ailb/batch",
                 json=self._batch_payload(),
             )
