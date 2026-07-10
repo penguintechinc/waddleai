@@ -26,3 +26,15 @@ dependencies:
     version: "v26.3.1"
     repository: "https://helm.ngc.nvidia.com/nvidia"
     condition: nvidia-gpu-operator.enabled
+  # AMD ROCm device plugin — vendored local subchart (charts/amd-rocm-plugin).
+  # Enable via: amd-rocm-plugin.enabled=true
+  - name: amd-rocm-plugin
+    version: "6.4.0"
+    repository: "file://charts/amd-rocm-plugin"
+    condition: amd-rocm-plugin.enabled
+  # Intel GPU device plugin — vendored local subchart (charts/intel-gpu-plugin).
+  # Enable via: intel-gpu-plugin.enabled=true
+  - name: intel-gpu-plugin
+    version: "0.31.0"
+    repository: "file://charts/intel-gpu-plugin"
+    condition: intel-gpu-plugin.enabled
