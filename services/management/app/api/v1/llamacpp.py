@@ -106,29 +106,34 @@ async def get_llamacpp_deployment(deployment_id):
 @require_role("admin")
 async def update_llamacpp_deployment(deployment_id):
     """Update a llama.cpp deployment (can only update stopped deployments)."""
-    data = (await request.get_json()) or {}
-    allowed = {"model_name", "model_url", "model_filename", "n_ctx", "n_gpu_layers",
-               "gpu_count", "k8s_namespace", "node_selector", "node_affinity"}
-    updates = {k: v for k, v in data.items() if k in allowed}
 
-    def _update():
+    def _check():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
         if not dep:
             return "not_found"
         if dep.status == "running":
             return "running"
+        return "ok"
 
+    check_result = await asyncio.to_thread(_check)
+
+    if check_result == "not_found":
+        return jsonify({"error": "Deployment not found"}), 404
+    if check_result == "running":
+        return jsonify({"error": "Stop the deployment before modifying it"}), 409
+
+    data = (await request.get_json(silent=True)) or {}
+    allowed = {"model_name", "model_url", "model_filename", "n_ctx", "n_gpu_layers",
+               "gpu_count", "k8s_namespace", "node_selector", "node_affinity"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+
+    def _update():
         if updates:
             db(db.llamacpp_deployments.id == deployment_id).update(**updates)
             db.commit()
         return "ok"
 
-    result = await asyncio.to_thread(_update)
-
-    if result == "not_found":
-        return jsonify({"error": "Deployment not found"}), 404
-    if result == "running":
-        return jsonify({"error": "Stop the deployment before modifying it"}), 409
+    await asyncio.to_thread(_update)
 
     return jsonify({"message": "Deployment updated"}), 200
 

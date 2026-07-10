@@ -195,6 +195,15 @@ async def create_provider():
     if provider_type not in SUPPORTED_PROVIDERS:
         return jsonify({"error": f"Unsupported provider type: {provider_type}"}), 400
 
+    provider_name = data["name"]
+
+    def _check_existing():
+        return db(db.ai_providers.name == provider_name).select().first()
+
+    existing = await asyncio.to_thread(_check_existing)
+    if existing:
+        return jsonify({"error": "Provider name already exists"}), 409
+
     provider_info = SUPPORTED_PROVIDERS[provider_type]
     if provider_info["requires_api_key"] and not data.get("api_key"):
         return jsonify({"error": f"{provider_type} requires an API key"}), 400
@@ -202,11 +211,6 @@ async def create_provider():
     config_hash = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
     def _create():
-        # Check for existing provider
-        existing = db(db.ai_providers.name == data["name"]).select().first()
-        if existing:
-            return None
-
         provider_id = db.ai_providers.insert(
             name=data["name"],
             provider_type=provider_type,
@@ -232,9 +236,6 @@ async def create_provider():
         return provider_id
 
     provider_id = await asyncio.to_thread(_create)
-
-    if provider_id is None:
-        return jsonify({"error": "Provider name already exists"}), 409
 
     return (
         jsonify(
@@ -534,6 +535,13 @@ async def create_provider_credential(provider_id: int):
     """Add a credential to a provider's pool."""
     from shared.security.credential_encryption import encrypt_credential
 
+    def _get_provider():
+        return db(db.ai_providers.id == provider_id).select().first()
+
+    provider = await asyncio.to_thread(_get_provider)
+    if not provider:
+        return jsonify({"status": "error", "error": "Provider not found"}), 404
+
     data = await request.get_json()
     if not data:
         return jsonify({"status": "error", "error": "Request body required"}), 400
@@ -545,23 +553,14 @@ async def create_provider_credential(provider_id: int):
         return jsonify({"status": "error", "error": "label must be <= 255 characters"}), 400
 
     api_key_plain = data.get("api_key", "").strip()
-
-    weight = data.get("weight", 100)
-    if not isinstance(weight, int) or weight < 1 or weight > 10000:
-        return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
+    if not api_key_plain:
+        provider_info = SUPPORTED_PROVIDERS.get(provider.provider_type, {})
+        if provider_info.get("requires_api_key", True):
+            return jsonify({"status": "error", "error": "api_key is required for this provider type"}), 400
 
     encrypted_key = encrypt_credential(api_key_plain) if api_key_plain else None
 
     def _create():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-        if not provider:
-            return ("provider_not_found", None)
-
-        if not api_key_plain:
-            provider_info = SUPPORTED_PROVIDERS.get(provider.provider_type, {})
-            if provider_info.get("requires_api_key", True):
-                return ("api_key_required", provider.provider_type)
-
         # Check label uniqueness within this provider
         existing = (
             db((db.provider_credentials.provider_id == provider_id) & (db.provider_credentials.label == label))
@@ -570,6 +569,10 @@ async def create_provider_credential(provider_id: int):
         )
         if existing:
             return ("label_conflict", None)
+
+        weight = data.get("weight", 100)
+        if not isinstance(weight, int) or weight < 1 or weight > 10000:
+            return ("invalid_weight", None)
 
         cred_id = db.provider_credentials.insert(
             provider_id=provider_id,
@@ -589,15 +592,13 @@ async def create_provider_credential(provider_id: int):
 
     status, payload = await asyncio.to_thread(_create)
 
-    if status == "provider_not_found":
-        return jsonify({"status": "error", "error": "Provider not found"}), 404
-    if status == "api_key_required":
-        return jsonify({"status": "error", "error": f"{payload} requires an API key"}), 400
     if status == "label_conflict":
         return (
             jsonify({"status": "error", "error": f"Credential with label '{label}' already exists for this provider"}),
             409,
         )
+    if status == "invalid_weight":
+        return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
 
     new_cred = payload
     return (
@@ -622,6 +623,27 @@ async def update_provider_credential(provider_id: int, cred_id: int):
     """Update label, weight, enabled, org_id, account_meta, or rotate the api_key."""
     from shared.security.credential_encryption import encrypt_credential
 
+    def _check_existence():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+        if not provider:
+            return "provider_not_found"
+
+        cred = (
+            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
+            .select()
+            .first()
+        )
+        if not cred:
+            return "cred_not_found"
+
+        return "ok"
+
+    existence = await asyncio.to_thread(_check_existence)
+    if existence == "provider_not_found":
+        return jsonify({"status": "error", "error": "Provider not found"}), 404
+    if existence == "cred_not_found":
+        return jsonify({"status": "error", "error": "Credential not found"}), 404
+
     data = await request.get_json()
     if not data:
         return jsonify({"status": "error", "error": "Request body required"}), 400
@@ -643,18 +665,6 @@ async def update_provider_credential(provider_id: int, cred_id: int):
         encrypted_new_key = encrypt_credential(new_key)
 
     def _update():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-        if not provider:
-            return "provider_not_found"
-
-        cred = (
-            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
-            .select()
-            .first()
-        )
-        if not cred:
-            return "cred_not_found"
-
         update_fields: dict = {}
 
         if "label" in data:
@@ -697,10 +707,6 @@ async def update_provider_credential(provider_id: int, cred_id: int):
 
     result = await asyncio.to_thread(_update)
 
-    if result == "provider_not_found":
-        return jsonify({"status": "error", "error": "Provider not found"}), 404
-    if result == "cred_not_found":
-        return jsonify({"status": "error", "error": "Credential not found"}), 404
     if result == "label_conflict":
         return jsonify({"status": "error", "error": f"Label '{label}' already in use"}), 409
     if result == "no_fields":

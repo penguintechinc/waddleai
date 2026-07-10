@@ -406,6 +406,13 @@ async def pull_ollama_model(deployment_id):
     """Pull a model to Ollama deployment"""
     from ...services.ollama_manager import OllamaDeploymentManager
 
+    def _check_deployment():
+        return db(db.ollama_deployments.id == deployment_id).select().first()
+
+    deployment = await asyncio.to_thread(_check_deployment)
+    if not deployment:
+        return jsonify({"error": "Deployment not found"}), 404
+
     data = await request.get_json()
     if not data or "model" not in data:
         return jsonify({"error": "model is required"}), 400
@@ -415,18 +422,10 @@ async def pull_ollama_model(deployment_id):
     full_model = f"{model_name}:{model_tag}" if model_tag != "latest" else model_name
 
     def _pull():
-        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
-        if not deployment:
-            return "not_found", None
-
         manager = OllamaDeploymentManager(db)
-        result = manager.pull_model(deployment_id, full_model)
-        return "ok", result
+        return manager.pull_model(deployment_id, full_model)
 
-    status, result = await asyncio.to_thread(_pull)
-
-    if status == "not_found":
-        return jsonify({"error": "Deployment not found"}), 404
+    result = await asyncio.to_thread(_pull)
 
     if result.error:
         return jsonify({"error": result.error, "model": full_model, "status": result.status}), 500
