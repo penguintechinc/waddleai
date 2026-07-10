@@ -72,6 +72,23 @@ Image name for management service
 {{- end }}
 
 {{/*
+Image name for proxy service (AIProxy)
+*/}}
+{{- define "waddleai.proxy.image" -}}
+{{- if .Values.proxy.image.digest }}
+{{- if .Values.global.imageRegistry }}
+{{- printf "%s/%s@%s" .Values.global.imageRegistry .Values.proxy.image.repository .Values.proxy.image.digest }}
+{{- else }}
+{{- printf "%s@%s" .Values.proxy.image.repository .Values.proxy.image.digest }}
+{{- end }}
+{{- else if .Values.global.imageRegistry }}
+{{- printf "%s/%s:%s" .Values.global.imageRegistry .Values.proxy.image.repository .Values.proxy.image.tag }}
+{{- else }}
+{{- printf "%s:%s" .Values.proxy.image.repository .Values.proxy.image.tag }}
+{{- end }}
+{{- end }}
+
+{{/*
 Image name for webui service
 */}}
 {{- define "waddleai.webui.image" -}}

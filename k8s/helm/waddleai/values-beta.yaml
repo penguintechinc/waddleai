@@ -30,6 +30,26 @@ management:
     LOG_LEVEL: INFO
     FLASK_ENV: production
 
+# AIProxy Service - Beta
+# NOTE: prod values (not in scope here) MUST pin proxy.image.digest per house SHA256 rule.
+proxy:
+  replicaCount: 1
+  image:
+    repository: proxy
+    tag: beta-1776182785
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  env:
+    LOG_LEVEL: INFO
+
 # WebUI Service - Beta
 webui:
   replicaCount: 1
