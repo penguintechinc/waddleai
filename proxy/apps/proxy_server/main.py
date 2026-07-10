@@ -116,7 +116,6 @@ class ProxyServer:
         # Contract-test only (WADDLEAI_STUB_UPSTREAM=1) -- see _seed_contract_test_data()
         self.contract_test_bearer_token = None
         self.contract_test_api_key = None
-        self.contract_test_api_key_id = None
 
         # Configuration
         self.config = {
@@ -288,7 +287,6 @@ class ProxyServer:
         )
         self.contract_test_bearer_token = issue_token(user_context, self.oidc_provider)
         self.contract_test_api_key = _TEST_API_KEY_SECRET
-        self.contract_test_api_key_id = api_key_id
         logger.info("Seeded contract-test org/user/api_key", org_id=org_id, user_id=user_id, api_key_id=api_key_id)
 
     async def shutdown(self):

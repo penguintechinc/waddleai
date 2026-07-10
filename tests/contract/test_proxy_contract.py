@@ -195,3 +195,26 @@ def test_mem0_memories_post_malformed_body(proxy_url):
         content=b"not-json",
     )
     assert_snapshot("proxy_mem0_post_malformed", status=r.status_code, body=r.text)
+
+
+def test_mem0_memories_search(proxy_url):
+    # Search memories by semantic similarity. Against sqlite (no embedding
+    # backend / ollama server), the search returns empty results.
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories/search",
+        headers=_bearer_headers(proxy_url),
+        json={"query": "find relevant memories", "user_id": "1"},
+    )
+    assert_snapshot("proxy_mem0_search", status=r.status_code, body=r.json())
+
+
+def test_mem0_memories_clear(proxy_url):
+    # Bulk-clear all memories for a user. Real current behavior: sqlite has
+    # no memory_embeddings table, so the PgvectorMemoryStore.clear_memories()
+    # call fails closed (caught and 500 returned, HTML body).
+    r = httpx.delete(
+        f"{proxy_url}/mem0/memories",
+        params={"user_id": "1"},
+        headers=_bearer_headers(proxy_url),
+    )
+    assert_snapshot("proxy_mem0_clear", status=r.status_code, body=r.text)

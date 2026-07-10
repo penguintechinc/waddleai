@@ -1,0 +1,4 @@
+{
+  "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>Failed to clear memories</p>\n",
+  "status": 500
+}

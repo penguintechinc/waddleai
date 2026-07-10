@@ -68,7 +68,7 @@ class TokenManager:
         """Load token conversion rates from database"""
         self.conversion_rates = {}
 
-        rates = self.db(self.db.token_conversion_rates.enabled == True).select()
+        rates = self.db(self.db.token_conversion_rates.enabled == True).select()  # noqa: E712
         for rate in rates:
             key = f"{rate.provider}:{rate.model}"
             self.conversion_rates[key] = ConversionRate(
