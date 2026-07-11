@@ -5,8 +5,13 @@ MarchProxy's AILB is configured with a mem0 endpoint pointing here:
     mem0_endpoint = "http://waddleai-proxy:8080/mem0"
 
 WaddleAI handles embedding generation, pgvector storage, and retrieval.
-All endpoints are authenticated via OIDC middleware and org-scoped to the
-calling token's organization — cross-org access is rejected with 403.
+All endpoints are authenticated via OIDC middleware and scoped to both:
+  - Organization: calling token's organization (cross-org access rejected 403)
+  - User: calling token's user (cross-user access rejected 403, personal-only)
+
+Until organizational/shared memory-scope lands, memory is scoped to the
+authenticated user within their organization. Requests naming a different
+user_id, or from org-0 (no valid tenant), are rejected as 403.
 
 Endpoints (mem0 REST API subset):
     POST   /mem0/memories          — Add a memory
@@ -60,14 +65,19 @@ async def add_memories():
     """Add conversation messages to memory.
 
     Called by MarchProxy after each LLM turn to persist the conversation.
-    Organization is scoped to the authenticated caller's token org.
+    Memory is scoped to the authenticated caller's organization and user.
     """
     manager = get_memory_manager()
 
-    # Authenticate and get the caller's org from the token
+    # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
     user = await get_current_user()
     token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     body = await request.get_json()
 
@@ -96,6 +106,12 @@ async def add_memories():
         if org_from_body != token_org:
             return jsonify({"error": "organization mismatch"}), 403
 
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
     org_id = token_org
     session_id = agent_id or run_id or ""
 
@@ -137,14 +153,19 @@ async def search_memories():
     """Search memories by semantic similarity.
 
     Called by MarchProxy before each LLM turn to retrieve relevant context.
-    Organization is scoped to the authenticated caller's token org.
+    Memory is scoped to the authenticated caller's organization and user.
     """
     manager = get_memory_manager()
 
-    # Authenticate and get the caller's org from the token
+    # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
     user = await get_current_user()
     token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     body = await request.get_json()
 
@@ -174,6 +195,12 @@ async def search_memories():
         if org_from_body != token_org:
             return jsonify({"error": "organization mismatch"}), 403
 
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
     org_id = token_org
     session_id = agent_id or run_id or None
 
@@ -205,14 +232,19 @@ async def search_memories():
 async def list_memories():
     """List recent memories for a user (chronological order).
 
-    Organization is scoped to the authenticated caller's token org.
+    Memory is scoped to the authenticated caller's organization and user.
     """
     manager = get_memory_manager()
 
-    # Authenticate and get the caller's org from the token
+    # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
     user = await get_current_user()
     token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     user_id_raw = request.args.get("user_id", "0")
     agent_id = request.args.get("agent_id")
@@ -235,6 +267,12 @@ async def list_memories():
         if org_from_query != token_org:
             return jsonify({"error": "organization mismatch"}), 403
 
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
     org_id = token_org
     session_id = agent_id or run_id or ""
 
@@ -264,14 +302,19 @@ async def list_memories():
 async def delete_memory(memory_id: str):
     """Delete a specific memory by ID.
 
-    Organization is scoped to the authenticated caller's token org.
+    Memory is scoped to the authenticated caller's organization and user.
     """
     manager = get_memory_manager()
 
-    # Authenticate and get the caller's org from the token
+    # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
     user = await get_current_user()
     token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     user_id_raw = request.args.get("user_id", "0")
     organization_id_raw = request.args.get("organization_id")
@@ -291,6 +334,12 @@ async def delete_memory(memory_id: str):
         if org_from_query != token_org:
             return jsonify({"error": "organization mismatch"}), 403
 
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
     org_id = token_org
 
     # Delete via raw SQL (direct write to primary)
@@ -309,14 +358,19 @@ async def delete_memory(memory_id: str):
 async def clear_memories():
     """Clear all memories for a user (optionally scoped to a session).
 
-    Organization is scoped to the authenticated caller's token org.
+    Memory is scoped to the authenticated caller's organization and user.
     """
     manager = get_memory_manager()
 
-    # Authenticate and get the caller's org from the token
+    # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
     user = await get_current_user()
     token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     user_id_raw = request.args.get("user_id", "0")
     agent_id = request.args.get("agent_id")
@@ -338,6 +392,12 @@ async def clear_memories():
         if org_from_query != token_org:
             return jsonify({"error": "organization mismatch"}), 403
 
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
     org_id = token_org
     session_id = agent_id or run_id or None
 
