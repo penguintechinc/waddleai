@@ -402,6 +402,10 @@ class MemoryEmbedding(Base):
     role = Column(String(50), nullable=False)  # user, assistant
     created_at = Column(DateTime, default=datetime.utcnow)
     metadata_ = Column("metadata", JSON, default=dict)
+    # Memory access-control scope: 'user' (personal, default) | 'org' (shared).
+    # Spec §9.7 field names; v0.4 adds more scope values without renaming.
+    scope_type = Column(String(20), nullable=False, default="user", server_default="user", index=True)
+    author_user_id = Column(Integer, nullable=False, index=True)
 
 
 class RAGDocument(Base):
