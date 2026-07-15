@@ -34,7 +34,6 @@ from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
-    claims_to_user_context,
     create_local_oidc_rp,
     create_oidc_provider,
     issue_token,
@@ -118,6 +117,7 @@ class ProxyServer:
         # Contract-test only (WADDLEAI_STUB_UPSTREAM=1) -- see _seed_contract_test_data()
         self.contract_test_bearer_token = None
         self.contract_test_api_key = None
+        self.contract_test_member_token = None
 
         # Configuration
         self.config = {
@@ -292,6 +292,31 @@ class ProxyServer:
         )
         self.contract_test_bearer_token = issue_token(user_context, self.oidc_provider)
         self.contract_test_api_key = _TEST_API_KEY_SECRET
+
+        # Second same-org user with role 'user' (NOT a moderator) — lets
+        # contract tests prove org-moderation denials and personal isolation.
+        member_id = self.db.users.insert(
+            username="contract-test-member",
+            email="contract-test-member@example.com",
+            password_hash=bcrypt.hash("unused-not-a-real-login"),
+            role="user",
+            organization_id=org_id,
+            token_quota_monthly=1000000,
+            token_quota_daily=100000,
+            enabled=True,
+            created_at=datetime.utcnow(),
+        )
+        self.db.commit()
+        member_context = UserContext(
+            user_id=member_id,
+            username="contract-test-member",
+            role=Role.USER,
+            organization_id=org_id,
+            managed_orgs=[],
+            permissions=ROLE_PERMISSIONS[Role.USER],
+            api_key_id=None,
+        )
+        self.contract_test_member_token = issue_token(member_context, self.oidc_provider)
         logger.info("Seeded contract-test org/user/api_key", org_id=org_id, user_id=user_id, api_key_id=api_key_id)
 
     async def shutdown(self):
@@ -382,6 +407,7 @@ if _TEST_MODE:
             {
                 "token": proxy_server.contract_test_bearer_token,
                 "api_key": proxy_server.contract_test_api_key,
+                "member_token": proxy_server.contract_test_member_token,
             }
         )
 
