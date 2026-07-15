@@ -143,7 +143,7 @@ class Mem0MemoryStore(MemoryStore):
             if not self.client:
                 await self.initialize()
 
-            # Prepare metadata
+            # Prepare metadata — 'scope' mirror + author for the schemaless backend
             metadata = {
                 **entry.metadata,
                 "user_id": entry.user_id,
@@ -151,10 +151,14 @@ class Mem0MemoryStore(MemoryStore):
                 "session_id": entry.session_id or "",
                 "created_at": entry.created_at.isoformat(),
                 "memory_id": entry.id,
+                "scope": entry.scope_type,
+                "author_user_id": entry.author_user_id or entry.user_id,
             }
 
-            # Store in mem0
-            self.client.add(entry.content, user_id=str(entry.user_id), metadata=metadata)
+            # mem0's API is user-keyed: org-shared entries live under a
+            # synthetic per-org user so any org member can retrieve them.
+            mem0_user = f"org-{entry.organization_id}" if entry.scope_type == "org" else str(entry.user_id)
+            self.client.add(entry.content, user_id=mem0_user, metadata=metadata)
 
             logger.debug(f"Stored memory in mem0: {entry.id}")
             return True
@@ -173,48 +177,63 @@ class Mem0MemoryStore(MemoryStore):
         min_relevance: float = 0.7,
         scope: str = "user",
     ) -> List[MemoryEntry]:
-        """Search memories in mem0"""
+        """Search memories in mem0.
+
+        mem0's search is user-keyed, so the merged view ('all') issues two
+        queries — the caller's personal bucket and the synthetic org bucket
+        ('org-{organization_id}') — and merges by relevance score.
+        """
         try:
             if not self.client:
                 await self.initialize()
 
-            # Search in mem0
-            results = self.client.search(query, user_id=str(user_id), limit=limit)
+            def _convert(results: list, personal_bucket: bool) -> List[MemoryEntry]:
+                memories: List[MemoryEntry] = []
+                for result in results:
+                    metadata = result.get("metadata", {})
+                    entry_scope = metadata.get("scope", "user")
+                    if personal_bucket and entry_scope == "org":
+                        continue  # org rows come from the org bucket only
+                    if metadata.get("organization_id") != organization_id:
+                        continue
+                    if session_id and metadata.get("session_id") != session_id:
+                        continue
+                    relevance_score = result.get("score", 0.0)
+                    if relevance_score < min_relevance:
+                        continue
+                    memories.append(
+                        MemoryEntry(
+                            id=metadata.get("memory_id", result.get("id", "")),
+                            user_id=metadata.get("user_id", user_id),
+                            organization_id=organization_id,
+                            session_id=metadata.get("session_id"),
+                            content=result.get("memory", ""),
+                            metadata={
+                                k: v
+                                for k, v in metadata.items()
+                                if k not in ["user_id", "organization_id", "session_id", "created_at", "memory_id"]
+                            },
+                            embedding=None,
+                            created_at=datetime.fromisoformat(
+                                metadata.get("created_at", datetime.utcnow().isoformat())
+                            ),
+                            relevance_score=relevance_score,
+                            scope_type=entry_scope,
+                            author_user_id=int(metadata.get("author_user_id", metadata.get("user_id", user_id))),
+                        )
+                    )
+                return memories
 
-            # Convert to MemoryEntry objects
-            memories = []
-            for result in results:
-                metadata = result.get("metadata", {})
+            memories: List[MemoryEntry] = []
+            if scope in ("user", "all"):
+                personal = self.client.search(query, user_id=str(user_id), limit=limit)
+                memories.extend(_convert(personal, personal_bucket=True))
+            if scope in ("org", "all"):
+                org = self.client.search(query, user_id=f"org-{organization_id}", limit=limit)
+                memories.extend(_convert(org, personal_bucket=False))
 
-                # Filter by organization and session if needed
-                if metadata.get("organization_id") != organization_id:
-                    continue
-                if session_id and metadata.get("session_id") != session_id:
-                    continue
-
-                # Check relevance
-                relevance_score = result.get("score", 0.0)
-                if relevance_score < min_relevance:
-                    continue
-
-                memory = MemoryEntry(
-                    id=metadata.get("memory_id", result.get("id", "")),
-                    user_id=user_id,
-                    organization_id=organization_id,
-                    session_id=metadata.get("session_id"),
-                    content=result.get("memory", ""),
-                    metadata={
-                        k: v
-                        for k, v in metadata.items()
-                        if k not in ["user_id", "organization_id", "session_id", "created_at", "memory_id"]
-                    },
-                    embedding=None,
-                    created_at=datetime.fromisoformat(metadata.get("created_at", datetime.utcnow().isoformat())),
-                    relevance_score=relevance_score,
-                )
-                memories.append(memory)
-
-            return memories
+            memories.sort(key=lambda m: m.relevance_score, reverse=True)
+            return memories[:limit]
 
         except Exception as e:
             logger.error(f"Failed to search memories in mem0: {e}")
@@ -359,7 +378,7 @@ class ChromaDBMemoryStore(MemoryStore):
 
         try:
             embedding = self.encoder.encode(text, convert_to_tensor=False)
-            return embedding.tolist()
+            return embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
         except Exception as e:
             logger.error(f"Failed to generate embedding: {e}")
             return None
@@ -374,7 +393,8 @@ class ChromaDBMemoryStore(MemoryStore):
             if entry.embedding is None:
                 entry.embedding = self._generate_embedding(entry.content)
 
-            # Prepare metadata
+            # Prepare metadata — 'scope' is the authoritative scope marker on
+            # this schemaless backend (absent key == personal/legacy).
             metadata = {
                 **entry.metadata,
                 "user_id": entry.user_id,
@@ -382,6 +402,8 @@ class ChromaDBMemoryStore(MemoryStore):
                 "session_id": entry.session_id or "",
                 "created_at": entry.created_at.isoformat(),
                 "content_length": len(entry.content),
+                "scope": entry.scope_type,
+                "author_user_id": entry.author_user_id or entry.user_id,
             }
 
             # Store in ChromaDB
@@ -409,47 +431,59 @@ class ChromaDBMemoryStore(MemoryStore):
         min_relevance: float = 0.7,
         scope: str = "user",
     ) -> List[MemoryEntry]:
-        """Search for relevant memories"""
+        """Search for relevant memories.
+
+        Two-query merge: the personal bucket (user_id match, post-filtered to
+        exclude org rows) and the org bucket (scope=='org' within the org).
+        scope='user' | 'org' selects one bucket; 'all' merges both by
+        relevance and truncates to limit. Chroma's where-filter language
+        cannot express "key absent or != value", so the org-row exclusion in
+        the personal bucket is a Python post-filter.
+        """
         try:
             if not self.collection:
                 await self.initialize()
 
-            # Build where clause
-            where_clause = {"user_id": user_id, "organization_id": organization_id}
-
-            if session_id:
-                where_clause["session_id"] = session_id
-
-            # Generate query embedding
             query_embedding = self._generate_embedding(query)
 
-            # Search in ChromaDB
-            if query_embedding:
-                results = self.collection.query(
-                    query_embeddings=[query_embedding],
-                    where=where_clause,
-                    n_results=limit,
-                    include=["documents", "metadatas", "distances"],
-                )
-            else:
-                # Fallback to text search if no embedding
-                results = self.collection.query(
+            def _run_query(where_clause: dict) -> list:
+                if session_id:
+                    where_clause = {**where_clause, "session_id": session_id}
+                if len(where_clause) > 1:
+                    # This chromadb version requires an explicit boolean
+                    # operator for multi-key where dicts (no implicit AND).
+                    where_clause = {"$and": [{k: v} for k, v in where_clause.items()]}
+                if query_embedding:
+                    return self.collection.query(
+                        query_embeddings=[query_embedding],
+                        where=where_clause,
+                        n_results=limit,
+                        include=["documents", "metadatas", "distances"],
+                    )
+                return self.collection.query(
                     query_texts=[query],
                     where=where_clause,
                     n_results=limit,
                     include=["documents", "metadatas", "distances"],
                 )
 
-            # Convert results to MemoryEntry objects
-            memories = []
-            if results and results["documents"]:
+            def _to_entries(results: dict, personal_bucket: bool) -> List[MemoryEntry]:
+                memories: List[MemoryEntry] = []
+                if not results or not results["documents"]:
+                    return memories
                 for i in range(len(results["documents"][0])):
                     metadata = results["metadatas"][0][i]
+                    entry_scope = metadata.get("scope", "user")
+                    if personal_bucket and entry_scope == "org":
+                        # Author's own org rows come from the org bucket —
+                        # skipping here prevents merged-view duplicates.
+                        continue
                     distance = results["distances"][0][i] if results.get("distances") else 0.0
-                    relevance_score = 1.0 - distance  # Convert distance to relevance
-
-                    if relevance_score >= min_relevance:
-                        memory = MemoryEntry(
+                    relevance_score = 1.0 - distance
+                    if relevance_score < min_relevance:
+                        continue
+                    memories.append(
+                        MemoryEntry(
                             id=results["ids"][0][i],
                             user_id=metadata["user_id"],
                             organization_id=metadata["organization_id"],
@@ -463,10 +497,22 @@ class ChromaDBMemoryStore(MemoryStore):
                             embedding=None,
                             created_at=datetime.fromisoformat(metadata["created_at"]),
                             relevance_score=relevance_score,
+                            scope_type=entry_scope,
+                            author_user_id=int(metadata.get("author_user_id", metadata["user_id"])),
                         )
-                        memories.append(memory)
+                    )
+                return memories
 
-            return memories
+            memories: List[MemoryEntry] = []
+            if scope in ("user", "all"):
+                personal = _run_query({"user_id": user_id, "organization_id": organization_id})
+                memories.extend(_to_entries(personal, personal_bucket=True))
+            if scope in ("org", "all"):
+                org = _run_query({"organization_id": organization_id, "scope": "org"})
+                memories.extend(_to_entries(org, personal_bucket=False))
+
+            memories.sort(key=lambda m: m.relevance_score, reverse=True)
+            return memories[:limit]
 
         except Exception as e:
             logger.error(f"Failed to search memories: {e}")
