@@ -177,8 +177,12 @@ async def add_memories():
     scope = _resolve_write_scope(body)
     if scope is None:
         return jsonify({"error": "invalid scope"}), 400
-    if scope == "org" and not is_feature_enabled(MEMORY_ORG_SCOPE_FLAG, distinct_id=str(token_org)):
-        return jsonify({"error": "organization memory scope not enabled"}), 403
+    if scope == "org":
+        # is_feature_enabled may do a blocking PostHog HTTP call when
+        # POSTHOG_KEY is configured — keep it off the event loop.
+        org_scope_enabled = await asyncio.to_thread(is_feature_enabled, MEMORY_ORG_SCOPE_FLAG, str(token_org))
+        if not org_scope_enabled:
+            return jsonify({"error": "organization memory scope not enabled"}), 403
 
     from shared.utils.memory_integration import MemoryEntry
 
