@@ -10,7 +10,7 @@
 
 ---
 
-**Goal:** Absorb the MarchProxy AILB module into the WaddleAI AIProxy (`proxy/` container) and complete the data plane: a stage-class `ProxyPipeline` shared by `/v1/chat/completions` and `/v1/messages` (parity bug fix); Valkey-atomic token/budget gating (replacing the AILB's in-memory counters); the superset router with circuit breaker; the `THREAT_PATTERNS` prompt-injection scanner wired into the pipeline; Big-5 dispatch (Gemini/xAI/Bedrock) with SSE streaming on every connector; batched metering as the sole writer to `token_usage`; in-repo protos; deletion of all MarchProxy coupling; and migrations 006–007.
+**Goal:** Absorb the MarchProxy AILB module into the WaddleAI AIProxy (`proxy/` container) and complete the data plane: a stage-class `ProxyPipeline` shared by `/v1/chat/completions` and `/v1/messages` (parity bug fix); Valkey-atomic token/budget gating (replacing the AILB's in-memory counters); the superset router with circuit breaker; the `THREAT_PATTERNS` prompt-injection scanner wired into the pipeline; Big-5 dispatch (Gemini/xAI/Bedrock) with SSE streaming on every connector; batched metering as the sole writer to `token_usage`; in-repo protos; deletion of all MarchProxy coupling; and migrations 007–008.
 
 **Architecture:** The pipeline is an ordered list of independently testable stage objects, each `async def __call__(self, ctx: PipelineContext) -> PipelineContext`, feature-flag aware, ordered **cheapest-gates-first** (auth → token/budget gate → security-in → dispatch → security-out → meter) so guard-model inference and provider dispatch never run for a request a cheaper Valkey/regex gate would refuse. Both API endpoints reduce to boundary format-translation around the one pipeline. All counters/affinity live in Valkey (stateless pods); durable state in Postgres via penguin-dal; NER/CPU work stays off the event loop (`ProcessPoolExecutor`); metering batches per-second. Every new behavior sits behind PostHog flag `waddleai.native_rate_limit` (default OFF), evaluated via `shared/licensing/features.py::features.enabled(...)` with fail-safe OFF.
 
@@ -42,10 +42,10 @@
 | Create | `proto/waddleai/v1/proxy.proto` | In-repo protos (replaces vendored marchproxy stubs) |
 | Modify | `scripts/generate_proto.sh` | Regenerate from `proto/waddleai/` — no `~/code/marchproxy` dependency |
 | Delete | vendored stubs + AILB coupling | See Task 14 deletion inventory |
-| Create | `services/management/alembic/versions/006_drop_ailb_add_native_limits.py` | Migration 006 |
-| Create | `services/management/alembic/versions/007_model_registry.py` | Migration 007 |
+| Create | `services/management/alembic/versions/007_drop_ailb_add_native_limits.py` | Migration 007 |
+| Create | `services/management/alembic/versions/008_model_registry.py` | Migration 008 |
 | Modify | `services/management/app/models_sqlalchemy.py` | `VirtualKey` budget cols + `TokenUsage.source`; new `ModelRegistry`; `ProviderCredential.plan_budget` |
-| Create | `tests/unit/management/test_migration_006.py`, `test_migration_007.py` | Round-trip + downgrade on seeded snapshot |
+| Create | `tests/unit/management/test_migration_007.py`, `test_migration_008.py` | Round-trip + downgrade on seeded snapshot |
 
 ---
 
@@ -77,7 +77,7 @@ Rewrites the AILB's in-memory, thread-locked per-minute counters (`app/tokens/to
   ```
   Monotonic Lua: `INCRBY` then compare to limit; on over-limit, `DECRBY` back and return rejected. Gate short-circuits to allow when `features.enabled("native_rate_limit", distinct_id=str(org_id))` is False.
 
-- [ ] **Step 4: Add model columns** — in `VirtualKey`: `budget_monthly_tokens = Column(Integer, nullable=True)`, `budget_monthly_usd = Column(Integer, nullable=True)  # micro-USD, nullable=unlimited`. Comment: `tpm_limit`/`rpm_limit` already present; Alembic 006 (Task 15) formalizes all four.
+- [ ] **Step 4: Add model columns** — in `VirtualKey`: `budget_monthly_tokens = Column(Integer, nullable=True)`, `budget_monthly_usd = Column(Integer, nullable=True)  # micro-USD, nullable=unlimited`. Comment: `tpm_limit`/`rpm_limit` already present; Alembic 007 (Task 14) formalizes all four.
 
 - [ ] **Step 5: Run tests, verify pass** — `python3 -m pytest tests/unit/test_token_limiter.py -v --no-cov` → all green.
 
@@ -373,7 +373,7 @@ Keep the gRPC server skeleton (house standard, port 50051) but define protos in-
 
 ### Task 13: WaddleAI-side deletion inventory (§5.6)
 
-Delete all MarchProxy sync plumbing, AILB routes, webhook ingest, vendored proto stubs, env, and their tests. Do this **before** migration 006 so nothing writes to the AILB tables when they are folded+dropped.
+Delete all MarchProxy sync plumbing, AILB routes, webhook ingest, vendored proto stubs, env, and their tests. Do this **before** migration 007 so nothing writes to the AILB tables when they are folded+dropped.
 
 **Files (delete):** `services/management/app/services/marchproxy_config.py`, `services/management/app/services/provider_sync.py`, `services/management/app/grpc/client.py`, `services/management/app/grpc/proto/marchproxy/`, `services/management/app/api/v1/ailb.py`, `services/management/app/api/v1/ailb_memory.py`, `proxy/apps/proxy_server/grpc_proto/marchproxy/`, tests `tests/unit/management/test_marchproxy_config.py`, `test_ailb_routes.py`, `test_ailb_memory.py`. **Modify:** `services/management/app/api/v1/webhooks.py` (remove AILB ingest routes `handle_usage_webhook`/`handle_health_webhook`/`handle_batch_webhook` + helpers), `services/management/app/api/v1/__init__.py` (drop `ailb`, `ailb_memory` blueprints), `services/management/app/config.py` + `k8s/helm/waddleai/templates/management-deployment.yaml` + `infrastructure/kubernetes/base/{configmap,management-deployment}.yaml` (remove `MARCHPROXY_AILB_*`), `proxy/apps/proxy_server/main.py` (remove `grpc_server` MarchProxy wiring comment/imports if stale), and the AILB portions of `tests/unit/management/test_webhook_routes.py`/`test_webhook_routes_extra.py`/`test_app_init.py`. Re-home memory/RAG/embedding config endpoints to `/api/v1/memory-config` (create `services/management/app/api/v1/memory_config.py`, ported from `ailb_memory.py` bodies).
 
@@ -392,46 +392,46 @@ Delete all MarchProxy sync plumbing, AILB routes, webhook ingest, vendored proto
 
 ---
 
-### Task 14: Migration 006 — drop AILB, add native limits, fold usage
+### Task 14: Migration 007 — drop AILB, add native limits, fold usage
 
-Down-revision `005_add_content_filter_tables`. Drops `marchproxy_ailb_sync`; folds `ailb_usage_events` + `ailb_usage_records` → `token_usage` with `source='ailb_import'` (billing/dashboard continuity, Q#1) then drops them; drops `virtual_keys.ailb_key_id`/`ailb_sync_status`; adds `virtual_keys.rpm_limit`/`tpm_limit` (if not already created by baseline) + `budget_monthly_tokens`/`budget_monthly_usd`; adds `token_usage.source`; seeds `token_conversion_rates` from `DEFAULT_CONVERSION_RATES`. Round-trip + downgrade tested (house rule).
+Down-revision `006_add_memory_scope`. Drops `marchproxy_ailb_sync`; folds `ailb_usage_events` + `ailb_usage_records` → `token_usage` with `source='ailb_import'` (billing/dashboard continuity, Q#1) then drops them; drops `virtual_keys.ailb_key_id`/`ailb_sync_status`; adds `virtual_keys.rpm_limit`/`tpm_limit` (if not already created by baseline) + `budget_monthly_tokens`/`budget_monthly_usd`; adds `token_usage.source`; seeds `token_conversion_rates` from `DEFAULT_CONVERSION_RATES`. Round-trip + downgrade tested (house rule).
 
-**Files:** Create `services/management/alembic/versions/006_drop_ailb_add_native_limits.py`, `tests/unit/management/test_migration_006.py`. Also drop `MarchProxyAILBSync`/`AILBUsageEvent`/`AILBUsageRecord` classes + `virtual_keys.ailb_*` from `models_sqlalchemy.py`.
+**Files:** Create `services/management/alembic/versions/007_drop_ailb_add_native_limits.py`, `tests/unit/management/test_migration_007.py`. Also drop `MarchProxyAILBSync`/`AILBUsageEvent`/`AILBUsageRecord` classes + `virtual_keys.ailb_*` from `models_sqlalchemy.py`.
 
-- [ ] **Step 1: Write failing round-trip test** — on a SQLite/seeded snapshot with sample `ailb_usage_events`/`ailb_usage_records` rows: `upgrade` → those rows appear in `token_usage` with `source='ailb_import'`, the three AILB tables are gone, `virtual_keys` has the four limit cols + no `ailb_*`, `token_usage.source` exists, and `token_conversion_rates` is seeded; `downgrade` → schema returns to the 005 shape (folded rows may remain as `ailb_import` — assert documented behavior). Run → fails (no 006).
+- [ ] **Step 1: Write failing round-trip test** — on a SQLite/seeded snapshot with sample `ailb_usage_events`/`ailb_usage_records` rows: `upgrade` → those rows appear in `token_usage` with `source='ailb_import'`, the three AILB tables are gone, `virtual_keys` has the four limit cols + no `ailb_*`, `token_usage.source` exists, and `token_conversion_rates` is seeded; `downgrade` → schema returns to the 006 shape (folded rows may remain as `ailb_import` — assert documented behavior). Run → fails (no 007).
 
-- [ ] **Step 2: Implement migration 006** — guarded `op.add_column`/`op.drop_column` (check-if-exists for `rpm_limit`/`tpm_limit`); an INSERT-SELECT fold from the two AILB tables into `token_usage`; `op.bulk_insert` seed for conversion rates. Provide a complete `downgrade()`.
+- [ ] **Step 2: Implement migration 007** — guarded `op.add_column`/`op.drop_column` (check-if-exists for `rpm_limit`/`tpm_limit`); an INSERT-SELECT fold from the two AILB tables into `token_usage`; `op.bulk_insert` seed for conversion rates. Provide a complete `downgrade()`.
 
 - [ ] **Step 3: Update ORM models** — remove the three AILB model classes and `virtual_keys.ailb_*` columns.
 
-- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_006.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows a single head `006_...`.
+- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_007.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows a single head `007_...`.
 
 - [ ] **Step 5: Commit**
   ```bash
-  git add services/management/alembic/versions/006_drop_ailb_add_native_limits.py tests/unit/management/test_migration_006.py services/management/app/models_sqlalchemy.py
-  git commit -m "feat(db): migration 006 — drop AILB tables, fold usage to token_usage, add native limits" \
+  git add services/management/alembic/versions/007_drop_ailb_add_native_limits.py tests/unit/management/test_migration_007.py services/management/app/models_sqlalchemy.py
+  git commit -m "feat(db): migration 007 — drop AILB tables, fold usage to token_usage, add native limits" \
              -m "migrated-from: marchproxy@9dca05a" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
 ---
 
-### Task 15: Migration 007 — model registry + dual-default seed + plan_budget
+### Task 15: Migration 008 — model registry + dual-default seed + plan_budget
 
-Down-revision `006`. Adds `model_registry(name, role, license, origin, min_vram, ollama_tag, resolved_digest, is_utility)` seeded with the §2.3 dual-default set (utility models flagged `is_utility=True`, excluded from Free caps per Q#7); adds `provider_credentials.plan_budget jsonb`. (Rate limiting itself is the Cilium-edge branch; this task only lands the registry + the budget config column the token gate reads.) Round-trip + downgrade tested.
+Down-revision `007`. Adds `model_registry(name, role, license, origin, min_vram, ollama_tag, resolved_digest, is_utility)` seeded with the §2.3 dual-default set (utility models flagged `is_utility=True`, excluded from Free caps per Q#7); adds `provider_credentials.plan_budget jsonb`. (Rate limiting itself is the Cilium-edge branch; this task only lands the registry + the budget config column the token gate reads.) Round-trip + downgrade tested.
 
-**Files:** Create `services/management/alembic/versions/007_model_registry.py`, `tests/unit/management/test_migration_007.py`. Modify `models_sqlalchemy.py` (`ModelRegistry` class; `ProviderCredential.plan_budget = Column(JSON)`).
+**Files:** Create `services/management/alembic/versions/008_model_registry.py`, `tests/unit/management/test_migration_008.py`. Modify `models_sqlalchemy.py` (`ModelRegistry` class; `ProviderCredential.plan_budget = Column(JSON)`).
 
 - [ ] **Step 1: Write failing round-trip test** — `upgrade` creates `model_registry` seeded with the dual-default rows (`gemma3:1b` + `granite3.3:2b`, `shieldgemma:2b` + `granite-guardian3:2b`, `nomic-embed-text`, etc.) with correct `license`/`origin`/`is_utility`, and adds `provider_credentials.plan_budget`; assert **no Chinese-origin** entries in the seed; `downgrade` drops both. Run → fails.
 
-- [ ] **Step 2: Implement migration 007 + `ModelRegistry` ORM model + `plan_budget` column.**
+- [ ] **Step 2: Implement migration 008 + `ModelRegistry` ORM model + `plan_budget` column.**
 
-- [ ] **Step 3: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_007.py -v --no-cov`; `alembic ... heads` shows single head `007_...`.
+- [ ] **Step 3: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_008.py -v --no-cov`; `alembic ... heads` shows single head `008_...`.
 
 - [ ] **Step 4: Commit**
   ```bash
-  git add services/management/alembic/versions/007_model_registry.py tests/unit/management/test_migration_007.py services/management/app/models_sqlalchemy.py
-  git commit -m "feat(db): migration 007 — model_registry dual-default seed + provider_credentials.plan_budget" \
+  git add services/management/alembic/versions/008_model_registry.py tests/unit/management/test_migration_008.py services/management/app/models_sqlalchemy.py
+  git commit -m "feat(db): migration 008 — model_registry dual-default seed + provider_credentials.plan_budget" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -478,8 +478,8 @@ Turn each §5.8 acceptance item into an explicit verify step. Add a scale smoke 
 | §5.3 metering sole writer, batched per-second | 9 |
 | §5.5 in-repo protos + rewrite generate_proto.sh | 12 |
 | §5.6 deletion inventory (sync, routes, webhook, env, tests) | 13 |
-| §5.7 migration 006 (drop/fold/add/seed) round-trip + downgrade | 14 |
-| §13.1 migration 007 (model_registry + plan_budget) | 15 |
+| §5.7 migration 007 (drop/fold/add/seed) round-trip + downgrade | 14 |
+| §13.1 migration 008 (model_registry + plan_budget) | 15 |
 | §5.8 acceptance items (each an explicit verify) | 16 |
 | §3.5 stateless pods / NER off loop / batched metering | 1, 7, 9 |
 | §14.5 flag `waddleai.native_rate_limit`, fail-safe OFF | 1, 10 |

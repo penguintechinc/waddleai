@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task ends in a real `git commit`.
 
-**Branch:** `feature/response-cache` (off `release/v0.2.X`). **Depends on:** `feature/aiproxy-migration` (the stage-class `ProxyPipeline` in `proxy/apps/proxy_server/pipeline/`, `shared/licensing/features.py::features.enabled(...)`, streaming connectors, `MeteringBuffer`, migrations 006–007). Merge back into `release/v0.2.X` without a PR when complete.
+**Branch:** `feature/response-cache` (off `release/v0.2.X`). **Depends on:** `feature/aiproxy-migration` (the stage-class `ProxyPipeline` in `proxy/apps/proxy_server/pipeline/`, `shared/licensing/features.py::features.enabled(...)`, streaming connectors, `MeteringBuffer`, migrations 007–008). Merge back into `release/v0.2.X` without a PR when complete.
 
-**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §6 (with §3.2 stage-4 placement, §3.6 poisoning defense/org boundary, §13.1 migration 008, §14.2 standing gates, §14.5 flag `waddleai.response_cache`). Authoritative.
+**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §6 (with §3.2 stage-4 placement, §3.6 poisoning defense/org boundary, §13.1 migration 009a, §14.2 standing gates, §14.5 flag `waddleai.response_cache`). Authoritative.
 
 ---
 
-**Goal:** Pipeline stage 4 — `shared/cache/` with the `response_cache.py` facade — three layers, cheapest lookup first: (1) **exact Valkey cache** (SHA-256 key, `temperature == 0` eligibility, default ON, streaming hits replayed as synthetic SSE, org-scoped keys as an absolute boundary); (2) **restricted semantic pgvector cache** (default OFF, single-turn/no-tools/temp-0/informational only, 0.95 cosine threshold, HNSW); (3) **upstream prompt-cache orchestration on miss** (Anthropic `cache_control` auto-inject default ON with per-org toggle, OpenAI `cached_tokens` surfaced, Gemini CachedContent lifecycle, Ollama/llama.cpp KV reuse via a Valkey session-affinity map). Plus: additive-only `usage.waddleai` cache fields, `token_usage.cache_status`/`tokens_saved` accounting, the `cache_configs` table (migration 008), a management CRUD + cache-stats dashboard surface, and the §6.5 acceptance suite where **org isolation is a security test**.
+**Goal:** Pipeline stage 4 — `shared/cache/` with the `response_cache.py` facade — three layers, cheapest lookup first: (1) **exact Valkey cache** (SHA-256 key, `temperature == 0` eligibility, default ON, streaming hits replayed as synthetic SSE, org-scoped keys as an absolute boundary); (2) **restricted semantic pgvector cache** (default OFF, single-turn/no-tools/temp-0/informational only, 0.95 cosine threshold, HNSW); (3) **upstream prompt-cache orchestration on miss** (Anthropic `cache_control` auto-inject default ON with per-org toggle, OpenAI `cached_tokens` surfaced, Gemini CachedContent lifecycle, Ollama/llama.cpp KV reuse via a Valkey session-affinity map). Plus: additive-only `usage.waddleai` cache fields, `token_usage.cache_status`/`tokens_saved` accounting, the `cache_configs` table (migration 009a), a management CRUD + cache-stats dashboard surface, and the §6.5 acceptance suite where **org isolation is a security test**.
 
 **Architecture:** `CacheStage` slots into the existing `ProxyPipeline` after `SecurityInStage`, before dispatch (§3.2 order: auth → token/budget → security-in → **cache** → dispatch → security-out → meter; routing arrives on a later branch and sits after cache). On hit, the stage populates `ctx.response` from cache and short-circuits dispatch — but never metering. On miss, it annotates the outgoing request (Anthropic breakpoints, Gemini cached-content ref, Ollama affinity hint) and registers a **write-back callback that only fires after `SecurityOutStage` passes** — entries are keyed to post-filter content and blocked responses are never cached (poisoning defense, §3.6). Everything is behind PostHog flag `waddleai.response_cache` (default OFF, fail-safe OFF via `features.enabled`); finer per-org/per-key toggles (`exact_enabled` default true, `semantic_enabled` default false, `anthropic_cache_control` default true) resolve through `cache_configs`. Valkey holds nothing durable — its loss degrades hit rate, never correctness (§3.4). No CPU-heavy work on the event loop: embeddings are async network I/O (Ollama `nomic-embed-text`, 768-dim, matching `shared/utils/embedding_manager.py`).
 
@@ -20,9 +20,9 @@
 
 | Action | File | Responsibility |
 |--------|------|----------------|
-| Create | `services/management/alembic/versions/008_cache_and_proxy_memory.py` | Migration 008 (§6 slice): `cache_configs`, `response_cache_entries` (pgvector+HNSW), `token_usage.cache_status`/`tokens_saved` |
+| Create | `services/management/alembic/versions/009a_response_cache.py` | Migration 009a `response_cache`: `cache_configs`, `response_cache_entries` (pgvector+HNSW), `token_usage.cache_status`/`tokens_saved` |
 | Modify | `services/management/app/models_sqlalchemy.py` | `CacheConfig`, `ResponseCacheEntry` ORM models; `TokenUsage` new columns |
-| Create | `tests/unit/management/test_migration_008.py` | Round-trip + downgrade on seeded snapshot |
+| Create | `tests/unit/management/test_migration_009a.py` | Round-trip + downgrade on seeded snapshot |
 | Create | `shared/cache/__init__.py` | Package exports (`ResponseCache`, `CacheStageResult`, factories) |
 | Create | `shared/cache/keys.py` | Eligibility predicates + SHA-256 exact-key derivation |
 | Create | `tests/unit/cache/test_eligibility_keys.py` | Determinism-eligibility matrix + key stability/sensitivity tests |
@@ -56,26 +56,26 @@
 
 ---
 
-### Task 1: Migration 008 (§6 slice) + ORM models
+### Task 1: Migration 009a (§6 slice) + ORM models
 
-Down-revision `007_model_registry`. Creates `cache_configs(id, scope_type, scope_ref, exact_enabled, semantic_enabled, semantic_threshold, ttl_seconds, max_entry_kb, anthropic_cache_control, created_at, updated_at)` and `response_cache_entries(id, org_id, scope_key, model_class, prompt_embedding vector(768), context_hash, response jsonb, hit_count, created_at, expires_at)` with an **HNSW** index on `prompt_embedding` (vector_cosine_ops) and a btree on `(org_id, model_class, expires_at)`; adds `token_usage.cache_status` (String(16), nullable) and `token_usage.tokens_saved` (Integer, default 0). Migration goes **first** (unlike the aiproxy plan's migrations-last order) because the semantic layer and config resolution in every later task run against these tables.
+Down-revision `008_model_registry`. Creates `cache_configs(id, scope_type, scope_ref, exact_enabled, semantic_enabled, semantic_threshold, ttl_seconds, max_entry_kb, anthropic_cache_control, created_at, updated_at)` and `response_cache_entries(id, org_id, scope_key, model_class, prompt_embedding vector(768), context_hash, response jsonb, hit_count, created_at, expires_at)` with an **HNSW** index on `prompt_embedding` (vector_cosine_ops) and a btree on `(org_id, model_class, expires_at)`; adds `token_usage.cache_status` (String(16), nullable) and `token_usage.tokens_saved` (Integer, default 0). Migration goes **first** (unlike the aiproxy plan's migrations-last order) because the semantic layer and config resolution in every later task run against these tables.
 
-> **Ledger note:** §13.1 names 008 `cache_and_proxy_memory` covering §6 **and** §6A. This branch authors the file with the §6 tables only; the sibling `feature/proxy-memory-layers` branch **extends this same (unreleased) migration file** with `session_scratchpad`/`conversation_summaries`/`embedding_cache` before release. Guard both halves so the file upgrades cleanly whichever branch merges first.
+> **Ledger note:** §13.1 splits the old shared slot into **separate chained revisions**: this branch owns `009a_response_cache` (§6 tables only, `down_revision = "008_model_registry"`); the sibling `feature/proxy-memory-layers` branch owns `009b_proxy_memory` (§6A tables, same parent). **Whichever branch merges into `release/v0.2.X` second re-points its migration's `down_revision` at the other's revision id** (one-line edit + re-run the round-trip test) so `alembic heads` stays single-headed — matching the coordination note in the proxy-memory plan.
 
-**Files:** Create `services/management/alembic/versions/008_cache_and_proxy_memory.py`, `tests/unit/management/test_migration_008.py`. Modify `services/management/app/models_sqlalchemy.py`.
+**Files:** Create `services/management/alembic/versions/009a_response_cache.py`, `tests/unit/management/test_migration_009a.py`. Modify `services/management/app/models_sqlalchemy.py`.
 
-- [ ] **Step 1: Write failing round-trip test** — `tests/unit/management/test_migration_008.py`, same harness as `test_migration_006/007`: on a seeded snapshot, `upgrade` → `cache_configs` and `response_cache_entries` exist with the exact §6.4/§6.2 column sets; `token_usage` has `cache_status` + `tokens_saved`; on Postgres the HNSW index exists (SQLite path: vector column degrades to JSON-serialized text per the existing `MemoryEmbedding` pattern — assert table + columns only, mark index assertion `postgres_only`); `downgrade` → both tables and both columns gone, 007 schema restored. Run → fails (no 008).
+- [ ] **Step 1: Write failing round-trip test** — `tests/unit/management/test_migration_009a.py`, same harness as `test_migration_007/008`: on a seeded snapshot, `upgrade` → `cache_configs` and `response_cache_entries` exist with the exact §6.4/§6.2 column sets; `token_usage` has `cache_status` + `tokens_saved`; on Postgres the HNSW index exists (SQLite path: vector column degrades to JSON-serialized text per the existing `MemoryEmbedding` pattern — assert table + columns only, mark index assertion `postgres_only`); `downgrade` → both tables and both columns gone, 008 schema restored. Run → fails (no 009a).
 
-- [ ] **Step 2: Implement migration 008** — `op.create_table` for both tables; dialect-guarded `Vector(768)` (pgvector) vs `Text` fallback; `op.execute("CREATE INDEX ... USING hnsw (prompt_embedding vector_cosine_ops)")` inside a Postgres-only guard; `op.add_column` × 2 on `token_usage`. Complete `downgrade()`. Seed one global default row in `cache_configs` (`scope_type='global', scope_ref=NULL, exact_enabled=true, semantic_enabled=false, semantic_threshold=0.95, ttl_seconds=86400, max_entry_kb=256, anthropic_cache_control=true`).
+- [ ] **Step 2: Implement migration 009a** — `op.create_table` for both tables; dialect-guarded `Vector(768)` (pgvector) vs `Text` fallback; `op.execute("CREATE INDEX ... USING hnsw (prompt_embedding vector_cosine_ops)")` inside a Postgres-only guard; `op.add_column` × 2 on `token_usage`. Complete `downgrade()`. Seed one global default row in `cache_configs` (`scope_type='global', scope_ref=NULL, exact_enabled=true, semantic_enabled=false, semantic_threshold=0.95, ttl_seconds=86400, max_entry_kb=256, anthropic_cache_control=true`).
 
 - [ ] **Step 3: Add ORM models** — `CacheConfig` and `ResponseCacheEntry` classes in `models_sqlalchemy.py` (follow the `MemoryEmbedding` pgvector-column pattern); `TokenUsage.cache_status = Column(String(16), nullable=True)`, `TokenUsage.tokens_saved = Column(Integer, default=0)`.
 
-- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_008.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows a single head `008_...`.
+- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_009a.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows a single head `009a_...`.
 
 - [ ] **Step 5: Commit**
   ```bash
-  git add services/management/alembic/versions/008_cache_and_proxy_memory.py tests/unit/management/test_migration_008.py services/management/app/models_sqlalchemy.py
-  git commit -m "feat(db): migration 008 — cache_configs + response_cache_entries (pgvector/HNSW) + token_usage cache cols" \
+  git add services/management/alembic/versions/009a_response_cache.py tests/unit/management/test_migration_009a.py services/management/app/models_sqlalchemy.py
+  git commit -m "feat(db): migration 009a — cache_configs + response_cache_entries (pgvector/HNSW) + token_usage cache cols" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -435,6 +435,6 @@ Every §6.5 acceptance item as an explicit test, in one integration module run a
 | §6.5 semantic should-hit/should-miss corpus + threshold regression | 6, 12 |
 | §6.5 `cache_control` verified against recorded Anthropic responses | 7, 12 |
 | §6.5/§14.2 flag-off proves zero behavior change | 10, 12 |
-| §13.1 migration 008 round-trip + downgrade | 1 |
+| §13.1 migration 009a round-trip + downgrade | 1 |
 | §14.5 flag `waddleai.response_cache`, fail-safe OFF via `features.enabled` | 10, 12 |
 | §3.2 stage-4 placement (after security-in, before routing/dispatch) | 10 |

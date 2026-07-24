@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task ends in a real `git commit` (Co-Authored-By trailer + flag-off proof).
 
-**Branch:** `feature/inference-fleet-v2` (off `release/v0.2.X`). **Depends on:** `feature/routing-engine` (§7 / migration 009 — the routing engine consults `endpoints_for(model)` for placement-aware dispatch; `model_registry` from migration 007 and `shared/licensing/features.py` from §5 must already be on the branch). Migrations 006–011 assumed landed; this branch adds **012**.
+**Branch:** `feature/inference-fleet-v2` (off `release/v0.2.X`). **Depends on:** `feature/routing-engine` (§7 / migration 010 — the routing engine consults `endpoints_for(model)` for placement-aware dispatch; `model_registry` from migration 008 and `shared/licensing/features.py` from §5 must already be on the branch). Migrations 007–012 assumed landed; this branch adds **013**.
 
-**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §10 (with §10.1 fleet backend interface, §10.2 hardened Ollama image, §10.3 access control, §10.4 placement/LB/caps, §10.5 acceptance), §2.4 (Free caps + Pro dual-metering), §2.2 (origin deny-list), §13.1 (migration 012), §14.5 (flag `waddleai.fleet_v2`), §14.6 (license entitlement/metering), Q#4/Q#7/Q#9 in the resolved ledger. Authoritative.
+**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §10 (with §10.1 fleet backend interface, §10.2 hardened Ollama image, §10.3 access control, §10.4 placement/LB/caps, §10.5 acceptance), §2.4 (Free caps + Pro dual-metering), §2.2 (origin deny-list), §13.1 (migration 013), §14.5 (flag `waddleai.fleet_v2`), §14.6 (license entitlement/metering), Q#4/Q#7/Q#9 in the resolved ledger. Authoritative.
 
 ---
 
@@ -25,8 +25,8 @@
 | Create | `tests/unit/fleet/test_fleet_base.py` | ABC contract + dataclass tests |
 | Create | `shared/fleet/registry.py` | `type`→class factory; `config`/`credentials_ref` resolution; `management_scope` wiring |
 | Create | `tests/unit/fleet/test_fleet_registry.py` | Factory + credential-resolution tests |
-| Create | `services/management/alembic/versions/012_fleet.py` | Migration 012 |
-| Create | `tests/unit/management/test_migration_012.py` | Round-trip + downgrade on seeded snapshot |
+| Create | `services/management/alembic/versions/013_fleet.py` | Migration 013 |
+| Create | `tests/unit/management/test_migration_013.py` | Round-trip + downgrade on seeded snapshot |
 | Modify | `services/management/app/models_sqlalchemy.py` | `FleetBackend` model; `management_scope` + interface cols on `ollama_deployments`/`llamacpp_deployments` |
 | Modify | `services/management/app/services/ollama_manager.py` | `OllamaDeploymentManager(InferenceFleetBackend)` — restructure |
 | Create | `tests/conformance/test_fleet_conformance.py` | Parametrized 5-backend interface conformance suite |
@@ -114,24 +114,24 @@ The pluggable interface all five backends implement (§10.1). Abstract methods `
 
 ---
 
-### Task 2: Migration 012 — `fleet_backends` + interface columns
+### Task 2: Migration 013 — `fleet_backends` + interface columns
 
-Down-revision `011_knowledge` (§13.1). Adds `fleet_backends(id, org_id, type enum, mode, management_scope enum, config jsonb, credentials_ref, status)`; extends `ollama_deployments` + `llamacpp_deployments` with a nullable `fleet_backend_id` FK, `management_scope` (default `full_lifecycle`), and any interface-needed columns (`node_uid`, `pool_mode`). Round-trip + downgrade on a seeded snapshot (house rule).
+Down-revision `012_knowledge` (§13.1). Adds `fleet_backends(id, org_id, type enum, mode, management_scope enum, config jsonb, credentials_ref, status)`; extends `ollama_deployments` + `llamacpp_deployments` with a nullable `fleet_backend_id` FK, `management_scope` (default `full_lifecycle`), and any interface-needed columns (`node_uid`, `pool_mode`). Round-trip + downgrade on a seeded snapshot (house rule).
 
-**Files:** Create `services/management/alembic/versions/012_fleet.py`, `tests/unit/management/test_migration_012.py`. Modify `models_sqlalchemy.py` (`FleetBackend` class; new cols on both deployment models).
+**Files:** Create `services/management/alembic/versions/013_fleet.py`, `tests/unit/management/test_migration_013.py`. Modify `models_sqlalchemy.py` (`FleetBackend` class; new cols on both deployment models).
 
-- [ ] **Step 1: Write failing round-trip test** — on a seeded SQLite snapshot with sample `ollama_deployments`/`llamacpp_deployments` rows: `upgrade` → `fleet_backends` exists with the two enums (Postgres native enum, SQLite check-constraint fallback); both deployment tables gain `fleet_backend_id`/`management_scope`; existing rows preserved with `management_scope='full_lifecycle'`; `downgrade` → schema returns to the 011 shape. Run → fails (no 012).
+- [ ] **Step 1: Write failing round-trip test** — on a seeded SQLite snapshot with sample `ollama_deployments`/`llamacpp_deployments` rows: `upgrade` → `fleet_backends` exists with the two enums (Postgres native enum, SQLite check-constraint fallback); both deployment tables gain `fleet_backend_id`/`management_scope`; existing rows preserved with `management_scope='full_lifecycle'`; `downgrade` → schema returns to the 012 shape. Run → fails (no 013).
 
-- [ ] **Step 2: Implement migration 012** — `op.create_table("fleet_backends", ...)`; guarded `op.add_column` on both deployment tables; enum creation portable across Postgres/SQLite. Complete `downgrade()`.
+- [ ] **Step 2: Implement migration 013** — `op.create_table("fleet_backends", ...)`; guarded `op.add_column` on both deployment tables; enum creation portable across Postgres/SQLite. Complete `downgrade()`.
 
 - [ ] **Step 3: Add ORM models** — `FleetBackend(Base)` with the columns above; add `fleet_backend_id`/`management_scope` to `OllamaDeployment` and `LlamaCppDeployment`.
 
-- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_012.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows single head `012_...`.
+- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_013.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows single head `013_...`.
 
 - [ ] **Step 5: Commit**
   ```bash
-  git add services/management/alembic/versions/012_fleet.py tests/unit/management/test_migration_012.py services/management/app/models_sqlalchemy.py
-  git commit -m "feat(db): migration 012 — fleet_backends registry + management_scope on deployments" \
+  git add services/management/alembic/versions/013_fleet.py tests/unit/management/test_migration_013.py services/management/app/models_sqlalchemy.py
+  git commit -m "feat(db): migration 013 — fleet_backends registry + management_scope on deployments" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -461,7 +461,7 @@ Turn every §10.5 acceptance item into an explicit verify step: the interface co
 | Spec §10 requirement | Task |
 |---|---|
 | §10.1 `InferenceFleetBackend` ABC (6 methods) + value types | 1 |
-| §10.1 `fleet_backends` registry table + `management_scope` (migration 012) | 2 |
+| §10.1 `fleet_backends` registry table + `management_scope` (migration 013) | 2 |
 | §10.1 backend registry/factory + credential resolution | 3 |
 | §10.1 OllamaDeploymentManager refactor → interface (restructure, +pool mode) | 4 |
 | §10.1 LlamaCppManager refactor → interface (`/tokenize` counts) | 5 |
@@ -483,4 +483,4 @@ Turn every §10.5 acceptance item into an explicit verify step: the interface co
 | §10.5 acceptance (CNP, mTLS, idle lifecycle, caps, Pro gating, hardened image) | 16 |
 | §14.5 flag `waddleai.fleet_v2`, fail-safe OFF, flag-off proof per task | 1–16 |
 | §14.6 two-layer gate (flag AND `check_feature("hybrid_targets")`); keepalive `nodes` metering | 6, 12 |
-| §13.1 migration 012 round-trip + downgrade | 2 |
+| §13.1 migration 013 round-trip + downgrade | 2 |

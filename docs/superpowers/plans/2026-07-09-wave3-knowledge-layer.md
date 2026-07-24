@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task ends in a real `git commit`.
 
-**Branch:** `feature/knowledge-layer` (off `release/v0.2.X`). **Depends on:** `feature/aiproxy-migration` (§5 — `ProxyPipeline` stage classes, `shared/licensing/features.py`, `ContentFilter`/`PromptSecurityScanner` wired at stage 3, `/api/v1/memory-config` re-home) **and** `feature/proxy-memory-layers` (§6A — `embedding_cache` table from migration 008, keyed `(model, content_hash)`) **and** `feature/smart-routing` (§7 — `model_assignments.embeddings` row / `model_registry`; migration 009). Migration 011 down-revisions `010_security_v2`.
+**Branch:** `feature/knowledge-layer` (off `release/v0.2.X`). **Depends on:** `feature/aiproxy-migration` (§5 — `ProxyPipeline` stage classes, `shared/licensing/features.py`, `ContentFilter`/`PromptSecurityScanner` wired at stage 3, `/api/v1/memory-config` re-home) **and** `feature/proxy-memory-layers` (§6A — `embedding_cache` table from migration 009b, keyed `(model, content_hash)`) **and** `feature/smart-routing` (§7 — `model_assignments.embeddings` row / `model_registry`; migration 010). Migration 012 down-revisions `011_security_v2`.
 
-**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §9 (with §9.1 CodeRAG, §9.2 docs cache, §9.3 PDF/MD ingestion, §9.4 conversation memory, §9.5 hybrid delivery, §9.6 injection-safety, §9.7 scoping/trust/isolation, §9.8 acceptance), plus §2.5 third-party content, §3.6 security posture, §13.1 migration 011, §14.2 standing gates, §14.5 flags `waddleai.coderag`/`waddleai.docs_cache`/`waddleai.knowledge_ingest`. Authoritative.
+**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §9 (with §9.1 CodeRAG, §9.2 docs cache, §9.3 PDF/MD ingestion, §9.4 conversation memory, §9.5 hybrid delivery, §9.6 injection-safety, §9.7 scoping/trust/isolation, §9.8 acceptance), plus §2.5 third-party content, §3.6 security posture, §13.1 migration 012, §14.2 standing gates, §14.5 flags `waddleai.coderag`/`waddleai.docs_cache`/`waddleai.knowledge_ingest`. Authoritative.
 
 ---
 
-**Goal:** Four knowledge subsystems on one Postgres+pgvector substrate (embeddings via the §7.1 `embeddings` assignment, default `nomic-embed-text`, 768-dim), all **scoped, trust-tiered, attributable, correctable, and injection-safe**: (1) **CodeRAG** — tree-sitter (MIT) function/class chunking with `path > class > signature` headers, server-side git-pull worker with content-hash incremental re-index, hybrid pgvector+FTS reciprocal-rank search keyed on `(repo, branch/commit)`; (2) **docs research cache** — on-demand fetch → `markdownify` (MIT) → chunk → embed, TTL 30d/7d, robots.txt + rate-limit + per-source license (CC-BY-SA attribution); (3) **manual knowledge ingestion** — `/api/v1/knowledge` upload+CRUD + CLI, PDF via `pypdf` (BSD) / `docling` (MIT) optional (**PyMuPDF/AGPL banned**), Markdown direct → org-scoped `rag_documents`; (4) **conversation memory** config re-home + the §9.7 correction/promotion surface. Delivery is **hybrid by client type** (MCP-capable → pull; plain → budgeted auto-inject, default 2000 tokens). Migration 011. Every subsystem behind its PostHog flag, default OFF. **MCP tools that expose these land in `feature/mcp-v2-integrations`; this branch builds the services + API they call.**
+**Goal:** Four knowledge subsystems on one Postgres+pgvector substrate (embeddings via the §7.1 `embeddings` assignment, default `nomic-embed-text`, 768-dim), all **scoped, trust-tiered, attributable, correctable, and injection-safe**: (1) **CodeRAG** — tree-sitter (MIT) function/class chunking with `path > class > signature` headers, server-side git-pull worker with content-hash incremental re-index, hybrid pgvector+FTS reciprocal-rank search keyed on `(repo, branch/commit)`; (2) **docs research cache** — on-demand fetch → `markdownify` (MIT) → chunk → embed, TTL 30d/7d, robots.txt + rate-limit + per-source license (CC-BY-SA attribution); (3) **manual knowledge ingestion** — `/api/v1/knowledge` upload+CRUD + CLI, PDF via `pypdf` (BSD) / `docling` (MIT) optional (**PyMuPDF/AGPL banned**), Markdown direct → org-scoped `rag_documents`; (4) **conversation memory** config re-home + the §9.7 correction/promotion surface. Delivery is **hybrid by client type** (MCP-capable → pull; plain → budgeted auto-inject, default 2000 tokens). Migration 012. Every subsystem behind its PostHog flag, default OFF. **MCP tools that expose these land in `feature/mcp-v2-integrations`; this branch builds the services + API they call.**
 
 **Architecture:** Every stored item carries `(scope, provenance, trust, version)` (§9.7). Retrieval is a composite scope key — narrower scopes override, broader are shared read-only; ranking is relevance × trust. Auto-captured memory/scratchpad stays at **session scope**; promotion to repo/project/org is **explicit**, never automatic. All retrieved content (memory, CodeRAG, docs, uploaded, external) is **provenance-tagged and re-filtered through content-filter tiers 1–3 before entering any prompt** — retrieved text is data, never instruction. Writes are filtered at store time; injection payloads are quarantined, never persisted clean. CodeRAG chunks key on branch so parallel worktrees never cross-contaminate. Org boundary is the hard isolation wall (§3.6). Embedding compute is deduplicated through the §6A.3 `embedding_cache`; CPU-heavy tree-sitter parsing and PDF extraction run off the event loop (`asyncio.to_thread` / `ProcessPoolExecutor`). Git clone/pull and docs fetch run in an async Management worker; the fetcher respects robots.txt with per-source rate limits. Every subsystem sits behind `features.enabled("coderag"|"docs_cache"|"knowledge_ingest", distinct_id=str(org_id))` — fail-safe OFF.
 
@@ -20,8 +20,8 @@
 
 | Action | File | Responsibility |
 |--------|------|----------------|
-| Create | `services/management/alembic/versions/011_knowledge.py` | Migration 011 (down-rev `010`) — `code_repos`, `code_chunks`, `docs_cache_pages`, `docs_sources` (pgvector + FTS); extend `rag_documents` + `memory_embeddings` with §9.7 scope/trust/version/status cols; seed `docs_sources` |
-| Create | `tests/unit/management/test_migration_011.py` | Round-trip + downgrade on seeded snapshot |
+| Create | `services/management/alembic/versions/012_knowledge.py` | Migration 012 (down-rev `011`) — `code_repos`, `code_chunks`, `docs_cache_pages`, `docs_sources` (pgvector + FTS); extend `rag_documents` + `memory_embeddings` with §9.7 scope/trust/version/status cols; seed `docs_sources` |
+| Create | `tests/unit/management/test_migration_012.py` | Round-trip + downgrade on seeded snapshot |
 | Modify | `services/management/app/models_sqlalchemy.py` | `CodeRepo`, `CodeChunk`, `DocsCachePage`, `DocsSource` classes; `RAGDocument`/`MemoryEmbedding` gain `scope_type`,`scope_ref`,`author_user_id`,`trust_tier`,`version`,`superseded_by`,`status`,`expires_at`,`provenance` |
 | Create | `shared/knowledge/__init__.py` | Package init |
 | Create | `shared/knowledge/embed.py` | `embed_cached(content, model)` over §6A.3 `embedding_cache`; `resolve_embedding_model()` reads §7 `embeddings` assignment (fallback nomic-embed-text) |
@@ -52,21 +52,21 @@
 
 ---
 
-### Task 1: Migration 011 + ORM models (knowledge tables + §9.7 scope/trust columns)
+### Task 1: Migration 012 + ORM models (knowledge tables + §9.7 scope/trust columns)
 
-Land all schema first so every downstream service has tables to write to. Down-revision `010_security_v2` (§13.1). pgvector(768) + FTS on content tables; §9.7 columns fold into `rag_documents`/`memory_embeddings` here (`session_scratchpad`/`conversation_summaries` are migration 008's). Round-trip + downgrade tested (house rule).
+Land all schema first so every downstream service has tables to write to. Down-revision `011_security_v2` (§13.1). pgvector(768) + FTS on content tables; §9.7 columns fold into `rag_documents`/`memory_embeddings` here (`session_scratchpad`/`conversation_summaries` are migration 009b's). Round-trip + downgrade tested (house rule).
 
-**Files:** Create `services/management/alembic/versions/011_knowledge.py`, `tests/unit/management/test_migration_011.py`. Modify `services/management/app/models_sqlalchemy.py`.
+**Files:** Create `services/management/alembic/versions/012_knowledge.py`, `tests/unit/management/test_migration_012.py`. Modify `services/management/app/models_sqlalchemy.py`.
 
-- [ ] **Step 1: Write failing round-trip test** — on a SQLite/seeded snapshot: `upgrade` creates `code_repos(id, org_id, name, source_url, credentials_ref, index_status, last_commit)`, `code_chunks(repo_id, path, symbol, kind, start_line, end_line, content, embedding vector(768), content_hash, branch_ref, scope_type, scope_ref, trust_tier, version, superseded_by, status, expires_at)`, `docs_cache_pages(id, ecosystem, package, version, url, content_md, embedding, license, fetched_at, ttl)`, `docs_sources(ecosystem, base_url, license, attribution_required, robots_ttl, rate_limit_rps)`; `rag_documents` and `memory_embeddings` gain `scope_type, scope_ref, author_user_id, trust_tier, version, superseded_by, status, expires_at, provenance`; `docs_sources` seeded with the §9.2 rows (python.org/PSF, docs.rs+doc.rust-lang.org/MIT-Apache, pkg.go.dev/BSD, nodejs.org/MIT, MDN/CC-BY-SA, ruby-doc/Ruby, cppreference/CC-BY-SA); assert MDN + cppreference carry `attribution_required=True`; `downgrade` returns to the 010 shape. Run → fails (no 011).
-- [ ] **Step 2: Run test, verify it fails** — `python3 -m pytest tests/unit/management/test_migration_011.py -v --no-cov` → module/revision absent.
-- [ ] **Step 3: Implement migration 011** — guarded `op.create_table` / `op.add_column`; pgvector columns via the existing conditional pattern (`ADD COLUMN IF NOT EXISTS embedding vector(768)` + ivfflat/HNSW index) mirrored from the `rag_documents` block already in `models_sqlalchemy.py`; FTS: create a `tsvector` GIN index over `code_chunks(content || symbol)`; `op.bulk_insert` seed for `docs_sources`. Complete `downgrade()`.
+- [ ] **Step 1: Write failing round-trip test** — on a SQLite/seeded snapshot: `upgrade` creates `code_repos(id, org_id, name, source_url, credentials_ref, index_status, last_commit)`, `code_chunks(repo_id, path, symbol, kind, start_line, end_line, content, embedding vector(768), content_hash, branch_ref, scope_type, scope_ref, trust_tier, version, superseded_by, status, expires_at)`, `docs_cache_pages(id, ecosystem, package, version, url, content_md, embedding, license, fetched_at, ttl)`, `docs_sources(ecosystem, base_url, license, attribution_required, robots_ttl, rate_limit_rps)`; `rag_documents` and `memory_embeddings` gain `scope_type, scope_ref, author_user_id, trust_tier, version, superseded_by, status, expires_at, provenance`; `docs_sources` seeded with the §9.2 rows (python.org/PSF, docs.rs+doc.rust-lang.org/MIT-Apache, pkg.go.dev/BSD, nodejs.org/MIT, MDN/CC-BY-SA, ruby-doc/Ruby, cppreference/CC-BY-SA); assert MDN + cppreference carry `attribution_required=True`; `downgrade` returns to the 011 shape. Run → fails (no 012).
+- [ ] **Step 2: Run test, verify it fails** — `python3 -m pytest tests/unit/management/test_migration_012.py -v --no-cov` → module/revision absent.
+- [ ] **Step 3: Implement migration 012** — guarded `op.create_table` / `op.add_column`; pgvector columns via the existing conditional pattern (`ADD COLUMN IF NOT EXISTS embedding vector(768)` + ivfflat/HNSW index) mirrored from the `rag_documents` block already in `models_sqlalchemy.py`; FTS: create a `tsvector` GIN index over `code_chunks(content || symbol)`; `op.bulk_insert` seed for `docs_sources`. Complete `downgrade()`.
 - [ ] **Step 4: Update ORM models** — add `CodeRepo`, `CodeChunk`, `DocsCachePage`, `DocsSource`; extend `RAGDocument`/`MemoryEmbedding` with the §9.7 columns (`trust_tier` default `'unverified'`, `status` default `'active'`, `version` default 1).
-- [ ] **Step 5: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_011.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows a single head `011_...`.
+- [ ] **Step 5: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_012.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` shows a single head `012_...`.
 - [ ] **Step 6: Commit**
   ```bash
-  git add services/management/alembic/versions/011_knowledge.py tests/unit/management/test_migration_011.py services/management/app/models_sqlalchemy.py
-  git commit -m "feat(db): migration 011 — knowledge tables + §9.7 scope/trust columns" \
+  git add services/management/alembic/versions/012_knowledge.py tests/unit/management/test_migration_012.py services/management/app/models_sqlalchemy.py
+  git commit -m "feat(db): migration 012 — knowledge tables + §9.7 scope/trust columns" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -307,9 +307,9 @@ Turn each §9.8 acceptance item into an explicit verify step; isolation/injectio
 | §9.7 trust tiers + relevance×trust ranking + unverified provenance header | 3, 4 |
 | §9.7 contradiction→quarantine→supersede; version/attribution; correct/dispute/promote | 3, 10 |
 | §9.7 per-user session isolation; branch-scoped CodeRAG retrieval | 3, 7 |
-| §9.7 memory tables scope/trust/version/status/expires columns (fold into 011) | 1 |
+| §9.7 memory tables scope/trust/version/status/expires columns (fold into 012) | 1 |
 | §9.7 embedding_cache dedup (§6A.3) + §7 embeddings assignment | 2 |
 | §9.8 acceptance items (each an explicit verify) | 12 |
 | §9.8 isolation/injection-safety as security tests | 3, 4, 7, 9, 12 |
-| §13.1 migration 011 (tables + provenance/scope cols) round-trip + downgrade | 1 |
+| §13.1 migration 012 (tables + provenance/scope cols) round-trip + downgrade | 1 |
 | §14.5 flags `waddleai.coderag`/`docs_cache`/`knowledge_ingest`, fail-safe OFF | 6, 8, 9, 11, 12 |
