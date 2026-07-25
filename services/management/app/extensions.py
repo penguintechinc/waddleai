@@ -52,7 +52,11 @@ def init_db(app: Quart) -> DB:
             logger.info("Database schema initialized")
 
             # Step 2: Connect with penguin-dal for runtime operations (auto-reflects schema)
+            # penguin-dal 0.1.0 (released) init_dal returns None and parks the DB on
+            # app.extensions["_penguin_dal"]; newer penguin-dal returns it directly.
             db = init_dal(app, uri=db_url, pool_size=int(app.config.get("DB_POOL_SIZE", 10)))
+            if db is None:
+                db = app.extensions["_penguin_dal"]
 
             logger.info(f"Database initialized successfully on attempt {attempt}")
             return db
