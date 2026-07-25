@@ -82,7 +82,7 @@ uv pip compile requirements.in --generate-hashes -o requirements.txt
     rpm_limit = Column(Integer)  # Per-org requests/min enforced at the Cilium/Envoy edge (§5.3)
 ```
 
-Create the Alembic migration `*_add_org_rpm_limit.py` (add column, nullable; `downgrade` drops it) with a seeded round-trip test. **Migration number: coordinate at merge** — this branch lands after 007 and before 008; either fold this column into the dependency branch's `006_drop_ailb_add_native_limits` (which already adds native limit columns) or assign the next free sequential number. Do not hard-collide with 008–013.
+Create the Alembic migration `*_add_org_rpm_limit.py` (add column, nullable; `downgrade` drops it) with a seeded round-trip test. **Migration number: coordinate at merge** — this branch lands after 008 and before 009; either fold this column into the dependency branch's `007_drop_ailb_add_native_limits` (which already adds native limit columns) or assign the next free sequential number. Do not hard-collide with 009–014.
 
 - [ ] **Step 4:** In `services/cilium_policy.py`, add k8s client loaders mirroring `llamacpp_manager.py` (in-cluster → kubeconfig fallback): `get_k8s_apiext_client()` (`ApiextensionsV1Api`), `get_k8s_custom_objects_client()` (`CustomObjectsApi`). Add `cilium_capabilities() -> dict` that lists CRDs and checks for `ciliumnetworkpolicies.cilium.io` and `ciliumenvoyconfigs.cilium.io`, catching every exception and returning the all-`False` dict. Constants: `CILIUM_GROUP = "cilium.io"`, `CILIUM_VERSION = "v2"`, `CNP_PLURAL = "ciliumnetworkpolicies"`, `CEC_PLURAL = "ciliumenvoyconfigs"`.
 

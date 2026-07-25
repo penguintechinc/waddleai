@@ -4,9 +4,9 @@
 
 **Branch:** `feature/proxy-memory-layers` (off `release/v0.2.X`). **Depends on:** `feature/aiproxy-migration` (the stage-class `ProxyPipeline` in `proxy/apps/proxy_server/pipeline/` exists; both `/v1/chat/completions` and `/v1/messages` run it; `shared/licensing/features.py::features.enabled(...)` exists; Valkey is deployed).
 
-**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §6A (with §9.6/§9.7 memory scoping/trust/isolation — MUST be honored on every layer; §6.3 prefix-cache feed; §7.1 `summarize` assignment; §13.1 migration 008; §14.2/§14.5). Authoritative.
+**Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §6A (with §9.6/§9.7 memory scoping/trust/isolation — MUST be honored on every layer; §6.3 prefix-cache feed; §7.1 `summarize` assignment; §13.1 migration 009b; §14.2/§14.5). Authoritative.
 
-**⚠️ Migration-008 coordination (flagged):** §13.1 assigns one migration `008 cache_and_proxy_memory` to *both* the `feature/response-cache` branch (§6 tables) and this branch (§6A tables). To keep the branches independent, this plan writes the §6A memory tables as their **own Alembic revision `008b_proxy_memory`** with `down_revision = "007_model_registry"`. The response-cache branch owns `008a_response_cache` (same parent). **Whichever branch merges into `release/v0.2.X` second MUST re-point its migration's `down_revision` at the other's revision id** (one-line edit + re-run the round-trip test) so `alembic heads` stays single-headed. Task 1 encodes this as an explicit check.
+**⚠️ Migration-009 coordination (flagged):** §13.1 assigns one migration `009 cache_and_proxy_memory` to *both* the `feature/response-cache` branch (§6 tables) and this branch (§6A tables). To keep the branches independent, this plan writes the §6A memory tables as their **own Alembic revision `009b_proxy_memory`** with `down_revision = "008_model_registry"`. The response-cache branch owns `009a_response_cache` (same parent). **Whichever branch merges into `release/v0.2.X` second MUST re-point its migration's `down_revision` at the other's revision id** (one-line edit + re-run the round-trip test) so `alembic heads` stays single-headed. Task 1 encodes this as an explicit check.
 
 ---
 
@@ -22,8 +22,8 @@
 
 | Action | File | Responsibility |
 |--------|------|----------------|
-| Create | `services/management/alembic/versions/008b_proxy_memory.py` | Migration 008b: `session_scratchpad`, `conversation_summaries`, `embedding_cache` (+§9.7 columns); §9.7 columns on `memory_embeddings`; `api_keys.proxy_memory` config |
-| Create | `tests/unit/management/test_migration_008b.py` | Round-trip + downgrade on seeded snapshot; single-head check |
+| Create | `services/management/alembic/versions/009b_proxy_memory.py` | Migration 009b: `session_scratchpad`, `conversation_summaries`, `embedding_cache` (+§9.7 columns); §9.7 columns on `memory_embeddings`; `api_keys.proxy_memory` config |
+| Create | `tests/unit/management/test_migration_009b.py` | Round-trip + downgrade on seeded snapshot; single-head check |
 | Modify | `services/management/app/models_sqlalchemy.py` | `SessionScratchpad`, `ConversationSummary`, `EmbeddingCacheEntry` models; `MemoryEmbedding` §9.7 cols; `APIKey.proxy_memory` |
 | Create | `shared/memory/__init__.py` | Package exports |
 | Create | `shared/memory/provenance.py` | `ProvenanceTag`, `filter_on_write`, `recall` (re-filter + quoted-data wrap) — §9.6/§9.7 enforcement primitives |
@@ -53,25 +53,25 @@
 
 ---
 
-### Task 1: Migration 008b — proxy-memory tables with §9.7 scope/trust columns
+### Task 1: Migration 009b — proxy-memory tables with §9.7 scope/trust columns
 
-Creates the three §6A.5 tables plus the §9.7 scoping/trust/attribution columns (`scope_type`, `scope_ref`, `author_user_id`, `trust_tier`, `version`, `superseded_by`, `status`, `expires_at`) on `session_scratchpad` and `conversation_summaries`, and retrofits the same §9.7 columns onto the existing `memory_embeddings` (spec: "folded into migrations 008/011" — `rag_documents`/`code_chunks` belong to 011 on the knowledge branch). `embedding_cache` follows the §6A.5 schema exactly — `(model, content_hash, embedding vector(768), created_at)`, content-addressed, **no stored plaintext and no org column**: it is a deterministic function cache holding only vectors; a caller must already possess the content to compute the key, so no org-readable data can leak (the org boundary for readable content is enforced on the retrieval-result cache, Task 10). Adds `api_keys.proxy_memory JSONB` (nullable = feature defaults) for the §6A.5 per-key config block. Down-revision `007_model_registry` — **see the migration-008 coordination note in the header**.
+Creates the three §6A.5 tables plus the §9.7 scoping/trust/attribution columns (`scope_type`, `scope_ref`, `author_user_id`, `trust_tier`, `version`, `superseded_by`, `status`, `expires_at`) on `session_scratchpad` and `conversation_summaries`, and retrofits the same §9.7 columns onto the existing `memory_embeddings` (spec: "folded into migrations 009b/012" — `rag_documents`/`code_chunks` belong to 012 on the knowledge branch). `embedding_cache` follows the §6A.5 schema exactly — `(model, content_hash, embedding vector(768), created_at)`, content-addressed, **no stored plaintext and no org column**: it is a deterministic function cache holding only vectors; a caller must already possess the content to compute the key, so no org-readable data can leak (the org boundary for readable content is enforced on the retrieval-result cache, Task 10). Adds `api_keys.proxy_memory JSONB` (nullable = feature defaults) for the §6A.5 per-key config block. Down-revision `008_model_registry` — **see the migration-009 coordination note in the header**.
 
-**Files:** Create `services/management/alembic/versions/008b_proxy_memory.py`, `tests/unit/management/test_migration_008b.py`. Modify `services/management/app/models_sqlalchemy.py`.
+**Files:** Create `services/management/alembic/versions/009b_proxy_memory.py`, `tests/unit/management/test_migration_009b.py`. Modify `services/management/app/models_sqlalchemy.py`.
 
-- [ ] **Step 1: Write failing round-trip test** — `tests/unit/management/test_migration_008b.py` on a seeded snapshot: `upgrade` creates `session_scratchpad(id, org_id, user_id, session_id, key, value, scope_type default 'session', scope_ref, author_user_id, trust_tier default 'unverified', version, superseded_by, status default 'active', created_at, updated_at, expires_at)` with a unique index on `(org_id, session_id, user_id, key)`; `conversation_summaries(id, conversation_id, org_id, summary, covers_through_turn, tokens_summarized, model_used, + the same §9.7 columns, updated_at)` unique on `(org_id, conversation_id, version)`; `embedding_cache(id, model, content_hash, embedding vector(768), created_at)` unique on `(model, content_hash)` (pgvector column; TEXT-serialized fallback asserted on SQLite); `memory_embeddings` gains the eight §9.7 columns with backfill defaults (`scope_type='session'`, `trust_tier='unverified'`, `status='active'`); `api_keys.proxy_memory` exists. `downgrade` returns the exact 007 shape. Assert `alembic heads` is single-headed. Run → fails (no 008b).
+- [ ] **Step 1: Write failing round-trip test** — `tests/unit/management/test_migration_009b.py` on a seeded snapshot: `upgrade` creates `session_scratchpad(id, org_id, user_id, session_id, key, value, scope_type default 'session', scope_ref, author_user_id, trust_tier default 'unverified', version, superseded_by, status default 'active', created_at, updated_at, expires_at)` with a unique index on `(org_id, session_id, user_id, key)`; `conversation_summaries(id, conversation_id, org_id, summary, covers_through_turn, tokens_summarized, model_used, + the same §9.7 columns, updated_at)` unique on `(org_id, conversation_id, version)`; `embedding_cache(id, model, content_hash, embedding vector(768), created_at)` unique on `(model, content_hash)` (pgvector column; TEXT-serialized fallback asserted on SQLite); `memory_embeddings` gains the eight §9.7 columns with backfill defaults (`scope_type='session'`, `trust_tier='unverified'`, `status='active'`); `api_keys.proxy_memory` exists. `downgrade` returns the exact 008 shape. Assert `alembic heads` is single-headed. Run → fails (no 009b).
 
-- [ ] **Step 2: Implement migration 008b** — guarded `op.create_table`/`op.add_column`; pgvector `Vector(768)` with a dialect guard (TEXT on SQLite for unit tests, matching existing project pattern); complete `downgrade()`. Top-of-file comment: `# COORDINATION: down_revision must be re-pointed at 008a_response_cache if that branch merges first (§13.1 shared migration 008).`
+- [ ] **Step 2: Implement migration 009b** — guarded `op.create_table`/`op.add_column`; pgvector `Vector(768)` with a dialect guard (TEXT on SQLite for unit tests, matching existing project pattern); complete `downgrade()`. Top-of-file comment: `# COORDINATION: down_revision must be re-pointed at 009a_response_cache if that branch merges first (§13.1 shared migration 009).`
 
 - [ ] **Step 3: Add ORM models** — `SessionScratchpad`, `ConversationSummary`, `EmbeddingCacheEntry` classes; §9.7 columns on `MemoryEmbedding`; `APIKey.proxy_memory = Column(JSON, nullable=True)`.
 
-- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_008b.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` → single head.
+- [ ] **Step 4: Run tests, verify pass** — `python3 -m pytest tests/unit/management/test_migration_009b.py -v --no-cov`; `alembic -c services/management/alembic.ini heads` → single head.
 
 - [ ] **Step 5: Commit**
   ```bash
-  git add services/management/alembic/versions/008b_proxy_memory.py tests/unit/management/test_migration_008b.py services/management/app/models_sqlalchemy.py
-  git commit -m "feat(db): migration 008b — proxy memory tables with §9.7 scope/trust columns" \
-             -m "Coordination: shares §13.1 migration-008 slot with feature/response-cache (008a); second-to-merge re-points down_revision." \
+  git add services/management/alembic/versions/009b_proxy_memory.py tests/unit/management/test_migration_009b.py services/management/app/models_sqlalchemy.py
+  git commit -m "feat(db): migration 009b — proxy memory tables with §9.7 scope/trust columns" \
+             -m "Coordination: shares §13.1 migration-009 slot with feature/response-cache (009a); second-to-merge re-points down_revision." \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -235,7 +235,7 @@ Token counts of stable blocks keyed `(model_or_tokenizer, content_hash)` in Valk
 
 ### Task 7: Conversation summarizer (`summarizer.py`)
 
-Threshold-triggered distillation (§6A.2). Operates on the request's message history: when total tokens (via `TokenLenCache`) cross `threshold_tokens`, turns older than the last `keep_recent` are summarized. Summaries persist in `conversation_summaries` keyed `(org_id, conversation_id)` with `covers_through_turn` + `version` — a repeat turn whose existing summary still covers `len(history) - keep_recent` reuses it (no model call); otherwise a new version is generated **synchronously** (cheap local model — acceptable latency, deterministic tests) and supersedes the old (`superseded_by`, §9.7 correction model). **§7.1 seam (flagged):** `model_assignments` doesn't exist until migration 009 (smart-routing branch), so model selection goes through a single `resolve_summarize_model()` helper — env `SUMMARIZE_MODEL` / config, default a registry local model (e.g. `gemma3:1b`) dispatched via the existing `llm_manager` — with a `# TODO(§7.1): replace with model_assignments lookup when feature/smart-routing lands` marker at exactly one call site. Summary text passes `filter_on_write` before persist. Originals are untouched — they remain in the request store / conversation memory (retrievability is the store's job; only what's *injected* is compacted).
+Threshold-triggered distillation (§6A.2). Operates on the request's message history: when total tokens (via `TokenLenCache`) cross `threshold_tokens`, turns older than the last `keep_recent` are summarized. Summaries persist in `conversation_summaries` keyed `(org_id, conversation_id)` with `covers_through_turn` + `version` — a repeat turn whose existing summary still covers `len(history) - keep_recent` reuses it (no model call); otherwise a new version is generated **synchronously** (cheap local model — acceptable latency, deterministic tests) and supersedes the old (`superseded_by`, §9.7 correction model). **§7.1 seam (flagged):** `model_assignments` doesn't exist until migration 010 (smart-routing branch), so model selection goes through a single `resolve_summarize_model()` helper — env `SUMMARIZE_MODEL` / config, default a registry local model (e.g. `gemma3:1b`) dispatched via the existing `llm_manager` — with a `# TODO(§7.1): replace with model_assignments lookup when feature/smart-routing lands` marker at exactly one call site. Summary text passes `filter_on_write` before persist. Originals are untouched — they remain in the request store / conversation memory (retrievability is the store's job; only what's *injected* is compacted).
 
 **Files:** Create `shared/memory/summarizer.py`, `tests/unit/memory/test_summarizer.py` (stubbed llm_manager + fakeredis + stubbed DAL).
 
@@ -422,7 +422,7 @@ Every §6A.6 acceptance item as an explicit integration test (stubbed upstream c
 - [ ] **Step 7: Injection-safety on all recalled content** — poison planted directly in scratchpad/summary rows (bypassing write filters, simulating pre-existing poison) is caught by read-time re-filter on every recall path; provenance headers present on every injected block; write-time planting attempt quarantined.
 - [ ] **Step 8: Flag-off = no memory layers active** — whole acceptance fixture re-run with the flag OFF: behavior unchanged, zero memory-layer writes (reuses Task 13's proof at integration level).
 - [ ] **Step 9: Coverage gate** — `python3 -m pytest tests/ --cov --cov-fail-under=90 2>&1 | tail -15` (≥90% on changed modules, §14.2).
-- [ ] **Step 10: Migration coordination check** — `alembic -c services/management/alembic.ini heads` → single head; if `008a_response_cache` has merged since Task 1, re-point `008b`'s `down_revision` now and re-run `tests/unit/management/test_migration_008b.py`.
+- [ ] **Step 10: Migration coordination check** — `alembic -c services/management/alembic.ini heads` → single head; if `009a_response_cache` has merged since Task 1, re-point `009b`'s `down_revision` now and re-run `tests/unit/management/test_migration_009b.py`.
 - [ ] **Step 11: Commit**
   ```bash
   git add tests/integration/test_proxy_memory_acceptance.py
@@ -440,7 +440,7 @@ Every §6A.6 acceptance item as an explicit integration test (stubbed upstream c
 | §6A.1 MCP tools `scratchpad_put/get/list` | 4 |
 | §6A.1 plain-client `X-WaddleAI-Session` substitution (opt-in) | 5 |
 | §6A.2 threshold trigger, keep-recent-N, tunable ratio, opt-in per key | 7, 8 |
-| §6A.2 §7.1 `summarize` model assignment (cheap local default) — seam pending migration 009 | 7 |
+| §6A.2 §7.1 `summarize` model assignment (cheap local default) — seam pending migration 010 | 7 |
 | §6A.2 originals retrievable; only injection compacted | 7, 8, 14 |
 | §6A.2 `usage.waddleai.summarized` + tokens elided | 8, 13 |
 | §6A.3 embedding cache (model, content_hash) Valkey→Postgres | 9 |
@@ -450,7 +450,7 @@ Every §6A.6 acceptance item as an explicit integration test (stubbed upstream c
 | §6A.4 intra-request dedup elision pre-dispatch + pre-count | 11, 12 |
 | §6A.4 tokenizer-length cache | 6 |
 | §6A.4 savings in `usage.waddleai.tokens_saved` | 12, 13 |
-| §6A.5 tables + §9.7 scope/trust columns (migration 008b, coordination flagged) | 1, 14 |
+| §6A.5 tables + §9.7 scope/trust columns (migration 009b, coordination flagged) | 1, 14 |
 | §6A.5 per-key `proxy_memory` config block | 1, 2 |
 | §6A.5 retrieval/tokenizer caches Valkey-only | 6, 10 |
 | §6A.5 single additive `usage.waddleai` object | 13 |

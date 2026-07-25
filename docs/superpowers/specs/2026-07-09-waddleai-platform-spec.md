@@ -287,7 +287,7 @@ Migrate from marchproxy **`origin/release/v0.2.x`** (latest non-dependabot branc
 | marchproxy `proxy-ailb/` component | Disposition | Notes |
 |---|---|---|
 | `app/tokens/token_manager.py` (+ 979-LOC test) | **Port** | Highest-value file: normalized-token/cost model + quota logic merges with `usage_tracker`; `DEFAULT_CONVERSION_RATES` becomes seed data for `token_conversion_rates`. **Rewrite required**: its in-memory fixed-window per-minute counters (thread-locked dict — unsafe across replicas) → Valkey atomic counters (Lua) for TPM/budget; RPM moves to the Cilium edge (§5.3) |
-| `app/router/intelligent.py` | **Merge** | Sibling of WaddleAI's `shared/utils/request_router.py` (common ancestor). Diff both; keep the superset of the six strategies + `ProviderStats` EMA/circuit-breaker (3-failure trip, 5-min cooldown). Output feeds the §7 unified engine |
+| `app/router/intelligent.py` | **Merge** | Sibling of WaddleAI's `shared/utils/request_router.py` (common ancestor). Diff both; keep the superset of the six strategies + `ProviderStats` EMA. The crude breaker (3-failure trip, 5-min cooldown) is upgraded per §5.3.4 — half-open probe, retryable-errors-only, Valkey-backed. Output feeds the §7 unified engine |
 | `app/security/prompt_security.py` (481 LOC + 820-LOC test) | **Merge & wire** | `THREAT_PATTERNS` corpus (injection/jailbreak/data-extraction/prompt-leak/credential-harvesting) + strict/balanced/permissive policy tiers merge into `shared/security/prompt_security.py` — and get **wired into ProxyPipeline stage 3** (MarchProxy never wired it into its request path) |
 | `tests/` (~2,750 LOC) | **Port** | Strongest asset; adapt to WaddleAI pytest layout alongside their modules |
 | `app/auth/rbac.py` (742 LOC + 957-LOC test) | **Partial** (Q#11 resolved) | penguin-aaa OIDC scopes wholly authoritative; `Permission` enum salvaged as scope vocabulary (resource:action catalog), Role bundles inform scope-bundle definitions; HMAC key code/tests dropped except where they cover `wa-` key hashing |
@@ -301,9 +301,14 @@ Valkey preference applied: migrated code's optional-Redis persistence lands on t
 
 1. **RPM at the Cilium edge**: Management's policy reconciler (`services/management/app/services/cilium_policy.py`) renders CiliumEnvoyConfig `local_ratelimit` + CiliumNetworkPolicy from DB settings; RBAC-scoped ServiceAccount; no-op when CRDs absent. **Per-org limits at the edge, per-key enforcement in the token gate** (avoids CRD churn on key rotation) — Q#10 resolved.
 2. **Token/budget gate in AIProxy** (`shared/utils/token_limiter.py`): Valkey Lua counters for TPM + monthly token/$ budgets; streaming reserve-at-submit, reconcile-at-completion; budget aggregates cached 60s.
-3. **Big-5 dispatch completion** in `shared/utils/llm_connectors.py`: add **Gemini, xAI, Bedrock** connectors (existing: OpenAI, Anthropic, Ollama, llama.cpp); **SSE streaming passthrough for every connector** (the migrated AILB had none); retries with jittered backoff; circuit breaker from the merged router.
-4. **Metering**: AIProxy is the sole writer to `token_usage`, batched per-second at scale (§3.5); AILB webhook ingest deleted.
-5. **TLS** at the Cilium Gateway (HTTPRoute exists); optional hypercorn certfile for bare-metal; cert-manager documented, not built.
+3. **Big-5 dispatch completion** in `shared/utils/llm_connectors.py`: add **Gemini, xAI, Bedrock** connectors (existing: OpenAI, Anthropic, Ollama, llama.cpp); **SSE streaming passthrough for every connector** (the migrated AILB had none); per-provider **configurable timeouts** (today: none at all on the SDK connectors, hardcoded 300s on Ollama/llama.cpp).
+4. **Failure taxonomy, retries & circuit breaker** (design reference: [`llm_api_resilience`](https://github.com/Inozem/llm_api_resilience), MIT — patterns only; the library itself is sync-only/no-streaming and unusable as a dependency):
+   - **Typed provider errors** replace the current bare `Exception` collapse: `ProviderTimeoutError | ProviderRateLimitError | ProviderServerError | ProviderClientError`, mapped from real status codes in each connector. Only the first three are **retryable**; client-side errors (auth, 4xx, schema) surface immediately — never retried, never failed over, and never counted by the breaker (today a client-caused provider 400 counts toward ejecting a healthy backend).
+   - **Retries**: per-provider `max_attempts` + jittered exponential backoff, applied to retryable errors only; injectable clock/sleeper so retry and breaker tests are deterministic instead of sleep-based.
+   - **Circuit breaker** upgraded from the AILB's trip-and-cooldown (3 failures / 5 min, cold re-entry) to closed → open → **half-open with a single reserved probe** (no thundering herd on recovery), keyed per (provider, model), state in **Valkey** so 3+ replicas agree; the in-process `ProviderStats` copy remains as a local fast-path hint.
+   - **Attempt-history observability**: on exhaustion, the surfaced/logged error carries the ordered attempt summary — `route [provider/model] → ErrorType` — never API keys, request bodies, or raw provider messages. Failure metrics actually emitted: `waddleai_llm_requests_total{status="error"}` on every failed dispatch, and the request counter records the real HTTP status (today hardcoded to 200 in the handler's `finally`).
+5. **Metering**: AIProxy is the sole writer to `token_usage`, batched per-second at scale (§3.5); AILB webhook ingest deleted.
+6. **TLS** at the Cilium Gateway (HTTPRoute exists); optional hypercorn certfile for bare-metal; cert-manager documented, not built.
 
 ### 5.4 Pipeline parity (bug fix)
 
@@ -322,17 +327,17 @@ Keep the AIProxy gRPC server skeleton (house standard, port 50051) but: define p
 | `services/management/app/api/v1/ailb.py`, `ailb_memory.py` | Delete; memory/RAG/embedding config endpoints re-home to `/api/v1/memory-config` |
 | `api/v1/webhooks.py` AILB ingest portion | Delete |
 | `MARCHPROXY_AILB_*` env (config.py, configmaps, Helm hardcoded block) | Delete |
-| Tables `marchproxy_ailb_sync`; `virtual_keys.ailb_*` columns | Drop (migration 006) |
+| Tables `marchproxy_ailb_sync`; `virtual_keys.ailb_*` columns | Drop (migration 007) |
 | Tables `ailb_usage_events`, `ailb_usage_records` | **Fold into `token_usage`** with `source='ailb_import'`, then drop — Q#1 resolved (preserves billing/dashboard continuity) |
 | Tests `test_marchproxy_config.py`, `test_ailb_routes.py`, AILB parts of webhook/usage tests | Delete/rewrite against native equivalents |
 
-### 5.7 Schema (migration 006)
+### 5.7 Schema (migration 007)
 
 Drop/fold per §5.6; add `virtual_keys.rpm_limit`, `tpm_limit`, `budget_monthly_tokens`, `budget_monthly_usd` (nullable = unlimited); seed `token_conversion_rates` from the migrated `DEFAULT_CONVERSION_RATES`. Round-trip + downgrade tested on a seeded snapshot.
 
 ### 5.8 Acceptance
 
-Contract snapshots green; Claude Code completes a streamed tool-use turn via `/v1/messages`; OpenAI SDK streaming via `/v1/chat/completions`; both endpoints traverse identical pipeline stages (stage-log assertion); rate limits enforced at edge (Cilium) and gate (Valkey) under parallel load at the limit boundary; zero `marchproxy` references outside historical migration notes; ported AILB tests green in the WaddleAI suite; scale smoke: 1K concurrent streamed requests through one pod without event-loop stalls (p99 proxy overhead < 50ms).
+Contract snapshots green; Claude Code completes a streamed tool-use turn via `/v1/messages`; OpenAI SDK streaming via `/v1/chat/completions`; both endpoints traverse identical pipeline stages (stage-log assertion); rate limits enforced at edge (Cilium) and gate (Valkey) under parallel load at the limit boundary; provider-error taxonomy tests (timeout/429/5xx retried with backoff then failed over, 4xx surfaced immediately with breaker untouched); breaker half-open single-probe verified under concurrent callers (exactly one probe passes during recovery); failed dispatches visible in metrics with real status codes; zero `marchproxy` references outside historical migration notes; ported AILB tests green in the WaddleAI suite; scale smoke: 1K concurrent streamed requests through one pod without event-loop stalls (p99 proxy overhead < 50ms).
 
 ## 6. Phase 2 — Prefix & Semantic Cache
 
@@ -421,9 +426,17 @@ Org **policy filters and sorts** on top of both: allow-lists and tier caps filte
 
 ### 7.3 Org routing policy, escalation & pressure signals
 
-`routing_policies` per org: `mode`, `escalation_threshold`, `escalation_target`, `classifier_prompt` (absorbs the old NL routing-instructions UX), `de_escalation (never | idle_reset | task_detect)`, `sensitivity_routing`, `budget_pressure_enabled`.
+`routing_policies` per org: `mode`, `escalation_threshold`, `escalation_target`, `classifier_prompt` (absorbs the old NL routing-instructions UX), `de_escalation (never | idle_reset | task_detect)`, `sensitivity_routing`, `budget_pressure_enabled`, `provider_failover (off | same_class | any_qualified)`.
 
 **Escalation triggers under `local_first`** (any one suffices): (1) classifier complexity ≥ org threshold; (2) local route unhealthy/overloaded (breaker open, no fleet endpoint has the model, queue depth exceeded); (3) failure/retry signals (malformed tool calls, client re-sent same prompt, N consecutive error-ish turns); (4) explicit hint — `X-WaddleAI-Escalate: true` or `auto:high` suffix (`auto:low` = manual reset). Escalation goes to the assignment row's `escalation_model` when set, else the org's `escalation_target`.
+
+**Availability failover (cross-provider substitution)** — the "Anthropic is down → serve from Gemini" path, distinct from complexity escalation:
+- **Trigger: retryable errors only** (§5.3.4 taxonomy — timeout/429/5xx/breaker-open, after the provider's own retry budget is exhausted). Client-caused errors never substitute — a bad request must not be replayed to a second provider and billed twice.
+- For `auto`/alias-routed requests the mechanism is already the §7.1 design: the policy-sorted qualified-candidate list **is** the chain — on retryable failure the dispatcher advances to the next candidate, which may be a different provider.
+- For **Stage-0 explicit-model requests** (client named `claude-sonnet-4`), substitution is a data-governance event, not a routing nicety — redirecting a request destined for one provider to another changes where org data flows. Gated by `provider_failover`: **`off` (default)** — fail fast with the taxonomy error; `same_class` — substitute only along the ordered `fallback_models` list on the model's `model_assignments` row (admin-curated equivalents, e.g. `claude-sonnet-4 → [gemini-2.5-pro, gpt-4o]`); `any_qualified` — the full capability-qualified candidate list. Per-org, default off.
+- **Fidelity boundary**: requests carrying provider-specific features that don't translate (thinking blocks, `cache_control`, strict tool-schema variants) fail fast rather than degrade silently — capability matching keeps incompatible targets out of the chain.
+- **Streaming boundary**: substitution is legal only before the first byte reaches the client; once streaming has begun the request is committed and the error surfaces.
+- Every substitution is reported in `waddleai.routed_from` and the §7.4 decision trace with cause `provider_unavailable`. Sensitivity routing still binds: a `local_only`-clamped request never substitutes to a commercial provider regardless of `provider_failover`.
 
 **Session behavior**: sticky after escalation (Valkey flag + TTL); **`de_escalation: idle_reset` default** — reset to local-first on idle gap (≥10 min, org-tunable) or new-conversation signal; `never` = pure sticky; `task_detect` ships in a later release built on real traffic data.
 
@@ -444,7 +457,7 @@ Every routing decision logs: requirements vector, tool-type source (explicit/heu
 
 ### 7.5 Provider selection & dispatch
 
-Within the chosen route, the merged AILB router logic (§5.2) picks the concrete endpoint: six strategies (`round_robin | cost_optimized | latency_optimized | load_balanced | failover | random`), `ProviderStats` EMA latency + circuit breaker (3-failure trip, 5-min cooldown), automatic fallback chain, and **session affinity** for local fleet targets (KV-cache reuse, §6.3).
+Within the chosen route, the merged AILB router logic (§5.2) picks the concrete endpoint: six strategies (`round_robin | cost_optimized | latency_optimized | load_balanced | failover | random`), `ProviderStats` EMA latency + the §5.3.4 circuit breaker (half-open probe, Valkey-backed), the automatic fallback chain (same-provider endpoints first, then cross-provider availability failover per §7.3 — retryable errors only, gated by `provider_failover` for explicit-model requests), and **session affinity** for local fleet targets (KV-cache reuse, §6.3).
 
 ### 7.6 Path migration & transparency
 
@@ -452,7 +465,7 @@ Within the chosen route, the merged AILB router logic (§5.2) picks the concrete
 
 ### 7.7 Acceptance
 
-Assignment CRUD + save-time capability validation warnings; capability-veto tests (image request against text-only assignment → re-routed + trace records veto); heuristic rule-table property tests; classifier recorded-output fixture set (stub Ollama in unit tests; real `gemma3:1b` nightly/GPU CI); escalation state machine covering all four triggers + idle_reset boundaries + per-row escalation_model precedence; sensitivity clamp test (PII-flagged request never dispatches commercial under `local_only`); budget-pressure threshold tests incl. toggle-off; chaos test (provider unhealthy mid-conversation → failover, no client-visible error); alias redirect visible in `routed_from`; `usage` additive-only vs contract snapshots; flag-off = legacy routing byte-identical.
+Assignment CRUD + save-time capability validation warnings; capability-veto tests (image request against text-only assignment → re-routed + trace records veto); heuristic rule-table property tests; classifier recorded-output fixture set (stub Ollama in unit tests; real `gemma3:1b` nightly/GPU CI); escalation state machine covering all four triggers + idle_reset boundaries + per-row escalation_model precedence; sensitivity clamp test (PII-flagged request never dispatches commercial under `local_only`); budget-pressure threshold tests incl. toggle-off; chaos test (provider unhealthy mid-conversation → failover, no client-visible error); availability-failover tests (explicit-model request with provider down: `off` fails fast with the taxonomy error, `same_class` serves from `fallback_models` with `routed_from` cause `provider_unavailable`; a 4xx never substitutes; no substitution after first streamed byte; `local_only` sensitivity clamp beats `provider_failover`); alias redirect visible in `routed_from`; `usage` additive-only vs contract snapshots; flag-off = legacy routing byte-identical.
 
 ## 8. Phase 3 — Security Layer v2
 
@@ -587,7 +600,7 @@ A single org-wide memory blob is wrong for real teams — it leaks task context 
 4. **Provenance travels with content**: the injected block names its scope, author, trust tier, and date — the model sees "this is an unverified note from a teammate," not an instruction from the system.
 5. **Cross-scope reads respect trust**: a session can read org/repo memory (higher trust) but a low-trust session memory can never be auto-elevated into another user's context without explicit promotion.
 
-New/changed schema for the model: memory tables gain `scope_type`, `scope_ref`, `author_user_id`, `trust_tier`, `version`, `superseded_by`, `status (active|quarantined|disputed)`, `expires_at`; applies to `conversation_memory` / `memory_embeddings`, `session_scratchpad`, `conversation_summaries`, `rag_documents`, `code_chunks` (branch ref). Folded into migrations 008/011.
+New/changed schema for the model: memory tables gain `scope_type`, `scope_ref`, `author_user_id`, `trust_tier`, `version`, `superseded_by`, `status (active|quarantined|disputed)`, `expires_at`; applies to `conversation_memory` / `memory_embeddings`, `session_scratchpad`, `conversation_summaries`, `rag_documents`, `code_chunks` (branch ref). Folded into migrations 009b/012. Note: `memory_embeddings.scope_type` (`user`/`org`) + `author_user_id` already shipped in migration 006 (v0.2.x memory access-control feature) — this section's `repo`/`project`/`session` scopes, trust tiers, and versioning **extend** that shipped column set; do not re-add.
 
 ### 9.8 Acceptance
 
@@ -690,23 +703,23 @@ On Cilium deployments the installer **detects missing CRDs/agents** (e.g., Tetra
 
 ## 13. Data Model & Migration Ledger
 
-Baseline: Alembic migrations `001`–`005` exist (baseline, provider_credentials, routing_matrix credential_label, drop provider api_key, content_filter tables). New work starts at **006**. SQLAlchemy models in `services/management/app/models_sqlalchemy.py`; penguin-dal for runtime, Alembic sole schema authority (house rule). Every migration ships with a downgrade and a round-trip test on a seeded snapshot.
+Baseline: Alembic migrations `001`–`006` exist (baseline, provider_credentials, routing_matrix credential_label, drop provider api_key, content_filter tables, **memory scope** — `006_add_memory_scope` shipped 2026-07-15 with the v0.2.x memory access-control feature: `memory_embeddings.scope_type`/`author_user_id` + backfill). New work starts at **007**. SQLAlchemy models in `services/management/app/models_sqlalchemy.py`; penguin-dal for runtime, Alembic sole schema authority (house rule). Every migration ships with a downgrade and a round-trip test on a seeded snapshot.
 
 ### 13.1 Migration sequence
 
 | # | Phase | Migration | Changes |
 |---|---|---|---|
-| 006 | §5,§12 | `drop_ailb_add_native_limits` | Drop `marchproxy_ailb_sync`; fold `ailb_usage_events`+`ailb_usage_records` → `token_usage` (`source='ailb_import'`) then drop; drop `virtual_keys.ailb_*`; guard-add `virtual_keys.budget_monthly_tokens/budget_monthly_usd` (rpm_limit/tpm_limit already exist — check-if-missing); add `token_usage.source`; add `organizations.rpm_limit` (per-org Cilium edge RPM, §12.1); seed `token_conversion_rates` from migrated `DEFAULT_CONVERSION_RATES` |
-| 007 | §2,§5 | `model_registry` | `model_registry` (name, role, license, origin, min_vram, ollama_tag, resolved_digest, is_utility); seed dual-default set; add `provider_credentials.plan_budget jsonb` |
-| 008a | §6 | `response_cache` | `cache_configs`, `response_cache_entries` (pgvector + HNSW); add `token_usage.cache_status/tokens_saved` |
-| 008b | §6A | `proxy_memory` | `session_scratchpad`, `conversation_summaries`, `embedding_cache` (pgvector) — separate chained revision (down_revision = head at merge), not a shared file, to avoid two branches editing one migration |
-| 009 | §7 | `routing_engine` | `model_configs` (seeded from hardcoded dict), `model_aliases`, `routing_rules_v2`, `routing_policies`, `routing_decision_traces` (§7.4 first-class trace corpus); evolve `routing_matrix` → `model_assignments` (add `escalation_model`, `tool_type`) |
-| 010 | §8 | `security_v2` | `security_policies`; extend `content_filter_audit_log` (`policy_id`, `intent_categories`, `degraded`, `bypass_grant_id`, `redaction_counts`); `security_bypass_grants`; migrate `content_filter_config` → scoped policies |
-| 011 | §9 | `knowledge` | `code_repos`, `code_chunks`, `docs_cache_pages`, `docs_sources` (per-source license table, §2.5) (all pgvector); extend `rag_documents`/`memory_embeddings` with §9.7 scope/trust/version/status/provenance columns |
-| 012 | §10 | `fleet` | `fleet_backends`; extend `ollama_deployments`/`llamacpp_deployments` for the backend interface + `management_scope` |
-| 013 | §11 | `integrations` | `mcp_endpoints`, `mcp_user_links` (per-user external-MCP tokens, encrypted) |
+| 007 | §5,§12 | `drop_ailb_add_native_limits` | Drop `marchproxy_ailb_sync`; fold `ailb_usage_events`+`ailb_usage_records` → `token_usage` (`source='ailb_import'`) then drop; drop `virtual_keys.ailb_*`; guard-add `virtual_keys.budget_monthly_tokens/budget_monthly_usd` (rpm_limit/tpm_limit already exist — check-if-missing); add `token_usage.source`; add `organizations.rpm_limit` (per-org Cilium edge RPM, §12.1); seed `token_conversion_rates` from migrated `DEFAULT_CONVERSION_RATES` |
+| 008 | §2,§5 | `model_registry` | `model_registry` (name, role, license, origin, min_vram, ollama_tag, resolved_digest, is_utility); seed dual-default set; add `provider_credentials.plan_budget jsonb` |
+| 009a | §6 | `response_cache` | `cache_configs`, `response_cache_entries` (pgvector + HNSW); add `token_usage.cache_status/tokens_saved` |
+| 009b | §6A | `proxy_memory` | `session_scratchpad`, `conversation_summaries`, `embedding_cache` (pgvector) — separate chained revision (down_revision = head at merge), not a shared file, to avoid two branches editing one migration |
+| 010 | §7 | `routing_engine` | `model_configs` (seeded from hardcoded dict), `model_aliases`, `routing_rules_v2`, `routing_policies`, `routing_decision_traces` (§7.4 first-class trace corpus); evolve `routing_matrix` → `model_assignments` (add `escalation_model`, `tool_type`, `fallback_models` — ordered cross-provider equivalents for §7.3 availability failover) |
+| 011 | §8 | `security_v2` | `security_policies`; extend `content_filter_audit_log` (`policy_id`, `intent_categories`, `degraded`, `bypass_grant_id`, `redaction_counts`); `security_bypass_grants`; migrate `content_filter_config` → scoped policies |
+| 012 | §9 | `knowledge` | `code_repos`, `code_chunks`, `docs_cache_pages`, `docs_sources` (per-source license table, §2.5) (all pgvector); extend `rag_documents`/`memory_embeddings` with the remaining §9.7 scope/trust/version/status/provenance columns (`memory_embeddings.scope_type`/`author_user_id` already shipped in 006 — extend, don't re-add) |
+| 013 | §10 | `fleet` | `fleet_backends`; extend `ollama_deployments`/`llamacpp_deployments` for the backend interface + `management_scope` |
+| 014 | §11 | `integrations` | `mcp_endpoints`, `mcp_user_links` (per-user external-MCP tokens, encrypted) |
 
-All migrations land within the `release/v0.2.X` line (one per feature branch, §14.1). **Numbers here express intended dependency order, not fixed Alembic revisions**: parallel feature branches (notably 008a/008b, and 009+ which branch off 007/008) get their final `down_revision` set to the actual head **at merge time** — each plan rebases onto the then-current head. This is the normal Alembic-DAG-resolved-at-merge model; do not treat the integers as pre-committed. Applied sequentially at release.
+All migrations land within the `release/v0.2.X` line (one per feature branch, §14.1). **Numbers here express intended dependency order, not fixed Alembic revisions**: parallel feature branches (notably 009a/009b, and 010+ which branch off 008/009) get their final `down_revision` set to the actual head **at merge time** — each plan rebases onto the then-current head. This is the normal Alembic-DAG-resolved-at-merge model; do not treat the integers as pre-committed. Applied sequentially at release.
 
 ### 13.2 New tables by domain (summary)
 
@@ -735,15 +748,15 @@ All migrations land within the `release/v0.2.X` line (one per feature branch, §
 |---|---|---|
 | `chore/license-server-waddleai-product` *(license-server repo)* | §14.6 define `waddleai` product + features + entitlement rows + `waddleai-flags` PostHog project | — (prerequisite) |
 | `chore/consolidate-quart-k8s` | §4 Flask→Quart, retire FastAPI plane, one k8s tree, proxy in Helm, Valkey, contract snapshots | — (first) |
-| `feature/aiproxy-migration` | §5 AILB code merge, token gate, big-5 dispatch, `/v1/messages` parity, `ProxyPipeline`, migration 006–007 | consolidate |
+| `feature/aiproxy-migration` | §5 AILB code merge, token gate, big-5 dispatch, `/v1/messages` parity, `ProxyPipeline`, migrations 007–008 | consolidate |
 | `feature/cilium-policy-reconciler` | §12 CiliumEnvoyConfig rate-limit + CNP reconciler, RBAC, CRD bootstrap | aiproxy-migration |
-| `feature/response-cache` | §6 exact/semantic cache + upstream passthrough, migration 008 | pipeline |
-| `feature/proxy-memory-layers` | §6A the four proxy memory layers (scratchpad, summarization, embedding/retrieval cache, schema-dedup) | pipeline |
-| `feature/smart-routing` | §7 routing engine, assignments, escalation, budgets, migration 009 | pipeline, registry |
-| `feature/security-v2` | §8 scoped policies, intent classifier, guard integrity, bypass, upstream filters, migration 010 | pipeline, routing |
-| `feature/knowledge-layer` | §9 CodeRAG, docs cache, PDF/MD ingest, hybrid delivery, migration 011 | pipeline, embedding cache |
-| `feature/inference-fleet-v2` | §10 fleet interface, hardened Ollama, cloud targets, migration 012 | routing |
-| `feature/mcp-v2-integrations` | §11 MCP server/gateway, CLI, apparatus docs, migration 013 | knowledge, routing |
+| `feature/response-cache` | §6 exact/semantic cache + upstream passthrough, migration 009a | pipeline |
+| `feature/proxy-memory-layers` | §6A the four proxy memory layers (scratchpad, summarization, embedding/retrieval cache, schema-dedup), migration 009b | pipeline |
+| `feature/smart-routing` | §7 routing engine, assignments, escalation, budgets, migration 010 | pipeline, registry |
+| `feature/security-v2` | §8 scoped policies, intent classifier, guard integrity, bypass, upstream filters, migration 011 | pipeline, routing |
+| `feature/knowledge-layer` | §9 CodeRAG, docs cache, PDF/MD ingest, hybrid delivery, migration 012 | pipeline, embedding cache |
+| `feature/inference-fleet-v2` | §10 fleet interface, hardened Ollama, cloud targets, migration 013 | routing |
+| `feature/mcp-v2-integrations` | §11 MCP server/gateway, CLI, apparatus docs, migration 014 | knowledge, routing |
 | `chore/tetragon-admission-policies` | §12 optional Tetragon + admission policy values | cilium-reconciler |
 
 Deferred to a later release (explicitly out of v0.2.x): `task_detect` de-escalation (§7.3), PenguinCode convergence, VS Code extension refresh (§11.3, cuttable). Every feature ships behind its PostHog flag defaulted OFF (§14.5), flipped on after beta validation, flag removed once stable. Licensed sub-features additionally gate on the license client (§14.6).
@@ -759,7 +772,7 @@ Deferred to a later release (explicitly out of v0.2.x): `task_detect` de-escalat
 
 ### 14.3 Acceptance by feature branch (all within v0.2.x)
 
-- **consolidate / aiproxy-migration (§4,§5)**: contract snapshots green pre/post Flask→Quart; migration 006 round-trip + downgrade on a seeded AILB snapshot; `/v1/messages` parity (stage-log assertion both endpoints); Claude Code streamed tool-use turn + OpenAI SDK streaming; rate limits enforced at edge (Cilium) and gate (Valkey) at the boundary; scale smoke (1K concurrent streams/pod, p99 proxy overhead <50ms, no event-loop stall); zero `marchproxy`/`flask`/`fastapi`(non-PenguinCode)/`redis:` references remain.
+- **consolidate / aiproxy-migration (§4,§5)**: contract snapshots green pre/post Flask→Quart; migration 007 round-trip + downgrade on a seeded AILB snapshot; `/v1/messages` parity (stage-log assertion both endpoints); Claude Code streamed tool-use turn + OpenAI SDK streaming; rate limits enforced at edge (Cilium) and gate (Valkey) at the boundary; scale smoke (1K concurrent streams/pod, p99 proxy overhead <50ms, no event-loop stall); zero `marchproxy`/`flask`/`fastapi`(non-PenguinCode)/`redis:` references remain.
 - **response-cache / proxy-memory (§6,§6A)**: cache determinism-eligibility matrix, streaming replay byte-equivalence, **org-isolation as a security test**; semantic should-hit/should-miss corpus + threshold regression; `cache_control` injection verified against recorded Anthropic responses; scratchpad isolation, summarization threshold + retrievability, embedding-cache hit avoids re-embed, schema-dedup token reduction (§6A.6).
 - **smart-routing (§7)**: capability-veto + all four escalation triggers + idle_reset boundaries + sensitivity clamp + budget-pressure (typed token/dollar/plan budgets, toggle-off) + chaos failover.
 - **security-v2 (§8)**: adversarial + guard-integrity + bypass + upstream-filter suites (§8.10).

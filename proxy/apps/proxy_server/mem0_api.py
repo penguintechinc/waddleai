@@ -9,9 +9,14 @@ All endpoints are authenticated via OIDC middleware and scoped to both:
   - Organization: calling token's organization (cross-org access rejected 403)
   - User: calling token's user (cross-user access rejected 403, personal-only)
 
-Until organizational/shared memory-scope lands, memory is scoped to the
-authenticated user within their organization. Requests naming a different
-user_id, or from org-0 (no valid tenant), are rejected as 403.
+Memories carry an access-control scope: "user" (personal — locked to the
+authenticated user, the default) or "org" (shared with the caller's whole
+organization). Writes signal scope via a top-level "scope" body field
+(fallback: metadata.scope). Reads return the merged personal+org view by
+default, relevance-ranked, with an optional scope filter. Org-scoped writes
+are feature-flag gated (waddleai.memory-org-scope, default OFF). Shared
+entries are deletable by their author or a holder of memory:moderate.
+Cross-org access, cross-user personal access, and org-0 tokens remain 403.
 
 Endpoints (mem0 REST API subset):
     POST   /mem0/memories          — Add a memory
@@ -27,6 +32,9 @@ from datetime import datetime
 
 from quart import Blueprint, abort, jsonify, request
 
+from shared.auth.rbac import Permission, UserContext
+from shared.utils.feature_flags import is_feature_enabled
+
 logger = logging.getLogger(__name__)
 
 # Blueprint — mounted at /mem0 in main.py
@@ -34,6 +42,56 @@ mem0_bp = Blueprint("mem0", __name__, url_prefix="/mem0")
 
 # The memory manager is set by the proxy startup (injected after initialization)
 _memory_manager = None
+
+# Wire-visible scope values. "all" (merged view) is internal-only.
+VALID_SCOPES = ("user", "org")
+
+MEMORY_ORG_SCOPE_FLAG = "waddleai.memory-org-scope"
+
+
+def _resolve_write_scope(body: dict) -> "str | None":
+    """Scope for a write: top-level 'scope' wins, metadata.scope is the
+    fallback, absent means personal. Returns None for invalid values."""
+    scope = body.get("scope")
+    if scope is None:
+        scope = (body.get("metadata") or {}).get("scope")
+    if scope is None:
+        return "user"
+    return scope if scope in VALID_SCOPES else None
+
+
+def _resolve_read_scope(raw: "str | None") -> "str | None":
+    """Scope filter for reads: absent/empty means the merged view ('all',
+    internal sentinel). Returns None for invalid values."""
+    if not raw:
+        return "all"
+    return raw if raw in VALID_SCOPES else None
+
+
+def _is_moderator(user: UserContext) -> bool:
+    """True if the caller holds memory:moderate. Permission sets contain
+    Permission enums (direct auth path) or plain strings (claims path) —
+    check both, never role names."""
+    perms = user.permissions or set()
+    return Permission.MEMORY_MODERATE in perms or Permission.MEMORY_MODERATE.value in perms
+
+
+def _delete_allowed(
+    scope_type: str,
+    author_user_id: int,
+    row_user_id: int,
+    token_user: int,
+    moderator: bool,
+) -> "tuple[bool, str]":
+    """Row-level delete decision. Personal rows: owner only (moderation does
+    not reach into personal memory). Org rows: author or moderator."""
+    if scope_type == "org":
+        if author_user_id == token_user or moderator:
+            return True, ""
+        return False, "not memory author"
+    if row_user_id == token_user:
+        return True, ""
+    return False, "user mismatch"
 
 
 def set_memory_manager(manager) -> None:
@@ -71,6 +129,7 @@ async def add_memories():
 
     # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
+
     user = await get_current_user()
     token_org = user.organization_id
     token_user = user.user_id
@@ -115,6 +174,16 @@ async def add_memories():
     org_id = token_org
     session_id = agent_id or run_id or ""
 
+    scope = _resolve_write_scope(body)
+    if scope is None:
+        return jsonify({"error": "invalid scope"}), 400
+    if scope == "org":
+        # is_feature_enabled may do a blocking PostHog HTTP call when
+        # POSTHOG_KEY is configured — keep it off the event loop.
+        org_scope_enabled = await asyncio.to_thread(is_feature_enabled, MEMORY_ORG_SCOPE_FLAG, str(token_org))
+        if not org_scope_enabled:
+            return jsonify({"error": "organization memory scope not enabled"}), 403
+
     from shared.utils.memory_integration import MemoryEntry
 
     stored = 0
@@ -133,6 +202,8 @@ async def add_memories():
             metadata={**metadata, "role": role},
             embedding=None,
             created_at=datetime.utcnow(),
+            scope_type=scope,
+            author_user_id=token_user,
         )
         success = await manager.memory_store.store_memory(entry)
         if success:
@@ -159,6 +230,7 @@ async def search_memories():
 
     # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
+
     user = await get_current_user()
     token_org = user.organization_id
     token_user = user.user_id
@@ -204,6 +276,10 @@ async def search_memories():
     org_id = token_org
     session_id = agent_id or run_id or None
 
+    scope = _resolve_read_scope(body.get("scope"))
+    if scope is None:
+        return jsonify({"error": "invalid scope"}), 400
+
     entries = await manager.memory_store.search_memories(
         query=query,
         user_id=user_id_int,
@@ -211,6 +287,7 @@ async def search_memories():
         session_id=session_id,
         limit=limit,
         min_relevance=threshold,
+        scope=scope,
     )
 
     results = [
@@ -221,6 +298,8 @@ async def search_memories():
             "score": entry.relevance_score,
             "metadata": entry.metadata,
             "created_at": entry.created_at.isoformat() if entry.created_at else None,
+            "scope": entry.scope_type,
+            "author_user_id": str(entry.author_user_id or entry.user_id),
         }
         for entry in entries
     ]
@@ -238,6 +317,7 @@ async def list_memories():
 
     # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
+
     user = await get_current_user()
     token_org = user.organization_id
     token_user = user.user_id
@@ -276,11 +356,16 @@ async def list_memories():
     org_id = token_org
     session_id = agent_id or run_id or ""
 
+    scope = _resolve_read_scope(request.args.get("scope"))
+    if scope is None:
+        return jsonify({"error": "invalid scope"}), 400
+
     entries = await manager.memory_store.get_conversation_history(
         user_id=user_id_int,
         organization_id=org_id,
         session_id=session_id,
         limit=limit,
+        scope=scope,
     )
 
     results = [
@@ -291,6 +376,8 @@ async def list_memories():
             "score": entry.relevance_score,
             "metadata": entry.metadata,
             "created_at": entry.created_at.isoformat() if entry.created_at else None,
+            "scope": entry.scope_type,
+            "author_user_id": str(entry.author_user_id or entry.user_id),
         }
         for entry in entries
     ]
@@ -308,6 +395,7 @@ async def delete_memory(memory_id: str):
 
     # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
+
     user = await get_current_user()
     token_org = user.organization_id
     token_user = user.user_id
@@ -342,12 +430,36 @@ async def delete_memory(memory_id: str):
     user_id_int = token_user
     org_id = token_org
 
-    # Delete via raw SQL (direct write to primary)
+    # Fetch-then-decide: personal rows are owner-only; org rows are
+    # deletable by their author or a memory:moderate holder.
     try:
-        await asyncio.to_thread(lambda: manager.memory_store.write_db.executesql(
-            "DELETE FROM memory_embeddings WHERE id = %s AND user_id = %s AND organization_id = %s",
-            (int(memory_id), user_id_int, org_id),
-        ))
+        rows = await asyncio.to_thread(
+            lambda: manager.memory_store.write_db.executesql(
+                "SELECT scope_type, author_user_id, user_id FROM memory_embeddings "
+                "WHERE id = %s AND organization_id = %s",
+                (int(memory_id), org_id),
+            )
+        )
+        if not rows:
+            return jsonify({"error": "memory not found"}), 404
+
+        scope_type, author_user_id, row_user_id = rows[0]
+        allowed, err = _delete_allowed(
+            scope_type or "user",
+            int(author_user_id or row_user_id),
+            int(row_user_id),
+            token_user,
+            _is_moderator(user),
+        )
+        if not allowed:
+            return jsonify({"error": err}), 403
+
+        await asyncio.to_thread(
+            lambda: manager.memory_store.write_db.executesql(
+                "DELETE FROM memory_embeddings WHERE id = %s AND organization_id = %s",
+                (int(memory_id), org_id),
+            )
+        )
         return jsonify({"status": "deleted", "id": memory_id})
     except Exception as exc:
         logger.error("Failed to delete memory %s: %s", memory_id, exc)
@@ -364,6 +476,7 @@ async def clear_memories():
 
     # Authenticate and get the caller's org and user from the token
     from .main import get_current_user
+
     user = await get_current_user()
     token_org = user.organization_id
     token_user = user.user_id
@@ -401,10 +514,21 @@ async def clear_memories():
     org_id = token_org
     session_id = agent_id or run_id or None
 
+    raw_scope = request.args.get("scope")
+    clear_scope = raw_scope if raw_scope in VALID_SCOPES else ("user" if not raw_scope else None)
+    if clear_scope is None:
+        return jsonify({"error": "invalid scope"}), 400
+
+    org_all = request.args.get("all", "").strip().lower() in ("1", "true", "yes")
+    if clear_scope == "org" and org_all and not _is_moderator(user):
+        return jsonify({"error": "memory moderation permission required"}), 403
+
     success = await manager.memory_store.clear_memories(
         user_id=user_id_int,
         organization_id=org_id,
         session_id=session_id,
+        scope=clear_scope,
+        org_all=org_all,
     )
 
     if not success:

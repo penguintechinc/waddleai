@@ -34,6 +34,12 @@ def _bearer_headers(base):
     return {"Authorization": f"Bearer {token}"}
 
 
+def _member_headers(base):
+    """Second seeded same-org user, role 'user' — no memory:moderate."""
+    r = httpx.get(f"{base}/_contract_test/token")
+    return {"Authorization": f"Bearer {r.json()['member_token']}"}
+
+
 def _drop_keys(obj, *keys):
     """Recursively strip keys that snapshot.py's normalizer does not catch.
 
@@ -415,3 +421,96 @@ def test_messages_auth_bad_key(proxy_url):
         },
     )
     assert r.status_code == 401, f"Bad key should fail: got {r.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# Memory access-control scope (personal vs org) — see
+# docs/superpowers/specs/2026-07-14-memory-access-control-design.md
+# ---------------------------------------------------------------------------
+
+
+def test_mem0_post_invalid_scope(proxy_url):
+    """Unknown scope values are a hard 400, never coerced to personal."""
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories",
+        headers=_bearer_headers(proxy_url),
+        json={"messages": [{"role": "user", "content": "hi"}], "scope": "team"},
+    )
+    assert_snapshot("proxy_mem0_post_invalid_scope", status=r.status_code, body=r.json())
+
+
+def test_mem0_post_org_scope_flag_off(proxy_url):
+    """Org-scoped writes are feature-flag gated (waddleai.memory-org-scope,
+    default OFF) — with the flag unset, behavior is personal-only lockdown.
+    # regression: org scope must be opt-in via flag, default OFF"""
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories",
+        headers=_bearer_headers(proxy_url),
+        json={"messages": [{"role": "user", "content": "hi"}], "scope": "org"},
+    )
+    assert_snapshot("proxy_mem0_post_org_flag_off", status=r.status_code, body=r.json())
+
+
+def test_mem0_post_metadata_scope_fallback_flag_off(proxy_url):
+    """metadata.scope is honored as the fallback signal — same flag gate."""
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories",
+        headers=_bearer_headers(proxy_url),
+        json={"messages": [{"role": "user", "content": "hi"}], "metadata": {"scope": "org"}},
+    )
+    assert_snapshot("proxy_mem0_post_metadata_org_flag_off", status=r.status_code, body=r.json())
+
+
+def test_mem0_search_invalid_scope_filter(proxy_url):
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories/search",
+        headers=_bearer_headers(proxy_url),
+        json={"query": "q", "scope": "everything"},
+    )
+    assert_snapshot("proxy_mem0_search_invalid_scope", status=r.status_code, body=r.json())
+
+
+def test_mem0_search_scope_filter_org(proxy_url):
+    """Reads are NOT flag-gated; org filter is accepted (empty on sqlite)."""
+    r = httpx.post(
+        f"{proxy_url}/mem0/memories/search",
+        headers=_bearer_headers(proxy_url),
+        json={"query": "q", "scope": "org"},
+    )
+    assert_snapshot("proxy_mem0_search_scope_org", status=r.status_code, body=r.json())
+
+
+def test_mem0_list_scope_filter_user(proxy_url):
+    r = httpx.get(
+        f"{proxy_url}/mem0/memories",
+        params={"scope": "user"},
+        headers=_bearer_headers(proxy_url),
+    )
+    assert_snapshot("proxy_mem0_list_scope_user", status=r.status_code, body=r.json())
+
+
+def test_mem0_list_invalid_scope_filter(proxy_url):
+    r = httpx.get(
+        f"{proxy_url}/mem0/memories",
+        params={"scope": "all"},  # internal sentinel — not accepted on the wire
+        headers=_bearer_headers(proxy_url),
+    )
+    assert_snapshot("proxy_mem0_list_invalid_scope", status=r.status_code, body=r.json())
+
+
+def test_mem0_clear_org_all_requires_moderation(proxy_url):
+    """Full org wipe is moderator-gated; the member token (role 'user') has
+    no memory:moderate and must get 403 BEFORE any store call.
+    # regression: org-wide memory wipe requires memory:moderate"""
+    r = httpx.delete(
+        f"{proxy_url}/mem0/memories",
+        params={"scope": "org", "all": "true"},
+        headers=_member_headers(proxy_url),
+    )
+    assert_snapshot("proxy_mem0_clear_org_all_member_denied", status=r.status_code, body=r.json())
+
+
+def test_mem0_member_token_basic_access(proxy_url):
+    """Sanity: the second seeded user authenticates and lists (empty)."""
+    r = httpx.get(f"{proxy_url}/mem0/memories", headers=_member_headers(proxy_url))
+    assert_snapshot("proxy_mem0_member_list", status=r.status_code, body=r.json())
