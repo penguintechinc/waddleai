@@ -1298,3 +1298,93 @@ class PgvectorMemoryStore(MemoryStore):
         except Exception as exc:
             logger.error("PgvectorMemoryStore.get_memory_stats failed: %s", exc)
             return {"total_memories": 0, "backend": "pgvector", "error": str(exc)}
+
+    async def get_recent_memories(
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        hours: int = 24,
+        limit: int = 20,
+    ) -> List[MemoryEntry]:
+        """Get recent memories within a time window (no vector search).
+
+        Routes to a read replica. Required by the MemoryStore ABC -- this was
+        previously unimplemented, which made PgvectorMemoryStore (and hence
+        create_memory_manager(backend="pgvector")) impossible to instantiate
+        in any environment (TypeError: Can't instantiate abstract class).
+        """
+        try:
+            read_db = self._read_db()
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            session_filter = ""
+            params: list = [user_id, organization_id, cutoff]
+            if session_id:
+                session_filter = " AND session_id = %s"
+                params.append(session_id)
+            params.append(limit)
+
+            sql = (
+                "SELECT id, user_id, organization_id, session_id, content, role, "
+                "created_at, metadata "
+                "FROM memory_embeddings "
+                "WHERE user_id = %s AND organization_id = %s AND created_at >= %s" + session_filter + " "
+                "ORDER BY created_at DESC LIMIT %s"
+            )
+            rows = read_db.executesql(sql, params)
+            if not rows:
+                return []
+
+            entries = []
+            for row in rows:
+                row_id, uid, org_id, sess_id, content, role, created_at, metadata_raw = row
+                try:
+                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta["role"] = role
+                entries.append(
+                    MemoryEntry(
+                        id=str(row_id),
+                        user_id=uid,
+                        organization_id=org_id,
+                        session_id=sess_id,
+                        content=content,
+                        metadata=meta,
+                        embedding=None,
+                        created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
+                        relevance_score=1.0,
+                    )
+                )
+            return entries
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.get_recent_memories failed: %s", exc)
+            return []
+
+    async def delete_memory(self, memory_id: str) -> bool:
+        """Delete a specific memory by id. Always writes to primary.
+
+        Required by the MemoryStore ABC (see get_recent_memories docstring).
+        """
+        try:
+            self.write_db.executesql("DELETE FROM memory_embeddings WHERE id = %s", (int(memory_id),))
+            return True
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.delete_memory failed: %s", exc)
+            return False
+
+    async def cleanup_old_memories(self, days: int = 90) -> int:
+        """Delete memories older than the given number of days. Always writes to primary.
+
+        Required by the MemoryStore ABC (see get_recent_memories docstring).
+        """
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            rows = self.write_db.executesql(
+                "DELETE FROM memory_embeddings WHERE created_at < %s RETURNING id",
+                (cutoff,),
+            )
+            return len(rows) if rows else 0
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.cleanup_old_memories failed: %s", exc)
+            return 0

@@ -5,8 +5,13 @@ MarchProxy's AILB is configured with a mem0 endpoint pointing here:
     mem0_endpoint = "http://waddleai-proxy:8080/mem0"
 
 WaddleAI handles embedding generation, pgvector storage, and retrieval.
-MarchProxy uses the standard mem0 client interface and is unaware of the
-underlying implementation.
+All endpoints are authenticated via OIDC middleware and scoped to both:
+  - Organization: calling token's organization (cross-org access rejected 403)
+  - User: calling token's user (cross-user access rejected 403, personal-only)
+
+Until organizational/shared memory-scope lands, memory is scoped to the
+authenticated user within their organization. Requests naming a different
+user_id, or from org-0 (no valid tenant), are rejected as 403.
 
 Endpoints (mem0 REST API subset):
     POST   /mem0/memories          — Add a memory
@@ -16,6 +21,7 @@ Endpoints (mem0 REST API subset):
     DELETE /mem0/memories          — Clear all memories for a user
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -42,6 +48,13 @@ def get_memory_manager():
     return _memory_manager
 
 
+# Note: every handler below reaches the underlying MemoryStore via
+# `manager.memory_store` (WaddleAIMemoryManager's actual attribute name --
+# see shared/utils/memory_integration.py). Previously read `manager.store`,
+# which does not exist on WaddleAIMemoryManager and raised AttributeError
+# unconditionally on every call in every environment.
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -52,8 +65,20 @@ async def add_memories():
     """Add conversation messages to memory.
 
     Called by MarchProxy after each LLM turn to persist the conversation.
+    Memory is scoped to the authenticated caller's organization and user.
     """
     manager = get_memory_manager()
+
+    # Authenticate and get the caller's org and user from the token
+    from .main import get_current_user
+    user = await get_current_user()
+    token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
+
     body = await request.get_json()
 
     if not body:
@@ -71,7 +96,23 @@ async def add_memories():
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = organization_id or 0
+    # Check for cross-org access attempt
+    if organization_id is not None:
+        try:
+            org_from_body = int(organization_id)
+        except (ValueError, TypeError):
+            org_from_body = 0
+
+        if org_from_body != token_org:
+            return jsonify({"error": "organization mismatch"}), 403
+
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
+    org_id = token_org
     session_id = agent_id or run_id or ""
 
     from shared.utils.memory_integration import MemoryEntry
@@ -93,7 +134,7 @@ async def add_memories():
             embedding=None,
             created_at=datetime.utcnow(),
         )
-        success = await manager.store.store_memory(entry)
+        success = await manager.memory_store.store_memory(entry)
         if success:
             stored += 1
 
@@ -112,8 +153,20 @@ async def search_memories():
     """Search memories by semantic similarity.
 
     Called by MarchProxy before each LLM turn to retrieve relevant context.
+    Memory is scoped to the authenticated caller's organization and user.
     """
     manager = get_memory_manager()
+
+    # Authenticate and get the caller's org and user from the token
+    from .main import get_current_user
+    user = await get_current_user()
+    token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
+
     body = await request.get_json()
 
     if not body:
@@ -132,10 +185,26 @@ async def search_memories():
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = organization_id or 0
+    # Check for cross-org access attempt
+    if organization_id is not None:
+        try:
+            org_from_body = int(organization_id)
+        except (ValueError, TypeError):
+            org_from_body = 0
+
+        if org_from_body != token_org:
+            return jsonify({"error": "organization mismatch"}), 403
+
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
+    org_id = token_org
     session_id = agent_id or run_id or None
 
-    entries = await manager.store.search_memories(
+    entries = await manager.memory_store.search_memories(
         query=query,
         user_id=user_id_int,
         organization_id=org_id,
@@ -161,8 +230,21 @@ async def search_memories():
 
 @mem0_bp.route("/memories", methods=["GET"])
 async def list_memories():
-    """List recent memories for a user (chronological order)."""
+    """List recent memories for a user (chronological order).
+
+    Memory is scoped to the authenticated caller's organization and user.
+    """
     manager = get_memory_manager()
+
+    # Authenticate and get the caller's org and user from the token
+    from .main import get_current_user
+    user = await get_current_user()
+    token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     user_id_raw = request.args.get("user_id", "0")
     agent_id = request.args.get("agent_id")
@@ -175,10 +257,26 @@ async def list_memories():
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = int(organization_id_raw) if organization_id_raw else 0
+    # Check for cross-org access attempt
+    if organization_id_raw is not None:
+        try:
+            org_from_query = int(organization_id_raw)
+        except (ValueError, TypeError):
+            org_from_query = 0
+
+        if org_from_query != token_org:
+            return jsonify({"error": "organization mismatch"}), 403
+
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
+    org_id = token_org
     session_id = agent_id or run_id or ""
 
-    entries = await manager.store.get_conversation_history(
+    entries = await manager.memory_store.get_conversation_history(
         user_id=user_id_int,
         organization_id=org_id,
         session_id=session_id,
@@ -202,8 +300,21 @@ async def list_memories():
 
 @mem0_bp.route("/memories/<memory_id>", methods=["DELETE"])
 async def delete_memory(memory_id: str):
-    """Delete a specific memory by ID."""
+    """Delete a specific memory by ID.
+
+    Memory is scoped to the authenticated caller's organization and user.
+    """
     manager = get_memory_manager()
+
+    # Authenticate and get the caller's org and user from the token
+    from .main import get_current_user
+    user = await get_current_user()
+    token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     user_id_raw = request.args.get("user_id", "0")
     organization_id_raw = request.args.get("organization_id")
@@ -213,14 +324,30 @@ async def delete_memory(memory_id: str):
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = int(organization_id_raw) if organization_id_raw else 0
+    # Check for cross-org access attempt
+    if organization_id_raw is not None:
+        try:
+            org_from_query = int(organization_id_raw)
+        except (ValueError, TypeError):
+            org_from_query = 0
+
+        if org_from_query != token_org:
+            return jsonify({"error": "organization mismatch"}), 403
+
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
+    org_id = token_org
 
     # Delete via raw SQL (direct write to primary)
     try:
-        manager.store.write_db.executesql(
+        await asyncio.to_thread(lambda: manager.memory_store.write_db.executesql(
             "DELETE FROM memory_embeddings WHERE id = %s AND user_id = %s AND organization_id = %s",
             (int(memory_id), user_id_int, org_id),
-        )
+        ))
         return jsonify({"status": "deleted", "id": memory_id})
     except Exception as exc:
         logger.error("Failed to delete memory %s: %s", memory_id, exc)
@@ -229,8 +356,21 @@ async def delete_memory(memory_id: str):
 
 @mem0_bp.route("/memories", methods=["DELETE"])
 async def clear_memories():
-    """Clear all memories for a user (optionally scoped to a session)."""
+    """Clear all memories for a user (optionally scoped to a session).
+
+    Memory is scoped to the authenticated caller's organization and user.
+    """
     manager = get_memory_manager()
+
+    # Authenticate and get the caller's org and user from the token
+    from .main import get_current_user
+    user = await get_current_user()
+    token_org = user.organization_id
+    token_user = user.user_id
+
+    # Reject tokens from org-0 (no valid organization)
+    if token_org == 0:
+        return jsonify({"error": "no valid organization"}), 403
 
     user_id_raw = request.args.get("user_id", "0")
     agent_id = request.args.get("agent_id")
@@ -242,10 +382,26 @@ async def clear_memories():
     except (ValueError, TypeError):
         user_id_int = 0
 
-    org_id = int(organization_id_raw) if organization_id_raw else 0
+    # Check for cross-org access attempt
+    if organization_id_raw is not None:
+        try:
+            org_from_query = int(organization_id_raw)
+        except (ValueError, TypeError):
+            org_from_query = 0
+
+        if org_from_query != token_org:
+            return jsonify({"error": "organization mismatch"}), 403
+
+    # Check for cross-user access attempt: if user_id supplied and != token_user, reject
+    if user_id_raw != "0" and user_id_int != token_user:
+        return jsonify({"error": "user mismatch"}), 403
+
+    # Use token-derived user_id (authoritative)
+    user_id_int = token_user
+    org_id = token_org
     session_id = agent_id or run_id or None
 
-    success = await manager.store.clear_memories(
+    success = await manager.memory_store.clear_memories(
         user_id=user_id_int,
         organization_id=org_id,
         session_id=session_id,

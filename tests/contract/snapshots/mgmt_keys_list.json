@@ -1,0 +1,26 @@
+{
+  "body": {
+    "keys": [
+      {
+        "ailb_sync_status": null,
+        "allowed_models": null,
+        "allowed_providers": null,
+        "budget_limit_daily": null,
+        "budget_limit_monthly": null,
+        "created_at": "<VOLATILE>",
+        "enabled": true,
+        "expires_at": "<VOLATILE>",
+        "id": "<VOLATILE>",
+        "key_prefix": "wa-admin",
+        "last_used": null,
+        "name": "Admin Master Key",
+        "organization_id": 1,
+        "rpm_limit": 10000,
+        "tpm_limit": 1000000,
+        "user_id": 1
+      }
+    ],
+    "total": 1
+  },
+  "status": 200
+}

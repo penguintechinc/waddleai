@@ -1,0 +1,94 @@
+{
+  "body": {
+    "provider_types": [
+      {
+        "default_endpoint": "https://api.openai.com/v1",
+        "default_models": [
+          "gpt-4o",
+          "gpt-4o-mini",
+          "gpt-4-turbo",
+          "gpt-4",
+          "gpt-3.5-turbo",
+          "o1-preview",
+          "o1-mini"
+        ],
+        "name": "OpenAI / ChatGPT",
+        "requires_api_key": true,
+        "type": "openai"
+      },
+      {
+        "default_endpoint": "https://api.anthropic.com",
+        "default_models": [
+          "claude-3-5-sonnet-latest",
+          "claude-3-opus-20240229",
+          "claude-3-sonnet-20240229",
+          "claude-3-haiku-20240307"
+        ],
+        "name": "Anthropic / Claude",
+        "requires_api_key": true,
+        "type": "anthropic"
+      },
+      {
+        "default_endpoint": "http://localhost:11434",
+        "default_models": [
+          "llama3.2",
+          "llama3.1",
+          "mistral",
+          "mixtral",
+          "codellama",
+          "phi3",
+          "qwen2.5"
+        ],
+        "name": "Ollama (Local)",
+        "requires_api_key": false,
+        "type": "ollama"
+      },
+      {
+        "default_endpoint": "https://generativelanguage.googleapis.com/v1",
+        "default_models": [
+          "gemini-1.5-pro",
+          "gemini-1.5-flash",
+          "gemini-1.0-pro"
+        ],
+        "name": "Google Gemini / Vertex AI",
+        "requires_api_key": true,
+        "type": "gemini"
+      },
+      {
+        "default_endpoint": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "default_models": [
+          "anthropic.claude-3-sonnet-20240229-v1:0",
+          "anthropic.claude-3-haiku-20240307-v1:0",
+          "amazon.titan-text-express-v1",
+          "meta.llama3-70b-instruct-v1:0"
+        ],
+        "name": "AWS Bedrock",
+        "requires_api_key": true,
+        "type": "bedrock"
+      },
+      {
+        "default_endpoint": null,
+        "default_models": [
+          "gpt-4",
+          "gpt-35-turbo"
+        ],
+        "name": "Azure OpenAI Service",
+        "requires_api_key": true,
+        "type": "azure_openai"
+      },
+      {
+        "default_endpoint": "https://api.cohere.ai/v1",
+        "default_models": [
+          "command-r-plus",
+          "command-r",
+          "command",
+          "embed-english-v3.0"
+        ],
+        "name": "Cohere",
+        "requires_api_key": true,
+        "type": "cohere"
+      }
+    ]
+  },
+  "status": 200
+}

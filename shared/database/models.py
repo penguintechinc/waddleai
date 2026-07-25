@@ -9,13 +9,26 @@ from datetime import date, datetime
 from pydal import DAL, Field
 
 
-def get_db(db_uri=None):
-    """Initialize database connection with all models"""
+def get_db(db_uri=None, migrate=False):
+    """Initialize database connection with all models.
+
+    Args:
+        db_uri: Database URI. Defaults to DATABASE_URL env var / local sqlite file.
+        migrate: If True, let PyDAL create/alter tables itself (used only by the
+            contract-test harness against an empty, ephemeral sqlite file). In every
+            other context (including production) this stays False: Alembic
+            (services/management/app/models_sqlalchemy.py) is the sole schema
+            authority and this module must not auto-migrate against it.
+    """
     if db_uri is None:
         db_uri = os.getenv("DATABASE_URL", "sqlite://waddleai.db")
 
-    # migrate=False: Alembic is the sole schema authority. Do not auto-migrate here.
-    db = DAL(db_uri, migrate=False, fake_migrate_all=False)
+    # fake_migrate_all always False: that flag skips real CREATE TABLE/ALTER
+    # and only (re)writes PyDAL's .table fingerprint files -- it is for
+    # adopting an already-existing external schema, not for actually creating
+    # one. migrate=True must produce real tables (contract-test harness runs
+    # against a brand-new, empty sqlite file).
+    db = DAL(db_uri, migrate=migrate, fake_migrate_all=False)
     define_tables(db)
     return db
 

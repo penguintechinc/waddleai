@@ -48,6 +48,8 @@ describe('Header', () => {
     expect(screen.getByText('Ollama')).toBeInTheDocument();
     expect(screen.getByText('Virtual Keys')).toBeInTheDocument();
     expect(screen.getByText('Analytics')).toBeInTheDocument();
+    expect(screen.getByText('Routing')).toBeInTheDocument();
+    expect(screen.getByText('Memory')).toBeInTheDocument();
   });
 
   it('renders navigation links with correct hrefs', () => {
@@ -58,6 +60,8 @@ describe('Header', () => {
     expect(screen.getByText('Ollama').closest('a')).toHaveAttribute('href', '/ollama');
     expect(screen.getByText('Virtual Keys').closest('a')).toHaveAttribute('href', '/keys');
     expect(screen.getByText('Analytics').closest('a')).toHaveAttribute('href', '/analytics');
+    expect(screen.getByText('Routing').closest('a')).toHaveAttribute('href', '/routing');
+    expect(screen.getByText('Memory').closest('a')).toHaveAttribute('href', '/memory');
   });
 
   it('displays username from user context', () => {

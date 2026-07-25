@@ -2,10 +2,11 @@
 WaddleAI Management API v1 - MarchProxy AILB Control Endpoints
 """
 
+import asyncio
 import json
 from datetime import datetime
 
-from flask import Response, current_app, jsonify, request
+from quart import Response, current_app, jsonify, request
 
 from ...extensions import db
 from ...services.marchproxy_config import MarchProxyConfigGenerator
@@ -16,7 +17,7 @@ from .auth import require_auth, require_role
 @api_v1_bp.route("/ailb/status", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_ailb_status():
+async def get_ailb_status():
     """Get AILB module status via gRPC"""
     ailb_host = current_app.config.get("MARCHPROXY_AILB_HOST", "localhost")
     ailb_grpc_port = current_app.config.get("MARCHPROXY_AILB_GRPC_PORT", 50051)
@@ -40,7 +41,7 @@ def get_ailb_status():
 @api_v1_bp.route("/ailb/health", methods=["GET"])
 @require_auth
 @require_role("admin")
-def check_ailb_health():
+async def check_ailb_health():
     """Health check for AILB"""
     ailb_host = current_app.config.get("MARCHPROXY_AILB_HOST", "localhost")
     ailb_http_port = current_app.config.get("MARCHPROXY_AILB_HTTP_PORT", 8080)
@@ -59,13 +60,17 @@ def check_ailb_health():
 @api_v1_bp.route("/ailb/routes", methods=["GET"])
 @require_auth
 @require_role("admin")
-def list_ailb_routes():
+async def list_ailb_routes():
     """List configured routes in AILB"""
     # TODO: Implement gRPC call to AILB ModuleService.GetRoutes
     # For now, fetch from local sync records
-    synced_providers = db(
-        (db.marchproxy_ailb_sync.sync_status == "synced") & (db.marchproxy_ailb_sync.provider_id == db.ai_providers.id)
-    ).select(db.ai_providers.ALL, db.marchproxy_ailb_sync.ALL)
+    def _fetch():
+        return db(
+            (db.marchproxy_ailb_sync.sync_status == "synced")
+            & (db.marchproxy_ailb_sync.provider_id == db.ai_providers.id)
+        ).select(db.ai_providers.ALL, db.marchproxy_ailb_sync.ALL)
+
+    synced_providers = await asyncio.to_thread(_fetch)
 
     routes = []
     for record in synced_providers:
@@ -91,9 +96,9 @@ def list_ailb_routes():
 @api_v1_bp.route("/ailb/routes", methods=["POST"])
 @require_auth
 @require_role("admin")
-def create_ailb_route():
+async def create_ailb_route():
     """Create a new route in AILB"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -109,15 +114,15 @@ def create_ailb_route():
 @api_v1_bp.route("/ailb/routes/<route_id>", methods=["PUT"])
 @require_auth
 @require_role("admin")
-def update_ailb_route(route_id):
+async def update_ailb_route(route_id):
     """Update route in AILB"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
 
     # Find provider by route_id
-    sync = db(db.marchproxy_ailb_sync.ailb_route_id == route_id).select().first()
+    sync = await asyncio.to_thread(lambda: db(db.marchproxy_ailb_sync.ailb_route_id == route_id).select().first())
 
     if not sync:
         return jsonify({"error": "Route not found"}), 404
@@ -129,17 +134,26 @@ def update_ailb_route(route_id):
 @api_v1_bp.route("/ailb/routes/<route_id>", methods=["DELETE"])
 @require_auth
 @require_role("admin")
-def delete_ailb_route(route_id):
+async def delete_ailb_route(route_id):
     """Delete route from AILB"""
-    sync = db(db.marchproxy_ailb_sync.ailb_route_id == route_id).select().first()
 
-    if not sync:
+    def _delete():
+        sync = db(db.marchproxy_ailb_sync.ailb_route_id == route_id).select().first()
+
+        if not sync:
+            return "not_found"
+
+        # TODO: Implement gRPC call to delete route
+        # Mark as deleted in sync table
+        db(db.marchproxy_ailb_sync.ailb_route_id == route_id).update(sync_status="deleted")
+        db.commit()
+
+        return "ok"
+
+    result = await asyncio.to_thread(_delete)
+
+    if result == "not_found":
         return jsonify({"error": "Route not found"}), 404
-
-    # TODO: Implement gRPC call to delete route
-    # Mark as deleted in sync table
-    db(db.marchproxy_ailb_sync.ailb_route_id == route_id).update(sync_status="deleted")
-    db.commit()
 
     return jsonify({"route_id": route_id, "message": "Route marked for deletion"})
 
@@ -147,7 +161,7 @@ def delete_ailb_route(route_id):
 @api_v1_bp.route("/ailb/metrics", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_ailb_metrics():
+async def get_ailb_metrics():
     """Get AILB metrics"""
     # TODO: Implement gRPC call to AILB ModuleService.GetMetrics
     return jsonify(
@@ -171,7 +185,7 @@ def get_ailb_metrics():
 @api_v1_bp.route("/ailb/reload", methods=["POST"])
 @require_auth
 @require_role("admin")
-def reload_ailb():
+async def reload_ailb():
     """Trigger AILB configuration reload"""
     # TODO: Implement gRPC call to AILB ModuleService.Reload
     return jsonify({"success": True, "message": "AILB reload triggered", "timestamp": datetime.utcnow().isoformat()})
@@ -180,82 +194,90 @@ def reload_ailb():
 @api_v1_bp.route("/ailb/export-config", methods=["POST"])
 @require_auth
 @require_role("admin")
-def export_ailb_config():
+async def export_ailb_config():
     """Export MarchProxy-compatible import configuration"""
-    # Get all enabled providers
-    providers = db((db.ai_providers.enabled is True) & (db.ai_providers.ailb_sync_enabled is True)).select()
-
-    # Get all enabled virtual keys
-    keys = db(db.virtual_keys.enabled is True).select()
-
-    # Build export config
-    export_config = {
-        "version": "1.0",
-        "module_type": "AILB",
-        "exported_at": datetime.utcnow().isoformat(),
-        "providers": [],
-        "routes": [],
-        "rate_limits": [],
-        "virtual_keys": [],
-    }
-
-    for provider in providers:
-        provider_config = {
-            "id": provider.id,
-            "name": provider.name,
-            "type": provider.provider_type,
-            "endpoint_url": provider.endpoint_url,
-            "models": provider.model_list or [],
-            "rate_limits": provider.rate_limits or {},
-            "priority": provider.priority,
-            "enabled": provider.enabled,
-        }
-        export_config["providers"].append(provider_config)
-
-        # Generate route config
-        route_config = {
-            "provider_id": provider.id,
-            "provider_type": provider.provider_type,
-            "endpoint": provider.endpoint_url,
-            "models": provider.model_list or [],
-            "weight": 100 - provider.priority,  # Convert priority to weight
-        }
-        export_config["routes"].append(route_config)
-
-    for key in keys:
-        key_config = {
-            "id": key.id,
-            "name": key.name,
-            "user_id": key.user_id,
-            "organization_id": key.organization_id,
-            "allowed_models": key.allowed_models or [],
-            "allowed_providers": key.allowed_providers or [],
-            "budget_daily": key.budget_limit_daily,
-            "budget_monthly": key.budget_limit_monthly,
-            "tpm_limit": key.tpm_limit,
-            "rpm_limit": key.rpm_limit,
-        }
-        export_config["virtual_keys"].append(key_config)
-
-        # Generate rate limit config
-        if key.tpm_limit or key.rpm_limit:
-            rate_limit = {"key_id": key.id, "tpm_limit": key.tpm_limit or 10000, "rpm_limit": key.rpm_limit or 60}
-            export_config["rate_limits"].append(rate_limit)
-
-    # Option to save to file
     save_to_file = request.args.get("save", "false").lower() == "true"
+
+    def _build():
+        # Get all enabled providers
+        providers = db((db.ai_providers.enabled is True) & (db.ai_providers.ailb_sync_enabled is True)).select()
+
+        # Get all enabled virtual keys
+        keys = db(db.virtual_keys.enabled is True).select()
+
+        # Build export config
+        export_config = {
+            "version": "1.0",
+            "module_type": "AILB",
+            "exported_at": datetime.utcnow().isoformat(),
+            "providers": [],
+            "routes": [],
+            "rate_limits": [],
+            "virtual_keys": [],
+        }
+
+        for provider in providers:
+            provider_config = {
+                "id": provider.id,
+                "name": provider.name,
+                "type": provider.provider_type,
+                "endpoint_url": provider.endpoint_url,
+                "models": provider.model_list or [],
+                "rate_limits": provider.rate_limits or {},
+                "priority": provider.priority,
+                "enabled": provider.enabled,
+            }
+            export_config["providers"].append(provider_config)
+
+            # Generate route config
+            route_config = {
+                "provider_id": provider.id,
+                "provider_type": provider.provider_type,
+                "endpoint": provider.endpoint_url,
+                "models": provider.model_list or [],
+                "weight": 100 - provider.priority,  # Convert priority to weight
+            }
+            export_config["routes"].append(route_config)
+
+        for key in keys:
+            key_config = {
+                "id": key.id,
+                "name": key.name,
+                "user_id": key.user_id,
+                "organization_id": key.organization_id,
+                "allowed_models": key.allowed_models or [],
+                "allowed_providers": key.allowed_providers or [],
+                "budget_daily": key.budget_limit_daily,
+                "budget_monthly": key.budget_limit_monthly,
+                "tpm_limit": key.tpm_limit,
+                "rpm_limit": key.rpm_limit,
+            }
+            export_config["virtual_keys"].append(key_config)
+
+            # Generate rate limit config
+            if key.tpm_limit or key.rpm_limit:
+                rate_limit = {"key_id": key.id, "tpm_limit": key.tpm_limit or 10000, "rpm_limit": key.rpm_limit or 60}
+                export_config["rate_limits"].append(rate_limit)
+
+        # Option to save to file
+        filepath = None
+        if save_to_file:
+            import os
+
+            config_dir = "/app/config/marchproxy"
+            os.makedirs(config_dir, exist_ok=True)
+
+            filename = f'ailb-import-{datetime.utcnow().strftime("%Y%m%d-%H%M%S")}.json'
+            filepath = os.path.join(config_dir, filename)
+
+            with open(filepath, "w") as f:
+                json.dump(export_config, f, indent=2)
+
+        return export_config, filepath
+
+    export_config, filepath = await asyncio.to_thread(_build)
+
     if save_to_file:
-        import os
-
-        config_dir = "/app/config/marchproxy"
-        os.makedirs(config_dir, exist_ok=True)
-
-        filename = f'ailb-import-{datetime.utcnow().strftime("%Y%m%d-%H%M%S")}.json'
-        filepath = os.path.join(config_dir, filename)
-
-        with open(filepath, "w") as f:
-            json.dump(export_config, f, indent=2)
-
         return jsonify({"success": True, "file_path": filepath, "config": export_config})
 
     return jsonify(export_config)
@@ -264,25 +286,31 @@ def export_ailb_config():
 @api_v1_bp.route("/ailb/sync-all", methods=["POST"])
 @require_auth
 @require_role("admin")
-def sync_all_providers():
+async def sync_all_providers():
     """Sync all enabled providers to AILB"""
-    providers = db((db.ai_providers.enabled is True) & (db.ai_providers.ailb_sync_enabled is True)).select()
 
-    results = {"synced": [], "failed": []}
+    def _sync():
+        providers = db((db.ai_providers.enabled is True) & (db.ai_providers.ailb_sync_enabled is True)).select()
 
-    for provider in providers:
-        try:
-            # TODO: Implement actual gRPC call
-            # For now, update sync status
-            db(db.marchproxy_ailb_sync.provider_id == provider.id).update(
-                sync_status="synced", last_synced=datetime.utcnow(), sync_error=None
-            )
-            results["synced"].append({"provider_id": provider.id, "provider_name": provider.name})
-        except Exception as e:
-            db(db.marchproxy_ailb_sync.provider_id == provider.id).update(sync_status="failed", sync_error=str(e))
-            results["failed"].append({"provider_id": provider.id, "provider_name": provider.name, "error": str(e)})
+        results = {"synced": [], "failed": []}
 
-    db.commit()
+        for provider in providers:
+            try:
+                # TODO: Implement actual gRPC call
+                # For now, update sync status
+                db(db.marchproxy_ailb_sync.provider_id == provider.id).update(
+                    sync_status="synced", last_synced=datetime.utcnow(), sync_error=None
+                )
+                results["synced"].append({"provider_id": provider.id, "provider_name": provider.name})
+            except Exception as e:
+                db(db.marchproxy_ailb_sync.provider_id == provider.id).update(sync_status="failed", sync_error=str(e))
+                results["failed"].append({"provider_id": provider.id, "provider_name": provider.name, "error": str(e)})
+
+        db.commit()
+
+        return results
+
+    results = await asyncio.to_thread(_sync)
 
     return jsonify({"message": "Sync completed", "results": results})
 
@@ -290,7 +318,7 @@ def sync_all_providers():
 @api_v1_bp.route("/ailb/marchproxy-import-config", methods=["GET"])
 @require_auth
 @require_role("admin")
-def generate_marchproxy_import_config():
+async def generate_marchproxy_import_config():
     """
     Generate MarchProxy-compatible import configuration.
 
@@ -302,20 +330,26 @@ def generate_marchproxy_import_config():
     - include_ollama: 'true' (default) or 'false' - include Ollama model routes
     - download: 'true' or 'false' (default) - download as file
     """
-    generator = MarchProxyConfigGenerator(db)
-
-    # Generate full configuration
-    config = generator.generate_full_config()
-
     # Check if Ollama routes should be excluded
     include_ollama = request.args.get("include_ollama", "true").lower() == "true"
-    if not include_ollama:
-        # Filter out Ollama routes
-        config["ailb"]["routes"] = [r for r in config["ailb"]["routes"] if "ollama" not in r.get("id", "")]
 
     # Format selection
     format_type = request.args.get("format", "json").lower()
     download = request.args.get("download", "false").lower() == "true"
+
+    def _generate():
+        generator = MarchProxyConfigGenerator(db)
+
+        # Generate full configuration
+        config = generator.generate_full_config()
+
+        if not include_ollama:
+            # Filter out Ollama routes
+            config["ailb"]["routes"] = [r for r in config["ailb"]["routes"] if "ollama" not in r.get("id", "")]
+
+        return config
+
+    config = await asyncio.to_thread(_generate)
 
     if format_type == "yaml":
         import yaml
@@ -339,7 +373,7 @@ def generate_marchproxy_import_config():
 @api_v1_bp.route("/ailb/ollama-routing-table", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_ollama_routing_table():
+async def get_ollama_routing_table():
     """
     Get Ollama model-to-endpoint routing table.
 
@@ -350,8 +384,12 @@ def get_ollama_routing_table():
         "codellama": "http://node-1:11434"
     }
     """
-    generator = MarchProxyConfigGenerator(db)
-    routing_table = generator.generate_ollama_routing_table()
+
+    def _generate():
+        generator = MarchProxyConfigGenerator(db)
+        return generator.generate_ollama_routing_table()
+
+    routing_table = await asyncio.to_thread(_generate)
 
     return jsonify(
         {
@@ -365,15 +403,19 @@ def get_ollama_routing_table():
 @api_v1_bp.route("/ailb/model-routing-config", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_model_routing_config():
+async def get_model_routing_config():
     """
     Get model-aware routing configuration for MarchProxy AILB.
 
     This provides detailed routing rules with health checks and
     fallback strategies for intelligent model routing.
     """
-    generator = MarchProxyConfigGenerator(db)
-    routing_config = generator.generate_model_routing_config()
+
+    def _generate():
+        generator = MarchProxyConfigGenerator(db)
+        return generator.generate_model_routing_config()
+
+    routing_config = await asyncio.to_thread(_generate)
 
     return jsonify(routing_config)
 
@@ -381,7 +423,7 @@ def get_model_routing_config():
 @api_v1_bp.route("/ailb/export-all-configs", methods=["GET"])
 @require_auth
 @require_role("admin")
-def export_all_configs():
+async def export_all_configs():
     """
     Export all configurations as a bundle.
 
@@ -393,19 +435,22 @@ def export_all_configs():
     """
     from ...services.ollama_manager import OllamaDeploymentManager
 
-    generator = MarchProxyConfigGenerator(db)
-    ollama_manager = OllamaDeploymentManager(db)
+    def _build():
+        generator = MarchProxyConfigGenerator(db)
+        ollama_manager = OllamaDeploymentManager(db)
 
-    bundle = {
-        "version": "1.0",
-        "generated_at": datetime.utcnow().isoformat(),
-        "configs": {
-            "marchproxy_import": generator.generate_full_config(),
-            "ollama_routing_table": generator.generate_ollama_routing_table(),
-            "model_routing_config": generator.generate_model_routing_config(),
-            "metallb_config": ollama_manager.export_metallb_config(),
-        },
-    }
+        return {
+            "version": "1.0",
+            "generated_at": datetime.utcnow().isoformat(),
+            "configs": {
+                "marchproxy_import": generator.generate_full_config(),
+                "ollama_routing_table": generator.generate_ollama_routing_table(),
+                "model_routing_config": generator.generate_model_routing_config(),
+                "metallb_config": ollama_manager.export_metallb_config(),
+            },
+        }
+
+    bundle = await asyncio.to_thread(_build)
 
     download = request.args.get("download", "false").lower() == "true"
 

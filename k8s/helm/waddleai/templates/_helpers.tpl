@@ -72,6 +72,23 @@ Image name for management service
 {{- end }}
 
 {{/*
+Image name for proxy service (AIProxy)
+*/}}
+{{- define "waddleai.proxy.image" -}}
+{{- if .Values.proxy.image.digest }}
+{{- if .Values.global.imageRegistry }}
+{{- printf "%s/%s@%s" .Values.global.imageRegistry .Values.proxy.image.repository .Values.proxy.image.digest }}
+{{- else }}
+{{- printf "%s@%s" .Values.proxy.image.repository .Values.proxy.image.digest }}
+{{- end }}
+{{- else if .Values.global.imageRegistry }}
+{{- printf "%s/%s:%s" .Values.global.imageRegistry .Values.proxy.image.repository .Values.proxy.image.tag }}
+{{- else }}
+{{- printf "%s:%s" .Values.proxy.image.repository .Values.proxy.image.tag }}
+{{- end }}
+{{- end }}
+
+{{/*
 Image name for webui service
 */}}
 {{- define "waddleai.webui.image" -}}
@@ -86,17 +103,21 @@ Image name for webui service
 Image name for postgres
 */}}
 {{- define "waddleai.postgres.image" -}}
+{{- if .Values.postgres.image.digest -}}
+{{- printf "%s@%s" .Values.postgres.image.repository .Values.postgres.image.digest }}
+{{- else -}}
 {{- printf "%s:%s" .Values.postgres.image.repository .Values.postgres.image.tag }}
+{{- end -}}
 {{- end }}
 
 {{/*
-Image name for redis
+Image name for valkey
 */}}
-{{- define "waddleai.redis.image" -}}
-{{- if .Values.redis.image.digest -}}
-{{- printf "%s@%s" .Values.redis.image.repository .Values.redis.image.digest }}
+{{- define "waddleai.valkey.image" -}}
+{{- if .Values.valkey.image.digest -}}
+{{- printf "%s@%s" .Values.valkey.image.repository .Values.valkey.image.digest }}
 {{- else -}}
-{{- printf "%s:%s" .Values.redis.image.repository .Values.redis.image.tag }}
+{{- printf "%s:%s" .Values.valkey.image.repository .Values.valkey.image.tag }}
 {{- end -}}
 {{- end }}
 
@@ -104,5 +125,9 @@ Image name for redis
 Image name for ollama
 */}}
 {{- define "waddleai.ollama.image" -}}
+{{- if .Values.ollama.image.digest -}}
+{{- printf "%s@%s" .Values.ollama.image.repository .Values.ollama.image.digest }}
+{{- else -}}
 {{- printf "%s:%s" .Values.ollama.image.repository .Values.ollama.image.tag }}
+{{- end -}}
 {{- end }}

@@ -1,0 +1,24 @@
+{
+  "body": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "This is a deterministic stub completion for WaddleAI contract tests.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "id": "<VOLATILE>",
+    "model": "gpt-3.5-turbo",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 11,
+      "prompt_tokens": 12,
+      "total_tokens": 23,
+      "waddleai_tokens": 3
+    }
+  },
+  "status": 200
+}

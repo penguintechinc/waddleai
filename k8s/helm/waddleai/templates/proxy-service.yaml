@@ -1,0 +1,24 @@
+{{- if .Values.proxy.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waddleai.fullname" . }}-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  type: {{ .Values.proxy.service.type }}
+  ports:
+    - port: {{ .Values.proxy.service.port }}
+      targetPort: {{ .Values.proxy.service.targetPort }}
+      protocol: TCP
+      name: http
+    - port: {{ .Values.proxy.service.grpcPort }}
+      targetPort: {{ .Values.proxy.service.grpcTargetPort }}
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "waddleai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+{{- end }}

@@ -609,7 +609,7 @@ class LLMConnectionManager:
         Falls back to link.api_key when no pool rows exist, preserving backward
         compatibility until migration 004 drops the deprecated column.
         """
-        links = self.db(self.db.connection_links.enabled is True).select()
+        links = self.db(self.db.connection_links.enabled == True).select()  # noqa: E712
 
         for link in links:
             try:
@@ -665,7 +665,7 @@ class LLMConnectionManager:
 
             cred_rows = self.db(
                 (self.db.provider_credentials.provider_id == provider_row.id)
-                & (self.db.provider_credentials.enabled is True)
+                & (self.db.provider_credentials.enabled == True)  # noqa: E712
             ).select()
 
             if not cred_rows:

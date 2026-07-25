@@ -2,11 +2,12 @@
 WaddleAI Management API v1 - AI Provider Management Endpoints
 """
 
+import asyncio
 import hashlib
 import json
 from datetime import datetime
 
-from flask import current_app, jsonify, request
+from quart import current_app, jsonify, request
 
 from ...extensions import db
 from . import api_v1_bp
@@ -71,7 +72,7 @@ SUPPORTED_PROVIDERS = {
 
 @api_v1_bp.route("/providers/types", methods=["GET"])
 @require_auth
-def list_provider_types():
+async def list_provider_types():
     """List supported provider types"""
     result = []
     for provider_type, info in SUPPORTED_PROVIDERS.items():
@@ -101,15 +102,17 @@ def list_provider_types():
 @api_v1_bp.route("/providers", methods=["GET"])
 @require_auth
 @require_role("admin")
-def list_providers():
+async def list_providers():
     """List all configured AI providers"""
-    providers = db(db.ai_providers.id > 0).select()
+
+    def _fetch():
+        providers = db(db.ai_providers.id > 0).select()
+        return [(provider, db(db.marchproxy_ailb_sync.provider_id == provider.id).select().first()) for provider in providers]
+
+    providers_with_sync = await asyncio.to_thread(_fetch)
 
     result = []
-    for provider in providers:
-        # Get sync status
-        sync = db(db.marchproxy_ailb_sync.provider_id == provider.id).select().first()
-
+    for provider, sync in providers_with_sync:
         result.append(
             {
                 "id": provider.id,
@@ -133,14 +136,20 @@ def list_providers():
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_provider(provider_id):
+async def get_provider(provider_id):
     """Get provider details"""
-    provider = db(db.ai_providers.id == provider_id).select().first()
+
+    def _fetch():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+        if not provider:
+            return None, None
+        sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
+        return provider, sync
+
+    provider, sync = await asyncio.to_thread(_fetch)
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
-
-    sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
 
     return jsonify(
         {
@@ -170,9 +179,9 @@ def get_provider(provider_id):
 @api_v1_bp.route("/providers", methods=["POST"])
 @require_auth
 @require_role("admin")
-def create_provider():
+async def create_provider():
     """Create a new AI provider"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -186,38 +195,47 @@ def create_provider():
     if provider_type not in SUPPORTED_PROVIDERS:
         return jsonify({"error": f"Unsupported provider type: {provider_type}"}), 400
 
-    # Check for existing provider
-    existing = db(db.ai_providers.name == data["name"]).select().first()
+    provider_name = data["name"]
+
+    def _check_existing():
+        return db(db.ai_providers.name == provider_name).select().first()
+
+    existing = await asyncio.to_thread(_check_existing)
     if existing:
         return jsonify({"error": "Provider name already exists"}), 409
 
-    # Validate API key requirement
     provider_info = SUPPORTED_PROVIDERS[provider_type]
     if provider_info["requires_api_key"] and not data.get("api_key"):
         return jsonify({"error": f"{provider_type} requires an API key"}), 400
 
-    provider_id = db.ai_providers.insert(
-        name=data["name"],
-        provider_type=provider_type,
-        endpoint_url=data["endpoint_url"],
-        api_key=data.get("api_key"),
-        model_list=data.get("model_list", provider_info["models"]),
-        rate_limits=data.get("rate_limits", {}),
-        enabled=data.get("enabled", True),
-        priority=data.get("priority", 100),
-        extra_config=data.get("extra_config", {}),
-        tls_config=data.get("tls_config", {}),
-        ailb_sync_enabled=data.get("ailb_sync_enabled", True),
-        created_at=datetime.utcnow(),
-    )
-    db.commit()
-
-    # Create sync record
     config_hash = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-    db.marchproxy_ailb_sync.insert(
-        provider_id=provider_id, sync_status="pending", config_hash=config_hash, created_at=datetime.utcnow()
-    )
-    db.commit()
+
+    def _create():
+        provider_id = db.ai_providers.insert(
+            name=data["name"],
+            provider_type=provider_type,
+            endpoint_url=data["endpoint_url"],
+            api_key=data.get("api_key"),
+            model_list=data.get("model_list", provider_info["models"]),
+            rate_limits=data.get("rate_limits", {}),
+            enabled=data.get("enabled", True),
+            priority=data.get("priority", 100),
+            extra_config=data.get("extra_config", {}),
+            tls_config=data.get("tls_config", {}),
+            ailb_sync_enabled=data.get("ailb_sync_enabled", True),
+            created_at=datetime.utcnow(),
+        )
+        db.commit()
+
+        # Create sync record
+        db.marchproxy_ailb_sync.insert(
+            provider_id=provider_id, sync_status="pending", config_hash=config_hash, created_at=datetime.utcnow()
+        )
+        db.commit()
+
+        return provider_id
+
+    provider_id = await asyncio.to_thread(_create)
 
     return (
         jsonify(
@@ -236,62 +254,74 @@ def create_provider():
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["PUT"])
 @require_auth
 @require_role("admin")
-def update_provider(provider_id):
+async def update_provider(provider_id):
     """Update provider configuration"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
 
-    provider = db(db.ai_providers.id == provider_id).select().first()
+    def _update():
+        provider = db(db.ai_providers.id == provider_id).select().first()
 
-    if not provider:
+        if not provider:
+            return "not_found"
+
+        update_fields = {}
+
+        if "name" in data:
+            existing = (
+                db((db.ai_providers.name == data["name"]) & (db.ai_providers.id != provider_id)).select().first()
+            )
+            if existing:
+                return "name_conflict"
+            update_fields["name"] = data["name"]
+
+        if "endpoint_url" in data:
+            update_fields["endpoint_url"] = data["endpoint_url"]
+
+        if "api_key" in data:
+            update_fields["api_key"] = data["api_key"]
+
+        if "model_list" in data:
+            update_fields["model_list"] = data["model_list"]
+
+        if "rate_limits" in data:
+            update_fields["rate_limits"] = data["rate_limits"]
+
+        if "enabled" in data:
+            update_fields["enabled"] = data["enabled"]
+
+        if "priority" in data:
+            update_fields["priority"] = data["priority"]
+
+        if "extra_config" in data:
+            update_fields["extra_config"] = data["extra_config"]
+
+        if "tls_config" in data:
+            update_fields["tls_config"] = data["tls_config"]
+
+        if "ailb_sync_enabled" in data:
+            update_fields["ailb_sync_enabled"] = data["ailb_sync_enabled"]
+
+        if "ailb_route_config" in data:
+            update_fields["ailb_route_config"] = data["ailb_route_config"]
+
+        if update_fields:
+            db(db.ai_providers.id == provider_id).update(**update_fields)
+
+            # Update sync status to pending
+            db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="pending")
+            db.commit()
+
+        return "ok"
+
+    result = await asyncio.to_thread(_update)
+
+    if result == "not_found":
         return jsonify({"error": "Provider not found"}), 404
-
-    update_fields = {}
-
-    if "name" in data:
-        existing = db((db.ai_providers.name == data["name"]) & (db.ai_providers.id != provider_id)).select().first()
-        if existing:
-            return jsonify({"error": "Provider name already exists"}), 409
-        update_fields["name"] = data["name"]
-
-    if "endpoint_url" in data:
-        update_fields["endpoint_url"] = data["endpoint_url"]
-
-    if "api_key" in data:
-        update_fields["api_key"] = data["api_key"]
-
-    if "model_list" in data:
-        update_fields["model_list"] = data["model_list"]
-
-    if "rate_limits" in data:
-        update_fields["rate_limits"] = data["rate_limits"]
-
-    if "enabled" in data:
-        update_fields["enabled"] = data["enabled"]
-
-    if "priority" in data:
-        update_fields["priority"] = data["priority"]
-
-    if "extra_config" in data:
-        update_fields["extra_config"] = data["extra_config"]
-
-    if "tls_config" in data:
-        update_fields["tls_config"] = data["tls_config"]
-
-    if "ailb_sync_enabled" in data:
-        update_fields["ailb_sync_enabled"] = data["ailb_sync_enabled"]
-
-    if "ailb_route_config" in data:
-        update_fields["ailb_route_config"] = data["ailb_route_config"]
-
-    if update_fields:
-        db(db.ai_providers.id == provider_id).update(**update_fields)
-
-        # Update sync status to pending
-        db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="pending")
-        db.commit()
+    if result == "name_conflict":
+        return jsonify({"error": "Provider name already exists"}), 409
 
     return jsonify({"message": "Provider updated successfully. Re-sync required."})
 
@@ -299,19 +329,28 @@ def update_provider(provider_id):
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["DELETE"])
 @require_auth
 @require_role("admin")
-def delete_provider(provider_id):
+async def delete_provider(provider_id):
     """Delete provider"""
-    provider = db(db.ai_providers.id == provider_id).select().first()
 
-    if not provider:
+    def _delete():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+
+        if not provider:
+            return False
+
+        # Mark sync as deleted
+        db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="deleted")
+
+        # Soft delete by disabling
+        db(db.ai_providers.id == provider_id).update(enabled=False)
+        db.commit()
+
+        return True
+
+    found = await asyncio.to_thread(_delete)
+
+    if not found:
         return jsonify({"error": "Provider not found"}), 404
-
-    # Mark sync as deleted
-    db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="deleted")
-
-    # Soft delete by disabling
-    db(db.ai_providers.id == provider_id).update(enabled=False)
-    db.commit()
 
     return jsonify({"message": "Provider disabled successfully. Remove from AILB manually or via sync."})
 
@@ -319,9 +358,9 @@ def delete_provider(provider_id):
 @api_v1_bp.route("/providers/<int:provider_id>/test", methods=["POST"])
 @require_auth
 @require_role("admin")
-def test_provider(provider_id):
+async def test_provider(provider_id):
     """Test provider connectivity"""
-    provider = db(db.ai_providers.id == provider_id).select().first()
+    provider = await asyncio.to_thread(lambda: db(db.ai_providers.id == provider_id).select().first())
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
@@ -343,24 +382,35 @@ def test_provider(provider_id):
 @api_v1_bp.route("/providers/<int:provider_id>/sync", methods=["POST"])
 @require_auth
 @require_role("admin")
-def sync_provider(provider_id):
+async def sync_provider(provider_id):
     """Sync provider to MarchProxy AILB"""
-    provider = db(db.ai_providers.id == provider_id).select().first()
 
-    if not provider:
+    def _sync():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+
+        if not provider:
+            return "not_found"
+
+        if not provider.ailb_sync_enabled:
+            return "sync_disabled"
+
+        # TODO: Implement actual gRPC call to AILB
+        # For now, simulate sync
+
+        # Update sync status
+        db(db.marchproxy_ailb_sync.provider_id == provider_id).update(
+            sync_status="synced", last_synced=datetime.utcnow(), sync_error=None
+        )
+        db.commit()
+
+        return "ok"
+
+    result = await asyncio.to_thread(_sync)
+
+    if result == "not_found":
         return jsonify({"error": "Provider not found"}), 404
-
-    if not provider.ailb_sync_enabled:
+    if result == "sync_disabled":
         return jsonify({"error": "AILB sync is disabled for this provider"}), 400
-
-    # TODO: Implement actual gRPC call to AILB
-    # For now, simulate sync
-
-    # Update sync status
-    db(db.marchproxy_ailb_sync.provider_id == provider_id).update(
-        sync_status="synced", last_synced=datetime.utcnow(), sync_error=None
-    )
-    db.commit()
 
     return jsonify(
         {"provider_id": provider_id, "sync_status": "synced", "message": "Provider synced to AILB successfully"}
@@ -370,14 +420,20 @@ def sync_provider(provider_id):
 @api_v1_bp.route("/providers/<int:provider_id>/sync-status", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_sync_status(provider_id):
+async def get_sync_status(provider_id):
     """Get provider sync status"""
-    provider = db(db.ai_providers.id == provider_id).select().first()
+
+    def _fetch():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+        if not provider:
+            return None, None
+        sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
+        return provider, sync
+
+    provider, sync = await asyncio.to_thread(_fetch)
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
-
-    sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
 
     return jsonify(
         {
@@ -395,9 +451,9 @@ def get_sync_status(provider_id):
 
 @api_v1_bp.route("/providers/<int:provider_id>/models", methods=["GET"])
 @require_auth
-def get_provider_models(provider_id):
+async def get_provider_models(provider_id):
     """Get available models for a provider"""
-    provider = db(db.ai_providers.id == provider_id).select().first()
+    provider = await asyncio.to_thread(lambda: db(db.ai_providers.id == provider_id).select().first())
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
@@ -445,13 +501,20 @@ def _credential_to_dict(cred) -> dict:
 @api_v1_bp.route("/providers/<int:provider_id>/credentials", methods=["GET"])
 @require_auth
 @require_role("admin")
-def list_provider_credentials(provider_id: int):
+async def list_provider_credentials(provider_id: int):
     """List all credentials for a provider. API keys are never returned in plaintext."""
-    provider = db(db.ai_providers.id == provider_id).select().first()
-    if not provider:
+
+    def _fetch():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+        if not provider:
+            return None
+        return db(db.provider_credentials.provider_id == provider_id).select(orderby=db.provider_credentials.id)
+
+    creds = await asyncio.to_thread(_fetch)
+
+    if creds is None:
         return jsonify({"status": "error", "error": "Provider not found"}), 404
 
-    creds = db(db.provider_credentials.provider_id == provider_id).select(orderby=db.provider_credentials.id)
     return jsonify(
         {
             "status": "success",
@@ -468,15 +531,18 @@ def list_provider_credentials(provider_id: int):
 @api_v1_bp.route("/providers/<int:provider_id>/credentials", methods=["POST"])
 @require_auth
 @require_role("admin")
-def create_provider_credential(provider_id: int):
+async def create_provider_credential(provider_id: int):
     """Add a credential to a provider's pool."""
     from shared.security.credential_encryption import encrypt_credential
 
-    provider = db(db.ai_providers.id == provider_id).select().first()
+    def _get_provider():
+        return db(db.ai_providers.id == provider_id).select().first()
+
+    provider = await asyncio.to_thread(_get_provider)
     if not provider:
         return jsonify({"status": "error", "error": "Provider not found"}), 404
 
-    data = request.get_json()
+    data = await request.get_json()
     if not data:
         return jsonify({"status": "error", "error": "Request body required"}), 400
 
@@ -492,39 +558,49 @@ def create_provider_credential(provider_id: int):
         if provider_info.get("requires_api_key", True):
             return jsonify({"status": "error", "error": "api_key is required for this provider type"}), 400
 
-    # Check label uniqueness within this provider
-    existing = (
-        db((db.provider_credentials.provider_id == provider_id) & (db.provider_credentials.label == label))
-        .select()
-        .first()
-    )
-    if existing:
+    encrypted_key = encrypt_credential(api_key_plain) if api_key_plain else None
+
+    def _create():
+        # Check label uniqueness within this provider
+        existing = (
+            db((db.provider_credentials.provider_id == provider_id) & (db.provider_credentials.label == label))
+            .select()
+            .first()
+        )
+        if existing:
+            return ("label_conflict", None)
+
+        weight = data.get("weight", 100)
+        if not isinstance(weight, int) or weight < 1 or weight > 10000:
+            return ("invalid_weight", None)
+
+        cred_id = db.provider_credentials.insert(
+            provider_id=provider_id,
+            label=label,
+            api_key=encrypted_key,
+            org_id=data.get("org_id"),
+            account_meta=data.get("account_meta"),
+            weight=weight,
+            enabled=data.get("enabled", True),
+            request_count=0,
+            token_count=0,
+            created_at=datetime.utcnow(),
+        )
+        db.commit()
+
+        return ("ok", db(db.provider_credentials.id == cred_id).select().first())
+
+    status, payload = await asyncio.to_thread(_create)
+
+    if status == "label_conflict":
         return (
             jsonify({"status": "error", "error": f"Credential with label '{label}' already exists for this provider"}),
             409,
         )
-
-    weight = data.get("weight", 100)
-    if not isinstance(weight, int) or weight < 1 or weight > 10000:
+    if status == "invalid_weight":
         return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
 
-    encrypted_key = encrypt_credential(api_key_plain) if api_key_plain else None
-
-    cred_id = db.provider_credentials.insert(
-        provider_id=provider_id,
-        label=label,
-        api_key=encrypted_key,
-        org_id=data.get("org_id"),
-        account_meta=data.get("account_meta"),
-        weight=weight,
-        enabled=data.get("enabled", True),
-        request_count=0,
-        token_count=0,
-        created_at=datetime.utcnow(),
-    )
-    db.commit()
-
-    new_cred = db(db.provider_credentials.id == cred_id).select().first()
+    new_cred = payload
     return (
         jsonify(
             {
@@ -543,74 +619,100 @@ def create_provider_credential(provider_id: int):
 @api_v1_bp.route("/providers/<int:provider_id>/credentials/<int:cred_id>", methods=["PATCH"])
 @require_auth
 @require_role("admin")
-def update_provider_credential(provider_id: int, cred_id: int):
+async def update_provider_credential(provider_id: int, cred_id: int):
     """Update label, weight, enabled, org_id, account_meta, or rotate the api_key."""
     from shared.security.credential_encryption import encrypt_credential
 
-    provider = db(db.ai_providers.id == provider_id).select().first()
-    if not provider:
-        return jsonify({"status": "error", "error": "Provider not found"}), 404
+    def _check_existence():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+        if not provider:
+            return "provider_not_found"
 
-    cred = (
-        db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
-        .select()
-        .first()
-    )
-    if not cred:
+        cred = (
+            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
+            .select()
+            .first()
+        )
+        if not cred:
+            return "cred_not_found"
+
+        return "ok"
+
+    existence = await asyncio.to_thread(_check_existence)
+    if existence == "provider_not_found":
+        return jsonify({"status": "error", "error": "Provider not found"}), 404
+    if existence == "cred_not_found":
         return jsonify({"status": "error", "error": "Credential not found"}), 404
 
-    data = request.get_json()
+    data = await request.get_json()
     if not data:
         return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    update_fields: dict = {}
 
     if "label" in data:
         label = data["label"].strip()
         if not label or len(label) > 255:
             return jsonify({"status": "error", "error": "label must be 1-255 characters"}), 400
-        # Check uniqueness (exclude self)
-        conflict = (
-            db(
-                (db.provider_credentials.provider_id == provider_id)
-                & (db.provider_credentials.label == label)
-                & (db.provider_credentials.id != cred_id)
-            )
-            .select()
-            .first()
-        )
-        if conflict:
-            return jsonify({"status": "error", "error": f"Label '{label}' already in use"}), 409
-        update_fields["label"] = label
 
     if "weight" in data:
         weight = data["weight"]
         if not isinstance(weight, int) or weight < 1 or weight > 10000:
             return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
-        update_fields["weight"] = weight
-
-    if "enabled" in data:
-        update_fields["enabled"] = bool(data["enabled"])
-
-    if "org_id" in data:
-        update_fields["org_id"] = data["org_id"]
-
-    if "account_meta" in data:
-        update_fields["account_meta"] = data["account_meta"]
 
     if "api_key" in data:
         new_key = data["api_key"].strip()
         if not new_key:
             return jsonify({"status": "error", "error": "api_key cannot be empty when provided"}), 400
-        update_fields["api_key"] = encrypt_credential(new_key)
+        encrypted_new_key = encrypt_credential(new_key)
 
-    if not update_fields:
+    def _update():
+        update_fields: dict = {}
+
+        if "label" in data:
+            # Check uniqueness (exclude self)
+            conflict = (
+                db(
+                    (db.provider_credentials.provider_id == provider_id)
+                    & (db.provider_credentials.label == label)
+                    & (db.provider_credentials.id != cred_id)
+                )
+                .select()
+                .first()
+            )
+            if conflict:
+                return "label_conflict"
+            update_fields["label"] = label
+
+        if "weight" in data:
+            update_fields["weight"] = weight
+
+        if "enabled" in data:
+            update_fields["enabled"] = bool(data["enabled"])
+
+        if "org_id" in data:
+            update_fields["org_id"] = data["org_id"]
+
+        if "account_meta" in data:
+            update_fields["account_meta"] = data["account_meta"]
+
+        if "api_key" in data:
+            update_fields["api_key"] = encrypted_new_key
+
+        if not update_fields:
+            return "no_fields"
+
+        db(db.provider_credentials.id == cred_id).update(**update_fields)
+        db.commit()
+
+        return db(db.provider_credentials.id == cred_id).select().first()
+
+    result = await asyncio.to_thread(_update)
+
+    if result == "label_conflict":
+        return jsonify({"status": "error", "error": f"Label '{label}' already in use"}), 409
+    if result == "no_fields":
         return jsonify({"status": "error", "error": "No valid fields to update"}), 400
 
-    db(db.provider_credentials.id == cred_id).update(**update_fields)
-    db.commit()
-
-    updated = db(db.provider_credentials.id == cred_id).select().first()
+    updated = result
     return jsonify(
         {
             "status": "success",
@@ -623,23 +725,39 @@ def update_provider_credential(provider_id: int, cred_id: int):
 @api_v1_bp.route("/providers/<int:provider_id>/credentials/<int:cred_id>", methods=["DELETE"])
 @require_auth
 @require_role("admin")
-def delete_provider_credential(provider_id: int, cred_id: int):
+async def delete_provider_credential(provider_id: int, cred_id: int):
     """Remove a credential from the pool. Requires at least one other credential to remain."""
-    provider = db(db.ai_providers.id == provider_id).select().first()
-    if not provider:
+
+    def _delete():
+        provider = db(db.ai_providers.id == provider_id).select().first()
+        if not provider:
+            return "provider_not_found"
+
+        cred = (
+            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
+            .select()
+            .first()
+        )
+        if not cred:
+            return "cred_not_found"
+
+        # Safety guard: refuse to delete the last credential
+        total = len(db(db.provider_credentials.provider_id == provider_id).select())
+        if total <= 1:
+            return "last_credential"
+
+        db(db.provider_credentials.id == cred_id).delete()
+        db.commit()
+
+        return "ok"
+
+    result = await asyncio.to_thread(_delete)
+
+    if result == "provider_not_found":
         return jsonify({"status": "error", "error": "Provider not found"}), 404
-
-    cred = (
-        db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
-        .select()
-        .first()
-    )
-    if not cred:
+    if result == "cred_not_found":
         return jsonify({"status": "error", "error": "Credential not found"}), 404
-
-    # Safety guard: refuse to delete the last credential
-    total = len(db(db.provider_credentials.provider_id == provider_id).select())
-    if total <= 1:
+    if result == "last_credential":
         return (
             jsonify(
                 {
@@ -649,9 +767,6 @@ def delete_provider_credential(provider_id: int, cred_id: int):
             ),
             409,
         )
-
-    db(db.provider_credentials.id == cred_id).delete()
-    db.commit()
 
     return jsonify(
         {

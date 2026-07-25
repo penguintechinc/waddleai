@@ -27,6 +27,8 @@ function Header() {
           <Link to="/ollama" className="nav-link">Ollama</Link>
           <Link to="/keys" className="nav-link">Virtual Keys</Link>
           <Link to="/analytics" className="nav-link">Analytics</Link>
+          <Link to="/routing" className="nav-link">Routing</Link>
+          <Link to="/memory" className="nav-link">Memory</Link>
         </nav>
         <div className="header-user">
           <span className="user-name">{user?.username || 'User'}</span>

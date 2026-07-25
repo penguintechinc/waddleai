@@ -1,0 +1,17 @@
+{
+  "body": {
+    "total": 1,
+    "users": [
+      {
+        "created_at": "<VOLATILE>",
+        "email": "admin@localhost.local",
+        "enabled": true,
+        "id": "<VOLATILE>",
+        "organization_id": 1,
+        "role": "admin",
+        "username": "admin"
+      }
+    ]
+  },
+  "status": 200
+}

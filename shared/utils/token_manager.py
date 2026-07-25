@@ -68,7 +68,7 @@ class TokenManager:
         """Load token conversion rates from database"""
         self.conversion_rates = {}
 
-        rates = self.db(self.db.token_conversion_rates.enabled is True).select()
+        rates = self.db(self.db.token_conversion_rates.enabled == True).select()  # noqa: E712
         for rate in rates:
             key = f"{rate.provider}:{rate.model}"
             self.conversion_rates[key] = ConversionRate(
@@ -134,12 +134,28 @@ class TokenManager:
         api_key_id: int,
         user_id: int,
         organization_id: int,
+        actual_input_tokens: Optional[int] = None,
+        actual_output_tokens: Optional[int] = None,
     ) -> TokenUsage:
-        """Process token usage for a request"""
+        """Process token usage for a request.
 
-        # Count LLM tokens
-        input_tokens = self.count_tokens(input_text, provider, model)
-        output_tokens = self.count_tokens(output_text, provider, model)
+        actual_input_tokens/actual_output_tokens: exact counts reported by the
+        provider/connector (or the upstream stub), when available. Both proxy
+        call sites (chat_completions, claude_messages) always pass these, so
+        this falls back to local tiktoken estimation only when a caller omits
+        them.
+        """
+
+        # Count LLM tokens: prefer the provider-reported counts when given,
+        # else fall back to local estimation.
+        input_tokens = (
+            actual_input_tokens if actual_input_tokens is not None else self.count_tokens(input_text, provider, model)
+        )
+        output_tokens = (
+            actual_output_tokens
+            if actual_output_tokens is not None
+            else self.count_tokens(output_text, provider, model)
+        )
 
         # Convert to WaddleAI tokens
         waddleai_tokens = self.calculate_waddleai_tokens(input_tokens, output_tokens, provider, model)

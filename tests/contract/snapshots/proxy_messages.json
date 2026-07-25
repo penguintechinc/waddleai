@@ -1,0 +1,21 @@
+{
+  "body": {
+    "content": [
+      {
+        "text": "This is a deterministic stub completion for WaddleAI contract tests.",
+        "type": "text"
+      }
+    ],
+    "id": "<VOLATILE>",
+    "model": "claude-3-sonnet-20240229",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "input_tokens": 12,
+      "output_tokens": 11
+    }
+  },
+  "status": 200
+}

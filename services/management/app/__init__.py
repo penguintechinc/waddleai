@@ -1,30 +1,34 @@
 """
-WaddleAI Management Server - Flask Application Factory
+WaddleAI Management Server - Quart Application Factory
 Manages AI providers, Ollama deployments, usage tracking, and MarchProxy AILB integration
 """
 
+import asyncio
 import logging
 import os
 import time
 from datetime import datetime
 
-from flask import Flask, Response
-from flask_cors import CORS
+import quart_cors
+from quart import Quart, Response
 
 from .config import Config
-from .extensions import db, init_extensions, redis_client, security
+from .extensions import db, init_extensions, redis_client
 
 # Process start time for uptime metric
 _START_TIME = time.time()
 
 
-def _auto_register_k8s_ollama(app):
+def _auto_register_k8s_ollama_sync(app):
     """
     Auto-register the in-cluster Ollama DaemonSet when OLLAMA_HOST is set by Helm.
 
     When ollama.enabled=true in the Helm chart, OLLAMA_HOST is injected pointing
     to the waddleai-ollama ClusterIP Service. This registers it as a managed
     kubernetes-daemonset deployment so WaddleAI can track health and models.
+
+    This performs blocking DB I/O and must only be invoked via
+    `asyncio.to_thread(...)` from an async context (see `_auto_register_k8s_ollama`).
     """
     ollama_host = os.environ.get("OLLAMA_HOST")
     mode = app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -32,38 +36,37 @@ def _auto_register_k8s_ollama(app):
     if not ollama_host or mode == "manual":
         return
 
-    with app.app_context():
-        try:
-            from .extensions import db as _db
+    try:
+        from .extensions import db as _db
 
-            existing = _db(_db.ollama_deployments.endpoint_url == ollama_host).select().first()
-            if existing:
-                return
+        existing = _db(_db.ollama_deployments.endpoint_url == ollama_host).select().first()
+        if existing:
+            return
 
-            _db.ollama_deployments.insert(
-                name="k8s-gpu-pool",
-                endpoint_url=ollama_host,
-                deployment_type="kubernetes-daemonset",
-                gpu_config={
-                    "gpu_count": 1,
-                    "node_selector": {"gpu": "true"},
-                    "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
-                },
-                resource_limits={"cpu_limit": "4", "memory_limit": "16Gi", "shared_storage_size": "200Gi"},
-                status="running",
-                health_status="unknown",
-                auto_start=False,
-                created_at=datetime.utcnow(),
-            )
-            _db.commit()
-            app.logger.info(f"Auto-registered in-cluster Ollama DaemonSet at {ollama_host}")
-        except Exception as e:
-            app.logger.warning(f"Failed to auto-register Ollama deployment: {e}")
+        _db.ollama_deployments.insert(
+            name="k8s-gpu-pool",
+            endpoint_url=ollama_host,
+            deployment_type="kubernetes-daemonset",
+            gpu_config={
+                "gpu_count": 1,
+                "node_selector": {"gpu": "true"},
+                "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
+            },
+            resource_limits={"cpu_limit": "4", "memory_limit": "16Gi", "shared_storage_size": "200Gi"},
+            status="running",
+            health_status="unknown",
+            auto_start=False,
+            created_at=datetime.utcnow(),
+        )
+        _db.commit()
+        app.logger.info(f"Auto-registered in-cluster Ollama DaemonSet at {ollama_host}")
+    except Exception as e:
+        app.logger.warning(f"Failed to auto-register Ollama deployment: {e}")
 
 
 def create_app(config_class=Config):
-    """Flask application factory"""
-    app = Flask(__name__)
+    """Quart application factory"""
+    app = Quart(__name__)
     app.config.from_object(config_class)
 
     # Configure logging
@@ -77,16 +80,7 @@ def create_app(config_class=Config):
     init_extensions(app)
 
     # Enable CORS
-    CORS(
-        app,
-        resources={
-            r"/api/*": {
-                "origins": app.config.get("CORS_ORIGINS", ["*"]),
-                "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-                "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
-            }
-        },
-    )
+    app = quart_cors.cors(app, allow_origin=app.config.get("CORS_ORIGINS", ["*"]))
 
     # Register blueprints
     register_blueprints(app)
@@ -95,18 +89,20 @@ def create_app(config_class=Config):
     register_error_handlers(app)
 
     # Auto-register in-cluster Ollama when deployed via Helm with ollama.enabled=true
-    _auto_register_k8s_ollama(app)
+    @app.before_serving
+    async def _auto_register_k8s_ollama():
+        await asyncio.to_thread(_auto_register_k8s_ollama_sync, app)
 
     # Health check endpoint
     @app.route("/healthz")
-    def healthz():
+    async def healthz():
         """Kubernetes-style health check - tolerant of transient DB issues"""
         # During startup, DB connections may not be immediately available in all workers
         # Return 200 if app is running, even if DB connection fails temporarily
         return "healthy", 200
 
     @app.route("/readyz")
-    def readyz():
+    async def readyz():
         """Kubernetes-style readiness check"""
         from . import extensions as _ext
 
@@ -132,12 +128,12 @@ def create_app(config_class=Config):
         return {"ready": all_ready, "checks": checks}, 200 if all_ready else 503
 
     @app.route("/livez")
-    def livez():
+    async def livez():
         """Kubernetes-style liveness check — always 200 while process is running"""
         return "alive", 200
 
     @app.route("/metrics")
-    def metrics():
+    async def metrics():
         """Basic Prometheus-format metrics endpoint"""
         from . import extensions as _ext
 
@@ -199,10 +195,10 @@ def register_blueprints(app):
 
 def register_error_handlers(app):
     """Register error handlers"""
-    from flask import jsonify
+    from quart import jsonify
 
     @app.errorhandler(400)
-    def bad_request(error):
+    async def bad_request(error):
         return (
             jsonify(
                 {
@@ -214,18 +210,18 @@ def register_error_handlers(app):
         )
 
     @app.errorhandler(401)
-    def unauthorized(error):
+    async def unauthorized(error):
         return jsonify({"error": "Unauthorized", "message": "Authentication required"}), 401
 
     @app.errorhandler(403)
-    def forbidden(error):
+    async def forbidden(error):
         return jsonify({"error": "Forbidden", "message": "Insufficient permissions"}), 403
 
     @app.errorhandler(404)
-    def not_found(error):
+    async def not_found(error):
         return jsonify({"error": "Not Found", "message": "Resource not found"}), 404
 
     @app.errorhandler(500)
-    def internal_error(error):
+    async def internal_error(error):
         app.logger.error(f"Internal server error: {error}")
         return jsonify({"error": "Internal Server Error", "message": "An unexpected error occurred"}), 500

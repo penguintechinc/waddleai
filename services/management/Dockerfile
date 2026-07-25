@@ -42,7 +42,7 @@ WORKDIR /app
 
 # Copy application code
 COPY app/ /app/app/
-COPY wsgi.py /app/
+COPY asgi.py /app/
 
 # Create necessary directories
 RUN mkdir -p /app/config/marchproxy /app/logs /app/databases && \
@@ -52,8 +52,7 @@ RUN mkdir -p /app/config/marchproxy /app/logs /app/databases && \
 USER waddleai
 
 # Environment variables
-ENV FLASK_APP=wsgi:app \
-    FLASK_ENV=production \
+ENV FLASK_ENV=production \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
@@ -62,8 +61,8 @@ EXPOSE 8001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/healthz || exit 1
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')" || exit 1
 
-# Run with gunicorn
+# Run with hypercorn (ASGI)
 # SQLAlchemy handles schema init once, PyDAL connects in each worker
-CMD ["gunicorn", "--bind", "0.0.0.0:8001", "--workers", "2", "--worker-class", "gevent", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "wsgi:app"]
+CMD ["hypercorn", "asgi:app", "--bind", "0.0.0.0:8001", "--workers", "2"]

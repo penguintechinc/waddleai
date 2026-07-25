@@ -1,0 +1,8 @@
+{
+  "body": {
+    "event_id": "evt_contract_test",
+    "processed": false,
+    "status": "accepted"
+  },
+  "status": 200
+}

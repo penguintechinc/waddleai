@@ -1,0 +1,6 @@
+{
+  "body": {
+    "error": "Authorization header required"
+  },
+  "status": 401
+}

@@ -89,6 +89,63 @@ management:
       secretName: waddleai-secrets
       key: postgres-password
 
+# AIProxy Service (data plane — /v1/chat/completions, /v1/messages, /v1/models, /mem0/*)
+# Plain Quart + hypercorn app; Cilium handles networking at the cluster level (no XDP/NET_ADMIN needed).
+proxy:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: waddleai/proxy
+    tag: latest
+    # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+    grpcPort: 50051
+    grpcTargetPort: 50051
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /readyz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  env:
+    LOG_LEVEL: INFO
+    HTTP_PORT: "8080"
+    GRPC_PORT: "50051"
+
+  # Secret env vars (from k8s secrets) — mirrors management's DATABASE_URL source
+  secretEnv:
+    - name: DATABASE_URL
+      secretName: waddleai-secrets
+      key: database-url
+
 # WebUI Service
 webui:
   enabled: true
@@ -137,7 +194,8 @@ postgres:
   replicaCount: 1
   image:
     repository: postgres
-    tag: "15"
+    tag: "17-bookworm"
+    digest: "sha256:5530681ea5d3e2ed4ce396f9b5cb443efbac6baf2a8a19c0c0635e40ae7eadce"
     pullPolicy: IfNotPresent
 
   service:
@@ -191,8 +249,8 @@ postgres:
     timeoutSeconds: 3
     failureThreshold: 3
 
-# Redis Cache
-redis:
+# Valkey Cache
+valkey:
   enabled: true
   replicaCount: 1
   image:
@@ -228,7 +286,7 @@ redis:
     enabled: true
     exec:
       command:
-        - redis-cli
+        - valkey-cli
         - ping
     initialDelaySeconds: 10
     periodSeconds: 10
@@ -239,7 +297,7 @@ redis:
     enabled: true
     exec:
       command:
-        - redis-cli
+        - valkey-cli
         - ping
     initialDelaySeconds: 5
     periodSeconds: 5
@@ -252,6 +310,11 @@ httproute:
   gatewayName: shared
   gatewayNamespace: gateway
   host: ""
+  # Example rules (populate + set enabled:true per environment; see values-beta.yaml):
+  #   - path: /v1/      { service: waddleai-proxy, port: 8080, timeoutSeconds: 600 }
+  #   - path: /mem0/    { service: waddleai-proxy, port: 8080 }
+  #   - path: /api      { service: waddleai-management, port: 8001 }
+  #   - path: /         { service: waddleai-webui, port: 8080 }
   rules: []
 
 # Ingress configuration
@@ -338,6 +401,7 @@ ollama:
   image:
     repository: ollama/ollama
     tag: "0.7.1"
+    digest: "sha256:de659b95818c5ea17dc287a2e4f147f81e202d84f1dc4ad3f256c53fb81e8dd0"
     pullPolicy: IfNotPresent
 
   service:

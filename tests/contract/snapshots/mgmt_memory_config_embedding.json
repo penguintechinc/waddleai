@@ -1,0 +1,11 @@
+{
+  "body": {
+    "backend": "ollama",
+    "configured": false,
+    "dimensions": 768,
+    "model": "nomic-embed-text",
+    "ollama_host": "http://localhost:11434",
+    "organization_id": null
+  },
+  "status": 200
+}

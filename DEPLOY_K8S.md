@@ -3,8 +3,7 @@
 ## Quick Deploy
 
 ```bash
-cd infrastructure/kubernetes
-./deploy-beta.sh
+./scripts/deploy-beta.sh
 ```
 
 ## What Gets Deployed
@@ -203,7 +202,7 @@ kubectl logs -n cert-manager -l app=cert-manager
 
 # Force renewal
 kubectl delete certificate waddleai-tls-wildcard -n waddleai
-kubectl apply -k infrastructure/kubernetes/overlays/beta
+./scripts/deploy-beta.sh
 ```
 
 ### Ingress 404 Errors
@@ -225,7 +224,7 @@ curl http://localhost:8001/healthz
 ### Remove Deployment (Keep Data)
 
 ```bash
-kubectl delete -k infrastructure/kubernetes/overlays/beta
+helm uninstall waddleai --kube-context=dal2-beta -n waddleai-beta
 ```
 
 ### Complete Removal (Data Loss!)
@@ -300,5 +299,5 @@ Configuration:
 ## Support
 
 - Documentation: `/docs/` folder
-- K8s Manifests: `/infrastructure/kubernetes/`
+- K8s Manifests: `/k8s/helm/waddleai/` (Helm, beta/prod) and `/k8s/kustomize/` (Kustomize, alpha)
 - Issues: support@penguintech.io
