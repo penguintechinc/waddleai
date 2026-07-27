@@ -3,8 +3,15 @@ Unit tests for LLM connectors system
 """
 
 from unittest.mock import AsyncMock, Mock, MagicMock, patch
+import sys
 
 import pytest
+
+# Mock google.genai module if not installed
+if "google.genai" not in sys.modules:
+    mock_genai = MagicMock()
+    sys.modules["google.genai"] = mock_genai
+    sys.modules["google"] = MagicMock(genai=mock_genai)
 
 
 class AsyncContextManagerMock:
@@ -19,6 +26,7 @@ class AsyncContextManagerMock:
 try:
     from shared.utils.llm_connectors import (
         AnthropicConnector,
+        GeminiConnector,
         LlamaCppConnector,
         OllamaConnector,
         OpenAIConnector,
@@ -298,6 +306,139 @@ class TestAnthropicConnector:
             assert result["provider"] == "anthropic"
 
 
+class TestGeminiConnector:
+    """Test Gemini connector"""
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_success(self):
+        """Test successful Gemini chat completion"""
+        finish_reason = Mock()
+        finish_reason.name = "STOP"
+        candidate = Mock()
+        candidate.finish_reason = finish_reason
+
+        mock_response = Mock()
+        mock_response.text = "Hello from Gemini!"
+        mock_response.candidates = [candidate]
+
+        messages = [{"role": "user", "content": "Hello"}]
+        model = "gemini-1.5-flash"
+
+        with patch("shared.utils.llm_connectors.genai.Client") as mock_genai:
+            mock_client = AsyncMock()
+            mock_genai.return_value = mock_client
+            mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+            config = {"api_key": "test-key", "model_list": ["gemini-1.5-flash"]}
+            connector = GeminiConnector("test-gemini", config)
+
+            response, metadata = await connector.chat_completion(messages, model)
+
+            assert response == "Hello from Gemini!"
+            assert metadata["provider"] == "gemini"
+            assert metadata["finish_reason"] == "STOP"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_with_system_message(self):
+        """Test Gemini chat completion with system message"""
+        finish_reason = Mock()
+        finish_reason.name = "STOP"
+        candidate = Mock()
+        candidate.finish_reason = finish_reason
+
+        mock_response = Mock()
+        mock_response.text = "Response"
+        mock_response.candidates = [candidate]
+
+        messages = [
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"}
+        ]
+        model = "gemini-1.5-flash"
+
+        with patch("shared.utils.llm_connectors.genai.Client") as mock_genai:
+            mock_client = AsyncMock()
+            mock_genai.return_value = mock_client
+            mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+            config = {"api_key": "test-key", "model_list": ["gemini-1.5-flash"]}
+            connector = GeminiConnector("test-gemini", config)
+
+            response, metadata = await connector.chat_completion(messages, model)
+
+            assert response == "Response"
+            # Verify that system message was passed separately
+            call_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
+            assert call_kwargs["system_prompt"] == "You are helpful"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_error(self):
+        """Test Gemini chat completion error handling"""
+        messages = [{"role": "user", "content": "Hello"}]
+        model = "gemini-1.5-flash"
+
+        with patch("shared.utils.llm_connectors.genai.Client") as mock_genai:
+            mock_client = AsyncMock()
+            mock_genai.return_value = mock_client
+            mock_client.aio.models.generate_content = AsyncMock(side_effect=Exception("API Error"))
+
+            config = {"api_key": "invalid-key", "model_list": ["gemini-1.5-flash"]}
+            connector = GeminiConnector("test-gemini", config)
+
+            with pytest.raises(Exception, match="API Error"):
+                await connector.chat_completion(messages, model)
+
+    @pytest.mark.asyncio
+    async def test_count_tokens(self):
+        """Test token counting for Gemini"""
+        with patch("shared.utils.llm_connectors.genai.Client"):
+            config = {"api_key": "test-key", "model_list": ["gemini-1.5-flash"]}
+            connector = GeminiConnector("test-gemini", config)
+
+            count = await connector.count_tokens("hello world", "gemini-1.5-flash")
+            assert isinstance(count, int)
+            assert count > 0
+
+    @pytest.mark.asyncio
+    async def test_list_models(self):
+        """Test listing Gemini models"""
+        with patch("shared.utils.llm_connectors.genai.Client"):
+            config = {"api_key": "test-key", "model_list": ["gemini-1.5-flash", "gemini-1.5-pro"]}
+            connector = GeminiConnector("test-gemini", config)
+
+            models = await connector.list_models()
+
+            assert len(models) == 2
+            assert models[0]["id"] == "gemini-1.5-flash"
+            assert models[0]["provider"] == "gemini"
+            assert models[1]["id"] == "gemini-1.5-pro"
+
+    @pytest.mark.asyncio
+    async def test_health_check(self):
+        """Test Gemini health check"""
+        finish_reason = Mock()
+        finish_reason.name = "STOP"
+        candidate = Mock()
+        candidate.finish_reason = finish_reason
+
+        mock_response = Mock()
+        mock_response.text = "hi"
+        mock_response.candidates = [candidate]
+
+        with patch("shared.utils.llm_connectors.genai.Client") as mock_genai:
+            mock_client = AsyncMock()
+            mock_genai.return_value = mock_client
+            mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+            config = {"api_key": "test-key", "model_list": ["gemini-1.5-flash"]}
+            connector = GeminiConnector("test-gemini", config)
+
+            result = await connector.health_check()
+
+            assert result["status"] == "healthy"
+            assert result["provider"] == "gemini"
+
+
 class TestOllamaConnector:
     """Test Ollama connector"""
 
@@ -513,6 +654,33 @@ class TestLLMManager:
             manager = LLMManager(manager_db)
             assert "test-anthropic" in manager.connectors
             assert isinstance(manager.connectors["test-anthropic"], AnthropicConnector)
+
+    def test_load_connectors_creates_gemini_connector(self, manager_db):
+        """Test loading Gemini connector from DB"""
+        import builtins
+        mock_link = MagicMock()
+        mock_link.name = "test-gemini"
+        mock_link.provider = "gemini"
+        mock_link.enabled = True
+        mock_link.endpoint_url = "https://generativelanguage.googleapis.com"
+        mock_link.api_key = "gemini-key"
+        mock_link.model_list = ["gemini-1.5-flash"]
+        mock_link.rate_limits = {}
+        mock_link.tls_config = {}
+
+        manager_db.return_value.select.return_value = [mock_link]
+        original_hasattr = builtins.hasattr
+        def mock_hasattr(obj, name):
+            if obj is manager_db and name in ("provider_credentials", "ai_providers"):
+                return False
+            return original_hasattr(obj, name)
+
+        with patch("shared.utils.llm_connectors.decrypt_credential", return_value="decrypted-key"), \
+             patch("shared.utils.llm_connectors.genai.Client"), \
+             patch("builtins.hasattr", side_effect=mock_hasattr):
+            manager = LLMManager(manager_db)
+            assert "test-gemini" in manager.connectors
+            assert isinstance(manager.connectors["test-gemini"], GeminiConnector)
 
     def test_load_connectors_creates_ollama_connector(self, manager_db):
         """Test loading Ollama connector from DB"""
