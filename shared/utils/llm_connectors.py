@@ -1,6 +1,6 @@
 """
 LLM Provider Connection Management
-Handles connections to OpenAI, Anthropic, Ollama, and llama.cpp (llama-server) providers
+Handles connections to OpenAI, Anthropic, Gemini, Ollama, and llama.cpp (llama-server) providers
 """
 
 import logging
@@ -15,6 +15,11 @@ import aiohttp
 import anthropic
 import openai
 import tiktoken
+
+try:
+    from google import genai  # type: ignore[attr-defined]
+except ImportError:
+    genai = None
 
 from shared.security.credential_encryption import decrypt_credential
 
@@ -313,6 +318,170 @@ class AnthropicConnector(LLMConnector):
             return {
                 "status": "unhealthy",
                 "provider": "anthropic",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+
+
+class GeminiConnector(LLMConnector):
+    """Google Gemini API connector using the google-genai SDK."""
+
+    def __init__(self, name: str, config: Dict[str, Any]):
+        super().__init__(name, config)
+        self.client = genai.Client(api_key=self.api_key)
+        # Gemini doesn't have tokenizers, so we estimate using tiktoken
+        self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
+
+    async def chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Generate Gemini chat completion.
+
+        Converts OpenAI/Anthropic-style messages to Gemini format,
+        extracting system role separately as Gemini requires.
+        """
+        try:
+            # Extract system message and convert to Gemini format
+            system_message = ""
+            gemini_messages = []
+
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_message = msg["content"]
+                else:
+                    # Gemini uses "user" and "model" (not "assistant")
+                    gemini_role = "user" if msg["role"] == "user" else "model"
+                    gemini_messages.append({"role": gemini_role, "parts": [{"text": msg["content"]}]})
+
+            # Prepare generation config
+            generation_config = genai.types.GenerateContentConfig(
+                max_output_tokens=kwargs.get("max_tokens", 1024),
+                temperature=kwargs.get("temperature", 0.7),
+            )
+
+            # Call Gemini API
+            response = await self.client.aio.models.generate_content(
+                model=f"models/{model}",
+                contents=gemini_messages,
+                system_prompt=system_message if system_message else None,
+                config=generation_config,
+            )
+
+            content = response.text
+
+            # Estimate token usage
+            input_text = system_message + " ".join([msg["content"] for msg in messages])
+            input_tokens = len(self.token_estimator.encode(input_text))
+            output_tokens = len(self.token_estimator.encode(content))
+
+            usage_info = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "model": model,
+                "finish_reason": response.candidates[0].finish_reason.name if response.candidates else "unknown",
+                "provider": "gemini",
+            }
+
+            return content, usage_info
+
+        except Exception as e:
+            logger.error(f"Gemini completion failed: {e}")
+            raise
+
+    async def count_tokens(self, text: str, model: str) -> int:
+        """Count tokens for Gemini models using the native API."""
+        try:
+            response = await self.client.aio.models.count_tokens(
+                model=f"models/{model}",
+                contents=text,
+            )
+            return int(response.total_tokens)
+        except Exception:
+            # Fallback to tiktoken estimation if API call fails
+            return len(self.token_estimator.encode(text))
+
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """List Gemini models using the native API, filtered by configured model_list.
+
+        Queries the Gemini API for available base models and returns only
+        those in the configured model_list for this connector instance.
+        Falls back to model_list if API call fails.
+        """
+        try:
+            # Query Gemini API for base models (query_base=True)
+            response = await self.client.aio.models.list(
+                config={"query_base": True, "page_size": 100}
+            )
+            models = []
+            # Collect all pages
+            async for model in response:
+                # Extract model name (e.g., "gemini-2.0-flash" from "publishers/google/models/gemini-2.0-flash")
+                model_id = model.name.split("/")[-1] if hasattr(model, 'name') else model.id
+                # Only include models in our configured model_list
+                if model_id in self.model_list:
+                    models.append(
+                        {
+                            "id": model_id,
+                            "object": "model",
+                            "created": int(datetime.utcnow().timestamp()),
+                            "owned_by": "google",
+                            "provider": "gemini",
+                            "capabilities": ["chat", "completion"],
+                            "context_length": self._get_context_length(model_id),
+                        }
+                    )
+            return models if models else self._fallback_model_list()
+        except Exception:
+            # Fallback to configured model_list if API fails
+            return self._fallback_model_list()
+
+    def _fallback_model_list(self) -> List[Dict[str, Any]]:
+        """Fallback model list from configuration."""
+        models = []
+        for model_id in self.model_list:
+            models.append(
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": int(datetime.utcnow().timestamp()),
+                    "owned_by": "google",
+                    "provider": "gemini",
+                    "capabilities": ["chat", "completion"],
+                    "context_length": self._get_context_length(model_id),
+                }
+            )
+        return models
+
+    def _get_context_length(self, model: str) -> int:
+        """Get context length for Gemini model."""
+        context_lengths = {
+            "gemini-2.0-flash": 1000000,
+            "gemini-1.5-pro": 1000000,
+            "gemini-1.5-flash": 1000000,
+            "gemini-1.0-pro": 32768,
+        }
+        return context_lengths.get(model, 32768)
+
+    async def health_check(self) -> Dict[str, Any]:
+        """Check Gemini API health with a minimal test call."""
+        try:
+            # Minimal test message to verify connectivity
+            model = self.model_list[0] if self.model_list else "gemini-1.5-flash"
+            await self.client.aio.models.generate_content(
+                model=f"models/{model}",
+                contents=[{"role": "user", "parts": [{"text": "hi"}]}],
+            )
+            return {
+                "status": "healthy",
+                "provider": "gemini",
+                "endpoint": "https://generativelanguage.googleapis.com",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "provider": "gemini",
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat(),
             }
@@ -627,6 +796,8 @@ class LLMConnectionManager:
                     connector = OpenAIConnector(link.name, config)
                 elif link.provider == "anthropic":
                     connector = AnthropicConnector(link.name, config)
+                elif link.provider == "gemini":
+                    connector = GeminiConnector(link.name, config)
                 elif link.provider == "ollama":
                     connector = OllamaConnector(link.name, config)
                 elif link.provider == "llamacpp":
