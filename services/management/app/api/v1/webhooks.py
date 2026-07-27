@@ -15,9 +15,13 @@ from . import api_v1_bp
 
 
 def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
-    """Verify webhook signature from AILB"""
+    """
+    Verify webhook signature from AILB.
+
+    Rejects (returns False) if no secret is configured — never skips verification.
+    """
     if not secret:
-        return True  # Skip verification if no secret configured
+        return False  # REJECT: verification requires a secret (never skip)
 
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
