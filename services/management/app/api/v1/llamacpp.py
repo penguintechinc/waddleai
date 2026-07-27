@@ -105,7 +105,7 @@ async def create_llamacpp_deployment():
         return jsonify({"error": "Invalid model_url: must be http/https URL without shell metacharacters"}), 400
 
     if model_filename and not _validate_model_filename(model_filename):
-        return jsonify({"error": "Invalid model_filename: must be bare filename (alphanumeric, dot, dash, underscore only)"}), 400
+        return jsonify({"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}), 400
 
     deployment_type = data.get("deployment_type", "kubernetes")
 
@@ -180,7 +180,7 @@ async def update_llamacpp_deployment(deployment_id):
     if "model_filename" in updates:
         model_filename = str(updates["model_filename"]).strip()
         if model_filename and not _validate_model_filename(model_filename):
-            return jsonify({"error": "Invalid model_filename: must be bare filename (alphanumeric, dot, dash, underscore only)"}), 400
+            return jsonify({"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}), 400
 
     def _update():
         if updates:
