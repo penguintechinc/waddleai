@@ -824,9 +824,43 @@ if features.enabled("smart_routing", distinct_id=org_id):   # waddleai.smart_rou
 
 ---
 
+## 15. Enterprise-Readiness Backlog (external review — Gemini, 2026-07-26)
+
+External AI-gateway review. Most items already live in the spec; recorded here as a gap-analysis so nothing is lost. **Covered** = already specified (with §ref); **Net-new** = not yet in spec, tracked with a target release. Each net-new item still ships behind a PostHog flag and, where enterprise-class, a license-tier gate (§2.4).
+
+### 15.1 Already covered (map to existing sections)
+
+| Suggestion | Where it lives |
+|---|---|
+| Automatic provider fallback + circuit breaking (Anthropic 5xx/**529**/rate-limit → alternate provider incl. Bedrock/Azure OpenAI) | §5.3.4 (taxonomy + breaker) + §7.3 availability failover — **add HTTP 529 "Overloaded" to the retryable set explicitly** |
+| Semantic caching (vector, ~0.95 similarity, <10ms) | §6.2 semantic cache (pgvector/HNSW, 0.95, restricted classes) |
+| Tiered / smart model downgrading (simple prompt → cheaper model) | §7 smart routing cascade + §7.3 budget-pressure downgrade |
+| Hard/soft **budget enforcement** (reject/downgrade at 100%) | §7.3 graduated budget pressure (80/95/100%) — enforcement side |
+| PII / DLP masking before egress to providers | §8.7 upstream query filters (pre-provider redaction) + §8 NER filter — **Presidio is an acceptable engine option alongside the NER pipeline** |
+| Prompt-injection / safety shields | §8.3 request-intent classifier (ShieldGemma / Granite Guardian) — **Llama Guard (Meta, non-PRC) acceptable as an alt guard model; NeMo Guardrails evaluated but not adopted** |
+| Enterprise SSO (OIDC / SAML 2.0) | §2.4 tiers (Pro: Google OAuth2; Enterprise: SAML 2.0 / OIDC) |
+| External KMS encryption (AWS/GCP/Azure) | §2.4 Enterprise (audit + external KMS) |
+| Stateless proxy scaling (distributed counters, replicas behind ingress) | §3.5 stateless pods + Valkey counters + HPA; §5.3 token gate |
+
+### 15.2 Net-new (tracked; not yet specified)
+
+| # | Item | Target | Notes |
+|---|---|---|---|
+| G1 | **SCIM 2.0 user/group provisioning** (auto create/revoke from Okta/Entra/Google groups) | v0.6.x (Enterprise) | Distinct from SSO login (§2.4); needs a SCIM endpoint + directory-group→role/scope mapping |
+| G2 | **External secrets managers for upstream provider keys** (HashiCorp Vault, AWS Secrets Manager, Azure Key Vault) — fetch at runtime instead of storing in Postgres | v0.5.x (Enterprise) | Complements, not replaces, §8 credential encryption; a `SecretsBackend` interface like the fleet interface (§10.1). Ties to security-review finding on at-rest provider keys |
+| G3 | **Immutable audit log + SIEM export** (append-only admin-action log → Splunk/Datadog/CloudWatch/Elastic) | v0.6.x (Enterprise) | §2.4 names audit logs; this adds tamper-evidence + external export sinks. Directly addresses the "no immutable trail of admin actions" gap the security review exposed |
+| G4 | **High-throughput OSS engine adapters** — vLLM, TGI (Text Generation Inference), TensorRT-LLM | v0.5.x | New `InferenceFleetBackend` implementations (§10.1) beside Ollama/llama.cpp/EXO; all OSI/non-PRC — confirm licenses at add time |
+| G5 | **Cost-center / department chargeback tagging** — tag virtual keys & requests with Cost-Center / Department / Project / Environment; chargeback reports | v0.6.x | Extends the §7.3 budget model + `token_usage`; feeds billing exports |
+| G6 | **Soft-budget alerting webhooks** (Slack / PagerDuty at 80% spend) | v0.6.x | Enforcement exists (§7.3); this is the notification side — reuse the flag/alert plumbing |
+| G7 | **OpenTelemetry distributed tracing** (trace_id/span_id across proxy → management → upstream; Jaeger/Honeycomb) | v0.6.x | Spec has Prometheus metrics only; OTel spans are net-new cross-service observability |
+
+Net-new schema (chargeback tags G5, SCIM mappings G1, secrets-backend config G2, audit-export config G3) folds into the migration ledger (§13.1) at the release each lands in; renumber from the then-current head.
+
+---
+
 ## Status
 
-**Sections 1–14 complete** (incl. §6A proxy memory layers and §9.7 memory scoping/trust/isolation model). All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
+**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review). All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
 
 ---
 
