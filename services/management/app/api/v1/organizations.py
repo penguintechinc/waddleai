@@ -217,13 +217,18 @@ async def get_organization_usage(org_id):
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
 
-    # Permission check
-    if user_role not in ["admin", "resource_manager", "reporter"]:
+    # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter
+    if user_role == "admin":
+        # Admin can access any org
+        pass
+    elif user_role in ["resource_manager", "reporter"]:
+        # Both must be scoped to their own org
         if org_id != user_org_id:
             return jsonify({"error": "Access denied"}), 403
-
-    if user_role == "resource_manager" and org_id != user_org_id:
-        return jsonify({"error": "Access denied"}), 403
+    else:
+        # Other roles scoped to their org
+        if org_id != user_org_id:
+            return jsonify({"error": "Access denied"}), 403
 
     org = await asyncio.to_thread(lambda: db(db.organizations.id == org_id).select().first())
 

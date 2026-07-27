@@ -69,9 +69,12 @@ class LlamaCppManager:
                             {
                                 "name": "download-model",
                                 "image": "curlimages/curl:latest",
+                                # Vuln D fix: use argv format, no shell metacharacter parsing
                                 "command": [
-                                    "sh", "-c",
-                                    f"curl -L -o /models/{deployment.model_filename} {deployment.model_url}",
+                                    "curl",
+                                    "-fsSL",
+                                    "-o", f"/models/{deployment.model_filename}",
+                                    deployment.model_url,
                                 ],
                                 "volumeMounts": [{"name": "model-storage", "mountPath": "/models"}],
                             }

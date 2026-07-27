@@ -181,9 +181,12 @@ async def update_user(user_id):
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Permission check
+    # Permission check — Vuln C fix: prevent non-admin from modifying admin users
     if user_role == "resource_manager" and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
+    # Non-admin cannot modify admin users
+    if user_role != "admin" and user.role == "admin":
+        return jsonify({"error": "Cannot modify admin user"}), 403
 
     # Build update fields
     update_fields = {}
@@ -268,6 +271,9 @@ async def enable_user(user_id):
 
     if user_role == "resource_manager" and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
+    # Vuln C fix: prevent non-admin from enabling admin users
+    if user_role != "admin" and user.role == "admin":
+        return jsonify({"error": "Cannot enable admin user"}), 403
 
     def _enable():
         db(db.users.id == user_id).update(enabled=True)

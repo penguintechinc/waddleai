@@ -110,6 +110,9 @@ async def set_user_quota(user_id):
     # Permission check
     if user_role == "resource_manager" and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
+    # Vuln C fix: prevent non-admin from modifying admin quota
+    if user_role != "admin" and user.role == "admin":
+        return jsonify({"error": "Cannot modify admin quota"}), 403
 
     update_fields = {}
 
@@ -252,11 +255,15 @@ async def get_quota_status(entity_id):
         if not key:
             return jsonify({"error": "Key not found"}), 404
 
-        # Permission check
-        if user_role not in ["admin", "reporter"]:
-            if user_role == "resource_manager" and key.organization_id != org_id:
+        # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter
+        if user_role == "admin":
+            # Admin can access any key
+            pass
+        elif user_role == "resource_manager":
+            if key.organization_id != org_id:
                 return jsonify({"error": "Access denied"}), 403
-            elif user_role not in ["resource_manager"] and key.user_id != user_id:
+        else:  # user, reporter, or any other role
+            if key.user_id != user_id:
                 return jsonify({"error": "Access denied"}), 403
 
         daily_tokens = daily_usage.waddleai_tokens if daily_usage else 0

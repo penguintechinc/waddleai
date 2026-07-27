@@ -4,6 +4,7 @@ WaddleAI Management API v1 - llama.cpp Deployment Management Endpoints
 
 import asyncio
 import logging
+import re
 
 import requests
 from quart import jsonify, request
@@ -14,6 +15,39 @@ from ...services.llamacpp_manager import LlamaCppManager
 from .auth import require_auth, require_role
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_model_url(url: str) -> bool:
+    """Validate model_url: http/https only, no shell metacharacters.
+
+    regression: security review 2026-07-26 — Vuln D: command injection prevention
+    """
+    if not url:
+        return False
+    # Must start with http:// or https://
+    if not url.startswith(("http://", "https://")):
+        return False
+    # Reject shell metacharacters
+    shell_chars = set(";|&$`()\\\"'<>")
+    if any(c in url for c in shell_chars):
+        return False
+    return True
+
+
+def _validate_model_filename(filename: str) -> bool:
+    """Validate model_filename: bare basename only, alphanumeric/dot/dash/underscore.
+
+    regression: security review 2026-07-26 — Vuln D: path traversal prevention
+    """
+    if not filename:
+        return False
+    # Must not contain path separators
+    if "/" in filename or "\\" in filename:
+        return False
+    # Allow only alphanumeric, dot, dash, underscore
+    if not re.match(r"^[A-Za-z0-9._-]+$", filename):
+        return False
+    return True
 
 
 def _deployment_to_dict(dep) -> dict:
@@ -62,6 +96,16 @@ async def create_llamacpp_deployment():
         return jsonify({"error": "name is required"}), 400
     if not model_name:
         return jsonify({"error": "model_name is required"}), 400
+
+    # Vuln D fix: validate model_url and model_filename at API layer
+    model_url = data.get("model_url", "").strip()
+    model_filename = data.get("model_filename", "").strip()
+
+    if model_url and not _validate_model_url(model_url):
+        return jsonify({"error": "Invalid model_url: must be http/https URL without shell metacharacters"}), 400
+
+    if model_filename and not _validate_model_filename(model_filename):
+        return jsonify({"error": "Invalid model_filename: must be bare filename (alphanumeric, dot, dash, underscore only)"}), 400
 
     deployment_type = data.get("deployment_type", "kubernetes")
 
@@ -126,6 +170,17 @@ async def update_llamacpp_deployment(deployment_id):
     allowed = {"model_name", "model_url", "model_filename", "n_ctx", "n_gpu_layers",
                "gpu_count", "k8s_namespace", "node_selector", "node_affinity"}
     updates = {k: v for k, v in data.items() if k in allowed}
+
+    # Vuln D fix: validate model_url and model_filename in PATCH too
+    if "model_url" in updates:
+        model_url = str(updates["model_url"]).strip()
+        if model_url and not _validate_model_url(model_url):
+            return jsonify({"error": "Invalid model_url: must be http/https URL without shell metacharacters"}), 400
+
+    if "model_filename" in updates:
+        model_filename = str(updates["model_filename"]).strip()
+        if model_filename and not _validate_model_filename(model_filename):
+            return jsonify({"error": "Invalid model_filename: must be bare filename (alphanumeric, dot, dash, underscore only)"}), 400
 
     def _update():
         if updates:
