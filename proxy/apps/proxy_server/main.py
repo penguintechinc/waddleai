@@ -224,6 +224,7 @@ class ProxyServer:
         else:
             # Start gRPC server in a daemon thread for MarchProxy AILB
             grpc_port = int(os.getenv("GRPC_PORT", "50051"))
+            grpc_auth_token = os.getenv("PROXY_GRPC_AUTH_TOKEN")
             components = ServerComponents(
                 routing_agent=getattr(self.request_router, "routing_agent", None),
                 security_agent=getattr(self.security_scanner, "security_agent", None),
@@ -233,6 +234,7 @@ class ProxyServer:
             self.grpc_server = run_grpc_in_thread(
                 port=grpc_port,
                 components=components,
+                grpc_auth_token=grpc_auth_token,
             )
             logger.info("gRPC server started", port=grpc_port)
 
