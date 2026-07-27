@@ -62,6 +62,9 @@ def verify_api_key(api_key: str) -> dict:
         if bcrypt.verify(api_key, key.key_hash):
             user = db(db.users.id == key.user_id).select().first()
             if user and user.enabled:
+                # Vuln A fix: Validate key's org matches user's org
+                if key.organization_id != user.organization_id:
+                    return None
                 return {
                     "user_id": user.id,
                     "username": user.username,

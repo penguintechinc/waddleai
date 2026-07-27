@@ -129,15 +129,39 @@ def init_extensions(app: Quart):
     redis_client = init_cache(app)
     cache_client = redis_client  # Ensure alias is set
 
-    # Initialize default data
-    init_default_data(db)
+    # Initialize default data (pass config so it can read ADMIN_INITIAL_PASSWORD)
+    init_default_data(db, config=app.config)
 
 
-def init_default_data(db: DB):
-    """Initialize default data for the database"""
+def init_default_data(db: DB, config: Optional[dict] = None) -> Optional[str]:
+    """
+    Initialize default data for the database.
+
+    Args:
+        db: Database instance
+        config: Flask app config object (used to read ADMIN_INITIAL_PASSWORD)
+
+    Returns:
+        The generated admin password (only for testing/development; production should never log this)
+    """
     import secrets
 
     from passlib.hash import bcrypt
+
+    # Use provided config or fall back to None (caller should provide it)
+    admin_password = None
+    if config:
+        admin_password = config.get("ADMIN_INITIAL_PASSWORD", "")
+
+    if not admin_password:
+        # No ADMIN_INITIAL_PASSWORD provided: generate a random, un-loggable
+        # password. The admin account is then unusable until reset via an
+        # operator flow -- fail-closed (no known default credential).
+        admin_password = secrets.token_urlsafe(16)
+
+    # Tracks the initial admin password to return (only populated when a new
+    # admin is created; consumed by dev/test callers, never logged).
+    result_password: Optional[str] = None
 
     # Create default organization
     if not db(db.organizations.name == "default").select():
@@ -158,7 +182,7 @@ def init_default_data(db: DB):
         admin_id = db.users.insert(
             username="admin",
             email="admin@localhost.local",
-            password_hash=bcrypt.hash("admin123"),
+            password_hash=bcrypt.hash(admin_password),
             role="admin",
             organization_id=org_id,
             token_quota_monthly=999999999,
@@ -171,7 +195,7 @@ def init_default_data(db: DB):
         api_key = "wa-" + secrets.token_urlsafe(32)
         db.virtual_keys.insert(
             user_id=admin_id,
-            organization_id=org_id,
+            organization_id=org_id,  # INVARIANT: must match admin user's org_id
             name="Admin Master Key",
             key_prefix="wa-admin",
             key_hash=bcrypt.hash(api_key),
@@ -180,8 +204,9 @@ def init_default_data(db: DB):
             enabled=True,
         )
 
-        logger.info(f"Created admin user. API Key: {api_key}")
-        print(f"Admin API Key (save this!): {api_key}")
+        logger.info("Created admin user and virtual key")
+        # Never log or print the plaintext API key
+        result_password = admin_password
 
     # Default token conversion rates
     default_rates = [
@@ -217,3 +242,4 @@ def init_default_data(db: DB):
 
     db.commit()
     logger.info("Default data initialized")
+    return result_password

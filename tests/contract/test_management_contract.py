@@ -254,10 +254,10 @@ def test_routing_config_instructions(management_url):
 
 
 def test_webhooks_usage(management_url):
-    # WEBHOOK_SECRET defaults to "change-in-production" (Config base class,
-    # no env override in the contract harness), so a correctly signed
-    # request is required for the 200 "accepted" path. `key_id` is
-    # deliberately omitted so no virtual_key lookup/mutation occurs
+    # WEBHOOK_SECRET is set to "contract-webhook-secret" by the harness
+    # (tests/contract/conftest.py), so a correctly signed request is required
+    # for the 200 "accepted" path (empty/absent secret now fails closed).
+    # `key_id` is deliberately omitted so no virtual_key lookup/mutation occurs
     # (keeps this test side-effect free for usage/quota snapshots).
     payload = {
         "event_id": "evt_contract_test",
@@ -269,7 +269,7 @@ def test_webhooks_usage(management_url):
         "status": "success",
     }
     body = json.dumps(payload).encode()
-    signature = "sha256=" + hmac.new(b"change-in-production", body, hashlib.sha256).hexdigest()
+    signature = "sha256=" + hmac.new(b"contract-webhook-secret", body, hashlib.sha256).hexdigest()
     r = httpx.post(
         f"{management_url}/api/v1/webhooks/ailb/usage",
         content=body,

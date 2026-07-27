@@ -110,7 +110,7 @@ class TestSetUserQuota:
         self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
     ) -> None:
         """Resource manager can set user quota in their org."""
-        user = make_mock_user(user_id=5, org_id=1)
+        user = make_mock_user(user_id=5, org_id=1, role="user")
         app_mock_db.return_value.select.return_value.first.return_value = user
 
         resp = await client.put(

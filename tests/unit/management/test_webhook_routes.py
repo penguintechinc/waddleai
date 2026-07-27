@@ -2,10 +2,23 @@
 Unit tests for AILB webhook routes: /api/v1/webhooks/ailb/*
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tests.unit.management.conftest import make_select_result
 from tests.unit.management.route_conftest import make_mock_key
+
+
+@pytest.fixture(autouse=True)
+def _bypass_webhook_signature():
+    """Bypass HMAC verification for these endpoint-logic tests.
+
+    Signature behavior (incl. fail-closed on an empty secret) is covered in
+    test_webhook_routes_extra.py::TestSignatureVerification.
+    """
+    with patch("services.management.app.api.v1.webhooks.verify_webhook_signature", return_value=True):
+        yield
 
 # ---------------------------------------------------------------------------
 # POST /api/v1/webhooks/ailb/usage

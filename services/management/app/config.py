@@ -52,7 +52,7 @@ class Config:
     """Base configuration"""
 
     # Flask settings
-    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "change-in-production"))
+    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", ""))
     DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
     # Database settings (PyDAL)
@@ -68,12 +68,12 @@ class Config:
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     # JWT settings
-    JWT_SECRET_KEY = os.getenv("JWT_SECRET", "change-in-production-min-32-chars")
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET", "")
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=24)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
 
     # Flask-Security-Too settings
-    SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "change-in-production")
+    SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "")
     SECURITY_PASSWORD_HASH = "bcrypt"
     SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"
     SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"
@@ -96,8 +96,11 @@ class Config:
     MARCHPROXY_AILB_TLS_KEY_PATH = os.getenv("MARCHPROXY_AILB_TLS_KEY_PATH", "")
 
     # Webhook settings
-    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-in-production")
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
     WEBHOOK_CALLBACK_URL = os.getenv("WEBHOOK_CALLBACK_URL", "http://localhost:8001/api/v1/webhooks/ailb/usage")
+
+    # Admin initial password (sourced from env; handled per-config-class)
+    ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "")
 
     # Ollama Management
     OLLAMA_MANAGEMENT_MODE = os.getenv("OLLAMA_MANAGEMENT_MODE", "both")  # manual, orchestrated, both
@@ -123,8 +126,17 @@ class Config:
 class DevelopmentConfig(Config):
     """Development configuration"""
 
+    import secrets
+
     DEBUG = True
     LOG_LEVEL = "DEBUG"
+
+    # Development: use deterministic defaults if env vars not set
+    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "dev-secret-key-min-32-chars"))
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET", "dev-jwt-secret-key-32-chars-minimum!")
+    SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "dev-password-salt")
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-webhook-secret")
+    ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "dev-admin-password")
 
 
 class ProductionConfig(Config):
@@ -138,9 +150,19 @@ class ProductionConfig(Config):
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
 
+    # Production: require all secrets from environment
+    # These will be empty strings if not set; validation happens in init_default_data
+    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", ""))
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET", "")
+    SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "")
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+    ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "")
+
 
 class TestingConfig(Config):
     """Testing configuration"""
+
+    import secrets
 
     TESTING = True
     DEBUG = True
@@ -149,3 +171,20 @@ class TestingConfig(Config):
     # (e.g. set by the contract-snapshot harness) like the base Config does.
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///test_waddleai.db")
     REDIS_URL = "redis://localhost:6379/1"
+
+    # Testing: use deterministic defaults to bootstrap tests
+    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "test-secret-key-min-32-chars-!!!!"))
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET", "test-jwt-secret-key-32-chars-minimum!!!")
+    SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "test-password-salt")
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "test-webhook-secret")
+
+    # Testing: generate deterministic admin password if env var not set
+    _testing_admin_password = os.getenv("ADMIN_INITIAL_PASSWORD", None)
+    if _testing_admin_password is None:
+        # Generate a deterministic test password (same across runs for reproducibility)
+        import hashlib
+
+        _seed = hashlib.sha256(b"waddleai-test-admin").hexdigest()[:16]
+        ADMIN_INITIAL_PASSWORD = f"test-admin-{_seed}"
+    else:
+        ADMIN_INITIAL_PASSWORD = _testing_admin_password

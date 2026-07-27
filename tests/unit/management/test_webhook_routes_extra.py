@@ -5,16 +5,33 @@ Focuses on HMAC signature verification and process_usage_event() internal logic.
 
 import hashlib
 import hmac
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tests.unit.management.route_conftest import make_mock_key
+
+
+@pytest.fixture(autouse=True)
+def _bypass_webhook_signature(request):
+    """Bypass HMAC verification for endpoint-logic tests.
+
+    The real signature behavior (including fail-closed on an empty secret) is
+    covered by TestSignatureVerification, which is exempted here so it exercises
+    verify_webhook_signature directly.
+    """
+    if request.cls is not None and request.cls.__name__ == "TestSignatureVerification":
+        yield
+        return
+    with patch("services.management.app.api.v1.webhooks.verify_webhook_signature", return_value=True):
+        yield
 
 
 class TestSignatureVerification:
     """Tests for verify_webhook_signature() function"""
 
     async def test_verify_signature_no_secret_configured(self, flask_app):
-        """When WEBHOOK_SECRET not configured, signature verification is skipped."""
+        """When WEBHOOK_SECRET is empty, verification REJECTS (fail closed), never skips."""
         async with flask_app.app_context():
             flask_app.config["WEBHOOK_SECRET"] = ""
             from services.management.app.api.v1.webhooks import verify_webhook_signature
@@ -22,7 +39,8 @@ class TestSignatureVerification:
             payload = b'{"test": "data"}'
             signature = "any-signature-accepted"
             result = verify_webhook_signature(payload, signature, flask_app.config["WEBHOOK_SECRET"])
-            assert result is True
+            # regression: security review 2026-07-26 — empty secret must reject, not skip
+            assert result is False
 
     async def test_verify_signature_valid(self, flask_app):
         """Valid HMAC signature returns True."""

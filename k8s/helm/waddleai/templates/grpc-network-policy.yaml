@@ -1,0 +1,30 @@
+{{- if .Values.proxy.grpc.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "waddleai.fullname" . }}-grpc
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app: waddleai-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: waddleai-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- if .Values.proxy.grpc.networkPolicy.allowedPodSelectors }}
+        {{- range .Values.proxy.grpc.networkPolicy.allowedPodSelectors }}
+        - podSelector:
+            {{- toYaml . | nindent 14 }}
+        {{- end }}
+        {{- else }}
+        # Default: no selectors allowed (fail-closed).
+        # Explicitly configure allowedPodSelectors in values to permit access.
+        []
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 50051
+{{- end }}

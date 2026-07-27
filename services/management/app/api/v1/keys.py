@@ -146,6 +146,29 @@ async def create_key():
         if user_role == "resource_manager" and target_org_id != org_id:
             return jsonify({"error": "Cannot create keys for other organizations"}), 403
 
+    # Vuln A fix: when creating a key for ANOTHER user, validate the target
+    # exists, belongs to target_org_id, and has a role no higher than the
+    # caller's. Creating a key for oneself needs no such lookup (the caller is
+    # authenticated and clearly exists).
+    if target_user_id != user_id:
+        def _validate_target_user() -> tuple[object, int]:
+            """Fetch target user and validate org membership + role hierarchy."""
+            target = db(db.users.id == target_user_id).select().first()
+            if not target:
+                return None, 404
+            if target.organization_id != target_org_id:
+                return None, 403
+            # Non-admin can only create keys for users with role <= their own
+            if user_role != "admin" and target.role == "admin":
+                return None, 403
+            return target, 200
+
+        _, status_code = await asyncio.to_thread(_validate_target_user)
+        if status_code == 404:
+            return jsonify({"error": "Target user not found"}), 404
+        if status_code != 200:
+            return jsonify({"error": "Cannot create key for target user"}), 403
+
     # Generate API key
     key_secret = secrets.token_urlsafe(32)
     api_key = f"wa-{key_secret}"
@@ -372,11 +395,15 @@ async def get_key_usage(key_id):
     if not key:
         return jsonify({"error": "Key not found"}), 404
 
-    # Permission check
-    if user_role not in ["admin", "reporter"]:
-        if user_role == "resource_manager" and key.organization_id != org_id:
+    # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter
+    if user_role == "admin":
+        # Admin can access any key
+        pass
+    elif user_role == "resource_manager":
+        if key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
-        elif user_role not in ["resource_manager"] and key.user_id != user_id:
+    else:  # user or reporter or any other role
+        if key.user_id != user_id:
             return jsonify({"error": "Access denied"}), 403
 
     from datetime import date, timedelta

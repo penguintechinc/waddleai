@@ -145,6 +145,20 @@ proxy:
     - name: DATABASE_URL
       secretName: waddleai-secrets
       key: database-url
+    - name: PROXY_GRPC_AUTH_TOKEN
+      secretName: waddleai-secrets
+      key: proxy-grpc-auth-token
+
+  # gRPC NetworkPolicy configuration (fail-closed: defaults to deny all)
+  grpc:
+    networkPolicy:
+      enabled: true
+      # allowedPodSelectors: list of pod selector labels allowed to call gRPC
+      # Default: empty list (all ingress denied until explicitly configured)
+      # Example:
+      #   - matchLabels:
+      #       app: marchproxy
+      allowedPodSelectors: []
 
 # WebUI Service
 webui:
