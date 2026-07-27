@@ -60,8 +60,9 @@ def management_url(tmp_path_factory):
     db_tmpdir = tmp_path_factory.mktemp("mgmt_db")
     # Pre-migration this points at wsgi:app; after Task B-final it is asgi:app (same object).
     entry = "asgi:app" if (REPO / "services/management/asgi.py").exists() else "wsgi:app"
-    # Set deterministic admin password for contract tests
-    extra_env = {"ADMIN_INITIAL_PASSWORD": "admin123"}
+    # Deterministic secrets so contract tests can authenticate (admin login)
+    # and produce a valid webhook HMAC signature.
+    extra_env = {"ADMIN_INITIAL_PASSWORD": "admin123", "WEBHOOK_SECRET": "contract-webhook-secret"}
     proc = _launch(entry, _port := _free_port(), REPO / "services/management",
                    db_dir=str(db_tmpdir), extra_env=extra_env)
     yield f"http://127.0.0.1:{_port}"

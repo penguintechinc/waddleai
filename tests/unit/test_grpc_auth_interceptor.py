@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import grpc
-import pytest
-from grpc import RpcMethodHandler, ServicerContext
+from grpc import ServicerContext
 
 
 @dataclass(slots=True)
@@ -50,7 +49,6 @@ class AuthInterceptor(grpc.ServerInterceptor):
 
         # Fail-closed: if no token configured, reject all calls
         if not self.configured_token:
-            abort_error = grpc.RpcError()
             return self._abort(grpc.StatusCode.UNAUTHENTICATED, "gRPC auth not configured")
 
         # Extract authorization metadata

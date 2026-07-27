@@ -146,26 +146,27 @@ async def create_key():
         if user_role == "resource_manager" and target_org_id != org_id:
             return jsonify({"error": "Cannot create keys for other organizations"}), 403
 
-    # Vuln A fix: Validate target user exists and belongs to target_org_id with role <= caller's
-    def _validate_target_user() -> tuple[dict | None, int]:
-        """Fetch target user and validate org membership + role hierarchy."""
-        target = db(db.users.id == target_user_id).select().first()
-        if not target:
-            return None, 404
-        if target.organization_id != target_org_id:
-            return None, 403
-        # Non-admin can only create keys for users with role <= their own
-        if user_role != "admin":
-            # resource_manager can create for non-admin users only
-            if target.role == "admin":
+    # Vuln A fix: when creating a key for ANOTHER user, validate the target
+    # exists, belongs to target_org_id, and has a role no higher than the
+    # caller's. Creating a key for oneself needs no such lookup (the caller is
+    # authenticated and clearly exists).
+    if target_user_id != user_id:
+        def _validate_target_user() -> tuple[object, int]:
+            """Fetch target user and validate org membership + role hierarchy."""
+            target = db(db.users.id == target_user_id).select().first()
+            if not target:
+                return None, 404
+            if target.organization_id != target_org_id:
                 return None, 403
-        return target, 200
+            # Non-admin can only create keys for users with role <= their own
+            if user_role != "admin" and target.role == "admin":
+                return None, 403
+            return target, 200
 
-    target_user_result, status_code = await asyncio.to_thread(_validate_target_user)
-    if status_code != 200:
+        _, status_code = await asyncio.to_thread(_validate_target_user)
         if status_code == 404:
             return jsonify({"error": "Target user not found"}), 404
-        else:
+        if status_code != 200:
             return jsonify({"error": "Cannot create key for target user"}), 403
 
     # Generate API key

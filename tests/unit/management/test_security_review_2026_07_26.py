@@ -9,7 +9,6 @@ regression: security review 2026-07-26
 
 from datetime import datetime
 from unittest.mock import MagicMock
-import pytest
 
 
 def make_mock_user(user_id: int = 1, role: str = "admin", org_id: int = 1, **kwargs) -> MagicMock:
