@@ -60,9 +60,10 @@ class FilterViolation:
 
     rule_name: str
     rule_type: str
-    matched_text: str  # First 100 chars of match
+    matched_text: str  # First 100 chars of match (for audit logging/display)
     action: str
     confidence: float
+    full_matched_text: str = ""  # Full matched text for redaction (default: empty, used only if set)
 
 
 @dataclass(slots=True)
@@ -434,7 +435,8 @@ class ContentFilter:
                 continue
             matches = compiled_pattern.finditer(text)
             for match in matches:
-                matched_text = match.group(0)[:100]
+                full_match = match.group(0)
+                matched_text = full_match[:100]  # Truncated for audit logging
                 pattern_config: PatternConfig = self.BUILTIN_PATTERNS[pattern_name]
                 confidence: float = pattern_config["confidence"]
 
@@ -444,6 +446,7 @@ class ContentFilter:
                     matched_text=matched_text,
                     action="redact",  # Built-ins default to redact
                     confidence=confidence,
+                    full_matched_text=full_match,  # Full text for complete redaction
                 )
                 violations.append(violation)
 
@@ -480,18 +483,19 @@ class ContentFilter:
                 if rule.rule_type == "custom_string":
                     # Case-insensitive substring matching
                     if rule.pattern.lower() in text.lower():
-                        matched_text = text[
-                            text.lower().find(rule.pattern.lower()) : text.lower().find(
-                                rule.pattern.lower()
-                            )
-                            + 100
-                        ]
+                        start_idx = text.lower().find(rule.pattern.lower())
+                        end_idx = start_idx + len(rule.pattern)
+                        # Extract context for logging (up to 100 chars from start point)
+                        matched_text = text[start_idx : start_idx + 100]
+                        # Full matched text is the exact substring found
+                        full_matched_text = text[start_idx:end_idx]
                         violation = FilterViolation(
                             rule_name=rule.name,
                             rule_type="custom_string",
                             matched_text=matched_text,
                             action=rule.action,
                             confidence=0.95,
+                            full_matched_text=full_matched_text,
                         )
                         violations.append(violation)
 
@@ -503,13 +507,15 @@ class ContentFilter:
                         )
                         matches = pattern.finditer(text)
                         for match in matches:
-                            matched_text = match.group(0)[:100]
+                            full_match = match.group(0)
+                            matched_text = full_match[:100]  # Truncated for audit logging
                             violation = FilterViolation(
                                 rule_name=rule.name,
                                 rule_type="custom_regex",
                                 matched_text=matched_text,
                                 action=rule.action,
                                 confidence=0.90,
+                                full_matched_text=full_match,  # Full text for complete redaction
                             )
                             violations.append(violation)
                     except re.error as e:
@@ -826,6 +832,10 @@ class ContentFilter:
         """
         Apply redactions to text based on violations.
 
+        Uses full_matched_text for redaction to ensure complete removal of secrets,
+        even those longer than 100 chars. Falls back to matched_text if full_matched_text
+        is not set (backwards compatibility).
+
         Args:
             text: Original text
             violations: Violations with matched text to redact
@@ -835,8 +845,10 @@ class ContentFilter:
         """
         redacted = text
         for violation in violations:
-            # Simple string replacement (escaping special chars)
-            pattern = re.escape(violation.matched_text)
+            # Use full_matched_text for redaction (complete secret), or fall back to matched_text
+            redact_text = violation.full_matched_text if violation.full_matched_text else violation.matched_text
+            # Escape special regex characters and replace
+            pattern = re.escape(redact_text)
             redacted = re.sub(
                 pattern,
                 "[REDACTED]",
@@ -1021,9 +1033,10 @@ class ContentFilter:
                 violation = FilterViolation(
                     rule_name=f"ner:{entity.entity_type}",
                     rule_type="ner_entity",
-                    matched_text=entity.text[:100],
+                    matched_text=entity.text[:100],  # Truncated for audit logging
                     action=action,
                     confidence=confidence,
+                    full_matched_text=entity.text,  # Full text for complete redaction
                 )
                 violations.append(violation)
 
