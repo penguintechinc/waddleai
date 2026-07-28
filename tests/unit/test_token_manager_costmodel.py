@@ -3,12 +3,11 @@ Test suite for Token Manager cost model (ported from AILB)
 Tests token conversion, cost calculation, and conversion rate management
 """
 
-from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
 
-from shared.utils.token_manager import ConversionRate, TokenManager, TokenUsage
+from shared.utils.token_manager import ConversionRate, TokenManager
 
 
 class TestTokenConversion:
