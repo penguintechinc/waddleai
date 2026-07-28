@@ -14,6 +14,16 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+# Hardened image references — digest-pinned, security-vetted
+LLAMACPP_IMAGE: str = (
+    "ghcr.io/ggml-org/llama.cpp@sha256:"
+    "51570a4f93c5ce81ac6f2b1ea16a58771cfded2adb34241df7e75329b24fe76e"
+)
+CURL_DOWNLOADER_IMAGE: str = (
+    "curlimages/curl@sha256:"
+    "7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
+)
+
 
 def get_k8s_apps_client():
     """Return a configured AppsV1Api client."""
@@ -50,12 +60,125 @@ class LlamaCppManager:
         return f"waddleai-llamacpp-{sanitised}"
 
     def export_k8s_manifest(self, deployment) -> str:
-        """Return DaemonSet + Service YAML for the given deployment."""
+        """Return DaemonSet + Service YAML for the given deployment.
+
+        Manifests are hardened to match k8s/helm/waddleai/templates/llamacpp-daemonset.yaml:
+        - Digest-pinned images (ggml-org/llama.cpp and curlimages/curl)
+        - PersistentVolumeClaim-backed model cache (falls back to emptyDir with warning)
+        - Cache-skip guard in init container (env vars, no shell interpolation)
+        - Full securityContext (pod + container level)
+        - CPU/memory resource requests/limits
+        - Health check probes
+        """
         ds_name = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
         namespace = deployment.k8s_namespace or "waddleai"
         node_selector = deployment.node_selector or {}
 
-        daemonset = {
+        # Resource defaults if not provided on deployment
+        cpu_request: str = deployment.cpu_request or "2000m"
+        cpu_limit: str = deployment.cpu_limit or "4000m"
+        memory_request: str = deployment.memory_request or "8Gi"
+        memory_limit: str = deployment.memory_limit or "16Gi"
+
+        # Model volume: PVC if cache claim provided, otherwise emptyDir with warning
+        model_volume: dict
+        if deployment.model_cache_claim:
+            model_volume = {
+                "name": "llamacpp-models",
+                "persistentVolumeClaim": {"claimName": deployment.model_cache_claim},
+            }
+        else:
+            logger.warning(
+                "No model_cache_claim set for deployment %s; model caching is disabled. "
+                "Set model_cache_claim to enable PVC-backed cache for faster restarts.",
+                deployment.name,
+            )
+            model_volume = {"name": "llamacpp-models", "emptyDir": {}}
+
+        # Cache-skip guard: init container checks if model already cached before download
+        # Uses env vars (MODEL_URL, MODEL_FILE) to avoid shell injection, matches Helm template
+        cache_skip_guard_script: str = (
+            "set -eu\n"
+            'if [ -f "/models/$MODEL_FILE" ]; then\n'
+            '  echo "$MODEL_FILE already cached, skipping download"\n'
+            "else\n"
+            '  echo "Downloading $MODEL_FILE"\n'
+            '  curl -fsSL -o "/models/$MODEL_FILE" "$MODEL_URL"\n'
+            "fi"
+        )
+
+        init_container: dict = {
+            "name": "download-model",
+            "image": CURL_DOWNLOADER_IMAGE,
+            "env": [
+                {"name": "MODEL_URL", "value": deployment.model_url},
+                {"name": "MODEL_FILE", "value": deployment.model_filename},
+            ],
+            "command": ["/bin/sh", "-c", cache_skip_guard_script],
+            "securityContext": {
+                "runAsNonRoot": True,
+                "runAsUser": 1000,
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "capabilities": {"drop": ["ALL"]},
+            },
+            "volumeMounts": [
+                {"name": "llamacpp-models", "mountPath": "/models"},
+                {"name": "tmp", "mountPath": "/tmp"},
+            ],
+        }
+
+        llama_server_container: dict = {
+            "name": "llama-server",
+            "image": LLAMACPP_IMAGE,
+            "args": [
+                "--model", f"/models/{deployment.model_filename}",
+                "--n-gpu-layers", str(deployment.n_gpu_layers),
+                "--ctx-size", str(deployment.n_ctx),
+                "--port", "8080",
+                "--host", "0.0.0.0",
+            ],
+            "ports": [{"name": "http", "containerPort": 8080, "protocol": "TCP"}],
+            "securityContext": {
+                "runAsNonRoot": True,
+                "runAsUser": 1000,
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "capabilities": {"drop": ["ALL"]},
+            },
+            "resources": {
+                "requests": {
+                    "cpu": cpu_request,
+                    "memory": memory_request,
+                    "nvidia.com/gpu": str(deployment.gpu_count),
+                },
+                "limits": {
+                    "cpu": cpu_limit,
+                    "memory": memory_limit,
+                    "nvidia.com/gpu": str(deployment.gpu_count),
+                },
+            },
+            "livenessProbe": {
+                "httpGet": {"path": "/health", "port": 8080},
+                "initialDelaySeconds": 60,
+                "periodSeconds": 30,
+                "timeoutSeconds": 15,
+                "failureThreshold": 5,
+            },
+            "readinessProbe": {
+                "httpGet": {"path": "/health", "port": 8080},
+                "initialDelaySeconds": 30,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            },
+            "volumeMounts": [
+                {"name": "llamacpp-models", "mountPath": "/models"},
+                {"name": "tmp", "mountPath": "/tmp"},
+            ],
+        }
+
+        daemonset: dict = {
             "apiVersion": "apps/v1",
             "kind": "DaemonSet",
             "metadata": {"name": ds_name, "namespace": namespace},
@@ -64,40 +187,18 @@ class LlamaCppManager:
                 "template": {
                     "metadata": {"labels": {"app": ds_name}},
                     "spec": {
+                        "securityContext": {
+                            "fsGroup": 1000,
+                            "runAsNonRoot": True,
+                            "runAsUser": 1000,
+                        },
                         "nodeSelector": node_selector,
-                        "initContainers": [
-                            {
-                                "name": "download-model",
-                                "image": "curlimages/curl:latest",
-                                # Vuln D fix: use argv format, no shell metacharacter parsing
-                                "command": [
-                                    "curl",
-                                    "-fsSL",
-                                    "-o", f"/models/{deployment.model_filename}",
-                                    deployment.model_url,
-                                ],
-                                "volumeMounts": [{"name": "model-storage", "mountPath": "/models"}],
-                            }
+                        "initContainers": [init_container],
+                        "containers": [llama_server_container],
+                        "volumes": [
+                            model_volume,
+                            {"name": "tmp", "emptyDir": {}},
                         ],
-                        "containers": [
-                            {
-                                "name": "llama-server",
-                                "image": "ghcr.io/ggerganov/llama.cpp:server",
-                                "args": [
-                                    "--model", f"/models/{deployment.model_filename}",
-                                    "--n-gpu-layers", str(deployment.n_gpu_layers),
-                                    "--ctx-size", str(deployment.n_ctx),
-                                    "--port", "8080",
-                                    "--host", "0.0.0.0",
-                                ],
-                                "ports": [{"containerPort": 8080}],
-                                "resources": {
-                                    "limits": {"nvidia.com/gpu": str(deployment.gpu_count)}
-                                },
-                                "volumeMounts": [{"name": "model-storage", "mountPath": "/models"}],
-                            }
-                        ],
-                        "volumes": [{"name": "model-storage", "emptyDir": {}}],
                     },
                 },
             },
@@ -108,7 +209,7 @@ class LlamaCppManager:
                 "nodeAffinity": deployment.node_affinity
             }
 
-        service = {
+        service: dict = {
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": {"name": f"{ds_name}-svc", "namespace": namespace},
