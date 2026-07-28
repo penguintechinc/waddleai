@@ -49,6 +49,22 @@ class ConversionRate:
 class TokenManager:
     """Manages token counting, conversion, and quota enforcement"""
 
+    # Default conversion rates for common models (seed data for token_conversion_rates table)
+    DEFAULT_CONVERSION_RATES = {
+        "openai:gpt-4": ConversionRate("openai", "gpt-4", 10.0, 20.0, 0.003),
+        "openai:gpt-4-turbo": ConversionRate("openai", "gpt-4-turbo", 10.0, 20.0, 0.001),
+        "openai:gpt-4o": ConversionRate("openai", "gpt-4o", 10.0, 20.0, 0.0005),
+        "openai:gpt-4o-mini": ConversionRate("openai", "gpt-4o-mini", 10.0, 10.0, 0.00015),
+        "openai:gpt-3.5-turbo": ConversionRate("openai", "gpt-3.5-turbo", 10.0, 10.0, 0.0002),
+        "anthropic:claude-3-opus": ConversionRate("anthropic", "claude-3-opus", 10.0, 20.0, 0.0075),
+        "anthropic:claude-3-sonnet": ConversionRate("anthropic", "claude-3-sonnet", 10.0, 20.0, 0.0015),
+        "anthropic:claude-3-haiku": ConversionRate("anthropic", "claude-3-haiku", 10.0, 10.0, 0.00025),
+        "anthropic:claude-3.5-sonnet": ConversionRate("anthropic", "claude-3.5-sonnet", 10.0, 20.0, 0.003),
+        "ollama:llama2": ConversionRate("ollama", "llama2", 10.0, 10.0, 0.0),
+        "ollama:mistral": ConversionRate("ollama", "mistral", 10.0, 10.0, 0.0),
+        "ollama:codellama": ConversionRate("ollama", "codellama", 10.0, 10.0, 0.0),
+    }
+
     def __init__(self, db):
         self.db = db
         self._load_conversion_rates()
@@ -65,19 +81,23 @@ class TokenManager:
         self.default_encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
     def _load_conversion_rates(self):
-        """Load token conversion rates from database"""
+        """Load token conversion rates from database, fallback to defaults if empty"""
         self.conversion_rates = {}
 
         rates = self.db(self.db.token_conversion_rates.enabled == True).select()  # noqa: E712
-        for rate in rates:
-            key = f"{rate.provider}:{rate.model}"
-            self.conversion_rates[key] = ConversionRate(
-                provider=rate.provider,
-                model=rate.model,
-                input_rate=rate.input_rate,
-                output_rate=rate.output_rate,
-                base_cost_per_waddleai_token=rate.base_cost_per_waddleai_token,
-            )
+        if rates:
+            for rate in rates:
+                key = f"{rate.provider}:{rate.model}"
+                self.conversion_rates[key] = ConversionRate(
+                    provider=rate.provider,
+                    model=rate.model,
+                    input_rate=rate.input_rate,
+                    output_rate=rate.output_rate,
+                    base_cost_per_waddleai_token=rate.base_cost_per_waddleai_token,
+                )
+        else:
+            # Fallback to defaults when DB table is empty
+            self.conversion_rates = dict(self.DEFAULT_CONVERSION_RATES)
 
     def count_tokens(self, text: str, provider: str = "openai", model: str = "gpt-3.5-turbo") -> int:
         """Count tokens in text using appropriate encoder"""
@@ -100,14 +120,14 @@ class TokenManager:
 
         if rate_key not in self.conversion_rates:
             logger.warning(f"No conversion rate found for {provider}:{model}, using default")
-            # Default conversion rate
+            # Default conversion rate: output tokens weighted 2x, divided by 10
             return max(1, (input_tokens + output_tokens * 2) // 10)
 
         rate = self.conversion_rates[rate_key]
 
         # Convert using rates (LLM tokens per WaddleAI token)
-        waddleai_input = max(1, input_tokens // rate.input_rate) if input_tokens > 0 else 0
-        waddleai_output = max(1, output_tokens // rate.output_rate) if output_tokens > 0 else 0
+        waddleai_input = max(1, int(input_tokens / rate.input_rate)) if input_tokens > 0 else 0
+        waddleai_output = max(1, int(output_tokens / rate.output_rate)) if output_tokens > 0 else 0
 
         return waddleai_input + waddleai_output
 
@@ -115,13 +135,13 @@ class TokenManager:
         """Calculate cost in WaddleAI tokens and USD"""
         rate_key = f"{provider}:{model}"
 
-        cost_waddleai = waddleai_tokens  # 1:1 for WaddleAI tokens
+        cost_waddleai = float(waddleai_tokens)  # 1:1 for WaddleAI tokens
 
         if rate_key in self.conversion_rates:
             rate = self.conversion_rates[rate_key]
-            cost_usd = waddleai_tokens * rate.base_cost_per_waddleai_token
+            cost_usd = float(waddleai_tokens * rate.base_cost_per_waddleai_token)
         else:
-            cost_usd = waddleai_tokens * 0.001  # Default $0.001 per WaddleAI token
+            cost_usd = float(waddleai_tokens * 0.001)  # Default $0.001 per WaddleAI token
 
         return cost_waddleai, cost_usd
 
