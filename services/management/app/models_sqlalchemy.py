@@ -235,6 +235,8 @@ class VirtualKey(Base):
     budget_limit_monthly = Column(Integer)
     tpm_limit = Column(Integer)  # Tokens per minute
     rpm_limit = Column(Integer)  # Requests per minute
+    budget_monthly_tokens = Column(Integer, nullable=True)  # Monthly token limit; None = unlimited
+    budget_monthly_usd = Column(Integer, nullable=True)  # Monthly USD limit in micro-USD; None = unlimited
     enabled = Column(Boolean, default=True)
     expires_at = Column(DateTime)
     last_used = Column(DateTime)
