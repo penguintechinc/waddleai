@@ -1,0 +1,19 @@
+{{- if and .Values.llamacpp.enabled .Values.llamacpp.persistence.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "waddleai.fullname" . }}-llamacpp-models
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llamacpp
+spec:
+  accessModes:
+    - {{ .Values.llamacpp.persistence.accessMode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ .Values.llamacpp.persistence.size }}
+  {{- if .Values.llamacpp.persistence.storageClass }}
+  storageClassName: {{ .Values.llamacpp.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

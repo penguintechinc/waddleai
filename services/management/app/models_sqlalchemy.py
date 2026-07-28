@@ -192,6 +192,13 @@ class LlamaCppDeployment(Base):
     k8s_daemonset_name = Column(String(255))
     node_selector = Column(JSON)   # e.g. {"waddleai/gpu-tier": "a100"}
     node_affinity = Column(JSON)   # optional advanced scheduling
+    model_cache_claim = Column(String(255))  # PVC name for model cache; None = emptyDir
+
+    # Resource limits for containers
+    cpu_request = Column(String(50))      # e.g. "2000m", "2"
+    cpu_limit = Column(String(50))        # e.g. "4000m", "4"
+    memory_request = Column(String(50))   # e.g. "8Gi", "8192Mi"
+    memory_limit = Column(String(50))     # e.g. "16Gi", "16384Mi"
 
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

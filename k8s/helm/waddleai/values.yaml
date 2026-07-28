@@ -482,6 +482,103 @@ ollama:
     timeoutSeconds: 5
     failureThreshold: 3
 
+# llama.cpp Inference Engine (self-managed alternative to Ollama)
+# llama-server serves exactly ONE model per process (unlike `ollama serve`, which
+# multiplexes). Each entry in `models` renders its own DaemonSet + Service, named
+# "<fullname>-llamacpp-<model.name>". Every model DaemonSet mounts the SAME shared
+# cache PVC below — GGUF weights are downloaded once and reused across pod restarts
+# instead of the emptyDir the management API's runtime deploy path still uses.
+llamacpp:
+  enabled: false
+  image:
+    repository: ghcr.io/ggml-org/llama.cpp
+    tag: "server"
+    digest: "sha256:51570a4f93c5ce81ac6f2b1ea16a58771cfded2adb34241df7e75329b24fe76e"
+    pullPolicy: IfNotPresent
+
+  # Model-download init container image (guarded, cache-aware curl)
+  downloaderImage:
+    repository: curlimages/curl
+    tag: "8.21.0"
+    digest: "sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+
+  # Label GPU nodes: kubectl label node <nodename> gpu=true
+  # Overridable per-model via models[].nodeSelector
+  nodeSelector:
+    gpu: "true"
+
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+  gpu:
+    enabled: true
+    type: nvidia
+
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "2000m"
+    limits:
+      memory: "16Gi"
+      cpu: "4000m"
+
+  # Shared RWX PVC for the whole llamacpp fleet — one volume, mounted by every
+  # model's DaemonSet, not one PVC per model.
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClass: ""
+    accessMode: ReadWriteMany
+    hostPath: ""
+
+  # One DaemonSet + one Service is rendered PER entry (llama-server = one model
+  # per process, unlike ollama's multiplexed `ollama pull` list).
+  # Fields:
+  #   name        - required; used in resource naming + pod selectors
+  #   url         - required; GGUF download URL
+  #   filename    - required; target filename on the shared cache volume
+  #   ctxSize     - optional; default 4096
+  #   nGpuLayers  - optional; default 0
+  #   gpuCount    - optional; default 1 (only used when gpu.enabled)
+  #   nodeSelector - optional; overrides the fleet-wide nodeSelector above
+  models: []
+  # Example:
+  # models:
+  #   - name: llama3-8b
+  #     url: https://huggingface.co/example/llama3-8b/resolve/main/llama3-8b.Q4_K_M.gguf
+  #     filename: llama3-8b.Q4_K_M.gguf
+  #     ctxSize: 8192
+  #     nGpuLayers: 999
+  #     gpuCount: 1
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 5
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
 # GPU Device Plugins (sub-charts — all disabled by default)
 # Enable the plugin matching your GPU hardware.
 

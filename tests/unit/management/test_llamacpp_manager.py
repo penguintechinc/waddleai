@@ -37,6 +37,12 @@ def k8s_deployment():
     dep.node_affinity = None
     dep.endpoint_url = None
     dep.status = "pending"
+    # Hardening attributes (defaults when not provided)
+    dep.model_cache_claim = None
+    dep.cpu_request = None
+    dep.cpu_limit = None
+    dep.memory_request = None
+    dep.memory_limit = None
     return dep
 
 
@@ -87,12 +93,13 @@ def test_export_k8s_manifest_gpu_resource(manager, k8s_deployment):
 
 
 def test_export_k8s_manifest_init_container_download_url(manager, k8s_deployment):
+    """URL should be passed via env var (not in command) for security."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
     docs = list(yaml.safe_load_all(manifest_yaml))
     ds = next(d for d in docs if d["kind"] == "DaemonSet")
     init_c = ds["spec"]["template"]["spec"]["initContainers"][0]
-    cmd = " ".join(init_c["command"])
-    assert k8s_deployment.model_url in cmd
+    env_vars = {e["name"]: e["value"] for e in init_c["env"]}
+    assert env_vars["MODEL_URL"] == k8s_deployment.model_url
 
 
 def test_export_k8s_manifest_service_port(manager, k8s_deployment):
