@@ -131,3 +131,25 @@ Image name for ollama
 {{- printf "%s:%s" .Values.ollama.image.repository .Values.ollama.image.tag }}
 {{- end -}}
 {{- end }}
+
+{{/*
+Image name for llamacpp (llama-server)
+*/}}
+{{- define "waddleai.llamacpp.image" -}}
+{{- if .Values.llamacpp.image.digest -}}
+{{- printf "%s@%s" .Values.llamacpp.image.repository .Values.llamacpp.image.digest }}
+{{- else -}}
+{{- printf "%s:%s" .Values.llamacpp.image.repository .Values.llamacpp.image.tag }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Image name for the llamacpp model-download init container
+*/}}
+{{- define "waddleai.llamacpp.downloaderImage" -}}
+{{- if .Values.llamacpp.downloaderImage.digest -}}
+{{- printf "%s@%s" .Values.llamacpp.downloaderImage.repository .Values.llamacpp.downloaderImage.digest }}
+{{- else -}}
+{{- printf "%s:%s" .Values.llamacpp.downloaderImage.repository .Values.llamacpp.downloaderImage.tag }}
+{{- end -}}
+{{- end }}

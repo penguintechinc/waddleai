@@ -1,0 +1,174 @@
+{{- if .Values.llamacpp.enabled -}}
+{{- range .Values.llamacpp.models }}
+{{- $model := . }}
+{{- $modelName := lower $model.name }}
+{{- $modelName = regexReplaceAll "[^a-z0-9-]" $modelName "-" }}
+{{- $modelName = regexReplaceAll "-+" $modelName "-" }}
+{{- $modelName = trimSuffix "-" (trimPrefix "-" $modelName) }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-llamacpp-{{ $modelName }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: llamacpp
+    app.kubernetes.io/instance-model: {{ $modelName }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: llamacpp
+      app.kubernetes.io/instance-model: {{ $modelName }}
+  template:
+    metadata:
+      labels:
+        {{- include "waddleai.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: llamacpp
+        app.kubernetes.io/instance-model: {{ $modelName }}
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "waddleai.serviceAccountName" $ }}
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      initContainers:
+        - name: download-model
+          image: {{ include "waddleai.llamacpp.downloaderImage" $ }}
+          imagePullPolicy: {{ $.Values.llamacpp.downloaderImage.pullPolicy }}
+          # Guarded download — skip the curl entirely when the GGUF is already on the
+          # shared cache volume, so a pod restart never re-pulls multi-GB weights.
+          # url/filename come from operator-controlled values, not end-user input, but
+          # are still passed as env vars and quoted rather than interpolated directly
+          # into the shell command.
+          env:
+            - name: MODEL_URL
+              value: {{ $model.url | quote }}
+            - name: MODEL_FILE
+              value: {{ $model.filename | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              if [ -f "/models/$MODEL_FILE" ]; then
+                echo "$MODEL_FILE already cached, skipping download"
+              else
+                echo "Downloading $MODEL_FILE"
+                curl -fsSL -o "/models/$MODEL_FILE" "$MODEL_URL"
+              fi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: llamacpp-models
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: llama-server
+          image: {{ include "waddleai.llamacpp.image" $ }}
+          imagePullPolicy: {{ $.Values.llamacpp.image.pullPolicy }}
+          # readOnlyRootFilesystem: true — llama-server only reads the GGUF from
+          # /models and needs scratch space at /tmp (both mounted below); it does not
+          # write elsewhere unless --slot-save-path is set, which this chart doesn't use.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - --model
+            - {{ printf "/models/%s" $model.filename | quote }}
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ $.Values.llamacpp.service.targetPort | quote }}
+            - --ctx-size
+            - {{ $model.ctxSize | default 4096 | quote }}
+            - --n-gpu-layers
+            - {{ $model.nGpuLayers | default 0 | quote }}
+          ports:
+            - name: http
+              containerPort: {{ $.Values.llamacpp.service.targetPort }}
+              protocol: TCP
+          {{- if $.Values.llamacpp.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ $.Values.llamacpp.livenessProbe.httpGet.path }}
+              port: {{ $.Values.llamacpp.livenessProbe.httpGet.port }}
+            initialDelaySeconds: {{ $.Values.llamacpp.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $.Values.llamacpp.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ $.Values.llamacpp.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ $.Values.llamacpp.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if $.Values.llamacpp.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ $.Values.llamacpp.readinessProbe.httpGet.path }}
+              port: {{ $.Values.llamacpp.readinessProbe.httpGet.port }}
+            initialDelaySeconds: {{ $.Values.llamacpp.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $.Values.llamacpp.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ $.Values.llamacpp.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ $.Values.llamacpp.readinessProbe.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- if $.Values.llamacpp.gpu.enabled }}
+            requests:
+              {{ $.Values.llamacpp.gpu.type | default "nvidia" }}.com/gpu: {{ $model.gpuCount | default 1 }}
+              {{- with $.Values.llamacpp.resources.requests }}
+              memory: {{ .memory }}
+              cpu: {{ .cpu }}
+              {{- end }}
+            limits:
+              {{ $.Values.llamacpp.gpu.type | default "nvidia" }}.com/gpu: {{ $model.gpuCount | default 1 }}
+              {{- with $.Values.llamacpp.resources.limits }}
+              memory: {{ .memory }}
+              cpu: {{ .cpu }}
+              {{- end }}
+            {{- else }}
+            {{- toYaml $.Values.llamacpp.resources | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: llamacpp-models
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: llamacpp-models
+          {{- if $.Values.llamacpp.persistence.hostPath }}
+          hostPath:
+            path: {{ $.Values.llamacpp.persistence.hostPath }}
+            type: DirectoryOrCreate
+          {{- else if $.Values.llamacpp.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "waddleai.fullname" $ }}-llamacpp-models
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- $nodeSelector := $model.nodeSelector | default $.Values.llamacpp.nodeSelector }}
+      {{- if $nodeSelector }}
+      nodeSelector:
+        {{- toYaml $nodeSelector | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.llamacpp.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}
