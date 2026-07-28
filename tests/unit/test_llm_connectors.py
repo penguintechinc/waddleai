@@ -2,16 +2,29 @@
 Unit tests for LLM connectors system
 """
 
-from unittest.mock import AsyncMock, Mock, MagicMock, patch
+import importlib
 import sys
+import types
+from unittest.mock import AsyncMock, Mock, MagicMock, patch
 
 import pytest
 
-# Mock google.genai module if not installed
-if "google.genai" not in sys.modules:
-    mock_genai = MagicMock()
-    sys.modules["google.genai"] = mock_genai
-    sys.modules["google"] = MagicMock(genai=mock_genai)
+# Stand in for google.genai when the optional SDK is not installed.
+# `google` is a namespace package shared with protobuf/auth — replacing it
+# wholesale breaks every later import of google.protobuf in the same session,
+# so only the `genai` attribute is supplied here.
+try:
+    from google import genai  # noqa: F401
+except ImportError:
+    _mock_genai = MagicMock()
+    sys.modules["google.genai"] = _mock_genai
+    try:
+        _google_pkg = importlib.import_module("google")
+    except ImportError:
+        _google_pkg = types.ModuleType("google")
+        _google_pkg.__path__ = []  # keep it a package so submodules resolve
+        sys.modules["google"] = _google_pkg
+    _google_pkg.genai = _mock_genai
 
 
 class AsyncContextManagerMock:
