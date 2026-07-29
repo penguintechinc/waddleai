@@ -3,6 +3,7 @@ LLM Provider Connection Management
 Handles connections to OpenAI, Anthropic, Gemini, Ollama, and llama.cpp (llama-server) providers
 """
 
+import asyncio
 import logging
 import random
 import threading
@@ -20,6 +21,11 @@ try:
     from google import genai  # type: ignore[attr-defined]
 except ImportError:
     genai = None
+
+try:
+    import boto3
+except ImportError:
+    boto3 = None
 
 from shared.security.credential_encryption import decrypt_credential
 
@@ -207,6 +213,95 @@ class OpenAIConnector(LLMConnector):
             return {
                 "status": "unhealthy",
                 "provider": "openai",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+
+
+class XAIConnector(OpenAIConnector):
+    """xAI API connector (OpenAI-compatible).
+
+    xAI exposes an OpenAI-compatible API endpoint, so we subclass OpenAIConnector
+    and override the provider label to distinguish xAI from OpenAI in usage tracking.
+    """
+
+    def __init__(self, name: str, config: Dict[str, Any]):
+        super().__init__(name, config)
+        # Override the endpoint_url default if not explicitly set
+        if not self.endpoint_url or self.endpoint_url == "https://api.openai.com/v1":
+            self.endpoint_url = "https://api.x.ai/v1"
+            self.client = openai.AsyncOpenAI(api_key=self.api_key, base_url=self.endpoint_url)
+
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+        """Generate xAI chat completion"""
+        try:
+            response = await self.client.chat.completions.create(model=model, messages=messages, **kwargs)
+
+            content = response.choices[0].message.content
+            usage_info = {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+                "model": response.model,
+                "finish_reason": response.choices[0].finish_reason,
+                "provider": "xai",
+            }
+
+            return content, usage_info
+
+        except Exception as e:
+            logger.error(f"xAI completion failed: {e}")
+            raise
+
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """List xAI models"""
+        try:
+            models_response = await self.client.models.list()
+            models = []
+
+            for model in models_response.data:
+                if model.id in self.model_list:
+                    models.append(
+                        {
+                            "id": model.id,
+                            "object": "model",
+                            "created": model.created,
+                            "owned_by": model.owned_by,
+                            "provider": "xai",
+                            "capabilities": ["chat", "completion"],
+                            "context_length": self._get_context_length(model.id),
+                        }
+                    )
+
+            return models
+
+        except Exception as e:
+            logger.error(f"Failed to list xAI models: {e}")
+            return []
+
+    def _get_context_length(self, model: str) -> int:
+        """Get context length for xAI model"""
+        context_lengths = {
+            "grok-1": 128000,
+            "grok-2": 128000,
+        }
+        return context_lengths.get(model, 128000)
+
+    async def health_check(self) -> Dict[str, Any]:
+        """Check xAI API health"""
+        try:
+            # Simple API call to check connectivity
+            await self.client.models.list()
+            return {
+                "status": "healthy",
+                "provider": "xai",
+                "endpoint": self.endpoint_url,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "provider": "xai",
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat(),
             }
@@ -757,6 +852,144 @@ class LlamaCppConnector(LLMConnector):
             await self._session.close()
 
 
+class BedrockConnector(LLMConnector):
+    """AWS Bedrock connector (bedrock-runtime client).
+
+    Wraps all boto3 blocking calls in asyncio.to_thread() to prevent
+    blocking the event loop. Credentials are passed via the config.
+    """
+
+    def __init__(self, name: str, config: Dict[str, Any]):
+        super().__init__(name, config)
+        if boto3 is None:
+            logger.warning("boto3 not installed; BedrockConnector will not function")
+            self.client = None
+        else:
+            # Create bedrock-runtime client (blocking operation handled at call site)
+            self.client = None  # Lazily initialized in async context
+        self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
+
+    async def _get_client(self):
+        """Get or create boto3 bedrock-runtime client (async-wrapped)."""
+        if self.client is None and boto3 is not None:
+            def _create_client():
+                return boto3.client("bedrock-runtime", region_name="us-east-1")
+            self.client = await asyncio.to_thread(_create_client)
+        return self.client
+
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+        """Generate Bedrock chat completion via converse API (async-wrapped)."""
+        try:
+            client = await self._get_client()
+            if client is None:
+                raise RuntimeError("Bedrock client not initialized (boto3 not available)")
+
+            # Convert messages to Bedrock format (strip system, use Messages array)
+            system_message = ""
+            bedrock_messages = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_message = msg["content"]
+                else:
+                    bedrock_messages.append({
+                        "role": msg["role"],
+                        "content": [{"text": msg["content"]}],
+                    })
+
+            def _invoke():
+                return client.converse(
+                    modelId=model,
+                    messages=bedrock_messages,
+                    system=[{"text": system_message}] if system_message else None,
+                    inferenceConfig={
+                        "maxTokens": kwargs.get("max_tokens", 1024),
+                        "temperature": kwargs.get("temperature", 0.7),
+                    },
+                )
+
+            response = await asyncio.to_thread(_invoke)
+
+            content = response["output"]["message"]["content"][0]["text"]
+            usage_info = {
+                "input_tokens": response.get("usage", {}).get("inputTokens", 0),
+                "output_tokens": response.get("usage", {}).get("outputTokens", 0),
+                "total_tokens": (
+                    response.get("usage", {}).get("inputTokens", 0)
+                    + response.get("usage", {}).get("outputTokens", 0)
+                ),
+                "model": model,
+                "finish_reason": response.get("stopReason", "stop"),
+                "provider": "bedrock",
+            }
+
+            return content, usage_info
+
+        except Exception as e:
+            logger.error(f"Bedrock completion failed: {e}")
+            raise
+
+    async def count_tokens(self, text: str, model: str) -> int:
+        """Count tokens for Bedrock models (fallback to tiktoken)."""
+        try:
+            # Bedrock doesn't provide a native tokenization endpoint,
+            # so we fall back to tiktoken estimation
+            return len(self.token_estimator.encode(text))
+        except Exception as e:
+            logger.warning(f"Token counting failed: {e}")
+            return len(text) // 4
+
+    async def list_models(self) -> List[Dict[str, Any]]:
+        """List configured Bedrock models (no live API query)."""
+        models = []
+        for model_id in self.model_list:
+            models.append(
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": int(datetime.utcnow().timestamp()),
+                    "owned_by": "aws-bedrock",
+                    "provider": "bedrock",
+                    "capabilities": ["chat"],
+                    "context_length": self._get_context_length(model_id),
+                }
+            )
+        return models
+
+    def _get_context_length(self, model: str) -> int:
+        """Get context length for Bedrock model."""
+        context_lengths = {
+            "anthropic.claude-3-opus-20240229-v1:0": 200000,
+            "anthropic.claude-3-sonnet-20240229-v1:0": 200000,
+            "anthropic.claude-3-haiku-20240307-v1:0": 200000,
+        }
+        return context_lengths.get(model, 100000)
+
+    async def health_check(self) -> Dict[str, Any]:
+        """Check Bedrock API health (async-wrapped)."""
+        try:
+            client = await self._get_client()
+            if client is None:
+                raise RuntimeError("Bedrock client not initialized (boto3 not available)")
+
+            def _check():
+                return client.list_foundation_models()
+
+            await asyncio.to_thread(_check)
+            return {
+                "status": "healthy",
+                "provider": "bedrock",
+                "endpoint": "bedrock-runtime (us-east-1)",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "provider": "bedrock",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+
+
 class LLMConnectionManager:
     """Manages all LLM provider connections"""
 
@@ -794,6 +1027,8 @@ class LLMConnectionManager:
 
                 if link.provider == "openai":
                     connector = OpenAIConnector(link.name, config)
+                elif link.provider == "xai":
+                    connector = XAIConnector(link.name, config)
                 elif link.provider == "anthropic":
                     connector = AnthropicConnector(link.name, config)
                 elif link.provider == "gemini":
@@ -802,6 +1037,8 @@ class LLMConnectionManager:
                     connector = OllamaConnector(link.name, config)
                 elif link.provider == "llamacpp":
                     connector = LlamaCppConnector(link.name, config)
+                elif link.provider == "bedrock":
+                    connector = BedrockConnector(link.name, config)
                 else:
                     logger.warning(f"Unknown provider: {link.provider}")
                     continue
