@@ -5,30 +5,13 @@ Tests stage ordering (cheapest-first), short-circuiting on blocked requests,
 stage-log accuracy, OpenTelemetry instrumentation, and security of span attributes.
 """
 
-import asyncio
 import os
-from dataclasses import dataclass
-from typing import List, Optional
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from typing import List
+from unittest.mock import Mock, patch
 
 import pytest
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-
-from proxy.apps.proxy_server.pipeline import (
-    PipelineContext,
-    ProxyPipeline,
-    Stage,
-    AuthStage,
-    TokenBudgetStage,
-    SecurityInStage,
-    DispatchStage,
-    SecurityOutStage,
-    MeterStage,
-)
-from shared.observability.tracing import init_tracing, get_tracer, TracingConfig
+from proxy.apps.proxy_server.pipeline import PipelineContext, ProxyPipeline, Stage
+from shared.observability.tracing import TracingConfig, get_tracer
 
 
 class TestPipelineContext:
@@ -169,7 +152,9 @@ class TestProxyPipelineBasic:
             FlagTestStage(name="security_in", flag=None),
         ]
         # token_budget flag is disabled
-        features = Mock(is_feature_enabled=Mock(side_effect=lambda flag, **kwargs: flag != "waddleai.native_rate_limit"))
+        features = Mock(
+            is_feature_enabled=Mock(side_effect=lambda flag, **kw: flag != "waddleai.native_rate_limit")
+        )
         pipeline = ProxyPipeline(stages, features)
 
         ctx = PipelineContext(user=Mock(), body={})
@@ -262,29 +247,55 @@ class TestOpenTelemetryIntegration:
 
     @pytest.mark.asyncio
     async def test_dispatch_span_has_genai_attributes(self):
-        """Dispatch span should have gen_ai.* semantic convention attributes."""
+        """Dispatch span must carry gen_ai.* attributes AND no prompt content.
+
+        Asserts on spans actually exported through an in-memory exporter, not on
+        the context — spec §15.3 makes these attributes a release gate, and the
+        token counts must match what metering records.
+        """
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+        secret_prompt = "my password is hunter2 and my ssn is 123-45-6789"
 
         class DispatchSpanTestStage(Stage):
             async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-                # Simulate provider call
-                ctx.model = "gpt-4"
+                ctx.provider = "openai"
+                ctx.model = "gpt-4o"
                 ctx.usage = {"input_tokens": 50, "output_tokens": 100}
                 ctx.response_text = "response from provider"
                 ctx.stage_log.append(f"ran:{self.name}")
                 return ctx
 
-        stages = [
-            DispatchSpanTestStage(name="dispatch", flag=None),
-        ]
         features = Mock(is_feature_enabled=Mock(return_value=True))
-        pipeline = ProxyPipeline(stages, features)
+        pipeline = ProxyPipeline([DispatchSpanTestStage(name="dispatch", flag=None)], features)
+        pipeline.tracer = provider.get_tracer("test")
 
-        ctx = PipelineContext(user=Mock(), body={}, model="gpt-4")
-        result = await pipeline.run(ctx)
+        ctx = PipelineContext(user=Mock(), body={"messages": [{"content": secret_prompt}]}, model="gpt-4o")
+        await pipeline.run(ctx)
 
-        assert result.usage is not None
-        assert result.usage.get("input_tokens") == 50
-        assert result.usage.get("output_tokens") == 100
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        assert "dispatch" in spans, f"no dispatch span exported: {list(spans)}"
+        attrs = dict(spans["dispatch"].attributes or {})
+
+        assert attrs["gen_ai.system"] == "openai"
+        assert attrs["gen_ai.request.model"] == "gpt-4o"
+        assert attrs["gen_ai.response.model"] == "gpt-4o"
+        assert attrs["gen_ai.usage.input_tokens"] == 50
+        assert attrs["gen_ai.usage.output_tokens"] == 100
+
+        # No prompt content or PII may reach a span (spec §15.3).
+        blob = repr(attrs) + repr([s.name for s in exporter.get_finished_spans()])
+        assert "hunter2" not in blob
+        assert "123-45-6789" not in blob
+        assert "response from provider" not in blob
 
     async def test_span_parenting_hierarchy(self):
         """Spans should form a proper parent/child hierarchy."""
