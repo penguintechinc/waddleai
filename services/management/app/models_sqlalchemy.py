@@ -293,6 +293,8 @@ class TokenUsage(Base):
     request_count = Column(Integer, default=0)
     cost_usd_total = Column(Integer, default=0)  # Store as cents
     last_updated = Column(DateTime, default=datetime.utcnow)
+    source = Column(String(50), default="aiproxy")  # aiproxy, ailb, etc
+    estimated = Column(Boolean, default=False)  # True if usage was estimated (missing from provider)
 
 
 class UsageCache(Base):
