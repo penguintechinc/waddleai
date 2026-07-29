@@ -2,16 +2,43 @@
 Pytest configuration and shared fixtures for WaddleAI tests
 """
 
+import importlib
 import os
 import shutil
 import sys
 import tempfile
-from unittest.mock import Mock
+import types
+from unittest.mock import Mock, MagicMock
 
 import pytest
 
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# Stand in for google.genai when the optional SDK is not installed.
+#
+# This MUST live in the root conftest, not in an individual test module:
+# shared/utils/llm_connectors.py binds `genai = None` at import time when the
+# SDK is missing, so whichever test module imports it FIRST decides whether the
+# Gemini tests can patch genai.Client. Installing the stub in a test module made
+# the suite order-dependent — adding a test file under tests/unit/proxy/ that
+# imported llm_connectors was enough to fail seven Gemini tests.
+#
+# `google` is a namespace package shared with protobuf/auth, so only the `genai`
+# attribute is supplied; replacing the package wholesale breaks every later
+# import of google.protobuf in the same session.
+try:  # pragma: no cover - depends on whether the optional SDK is installed
+    from google import genai as _real_genai  # noqa: F401
+except ImportError:  # pragma: no cover
+    _mock_genai = MagicMock()
+    sys.modules["google.genai"] = _mock_genai
+    try:
+        _google_pkg = importlib.import_module("google")
+    except ImportError:
+        _google_pkg = types.ModuleType("google")
+        _google_pkg.__path__ = []  # keep it a package so submodules resolve
+        sys.modules["google"] = _google_pkg
+    _google_pkg.genai = _mock_genai
 
 from shared.auth.rbac import RBACManager, Role, UserContext
 
