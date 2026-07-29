@@ -290,6 +290,9 @@ class LLMConnector(ABC):
 class OpenAIConnector(LLMConnector):
     """OpenAI API connector"""
 
+    # Label reported in usage metadata; OpenAI-wire subclasses override it.
+    provider_label: str = "openai"
+
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
         self.client = openai.AsyncOpenAI(api_key=self.api_key, base_url=self.endpoint_url)
@@ -358,16 +361,35 @@ class OpenAIConnector(LLMConnector):
     async def stream_chat_completion(
         self, messages: List[Dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
-        """Stream OpenAI chat completion using native stream=True"""
+        """Stream OpenAI chat completion using native stream=True.
+
+        Requests ``stream_options={"include_usage": True}`` so the API emits a
+        final usage-bearing chunk. Without it streamed requests would meter zero
+        tokens, bypassing quota and billing.
+        """
         try:
+            stream_options = kwargs.pop("stream_options", {"include_usage": True})
             stream = await self.client.chat.completions.create(
-                model=model, messages=messages, stream=True, **kwargs
+                model=model,
+                messages=messages,
+                stream=True,
+                stream_options=stream_options,
+                **kwargs,
             )
+            usage: Optional[Dict[str, Any]] = None
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
-            # OpenAI streaming does not include final usage; send done=True signal
-            yield StreamChunk(delta="", usage=None, done=True)
+                # The usage-bearing chunk arrives last and carries no choices.
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage:
+                    usage = {
+                        "input_tokens": getattr(chunk_usage, "prompt_tokens", 0),
+                        "output_tokens": getattr(chunk_usage, "completion_tokens", 0),
+                        "provider": self.provider_label,
+                        "model": model,
+                    }
+            yield StreamChunk(delta="", usage=usage, done=True)
 
         except openai.APITimeoutError as e:
             raise ProviderTimeoutError(
@@ -477,7 +499,11 @@ class XAIConnector(OpenAIConnector):
 
     xAI exposes an OpenAI-compatible API endpoint, so we subclass OpenAIConnector
     and override the provider label to distinguish xAI from OpenAI in usage tracking.
+    Streaming is inherited unchanged — a duplicated copy here would silently miss
+    fixes made to the OpenAI path.
     """
+
+    provider_label: str = "xai"
 
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
@@ -573,57 +599,6 @@ class XAIConnector(OpenAIConnector):
             "grok-2": 128000,
         }
         return context_lengths.get(model, 128000)
-
-    async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
-        """Stream xAI chat completion using OpenAI-compatible stream=True"""
-        try:
-            stream = await self.client.chat.completions.create(
-                model=model, messages=messages, stream=True, **kwargs
-            )
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
-            # xAI streaming does not include final usage; send done=True signal
-            yield StreamChunk(delta="", usage=None, done=True)
-
-        except openai.APITimeoutError as e:
-            raise ProviderTimeoutError(
-                provider="xai",
-                model=model,
-                message="xAI request timeout",
-            ) from e
-        except openai.RateLimitError as e:
-            raise ProviderRateLimitError(
-                provider="xai",
-                model=model,
-                message="xAI rate limit",
-                status_code=429,
-            ) from e
-        except openai.APIStatusError as e:
-            status_code = e.status_code
-            if status_code >= 500:
-                raise ProviderServerError(
-                    provider="xai",
-                    model=model,
-                    message="xAI server error",
-                    status_code=status_code,
-                ) from e
-            else:  # 4xx
-                raise ProviderClientError(
-                    provider="xai",
-                    model=model,
-                    message="xAI client error",
-                    status_code=status_code,
-                ) from e
-        except Exception as e:
-            logger.error(f"xAI stream failed: {e}")
-            raise ProviderServerError(
-                provider="xai",
-                model=model,
-                message=f"xAI stream failed: {str(e)[:100]}",
-            ) from e
 
     async def health_check(self) -> Dict[str, Any]:
         """Check xAI API health"""
