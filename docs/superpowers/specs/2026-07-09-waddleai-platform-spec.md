@@ -852,9 +852,25 @@ External AI-gateway review. Most items already live in the spec; recorded here a
 | G4 | **High-throughput OSS engine adapters** — vLLM, TGI (Text Generation Inference), TensorRT-LLM | v0.5.x | New `InferenceFleetBackend` implementations (§10.1) beside Ollama/llama.cpp/EXO; all OSI/non-PRC — confirm licenses at add time |
 | G5 | **Cost-center / department chargeback tagging** — tag virtual keys & requests with Cost-Center / Department / Project / Environment; chargeback reports | v0.6.x | Extends the §7.3 budget model + `token_usage`; feeds billing exports |
 | G6 | **Soft-budget alerting webhooks** (Slack / PagerDuty at 80% spend) | v0.6.x | Enforcement exists (§7.3); this is the notification side — reuse the flag/alert plumbing |
-| G7 | **OpenTelemetry distributed tracing** (trace_id/span_id across proxy → management → upstream; Jaeger/Honeycomb) | v0.6.x | Spec has Prometheus metrics only; OTel spans are net-new cross-service observability |
+| G7 | **OpenTelemetry distributed tracing + GenAI semantic conventions** — see §15.3, promoted to a **v0.2.x release requirement** | **v0.2.x (release gate)** | Spec had Prometheus metrics only; no OTel instrumentation exists in the codebase today |
 
 Net-new schema (chargeback tags G5, SCIM mappings G1, secrets-backend config G2, audit-export config G3) folds into the migration ledger (§13.1) at the release each lands in; renumber from the then-current head.
+
+### 15.3 OpenTelemetry — v0.2.x release requirement (G7 promoted)
+
+**OTel instrumentation is a release gate for v0.2.x, not backlog.** Without it WaddleAI cannot plug into the observability stack a customer already runs, which is an enterprise RFP disqualifier. The codebase has **zero** OTel instrumentation today (only transitive deps in `proxy/requirements.txt`).
+
+**Where it is built:** instrumentation lands **inside the §5 `ProxyPipeline` stage classes as they are written**, not as a later retrofit — each stage emits a span, so the pipeline's stage-log and its trace are the same structure. A separate bolt-on pass would have to re-open every stage.
+
+**Scope for v0.2.x:**
+- **Tracer/meter bootstrap** in both services (`proxy` and `management`): OTLP exporter, resource attributes (`service.name`, `service.version` from `.version`, `deployment.environment`), sampling config. All via env (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, …) — no OTel endpoint configured ⇒ instrumentation is a no-op, never a startup failure.
+- **Span per pipeline stage** (auth → token/budget gate → security-in → cache → routing → dispatch → security-out → meter), parented to the inbound request span; the dispatch span wraps the upstream provider call so provider latency is separable from proxy overhead.
+- **GenAI semantic conventions** on the dispatch span: `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reason`. **These conventions are still Development status upstream** (attribute names may change without a major bump), so emit via `OTEL_SEMCONV_STABILITY_OPT_IN` dual-emission rather than hard-coding today's names.
+- **Trace context propagation** W3C `traceparent` inbound → proxy → management (gRPC + REST), so a request is one trace end to end.
+- **Never in spans:** prompt or completion content, API keys, PII. Token *counts* and model names only — content capture stays off by default (it is a separate opt-in concern under §8/§9.7).
+- Prometheus metrics (§existing) are retained — OTel traces complement, not replace, them.
+
+**Acceptance:** a single client request produces one trace spanning proxy stages + upstream call with correct parenting; `gen_ai.*` attributes present and matching the metered token counts; `traceparent` propagated to management; **no OTel endpoint configured ⇒ zero behavior change and no startup error** (flag-off proof, §14.2); no prompt content or credentials appear in any exported span.
 
 ---
 
