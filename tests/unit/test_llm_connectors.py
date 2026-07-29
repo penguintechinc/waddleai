@@ -583,6 +583,8 @@ class TestOllamaConnector:
     @pytest.mark.asyncio
     async def test_chat_completion_error(self):
         """Test Ollama chat completion error handling"""
+        from shared.utils.llm_connectors import ProviderServerError
+
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
         connector = OllamaConnector("test-ollama", config)
 
@@ -595,7 +597,7 @@ class TestOllamaConnector:
         with patch.object(connector, "session") as mock_session:
             mock_session.post = MagicMock(return_value=AsyncContextManagerMock(mock_response))
 
-            with pytest.raises(Exception, match="Ollama API error"):
+            with pytest.raises(ProviderServerError, match="Ollama server error"):
                 await connector.chat_completion(messages, model)
 
     @pytest.mark.asyncio
@@ -965,6 +967,8 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_server_error(self, connector):
+        from shared.utils.llm_connectors import ProviderServerError
+
         mock_resp = AsyncMock()
         mock_resp.status = 500
 
@@ -973,7 +977,7 @@ class TestLlamaCppConnector:
         mock_session.post = MagicMock(return_value=AsyncContextManagerMock(mock_resp))
 
         with patch.object(connector, "_session", mock_session):
-            with pytest.raises(Exception, match="llama-server error: 500"):
+            with pytest.raises(ProviderServerError, match="llama-server error"):
                 await connector.chat_completion(
                     [{"role": "user", "content": "Hi"}], "llama-3.2-3b-instruct"
                 )
@@ -1146,3 +1150,185 @@ class TestBedrockConnector:
 
             assert result["status"] == "healthy"
             assert result["provider"] == "bedrock"
+
+
+class TestProviderErrors:
+    """Test typed provider error hierarchy"""
+
+    def test_provider_timeout_error_is_retryable(self):
+        """Timeout errors are retryable"""
+        from shared.utils.llm_connectors import ProviderTimeoutError
+        err = ProviderTimeoutError(provider="test", model="m1", message="timeout")
+        assert err.provider == "test"
+        assert err.model == "m1"
+
+    def test_provider_rate_limit_error_is_retryable(self):
+        """Rate limit errors are retryable"""
+        from shared.utils.llm_connectors import ProviderRateLimitError
+        err = ProviderRateLimitError(provider="test", model="m1", message="429", status_code=429)
+        assert err.status_code == 429
+
+    def test_provider_server_error_is_retryable(self):
+        """Server errors are retryable"""
+        from shared.utils.llm_connectors import ProviderServerError
+        err = ProviderServerError(provider="test", model="m1", message="500", status_code=500)
+        assert err.status_code == 500
+
+    def test_provider_client_error_not_retryable(self):
+        """Client errors are not retryable"""
+        from shared.utils.llm_connectors import ProviderClientError
+        err = ProviderClientError(provider="test", model="m1", message="401", status_code=401)
+        assert err.status_code == 401
+
+
+class TestRetryLogic:
+    """Test retry logic with jittered backoff"""
+
+    @pytest.mark.asyncio
+    async def test_retry_success_on_first_attempt(self):
+        """First attempt succeeds"""
+        from shared.utils.llm_connectors import _with_retries
+
+        async def success_call():
+            return "result"
+
+        result, attempts = await _with_retries(success_call, "test-provider", "test-model")
+        assert result == "result"
+        assert len(attempts) == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_after_transient_error(self):
+        """Succeeds after timeout error on first attempt"""
+        from shared.utils.llm_connectors import _with_retries, ProviderTimeoutError
+
+        call_count = 0
+
+        async def failing_then_success():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ProviderTimeoutError("test", "model", "timeout")
+            return "success"
+
+        # Inject mock sleep to avoid actual delays
+        async def mock_sleep(_):
+            pass
+
+        result, attempts = await _with_retries(
+            failing_then_success,
+            "test-provider",
+            "test-model",
+            max_attempts=3,
+            sleep_fn=mock_sleep,
+        )
+        assert result == "success"
+        assert len(attempts) == 1
+        assert attempts[0].error_type == "ProviderTimeoutError"
+
+    @pytest.mark.asyncio
+    async def test_retry_exhaustion_includes_attempt_summary(self):
+        """Failed retries raise with attempt summary"""
+        from shared.utils.llm_connectors import _with_retries, ProviderRateLimitError
+
+        async def always_fail():
+            raise ProviderRateLimitError("openai", "gpt-4", "rate limit", status_code=429)
+
+        async def mock_sleep(_):
+            pass
+
+        with pytest.raises(ProviderRateLimitError) as exc_info:
+            await _with_retries(
+                always_fail,
+                "openai",
+                "gpt-4",
+                max_attempts=2,
+                sleep_fn=mock_sleep,
+            )
+
+        assert exc_info.value.provider == "openai"
+        assert exc_info.value.model == "gpt-4"
+
+    @pytest.mark.asyncio
+    async def test_client_error_not_retried(self):
+        """Client errors (4xx) are raised immediately without retry"""
+        from shared.utils.llm_connectors import _with_retries, ProviderClientError
+
+        call_count = 0
+
+        async def fail_client():
+            nonlocal call_count
+            call_count += 1
+            raise ProviderClientError("openai", "gpt-4", "invalid api key", status_code=401)
+
+        async def mock_sleep(_):
+            pass
+
+        with pytest.raises(ProviderClientError):
+            await _with_retries(
+                fail_client,
+                "openai",
+                "gpt-4",
+                max_attempts=3,
+                sleep_fn=mock_sleep,
+            )
+
+        # Should only call once (no retry on client error)
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_respects_max_attempts(self):
+        """Retries up to max_attempts"""
+        from shared.utils.llm_connectors import _with_retries, ProviderServerError
+
+        call_count = 0
+
+        async def always_fail():
+            nonlocal call_count
+            call_count += 1
+            raise ProviderServerError("test", "model", "error")
+
+        async def mock_sleep(_):
+            pass
+
+        with pytest.raises(ProviderServerError):
+            await _with_retries(
+                always_fail,
+                "test",
+                "model",
+                max_attempts=3,
+                sleep_fn=mock_sleep,
+            )
+
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_jittered_backoff(self):
+        """Backoff increases exponentially with jitter"""
+        from shared.utils.llm_connectors import _with_retries, ProviderServerError
+
+        call_count = 0
+        sleep_calls = []
+
+        async def always_fail():
+            nonlocal call_count
+            call_count += 1
+            raise ProviderServerError("test", "model", "error")
+
+        async def track_sleep(delay):
+            sleep_calls.append(delay)
+
+        with pytest.raises(ProviderServerError):
+            await _with_retries(
+                always_fail,
+                "test",
+                "model",
+                max_attempts=3,
+                base_delay_ms=100,
+                sleep_fn=track_sleep,
+            )
+
+        # Should have 2 sleep calls (after 1st and 2nd attempt, not after 3rd)
+        assert len(sleep_calls) == 2
+        # First backoff around 100ms, second around 200ms (with jitter)
+        assert sleep_calls[0] < 0.2  # 100ms + max 10% jitter
+        assert 0.1 < sleep_calls[1] < 0.3  # ~200ms + max 10% jitter

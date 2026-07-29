@@ -443,10 +443,18 @@ class LLMRequestRouter:
 
             except Exception as e:
                 logger.warning(f"Provider {provider_name} failed for model {model}: {e}")
-                # TODO(Task 8): Distinguish retryable (5xx, 429, timeout, connection)
-                # vs non-retryable (4xx) failures. Currently all exceptions increment
-                # consecutive_failures counter, which could penalize transient client errors.
-                self._update_provider_stats(provider_name, success=False)
+                # Task 8 resolution: distinguish retryable vs non-retryable errors.
+                # Client errors (4xx, auth, schema) surface immediately and do NOT
+                # increment consecutive_failures (they should not eject a healthy provider).
+                # Only retryable errors (timeout, 429, 5xx) count toward the breaker.
+                # ProviderClientError is never retried and never breaker-counted.
+                from shared.utils.llm_connectors import ProviderClientError
+
+                if not isinstance(e, ProviderClientError):
+                    # Retryable error — count toward breaker
+                    self._update_provider_stats(provider_name, success=False)
+                # Client error — do NOT count toward breaker, just skip this provider
+
                 last_error = e
                 continue
 
