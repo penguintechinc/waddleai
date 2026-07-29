@@ -215,6 +215,12 @@ class MeteringBuffer:
         self.writer = writer
         self.interval = interval
         self._buffer: list[MeteringEvent] = []
+        # Aggregates whose write failed; retried on the next flush so a database
+        # blip does not silently discard billable usage. Bounded so a sustained
+        # outage degrades to dropping the OLDEST rows (loudly) rather than
+        # growing memory without limit.
+        self._pending: list[AggregatedMetrics] = []
+        self.max_pending_aggregates = 1000
         self._lock = Lock()
         self._running = False
         self._flush_task: Optional[asyncio.Task[Any]] = None
@@ -280,17 +286,49 @@ class MeteringBuffer:
         """
         # Swap the buffer under lock (prevent lost updates)
         with self._lock:
-            if not self._buffer:
-                return
             current_buffer = self._buffer[:]
             self._buffer.clear()
+            retries = self._pending[:]
+            self._pending.clear()
 
-        # Aggregate outside the lock
-        aggregates = self._aggregate_events(current_buffer)
+        if not current_buffer and not retries:
+            return
 
-        # Write aggregated data to database (blocking calls in thread pool)
-        for agg in aggregates.values():
-            await asyncio.to_thread(self.writer.write_aggregated_row, agg)
+        # Aggregate outside the lock; retries from a previous failed flush go first.
+        aggregates = self._aggregate_events(current_buffer) if current_buffer else {}
+        to_write = retries + list(aggregates.values())
+
+        # Write aggregated data to database (blocking calls in thread pool).
+        # A failed row is re-queued rather than dropped — losing it would mean
+        # unbilled tokens with no error surface anywhere.
+        failed: list[AggregatedMetrics] = []
+        for agg in to_write:
+            try:
+                await asyncio.to_thread(self.writer.write_aggregated_row, agg)
+            except Exception as e:
+                logger.error(
+                    "Metering write failed for vkey=%s model=%s; re-queueing (%s)",
+                    agg.virtual_key_id,
+                    agg.model,
+                    e,
+                )
+                failed.append(agg)
+
+        if failed:
+            with self._lock:
+                self._pending.extend(failed)
+                overflow = len(self._pending) - self.max_pending_aggregates
+                if overflow > 0:
+                    dropped = self._pending[:overflow]
+                    del self._pending[:overflow]
+                    logger.error(
+                        "Metering retry queue full (%d): dropping %d aggregate(s), "
+                        "%d input + %d output tokens will be unbilled",
+                        self.max_pending_aggregates,
+                        overflow,
+                        sum(a.total_input_tokens for a in dropped),
+                        sum(a.total_output_tokens for a in dropped),
+                    )
 
     def _aggregate_events(self, events: list[MeteringEvent]) -> Dict[tuple, AggregatedMetrics]:
         """
