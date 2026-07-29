@@ -91,20 +91,6 @@ class CredentialInfo:
     weight: int
 
 
-@dataclass(slots=True)
-class BreakerState:
-    """Circuit breaker state for a (provider, model) pair."""
-
-    status: str = "closed"  # closed | open | half_open
-    failures_since_open: int = 0
-    last_failure_time: Optional[datetime] = None
-    half_open_probe_in_flight: bool = False
-
-    def is_retryable(self) -> bool:
-        """True if the breaker allows a request to proceed."""
-        return self.status in ("closed", "half_open")
-
-
 async def _with_retries(
     call: Callable[[], Any],
     provider: str,
