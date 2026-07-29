@@ -10,7 +10,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 import anthropic
@@ -89,6 +89,20 @@ class CredentialInfo:
     api_key: str  # Already decrypted
     org_id: str
     weight: int
+
+
+@dataclass(slots=True)
+class StreamChunk:
+    """Streaming response chunk from LLM provider.
+
+    Attributes:
+        delta: Incremental text content (empty for usage-only chunks)
+        usage: Optional token usage dict (populated on final chunk where provider reports it)
+        done: True for final chunk, False for incremental chunks
+    """
+    delta: str
+    usage: Optional[Dict[str, Any]] = None
+    done: bool = False
 
 
 async def _with_retries(
@@ -251,6 +265,13 @@ class LLMConnector(ABC):
         pass
 
     @abstractmethod
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream chat completion, yielding chunks with delta text and usage on final chunk"""
+        pass
+
+    @abstractmethod
     async def count_tokens(self, text: str, model: str) -> int:
         """Count tokens in text"""
         pass
@@ -332,6 +353,57 @@ class OpenAIConnector(LLMConnector):
                 provider="openai",
                 model=model,
                 message=f"OpenAI completion failed: {str(e)[:100]}",
+            ) from e
+
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream OpenAI chat completion using native stream=True"""
+        try:
+            stream = await self.client.chat.completions.create(
+                model=model, messages=messages, stream=True, **kwargs
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
+            # OpenAI streaming does not include final usage; send done=True signal
+            yield StreamChunk(delta="", usage=None, done=True)
+
+        except openai.APITimeoutError as e:
+            raise ProviderTimeoutError(
+                provider="openai",
+                model=model,
+                message="OpenAI request timeout",
+            ) from e
+        except openai.RateLimitError as e:
+            raise ProviderRateLimitError(
+                provider="openai",
+                model=model,
+                message="OpenAI rate limit",
+                status_code=429,
+            ) from e
+        except openai.APIStatusError as e:
+            status_code = e.status_code
+            if status_code >= 500:
+                raise ProviderServerError(
+                    provider="openai",
+                    model=model,
+                    message="OpenAI server error",
+                    status_code=status_code,
+                ) from e
+            else:  # 4xx
+                raise ProviderClientError(
+                    provider="openai",
+                    model=model,
+                    message="OpenAI client error",
+                    status_code=status_code,
+                ) from e
+        except Exception as e:
+            logger.error(f"OpenAI stream failed: {e}")
+            raise ProviderServerError(
+                provider="openai",
+                model=model,
+                message=f"OpenAI stream failed: {str(e)[:100]}",
             ) from e
 
     async def count_tokens(self, text: str, model: str) -> int:
@@ -502,6 +574,57 @@ class XAIConnector(OpenAIConnector):
         }
         return context_lengths.get(model, 128000)
 
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream xAI chat completion using OpenAI-compatible stream=True"""
+        try:
+            stream = await self.client.chat.completions.create(
+                model=model, messages=messages, stream=True, **kwargs
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
+            # xAI streaming does not include final usage; send done=True signal
+            yield StreamChunk(delta="", usage=None, done=True)
+
+        except openai.APITimeoutError as e:
+            raise ProviderTimeoutError(
+                provider="xai",
+                model=model,
+                message="xAI request timeout",
+            ) from e
+        except openai.RateLimitError as e:
+            raise ProviderRateLimitError(
+                provider="xai",
+                model=model,
+                message="xAI rate limit",
+                status_code=429,
+            ) from e
+        except openai.APIStatusError as e:
+            status_code = e.status_code
+            if status_code >= 500:
+                raise ProviderServerError(
+                    provider="xai",
+                    model=model,
+                    message="xAI server error",
+                    status_code=status_code,
+                ) from e
+            else:  # 4xx
+                raise ProviderClientError(
+                    provider="xai",
+                    model=model,
+                    message="xAI client error",
+                    status_code=status_code,
+                ) from e
+        except Exception as e:
+            logger.error(f"xAI stream failed: {e}")
+            raise ProviderServerError(
+                provider="xai",
+                model=model,
+                message=f"xAI stream failed: {str(e)[:100]}",
+            ) from e
+
     async def health_check(self) -> Dict[str, Any]:
         """Check xAI API health"""
         try:
@@ -642,6 +765,73 @@ class AnthropicConnector(LLMConnector):
             "claude-3-haiku-20240307": 200000,
         }
         return context_lengths.get(model, 100000)
+
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream Anthropic chat completion using messages.stream() API"""
+        try:
+            # Extract system message
+            system_message = ""
+            user_messages = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_message = msg["content"]
+                else:
+                    user_messages.append(msg)
+
+            # Use streaming context manager
+            with self.client.messages.stream(
+                model=model,
+                max_tokens=kwargs.get("max_tokens", 1000),
+                system=system_message if system_message else None,
+                messages=user_messages,
+            ) as stream:
+                # Iterate through events asynchronously
+                async for event in stream:
+                    # Check for content_block_delta events with text deltas
+                    if hasattr(event, "type") and event.type == "content_block_delta":
+                        if hasattr(event, "delta") and hasattr(event.delta, "text"):
+                            yield StreamChunk(delta=event.delta.text, done=False)
+            # Anthropic streaming does not include final usage; send done=True signal
+            yield StreamChunk(delta="", usage=None, done=True)
+
+        except anthropic.APITimeoutError as e:
+            raise ProviderTimeoutError(
+                provider="anthropic",
+                model=model,
+                message="Anthropic request timeout",
+            ) from e
+        except anthropic.RateLimitError as e:
+            raise ProviderRateLimitError(
+                provider="anthropic",
+                model=model,
+                message="Anthropic rate limit",
+                status_code=429,
+            ) from e
+        except anthropic.APIStatusError as e:
+            status_code = e.status_code
+            if status_code == 529 or status_code >= 500:
+                raise ProviderServerError(
+                    provider="anthropic",
+                    model=model,
+                    message="Anthropic server error",
+                    status_code=status_code,
+                ) from e
+            else:  # 4xx
+                raise ProviderClientError(
+                    provider="anthropic",
+                    model=model,
+                    message="Anthropic client error",
+                    status_code=status_code,
+                ) from e
+        except Exception as e:
+            logger.error(f"Anthropic stream failed: {e}")
+            raise ProviderServerError(
+                provider="anthropic",
+                model=model,
+                message=f"Anthropic stream failed: {str(e)[:100]}",
+            ) from e
 
     async def health_check(self) -> Dict[str, Any]:
         """Check Anthropic API health"""
@@ -832,6 +1022,68 @@ class GeminiConnector(LLMConnector):
         }
         return context_lengths.get(model, 32768)
 
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream Gemini chat completion using generate_content_stream"""
+        try:
+            # Extract system message and convert to Gemini format
+            system_message = ""
+            gemini_messages = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_message = msg["content"]
+                else:
+                    gemini_role = "user" if msg["role"] == "user" else "model"
+                    gemini_messages.append({"role": gemini_role, "parts": [{"text": msg["content"]}]})
+
+            # Prepare generation config
+            generation_config = genai.types.GenerateContentConfig(
+                max_output_tokens=kwargs.get("max_tokens", 1024),
+                temperature=kwargs.get("temperature", 0.7),
+            )
+
+            # Stream Gemini content
+            async for chunk in await self.client.aio.models.generate_content_stream(
+                model=f"models/{model}",
+                contents=gemini_messages,
+                system_prompt=system_message if system_message else None,
+                config=generation_config,
+            ):
+                if chunk.text:
+                    yield StreamChunk(delta=chunk.text, done=False)
+            # Gemini streaming does not include final usage; send done=True signal
+            yield StreamChunk(delta="", usage=None, done=True)
+
+        except Exception as e:
+            logger.error(f"Gemini stream failed: {e}")
+            # Map common error patterns
+            if isinstance(e, asyncio.TimeoutError):
+                raise ProviderTimeoutError(
+                    provider="gemini",
+                    model=model,
+                    message="Gemini request timeout",
+                ) from e
+            elif "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                raise ProviderRateLimitError(
+                    provider="gemini",
+                    model=model,
+                    message="Gemini rate limit",
+                    status_code=429,
+                ) from e
+            elif "INVALID_ARGUMENT" in str(e) or "PERMISSION_DENIED" in str(e):
+                raise ProviderClientError(
+                    provider="gemini",
+                    model=model,
+                    message="Gemini client error",
+                ) from e
+            else:
+                raise ProviderServerError(
+                    provider="gemini",
+                    model=model,
+                    message=f"Gemini stream failed: {str(e)[:100]}",
+                ) from e
+
     async def health_check(self) -> Dict[str, Any]:
         """Check Gemini API health with a minimal test call."""
         try:
@@ -1003,6 +1255,70 @@ class OllamaConnector(LLMConnector):
             logger.error(f"Failed to remove Ollama model {model}: {e}")
             return {"status": "error", "error": str(e)}
 
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream Ollama chat completion using NDJSON streaming"""
+        try:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "options": {"temperature": kwargs.get("temperature", 0.7), "num_predict": kwargs.get("max_tokens", -1)},
+            }
+
+            async with self.session.post(
+                f"{self.endpoint_url}/api/chat", json=payload, timeout=aiohttp.ClientTimeout(total=300)
+            ) as response:
+                if response.status != 200:
+                    if response.status >= 500:
+                        raise ProviderServerError(
+                            provider="ollama",
+                            model=model,
+                            message="Ollama server error",
+                            status_code=response.status,
+                        )
+                    else:
+                        raise ProviderClientError(
+                            provider="ollama",
+                            model=model,
+                            message="Ollama client error",
+                            status_code=response.status,
+                        )
+
+                # Read NDJSON stream line by line
+                async for line in response.content:
+                    if not line:
+                        continue
+                    try:
+                        import json
+                        chunk = json.loads(line)
+                        if "message" in chunk and "content" in chunk["message"]:
+                            content = chunk["message"]["content"]
+                            if content:
+                                yield StreamChunk(delta=content, done=False)
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+
+                # Ollama streaming does not include final usage; send done=True signal
+                yield StreamChunk(delta="", usage=None, done=True)
+
+        except ProviderError:
+            raise
+        except asyncio.TimeoutError as e:
+            raise ProviderTimeoutError(
+                provider="ollama",
+                model=model,
+                message="Ollama request timeout",
+            ) from e
+        except Exception as e:
+            logger.error(f"Ollama stream failed: {e}")
+            raise ProviderServerError(
+                provider="ollama",
+                model=model,
+                message=f"Ollama stream failed: {str(e)[:100]}",
+            ) from e
+
     async def health_check(self) -> Dict[str, Any]:
         """Check Ollama health"""
         try:
@@ -1148,6 +1464,73 @@ class LlamaCppConnector(LLMConnector):
         except Exception as e:
             logger.error(f"Failed to list llama-server models: {e}")
             return []
+
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream llama-server chat completion using SSE format"""
+        session = self._get_session()
+        payload = {"model": model or self.model_name, "messages": messages, "stream": True, **kwargs}
+        try:
+            async with session.post(
+                f"{self.endpoint_url}/v1/chat/completions",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as response:
+                if response.status != 200:
+                    if response.status >= 500:
+                        raise ProviderServerError(
+                            provider="llamacpp",
+                            model=model,
+                            message="llama-server error",
+                            status_code=response.status,
+                        )
+                    else:
+                        raise ProviderClientError(
+                            provider="llamacpp",
+                            model=model,
+                            message="llama-server client error",
+                            status_code=response.status,
+                        )
+
+                # Read SSE stream
+                async for line in response.content:
+                    if not line:
+                        continue
+                    line_str = line.decode("utf-8").strip()
+                    if not line_str.startswith("data: "):
+                        continue
+                    data_str = line_str[6:]  # Strip "data: " prefix
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        import json
+                        chunk = json.loads(data_str)
+                        if "choices" in chunk and chunk["choices"]:
+                            delta = chunk["choices"][0].get("delta", {})
+                            if "content" in delta and delta["content"]:
+                                yield StreamChunk(delta=delta["content"], done=False)
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+
+                # llama.cpp streaming does not include final usage; send done=True signal
+                yield StreamChunk(delta="", usage=None, done=True)
+
+        except ProviderError:
+            raise
+        except asyncio.TimeoutError as e:
+            raise ProviderTimeoutError(
+                provider="llamacpp",
+                model=model,
+                message="llama-server request timeout",
+            ) from e
+        except Exception as e:
+            logger.error(f"LlamaCpp stream failed: {e}")
+            raise ProviderServerError(
+                provider="llamacpp",
+                model=model,
+                message=f"LlamaCpp stream failed: {str(e)[:100]}",
+            ) from e
 
     async def health_check(self) -> Dict[str, Any]:
         session = self._get_session()
@@ -1334,6 +1717,124 @@ class BedrockConnector(LLMConnector):
             "anthropic.claude-3-haiku-20240307-v1:0": 200000,
         }
         return context_lengths.get(model, 100000)
+
+    async def stream_chat_completion(
+        self, messages: List[Dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream Bedrock chat completion using invoke_model_with_response_stream (wrapped in thread).
+
+        Bedrock's event-stream iterator is blocking, so we drain it in asyncio.to_thread
+        and feed chunks into an async queue for the caller.
+        """
+        try:
+            client = await self._get_client()
+            if client is None:
+                raise RuntimeError("Bedrock client not initialized (boto3 not available)")
+
+            # Convert messages to Bedrock format
+            system_message = ""
+            bedrock_messages = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_message = msg["content"]
+                else:
+                    bedrock_messages.append({
+                        "role": msg["role"],
+                        "content": [{"text": msg["content"]}],
+                    })
+
+            # Queue to move chunks from blocking thread to async context
+            queue: asyncio.Queue[Optional[dict]] = asyncio.Queue()
+
+            async def _drain_stream():
+                """Drain the blocking event-stream iterator in a thread, feed to async queue"""
+                def _invoke_stream():
+                    try:
+                        response = client.invoke_model_with_response_stream(
+                            modelId=model,
+                            messages=bedrock_messages,
+                            system=[{"text": system_message}] if system_message else None,
+                            inferenceConfig={
+                                "maxTokens": kwargs.get("max_tokens", 1024),
+                                "temperature": kwargs.get("temperature", 0.7),
+                            },
+                        )
+                        # Iterate through events and queue each one
+                        for event in response.get("body"):
+                            if "contentBlockDelta" in event:
+                                delta = event["contentBlockDelta"]["delta"]
+                                if "text" in delta:
+                                    queue.put_nowait({"type": "delta", "text": delta["text"]})
+                        queue.put_nowait(None)  # Signal completion
+                    except Exception as e:
+                        queue.put_nowait({"type": "error", "error": e})
+
+                await asyncio.to_thread(_invoke_stream)
+
+            # Start draining in background
+            drain_task = asyncio.create_task(_drain_stream())
+
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break  # Stream ended
+                    if item.get("type") == "error":
+                        raise item["error"]
+                    if item.get("type") == "delta":
+                        yield StreamChunk(delta=item["text"], done=False)
+            finally:
+                await drain_task
+
+            # Bedrock streaming does not include final usage in stream; send done=True signal
+            yield StreamChunk(delta="", usage=None, done=True)
+
+        except Exception as e:
+            logger.error(f"Bedrock stream failed: {e}")
+            # Map botocore ClientError status codes
+            if boto3 is not None:
+                try:
+                    from botocore.exceptions import ClientError
+                    if isinstance(e, ClientError):
+                        status_code = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                        if status_code:
+                            if status_code == 429:
+                                raise ProviderRateLimitError(
+                                    provider="bedrock",
+                                    model=model,
+                                    message="Bedrock rate limit",
+                                    status_code=status_code,
+                                ) from e
+                            elif status_code >= 500:
+                                raise ProviderServerError(
+                                    provider="bedrock",
+                                    model=model,
+                                    message="Bedrock server error",
+                                    status_code=status_code,
+                                ) from e
+                            else:  # 4xx
+                                raise ProviderClientError(
+                                    provider="bedrock",
+                                    model=model,
+                                    message="Bedrock client error",
+                                    status_code=status_code,
+                                ) from e
+                except ImportError:
+                    pass
+
+            # Generic error mapping for timeout and other cases
+            if isinstance(e, asyncio.TimeoutError) or "timeout" in str(e).lower():
+                raise ProviderTimeoutError(
+                    provider="bedrock",
+                    model=model,
+                    message="Bedrock request timeout",
+                ) from e
+
+            raise ProviderServerError(
+                provider="bedrock",
+                model=model,
+                message=f"Bedrock stream failed: {str(e)[:100]}",
+            ) from e
 
     async def health_check(self) -> Dict[str, Any]:
         """Check Bedrock API health (async-wrapped)."""
