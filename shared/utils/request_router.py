@@ -443,6 +443,9 @@ class LLMRequestRouter:
 
             except Exception as e:
                 logger.warning(f"Provider {provider_name} failed for model {model}: {e}")
+                # TODO(Task 8): Distinguish retryable (5xx, 429, timeout, connection)
+                # vs non-retryable (4xx) failures. Currently all exceptions increment
+                # consecutive_failures counter, which could penalize transient client errors.
                 self._update_provider_stats(provider_name, success=False)
                 last_error = e
                 continue
