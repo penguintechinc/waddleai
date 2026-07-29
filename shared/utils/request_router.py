@@ -40,6 +40,9 @@ class ProviderStats:
     last_failure: Optional[datetime] = None
     consecutive_failures: int = 0
     tokens_processed: int = 0
+    # Set while a single half-open probe is in flight, so a recovering provider
+    # receives one trial request rather than the full concurrent load.
+    half_open_probe_in_flight: bool = False
 
 
 @dataclass
@@ -67,6 +70,11 @@ class LLMRequestRouter:
         self.model_configs: Dict[str, ModelConfig] = {}
         self.default_strategy = RoutingStrategy.LOAD_BALANCED
         self.health_check_interval = 300  # 5 minutes
+
+        # Circuit breaker: trip after N consecutive retryable failures, then hold
+        # the provider out for the cooldown before allowing one half-open probe.
+        self.breaker_failure_threshold = 3
+        self.breaker_cooldown = timedelta(minutes=5)
 
         # Routing LLM configuration
         self.routing_llm_model = os.getenv("ROUTING_LLM", "llama3.2:1b")
@@ -278,16 +286,30 @@ class LLMRequestRouter:
                 # Check if provider is healthy
                 stats = self.provider_stats.get(provider_name, ProviderStats())
 
-                # Skip if too many consecutive failures
-                if stats.consecutive_failures >= 3:
+                # Breaker: closed -> open -> half-open -> closed.
+                # A provider over the failure threshold is "open" until its
+                # cooldown elapses. It is then offered as a SINGLE half-open
+                # probe; concurrent callers are refused until that probe is
+                # resolved by _update_provider_stats. Without this a tripped
+                # provider could never recover, because the failure counter
+                # only clears on a success it would never be selected for.
+                in_cooldown = (
+                    stats.last_failure is not None
+                    and (not stats.last_success or stats.last_failure > stats.last_success)
+                    and (datetime.utcnow() - stats.last_failure) < self.breaker_cooldown
+                )
+
+                if stats.consecutive_failures >= self.breaker_failure_threshold:
+                    if in_cooldown:
+                        continue  # open
+                    if stats.half_open_probe_in_flight:
+                        continue  # half-open, probe already reserved
+                    stats.half_open_probe_in_flight = True
+                    available.append(provider_name)
                     continue
 
-                # Skip if recent failures and no recent success
-                if (
-                    stats.last_failure
-                    and (not stats.last_success or stats.last_failure > stats.last_success)
-                    and (datetime.utcnow() - stats.last_failure) < timedelta(minutes=5)
-                ):
+                # Below threshold: still skip while a recent failure is cooling off.
+                if in_cooldown:
                     continue
 
                 available.append(provider_name)
@@ -469,6 +491,9 @@ class LLMRequestRouter:
 
         stats = self.provider_stats[provider_name]
         stats.total_requests += 1
+
+        # Resolve any half-open probe this call reserved, whichever way it went.
+        stats.half_open_probe_in_flight = False
 
         if success:
             stats.successful_requests += 1
