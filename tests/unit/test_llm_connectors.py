@@ -39,10 +39,12 @@ class AsyncContextManagerMock:
 try:
     from shared.utils.llm_connectors import (
         AnthropicConnector,
+        BedrockConnector,
         GeminiConnector,
         LlamaCppConnector,
         OllamaConnector,
         OpenAIConnector,
+        XAIConnector,
         LLMConnectionManager,
         create_llm_connection_manager,
     )
@@ -216,6 +218,103 @@ class TestOpenAIConnector:
 
             assert result["status"] == "healthy"
             assert result["provider"] == "openai"
+
+
+class TestXAIConnector:
+    """Test xAI connector (OpenAI-compatible)"""
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_success(self):
+        """Test successful xAI chat completion"""
+        mock_response = Mock()
+        mock_response.choices = [Mock(message=Mock(content="Hello from xAI!"))]
+        mock_response.usage = Mock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        mock_response.model = "grok-1"
+        mock_response.choices[0].finish_reason = "stop"
+
+        messages = [{"role": "user", "content": "Hello"}]
+        model = "grok-1"
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            connector = XAIConnector("test-xai", config)
+
+            response, metadata = await connector.chat_completion(messages, model)
+
+            assert response == "Hello from xAI!"
+            assert metadata["input_tokens"] == 10
+            assert metadata["output_tokens"] == 5
+            assert metadata["provider"] == "xai"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_error(self):
+        """Test xAI chat completion error handling"""
+        messages = [{"role": "user", "content": "Hello"}]
+        model = "grok-1"
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+            mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API Error"))
+
+            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "invalid-key", "model_list": ["grok-1"]}
+            connector = XAIConnector("test-xai", config)
+
+            with pytest.raises(Exception, match="API Error"):
+                await connector.chat_completion(messages, model)
+
+    @pytest.mark.asyncio
+    async def test_count_tokens(self):
+        """Test token counting for xAI"""
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI"):
+            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            connector = XAIConnector("test-xai", config)
+
+            count = await connector.count_tokens("hello world", "grok-1")
+            assert isinstance(count, int)
+            assert count > 0
+
+    @pytest.mark.asyncio
+    async def test_list_models(self):
+        """Test listing xAI models"""
+        mock_model_1 = Mock(id="grok-1", created=1234567890, owned_by="xai")
+        mock_models = Mock(data=[mock_model_1])
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+            mock_client.models.list = AsyncMock(return_value=mock_models)
+
+            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            connector = XAIConnector("test-xai", config)
+
+            models = await connector.list_models()
+
+            assert len(models) == 1
+            assert models[0]["id"] == "grok-1"
+            assert models[0]["provider"] == "xai"
+
+    @pytest.mark.asyncio
+    async def test_health_check(self):
+        """Test xAI health check"""
+        mock_models = Mock(data=[])
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+            mock_client.models.list = AsyncMock(return_value=mock_models)
+
+            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            connector = XAIConnector("test-xai", config)
+
+            result = await connector.health_check()
+
+            assert result["status"] == "healthy"
+            assert result["provider"] == "xai"
 
 
 class TestAnthropicConnector:
@@ -955,3 +1054,95 @@ class TestLlamaCppConnector:
 
         assert result["status"] == "unhealthy"
         assert "connection refused" in result["error"]
+
+
+class TestBedrockConnector:
+    """Test AWS Bedrock connector"""
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_success(self):
+        """Test successful Bedrock chat completion"""
+        mock_response = {
+            "output": {
+                "message": {
+                    "content": [{"text": "Hello from Bedrock!"}],
+                }
+            },
+            "usage": {"inputTokens": 10, "outputTokens": 5},
+            "stopReason": "stop",
+        }
+
+        messages = [{"role": "user", "content": "Hello"}]
+        model = "anthropic.claude-3-haiku-20240307-v1:0"
+
+        with patch("shared.utils.llm_connectors.boto3") as mock_boto3:
+            mock_client = MagicMock()
+            mock_boto3.client = MagicMock(return_value=mock_client)
+            mock_client.converse = MagicMock(return_value=mock_response)
+
+            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            connector = BedrockConnector("test-bedrock", config)
+
+            response, metadata = await connector.chat_completion(messages, model)
+
+            assert response == "Hello from Bedrock!"
+            assert metadata["input_tokens"] == 10
+            assert metadata["output_tokens"] == 5
+            assert metadata["provider"] == "bedrock"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_error(self):
+        """Test Bedrock chat completion error handling"""
+        messages = [{"role": "user", "content": "Hello"}]
+        model = "anthropic.claude-3-haiku-20240307-v1:0"
+
+        with patch("shared.utils.llm_connectors.boto3") as mock_boto3:
+            mock_client = MagicMock()
+            mock_boto3.client = MagicMock(return_value=mock_client)
+            mock_client.converse = MagicMock(side_effect=Exception("Bedrock API Error"))
+
+            config = {"api_key": "invalid-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            connector = BedrockConnector("test-bedrock", config)
+
+            with pytest.raises(Exception, match="Bedrock API Error"):
+                await connector.chat_completion(messages, model)
+
+    @pytest.mark.asyncio
+    async def test_count_tokens(self):
+        """Test token counting for Bedrock (fallback to tiktoken)"""
+        with patch("shared.utils.llm_connectors.boto3"):
+            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            connector = BedrockConnector("test-bedrock", config)
+
+            count = await connector.count_tokens("hello world", "anthropic.claude-3-haiku-20240307-v1:0")
+            assert isinstance(count, int)
+            assert count > 0
+
+    @pytest.mark.asyncio
+    async def test_list_models(self):
+        """Test listing Bedrock models"""
+        with patch("shared.utils.llm_connectors.boto3"):
+            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            connector = BedrockConnector("test-bedrock", config)
+
+            models = await connector.list_models()
+
+            assert len(models) == 1
+            assert models[0]["id"] == "anthropic.claude-3-haiku-20240307-v1:0"
+            assert models[0]["provider"] == "bedrock"
+
+    @pytest.mark.asyncio
+    async def test_health_check(self):
+        """Test Bedrock health check"""
+        with patch("shared.utils.llm_connectors.boto3") as mock_boto3:
+            mock_client = MagicMock()
+            mock_boto3.client = MagicMock(return_value=mock_client)
+            mock_client.list_foundation_models = MagicMock(return_value={"modelSummaries": []})
+
+            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            connector = BedrockConnector("test-bedrock", config)
+
+            result = await connector.health_check()
+
+            assert result["status"] == "healthy"
+            assert result["provider"] == "bedrock"
