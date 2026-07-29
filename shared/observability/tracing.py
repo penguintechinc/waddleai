@@ -15,7 +15,7 @@ Semantic conventions (GenAI):
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from opentelemetry import trace
@@ -23,7 +23,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.trace import NoOpTracer
+
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,6 @@ def get_tracer(service_name: str = "waddleai") -> trace.Tracer:
     Returns:
         Tracer instance
     """
-    global _tracer
 
     if _tracer is not None:
         return _tracer

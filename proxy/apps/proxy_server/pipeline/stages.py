@@ -33,6 +33,11 @@ class PipelineContext:
     status_code: int = 200
     stream: bool = False
     stage_log: List[str] = field(default_factory=list)
+    # Set by the dispatch stage; feeds the gen_ai.* span attributes (§15.3) and
+    # lets routing report the actually-served model rather than the requested one.
+    provider: Optional[str] = None
+    requested_model: Optional[str] = None
+    finish_reason: Optional[str] = None
 
 
 class Stage(ABC):
@@ -93,7 +98,7 @@ class ProxyPipeline:
         Returns:
             Final context after all stages (or short-circuit point)
         """
-        with self.tracer.start_as_current_span("pipeline") as root_span:
+        with self.tracer.start_as_current_span("pipeline"):
             for stage in self.stages:
                 # Check if stage is flag-gated
                 if stage.flag is not None:
@@ -120,6 +125,8 @@ class ProxyPipeline:
                     try:
                         ctx = await stage(ctx)
                         ctx.stage_log.append(f"ran:{stage.name}")
+                        if stage.name == "dispatch":
+                            self._set_genai_attributes(span, ctx)
                     except Exception as e:
                         logger.error(f"Stage {stage.name} failed: {e}", exc_info=True)
                         span.set_attribute("error", True)
@@ -128,6 +135,35 @@ class ProxyPipeline:
                         raise
 
         return ctx
+
+    @staticmethod
+    def _set_genai_attributes(span: Any, ctx: PipelineContext) -> None:
+        """Attach GenAI semantic-convention attributes to the dispatch span.
+
+        Only model identifiers and token counts — never prompt or completion
+        content, credentials, or PII (spec §15.3). Emitted names follow the
+        OpenTelemetry GenAI conventions, which are still Development status
+        upstream, so treat them as subject to change.
+        """
+        provider = getattr(ctx, "provider", None)
+        if provider:
+            span.set_attribute("gen_ai.system", provider)
+
+        requested_model = getattr(ctx, "requested_model", None) or ctx.model
+        if requested_model:
+            span.set_attribute("gen_ai.request.model", requested_model)
+        if ctx.model:
+            span.set_attribute("gen_ai.response.model", ctx.model)
+
+        usage = ctx.usage or {}
+        if usage.get("input_tokens") is not None:
+            span.set_attribute("gen_ai.usage.input_tokens", int(usage["input_tokens"]))
+        if usage.get("output_tokens") is not None:
+            span.set_attribute("gen_ai.usage.output_tokens", int(usage["output_tokens"]))
+
+        finish_reason = getattr(ctx, "finish_reason", None)
+        if finish_reason:
+            span.set_attribute("gen_ai.response.finish_reason", finish_reason)
 
 
 class AuthStage(Stage):
