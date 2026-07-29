@@ -1655,3 +1655,41 @@ class TestStreamingConnectors:
             with pytest.raises(ProviderServerError):
                 async for _ in connector.stream_chat_completion(messages, model):
                     pass
+
+
+class TestStreamingUsageAccounting:
+    """Streamed requests must still report token usage.
+
+    Without usage on the final chunk the metering writer records zero for every
+    streamed request, which bypasses quota and under-bills. OpenAI reports usage
+    only when stream_options={"include_usage": True} is requested.
+    """
+
+    @pytest.mark.asyncio
+    async def test_openai_stream_requests_usage_and_reports_it(self):
+        usage_chunk = Mock(choices=[], usage=Mock(prompt_tokens=11, completion_tokens=7))
+        text_chunk = Mock(choices=[Mock(delta=Mock(content="hi"))], usage=None)
+
+        async def fake_stream():
+            yield text_chunk
+            yield usage_chunk
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            client = AsyncMock()
+            mock_openai.return_value = client
+            client.chat.completions.create = AsyncMock(return_value=fake_stream())
+
+            connector = OpenAIConnector("t", {"endpoint_url": "u", "api_key": "k"})
+            chunks = [c async for c in connector.stream_chat_completion([], "gpt-4")]
+
+        # usage must be requested, or the provider never sends it
+        assert client.chat.completions.create.call_args.kwargs["stream_options"] == {"include_usage": True}
+        assert chunks[-1].done is True
+        assert chunks[-1].usage["input_tokens"] == 11
+        assert chunks[-1].usage["output_tokens"] == 7
+        assert chunks[-1].usage["provider"] == "openai"
+
+    def test_xai_inherits_openai_streaming(self):
+        """xAI must not carry its own copy — a duplicate misses OpenAI-path fixes."""
+        assert XAIConnector.stream_chat_completion is OpenAIConnector.stream_chat_completion
+        assert XAIConnector.provider_label == "xai"
