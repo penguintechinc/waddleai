@@ -4,7 +4,7 @@ Unit tests for MeteringBuffer - batched token usage aggregation
 
 import asyncio
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -391,3 +391,58 @@ class TestCreateMeteringBuffer:
         """Test create_metering_buffer raises when neither writer nor db provided"""
         with pytest.raises(ValueError, match="Must provide either writer or db"):
             create_metering_buffer()
+
+
+class TestFlushFailureDoesNotLoseUsage:
+    """A failed DB write must not silently discard billable usage.
+
+    flush() clears the buffer before writing. Without retry handling, any
+    writer exception (DB restart, connection blip) permanently drops every
+    event in that window — unbilled tokens and an effective quota bypass.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failed_write_is_retried_on_next_flush(self):
+        writer = MagicMock()
+        writer.write_aggregated_row.side_effect = [RuntimeError("db down"), None]
+
+        buf = MeteringBuffer(writer=writer, interval=0.01)
+        buf.record(
+            MeteringEvent(
+                virtual_key_id=1,
+                model="gpt-4",
+                provider="openai",
+                usage={"input_tokens": 10, "output_tokens": 5},
+                timestamp=datetime.utcnow(),
+            )
+        )
+
+        await buf.flush()  # write raises -> must not drop the usage
+        await buf.flush()  # retry succeeds
+
+        assert writer.write_aggregated_row.call_count == 2
+        retried = writer.write_aggregated_row.call_args_list[1][0][0]
+        assert retried.total_input_tokens == 10
+        assert retried.total_output_tokens == 5
+
+    @pytest.mark.asyncio
+    async def test_pending_retries_are_bounded(self):
+        """A permanently failing writer must not grow memory without limit."""
+        writer = MagicMock()
+        writer.write_aggregated_row.side_effect = RuntimeError("db down")
+
+        buf = MeteringBuffer(writer=writer, interval=0.01)
+        buf.max_pending_aggregates = 5  # keep the bound test fast
+        for i in range(buf.max_pending_aggregates + 25):
+            buf.record(
+                MeteringEvent(
+                    virtual_key_id=i,  # distinct key -> distinct aggregate
+                    model="gpt-4",
+                    provider="openai",
+                    usage={"input_tokens": 1, "output_tokens": 1},
+                    timestamp=datetime.utcnow(),
+                )
+            )
+            await buf.flush()
+
+        assert len(buf._pending) <= buf.max_pending_aggregates
