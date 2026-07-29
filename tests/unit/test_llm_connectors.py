@@ -29,12 +29,16 @@ except ImportError:
 
 class AsyncContextManagerMock:
     """Helper to mock async context managers (aiohttp responses)."""
+
     def __init__(self, mock_response):
         self._mock = mock_response
+
     async def __aenter__(self):
         return self._mock
+
     async def __aexit__(self, *args):
         pass
+
 
 try:
     from shared.utils.llm_connectors import (
@@ -70,7 +74,11 @@ class TestConnectorConfig:
             assert connector.model_list == ["gpt-4"]
 
     def test_anthropic_connector_reads_config(self):
-        config = {"endpoint_url": "https://api.anthropic.com", "api_key": "ant-key", "model_list": ["claude-3-haiku-20240307"]}
+        config = {
+            "endpoint_url": "https://api.anthropic.com",
+            "api_key": "ant-key",
+            "model_list": ["claude-3-haiku-20240307"],
+        }
         with patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic"):
             connector = AnthropicConnector("my-anthropic", config)
             assert connector.name == "my-anthropic"
@@ -191,7 +199,11 @@ class TestOpenAIConnector:
             mock_openai.return_value = mock_client
             mock_client.models.list = AsyncMock(return_value=mock_models)
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4", "gpt-3.5-turbo"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4", "gpt-3.5-turbo"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             models = await connector.list_models()
@@ -730,6 +742,7 @@ class TestLLMManager:
         manager_db.return_value.select.return_value = [mock_link]
         # Mock hasattr to return False for provider_credentials and ai_providers
         original_hasattr = builtins.hasattr
+
         def mock_hasattr(obj, name):
             if obj is manager_db and name in ("provider_credentials", "ai_providers"):
                 return False
@@ -757,6 +770,7 @@ class TestLLMManager:
 
         manager_db.return_value.select.return_value = [mock_link]
         original_hasattr = builtins.hasattr
+
         def mock_hasattr(obj, name):
             if obj is manager_db and name in ("provider_credentials", "ai_providers"):
                 return False
@@ -784,6 +798,7 @@ class TestLLMManager:
 
         manager_db.return_value.select.return_value = [mock_link]
         original_hasattr = builtins.hasattr
+
         def mock_hasattr(obj, name):
             if obj is manager_db and name in ("provider_credentials", "ai_providers"):
                 return False
@@ -811,6 +826,7 @@ class TestLLMManager:
 
         manager_db.return_value.select.return_value = [mock_link]
         original_hasattr = builtins.hasattr
+
         def mock_hasattr(obj, name):
             if obj is manager_db and name in ("provider_credentials", "ai_providers"):
                 return False
@@ -838,6 +854,7 @@ class TestLLMManager:
 
         manager_db.return_value.select.return_value = [mock_link]
         original_hasattr = builtins.hasattr
+
         def mock_hasattr(obj, name):
             if obj is manager_db and name in ("provider_credentials", "ai_providers"):
                 return False
@@ -1332,3 +1349,309 @@ class TestRetryLogic:
         # First backoff around 100ms, second around 200ms (with jitter)
         assert sleep_calls[0] < 0.2  # 100ms + max 10% jitter
         assert 0.1 < sleep_calls[1] < 0.3  # ~200ms + max 10% jitter
+
+
+class TestStreamingConnectors:
+    """Test streaming chat completion on all connectors"""
+
+    @pytest.mark.asyncio
+    async def test_openai_stream_chat_completion(self):
+        """Test OpenAI streaming chat completion"""
+        from shared.utils.llm_connectors import StreamChunk
+
+        # Mock streaming chunks
+        mock_chunks = [
+            Mock(choices=[Mock(delta=Mock(content="Hello"))]),
+            Mock(choices=[Mock(delta=Mock(content=" "))]),
+            Mock(choices=[Mock(delta=Mock(content="world"))]),
+        ]
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "gpt-4"
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+
+            # Make stream an async iterator
+            async def async_stream():
+                for chunk in mock_chunks:
+                    yield chunk
+
+            mock_client.chat.completions.create = AsyncMock(return_value=async_stream())
+
+            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            connector = OpenAIConnector("test-openai", config)
+
+            chunks = []
+            async for chunk in connector.stream_chat_completion(messages, model):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 3
+            assert isinstance(chunks[0], StreamChunk)
+            assert chunks[0].delta == "Hello"
+            assert chunks[0].done is False
+            assert chunks[-1].done is True  # Final chunk
+
+    @pytest.mark.asyncio
+    async def test_xai_stream_chat_completion(self):
+        """Test xAI streaming chat completion (OpenAI-compatible)"""
+        from shared.utils.llm_connectors import StreamChunk
+
+        mock_chunks = [
+            Mock(choices=[Mock(delta=Mock(content="Response"))]),
+        ]
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "grok-1"
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+
+            async def async_stream():
+                for chunk in mock_chunks:
+                    yield chunk
+
+            mock_client.chat.completions.create = AsyncMock(return_value=async_stream())
+
+            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            connector = XAIConnector("test-xai", config)
+
+            chunks = []
+            async for chunk in connector.stream_chat_completion(messages, model):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 1
+            assert isinstance(chunks[0], StreamChunk)
+            assert chunks[-1].done is True
+
+    @pytest.mark.asyncio
+    async def test_anthropic_stream_chat_completion(self):
+        """Test Anthropic streaming chat completion"""
+        from shared.utils.llm_connectors import StreamChunk
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "claude-3-haiku-20240307"
+
+        # Mock stream events
+        mock_event1 = Mock(type="content_block_delta", delta=Mock(text="Hello"))
+        mock_event2 = Mock(type="content_block_delta", delta=Mock(text=" world"))
+
+        with patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic") as mock_anthropic:
+            mock_client = AsyncMock()
+            mock_anthropic.return_value = mock_client
+
+            # Create a proper sync context manager with async iteration support
+            class MockStreamContext:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    if not hasattr(self, "_index"):
+                        self._index = 0
+                    if self._index == 0:
+                        self._index += 1
+                        return mock_event1
+                    elif self._index == 1:
+                        self._index += 1
+                        return mock_event2
+                    else:
+                        raise StopAsyncIteration
+
+            mock_client.messages.stream = Mock(return_value=MockStreamContext())
+
+            config = {"api_key": "ant-key", "model_list": ["claude-3-haiku-20240307"]}
+            connector = AnthropicConnector("test-anthropic", config)
+
+            chunks = []
+            async for chunk in connector.stream_chat_completion(messages, model):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 2
+            assert isinstance(chunks[0], StreamChunk)
+            assert chunks[-1].done is True
+
+    @pytest.mark.asyncio
+    async def test_ollama_stream_chat_completion(self):
+        """Test Ollama streaming chat completion (NDJSON)"""
+        from shared.utils.llm_connectors import StreamChunk
+        import json
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "llama2"
+
+        ndjson_lines = [
+            json.dumps({"message": {"content": "Hello"}}).encode(),
+            json.dumps({"message": {"content": " world"}}).encode(),
+        ]
+
+        with patch("shared.utils.llm_connectors.aiohttp.ClientSession") as mock_session_class:
+            mock_session = AsyncMock()
+            mock_session_class.return_value = mock_session
+
+            # Create async iterator for response content
+            async def async_iter_lines():
+                for line in ndjson_lines:
+                    yield line
+
+            mock_response = AsyncMock()
+            mock_response.status = 200
+            mock_response.content = async_iter_lines()
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session.post = Mock(return_value=mock_response)
+
+            config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
+            connector = OllamaConnector("test-ollama", config)
+
+            chunks = []
+            async for chunk in connector.stream_chat_completion(messages, model):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 2
+            assert isinstance(chunks[0], StreamChunk)
+            assert chunks[-1].done is True
+
+    @pytest.mark.asyncio
+    async def test_llamacpp_stream_chat_completion(self):
+        """Test llama-server streaming chat completion (SSE)"""
+        from shared.utils.llm_connectors import StreamChunk
+        import json
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "my-model"
+
+        sse_lines = [
+            b'data: ' + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}).encode(),
+            b'data: ' + json.dumps({"choices": [{"delta": {"content": " world"}}]}).encode(),
+            b'data: [DONE]',
+        ]
+
+        with patch("shared.utils.llm_connectors.aiohttp.ClientSession") as mock_session_class:
+            mock_session = AsyncMock()
+            mock_session_class.return_value = mock_session
+
+            # Create async iterator for SSE lines
+            async def async_iter_lines():
+                for line in sse_lines:
+                    yield line
+
+            mock_response = AsyncMock()
+            mock_response.status = 200
+            mock_response.content = async_iter_lines()
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session.post = Mock(return_value=mock_response)
+
+            config = {"endpoint_url": "http://localhost:8000", "api_key": "", "model_name": "my-model"}
+            connector = LlamaCppConnector("test-llamacpp", config)
+
+            chunks = []
+            async for chunk in connector.stream_chat_completion(messages, model):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 2
+            assert isinstance(chunks[0], StreamChunk)
+            assert chunks[-1].done is True
+
+    @pytest.mark.asyncio
+    async def test_gemini_stream_chat_completion(self):
+        """Test Gemini streaming chat completion"""
+        from shared.utils.llm_connectors import StreamChunk
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "gemini-1.5-flash"
+
+        mock_chunks = [
+            Mock(text="Hello"),
+            Mock(text=" world"),
+        ]
+
+        with patch("shared.utils.llm_connectors.genai") as mock_genai_module:
+            mock_client = AsyncMock()
+
+            # Create async generator
+            async def async_stream_gen():
+                for chunk in mock_chunks:
+                    yield chunk
+
+            mock_client.aio.models.generate_content_stream = AsyncMock(
+                return_value=async_stream_gen()
+            )
+            mock_genai_module.Client = Mock(return_value=mock_client)
+            mock_genai_module.types.GenerateContentConfig = Mock(return_value={})
+
+            config = {"api_key": "gemini-key", "model_list": ["gemini-1.5-flash"]}
+            connector = GeminiConnector("test-gemini", config)
+
+            chunks = []
+            async for chunk in connector.stream_chat_completion(messages, model):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 2
+            assert isinstance(chunks[0], StreamChunk)
+            assert chunks[-1].done is True
+
+    @pytest.mark.asyncio
+    async def test_bedrock_stream_chat_completion(self):
+        """Test Bedrock streaming chat completion with thread bridge"""
+        from shared.utils.llm_connectors import StreamChunk
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "anthropic.claude-3-haiku-20240307-v1:0"
+
+        # Mock streaming events
+        mock_events = [
+            {"contentBlockDelta": {"delta": {"text": "Hello"}}},
+            {"contentBlockDelta": {"delta": {"text": " world"}}},
+        ]
+
+        with patch("shared.utils.llm_connectors.boto3") as mock_boto3:
+            mock_client = Mock()
+            mock_boto3.client = Mock(return_value=mock_client)
+
+            # Mock the event stream
+            def mock_stream_response():
+                return {"body": mock_events}
+
+            mock_client.invoke_model_with_response_stream = Mock(return_value=mock_stream_response())
+
+            config = {"api_key": "", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            connector = BedrockConnector("test-bedrock", config)
+
+            chunks = []
+            async for chunk in connector.stream_chat_completion(messages, model):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 2
+            assert isinstance(chunks[0], StreamChunk)
+            assert chunks[-1].done is True
+
+    @pytest.mark.asyncio
+    async def test_stream_error_mapping_openai(self):
+        """Test that streaming errors map to typed ProviderError"""
+        from shared.utils.llm_connectors import ProviderServerError
+
+        messages = [{"role": "user", "content": "Hi"}]
+        model = "gpt-4"
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_openai.return_value = mock_client
+            mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Stream error"))
+
+            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            connector = OpenAIConnector("test-openai", config)
+
+            with pytest.raises(ProviderServerError):
+                async for _ in connector.stream_chat_completion(messages, model):
+                    pass
