@@ -19,10 +19,11 @@ Tests all endpoints:
 """
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from services.management.app.services.ollama_manager import PullStatus
 from tests.unit.management.conftest import make_select_result
 
 # ============================================================================
@@ -512,7 +513,11 @@ def test_health_check_deployment_success(client, app_mock_db, auth_headers):
     dep = make_mock_deployment(dep_id=1)
     app_mock_db.return_value.select.return_value = make_select_result([dep])
 
-    resp = client.get("/api/v1/ollama/deployments/1/health", headers=auth_headers)
+    # Patch the manager: its health_check performs a live HTTP GET against the
+    # deployment endpoint. A unit test must not depend on a reachable Ollama.
+    with patch("services.management.app.services.ollama_manager.OllamaDeploymentManager.health_check") as mock_health:
+        mock_health.return_value = {"healthy": True, "status": "healthy"}
+        resp = client.get("/api/v1/ollama/deployments/1/health", headers=auth_headers)
 
     assert resp.status_code == 200
     data = resp.get_json()
@@ -674,12 +679,16 @@ def test_pull_ollama_model_new(client, app_mock_db, auth_headers):
 
     payload = {"model": "llama3.2", "tag": "latest"}
 
-    resp = client.post(
-        "/api/v1/ollama/deployments/1/models/pull",
-        headers=auth_headers,
-        data=json.dumps(payload),
-        content_type="application/json",
-    )
+    # pull_model issues a live HTTP POST to the deployment endpoint; patch it
+    # so this exercises the ROUTE, not a reachable Ollama server.
+    with patch("services.management.app.services.ollama_manager.OllamaDeploymentManager.pull_model") as mock_pull:
+        mock_pull.return_value = PullStatus(model="llama3.2", status="pulling", completed=False)
+        resp = client.post(
+            "/api/v1/ollama/deployments/1/models/pull",
+            headers=auth_headers,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
 
     assert resp.status_code == 200
     data = resp.get_json()
@@ -700,12 +709,16 @@ def test_pull_ollama_model_existing(client, app_mock_db, auth_headers):
 
     payload = {"model": "llama3.2", "tag": "latest"}
 
-    resp = client.post(
-        "/api/v1/ollama/deployments/1/models/pull",
-        headers=auth_headers,
-        data=json.dumps(payload),
-        content_type="application/json",
-    )
+    # pull_model issues a live HTTP POST to the deployment endpoint; patch it
+    # so this exercises the ROUTE, not a reachable Ollama server.
+    with patch("services.management.app.services.ollama_manager.OllamaDeploymentManager.pull_model") as mock_pull:
+        mock_pull.return_value = PullStatus(model="llama3.2", status="pulling", completed=False)
+        resp = client.post(
+            "/api/v1/ollama/deployments/1/models/pull",
+            headers=auth_headers,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
 
     assert resp.status_code == 200
     assert "pulling" in resp.get_json()["status"]
