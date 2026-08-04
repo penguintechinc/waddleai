@@ -214,15 +214,18 @@ class AuthStage(Stage):
             return ctx
 
         # User must have an organization/tenant ID
-        tenant_id = getattr(ctx.user, "tenant_id", None)
+        # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
+        tenant_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
         if not tenant_id:
             ctx.blocked = True
             ctx.status_code = 403
             ctx.block_reason = "missing_organization"
-            logger.warning(f"Auth failed: user {ctx.user.id} has no tenant_id")
+            user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", "?")
+            logger.warning(f"Auth failed: user {user_id} has no tenant_id/organization_id")
             return ctx
 
-        logger.debug(f"Auth: user={ctx.user.id} tenant={tenant_id}")
+        user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", "?")
+        logger.debug(f"Auth: user={user_id} tenant={tenant_id}")
         return ctx
 
 
@@ -332,8 +335,9 @@ class SecurityInStage(Stage):
             return ctx
 
         # STEP 1: Prompt security scan (fail fast on injection attacks)
-        user_id = getattr(ctx.user, "id", None)
-        api_key_id = None  # Would come from virtual key mapping in production
+        # Support both id (generic) and user_id (WaddleAI UserContext)
+        user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
+        api_key_id = getattr(ctx.user, "api_key_id", None)
         ip_address = None  # Would come from request context
 
         threats, _ = self.scanner.scan_messages(
@@ -352,13 +356,15 @@ class SecurityInStage(Stage):
 
         # STEP 2: Content filter for PII/PCI redaction (only if no injection detected)
         # Process each message and update with filtered version
+        # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
+        org_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
         filtered_messages = []
         for msg in ctx.messages:
             content = msg.get("content", "")
             filter_result = await self.content_filter.filter_input(
                 text=content,
                 user_id=user_id,
-                org_id=getattr(ctx.user, "tenant_id", None),
+                org_id=org_id,
                 ip=ip_address,
             )
 
@@ -420,7 +426,22 @@ class DispatchStage(Stage):
 
         # Select provider and target model
         try:
-            provider, target_model = self.router.select_provider(ctx.model or "gpt-4")
+            model = ctx.model or "gpt-4"
+            # Get available providers for the model
+            available_providers = self.router._get_available_providers(model)
+            if not available_providers:
+                logger.error("DispatchStage: no available providers for model %s", model)
+                ctx.blocked = True
+                ctx.status_code = 500
+                ctx.block_reason = "no_available_providers"
+                return ctx
+            # Select provider using router's strategy
+            provider = self.router._select_provider(
+                model,
+                available_providers,
+                self.router.default_strategy,
+            )
+            target_model = model  # For now, use the requested model name
         except Exception as e:
             logger.error("DispatchStage: provider selection failed: %s", e)
             ctx.blocked = True
@@ -536,8 +557,10 @@ class SecurityOutStage(Stage):
         if not ctx.response_text:
             return ctx
 
-        user_id = getattr(ctx.user, "id", None)
-        org_id = getattr(ctx.user, "tenant_id", None)
+        # Support both id (generic) and user_id (WaddleAI UserContext)
+        user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
+        # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
+        org_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
 
         try:
             filter_result = await self.content_filter.filter_output(
