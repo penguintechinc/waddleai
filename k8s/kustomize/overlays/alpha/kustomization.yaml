@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: waddleai
+namePrefix: alpha-
+commonLabels:
+  environment: alpha
+resources:
+  - ../../base
+replicas:
+  - name: management
+    count: 1
+images:
+  - name: management
+    newName: localhost:32000/management
+    newTag: latest
+configMapGenerator:
+  - name: waddleai-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=DEBUG
+      - RELEASE_MODE=false

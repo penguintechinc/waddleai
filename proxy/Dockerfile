@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
 WORKDIR /app
 
@@ -23,12 +23,15 @@ RUN adduser --disabled-password --gecos '' waddleai
 RUN chown -R waddleai:waddleai /app
 USER waddleai
 
-# Expose port
-EXPOSE 8000
+# Expose ports (HTTP + gRPC)
+EXPOSE 8080 50051
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8000/healthz || exit 1
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" || exit 1
 
-# Run the application
-CMD ["python", "apps/proxy_server/main.py"]
+# Set Python path to include /app for shared module imports
+ENV PYTHONPATH=/app
+
+# Run the application with hypercorn
+CMD ["hypercorn", "apps.proxy_server.main:app", "--bind", "0.0.0.0:8080", "--workers", "4"]

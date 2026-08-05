@@ -1,0 +1,62 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: penguincode-alpha
+
+bases:
+- ../../base
+
+namePrefix: alpha-
+
+commonLabels:
+  environment: alpha
+  release: penguincode-alpha
+
+commonAnnotations:
+  environment: alpha
+  release: penguincode-alpha
+
+replicas:
+- name: penguincode-server
+  count: 1
+
+images:
+- name: penguincode/server
+  newTag: latest
+  newName: penguincode/server
+
+patches:
+- target:
+    kind: Deployment
+    name: alpha-penguincode-server
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/limits/cpu
+      value: 200m
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/limits/memory
+      value: 256Mi
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/requests/cpu
+      value: 100m
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/requests/memory
+      value: 128Mi
+    - op: replace
+      path: /spec/template/spec/containers/0/env/8/value
+      value: "1"
+    - op: replace
+      path: /spec/template/spec/containers/0/env/16/value
+      value: "4096"
+    - op: replace
+      path: /spec/template/spec/containers/0/env/17/value
+      value: "1"
+    - op: replace
+      path: /spec/template/spec/containers/0/env/19/value
+      value: "DEBUG"
+    - op: replace
+      path: /spec/template/spec/containers/0/imagePullPolicy
+      value: Never
+
+envs:
+- name: env.yaml

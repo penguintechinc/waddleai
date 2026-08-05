@@ -1,0 +1,249 @@
+# PenguinCode Configuration
+# Target Hardware: NVIDIA RTX 4060 Ti (8GB VRAM)
+# All defaults optimized for 8GB VRAM
+
+# Ollama Configuration (local or remote)
+# Supports local Ollama or remote instances (LAN server, cloud GPU, etc.)
+ollama:
+  api_url: "${OLLAMA_API_URL:-http://localhost:11434}"  # Use env var or default
+  timeout: 120                    # Request timeout in seconds
+  # For remote Ollama, set OLLAMA_API_URL environment variable:
+  #   export OLLAMA_API_URL="http://192.168.1.100:11434"
+  #   export OLLAMA_API_URL="http://gpu-server.local:11434"
+
+# Global model roles (fallback defaults - optimized for 8GB VRAM)
+# Uses tiered approach: lite models for simple tasks, full models for complex
+models:
+  planning: "llama3.1:8b"
+  orchestration: "llama3.2:latest"
+  research: "llama3.2:latest"
+  # Execution models (code generation, file writes)
+  execution: "qwen2.5-coder:7b"       # Complex: refactoring, multi-file, features
+  execution_lite: "qwen2.5-coder:7b"  # Simple: single file edits (use 1.5b if installed)
+  # Exploration models (code reading, search)
+  exploration: "llama3.2:latest"       # Standard exploration
+  exploration_lite: "llama3.2:latest"  # Quick file reads (use 1b if installed)
+
+# Per-agent model overrides (optimized for RTX 4060 Ti 8GB)
+agents:
+  executor:
+    model: "qwen2.5-coder:7b"
+    description: "Code mutations, file writes, bash execution"
+  explorer:
+    model: "llama3.2:latest"
+    description: "Codebase navigation, file reading, search"
+  reviewer:
+    model: "codellama:7b"
+    description: "Code review, quality analysis"
+  planner:
+    model: "llama3.1:8b"
+    description: "Implementation planning, task decomposition"
+  tester:
+    model: "qwen2.5-coder:7b"
+    description: "Test generation and execution"
+  refactor:
+    model: "codellama:7b"
+    description: "Refactoring suggestions and improvements"
+  debugger:
+    model: "llama3.1:8b"
+    description: "Error analysis, debugging, fix suggestions"
+  docs:
+    model: "llama3.1:8b"
+    description: "Documentation generation"
+  researcher:
+    model: "llama3.2:latest"
+    description: "Web research, summarization"
+
+defaults:
+  temperature: 0.7
+  max_tokens: 4096
+  context_window: 8192
+
+security:
+  level: 2  # 1=always prompt, 2=prompt for destructive, 3=no prompts
+
+history:
+  enabled: true
+  location: "per-project"
+  max_sessions: 50
+
+# Research configuration
+research:
+  engine: "duckduckgo"  # duckduckgo | fireplexity | sciraai | searxng | google
+  use_mcp: true         # Use MCP server when available (default for duckduckgo/google)
+  max_results: 5
+
+  # Engine-specific settings
+  engines:
+    duckduckgo:
+      safesearch: "moderate"
+      region: "wt-wt"
+
+    fireplexity:
+      firecrawl_api_key: "${FIRECRAWL_API_KEY}"
+      # Uses Ollama models configured above
+
+    sciraai:
+      api_key: "${SCIRA_API_KEY}"
+      endpoint: "https://api.scira.ai"
+
+    searxng:
+      url: "https://searx.be"  # Public instance or self-hosted
+      categories: ["general"]
+
+    google:
+      api_key: "${GOOGLE_API_KEY}"
+      cx_id: "${GOOGLE_CX_ID}"
+
+# Memory configuration (mem0)
+memory:
+  enabled: true
+  vector_store: "chroma"  # chroma | qdrant | pgvector
+
+  # Uses Ollama models from 'models' section for LLM/embeddings
+  embedding_model: "nomic-embed-text"
+
+  stores:
+    chroma:
+      path: "./.penguincode/memory"
+      collection: "penguincode_memory"
+
+    qdrant:
+      url: "http://localhost:6333"
+      collection: "penguincode_memory"
+
+    pgvector:
+      connection_string: "${PGVECTOR_URL}"
+      table: "penguincode_memory"
+
+# GPU Regulators (rate limiting to prevent overload)
+regulators:
+  auto_detect: true
+  gpu_type: "auto"
+  gpu_model: ""
+  vram_mb: 8192
+  max_concurrent_requests: 2
+  max_models_loaded: 1
+  request_queue_size: 10
+  min_request_interval_ms: 100
+  cooldown_after_error_ms: 1000
+
+# Documentation RAG (auto-indexing of language/library docs)
+docs_rag:
+  enabled: true
+  auto_detect_on_start: true    # Detect languages from project files at startup
+  auto_detect_on_request: true  # Detect languages from request content (overrides manual)
+  auto_index_on_detect: true    # Index docs when languages detected
+  auto_index_on_request: true   # Index docs on-demand when needed for a request
+
+  # Manual language configuration (used when auto_detect is false or as baseline)
+  # Auto-detect will add to these, not replace them
+  # Set to true to always index docs for a language even if not detected
+  languages_manual:
+    python: false
+    javascript: false
+    typescript: false
+    go: false
+    rust: false
+    hcl: false        # Terraform/OpenTofu
+    ansible: false
+    ruby: false
+    php: false
+    dart: false
+
+  # User-specified libraries to always index
+  libraries_manual: []
+    # - fastapi
+    # - pytest
+    # - numpy
+
+  # Cache and indexing settings
+  cache_dir: "./.penguincode/docs"
+  cache_max_age_days: 7
+  max_pages_per_library: 50
+  max_libraries_to_index: 20
+
+# Optional: Hosted Ollama usage API (for quota tracking)
+usage_api:
+  enabled: false
+  endpoint: "https://ollama.example.com/api/usage"
+  jwt_token: "${OLLAMA_USAGE_JWT}"
+  refresh_interval: 300
+  show_warnings_at: 80
+
+# MCP (Model Context Protocol) Server Configuration
+# Extend PenguinCode with additional tools via MCP servers
+# See: https://modelcontextprotocol.io/
+mcp:
+  enabled: true
+  servers:
+    # Example: DuckDuckGo search via MCP (stdio-based)
+    # - name: "duckduckgo"
+    #   transport: "stdio"
+    #   command: "npx"
+    #   args: ["-y", "@nickclyde/duckduckgo-mcp-server"]
+    #   timeout: 30
+
+    # Example: SearXNG search via MCP (stdio-based)
+    # - name: "searxng"
+    #   transport: "stdio"
+    #   command: "uvx"
+    #   args: ["mcp-searxng"]
+    #   env:
+    #     SEARXNG_URL: "https://searx.be"
+    #   timeout: 30
+
+    # Example: Custom HTTP-based MCP server with auth
+    # - name: "custom-server"
+    #   transport: "http"
+    #   url: "http://localhost:8080"
+    #   headers:
+    #     Authorization: "Bearer ${MCP_API_TOKEN}"
+    #   timeout: 30
+
+    # Example: N8N workflow automation via MCP
+    # - name: "n8n"
+    #   transport: "http"
+    #   url: "http://localhost:5678/mcp"
+    #   headers:
+    #     X-N8N-API-KEY: "${N8N_API_KEY}"
+
+    # Example: Flowise AI workflow via MCP
+    # - name: "flowise"
+    #   transport: "http"
+    #   url: "http://localhost:3000/api/v1/mcp"
+    #   headers:
+    #     Authorization: "Bearer ${FLOWISE_API_KEY}"
+
+# Server Configuration (Client-Server Mode)
+# Modes: local (default), standalone (gRPC on localhost), remote (gRPC with auth)
+server:
+  mode: "local"           # local | standalone | remote
+  host: "localhost"       # Server bind address
+  port: 50051             # gRPC port
+  tls_enabled: false      # Enable TLS for secure connections
+  tls_cert_path: ""       # Path to TLS certificate
+  tls_key_path: ""        # Path to TLS private key
+
+# Authentication (for remote server mode)
+auth:
+  enabled: false          # Enable JWT authentication
+  jwt_secret: "${PENGUINCODE_JWT_SECRET}"
+  shared_key: "${PENGUINCODE_SHARED_KEY}"  # Shared secret for team key→JWT exchange
+  token_expiry: 3600      # Access token expiry in seconds (1 hour)
+  refresh_expiry: 86400   # Refresh token expiry (24 hours)
+  api_keys:               # Valid API keys for authentication
+    - "${PENGUINCODE_API_KEY}"
+
+# Client Configuration (for connecting to remote servers)
+client:
+  server_url: ""                    # Remote server URL (e.g., "grpc://server:50051")
+  shared_key: "${PENGUINCODE_SHARED_KEY}"  # Shared secret for auto-auth with server
+  token_path: "~/.penguincode/token"  # Where to store JWT token
+  local_tools:                      # Tools that execute locally on client
+    - read
+    - write
+    - edit
+    - bash
+    - grep
+    - glob

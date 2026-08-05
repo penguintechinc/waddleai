@@ -3,10 +3,16 @@ name: Deploy to Cloudflare Pages
 on:
   push:
     branches: [main, v1.x]
-    paths: ['website/**']
+    paths:
+      - 'website/**'
+      - '.version'
+      - '.github/workflows/deploy-cloudflare-pages.yml'
   pull_request:
     branches: [main]
-    paths: ['website/**']
+    paths:
+      - 'website/**'
+      - '.version'
+      - '.github/workflows/deploy-cloudflare-pages.yml'
 
 jobs:
   build-and-deploy:
@@ -14,10 +20,10 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
         with:
           node-version: '18.17.0'
           cache: 'npm'
@@ -28,6 +34,11 @@ jobs:
           cd website
           npm ci
 
+      - name: Run security audit (npm audit)
+        run: |
+          cd website
+          npm audit --audit-level=moderate || true
+
       - name: Build website
         run: |
           cd website
@@ -37,7 +48,7 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
 
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
+        uses: cloudflare/pages-action@f0a1cd58cd66095dee69bfa18fa5efd1dde93bca  # v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -47,7 +58,7 @@ jobs:
           
       - name: Comment deployment URL
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
         with:
           script: |
             const deploymentUrl = `https://${context.sha.substring(0, 8)}.waddleai-website.pages.dev`;

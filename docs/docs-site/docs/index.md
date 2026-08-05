@@ -6,6 +6,13 @@ Enterprise-grade AI proxy and management system with OpenAI-compatible APIs, adv
 
 WaddleAI provides a comprehensive AI proxy solution that acts as a drop-in replacement for OpenAI's API while adding advanced features like multi-LLM support, security scanning, and enterprise-grade management.
 
+### What's New in v0.1.0
+
+- **4-tier content filtering** with NER (Presidio/spaCy) and ShieldGemma safety auditing — PII/PCI patterns are now toggleable per organization
+- **llama.cpp provider** — run models locally on GPU nodes via K8s DaemonSet, with exact tokenization
+- **Multi-credential provider pools** — rotate credentials across LLM provider accounts with automatic failover
+- **pgvector memory** — semantic conversation memory backed by PostgreSQL pgvector extension
+
 ### Key Features
 
 ✨ **OpenAI-Compatible API** - Drop-in replacement for OpenAI API  
@@ -16,7 +23,10 @@ WaddleAI provides a comprehensive AI proxy solution that acts as a drop-in repla
 📊 **Token Management** - Quota enforcement and usage tracking  
 🏢 **Multi-Tenant** - Organization-based isolation  
 📈 **Monitoring** - Prometheus metrics and health checks  
-🧠 **Memory Integration** - Conversation memory with mem0/ChromaDB
+🧠 **Memory Integration** - Conversation memory with mem0/ChromaDB  
+🔒 **4-Tier Content Filtering** - PII/PCI regex, NER (Presidio/spaCy), ShieldGemma safety auditor  
+⚡ **Local Inference** - llama.cpp provider for edge/air-gapped deployments  
+🔑 **Multi-Credential Pools** - Rotate API keys across provider accounts
 
 ## Getting Started
 

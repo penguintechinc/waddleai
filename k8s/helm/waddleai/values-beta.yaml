@@ -1,0 +1,223 @@
+# Beta Environment Values
+# Staging/Pre-production environment with production-like resources
+
+environment: beta
+
+# Global image settings
+global:
+  imageRegistry: ghcr.io/penguintechinc/waddleai
+  imagePullPolicy: Always
+  imagePullSecrets:
+    - name: ghcr-pull-secret
+
+# Management Service - Beta
+management:
+  replicaCount: 2
+  image:
+    repository: management
+    tag: beta-1776182785
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+  env:
+    LOG_LEVEL: INFO
+    FLASK_ENV: production
+
+# WebUI Service - Beta
+webui:
+  replicaCount: 1
+  image:
+    repository: webui
+    tag: beta-1776182767
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "200m"
+    limits:
+      memory: "256Mi"
+      cpu: "400m"
+
+# PostgreSQL - Beta
+postgres:
+  replicaCount: 1
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "2000m"
+
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: "nest-block"
+
+# Redis - Beta
+redis:
+  replicaCount: 1
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "512Mi"
+      cpu: "400m"
+
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: "nest-block"
+
+# Ingress - Disabled for Beta (replaced by HTTPRoute)
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  hosts:
+    - host: waddleai.penguintech.cloud
+      paths:
+        - path: /
+          pathType: Prefix
+          serviceName: waddleai-webui
+          servicePort: 8080
+        - path: /api
+          pathType: Prefix
+          serviceName: waddleai-management
+          servicePort: 8001
+  tls:
+    - secretName: waddleai-tls
+      hosts:
+        - waddleai.penguintech.cloud
+
+httproute:
+  enabled: true
+  gatewayName: shared
+  gatewayNamespace: gateway
+  host: "waddleai.penguintech.cloud"
+  rules:
+    - path: /api
+      service: "waddleai-management"
+      port: 8001
+    - path: /
+      service: "waddleai-webui"
+      port: 8080
+
+# Pod Disruption Budget - Enabled for Beta
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Affinity rules for better distribution
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - waddleai
+          topologyKey: kubernetes.io/hostname
+
+# Ollama - Beta (targets svr01-dal2 and svr02-dal2 — GPU compute nodes)
+# svr03-dal2 has a basic GPU but is primarily a storage server; excluded via ollama=true label.
+# Pre-requisites on cluster:
+#   kubectl label node svr01-dal2 gpu=true ollama=true
+#   kubectl label node svr02-dal2 gpu=true ollama=true
+#   kubectl label node svr03-dal2 gpu=true  (gets device plugin but NOT ollama)
+ollama:
+  enabled: true
+  image:
+    repository: ollama/ollama
+    tag: "0.7.1"
+    pullPolicy: IfNotPresent
+
+  nodeSelector:
+    ollama: "true"
+
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+  gpu:
+    enabled: true
+    type: nvidia
+    count: 1
+
+  resources:
+    requests:
+      memory: "16Gi"
+      cpu: "4000m"
+    limits:
+      memory: "32Gi"
+      cpu: "8000m"
+
+  persistence:
+    enabled: false
+    # hostPath mounts local node storage — avoids CephFS dependency, faster for large models
+    hostPath: /var/lib/ollama/models
+
+  env:
+    OLLAMA_HOST: "0.0.0.0"
+    OLLAMA_KEEP_ALIVE: "24h"
+    OLLAMA_MAX_LOADED_MODELS: "3"
+    OLLAMA_NUM_PARALLEL: "4"
+
+  models: []
+
+# GPU Device Plugins - Beta
+# NVIDIA GPU Operator targets svr01-dal2 and svr02-dal2 (labeled gpu=true)
+# driver.enabled=false — NVIDIA drivers already present on nodes
+nvidia-gpu-operator:
+  enabled: true
+  operator:
+    defaultRuntime: containerd
+  driver:
+    enabled: false
+  toolkit:
+    enabled: true
+  devicePlugin:
+    enabled: true
+    config:
+      default: "any"
+  gfd:
+    enabled: true
+    nodeSelector:
+      gpu: "true"
+  dcgm:
+    enabled: false
+  dcgmExporter:
+    enabled: false
+  migManager:
+    enabled: false
+  nodeStatusExporter:
+    enabled: false
+  validator:
+    enabled: true
+
+amd-rocm-plugin:
+  enabled: false
+
+intel-gpu-plugin:
+  enabled: false

@@ -1,0 +1,155 @@
+{{- if .Values.ollama.enabled -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "waddleai.fullname" . }}-ollama
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama
+  template:
+    metadata:
+      labels:
+        {{- include "waddleai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      {{- if .Values.ollama.models }}
+      initContainers:
+        - name: pull-models
+          image: {{ include "waddleai.ollama.image" . }}
+          imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ollama serve &
+              OLLAMA_PID=$!
+              sleep 5
+              {{- range .Values.ollama.models }}
+              ollama pull {{ . }}
+              {{- end }}
+              kill $OLLAMA_PID
+          env:
+            - name: OLLAMA_MODELS
+              value: /models
+            - name: HOME
+              value: /tmp
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: ollama-models
+              mountPath: /models
+          {{- if .Values.ollama.gpu.enabled }}
+          resources:
+            limits:
+              {{ .Values.ollama.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollama.gpu.count | default 1 }}
+          {{- end }}
+      {{- end }}
+      containers:
+        - name: ollama
+          image: {{ include "waddleai.ollama.image" . }}
+          imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: {{ .Values.ollama.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: OLLAMA_MODELS
+              value: /models
+            - name: HOME
+              value: /tmp
+            {{- range $key, $value := .Values.ollama.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- if .Values.ollama.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.ollama.livenessProbe.httpGet.path }}
+              port: {{ .Values.ollama.livenessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.ollama.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.ollama.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.ollama.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.ollama.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.ollama.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.ollama.readinessProbe.httpGet.path }}
+              port: {{ .Values.ollama.readinessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.ollama.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.ollama.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.ollama.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.ollama.readinessProbe.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- if .Values.ollama.gpu.enabled }}
+            requests:
+              {{ .Values.ollama.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollama.gpu.count | default 1 }}
+              {{- with .Values.ollama.resources.requests }}
+              memory: {{ .memory }}
+              cpu: {{ .cpu }}
+              {{- end }}
+            limits:
+              {{ .Values.ollama.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollama.gpu.count | default 1 }}
+              {{- with .Values.ollama.resources.limits }}
+              memory: {{ .memory }}
+              cpu: {{ .cpu }}
+              {{- end }}
+            {{- else }}
+            {{- toYaml .Values.ollama.resources | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: ollama-models
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: ollama-models
+          {{- if .Values.ollama.persistence.hostPath }}
+          hostPath:
+            path: {{ .Values.ollama.persistence.hostPath }}
+            type: DirectoryOrCreate
+          {{- else if .Values.ollama.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "waddleai.fullname" . }}-ollama-models
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      nodeSelector:
+        {{- toYaml .Values.ollama.nodeSelector | nindent 8 }}
+      {{- with .Values.ollama.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

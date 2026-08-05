@@ -1,0 +1,40 @@
+[tool.black]
+line-length = 120
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | venv
+  | __pycache__
+  | node_modules
+  | grpc_proto
+  | grpc/proto
+  | .*_pb2\.py
+  | .*_pb2_grpc\.py
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120
+skip_glob = [
+    "*/.venv/*",
+    "*/venv/*",
+    "*/__pycache__/*",
+    "*/node_modules/*",
+    "*/grpc_proto/*",
+    "*/grpc/proto/*",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+]
+
+[tool.mypy]
+ignore_missing_imports = true
+exclude = [
+    ".venv",
+    "venv",
+    "grpc_proto",
+    "grpc/proto",
+    ".*_pb2\\.py",
+    ".*_pb2_grpc\\.py",
+]

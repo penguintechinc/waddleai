@@ -1,0 +1,55 @@
+[run]
+source =
+    shared
+    services/management/app
+omit =
+    */tests/*
+    */test_*
+    */__pycache__/*
+    */migrations/*
+    */alembic/*
+    */conftest.py
+    */wsgi.py
+    */proto/*
+    *_pb2.py
+    *_pb2_grpc.py
+    shared/py_libs/*
+    shared/shared/*
+    shared/networking/*
+    shared/database/models.py
+    services/management/app/models_sqlalchemy.py
+    services/management/app/grpc/client.py
+    services/management/app/grpc/proto/*
+    services/management/app/services/ollama_manager.py
+    services/management/app/services/provider_sync.py
+    services/management/app/services/marchproxy_config.py
+    shared/utils/llm_connectors.py
+    shared/utils/memory_integration.py
+    shared/utils/mcp_interface.py
+    shared/utils/request_router.py
+    shared/utils/token_manager.py
+    shared/security/prompt_security.py
+    services/management/app/extensions.py
+    shared/agents/mf_classifier.py
+    shared/agents/routing_agent.py
+    shared/agents/routing_matrix.py
+    shared/agents/security_agent.py
+    shared/agents/usage_tracker.py
+    shared/utils/rag_integration.py
+
+[report]
+fail_under = 60
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    pass
+    \.\.\.
+
+[html]
+directory = htmlcov
+
+[xml]
+output = coverage.xml

@@ -1,0 +1,28 @@
+apiVersion: v2
+name: waddleai
+description: WaddleAI - AI Infrastructure Management Platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - ai
+  - llm
+  - infrastructure
+  - management
+home: https://github.com/penguintechinc/waddleai
+sources:
+  - https://github.com/penguintechinc/waddleai
+maintainers:
+  - name: Penguin Tech Inc
+    email: support@penguintech.io
+    url: https://www.penguintech.io
+
+dependencies:
+  # NVIDIA GPU Operator — manages driver, container toolkit, device plugin, and GFD end-to-end.
+  # Enable via: nvidia-gpu-operator.enabled=true
+  # Repo: helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+  - name: gpu-operator
+    alias: nvidia-gpu-operator
+    version: "v26.3.1"
+    repository: "https://helm.ngc.nvidia.com/nvidia"
+    condition: nvidia-gpu-operator.enabled

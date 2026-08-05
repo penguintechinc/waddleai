@@ -1,0 +1,98 @@
+# Alpha Environment Values
+# Development/Testing environment with minimal resources
+
+environment: alpha
+
+# Management Service - Alpha
+management:
+  replicaCount: 1
+  image:
+    tag: alpha-latest
+    pullPolicy: Never
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  env:
+    LOG_LEVEL: DEBUG
+    FLASK_ENV: development
+
+# WebUI Service - Alpha
+webui:
+  replicaCount: 1
+  image:
+    tag: alpha-latest
+    pullPolicy: Never
+
+  resources:
+    requests:
+      memory: "32Mi"
+      cpu: "50m"
+    limits:
+      memory: "64Mi"
+      cpu: "100m"
+
+# PostgreSQL - Alpha
+postgres:
+  replicaCount: 1
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  persistence:
+    enabled: true
+    size: 5Gi
+
+# Redis - Alpha
+redis:
+  replicaCount: 1
+
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "100m"
+
+  persistence:
+    enabled: true
+    size: 2Gi
+
+# Ingress - Enabled for Alpha
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: waddleai.localhost.local
+      paths:
+        - path: /
+          pathType: Prefix
+          serviceName: waddleai-webui
+          servicePort: 8080
+        - path: /api
+          pathType: Prefix
+          serviceName: waddleai-management
+          servicePort: 8001
+  tls:
+    - secretName: waddleai-tls
+      hosts:
+        - waddleai.localhost.local
+
+# Pod Disruption Budget - Disabled for Alpha
+podDisruptionBudget:
+  enabled: false

@@ -1,0 +1,152 @@
+syntax = "proto3";
+package penguincode;
+
+// Authentication Service
+service AuthService {
+  rpc Authenticate(AuthRequest) returns (AuthResponse);
+  rpc RefreshToken(RefreshRequest) returns (AuthResponse);
+  rpc ValidateToken(ValidateRequest) returns (ValidateResponse);
+}
+
+message AuthRequest {
+  string api_key = 1;
+  string client_id = 2;
+}
+
+message AuthResponse {
+  string access_token = 1;
+  int64 expires_in = 2;
+  string refresh_token = 3;
+}
+
+message RefreshRequest { string refresh_token = 1; }
+message ValidateRequest { string access_token = 1; }
+message ValidateResponse {
+  bool valid = 1;
+  string user_id = 2;
+  repeated string scopes = 3;
+}
+
+// Chat Service
+service ChatService {
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc Chat(ChatRequest) returns (stream ChatResponse);
+  rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+}
+
+message CreateSessionRequest {
+  string project_dir = 1;
+  ClientCapabilities capabilities = 2;
+}
+
+message ClientCapabilities {
+  repeated string available_tools = 1;
+  string platform = 2;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  ServerInfo server_info = 2;
+}
+
+message ServerInfo {
+  string version = 1;
+  repeated string available_models = 2;
+  bool ollama_connected = 3;
+}
+
+message ChatRequest {
+  string session_id = 1;
+  string message = 2;
+}
+
+message ChatResponse {
+  oneof response_type {
+    TextChunk text = 1;
+    ToolRequest tool_request = 2;
+    AgentSpawn agent_spawn = 3;
+    AgentResult agent_result = 4;
+    StatusUpdate status = 5;
+    Error error = 6;
+  }
+}
+
+message TextChunk {
+  string content = 1;
+  bool is_final = 2;
+}
+
+message AgentSpawn {
+  string agent_type = 1;
+  string task = 2;
+}
+
+message AgentResult {
+  string agent_type = 1;
+  bool success = 2;
+  string output = 3;
+  int64 duration_ms = 4;
+}
+
+message StatusUpdate {
+  string status = 1;
+  string message = 2;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+  bool recoverable = 3;
+}
+
+message GetHistoryRequest {
+  string session_id = 1;
+  int32 limit = 2;
+}
+
+message GetHistoryResponse {
+  repeated HistoryMessage messages = 1;
+}
+
+message HistoryMessage {
+  string role = 1;
+  string content = 2;
+  string timestamp = 3;
+}
+
+message CloseSessionRequest { string session_id = 1; }
+message CloseSessionResponse { bool success = 1; }
+
+// Tool Callback Service - Bidirectional streaming
+service ToolCallbackService {
+  rpc ExecuteTools(stream ToolResponse) returns (stream ToolRequest);
+}
+
+message ToolRequest {
+  string request_id = 1;
+  string session_id = 2;
+  string tool_name = 3;
+  map<string, string> arguments = 4;
+  int32 timeout_seconds = 5;
+}
+
+message ToolResponse {
+  string request_id = 1;
+  bool success = 2;
+  string data = 3;
+  string error = 4;
+}
+
+// Health Service
+service HealthService {
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message HealthCheckRequest {}
+message HealthCheckResponse {
+  bool healthy = 1;
+  string version = 2;
+  bool ollama_connected = 3;
+  int32 active_sessions = 4;
+}

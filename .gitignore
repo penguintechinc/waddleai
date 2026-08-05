@@ -201,3 +201,4 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+k8s/helm/waddleai/values-secrets-*.yaml

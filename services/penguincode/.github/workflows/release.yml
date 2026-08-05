@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Update .version file
+        run: |
+          EPOCH=$(date +%s)
+          echo "v${{ steps.get_version.outputs.VERSION }}.${EPOCH}" > .version
+
+      - name: Generate Release Notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Penguin Code v${{ steps.get_version.outputs.VERSION }}
+
+          ### Features
+
+          - 🐧 **PenguinCode CLI** - AI-powered coding assistant using Ollama
+          - 🔧 **VS Code Extension** - Integrated development experience
+          - 🔍 **Multi-Engine Research** - DuckDuckGo, Google, SciraAI, SearXNG, Fireplexity
+          - 🧠 **mem0 Memory Layer** - Persistent context across sessions
+          - 🔌 **MCP Protocol** - Model Context Protocol support
+          - 🤖 **Multi-Agent System** - Specialized agents for different tasks
+
+          ### Installation
+
+          **VS Code Extension:**
+          1. Download the VSIX file below
+          2. Extensions → ··· → Install from VSIX
+          3. Restart VS Code
+
+          **CLI Tool:**
+          ```bash
+          pip install -e .
+          penguincode setup
+          ```
+
+          ### Configuration
+
+          Edit `config.yaml` to configure:
+          - Ollama models and endpoints
+          - Research engine selection
+          - Memory layer (ChromaDB, Qdrant, or PGVector)
+          - GPU settings and rate limiting
+
+          ### Requirements
+
+          - **Ollama**: https://ollama.ai
+          - **Python**: 3.12+ (for CLI)
+          - **Node.js**: 18+ (for extension development)
+          - **Recommended Models**:
+            - `llama3.2:3b` - Research and orchestration
+            - `qwen2.5-coder:7b` - Code execution
+            - `deepseek-coder:6.7b` - Planning and debugging
+            - `nomic-embed-text` - Embeddings for memory
+
+          ### Platform Support
+
+          - ✅ Windows (x64, arm64)
+          - ✅ macOS (x64, arm64/Apple Silicon)
+          - ✅ Linux (x64, arm64)
+
+          ### Documentation
+
+          - [README](README.md)
+          - [Configuration Guide](docs/USAGE.md)
+          - [Development Standards](docs/STANDARDS.md)
+
+          ---
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/v0.1.0...${{ steps.get_version.outputs.TAG }}
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Penguin Code v${{ steps.get_version.outputs.VERSION }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-extension:
+    name: Build and Upload Extension
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: vsix-extension/package-lock.json
+
+      - name: Install dependencies
+        working-directory: vsix-extension
+        run: npm ci
+
+      - name: Run linter
+        working-directory: vsix-extension
+        run: npm run lint
+
+      - name: Build extension
+        working-directory: vsix-extension
+        run: npm run compile
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update package.json version
+        working-directory: vsix-extension
+        run: |
+          npm version ${{ steps.get_version.outputs.VERSION }} --no-git-tag-version --allow-same-version
+
+      - name: Package extension
+        working-directory: vsix-extension
+        run: |
+          npx vsce package --out penguin-code-${{ steps.get_version.outputs.VERSION }}.vsix
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: vsix-extension/penguin-code-${{ steps.get_version.outputs.VERSION }}.vsix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: penguin-code-v${{ steps.get_version.outputs.VERSION }}
+          path: vsix-extension/penguin-code-${{ steps.get_version.outputs.VERSION }}.vsix
+          retention-days: 90

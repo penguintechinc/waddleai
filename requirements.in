@@ -1,0 +1,68 @@
+# Core Framework
+py4web>=1.20241201.1
+# Async and HTTP
+aiohttp>=3.9.0
+# OpenAI and LLM Clients
+openai>=1.6.0
+anthropic>=0.12.0
+ollama>=0.1.9
+# NER-based PII Detection (Presidio + spaCy)
+presidio-analyzer>=2.2.354
+presidio-anonymizer>=2.2.354
+spacy>=3.7.0
+# Security and Authentication
+pyjwt>=2.8.0
+bcrypt>=4.1.0
+cryptography>=41.0.0
+passlib>=1.7.4
+# Token Processing and AI
+tiktoken>=0.5.2
+transformers>=4.36.0
+torch>=2.1.0
+# Memory and Vector Databases
+chromadb>=0.4.20
+mem0ai>=0.1.0
+sentence-transformers>=2.2.2
+numpy>=1.24.0
+# RAG Vector Stores
+supabase>=2.3.0
+qdrant-client>=1.7.0
+# Monitoring and Metrics
+prometheus-client>=0.19.0
+structlog>=23.2.0
+psutil>=5.9.8
+# Database and Storage
+psycopg2-binary>=2.9.9
+pgvector>=0.3.0
+redis>=5.0.0
+# Utilities and Validation
+pydantic>=2.5.0
+python-multipart>=0.0.6
+python-dotenv>=1.0.0
+click>=8.1.7
+# HTTP Requests
+requests>=2.31.0
+httpx>=0.26.0
+# WebSocket support for MCP
+websockets>=12.0
+# Date and Time
+python-dateutil>=2.8.2
+# Configuration
+pyyaml>=6.0.1
+toml>=0.10.2
+# PenguinTech Libraries
+penguin-aaa>=0.1.0
+penguin-dal>=0.2.1
+penguin-utils>=0.1.0
+penguin-sal>=0.2.0
+# Development and Testing
+pytest>=7.4.3
+pytest-asyncio>=0.23.2
+black>=23.12.0
+flake8>=7.0.0
+mypy>=1.8.0
+# MCP Protocol Support
+mcp>=1.0.0
+# Performance
+ujson>=5.9.0
+orjson>=3.9.10

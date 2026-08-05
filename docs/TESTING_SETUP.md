@@ -192,3 +192,24 @@ This ensures compatibility with:
 - VS Code Extension
 - OpenAI Python/JavaScript clients
 - Any OpenAI-compatible tool
+
+## llama.cpp Integration Testing
+
+### Prerequisites
+
+A running llama-server. Quick local setup via Docker:
+
+```bash
+docker run -p 8080:8080 ghcr.io/ggerganov/llama.cpp:server \
+    --hf-repo ggml-org/models --hf-file tinyllamas/stories15M-q8_0.gguf \
+    --port 8080 --host 0.0.0.0
+```
+
+### Running integration tests
+
+```bash
+export LLAMACPP_ENDPOINT=http://localhost:8080
+pytest tests/integration/test_llamacpp_integration.py -v
+```
+
+Without `LLAMACPP_ENDPOINT`, only `test_llamacpp_connector_importable` runs (always passes).

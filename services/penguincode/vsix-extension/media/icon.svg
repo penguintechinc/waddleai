@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Llama/alpaca head silhouette simplified for activity bar -->
+  <circle cx="12" cy="10" r="6"/>
+  <ellipse cx="8" cy="7" rx="1.5" ry="2.5"/>
+  <ellipse cx="16" cy="7" rx="1.5" ry="2.5"/>
+  <circle cx="10" cy="10" r="0.75" fill="currentColor"/>
+  <circle cx="14" cy="10" r="0.75" fill="currentColor"/>
+  <path d="M10 13 Q12 15 14 13"/>
+  <path d="M8 17 L8 21"/>
+  <path d="M16 17 L16 21"/>
+</svg>

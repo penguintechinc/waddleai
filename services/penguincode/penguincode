@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# PenguinCode run script - activates venv and runs the CLI
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Auto-bootstrap: create venv and install deps on first run
+if [ ! -d "venv" ]; then
+    echo "═══════════════════════════════════════════════════"
+    echo "  🐧 First-time setup — creating virtual environment..."
+    echo "═══════════════════════════════════════════════════"
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -e . --quiet
+    echo "═══════════════════════════════════════════════════"
+    echo "  ✅ Setup complete! Launching PenguinCode..."
+    echo "═══════════════════════════════════════════════════"
+else
+    source venv/bin/activate
+fi
+
+# Run penguincode with all passed arguments
+python -m penguincode_cli.main "$@"

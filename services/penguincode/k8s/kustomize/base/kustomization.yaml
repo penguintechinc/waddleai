@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: penguincode
+
+resources:
+- ../../manifests/namespace.yaml
+- ../../manifests/serviceaccount.yaml
+- ../../manifests/server/deployment.yaml
+- ../../manifests/server/service.yaml
+
+commonLabels:
+  app: penguincode
+  managed-by: kustomize
+
+commonAnnotations:
+  app.penguintech.io/managed: "true"

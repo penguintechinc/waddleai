@@ -1,0 +1,38 @@
+{{- if .Values.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: amd-rocm-plugin
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: amd-rocm-plugin
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: amd-rocm-plugin
+  labels:
+    app.kubernetes.io/name: amd-rocm-plugin
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: amd-rocm-plugin
+  labels:
+    app.kubernetes.io/name: amd-rocm-plugin
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: amd-rocm-plugin
+subjects:
+  - kind: ServiceAccount
+    name: amd-rocm-plugin
+    namespace: {{ .Values.namespace }}
+{{- end }}

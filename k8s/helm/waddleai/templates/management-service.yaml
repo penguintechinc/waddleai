@@ -1,0 +1,20 @@
+{{- if .Values.management.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waddleai.fullname" . }}-management
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+spec:
+  type: {{ .Values.management.service.type }}
+  ports:
+    - port: {{ .Values.management.service.port }}
+      targetPort: {{ .Values.management.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "waddleai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+{{- end }}

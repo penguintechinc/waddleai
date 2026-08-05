@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performance Configuration - WaddleAI Management</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .sidebar {
+            height: 100vh;
+            background-color: #343a40;
+            color: white;
+            position: fixed;
+            padding-top: 20px;
+        }
+        .sidebar a {
+            color: #adb5bd;
+            text-decoration: none;
+            display: block;
+            padding: 10px 20px;
+        }
+        .sidebar a:hover {
+            background-color: #495057;
+            color: white;
+        }
+        .main-content {
+            margin-left: 250px;
+            padding: 30px;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stat-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+        }
+        .enabled-badge {
+            background-color: #28a745;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+        .disabled-badge {
+            background-color: #dc3545;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sidebar -->
+    <div class="sidebar" style="width: 250px;">
+        <h4 class="text-center">WaddleAI</h4>
+        <hr class="bg-light">
+        <a href="/"><i class="fas fa-home"></i> Dashboard</a>
+        <a href="/routing-config"><i class="fas fa-route"></i> Routing Configuration</a>
+        <a href="/providers"><i class="fas fa-plug"></i> LLM Providers</a>
+        <a href="/performance-config" class="active"><i class="fas fa-tachometer-alt"></i> Performance</a>
+        <a href="/users"><i class="fas fa-users"></i> Users</a>
+        <a href="/api-keys"><i class="fas fa-key"></i> API Keys</a>
+        <hr class="bg-light">
+        <a href="/auth/logout"><i class="fas fa-sign-out-alt"></i> Logout</a>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="container-fluid">
+            <h1 class="mb-4"><i class="fas fa-tachometer-alt"></i> Performance Configuration</h1>
+
+            <!-- XDP Status Card -->
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="fas fa-bolt"></i> XDP/AF_XDP Network Acceleration</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <h6>Status</h6>
+                            <p><span id="xdp-status-badge" class="disabled-badge">Disabled</span></p>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Interface</h6>
+                            <p id="xdp-interface">eth0</p>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>About XDP:</strong> XDP (eXpress Data Path) provides kernel-level packet processing for:
+                        <ul class="mt-2 mb-0">
+                            <li>DDoS protection at packet level</li>
+                            <li>Hardware-accelerated rate limiting</li>
+                            <li>10-100x performance improvement for high-throughput scenarios</li>
+                            <li>Zero-copy AF_XDP sockets for WebSocket streaming</li>
+                        </ul>
+                    </div>
+
+                    <div class="alert alert-warning" id="xdp-warning">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <strong>Requirements:</strong>
+                        <ul class="mb-0">
+                            <li>Linux kernel 5.10+</li>
+                            <li>Root privileges or CAP_NET_ADMIN capability</li>
+                            <li>Network interface with XDP support</li>
+                            <li>Compiled BPF program (xdp_filter.o)</li>
+                        </ul>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <button class="btn btn-success btn-lg w-100" id="enable-xdp" onclick="toggleXDP(true)">
+                                <i class="fas fa-play"></i> Enable XDP
+                            </button>
+                        </div>
+                        <div class="col-md-6">
+                            <button class="btn btn-danger btn-lg w-100" id="disable-xdp" onclick="toggleXDP(false)">
+                                <i class="fas fa-stop"></i> Disable XDP
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- XDP Statistics Card -->
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="fas fa-chart-bar"></i> XDP Statistics</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="stat-box">
+                                <div class="stat-label">Total Packets</div>
+                                <div class="stat-value" id="stat-packets-total">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-box" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                                <div class="stat-label">Passed</div>
+                                <div class="stat-value" id="stat-packets-passed">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-box" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+                                <div class="stat-label">Dropped</div>
+                                <div class="stat-value" id="stat-packets-dropped">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-box" style="background: linear-gradient(135deg, #30cfd0 0%, #330867 100%);">
+                                <div class="stat-label">Rate Limited</div>
+                                <div class="stat-value" id="stat-packets-rate-limited">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h6>Drop Rate</h6>
+                                    <h3 id="stat-drop-rate">0.0%</h3>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h6>Throughput</h6>
+                                    <h3 id="stat-throughput">0.0 Mbps</h3>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary mt-3" onclick="loadXDPStatus()">
+                        <i class="fas fa-sync"></i> Refresh Statistics
+                    </button>
+                </div>
+            </div>
+
+            <!-- AF_XDP Sockets Card -->
+            <div class="card">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0"><i class="fas fa-network-wired"></i> AF_XDP Zero-Copy Sockets</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>Active Sockets:</strong> <span id="af-xdp-sockets" class="badge bg-info">0</span></p>
+                    <p><strong>Rate Limits Active:</strong> <span id="rate-limits-active" class="badge bg-warning">0</span></p>
+
+                    <div class="alert alert-secondary">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>AF_XDP Sockets:</strong> Used for high-performance WebSocket connections with kernel bypass. Each socket provides zero-copy packet delivery for maximum throughput.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Tips Card -->
+            <div class="card">
+                <div class="card-header bg-dark text-white">
+                    <h5 class="mb-0"><i class="fas fa-lightbulb"></i> Performance Tips</h5>
+                </div>
+                <div class="card-body">
+                    <h6>Optimizing XDP Performance:</h6>
+                    <ol>
+                        <li><strong>Use native mode:</strong> Change XDP_MODE from 'skb' to 'native' for better performance</li>
+                        <li><strong>Enable hardware offload:</strong> Use 'offload' mode if your NIC supports it</li>
+                        <li><strong>Tune rate limits:</strong> Configure per-IP rate limits in the XDP BPF map</li>
+                        <li><strong>Monitor metrics:</strong> Track packet statistics to identify bottlenecks</li>
+                        <li><strong>Use AF_XDP:</strong> Enable AF_XDP sockets for WebSocket connections</li>
+                    </ol>
+
+                    <h6 class="mt-4">Environment Variables:</h6>
+                    <pre class="bg-light p-3 rounded"><code>ENABLE_XDP=true
+XDP_INTERFACE=eth0
+XDP_PROGRAM_PATH=/app/shared/networking/xdp_filter.o
+XDP_MODE=native  # or 'skb' or 'offload'</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Load XDP status
+        async function loadXDPStatus() {
+            try {
+                const response = await fetch('/api/performance/xdp', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+                const data = await response.json();
+
+                // Update status badge
+                const statusBadge = document.getElementById('xdp-status-badge');
+                if (data.enabled) {
+                    statusBadge.className = 'enabled-badge';
+                    statusBadge.textContent = 'Enabled';
+                } else {
+                    statusBadge.className = 'disabled-badge';
+                    statusBadge.textContent = 'Disabled';
+                }
+
+                // Update interface
+                document.getElementById('xdp-interface').textContent = data.interface || 'eth0';
+
+                // Update statistics
+                if (data.stats) {
+                    document.getElementById('stat-packets-total').textContent = data.stats.packets_total.toLocaleString();
+                    document.getElementById('stat-packets-passed').textContent = data.stats.packets_passed.toLocaleString();
+                    document.getElementById('stat-packets-dropped').textContent = data.stats.packets_dropped.toLocaleString();
+                    document.getElementById('stat-packets-rate-limited').textContent = data.stats.packets_rate_limited.toLocaleString();
+                }
+
+                // Update performance metrics
+                if (data.performance) {
+                    document.getElementById('stat-drop-rate').textContent = (data.performance.drop_rate * 100).toFixed(2) + '%';
+                    document.getElementById('stat-throughput').textContent = (data.performance.throughput_mbps || 0).toFixed(1) + ' Mbps';
+                }
+
+                // Update AF_XDP info
+                document.getElementById('af-xdp-sockets').textContent = data.af_xdp_sockets || 0;
+                document.getElementById('rate-limits-active').textContent = data.rate_limits_active || 0;
+
+            } catch (error) {
+                console.error('Failed to load XDP status:', error);
+            }
+        }
+
+        // Toggle XDP
+        async function toggleXDP(enable) {
+            try {
+                const response = await fetch('/api/performance/xdp/enable', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    },
+                    body: JSON.stringify({ enable })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    alert(data.message);
+                    loadXDPStatus();
+                } else {
+                    throw new Error('Failed to toggle XDP');
+                }
+            } catch (error) {
+                console.error('XDP toggle failed:', error);
+                alert('Failed to toggle XDP acceleration');
+            }
+        }
+
+        // Auto-refresh statistics every 5 seconds
+        setInterval(loadXDPStatus, 5000);
+
+        // Load status on page load
+        loadXDPStatus();
+    </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: intel-gpu-plugin
+description: Intel GPU device plugin for Kubernetes — exposes gpu.intel.com/i915 resources to the scheduler
+type: application
+version: 0.31.0
+appVersion: "0.31.0"

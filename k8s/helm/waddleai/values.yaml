@@ -1,0 +1,447 @@
+# Default values for WaddleAI Helm Chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global settings
+global:
+  imageRegistry: registry-dal2.penguintech.io
+  imagePullPolicy: IfNotPresent
+  storageClass: ""
+
+# Environment name (alpha, beta, prod)
+environment: alpha
+
+# Namespace configuration
+namespace: waddleai
+
+# Image pull secrets (if needed for private registry)
+imagePullSecrets: []
+
+# Management Service
+management:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: waddleai/management
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8001
+    targetPort: 8001
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8001
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8001
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  env:
+    DB_TYPE: postgres
+    FLASK_ENV: production
+    ENABLE_OLLAMA_MANAGEMENT: "true"
+    ENABLE_USAGE_WEBHOOKS: "true"
+    ENABLE_GEMINI: "true"
+    ENABLE_BEDROCK: "true"
+    ENABLE_AZURE_OPENAI: "true"
+    ENABLE_COHERE: "true"
+    OLLAMA_MANAGEMENT_MODE: both
+    LOG_LEVEL: INFO
+
+  # Secret env vars (from k8s secrets)
+  secretEnv:
+    - name: DATABASE_URL
+      secretName: waddleai-secrets
+      key: database-url
+    - name: JWT_SECRET
+      secretName: waddleai-secrets
+      key: jwt-secret
+    - name: FLASK_SECRET_KEY
+      secretName: waddleai-secrets
+      key: flask-secret-key
+    - name: WEBHOOK_SECRET
+      secretName: waddleai-secrets
+      key: webhook-secret
+    - name: POSTGRES_PASSWORD
+      secretName: waddleai-secrets
+      key: postgres-password
+
+# WebUI Service
+webui:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: waddleai/webui
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "100m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# PostgreSQL Database
+postgres:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: postgres
+    tag: "15"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 5432
+    targetPort: 5432
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+  env:
+    POSTGRES_DB: waddleai
+    POSTGRES_USER: waddleai
+
+  secretEnv:
+    - name: POSTGRES_PASSWORD
+      secretName: waddleai-secrets
+      key: postgres-password
+
+  livenessProbe:
+    enabled: true
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - pg_isready -U waddleai -d waddleai
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - pg_isready -U waddleai -d waddleai
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Redis Cache
+redis:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: valkey/valkey
+    tag: "8-bookworm"
+    digest: "sha256:fea8b3e67b15729d4bb70589eb03367bab9ad1ee89c876f54327fc7c6e618571"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 6379
+    targetPort: 6379
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+
+  args:
+    - valkey-server
+    - --appendonly
+    - "yes"
+
+  livenessProbe:
+    enabled: true
+    exec:
+      command:
+        - redis-cli
+        - ping
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    exec:
+      command:
+        - redis-cli
+        - ping
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# HTTPRoute Configuration (Cilium Gateway API)
+httproute:
+  enabled: false
+  gatewayName: shared
+  gatewayNamespace: gateway
+  host: ""
+  rules: []
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: waddleai.penguintech.io
+      paths:
+        - path: /
+          pathType: Prefix
+          serviceName: waddleai-webui
+          servicePort: 8080
+        - path: /api
+          pathType: Prefix
+          serviceName: waddleai-management
+          servicePort: 8001
+  tls:
+    - secretName: waddleai-tls
+      hosts:
+        - waddleai.penguintech.io
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: waddleai
+
+# Pod Security Context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Security Context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Network Policy
+networkPolicy:
+  enabled: false
+  policyTypes:
+    - Ingress
+    - Egress
+
+# Secret management
+# Set manage: false to skip chart-managed secret (use externally created secret instead)
+secrets:
+  manage: true
+  postgresPassword: "changeme-postgres-password"
+  jwtSecret: "changeme-jwt-secret-min-32-characters-required"
+  flaskSecretKey: "changeme-flask-secret-key"
+  webhookSecret: "changeme-webhook-secret"
+
+# Ollama GPU Inference Engine
+# Deployed as DaemonSet on nodes labeled gpu=true (e.g. svr01, svr02)
+# Models are shared via a ReadWriteMany PVC — pulled once, served from all GPU nodes
+ollama:
+  enabled: false
+  image:
+    repository: ollama/ollama
+    tag: "0.7.1"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 11434
+    targetPort: 11434
+
+  # Label GPU nodes: kubectl label node <nodename> gpu=true
+  nodeSelector:
+    gpu: "true"
+
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+  gpu:
+    enabled: true
+    type: nvidia
+    count: 1
+
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "2000m"
+    limits:
+      memory: "16Gi"
+      cpu: "4000m"
+
+  # Shared RWX PVC — models downloaded once, mounted on all GPU nodes
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClass: ""
+    accessMode: ReadWriteMany
+
+  # Optional: list of model names to pull on pod startup
+  # e.g. ["llama3:8b", "mistral:7b"]
+  models: []
+
+  env:
+    OLLAMA_HOST: "0.0.0.0"
+    OLLAMA_KEEP_ALIVE: "24h"
+    OLLAMA_MAX_LOADED_MODELS: "2"
+    OLLAMA_NUM_PARALLEL: "2"
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 5
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# GPU Device Plugins (sub-charts — all disabled by default)
+# Enable the plugin matching your GPU hardware.
+
+# NVIDIA GPU Operator — full stack: GFD, container toolkit, device plugin.
+# Requires: helm repo add nvidia https://helm.ngc.nvidia.com/nvidia && helm dep update
+# Set driver.enabled=false when NVIDIA drivers are already installed on nodes.
+nvidia-gpu-operator:
+  enabled: false
+  operator:
+    defaultRuntime: containerd
+  driver:
+    enabled: false
+  toolkit:
+    enabled: true
+  devicePlugin:
+    enabled: true
+  gfd:
+    enabled: true
+  dcgm:
+    enabled: false
+  dcgmExporter:
+    enabled: false
+  migManager:
+    enabled: false
+  nodeStatusExporter:
+    enabled: false
+  validator:
+    enabled: true
+
+# AMD ROCm device plugin — exposes amd.com/gpu resources
+amd-rocm-plugin:
+  enabled: false
+  namespace: kube-system
+  nodeSelector: {}
+
+# Intel GPU device plugin — exposes gpu.intel.com/i915 resources
+intel-gpu-plugin:
+  enabled: false
+  namespace: kube-system
+  nodeSelector: {}
+  sharedDevNum: 1

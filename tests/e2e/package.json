@@ -1,0 +1,15 @@
+{
+  "name": "waddleai-e2e",
+  "version": "1.0.0",
+  "description": "End-to-end tests for WaddleAI webui",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "report": "playwright show-report /tmp/playwright-waddleai/report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.51.1"
+  }
+}
