@@ -72,7 +72,7 @@ kubernetes>=35.0.0
 Recompile hashes:
 
 ```bash
-cd /home/penguin/code/waddleai/services/management
+cd ./services/management
 uv pip compile requirements.in --generate-hashes -o requirements.txt
 ```
 
@@ -89,7 +89,7 @@ Create the Alembic migration `*_add_org_rpm_limit.py` (add column, nullable; `do
 - [ ] **Step 5: Run tests + verify hashes**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest services/management/tests/unit/test_cilium_reconciler.py -k capabilit -v --no-cov
 grep -c "\--hash=sha256:" services/management/requirements.txt
 ```
@@ -133,7 +133,7 @@ def test_cec_single_org(snapshot_cmp):
 - [ ] **Step 3: Record + verify**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 CONTRACT_RECORD=1 python3 -m pytest services/management/tests/unit/test_cilium_render.py -k cec -v --no-cov
 python3 -m pytest services/management/tests/unit/test_cilium_render.py -k cec -v --no-cov
 ```
@@ -168,7 +168,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Record + verify + full render suite**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 CONTRACT_RECORD=1 python3 -m pytest services/management/tests/unit/test_cilium_render.py -v --no-cov
 python3 -m pytest services/management/tests/unit/test_cilium_render.py -v --no-cov
 ```
@@ -208,7 +208,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Run**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest services/management/tests/unit/test_cilium_reconciler.py -v --no-cov
 ```
 
@@ -240,7 +240,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Run + contract gate** (existing `/api/v1/*` snapshots must stay green — the new blueprint is additive):
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest services/management/tests/unit/test_cilium_api.py -v --no-cov
 make test-contract
 ```
@@ -290,7 +290,7 @@ Add `waddleai.cilium.topology` to `_helpers.tpl` emitting the namespace + select
 - [ ] **Step 2: Lint**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 helm lint k8s/helm/waddleai
 helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/values-beta.yaml >/dev/null && echo OK
 ```
@@ -319,7 +319,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: Render + least-privilege assertion**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/values-beta.yaml | grep -A25 "kind: ClusterRole" > /tmp/cilium-rbac.yaml
 grep -q "ciliumnetworkpolicies" /tmp/cilium-rbac.yaml && grep -q "ciliumenvoyconfigs" /tmp/cilium-rbac.yaml && echo OK
 grep -E "resources:\s*\[?\"?\*" /tmp/cilium-rbac.yaml && echo "WILDCARD LEAK" || echo "least-privilege OK"
@@ -348,7 +348,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: Golden-per-toggle render (§12.4)** — verify each toggle combination:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 # all on, CRDs present (kind/beta): CNP + RBAC + CEC-configmap render
 helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/values-beta.yaml --api-versions cilium.io/v2 | grep -q "kind: CiliumNetworkPolicy" && echo "cnp-on OK"
 # networkPolicy off: no CNP
@@ -382,7 +382,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Unit + render suites green, coverage on changed modules (§14.2, 90%+)**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest services/management/tests/unit/test_cilium_render.py services/management/tests/unit/test_cilium_reconciler.py services/management/tests/unit/test_cilium_api.py \
   --cov=services/management/app/services/cilium_policy --cov=services/management/app/api/v1/cilium --cov-fail-under=90 -v
 ```
@@ -396,7 +396,7 @@ make test-contract
 - [ ] **Step 3: `helm template` golden per toggle combo + CRD-absent path + RBAC least-privilege** (re-run the C2/C3 matrix as one gate):
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 for f in values-alpha values-beta; do
   helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/$f.yaml --api-versions cilium.io/v2 > /tmp/cilium-golden-$f.yaml && echo "$f renders (crds present)"
   helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/$f.yaml > /tmp/cilium-golden-$f-nocrd.yaml && echo "$f renders (crds absent)"
@@ -407,14 +407,14 @@ helm lint k8s/helm/waddleai
 - [ ] **Step 4: Migration round-trip + downgrade** on a seeded snapshot (house rule, §13):
 
 ```bash
-cd /home/penguin/code/waddleai/services/management
+cd ./services/management
 alembic upgrade head && alembic downgrade -1 && alembic upgrade head && echo "org rpm_limit round-trip OK"
 ```
 
 - [ ] **Step 5: Flag-off proof (§14.2) explicit assertion** — confirm the reconciler makes zero CRD writes with the flag off:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest services/management/tests/unit/test_cilium_reconciler.py -k "flag_off or flag off" -v --no-cov
 ```
 
@@ -423,7 +423,7 @@ python3 -m pytest services/management/tests/unit/test_cilium_reconciler.py -k "f
 - [ ] **Step 7: Security + container standing gates**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 make test-security   # bandit/gosec/pip-audit/trivy/gitleaks + pip-licenses OSI gate
 ```
 

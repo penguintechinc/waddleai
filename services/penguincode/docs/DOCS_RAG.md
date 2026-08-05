@@ -594,7 +594,7 @@ User Response
 ---
 
 **Learn More**:
-- See implementation files in `/home/penguin/code/PenguinCode/penguincode/docs_rag/`
+- See implementation files in `services/penguincode/penguincode_cli/docs_rag/`
 - Configuration examples above
 - Troubleshooting section for common issues
 
