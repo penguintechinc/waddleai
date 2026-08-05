@@ -86,6 +86,11 @@ lib-cov
 coverage
 *.lcov
 
+# Python coverage data. The bare `coverage` pattern above matches the
+# directory only, not coverage.py's `.coverage` data file.
+.coverage
+.coverage.*
+
 # nyc test coverage
 .nyc_output
 

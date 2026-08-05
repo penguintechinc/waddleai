@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+
+{% block title %}LLM Providers - WaddleAI Management Portal{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6 sm:px-0" x-data="providersManager()">
+
+    <!-- Header -->
+    <div class="mb-8">
+        <h1 class="text-2xl font-bold text-gray-900">LLM Provider Management</h1>
+        <p class="mt-1 text-sm text-gray-600">Manage connection links to OpenAI, Anthropic, Ollama, and other LLM providers</p>
+    </div>
+
+    {% if user.role != 'admin' %}
+    <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+        <p class="text-sm text-yellow-700">You need admin privileges to manage LLM providers.</p>
+    </div>
+    {% else %}
+
+    <!-- Add Provider Button -->
+    <div class="mb-6">
+        <button @click="showAddModal = true"
+                class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            <svg class="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+            </svg>
+            Add Provider
+        </button>
+    </div>
+
+    <!-- Provider List -->
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Provider</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Endpoint</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Models</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                <template x-for="provider in providers" :key="provider.id">
+                    <tr>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <div class="text-sm font-medium text-gray-900" x-text="provider.name"></div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full"
+                                  :class="{
+                                      'bg-purple-100 text-purple-800': provider.provider_type === 'openai',
+                                      'bg-blue-100 text-blue-800': provider.provider_type === 'anthropic',
+                                      'bg-green-100 text-green-800': provider.provider_type === 'ollama',
+                                      'bg-gray-100 text-gray-800': !['openai', 'anthropic', 'ollama'].includes(provider.provider_type)
+                                  }"
+                                  x-text="provider.provider_type"></span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="provider.base_url"></td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full"
+                                  :class="provider.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'"
+                                  x-text="provider.status"></span>
+                        </td>
+                        <td class="px-6 py-4 text-sm text-gray-500">
+                            <span x-text="provider.available_models ? provider.available_models.length : 0"></span> models
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                            <button @click="testConnection(provider.id)"
+                                    class="text-blue-600 hover:text-blue-900">Test</button>
+                            <button @click="editProvider(provider)"
+                                    class="text-indigo-600 hover:text-indigo-900">Edit</button>
+                            <button @click="deleteProvider(provider.id)"
+                                    class="text-red-600 hover:text-red-900">Delete</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+
+        <div x-show="providers.length === 0" class="text-center py-12">
+            <p class="text-gray-500">No providers configured. Add your first provider to get started.</p>
+        </div>
+    </div>
+
+    <!-- Add/Edit Provider Modal -->
+    <div x-show="showAddModal || showEditModal"
+         x-cloak
+         class="fixed z-10 inset-0 overflow-y-auto"
+         aria-labelledby="modal-title"
+         role="dialog"
+         aria-modal="true">
+        <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" @click="closeModal()"></div>
+
+            <div class="inline-block align-bottom bg-white rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full sm:p-6">
+                <div>
+                    <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4" x-text="showEditModal ? 'Edit Provider' : 'Add New Provider'"></h3>
+
+                    <form @submit.prevent="saveProvider()">
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Provider Name</label>
+                                <input type="text" x-model="currentProvider.name" required
+                                       class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Provider Type</label>
+                                <select x-model="currentProvider.provider_type" required
+                                        class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                    <option value="">Select type...</option>
+                                    <option value="openai">OpenAI</option>
+                                    <option value="anthropic">Anthropic</option>
+                                    <option value="ollama">Ollama</option>
+                                    <option value="azure">Azure OpenAI</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">Base URL</label>
+                                <input type="url" x-model="currentProvider.base_url" required
+                                       placeholder="https://api.openai.com/v1"
+                                       class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">API Key (optional)</label>
+                                <input type="password" x-model="currentProvider.api_key"
+                                       placeholder="sk-..."
+                                       class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            </div>
+
+                            <div>
+                                <label class="flex items-center">
+                                    <input type="checkbox" x-model="currentProvider.enabled"
+                                           class="rounded border-gray-300 text-indigo-600 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
+                                    <span class="ml-2 text-sm text-gray-700">Enable provider</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="mt-5 sm:mt-6 sm:grid sm:grid-cols-2 sm:gap-3 sm:grid-flow-row-dense">
+                            <button type="submit"
+                                    class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:col-start-2 sm:text-sm">
+                                Save
+                            </button>
+                            <button type="button" @click="closeModal()"
+                                    class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:col-start-1 sm:text-sm">
+                                Cancel
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% endif %}
+</div>
+
+<script>
+function providersManager() {
+    return {
+        providers: [],
+        showAddModal: false,
+        showEditModal: false,
+        currentProvider: {},
+
+        async init() {
+            await this.loadProviders();
+        },
+
+        async loadProviders() {
+            try {
+                const data = await apiCall('/api/providers');
+                this.providers = data.providers || [];
+            } catch (error) {
+                showToast('Failed to load providers: ' + error.message, 'error');
+            }
+        },
+
+        async testConnection(providerId) {
+            try {
+                showToast('Testing connection...', 'info');
+                const result = await apiCall(`/api/providers/${providerId}/test`, { method: 'POST' });
+                if (result.success) {
+                    showToast('Connection successful! ' + (result.models_count || 0) + ' models available.', 'success');
+                    await this.loadProviders();
+                } else {
+                    showToast('Connection failed: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                showToast('Test failed: ' + error.message, 'error');
+            }
+        },
+
+        editProvider(provider) {
+            this.currentProvider = { ...provider };
+            this.showEditModal = true;
+        },
+
+        async saveProvider() {
+            try {
+                if (this.showEditModal) {
+                    await apiCall(`/api/providers/${this.currentProvider.id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify(this.currentProvider)
+                    });
+                    showToast('Provider updated successfully', 'success');
+                } else {
+                    await apiCall('/api/providers', {
+                        method: 'POST',
+                        body: JSON.stringify(this.currentProvider)
+                    });
+                    showToast('Provider added successfully', 'success');
+                }
+                this.closeModal();
+                await this.loadProviders();
+            } catch (error) {
+                showToast('Failed to save provider: ' + error.message, 'error');
+            }
+        },
+
+        async deleteProvider(providerId) {
+            if (!confirm('Are you sure you want to delete this provider?')) return;
+
+            try {
+                await apiCall(`/api/providers/${providerId}`, { method: 'DELETE' });
+                showToast('Provider deleted successfully', 'success');
+                await this.loadProviders();
+            } catch (error) {
+                showToast('Failed to delete provider: ' + error.message, 'error');
+            }
+        },
+
+        closeModal() {
+            this.showAddModal = false;
+            this.showEditModal = false;
+            this.currentProvider = { enabled: true };
+        }
+    }
+}
+</script>
+{% endblock %}
