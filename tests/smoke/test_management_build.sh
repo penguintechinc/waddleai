@@ -97,7 +97,7 @@ echo "Test 3: Docker build check..."
 if command -v docker &> /dev/null; then
     echo "Building Docker image..."
     cd "$PROJECT_ROOT"
-    if docker build -t waddleai-mgmt-test:smoke -f services/management/Dockerfile services/management/ > /tmp/waddleai-build.log 2>&1; then
+    if docker build -t waddleai-mgmt-test:smoke -f services/management/Dockerfile . > /tmp/waddleai-build.log 2>&1; then
         pass "Docker build successful"
         # Clean up test image
         docker rmi waddleai-mgmt-test:smoke > /dev/null 2>&1 || true
