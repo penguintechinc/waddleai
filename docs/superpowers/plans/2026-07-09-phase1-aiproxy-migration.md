@@ -6,7 +6,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-09-waddleai-platform-spec.md` §5 (with §3.2 pipeline, §3.5 scale guardrails, §2.3 registry, §13.1 migrations, §14.2/§14.5). Authoritative.
 
-**Migration source:** marchproxy `origin/release/v0.2.x` @ `9dca05a67dde01bfcff2f721db59a02397287c6b` (Python 3.12/FastAPI; Python→Python re-merge). Read-only: `git -C /home/penguin/code/marchproxy show origin/release/v0.2.x:proxy-ailb/<path>`. Every ported file records `migrated-from: marchproxy@9dca05a` in its commit trailer.
+**Migration source:** marchproxy `origin/release/v0.2.x` @ `9dca05a67dde01bfcff2f721db59a02397287c6b` (Python 3.12/FastAPI; Python→Python re-merge). Read-only: `git -C ~/code/marchproxy show origin/release/v0.2.x:proxy-ailb/<path>`. Every ported file records `migrated-from: marchproxy@9dca05a` in its commit trailer.
 
 ---
 
@@ -121,7 +121,7 @@ Reconcile AILB `app/router/intelligent.py` with WaddleAI `shared/utils/request_r
 
 **Files:** Modify `shared/utils/request_router.py`. Create `tests/unit/test_request_router_merge.py` (adapt AILB router tests + WaddleAI existing).
 
-- [ ] **Step 1: Diff both routers** — `git -C /home/penguin/code/marchproxy show origin/release/v0.2.x:proxy-ailb/app/router/intelligent.py` vs `shared/utils/request_router.py`; record any AILB strategy branch or breaker nuance not present in WaddleAI.
+- [ ] **Step 1: Diff both routers** — `git -C ~/code/marchproxy show origin/release/v0.2.x:proxy-ailb/app/router/intelligent.py` vs `shared/utils/request_router.py`; record any AILB strategy branch or breaker nuance not present in WaddleAI.
 
 - [ ] **Step 2: Write failing tests** — cover: each of 6 strategies selects deterministically on a stubbed connector set; `COST_OPTIMIZED` picks the lowest `cost_per_token` provider; breaker skips a provider after 3 consecutive failures; breaker re-admits after a success resets `consecutive_failures`; failover fallback chain raises only when all providers fail.
 

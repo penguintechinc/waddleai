@@ -83,7 +83,7 @@ class LlamaCppDeployment(Base):
 - [ ] **Step 3: Verify import**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -c "from services.management.app.models_sqlalchemy import LlamaCppDeployment; print(LlamaCppDeployment.__tablename__)"
 ```
 
@@ -132,7 +132,7 @@ def test_llamacpp_default_models_populated():
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/management/test_providers.py::test_llamacpp_provider_type_exists -v --no-cov
 ```
 
@@ -196,7 +196,7 @@ In `__all__` list (around line 289), add `"LlamaCppConfig"`.
 - [ ] **Step 7: Run tests to verify they pass**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/management/test_providers.py::test_llamacpp_provider_type_exists tests/unit/management/test_providers.py::test_llamacpp_config_sets_provider_type tests/unit/management/test_providers.py::test_llamacpp_default_models_populated -v --no-cov
 ```
 
@@ -356,7 +356,7 @@ class AsyncContextManagerMock:
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/test_llm_connectors.py::TestLlamaCppConnector -v --no-cov
 ```
 
@@ -516,7 +516,7 @@ Handles connections to OpenAI, Anthropic, Ollama, and llama.cpp (llama-server) p
 - [ ] **Step 6: Run connector tests**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/test_llm_connectors.py::TestLlamaCppConnector -v --no-cov
 ```
 
@@ -708,7 +708,7 @@ def test_register_remote_unhealthy_raises(manager, remote_deployment):
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/management/test_llamacpp_manager.py -v --no-cov
 ```
 
@@ -906,7 +906,7 @@ class LlamaCppManager:
 - [ ] **Step 4: Run manager tests**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/management/test_llamacpp_manager.py -v --no-cov
 ```
 
@@ -1153,7 +1153,7 @@ class TestExportManifest:
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/management/test_llamacpp_routes.py -v --no-cov 2>&1 | head -20
 ```
 
@@ -1384,7 +1384,7 @@ def export_llamacpp_k8s(deployment_id):
 - [ ] **Step 4: Run route tests**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/unit/management/test_llamacpp_routes.py -v --no-cov
 ```
 
@@ -1429,7 +1429,7 @@ from . import (
 - [ ] **Step 2: Run full test suite**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/ --tb=short 2>&1 | tail -10
 ```
 
@@ -1545,7 +1545,7 @@ async def test_llamacpp_chat_completion():
 - [ ] **Step 2: Run the always-on test**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -m pytest tests/integration/test_llamacpp_integration.py::test_llamacpp_connector_importable -v --no-cov
 ```
 

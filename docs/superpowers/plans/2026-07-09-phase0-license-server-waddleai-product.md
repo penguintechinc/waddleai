@@ -1,6 +1,6 @@
 # Phase 0 — License Server: Define the `waddleai` Product Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **This work lives in the license-server repo `/home/penguin/code/license-server`, NOT the waddleai repo** — all file paths below are relative to `/home/penguin/code/license-server`. Work on branch `chore/license-server-waddleai-product`, branched off the license-server repo's active release line (house rule: never branch off `main`; if no release branch exists, cut one from the current working line first). Merge back into that release branch without a PR when complete. This is the **prerequisite** branch in the §14.1 dependency chain — WaddleAI's licensing/flag integration (`shared/licensing/features.py`, `penguin-licensing`) cannot be validated until the `waddleai` product exists here.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **This work lives in the license-server repo `~/code/license-server`, NOT the waddleai repo** — all file paths below are relative to `~/code/license-server`. Work on branch `chore/license-server-waddleai-product`, branched off the license-server repo's active release line (house rule: never branch off `main`; if no release branch exists, cut one from the current working line first). Merge back into that release branch without a PR when complete. This is the **prerequisite** branch in the §14.1 dependency chain — WaddleAI's licensing/flag integration (`shared/licensing/features.py`, `penguin-licensing`) cannot be validated until the `waddleai` product exists here.
 
 **Goal:** Make the license server aware of WaddleAI. Today only test fixtures reference `waddleai` (survey confirmed — no `products` row, no `product_features`, no PostHog project). This branch defines: a `products` row `name="waddleai"`; a `product_features` catalog whose `flag_key`s are exactly the §14.5 keys plus the §14.6 licensed sub-features, each with `tier_requirements` per the §2.4 tier matrix; pre-seeded `entitlement_usage` caps (community `nodes ≤ 5` / `models ≤ 3`; professional/enterprise `-1`) carried on representative per-tier licenses so the checkin/overage path is real and testable; and a `waddleai-flags` PostHog project registered with every flag key. All of it ships as an **idempotent seed** (repo convention — `seed_db.py` seeds users, `seed_test_data.py` seeds a demo product; schema stays in Alembic 001–003, data stays in seeds), gated on `POSTHOG_ENABLED` for the PostHog side so dev/CI never require a live PostHog.
 
@@ -108,7 +108,7 @@ def test_tier_caps_shape():
 - [ ] **Step 3: Run the catalog tests.**
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -m pytest tests/test_waddleai_catalog.py -v
+cd ~/code/license-server/api && python3 -m pytest tests/test_waddleai_catalog.py -v
 ```
 
 Expected: all green.
@@ -166,7 +166,7 @@ async def test_seed_is_idempotent(app_context):
 - [ ] **Step 3: Run.**
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -m pytest tests/test_waddleai_seed.py -v -k "product or idempotent"
+cd ~/code/license-server/api && python3 -m pytest tests/test_waddleai_seed.py -v -k "product or idempotent"
 ```
 
 Expected: green.
@@ -215,7 +215,7 @@ async def test_checkin_overage_fires_at_community_node_cap(client, app_context):
 - [ ] **Step 3: Run.**
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -m pytest tests/test_waddleai_seed.py -v
+cd ~/code/license-server/api && python3 -m pytest tests/test_waddleai_seed.py -v
 ```
 
 Expected: green (caps materialized; overage warning fires at the community node cap).
@@ -280,7 +280,7 @@ async def test_posthog_enabled_registers_project_and_flags(app_context, monkeypa
 - [ ] **Step 3: Run full seeder suite.**
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -m pytest tests/test_waddleai_seed.py -v
+cd ~/code/license-server/api && python3 -m pytest tests/test_waddleai_seed.py -v
 ```
 
 Expected: green (disabled = no-op safe; mocked enabled = project `waddleai` + all flags + `posthog_projects` row).
@@ -317,8 +317,8 @@ and add `seed-waddleai` to the `seed-mock-data` recipe (replace its "No mock dat
 - [ ] **Step 4: Run the e2e suite + the CLI.**
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -m pytest tests/test_waddleai_entitlements_e2e.py -v
-cd /home/penguin/code/license-server && make seed-waddleai
+cd ~/code/license-server/api && python3 -m pytest tests/test_waddleai_entitlements_e2e.py -v
+cd ~/code/license-server && make seed-waddleai
 ```
 
 Expected: e2e green; CLI prints the summary without error (PostHog `skipped` when disabled).
@@ -341,7 +341,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Full unit suite green (no regressions in existing tests).**
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -m pytest tests/ -v 2>&1 | tail -20
+cd ~/code/license-server/api && python3 -m pytest tests/ -v 2>&1 | tail -20
 ```
 
 Expected: all pass, including the pre-existing `test_features_endpoint.py`/`test_portal_features.py` (the seed must not perturb other products' rows).
@@ -349,7 +349,7 @@ Expected: all pass, including the pre-existing `test_features_endpoint.py`/`test
 - [ ] **Step 2: Catalog completeness vs §14.5** — every branch flag key exists exactly once:
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -c "
+cd ~/code/license-server/api && python3 -c "
 from app.seeds.waddleai import WADDLEAI_FEATURES, flag_key_for
 need = {'native_rate_limit','response_cache','proxy_memory','smart_routing','security_v2','coderag','docs_cache','knowledge_ingest','fleet_v2','mcp_v2'}
 have = {f['name'] for f in WADDLEAI_FEATURES}
@@ -365,7 +365,7 @@ Expected: `missing §14.5 flags: none`; `flag_keys ok: True`.
 - [ ] **Step 3: Tier-gating hard check (§2.4)** — community never resolves a professional/enterprise feature; run the e2e + catalog suites together:
 
 ```bash
-cd /home/penguin/code/license-server/api && python3 -m pytest tests/test_waddleai_catalog.py tests/test_waddleai_seed.py tests/test_waddleai_entitlements_e2e.py -v
+cd ~/code/license-server/api && python3 -m pytest tests/test_waddleai_catalog.py tests/test_waddleai_seed.py tests/test_waddleai_entitlements_e2e.py -v
 ```
 
 Expected: green. Any failure is a bug in a prior task — fix it, do not wave it through.
@@ -373,7 +373,7 @@ Expected: green. Any failure is a bug in a prior task — fix it, do not wave it
 - [ ] **Step 4: Idempotency + overage proof re-run** — seed twice, confirm no duplicate features and the community node cap still fires:
 
 ```bash
-cd /home/penguin/code/license-server && make seed-waddleai && make seed-waddleai
+cd ~/code/license-server && make seed-waddleai && make seed-waddleai
 cd api && python3 -m pytest tests/test_waddleai_seed.py -k "idempotent or overage or caps" -v
 ```
 

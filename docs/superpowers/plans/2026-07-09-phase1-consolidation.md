@@ -169,7 +169,7 @@ test-contract:
 - [ ] **Step 4: Verify the harness imports (no snapshots yet)**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -c "import tests.contract.snapshot as s; print(s.assert_snapshot)"
 ```
 
@@ -237,7 +237,7 @@ def test_orgs_list(management_url):
 - [ ] **Step 2: Record snapshots against the current (Flask) service**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 CONTRACT_RECORD=1 python3 -m pytest tests/contract/test_management_contract.py -v --no-cov
 ```
 
@@ -275,7 +275,7 @@ In `proxy/apps/proxy_server/main.py`, gate the dispatch connector so that when `
 - [ ] **Step 3: Record + verify**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 CONTRACT_RECORD=1 python3 -m pytest tests/contract/test_proxy_contract.py -v --no-cov
 python3 -m pytest tests/contract/test_proxy_contract.py -v --no-cov
 ```
@@ -323,7 +323,7 @@ Keep `redis>=5.0.0`, `penguin-aaa`, `penguin-dal`, `sqlalchemy`, all provider SD
 - [ ] **Step 2: Compile pinned hashes** (final cross-service recompile happens in Task E1):
 
 ```bash
-cd /home/penguin/code/waddleai/services/management
+cd ./services/management
 uv pip compile requirements.in --generate-hashes -o requirements.txt
 ```
 
@@ -347,7 +347,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: Verify the app imports and boots**
 
 ```bash
-cd /home/penguin/code/waddleai/services/management
+cd ./services/management
 python3 -c "import asyncio; from app import create_app; print(type(create_app()).__name__)"
 ```
 
@@ -375,7 +375,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2:** Grep-verify no Flask-Security symbols remain:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 grep -rn "flask_security\|Flask-Security\|PyDALUserDatastore" services/management/app/ || echo "clean"
 ```
 
@@ -483,7 +483,7 @@ CMD ["hypercorn", "asgi:app", "--bind", "0.0.0.0:8001", "--workers", "2"]
 - [ ] **Step 4: Full-suite + contract gate**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 make test-contract
 grep -rn "import flask\|from flask\|flask_security\|gunicorn\|gevent" services/management/ --include=*.py || echo "no flask refs"
 ```
@@ -519,7 +519,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 4:** Record new snapshots + verify:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 CONTRACT_RECORD=1 python3 -m pytest tests/contract/test_management_contract.py -k "routing_config or memory_config" --no-cov
 make test-contract
 ```
@@ -542,7 +542,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Confirm nothing imports it**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 grep -rn "management_server\|apps.management_server" --include=*.py --include=*.yaml . | grep -v "management/apps/management_server/" || echo "no external refs"
 ```
 
@@ -579,7 +579,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Confirm no live consumers** (Q#5: VS Code extension is pure REST; only the deleted FastAPI plane + an example script referenced it)
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 grep -rn "mcp_interface\|create_mcp_server\|mcp_server" --include=*.py . | grep -v "management/apps/mcp_server/\|shared/utils/mcp_interface.py" || echo "no live consumers"
 ```
 
@@ -620,7 +620,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Golden render**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/values-beta.yaml --set proxy.enabled=true > /tmp/proxy-render.yaml
 grep -q "kind: Deployment" /tmp/proxy-render.yaml && grep -q "name: waddleai-proxy" /tmp/proxy-render.yaml && echo OK
 helm lint k8s/helm/waddleai
@@ -664,7 +664,7 @@ httproute:
 - [ ] **Step 2: Render check**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/values-beta.yaml | grep -A2 "value: /v1/" && echo OK
 ```
 
@@ -688,7 +688,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: Render + lint**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/values-beta.yaml | grep -i "valkey-cli" && echo OK
 grep -rn "redis-cli\|name: redis\b" k8s/helm/waddleai/ || echo "no redis-cli left"
 helm lint k8s/helm/waddleai
@@ -718,7 +718,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Verify + contract gate**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 python3 -c "from services.management.app.config import Config; print(hasattr(Config,'CACHE_HOST'))"
 make test-contract
 ```
@@ -745,7 +745,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: Delete the tree**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 git rm -r infrastructure/kubernetes
 ```
 
@@ -777,7 +777,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1:** Drop dependencies the Flask→Quart migration and legacy-plane deletion made unused (e.g. `flask-*`, `gunicorn`, `gevent` already gone; audit `cohere`, `docker`, unused gRPC extras against actual imports). Recompile both with hashes:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 ( cd services/management && uv pip compile requirements.in --generate-hashes -o requirements.txt )
 ( cd proxy && uv pip compile requirements.in --generate-hashes -o requirements.txt )
 ```
@@ -816,7 +816,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Run the gate**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 bash scripts/check-licenses.sh && echo "licenses clean"
 ```
 
@@ -840,7 +840,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Contract snapshots green**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 make test-contract
 ```
 

@@ -28,7 +28,7 @@
 - **Auto-captured memory stays personal:** `MemoryEntry.scope_type` defaults to `"user"`; no internal caller passes `scope_type="org"`.
 - **Style:** `python3` always; type hints on every new function; run `python3 -m flake8` and `python3 -m black --check` on changed files before each commit. Match surrounding code style (this codebase does not use `@dataclass(slots=True)` in `memory_integration.py` — follow the file's existing plain `@dataclass`).
 - **Commits:** end every commit message with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
-- **All test commands run from repo root** `/home/penguin/code/waddleai`.
+- **All test commands run from repo root** `.`.
 
 ---
 
@@ -46,7 +46,7 @@
 - [ ] **Step 1: Create the branch and commit the spec**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 git checkout chore/consolidate-quart-k8s
 git checkout -b feature/memory-access-control
 git add docs/superpowers/specs/2026-07-14-memory-access-control-design.md

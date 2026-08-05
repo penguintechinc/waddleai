@@ -12,7 +12,7 @@ The WaddleAI VS Code extension has been successfully compiled and is ready for t
 3. WaddleAI proxy server should be running (default: `http://localhost:8000`)
 
 ### Step 1: Launch Extension Development Host
-1. Open this folder (`/home/penguin/code/WaddleAI/vscode-extension/waddleai-copilot`) in VS Code
+1. Open this folder (`vscode-extension/waddleai-copilot`) in VS Code
 2. Press `F5` or go to Run menu → Start Debugging
 3. This will launch a new VS Code window titled "[Extension Development Host]"
 

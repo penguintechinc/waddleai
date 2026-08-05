@@ -163,7 +163,7 @@ test-tetragon-kind:
 - [ ] **Step 7: Record + verify the no-op baseline.** With every class ON but no CRDs present, the chart must emit zero policy objects and still lint:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 GOLDEN_RECORD=1 bash tests/helm/render-golden.sh
 grep -c "kind: TracingPolicyNamespaced\|kind: ValidatingAdmissionPolicy" tests/helm/golden/nocrd-defaults.yaml || echo "0 policies on non-Cilium (correct)"
 helm lint k8s/helm/waddleai
@@ -229,7 +229,7 @@ spec:
 - [ ] **Step 2: Record + verify** the exec policy appears only when Tetragon is present, and respects mode:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 GOLDEN_RECORD=1 bash tests/helm/render-golden.sh
 grep -q "kind: TracingPolicyNamespaced" tests/helm/golden/full-present.yaml && echo "exec policy rendered"
 grep -q "action: Sigkill" tests/helm/golden/beta-enforce.yaml && echo "beta enforces"
@@ -259,7 +259,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: Record + verify:**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 GOLDEN_RECORD=1 bash tests/helm/render-golden.sh
 grep -q "tcp_connect\|tcp_v4_connect" tests/helm/golden/full-present.yaml && echo "egress observed"
 grep -q "action: Post" tests/helm/golden/full-present.yaml && echo "observe mode default"
@@ -343,7 +343,7 @@ spec:
 - [ ] **Step 2: Record + verify** VAP renders only when the API is available, actions honor env profile:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 GOLDEN_RECORD=1 bash tests/helm/render-golden.sh
 grep -q "kind: ValidatingAdmissionPolicy" tests/helm/golden/full-present.yaml && echo "VAP rendered"
 grep -q '"Warn"' tests/helm/golden/admission-only.yaml || grep -q '"Deny"' tests/helm/golden/full-present.yaml && echo "actions bound"
@@ -373,7 +373,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: Record + verify** both engines and the opt-in/absent matrix:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 GOLDEN_RECORD=1 bash tests/helm/render-golden.sh
 grep -q "@sha256:" tests/helm/golden/full-present.yaml && echo "digest VAP rendered"
 grep -q "kind: ClusterPolicy" tests/helm/golden/kyverno-present.yaml && echo "kyverno rendered when present+opted-in"
@@ -418,7 +418,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Verify the graceful path renders a status, never an error.** `helm template` on a bare cluster must succeed (exit 0) and print the skip notice:
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 helm template waddleai k8s/helm/waddleai -f k8s/helm/waddleai/values.yaml 1>/dev/null && echo "renders clean on non-Cilium"
 helm template waddleai k8s/helm/waddleai --set tetragon.install.dependency=true --api-versions cilium.io/v1alpha1/TracingPolicyNamespaced 1>/dev/null && echo "dependency-opt-in renders"
 GOLDEN_RECORD=1 bash tests/helm/render-golden.sh
@@ -455,7 +455,7 @@ kubectl logs -n kube-system ds/tetragon -c export-stdout | grep -q "process_exec
 - [ ] **Step 3: Run + commit**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 make test-tetragon-kind   # Tetragon assertions green (skips gracefully if kind unavailable in CI tier)
 git add tests/helm/test_tetragon_admission_kind.sh Makefile
 git commit -m "test(helm): kind e2e — Tetragon exec-block enforced, egress observed
@@ -500,7 +500,7 @@ grep -rn "cluster-admin" k8s/helm/waddleai/templates/ && echo "REVIEW" || echo "
 - [ ] **Step 4: Run full kind e2e + commit**
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 make test-tetragon-kind
 git add tests/helm/test_tetragon_admission_kind.sh tests/helm/fixtures/
 git commit -m "test(helm): admission negative tests + CRD-absent graceful deploy path
@@ -517,7 +517,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Golden combination matrix green** (the merge gate):
 
 ```bash
-cd /home/penguin/code/waddleai
+cd .
 bash tests/helm/render-golden.sh && echo "all golden combinations stable"
 helm lint k8s/helm/waddleai
 ```
