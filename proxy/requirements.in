@@ -17,6 +17,10 @@ grpcio-tools>=1.60.0
 slowapi>=0.1.9
 limits>=3.7.0
 
+# LLM SDKs
+google-genai==2.14.0
+boto3>=1.28.0
+
 # PenguinTech Libraries
 penguin-aaa>=0.1.0
 penguin-dal>=0.2.1

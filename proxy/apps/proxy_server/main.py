@@ -31,6 +31,16 @@ from quart import Quart, Response, abort, jsonify, request
 
 from proxy.apps.proxy_server.grpc_server import ServerComponents, run_grpc_in_thread
 from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
+from proxy.apps.proxy_server.pipeline import (
+    AuthStage,
+    DispatchStage,
+    MeterStage,
+    PipelineContext,
+    ProxyPipeline,
+    SecurityInStage,
+    SecurityOutStage,
+    TokenBudgetStage,
+)
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -43,13 +53,14 @@ from shared.auth.penguin_auth import (
 from shared.auth.rbac import ROLE_PERMISSIONS, AuthenticationError, Permission, RBACManager, Role, UserContext
 from shared.database.models import get_db
 from shared.security.content_filter import ContentFilter
-from shared.security.prompt_security import Action, create_security_scanner
+from shared.security.prompt_security import create_security_scanner
 from shared.utils.health_checks import WaddleAIHealthMonitor
 from shared.utils.llm_connectors import create_llm_connection_manager
 from shared.utils.memory_integration import create_memory_manager
 from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
+from shared.utils.feature_flags import is_feature_enabled
 
 # Configure structured logging
 structlog.configure(
@@ -108,6 +119,8 @@ class ProxyServer:
         self.http_session = None
         self.metrics = proxy_metrics
         self.grpc_server = None
+        self.pipeline = None  # Built once in startup
+        self.features = None  # Feature flag helper for pipeline
 
         # penguin-aaa components
         self.oidc_provider = None
@@ -216,6 +229,63 @@ class ProxyServer:
         # Wire memory manager into mem0-compatible API
         set_memory_manager(self.memory_manager)
 
+        # Initialize feature flags for pipeline stage gating
+        # Create a simple wrapper around the is_feature_enabled function
+        class FeatureFlagsHelper:
+            """Simple wrapper to provide is_feature_enabled method for pipeline."""
+            @staticmethod
+            def is_feature_enabled(flag_key: str, distinct_id: str = None) -> bool:
+                return is_feature_enabled(flag_key, distinct_id or "server", default=False)
+
+        self.features = FeatureFlagsHelper()
+
+        # In test mode, add stub connector to llm_manager so pipeline dispatch works
+        if _TEST_MODE:
+            from shared.utils.llm_connectors import LLMConnector, StreamChunk
+
+            class StubConnector(LLMConnector):
+                """Stub connector for test mode that returns deterministic responses."""
+
+                async def chat_completion(self, messages, model=None, **kwargs):
+                    # Return appropriate finish_reason based on model
+                    finish_reason = "end_turn" if "claude" in str(model or "").lower() else "stop"
+                    return (
+                        _STUB_COMPLETION_TEXT,
+                        {"provider": "stub", "input_tokens": 12, "output_tokens": 11, "finish_reason": finish_reason},
+                    )
+
+                async def stream_chat_completion(self, messages, model=None, **kwargs):
+                    # Return appropriate finish_reason based on model
+                    finish_reason = "end_turn" if "claude" in str(model or "").lower() else "stop"
+                    # Simple streaming implementation
+                    yield StreamChunk(delta=_STUB_COMPLETION_TEXT, done=False)
+                    yield StreamChunk(
+                        delta="",
+                        usage={"provider": "stub", "input_tokens": 12, "output_tokens": 11, "finish_reason": finish_reason},
+                        done=True
+                    )
+
+                async def count_tokens(self, messages, model=None, **kwargs):
+                    return 12  # Stub token count
+
+                async def health_check(self):
+                    return {"status": "healthy"}
+
+                async def list_models(self):
+                    # Return empty list so stub doesn't pollute the models endpoint
+                    # The stub connector is only used for request dispatch in tests, not for model listing
+                    return []
+
+            stub = StubConnector(name="stub", config={})
+            self.llm_manager.connectors["stub"] = stub
+            logger.info("Stub LLM connector registered for test mode")
+
+        # Build the ProxyPipeline once (reused for all requests).
+        # Stages execute in order: auth → token_budget → security_in →
+        # dispatch → security_out → meter
+        self.pipeline = self._build_pipeline()
+        logger.info("ProxyPipeline built with %d stages", len(self.pipeline.stages))
+
         if _TEST_MODE:
             # Skip gRPC (external sidecar port bind, irrelevant to the HTTP
             # contract surface being snapshotted).
@@ -320,6 +390,113 @@ class ProxyServer:
         )
         self.contract_test_member_token = issue_token(member_context, self.oidc_provider)
         logger.info("Seeded contract-test org/user/api_key", org_id=org_id, user_id=user_id, api_key_id=api_key_id)
+
+    def _build_pipeline(self) -> ProxyPipeline:
+        """Build the ProxyPipeline with all stages in standard order.
+
+        Stages execute in order:
+          1. AuthStage: validate user/tenant
+          2. TokenBudgetStage: check token quotas (skipped in test mode)
+          3. SecurityInStage: scan for prompt injection + content filter input
+          4. DispatchStage: route to provider + call connector
+          5. SecurityOutStage: content filter output
+          6. MeterStage: record usage + reconcile reservations (skipped in test mode)
+
+        Returns:
+            Initialized ProxyPipeline instance.
+        """
+        from shared.utils.metering import MeteringBuffer, PenguinDALUsageWriter
+        from shared.utils.token_limiter import TokenLimiter
+
+        # Get connectors dict from llm_manager
+        connectors_dict = {}
+        if hasattr(self.llm_manager, "connectors"):
+            connectors_dict = self.llm_manager.connectors
+
+        # Build stage list - TokenBudgetStage and MeterStage may be skipped in test mode
+        # where Redis/Valkey is unavailable
+        stages = [
+            AuthStage(name="auth", flag=None),
+        ]
+
+        # Token budget stage - requires Redis/Valkey client
+        # In test mode (_TEST_MODE), use a mock limiter
+        if _TEST_MODE:
+            # Simple mock token limiter for test mode
+            class MockTokenLimiter:
+                async def reserve(self, vkey_id, estimated_tokens, estimated_usd, limits):
+                    from shared.utils.token_limiter import GateDecision
+                    return GateDecision(allowed=True, reason=None, reservation_id=f"mock-{vkey_id}")
+                async def reconcile(self, reservation_id, actual_tokens, actual_usd):
+                    pass
+            token_limiter = MockTokenLimiter()
+        else:
+            import redis.asyncio as redis
+            valkey_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            try:
+                valkey = redis.from_url(valkey_url, decode_responses=True)
+                token_limiter = TokenLimiter(valkey=valkey, features=self.features)
+            except Exception as e:
+                logger.warning("Token limiter initialization failed: %s", e)
+                # Create a simple mock in case Redis is not available
+                class MockTokenLimiter:
+                    async def reserve(self, vkey_id, estimated_tokens, estimated_usd, limits):
+                        from shared.utils.token_limiter import GateDecision
+                        return GateDecision(allowed=True, reason=None, reservation_id=f"mock-{vkey_id}")
+                    async def reconcile(self, reservation_id, actual_tokens, actual_usd):
+                        pass
+                token_limiter = MockTokenLimiter()
+
+        stages.append(
+            TokenBudgetStage(
+                name="token_budget",
+                token_limiter=token_limiter,
+                features=self.features,
+                flag=None,
+            )
+        )
+
+        # Security and dispatch stages
+        stages.extend([
+            SecurityInStage(
+                name="security_in",
+                scanner=self.security_scanner,
+                content_filter=self.content_filter,
+                flag=None,
+            ),
+            DispatchStage(
+                name="dispatch",
+                router=self.request_router,
+                connectors=connectors_dict,
+                flag=None,
+            ),
+            SecurityOutStage(
+                name="security_out",
+                content_filter=self.content_filter,
+                flag=None,
+            ),
+        ])
+
+        # Metering stage - requires Redis/Valkey and database
+        if _TEST_MODE:
+            # In test mode, use a mock metering buffer
+            class MockMeteringBuffer:
+                def record(self, event): pass
+            metering_buffer = MockMeteringBuffer()
+        else:
+            usage_writer = PenguinDALUsageWriter(db=self.db)
+            metering_buffer = MeteringBuffer(writer=usage_writer, interval=1.0)
+
+        stages.append(
+            MeterStage(
+                name="meter",
+                metering_buffer=metering_buffer,
+                token_limiter=token_limiter,
+                flag=None,
+            )
+        )
+
+        return ProxyPipeline(stages=stages, features=self.features)
 
     async def shutdown(self):
         """Cleanup server components"""
@@ -684,7 +861,7 @@ async def prometheus_metrics():
 
 @app.route("/v1/chat/completions", methods=["POST"])
 async def chat_completions():
-    """OpenAI-compatible chat completions endpoint"""
+    """OpenAI-compatible chat completions endpoint using the shared ProxyPipeline."""
     start_time = time.time()
     proxy_server.metrics.set_active_connections("requests_in_flight", 1)
 
@@ -696,6 +873,7 @@ async def chat_completions():
         body = await request.get_json()
         messages = body.get("messages", [])
         request_model = body.get("model")
+        stream = body.get("stream", False)
 
         # Determine target model using hierarchy
         model = (
@@ -705,143 +883,73 @@ async def chat_completions():
             or "gpt-3.5-turbo"
         )  # Final fallback
 
-        # Combine messages for security scanning
-        prompt_text = "\n".join([msg.get("content", "") for msg in messages if msg.get("content")])
-
-        # Security scanning
-        threats, _sanitized_prompt = proxy_server.security_scanner.scan_prompt(
-            prompt_text,
-            user_id=user_context.user_id,
-            api_key_id=user_context.api_key_id,
-            ip_address=request.remote_addr,
-        )
-
-        # Handle security threats
-        for threat in threats:
-            proxy_server.metrics.record_security_event(
-                event_type=threat.threat_type.value,
-                severity=threat.severity.value,
-                action=threat.suggested_action.value,
-            )
-
-            if threat.suggested_action == Action.BLOCK:
-                return (
-                    jsonify(
-                        {
-                            "error": {
-                                "message": f"Request blocked due to security threat: {threat.description}",
-                                "type": "security_error",
-                            }
-                        }
-                    ),
-                    400,
-                )
-
-        # Content filter — input phase (PII/PCI patterns + custom rules)
-        input_filter_result = await proxy_server.content_filter.filter_input(
-            text=prompt_text,
-            user_id=user_context.user_id,
-            org_id=user_context.organization_id,
-            ip=request.remote_addr,
-        )
-        if not input_filter_result.allowed:
-            return (
-                jsonify(
-                    {
-                        "error": {
-                            "message": "Request blocked by content filter",
-                            "type": "content_filter_block",
-                            "violations": [v.rule_name for v in input_filter_result.violations],
-                        }
-                    }
-                ),
-                400,
-            )
-        # Use filtered text if redactions were applied
-        if input_filter_result.action == "redact":
-            prompt_text = input_filter_result.filtered_text
-
-        # Check quota
-        quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
-        if not quota_ok:
-            daily_usage = f"{quota_info['daily']['used']}/{quota_info['daily']['limit']}"
-            monthly_usage = f"{quota_info['monthly']['used']}/{quota_info['monthly']['limit']}"
-            error_msg = f"Quota exceeded. Daily: {daily_usage}, Monthly: {monthly_usage}"
-            return (
-                jsonify(
-                    {
-                        "error": {
-                            "message": error_msg,
-                            "type": "quota_exceeded",
-                        }
-                    }
-                ),
-                429,
-            )
-
         # Get session ID for memory (could be from headers or body)
         session_id = body.get("session_id") or request.headers.get("X-Session-ID")
 
-        # Get conversation context from memory
+        # Get conversation context from memory and enhance messages
         conversation_context = await proxy_server.memory_manager.get_conversation_context(
             user_id=user_context.user_id,
             organization_id=user_context.organization_id,
             current_messages=messages,
             session_id=session_id,
         )
-
-        # Enhance messages with memory context if available
         enhanced_messages = await proxy_server.memory_manager.enhance_messages_with_context(
             messages=messages, context=conversation_context
         )
 
-        # Route request to appropriate LLM provider
-        try:
-            if _TEST_MODE:
-                response_text, routing_usage_info = _stub_llm_response(model, enhanced_messages)
-            else:
-                response_text, routing_usage_info = await proxy_server.request_router.route_request(
-                    model=model,
-                    messages=enhanced_messages,
-                    **{k: v for k, v in body.items() if k not in ["messages", "model", "session_id"]},
-                )
-        except Exception as e:
-            logger.error(f"LLM routing failed: {e}")
-            return jsonify({"error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}}), 503
+        # Build pipeline context
+        ctx = PipelineContext(
+            user=user_context,
+            body=body,
+            model=model,
+            messages=enhanced_messages,
+            stream=stream,
+        )
 
-        # Extract provider and usage info from routing
-        actual_provider = routing_usage_info.get("provider", "unknown")
-        input_tokens = routing_usage_info.get("input_tokens", 0)
-        output_tokens = routing_usage_info.get("output_tokens", 0)
+        # Run the pipeline
+        ctx = await proxy_server.pipeline.run(ctx)
 
-        # Process token usage with actual provider
-        usage = proxy_server.token_manager.process_usage(
-            input_text=prompt_text,
+        # If blocked, return error response
+        if ctx.blocked:
+            status_code = ctx.status_code or 500
+            error_msg = ctx.block_reason or "Request blocked"
+            return jsonify({"error": {"message": error_msg, "type": "error"}}), status_code
+
+        # Extract model and usage from pipeline context
+        response_text = ctx.response_text
+        usage = ctx.usage or {}
+        model = ctx.model or model
+        provider = ctx.provider or "unknown"
+        finish_reason = ctx.finish_reason or "stop"
+
+        # Process token usage record
+        token_usage = proxy_server.token_manager.process_usage(
+            input_text="\n".join([msg.get("content", "") for msg in messages if msg.get("content")]),
             output_text=response_text,
-            provider=actual_provider,
+            provider=provider,
             model=model,
             api_key_id=user_context.api_key_id or 0,
             user_id=user_context.user_id,
             organization_id=user_context.organization_id,
-            actual_input_tokens=input_tokens,
-            actual_output_tokens=output_tokens,
+            actual_input_tokens=usage.get("input_tokens", 0),
+            actual_output_tokens=usage.get("output_tokens", 0),
         )
 
-        # Update metrics
+        # Record metrics
         proxy_server.metrics.record_llm_request(
-            provider=actual_provider,
+            provider=provider,
             model=model,
             status="success",
             token_usage={
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "waddleai_tokens": usage.waddleai_tokens,
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "waddleai_tokens": token_usage.waddleai_tokens,
                 "organization": user_context.organization_id,
                 "user": user_context.user_id,
             },
         )
 
-        # Store conversation in memory (asynchronously, don't block response)
+        # Store conversation in memory (asynchronously)
         asyncio.ensure_future(
             proxy_server.memory_manager.add_conversation_turn(
                 user_id=user_context.user_id,
@@ -851,39 +959,13 @@ async def chat_completions():
                 session_id=session_id,
                 metadata={
                     "model": model,
-                    "provider": actual_provider,
-                    "waddleai_tokens": usage.waddleai_tokens,
-                    "llm_tokens_input": input_tokens,
-                    "llm_tokens_output": output_tokens,
+                    "provider": provider,
+                    "waddleai_tokens": token_usage.waddleai_tokens,
+                    "llm_tokens_input": usage.get("input_tokens", 0),
+                    "llm_tokens_output": usage.get("output_tokens", 0),
                 },
             )
         )
-
-        # Content filter — output phase (PII/PCI in LLM response + custom rules)
-        output_filter_result = await proxy_server.content_filter.filter_output(
-            text=response_text,
-            user_id=user_context.user_id,
-            org_id=user_context.organization_id,
-        )
-        if not output_filter_result.allowed:
-            logger.warning(
-                "LLM response blocked by output filter",
-                user=user_context.user_id,
-                violations=[v.rule_name for v in output_filter_result.violations],
-            )
-            return (
-                jsonify(
-                    {
-                        "error": {
-                            "message": "Response blocked by content filter",
-                            "type": "content_filter_output_block",
-                        }
-                    }
-                ),
-                400,
-            )
-        # Use redacted version if PII was found
-        response_text = output_filter_result.filtered_text
 
         # Return OpenAI-compatible response
         return jsonify(
@@ -893,19 +975,19 @@ async def chat_completions():
                 "created": int(time.time()),
                 "model": model,
                 "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": response_text}, "finish_reason": "stop"}
+                    {"index": 0, "message": {"role": "assistant", "content": response_text}, "finish_reason": finish_reason}
                 ],
                 "usage": {
-                    "prompt_tokens": usage.llm_tokens_input,
-                    "completion_tokens": usage.llm_tokens_output,
-                    "total_tokens": usage.llm_tokens_input + usage.llm_tokens_output,
-                    "waddleai_tokens": usage.waddleai_tokens,
+                    "prompt_tokens": usage.get("input_tokens", 0),
+                    "completion_tokens": usage.get("output_tokens", 0),
+                    "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                    "waddleai_tokens": token_usage.waddleai_tokens,
                 },
             }
         )
 
     except Exception as e:
-        logger.error("Chat completion failed", error=str(e), user=user_context.username)
+        logger.error("Chat completion failed", error=str(e), user=getattr(user_context, "username", "unknown"))
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
     finally:
         duration = time.time() - start_time
@@ -1034,128 +1116,93 @@ async def get_quota():
 
 @app.route("/v1/messages", methods=["POST"])
 async def claude_messages():
-    """Anthropic Claude Messages API compatible endpoint"""
-    try:
-        # Unified authentication via get_current_user (Bearer JWT, x-api-key, or raw wa- key)
-        user_context = await get_current_user()
+    """Anthropic Claude Messages API compatible endpoint using the shared ProxyPipeline.
 
-        # Parse request body
+    Preserves Anthropic fidelity:
+    - content array format (multimodal: text, tool_use, tool_result, image, etc.)
+    - system field as string OR array of objects
+    - thinking blocks (extended thinking)
+    - cache_control directives (untouched passthrough)
+    """
+    start_time = time.time()
+    user_context = await get_current_user()
+
+    try:
+        # Parse request body — preserve Anthropic format entirely
         body = await request.get_json()
         model = body.get("model", "claude-3-sonnet-20240229")
-        messages = body.get("messages", [])
-        max_tokens = body.get("max_tokens", 1024)
-        system_prompt = body.get("system", "")
-        temperature = body.get("temperature", 1.0)
+        messages = body.get("messages", [])  # Keep as-is (may have content arrays)
+        stream = body.get("stream", False)
+        # Preserve max_tokens, temperature, system, and other Anthropic params
+        # in body for passthrough to connector
 
-        # Convert Claude Messages format to OpenAI format
-        openai_messages = []
-        if system_prompt:
-            openai_messages.append({"role": "system", "content": system_prompt})
+        # Determine target model
+        x_preferred_model = request.headers.get("X-Preferred-Model")
+        model = determine_target_model(request_model=model, user_context=user_context, x_preferred_model=x_preferred_model) or model
 
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
+        # Get session ID for memory
+        session_id = body.get("session_id") or request.headers.get("X-Session-ID")
 
-            # Handle content array format (Claude uses array for multimodal)
-            if isinstance(content, list):
-                # Concatenate text content from array
-                text_content = " ".join([item.get("text", "") for item in content if item.get("type") == "text"])
-                content = text_content
-
-            openai_messages.append({"role": role, "content": content})
-
-        # Combine messages for security scanning
-        prompt_text = "\n".join([msg.get("content", "") for msg in openai_messages if msg.get("content")])
-
-        # Security scanning
-        threats, _sanitized_prompt = proxy_server.security_scanner.scan_prompt(
-            prompt_text,
+        # Get conversation context from memory and enhance messages
+        # (For Anthropic format, content arrays are preserved as-is)
+        conversation_context = await proxy_server.memory_manager.get_conversation_context(
             user_id=user_context.user_id,
-            api_key_id=user_context.api_key_id,
-            ip_address=request.remote_addr,
+            organization_id=user_context.organization_id,
+            current_messages=messages,
+            session_id=session_id,
+        )
+        enhanced_messages = await proxy_server.memory_manager.enhance_messages_with_context(
+            messages=messages, context=conversation_context
         )
 
-        # Handle security threats
-        for threat in threats:
-            proxy_server.metrics.record_security_event(
-                event_type=threat.threat_type.value,
-                severity=threat.severity.value,
-                action=threat.suggested_action.value,
-            )
+        # Build pipeline context with Anthropic messages as-is
+        ctx = PipelineContext(
+            user=user_context,
+            body=body,
+            model=model,
+            messages=enhanced_messages,
+            stream=stream,
+        )
 
-            if threat.suggested_action == Action.BLOCK:
-                return (
-                    jsonify(
-                        {
-                            "error": {
-                                "message": f"Request blocked due to security threat: {threat.description}",
-                                "type": "security_error",
-                            }
-                        }
-                    ),
-                    400,
-                )
+        # Run the pipeline (now includes SecurityInStage and SecurityOutStage
+        # which were previously skipped for /v1/messages)
+        ctx = await proxy_server.pipeline.run(ctx)
 
-        # Check quota
-        quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
-        if not quota_ok:
-            daily_usage = f"{quota_info['daily']['used']}/{quota_info['daily']['limit']}"
-            monthly_usage = f"{quota_info['monthly']['used']}/{quota_info['monthly']['limit']}"
-            error_msg = f"Quota exceeded. Daily: {daily_usage}, Monthly: {monthly_usage}"
-            return (
-                jsonify(
-                    {
-                        "error": {
-                            "message": error_msg,
-                            "type": "quota_exceeded",
-                        }
-                    }
-                ),
-                429,
-            )
+        # If blocked, return Anthropic error format
+        if ctx.blocked:
+            status_code = ctx.status_code or 500
+            error_msg = ctx.block_reason or "Request blocked"
+            return jsonify({"error": {"type": "invalid_request_error", "message": error_msg}}), status_code
 
-        # Route request to appropriate LLM provider
-        try:
-            if _TEST_MODE:
-                response_text, routing_usage_info = _stub_llm_response(model, openai_messages)
-            else:
-                response_text, routing_usage_info = await proxy_server.request_router.route_request(
-                    model=model,
-                    messages=openai_messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-        except Exception as e:
-            logger.error(f"LLM routing failed: {e}")
-            return jsonify({"error": {"message": f"LLM routing failed: {str(e)}", "type": "routing_error"}}), 503
+        # Extract results from pipeline
+        response_text = ctx.response_text
+        usage_info = ctx.usage or {}
+        model = ctx.model or model
+        provider = ctx.provider or "unknown"
+        finish_reason = ctx.finish_reason or "end_turn"
 
-        # Extract provider and usage info
-        actual_provider = routing_usage_info.get("provider", "unknown")
-        input_tokens = routing_usage_info.get("input_tokens", 0)
-        output_tokens = routing_usage_info.get("output_tokens", 0)
-
-        # Process token usage
-        usage = proxy_server.token_manager.process_usage(
-            input_text=prompt_text,
+        # Process token usage record
+        token_usage = proxy_server.token_manager.process_usage(
+            input_text=_extract_text_from_claude_messages(messages),
             output_text=response_text,
-            provider=actual_provider,
+            provider=provider,
             model=model,
             api_key_id=user_context.api_key_id or 0,
             user_id=user_context.user_id,
             organization_id=user_context.organization_id,
-            actual_input_tokens=input_tokens,
-            actual_output_tokens=output_tokens,
+            actual_input_tokens=usage_info.get("input_tokens", 0),
+            actual_output_tokens=usage_info.get("output_tokens", 0),
         )
 
-        # Update metrics
+        # Record metrics
         proxy_server.metrics.record_llm_request(
-            provider=actual_provider,
+            provider=provider,
             model=model,
             status="success",
             token_usage={
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "waddleai_tokens": usage.waddleai_tokens,
+                "input_tokens": usage_info.get("input_tokens", 0),
+                "output_tokens": usage_info.get("output_tokens", 0),
+                "waddleai_tokens": token_usage.waddleai_tokens,
                 "organization": user_context.organization_id,
                 "user": user_context.user_id,
             },
@@ -1166,15 +1213,15 @@ async def claude_messages():
             proxy_server.memory_manager.add_conversation_turn(
                 user_id=user_context.user_id,
                 organization_id=user_context.organization_id,
-                messages=openai_messages,
+                messages=messages,  # Original Anthropic messages
                 response=response_text,
-                session_id=None,
+                session_id=session_id,
                 metadata={
                     "model": model,
-                    "provider": actual_provider,
-                    "waddleai_tokens": usage.waddleai_tokens,
-                    "llm_tokens_input": input_tokens,
-                    "llm_tokens_output": output_tokens,
+                    "provider": provider,
+                    "waddleai_tokens": token_usage.waddleai_tokens,
+                    "llm_tokens_input": usage_info.get("input_tokens", 0),
+                    "llm_tokens_output": usage_info.get("output_tokens", 0),
                     "api_format": "claude_messages",
                 },
             )
@@ -1188,15 +1235,76 @@ async def claude_messages():
                 "role": "assistant",
                 "content": [{"type": "text", "text": response_text}],
                 "model": model,
-                "stop_reason": "end_turn",
+                "stop_reason": finish_reason,
                 "stop_sequence": None,
-                "usage": {"input_tokens": usage.llm_tokens_input, "output_tokens": usage.llm_tokens_output},
+                "usage": {"input_tokens": usage_info.get("input_tokens", 0), "output_tokens": usage_info.get("output_tokens", 0)},
             }
         )
 
     except Exception as e:
         logger.error("Claude messages API failed", error=str(e))
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
+    finally:
+        duration = time.time() - start_time
+        proxy_server.metrics.record_request(
+            endpoint="/v1/messages", method="POST", status_code=200, duration=duration
+        )
+
+
+def _extract_text_from_claude_messages(messages: list) -> str:
+    """Extract plain text from Anthropic message format for security scanning.
+
+    Handles both string content and content arrays (multimodal).
+    """
+    texts = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            # Extract text from content array items
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    texts.append(item.get("text", ""))
+    return "\n".join(texts)
+
+
+@app.route("/v1/messages/count_tokens", methods=["POST"])
+async def count_tokens():
+    """Anthropic Messages API token counting endpoint.
+
+    Returns the number of input tokens for a given request, using the
+    connector's count_tokens method if available, or a simple estimation.
+    """
+    await get_current_user()  # Authenticate
+
+    try:
+        body = await request.get_json()
+        messages = body.get("messages", [])
+        model = body.get("model", "claude-3-sonnet-20240229")
+
+        # Extract text for token counting
+        prompt_text = _extract_text_from_claude_messages(messages)
+
+        # Try to use connector's count_tokens if available
+        try:
+            provider, target_model = proxy_server.request_router.select_provider(model)
+            connector = proxy_server.llm_manager.connectors.get(provider) if hasattr(proxy_server.llm_manager, "connectors") else None
+
+            if connector and hasattr(connector, "count_tokens"):
+                input_tokens = await connector.count_tokens(messages=messages, model=target_model)
+            else:
+                # Fallback: simple estimation (~4 chars per token)
+                input_tokens = max(len(prompt_text) // 4, 1)
+        except Exception:
+            # Fallback on any error
+            input_tokens = max(len(prompt_text) // 4, 1)
+
+        return jsonify({"input_tokens": input_tokens})
+
+    except Exception as e:
+        logger.error("Token counting failed", error=str(e))
+        return jsonify({"error": {"message": "Failed to count tokens", "type": "server_error"}}), 500
 
 
 if __name__ == "__main__":
