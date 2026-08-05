@@ -10,9 +10,7 @@ Covers:
 - MeterStage: usage recording + reconciliation
 """
 
-import asyncio
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -65,8 +63,14 @@ class TestAuthStageImplementation:
         assert result.block_reason is not None
 
     async def test_auth_stage_blocks_missing_tenant(self):
-        """AuthStage should block when user lacks organization/tenant."""
-        user = Mock(id=1, tenant_id=None)
+        """AuthStage should block when user lacks organization/tenant.
+
+        Both attribute names must be None: AuthStage accepts `tenant_id`
+        (generic) or `organization_id` (WaddleAI's UserContext), and a bare
+        Mock auto-creates any attribute as a truthy object — which would
+        silently satisfy the tenant check and make this test vacuous.
+        """
+        user = Mock(id=1, tenant_id=None, organization_id=None)
         stage = AuthStage(name="auth", flag=None)
         ctx = PipelineContext(user=user, body={})
         result = await stage(ctx)

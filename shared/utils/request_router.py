@@ -510,6 +510,30 @@ class LLMRequestRouter:
             stats.last_failure = datetime.utcnow()
             stats.consecutive_failures += 1
 
+    def select_provider(
+        self,
+        model: str,
+        strategy: Optional[RoutingStrategy] = None,
+    ) -> Optional[Tuple[str, str]]:
+        """Pick a healthy provider for a model.
+
+        Public seam over availability filtering (which applies the circuit
+        breaker, including the half-open probe) plus strategy selection.
+        Callers outside this class must use this rather than reaching into
+        the private helpers, so breaker semantics can never be bypassed.
+
+        Returns:
+            (provider_name, model) or None when no provider can serve the model.
+        """
+        available = self._get_available_providers(model)
+        if not available:
+            return None
+
+        provider = self._select_provider(model, available, strategy or self.default_strategy)
+        if not provider:
+            return None
+        return provider, model
+
     def get_provider_stats(self) -> Dict[str, Dict[str, Any]]:
         """Get current provider statistics"""
         stats_dict = {}

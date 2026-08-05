@@ -424,24 +424,20 @@ class DispatchStage(Stage):
             ctx.block_reason = "no_messages"
             return ctx
 
-        # Select provider and target model
+        # Select provider and target model via the router's public seam, which
+        # applies availability filtering (and therefore the circuit breaker,
+        # including its half-open probe). Reaching into the private helpers
+        # here would let a caller bypass breaker semantics.
         try:
             model = ctx.model or "gpt-4"
-            # Get available providers for the model
-            available_providers = self.router._get_available_providers(model)
-            if not available_providers:
+            selection = self.router.select_provider(model)
+            if not selection:
                 logger.error("DispatchStage: no available providers for model %s", model)
                 ctx.blocked = True
-                ctx.status_code = 500
+                ctx.status_code = 503
                 ctx.block_reason = "no_available_providers"
                 return ctx
-            # Select provider using router's strategy
-            provider = self.router._select_provider(
-                model,
-                available_providers,
-                self.router.default_strategy,
-            )
-            target_model = model  # For now, use the requested model name
+            provider, target_model = selection
         except Exception as e:
             logger.error("DispatchStage: provider selection failed: %s", e)
             ctx.blocked = True
