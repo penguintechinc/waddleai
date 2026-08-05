@@ -128,7 +128,7 @@ PostgreSQL
 
 #### Inside the System (Service-to-Service)
 ```
-WebUI ──────→ Flask Backend  [REST over Kubernetes network]
+WebUI ──────→ Flask Backend  [REST over local network]
 Flask ──────→ Go Backend     [gRPC for speed]
 Flask ──────→ PostgreSQL     [PyDAL connections]
 ```
@@ -151,29 +151,27 @@ Flask ──────→ PostgreSQL     [PyDAL connections]
 ### Step 1: One Command to Rule Them All
 
 ```bash
-kubectl apply --context local-alpha -k k8s/kustomize/overlays/alpha
+make dev
 ```
 
-This deploys all three services, database, and everything you need to the local Kubernetes cluster.
+This starts all three containers, database, and everything you need.
 
 **What happens:**
-1. Flask Backend deployment starts (listens on port 5000)
-2. WebUI deployment starts (listens on port 3000)
-3. Go Backend deployment starts (if you have one)
-4. PostgreSQL StatefulSet spins up
-5. All connected via Kubernetes ClusterIP services
+1. Flask Backend builds and starts (listens on port 5000)
+2. WebUI builds and starts (listens on port 3000)
+3. Go Backend builds and starts (if you have one)
+4. PostgreSQL spins up
+5. All connected on internal Docker network
 
-### Step 2: Port-Forward to Your Browser
+### Step 2: Open Your Browser
 
-```bash
-kubectl port-forward --context local-alpha svc/webui 3000:80
+```
+http://localhost:3000
 ```
 
-Then open `http://localhost:3000`
-
 You're in! The WebUI is serving. Behind the scenes:
-- WebUI sends your requests to Flask via Kubernetes DNS
-- Flask queries the database via StatefulSet DNS
+- WebUI sends your requests to Flask
+- Flask queries the database
 - Database returns data
 - Flask sends back JSON
 - WebUI shows you the results
@@ -181,13 +179,10 @@ You're in! The WebUI is serving. Behind the scenes:
 ### Step 3: Testing the APIs Directly
 
 ```bash
-# Port-forward to Flask backend
-kubectl port-forward --context local-alpha svc/flask-backend 5000:5000 &
-
 # Login and get a token
 curl -X POST http://localhost:5000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@localhost.local","password":"admin123"}'
+  -d '{"email":"admin@example.com","password":"admin"}'
 
 # Use token to get users
 curl -X GET http://localhost:5000/api/v1/users \
@@ -260,49 +255,20 @@ HEALTHCHECK --interval=30s --timeout=3s CMD node -e \
 CMD ["node", "index.js"]
 ```
 
-### Step 4: Create Kubernetes Manifests
-
-For local development with Kustomize:
+### Step 4: Add to Docker Compose
 
 ```yaml
-# k8s/kustomize/overlays/alpha/my-service-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-service
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-service
-  template:
-    metadata:
-      labels:
-        app: my-service
-    spec:
-      containers:
-      - name: my-service
-        image: my-service:latest
-        ports:
-        - containerPort: 5050
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 5050
-          initialDelaySeconds: 10
-          periodSeconds: 30
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: my-service
-spec:
-  selector:
-    app: my-service
-  ports:
-  - port: 5050
-    targetPort: 5050
-  type: ClusterIP
+# In docker-compose.dev.yml
+services:
+  my-service:
+    build: ./services/my-service
+    ports:
+      - "5050:5050"
+    networks:
+      - app-network
+    depends_on:
+      postgres:
+        condition: service_healthy
 ```
 
 ### Step 5: Update CI/CD
@@ -346,7 +312,7 @@ Add section to this file explaining what it does!
 
 ### Q: What if I only want two containers (no Go backend)?
 
-**A:** Totally fine. Just don't include go-backend in your Kustomize or Helm deployments. Most projects only need Flask + WebUI.
+**A:** Totally fine. Docker Compose won't break. Just don't include go-backend in your compose file. Most projects only need Flask + WebUI.
 
 ### Q: How do I add a database?
 
@@ -360,9 +326,9 @@ make dev
 
 All database drivers are built in via PyDAL. It "just works."
 
-### Q: Do I have to use Kubernetes?
+### Q: Can I run this on Kubernetes?
 
-**A:** Yes! All local development uses Kubernetes via Kustomize, and production uses Helm. Docker Compose is deprecated. See `k8s/kustomize/overlays/alpha/` for local setup and `k8s/helm/{service}/` for production deployment.
+**A:** Yes! Each service becomes a Deployment. Database becomes a StatefulSet. Services expose via ClusterIP internally, Ingress externally. That's advanced, but the template supports it—see the `infrastructure/` folder.
 
 ### Q: How do I know which protocol to use between services?
 
@@ -375,97 +341,50 @@ All database drivers are built in via PyDAL. It "just works."
 
 ## 📈 Scaling: Simple Edition
 
-### Vertical Scaling (Increase a Container's Resources)
-
-Edit the resource limits in your Kustomize overlay or Helm values:
-
+### Vertical Scaling (Make One Container Bigger)
 ```bash
-# Patch resource limits on a running deployment
-kubectl --context local-alpha patch deployment flask-backend -n myapp \
-  -p '{"spec":{"template":{"spec":{"containers":[{"name":"flask-backend","resources":{"requests":{"cpu":"500m","memory":"512Mi"},"limits":{"cpu":"2","memory":"2Gi"}}}]}}}}'
+# Give Flask more resources
+docker update --cpus="2" --memory="2g" flask-backend
 ```
 
-Or update your Helm values and redeploy:
+Works for small growth, then you hit a wall.
+
+### Horizontal Scaling (Add More Containers)
+
+**Option 1: Locally with Docker Compose** (for testing)
 ```yaml
-# values-prod.yaml
-resources:
-  requests:
-    cpu: 500m
-    memory: 512Mi
-  limits:
-    cpu: "2"
-    memory: 2Gi
+services:
+  flask-backend:
+    deploy:
+      replicas: 3  # Run 3 copies
 ```
 
-Works for small growth — when you need more, add replicas instead.
-
-### Horizontal Scaling (Add More Pods)
-
-Scale your deployments in Kubernetes:
-
-```bash
-# Scale Flask backend to 3 replicas
-kubectl scale --context local-alpha deployment flask-backend --replicas=3 -n myapp
-
-# Or edit the Kustomize overlay
-# k8s/kustomize/overlays/alpha/kustomization.yaml
-patches:
-- target:
-    kind: Deployment
-    name: flask-backend
-  patch: |-
-    - op: replace
-      path: /spec/replicas
-      value: 3
-```
-
-Then apply:
-```bash
-kubectl apply --context local-alpha -k k8s/kustomize/overlays/alpha
+**Option 2: Kubernetes** (production)
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-backend
+spec:
+  replicas: 3  # Start with 3 pods
+  selector:
+    matchLabels:
+      app: flask-backend
 ```
 
 ### Caching Layer (Redis)
 
-When Flask starts hitting the database too hard, add Redis via Kustomize:
+When Flask starts hitting the database too hard:
 
-```yaml
-# k8s/kustomize/overlays/alpha/redis-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-      - name: redis
-        image: redis:7-bookworm
-        ports:
-        - containerPort: 6379
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-spec:
-  selector:
-    app: redis
-  ports:
-  - port: 6379
-    targetPort: 6379
+```bash
+# Add Redis
+docker run -d --name redis -p 6379:6379 redis:7-bookworm
 ```
 
 Then in Flask:
 ```python
 from redis import Redis
-cache = Redis(host='redis', port=6379)  # Resolves via K8s DNS
+cache = Redis(host='redis', port=6379)
 # Cache frequently accessed data
 ```
 
@@ -479,54 +398,6 @@ cache = Redis(host='redis', port=6379)  # Resolves via K8s DNS
 
 ---
 
-## Desktop / Endpoint Clients
-
-**All desktop and endpoint client functionality is centralized in the Penguin desktop application** (`~/code/penguin/services/desktop/`). Individual projects do **NOT** build their own desktop clients.
-
-```
-┌─────────────────────────────────────────────────┐
-│           🐧 Penguin Desktop App                │
-│         (Go + Fyne, cross-platform)             │
-│                                                 │
-│  ┌───────────┐ ┌───────────┐ ┌───────────┐     │
-│  │ Module A  │ │ Module B  │ │ Module C  │ ... │
-│  │(Project X)│ │(Project Y)│ │(Project Z)│     │
-│  └───────────┘ └───────────┘ └───────────┘     │
-│       ↑              ↑              ↑           │
-│       └──── net/rpc over stdin/stdout ──────┘   │
-│                                                 │
-│  Host: windowing, tray, updates, crash recovery │
-└─────────────────────────────────────────────────┘
-         ↕ HTTPS/REST to project backends
-```
-
-### How It Works
-
-Each project that needs a desktop/endpoint presence contributes a **plugin module** to the Penguin app rather than building a standalone client. Modules are separate Go binaries that communicate with the host via HashiCorp go-plugin (net/rpc over stdin/stdout). The host handles:
-
-- Cross-platform windowing and system tray (Fyne)
-- Crash recovery with progressive backoff restart
-- Shared authentication and update mechanisms
-- Declarative UI rendering (modules describe widget trees, host renders)
-
-### Adding Your Project's Module
-
-1. Create a new module binary in `~/code/penguin/services/desktop/cmd/modules/penguin-mod-{name}/`
-2. Implement the plugin interface defined by the host
-3. Your module communicates with your project's backend via REST/gRPC as usual
-4. Document module-specific standards in the module's `docs/APP_STANDARDS.md`
-
-### What NOT to Build in Your Project
-
-- Standalone desktop applications (Electron, Tauri, etc.)
-- Endpoint agents or CLI daemons for end-users
-- System tray applications
-- Native installers for desktop functionality
-
-All of these belong as modules in the Penguin desktop app.
-
----
-
 ## Standards Summary
 
 ✅ **DO:**
@@ -535,18 +406,16 @@ All of these belong as modules in the Penguin desktop app.
 - Run database operations through PyDAL
 - Implement `/healthz` endpoint in every service
 - Keep services independent and focused
-- Use Kubernetes ClusterIP services for internal communication
+- Use Docker networks, not host ports
 - Test on both amd64 and arm64 architectures
-- Use Kustomize for local development deployments
-- Use Helm for production deployments
 
 ❌ **DON'T:**
-- Hardcode service hostnames (use Kubernetes DNS: `service-name:port`)
+- Hardcode service hostnames (use environment variables)
 - Skip health checks
-- Use curl in container probes (use native language or HTTP probes)
+- Use curl in Dockerfiles for health checks (use native language)
 - Build Go "for fun" if Flask would work
 - Couple containers tightly (API-first design)
-- Expose services via NodePort unnecessarily (use ClusterIP internally)
+- Expose unnecessary ports to the host
 
 ---
 

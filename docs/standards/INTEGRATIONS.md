@@ -20,7 +20,7 @@ Each integration is optional depending on your needs, but when you use them, fol
 
 Your app runs behind **MarchProxy** (`~/code/MarchProxy`) for routing, load balancing, and API gateway features.
 
-**Important:** MarchProxy is external infrastructure managed separately. Don't include it in your Kubernetes deployments - just generate config files and import them via MarchProxy's API.
+**Important:** Don't include MarchProxy in your `docker-compose.yml` - it's external infrastructure managed separately. Just generate config files and import them via MarchProxy's API.
 
 ### How It Works
 
@@ -224,20 +224,14 @@ Consider WaddleAI if your app needs:
 
 ### Architecture Pattern
 
-WaddleAI runs as a separate microservice in your Kubernetes cluster:
+WaddleAI runs as a separate microservice in your docker-compose:
 
 ```
-k8s/
-├── kustomize/
-│   └── overlays/alpha/
-│       ├── flask-backend-deployment.yaml
-│       ├── webui-deployment.yaml
-│       ├── go-backend-deployment.yaml  # Optional
-│       └── waddleai-deployment.yaml    # Optional: if using AI
-└── helm/
-    └── myapp/
-        └── templates/
-            └── waddleai-deployment.yaml
+services/
+├── flask-backend/     # Your Flask API
+├── webui/            # Your React frontend
+├── go-backend/       # Optional: High-performance backend
+└── ai/               # Optional: WaddleAI service (if using AI)
 ```
 
 ### Setup Steps
@@ -248,69 +242,30 @@ k8s/
 git submodule add ~/code/WaddleAI services/ai/waddleai
 ```
 
-**2. Create Kustomize deployment for WaddleAI:**
+**2. Update docker-compose.dev.yml:**
 
 ```yaml
-# k8s/kustomize/overlays/alpha/waddleai-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: waddleai
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: waddleai
-  template:
-    metadata:
-      labels:
-        app: waddleai
-    spec:
-      containers:
-      - name: waddleai
-        image: waddleai:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: MODEL_PATH
-          value: /models
-        - name: MAX_WORKERS
-          value: "4"
-        volumeMounts:
-        - name: ai-models
-          mountPath: /models
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 30
-      volumes:
-      - name: ai-models
-        emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: waddleai
-spec:
-  selector:
-    app: waddleai
-  ports:
-  - port: 8000
-    targetPort: 8000
-  type: ClusterIP
-```
+version: '3.8'
 
-**3. Update Flask deployment to reference WaddleAI:**
+services:
+  flask-backend:
+    build: ./services/flask-backend
+    environment:
+      - WADDLEAI_URL=http://waddleai:8000
+    depends_on:
+      - waddleai
 
-```yaml
-# In your Flask deployment
-containers:
-- name: flask-backend
-  env:
-  - name: WADDLEAI_URL
-    value: http://waddleai:8000  # Kubernetes DNS resolution
+  waddleai:
+    build: ./services/ai/waddleai
+    environment:
+      - MODEL_PATH=/models
+      - MAX_WORKERS=4
+    volumes:
+      - ai-models:/models
+    # Internal only - not exposed to host
+
+volumes:
+  ai-models:
 ```
 
 **3. Python API client for Flask backend:**

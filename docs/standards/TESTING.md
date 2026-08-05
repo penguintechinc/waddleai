@@ -45,7 +45,7 @@ Each layer validates different aspects—unit tests catch code bugs, integration
 
 **Requirements**:
 - MUST pass before committing
-- Uses local Kubernetes (Kustomize on MicroK8s)
+- Uses local Docker containers
 - Fast feedback loop (<2 min)
 
 ### Phase 2: CI/CD Pipeline (GitHub Actions)
@@ -123,7 +123,7 @@ kubectl get pods -n myapp | grep Running
 kubectl get svc -n myapp
 
 # Test the live API
-curl -f https://myapp.penguintech.cloud/healthz
+curl -f https://myapp.penguintech.io/healthz
 
 # Run live integration tests
 kubectl exec -n myapp deploy/flask-backend -- pytest tests/live/
@@ -138,25 +138,6 @@ kubectl exec -n myapp deploy/flask-backend -- pytest tests/live/
 | Phase 3: Deployment | Post-deploy | K8s cluster | 5-30 min | Live integration, E2E |
 
 ## Testing Requirements
-
-## ⚠️ Clean the Cluster Before Smoke/E2E Tests
-
-**Always delete the existing deployment before running smoke tests or E2E tests** — unless you explicitly need to test against existing state.
-
-**Why:** Stale deployments hide bugs. Old database state, lingering pods from previous runs, and leftover resources can mask real failures. A fresh deployment validates that your changes actually work in isolation.
-
-```bash
-# Delete existing alpha deployment (always do this before smoke tests)
-kubectl delete --context local-alpha -k k8s/kustomize/overlays/alpha
-
-# Wait for pods to terminate
-kubectl get pods --context local-alpha -n {product} --watch
-
-# Then deploy fresh
-kubectl apply --context local-alpha -k k8s/kustomize/overlays/alpha
-```
-
-**Exception:** Skip the cleanup only when you explicitly need to test upgrade behavior or persistence across deployments.
 
 ### Smoke Tests (MANDATORY): Your Safety Net
 
@@ -203,34 +184,19 @@ echo "=== Flask Backend Smoke Test ==="
 echo "Building container..."
 docker build -t flask-backend:test ./services/flask-backend
 
-# 2. Deploy to local K8s cluster
-echo "Deploying to Kubernetes..."
-kubectl apply --context local-alpha -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: flask-backend-smoke-test
-  namespace: default
-spec:
-  containers:
-  - name: flask-backend
-    image: flask-backend:test
-    ports:
-    - containerPort: 5000
-    env:
-    - name: DB_TYPE
-      value: sqlite
-    - name: DB_NAME
-      value: test.db
-  restartPolicy: Never
-EOF
+# 2. Run container
+echo "Starting container..."
+CONTAINER_ID=$(docker run -d \
+  -e DB_TYPE=sqlite \
+  -e DB_NAME=test.db \
+  flask-backend:test)
 
 # Wait for startup
-sleep 10
+sleep 5
 
 # 3. Health check
 echo "Checking health endpoint..."
-kubectl exec --context local-alpha pod/flask-backend-smoke-test -- python3 -c "
+docker exec $CONTAINER_ID python3 -c "
 import http.client
 conn = http.client.HTTPConnection('localhost', 5000)
 conn.request('GET', '/healthz')
@@ -240,17 +206,17 @@ if r.status != 200:
 print('✓ Health check passed')
 "
 
-# 4. Run unit tests
+# 4. Run unit tests inside container
 echo "Running unit tests..."
-kubectl exec --context local-alpha pod/flask-backend-smoke-test -- pytest tests/unit -v
+docker exec $CONTAINER_ID pytest tests/unit -v
 
 # 5. Run basic integration tests
 echo "Running integration tests..."
-kubectl exec --context local-alpha pod/flask-backend-smoke-test -- pytest tests/integration/test_api_basic.py -v
+docker exec $CONTAINER_ID pytest tests/integration/test_api_basic.py -v
 
 # 6. API endpoint smoke tests
 echo "Testing API endpoints..."
-kubectl exec --context local-alpha pod/flask-backend-smoke-test -- python3 -c "
+docker exec $CONTAINER_ID python3 -c "
 import http.client, json
 conn = http.client.HTTPConnection('localhost', 5000)
 
@@ -268,7 +234,8 @@ print('✓ Users endpoint responding')
 "
 
 # Cleanup
-kubectl delete --context local-alpha pod flask-backend-smoke-test
+docker stop $CONTAINER_ID
+docker rm $CONTAINER_ID
 
 echo "✓ Flask Backend Smoke Test PASSED"
 ```
@@ -284,41 +251,24 @@ echo "=== WebUI Smoke Test ==="
 echo "Building container..."
 docker build -t webui:test ./services/webui
 
-# 2. Deploy to Kubernetes
-echo "Deploying to Kubernetes..."
-kubectl apply --context local-alpha -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: webui-smoke-test
-  namespace: default
-spec:
-  containers:
-  - name: webui
-    image: webui:test
-    ports:
-    - containerPort: 3000
-  restartPolicy: Never
-EOF
+# 2. Run container
+echo "Starting container..."
+CONTAINER_ID=$(docker run -d -p 3000:3000 webui:test)
 
 # Wait for startup
 sleep 10
 
-# 3. Health check (port-forward and check)
+# 3. Health check
 echo "Checking health endpoint..."
-kubectl port-forward --context local-alpha pod/webui-smoke-test 3000:3000 &
-PORT_FWD_PID=$!
-sleep 2
 curl -f http://localhost:3000/healthz || exit 1
-kill $PORT_FWD_PID 2>/dev/null || true
 
 # 4. Run unit tests
 echo "Running unit tests..."
-kubectl exec --context local-alpha pod/webui-smoke-test -- npm run test:unit
+docker exec $CONTAINER_ID npm run test:unit
 
 # 5. Page load tests
 echo "Testing page loads..."
-kubectl exec --context local-alpha pod/webui-smoke-test -- node -e "
+docker exec $CONTAINER_ID node -e "
 const http = require('http');
 
 function testPage(path) {
@@ -344,10 +294,11 @@ function testPage(path) {
 
 # 6. Build production bundle
 echo "Testing production build..."
-kubectl exec --context local-alpha pod/webui-smoke-test -- npm run build
+docker exec $CONTAINER_ID npm run build
 
 # Cleanup
-kubectl delete --context local-alpha pod webui-smoke-test
+docker stop $CONTAINER_ID
+docker rm $CONTAINER_ID
 
 echo "✓ WebUI Smoke Test PASSED"
 ```
@@ -363,44 +314,32 @@ echo "=== Go Backend Smoke Test ==="
 echo "Building container..."
 docker build -t go-backend:test ./services/go-backend
 
-# 2. Deploy to Kubernetes
-echo "Deploying to Kubernetes..."
-kubectl apply --context local-alpha -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: go-backend-smoke-test
-  namespace: default
-spec:
-  containers:
-  - name: go-backend
-    image: go-backend:test
-    ports:
-    - containerPort: 8080
-  restartPolicy: Never
-EOF
+# 2. Run container
+echo "Starting container..."
+CONTAINER_ID=$(docker run -d go-backend:test)
 
 # Wait for startup
 sleep 5
 
 # 3. Health check
 echo "Checking health endpoint..."
-kubectl exec --context local-alpha pod/go-backend-smoke-test -- /usr/local/bin/healthcheck || exit 1
+docker exec $CONTAINER_ID /usr/local/bin/healthcheck || exit 1
 
 # 4. Run unit tests
 echo "Running unit tests..."
-kubectl exec --context local-alpha pod/go-backend-smoke-test -- go test ./... -v
+docker exec $CONTAINER_ID go test ./... -v
 
 # 5. Run integration tests
 echo "Running integration tests..."
-kubectl exec --context local-alpha pod/go-backend-smoke-test -- go test ./tests/integration/... -v
+docker exec $CONTAINER_ID go test ./tests/integration/... -v
 
 # 6. Performance smoke test
 echo "Running performance smoke test..."
-kubectl exec --context local-alpha pod/go-backend-smoke-test -- go test -bench=. -benchtime=1s ./tests/benchmarks/smoke_test.go
+docker exec $CONTAINER_ID go test -bench=. -benchtime=1s ./tests/benchmarks/smoke_test.go
 
 # Cleanup
-kubectl delete --context local-alpha pod go-backend-smoke-test
+docker stop $CONTAINER_ID
+docker rm $CONTAINER_ID
 
 echo "✓ Go Backend Smoke Test PASSED"
 ```
@@ -454,7 +393,6 @@ fi
 - Make scripts executable: `chmod +x tests/smoketests/*.sh`
 - Don't require network—use test databases in Docker
 - Tests should be deterministic (pass every time, not randomly flaky)
-- Never ignore pre-existing failures — if a test was already failing before your changes, fix it. "It was already broken" is never an acceptable reason to ship broken code.
 
 ## Unit Tests: The Foundation
 
@@ -470,7 +408,7 @@ Unit tests are the cheapest insurance you can buy. They run instantly and catch 
 3. No external dependencies
 4. Each test is independent
 5. Tests run in milliseconds
-6. 90%+ code coverage mandatory
+6. >80% code coverage minimum
 
 **Quick Start**:
 
@@ -539,20 +477,19 @@ tests/integration/
 │   └── test_database.py         # Database CRUD works
 ├── go-backend/
 │   └── integration_test.go      # Go service tests
-└── k8s/
-    └── kustomization.yaml       # Test environment (real database in K8s)
+└── docker-compose.test.yml      # Test environment (real database)
 ```
 
 **Running Integration Tests**:
 ```bash
-# Deploy test environment to local K8s cluster
-kubectl apply --context local-alpha -k tests/integration/k8s
+# Start test database and services
+docker-compose -f tests/integration/docker-compose.test.yml up -d
 
 # Run tests
 pytest tests/integration/ -v
 
 # Clean up
-kubectl delete --context local-alpha -k tests/integration/k8s
+docker-compose -f tests/integration/docker-compose.test.yml down -v
 ```
 
 **Real Example** - Testing user login:
@@ -613,20 +550,14 @@ E2E tests answer: "Can users actually do the thing they came to do?" This is the
 
 **Running E2E Tests**:
 ```bash
-# Deploy all services to local Kubernetes cluster
-kubectl apply --context local-alpha -k k8s/kustomize/overlays/alpha
-
-# Port-forward WebUI for testing
-kubectl port-forward --context local-alpha svc/webui 3000:80 &
+# Start all services (UI, API, database)
+docker-compose up -d
 
 # Run tests (uses Playwright for browser automation)
 npm run test:e2e
 
 # Or specifically
 npx playwright test tests/e2e/
-
-# Clean up
-kubectl delete --context local-alpha -k k8s/kustomize/overlays/alpha
 ```
 
 **Real Example** - User login and dashboard:
@@ -724,8 +655,7 @@ MOCK_USERS = [
 #!/bin/bash
 echo "Seeding test database..."
 
-# Execute seed script inside Flask pod
-kubectl exec --context local-alpha -n myapp deploy/flask-backend -- python3 -c "
+docker exec flask-backend python3 -c "
 from app import create_app, db
 from app.models import User
 from tests.fixtures import users
@@ -800,31 +730,23 @@ make test-performance
 
 | Problem | Solution |
 |---------|----------|
-| "Connection refused" | Is the service running? `kubectl --context local-alpha get pods -n {product}` |
+| "Connection refused" | Is the service running? `docker-compose ps` |
 | "Table doesn't exist" | Did you run migrations? `make migrate` |
 | "Timeout" | Is the test too slow? Increase timeout or optimize code |
 | "Random failures" | Test is flaky—make it more deterministic |
 | "Works locally, fails in CI" | Different environment? Check env vars |
 
-## Coverage Goals: 90% Is the Minimum
+## Coverage Goals: What's "Good Enough"?
 
-**Target**: 90%+ code coverage mandatory and enforced by CI.
+**Target**: 80% code coverage minimum
 
-Code coverage of 90%+ is mandatory and enforced by CI. Focus on testing business logic, user workflows, and error handling.
+Why 80% and not 100%?
+- 100% coverage takes forever and has diminishing returns
+- 80% gets most bugs, especially in business logic
+- Some code is hard to test (error recovery, rare edge cases)
+- Focus on testing what matters: user workflows and business rules
 
-**Enforce coverage** (fail if below 90%):
-```bash
-# Python — CI fails if coverage drops below 90%
-pytest tests/unit/ --cov=app --cov-fail-under=90
-
-# JavaScript — configure in jest.config.js
-# "coverageThreshold": { "global": { "lines": 90, "branches": 90, "functions": 90 } }
-
-# Go — check output manually; CI rejects <90%
-go test ./... -cover  # look for "coverage: XX.X% of statements"
-```
-
-**View coverage details**:
+**Check coverage**:
 ```bash
 # Python
 pytest tests/unit/ --cov=app --cov-report=html
