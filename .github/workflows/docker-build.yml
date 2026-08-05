@@ -113,6 +113,12 @@ jobs:
           - service: webui
             context: ./services/webui
             dockerfile: ./services/webui/Dockerfile
+          # management moved to services/ in the Phase-1 consolidation; the
+          # default ./{service}/Dockerfile no longer exists. Context stays the
+          # repo root so the image can COPY the shared/ package it imports.
+          - service: management
+            context: .
+            dockerfile: ./services/management/Dockerfile
 
     steps:
     - name: Checkout code
