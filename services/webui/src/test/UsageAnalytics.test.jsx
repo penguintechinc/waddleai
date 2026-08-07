@@ -331,4 +331,133 @@ describe('UsageAnalytics', () => {
     fireEvent.change(startDateInput, { target: { value: '2025-01-01' } });
     expect(startDateInput.value).toBe('2025-01-01');
   });
+
+  it('computes a non-zero percentage change when a previous period value is present', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary')
+        return Promise.resolve({ data: { ...mockSummaryData, previous_requests: 1000 } });
+      if (url === '/api/v1/usage') return Promise.resolve({ data: mockUsageData });
+    });
+
+    render(<UsageAnalytics />);
+
+    await waitFor(() => {
+      // total_requests: 3200, previous_requests: 1000 -> (3200-1000)/1000*100 = 220.0
+      expect(screen.getByText('+220.0% from last period')).toBeInTheDocument();
+    });
+  });
+
+  it('includes start_date and end_date filter params when Apply Filters is clicked with dates set', async () => {
+    setupSuccessfulAxios();
+    render(<UsageAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Usage Analytics')).toBeInTheDocument();
+    });
+
+    const startDateInput = screen
+      .getAllByDisplayValue('')
+      .find((el) => el.getAttribute('type') === 'date');
+    fireEvent.change(startDateInput, { target: { value: '2025-01-01' } });
+
+    const endDateInput = screen
+      .getAllByDisplayValue('')
+      .find((el) => el.getAttribute('type') === 'date');
+    fireEvent.change(endDateInput, { target: { value: '2025-02-01' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply Filters' }));
+
+    await waitFor(() => {
+      const calls = axios.get.mock.calls;
+      const usageCall = calls.find(
+        ([url, config]) =>
+          url === '/api/v1/usage' &&
+          config?.params?.start_date === '2025-01-01' &&
+          config?.params?.end_date === '2025-02-01'
+      );
+      expect(usageCall).toBeDefined();
+    });
+  });
+
+  it('renders a zero-height bar when every item in the chart has a zero value', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary') return Promise.resolve({ data: mockSummaryData });
+      if (url === '/api/v1/usage')
+        return Promise.resolve({
+          data: {
+            ...mockUsageData,
+            by_provider: [{ provider: 'idle-provider', requests: 0, tokens: 0, cost: 0 }],
+          },
+        });
+    });
+
+    render(<UsageAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle('idle-provider: 0')).toBeInTheDocument();
+    });
+
+    const bar = screen.getByTitle('idle-provider: 0');
+    expect(bar).toHaveStyle({ height: '0%' });
+  });
+
+  it('shows fallback values in breakdown table when name/requests/tokens/cost fields are missing', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary') return Promise.resolve({ data: mockSummaryData });
+      if (url === '/api/v1/usage')
+        return Promise.resolve({ data: { ...mockUsageData, by_provider: [{}] } });
+    });
+
+    render(<UsageAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Unknown')).toBeInTheDocument();
+    });
+
+    const row = screen.getByText('Unknown').closest('tr');
+    const cells = row.querySelectorAll('td');
+    expect(cells[1]).toHaveTextContent('0');
+    expect(cells[2]).toHaveTextContent('0');
+    expect(cells[3]).toHaveTextContent('$0.0000');
+    expect(cells[4]).toHaveTextContent('0.0%');
+  });
+
+  it('shows 0 fallback for total requests and tokens stat cards when API omits those fields', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary')
+        return Promise.resolve({ data: { total_cost: 5, active_keys: 2 } });
+      if (url === '/api/v1/usage') return Promise.resolve({ data: mockUsageData });
+    });
+
+    render(<UsageAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Usage Analytics')).toBeInTheDocument();
+    });
+
+    const requestsCard = screen.getByText('Total Requests').closest('.stat-card');
+    expect(requestsCard).toHaveTextContent('0');
+
+    const tokensCard = screen.getByText('Total Tokens').closest('.stat-card');
+    expect(tokensCard).toHaveTextContent('0');
+  });
+
+  it('formats bar chart values over one million with an M suffix', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary') return Promise.resolve({ data: mockSummaryData });
+      if (url === '/api/v1/usage')
+        return Promise.resolve({
+          data: {
+            ...mockUsageData,
+            by_provider: [{ provider: 'openai', requests: 2000, tokens: 3200000, cost: 18.0 }],
+          },
+        });
+    });
+
+    render(<UsageAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('3.20M')).toBeInTheDocument();
+    });
+  });
 });

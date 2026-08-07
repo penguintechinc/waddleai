@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Routing from '../pages/Routing';
@@ -220,5 +220,110 @@ describe('Routing page', () => {
 
     const alternatives = screen.getByText('Alternative Models:').closest('p');
     expect(alternatives).toHaveTextContent('Alternative Models:');
+  });
+
+  it('changes routing LLM model via select', async () => {
+    render(<Routing />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Routing LLM Model')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText('Routing LLM Model'), { target: { value: 'gpt-4o-mini' } });
+    expect(screen.getByLabelText('Routing LLM Model')).toHaveValue('gpt-4o-mini');
+  });
+
+  it('updates routing instructions textarea', async () => {
+    render(<Routing />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Routing Instructions')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText('Routing Instructions'), { target: { value: 'New instructions' } });
+    expect(screen.getByLabelText('Routing Instructions')).toHaveValue('New instructions');
+  });
+
+  it('dismisses success alert when close button clicked', async () => {
+    axios.post.mockResolvedValue({ data: { status: 'success', data: {} } });
+    render(<Routing />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Routing Configuration' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Routing Configuration' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Routing configuration saved successfully')).toBeInTheDocument();
+    });
+
+    const successAlert = screen.getByText('Routing configuration saved successfully').closest('.alert');
+    fireEvent.click(successAlert.querySelector('button'));
+    expect(screen.queryByText('Routing configuration saved successfully')).not.toBeInTheDocument();
+  });
+
+  it('clears success message automatically after 3 seconds', async () => {
+    axios.post.mockResolvedValue({ data: { status: 'success', data: {} } });
+    render(<Routing />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Routing Configuration' })).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Routing Configuration' }));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Routing configuration saved successfully')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(screen.queryByText('Routing configuration saved successfully')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('falls back to empty instructions object when response.data.data is entirely missing', async () => {
+    axios.get.mockResolvedValue({ data: { status: 'success' } });
+    render(<Routing />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Routing LLM Model')).toHaveValue('llama3.2:1b');
+    });
+    expect(screen.getByLabelText('Routing Instructions')).toHaveValue('');
+  });
+
+  it('shows generic error when save fails without response error field', async () => {
+    axios.post.mockRejectedValue(new Error('Network error'));
+    render(<Routing />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Routing Configuration' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Routing Configuration' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to save routing configuration')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when test routing fails without response error field', async () => {
+    axios.post.mockRejectedValue(new Error('Network error'));
+
+    const user = userEvent.setup();
+    render(<Routing />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Test Prompt')).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByLabelText('Test Prompt'), 'x');
+    fireEvent.click(screen.getByRole('button', { name: 'Test Routing' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Routing test failed')).toBeInTheDocument();
+    });
   });
 });

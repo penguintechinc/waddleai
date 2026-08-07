@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Memory from '../pages/Memory';
 
@@ -196,5 +196,116 @@ describe('Memory page', () => {
     expect(checkboxes[0]).toBeChecked();
     fireEvent.click(checkboxes[0]);
     expect(checkboxes[0]).not.toBeChecked();
+  });
+
+  it('falls back to organization id 1 when input is cleared to a falsy value', async () => {
+    render(<Memory />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Organization ID')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText('Organization ID'), { target: { value: '0' } });
+    expect(screen.getByLabelText('Organization ID')).toHaveValue(1);
+  });
+
+  it('updates memory max messages and similarity threshold fields', async () => {
+    render(<Memory />);
+    await waitFor(() => {
+      expect(document.getElementById('memory-max-messages')).toBeInTheDocument();
+    });
+
+    fireEvent.change(document.getElementById('memory-max-messages'), { target: { value: '50' } });
+    expect(document.getElementById('memory-max-messages')).toHaveValue(50);
+
+    fireEvent.change(document.getElementById('memory-similarity'), { target: { value: '0.9' } });
+    expect(document.getElementById('memory-similarity')).toHaveValue(0.9);
+  });
+
+  it('toggles rag enabled checkbox and updates rag collection, top k, and similarity fields', async () => {
+    render(<Memory />);
+    await waitFor(() => {
+      expect(document.getElementById('rag-collection')).toBeInTheDocument();
+    });
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    expect(checkboxes[1]).not.toBeChecked();
+    fireEvent.click(checkboxes[1]);
+    expect(checkboxes[1]).toBeChecked();
+
+    fireEvent.change(document.getElementById('rag-collection'), { target: { value: 'docs' } });
+    expect(document.getElementById('rag-collection')).toHaveValue('docs');
+
+    fireEvent.change(document.getElementById('rag-top-k'), { target: { value: '10' } });
+    expect(document.getElementById('rag-top-k')).toHaveValue(10);
+
+    fireEvent.change(document.getElementById('rag-similarity'), { target: { value: '0.8' } });
+    expect(document.getElementById('rag-similarity')).toHaveValue(0.8);
+  });
+
+  it('updates embedding backend, model, host, and dimensions fields', async () => {
+    render(<Memory />);
+    await waitFor(() => {
+      expect(document.getElementById('embedding-backend')).toBeInTheDocument();
+    });
+
+    fireEvent.change(document.getElementById('embedding-backend'), { target: { value: 'openai' } });
+    expect(document.getElementById('embedding-backend')).toHaveValue('openai');
+
+    fireEvent.change(document.getElementById('embedding-model'), {
+      target: { value: 'text-embedding-3-small' },
+    });
+    expect(document.getElementById('embedding-model')).toHaveValue('text-embedding-3-small');
+
+    fireEvent.change(document.getElementById('embedding-host'), {
+      target: { value: 'http://localhost:9999' },
+    });
+    expect(document.getElementById('embedding-host')).toHaveValue('http://localhost:9999');
+
+    fireEvent.change(document.getElementById('embedding-dimensions'), { target: { value: '1536' } });
+    expect(document.getElementById('embedding-dimensions')).toHaveValue(1536);
+  });
+
+  it('dismisses success alert when close button clicked', async () => {
+    axios.post.mockResolvedValue({ data: { status: 'updated' } });
+    render(<Memory />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Memory Configuration' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Memory Configuration' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Memory configuration saved successfully')).toBeInTheDocument();
+    });
+
+    const successAlert = screen.getByText('Memory configuration saved successfully').closest('.alert');
+    fireEvent.click(successAlert.querySelector('button'));
+    expect(screen.queryByText('Memory configuration saved successfully')).not.toBeInTheDocument();
+  });
+
+  it('clears success message automatically after 3 seconds', async () => {
+    axios.post.mockResolvedValue({ data: { status: 'updated' } });
+    render(<Memory />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Memory Configuration' })).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Memory Configuration' }));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Memory configuration saved successfully')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(screen.queryByText('Memory configuration saved successfully')).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

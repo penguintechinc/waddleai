@@ -130,14 +130,12 @@ jobs:
     - name: Lint
       run: npm run lint
 
-    # Deliberately `vitest run` and not `npm test`: the npm script adds
-    # --coverage, and vitest.config.js enforces a 90% threshold the suite does
-    # not currently meet (75.6% functions / 85.86% branches, predating
-    # 2431aeb2). Gating on coverage today would wire this job in permanently
-    # red. Tests themselves must pass; raising coverage to the 90% standard and
-    # switching this step to `npm test` is tracked separately.
-    - name: Unit tests
-      run: npx vitest run
+    # `npm test` runs vitest with --coverage, so this step enforces the 90%
+    # thresholds in vitest.config.js as well as test outcomes. It ran as bare
+    # `vitest run` only while coverage sat below the gate; the suite now clears
+    # it (100 statements / 99.55 branches / 100 functions / 100 lines).
+    - name: Unit tests and coverage
+      run: npm test
 
     - name: Build
       run: npm run build
