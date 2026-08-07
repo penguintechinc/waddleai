@@ -1,15 +1,18 @@
 # Multi-stage Dockerfile for WaddleAI WebUI
 # React frontend served via nginx
 
-FROM node:18-bookworm-slim@sha256:f9ab18e354e6855ae56ef2b290dd225c1e51a564f87584b9bd21dd651838830e AS builder
+FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json package-lock.json* ./
+# Lockfile is required, not optional — npm ci refuses to run without it, and a
+# glob that silently tolerates its absence would defeat the point.
+COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm install
+# npm ci, not npm install: install can resolve versions that differ from the
+# lockfile, so a dependency pinned for a security fix is not guaranteed to be
+# the one that ships. ci installs exactly what the lockfile records.
+RUN npm ci
 
 # Copy source code
 COPY . .
