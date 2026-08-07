@@ -2,6 +2,12 @@
 .PLAN
 .TODO
 
+# Git worktrees — one per feature/fix/chore branch, each a full checkout
+.worktrees/
+
+# Subagent-driven-development progress ledger (scratch)
+.superpowers/
+
 # Python
 __pycache__/
 *.py[cod]
