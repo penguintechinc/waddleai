@@ -18,4 +18,13 @@ module.exports = {
     ],
     'react/prop-types': 'off',
   },
+  overrides: [
+    {
+      // Vitest runs test files under Node, where `global` is the runtime
+      // object tests stub (e.g. `global.fetch = vi.fn()`) — distinct from
+      // the jsdom `window`/`browser` globals declared above.
+      files: ['src/test/**/*.{js,jsx}'],
+      env: { node: true },
+    },
+  ],
 }
