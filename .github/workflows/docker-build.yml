@@ -104,6 +104,44 @@ jobs:
         flags: unittests
         name: codecov-umbrella
 
+  # services/webui was only ever docker-built, so its JS lint and test suites
+  # never ran anywhere. They rotted unnoticed to 19 lint errors and 17 failing
+  # tests before anyone looked. This job exists so that cannot recur.
+  test-webui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./services/webui
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: services/webui/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Lint
+      run: npm run lint
+
+    # Deliberately `vitest run` and not `npm test`: the npm script adds
+    # --coverage, and vitest.config.js enforces a 90% threshold the suite does
+    # not currently meet (75.6% functions / 85.86% branches, predating
+    # 2431aeb2). Gating on coverage today would wire this job in permanently
+    # red. Tests themselves must pass; raising coverage to the 90% standard and
+    # switching this step to `npm test` is tracked separately.
+    - name: Unit tests
+      run: npx vitest run
+
+    - name: Build
+      run: npm run build
+
   build-platform:
     needs: test
     runs-on: ubuntu-latest
