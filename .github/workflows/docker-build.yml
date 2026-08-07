@@ -89,7 +89,11 @@ jobs:
 
     - name: Run security check (bandit)
       run: |
-        bandit -r proxy management shared -ll -f json -o bandit-results.json || true
+        # Two passes on purpose: the first records every medium+ finding to the
+        # JSON report without gating the build; the second gates on HIGH only, so
+        # a high-severity finding fails CI instead of being swallowed.
+        bandit -r proxy services/management shared -ll -f json -o bandit-results.json || true
+        bandit -r proxy services/management shared -lll
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6

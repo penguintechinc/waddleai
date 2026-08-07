@@ -388,7 +388,7 @@ class QdrantRAGStore(RAGStore):
 
                 # Create point
                 point = PointStruct(
-                    id=hashlib.md5(doc.id.encode()).hexdigest()[:16],  # Qdrant uses int/UUID
+                    id=hashlib.md5(doc.id.encode(), usedforsecurity=False).hexdigest()[:16],  # Qdrant uses int/UUID
                     vector=doc.embedding,
                     payload={
                         "doc_id": doc.id,
