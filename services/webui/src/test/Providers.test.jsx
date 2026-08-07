@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Providers from '../pages/Providers';
@@ -454,5 +454,194 @@ describe('Providers page', () => {
     fireEvent.click(successAlert.querySelector('button'));
 
     expect(screen.queryByText('Connection test successful!')).not.toBeInTheDocument();
+  });
+
+  it('renders the ollama provider icon', async () => {
+    axios.get.mockResolvedValue({
+      data: { providers: [{ id: 3, name: 'Local Ollama', provider_type: 'ollama', is_active: true }] },
+    });
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getByText('🦙')).toBeInTheDocument();
+    });
+  });
+
+  it('renders the generic icon for an unrecognized provider type', async () => {
+    axios.get.mockResolvedValue({
+      data: { providers: [{ id: 4, name: 'Custom LLM', provider_type: 'custom', is_active: true }] },
+    });
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getByText('🔌')).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to an empty providers list when API response omits the field', async () => {
+    axios.get.mockResolvedValue({ data: {} });
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No AI providers configured')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when create provider fails without response error field', async () => {
+    axios.post.mockRejectedValue(new Error('boom'));
+
+    const user = userEvent.setup();
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '+ Add Provider' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add Provider' }));
+    await user.type(screen.getByPlaceholderText('My OpenAI Provider'), 'X');
+    await user.type(screen.getByPlaceholderText('sk-...'), 'sk-x');
+    fireEvent.click(screen.getByRole('button', { name: 'Add Provider' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to create provider')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when update provider fails without response error field', async () => {
+    axios.put.mockRejectedValue(new Error('boom'));
+
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(2);
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to update provider')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when delete provider fails without response error field', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    axios.delete.mockRejectedValue(new Error('boom'));
+
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(2);
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to delete provider')).toBeInTheDocument();
+    });
+
+    confirmSpy.mockRestore();
+  });
+
+  it('shows generic error when connection test throws without response error field', async () => {
+    axios.post.mockRejectedValue(new Error('boom'));
+
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Test' })).toHaveLength(2);
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connection test failed')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when sync to AILB fails without response error field', async () => {
+    axios.post.mockRejectedValue(new Error('boom'));
+
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sync to AILB' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sync to AILB' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to sync to AILB')).toBeInTheDocument();
+    });
+  });
+
+  it('opens edit form with default endpoint and priority when provider has neither set', async () => {
+    axios.get.mockResolvedValue({
+      data: { providers: [{ id: 5, name: 'Bare Provider', provider_type: 'openai', is_active: true }] },
+    });
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    expect(screen.getByText('Edit Provider')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('https://api.openai.com/v1')).toHaveValue('');
+    expect(screen.getByDisplayValue('1')).toBeInTheDocument();
+  });
+
+  it('updates provider type, endpoint URL, priority, and active toggle in the form', async () => {
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '+ Add Provider' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add Provider' }));
+
+    const typeSelect = screen.getByDisplayValue('OpenAI');
+    fireEvent.change(typeSelect, { target: { value: 'anthropic' } });
+    expect(typeSelect).toHaveValue('anthropic');
+
+    const endpointInput = screen.getByPlaceholderText('https://api.openai.com/v1');
+    fireEvent.change(endpointInput, { target: { value: 'https://custom.example.com' } });
+    expect(endpointInput).toHaveValue('https://custom.example.com');
+
+    const priorityInput = screen.getByDisplayValue('1');
+    fireEvent.change(priorityInput, { target: { value: '5' } });
+    expect(screen.getByDisplayValue('5')).toBeInTheDocument();
+
+    const activeCheckbox = screen.getByRole('checkbox');
+    expect(activeCheckbox).toBeChecked();
+    fireEvent.click(activeCheckbox);
+    expect(activeCheckbox).not.toBeChecked();
+  });
+
+  it('clears both success and error 3 seconds after a connection test', async () => {
+    axios.post.mockResolvedValue({ data: { success: true } });
+    render(<Providers />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Test' })).toHaveLength(2);
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[0]);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Connection test successful!')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(screen.queryByText('Connection test successful!')).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

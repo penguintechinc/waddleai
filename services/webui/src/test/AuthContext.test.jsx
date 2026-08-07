@@ -202,6 +202,49 @@ describe('AuthContext', () => {
     expect(loginResult).toEqual({ success: false, error: 'Invalid credentials' });
   });
 
+  it('login() falls back to "Login failed" when the error response has no message field', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false }); // initial verify
+
+    let loginResult;
+    function LoginTester() {
+      const { login, loading } = useAuth();
+      return (
+        <div>
+          <div data-testid="loading">{String(loading)}</div>
+          <button
+            data-testid="do-login"
+            onClick={async () => {
+              loginResult = await login('user', 'wrong');
+            }}
+          >
+            go
+          </button>
+        </div>
+      );
+    }
+
+    render(
+      <AuthProvider>
+        <LoginTester />
+      </AuthProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('loading')).toHaveTextContent('false');
+    });
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      json: async () => ({}),
+    });
+
+    await act(async () => {
+      screen.getByTestId('do-login').click();
+    });
+
+    expect(loginResult).toEqual({ success: false, error: 'Login failed' });
+  });
+
   it('login() returns success: false with Network error on fetch exception', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false }); // initial verify
 

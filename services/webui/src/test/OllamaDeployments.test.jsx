@@ -332,6 +332,117 @@ describe('OllamaDeployments', () => {
     });
   });
 
+  it('updates deployment type, GPU count, and auto-start toggle in create form', async () => {
+    render(<OllamaDeployments />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '+ New Deployment' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ New Deployment' }));
+
+    const typeSelect = screen.getByRole('combobox');
+    fireEvent.change(typeSelect, { target: { value: 'kubernetes' } });
+    expect(typeSelect).toHaveValue('kubernetes');
+
+    const gpuInput = screen.getByDisplayValue('1');
+    fireEvent.change(gpuInput, { target: { value: '4' } });
+    expect(screen.getByDisplayValue('4')).toBeInTheDocument();
+
+    const autoStartCheckbox = screen.getByRole('checkbox');
+    expect(autoStartCheckbox).toBeChecked();
+    fireEvent.click(autoStartCheckbox);
+    expect(autoStartCheckbox).not.toBeChecked();
+  });
+
+  it('falls back to an empty deployments list when API response omits the field', async () => {
+    axios.get.mockResolvedValue({ data: {} });
+    render(<OllamaDeployments />);
+    await waitFor(() => {
+      expect(screen.getByText('No Ollama deployments configured')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when create deployment fails without response error field', async () => {
+    axios.post.mockRejectedValue(new Error('boom'));
+
+    const user = userEvent.setup();
+    render(<OllamaDeployments />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '+ New Deployment' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New Deployment' }));
+    await user.type(screen.getByPlaceholderText('ollama-node-1'), 'x');
+    await user.type(screen.getByPlaceholderText('http://ollama-node-1:11434'), 'http://x:11434');
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to create deployment')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when delete deployment fails without response error field', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    axios.delete.mockRejectedValue(new Error('boom'));
+
+    render(<OllamaDeployments />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(2);
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to delete deployment')).toBeInTheDocument();
+    });
+
+    confirmSpy.mockRestore();
+  });
+
+  it('shows generic error when pull model fails without response error field', async () => {
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('llama3.2');
+    axios.post.mockRejectedValue(new Error('boom'));
+
+    render(<OllamaDeployments />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Pull Model' })).toHaveLength(2);
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Pull Model' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to pull model')).toBeInTheDocument();
+    });
+
+    promptSpy.mockRestore();
+  });
+
+  it('renders "latest" as fallback model tag when a model has no tag', async () => {
+    axios.get.mockResolvedValue({
+      data: {
+        deployments: [
+          {
+            id: 5,
+            name: 'tagless-node',
+            endpoint_url: 'http://tagless:11434',
+            deployment_type: 'docker',
+            status: 'running',
+            health_status: 'healthy',
+            gpu_config: { gpu_count: 1 },
+            models: [{ id: 9, model_name: 'phi3' }],
+          },
+        ],
+      },
+    });
+
+    render(<OllamaDeployments />);
+    await waitFor(() => {
+      expect(screen.getByText('phi3:latest')).toBeInTheDocument();
+    });
+  });
+
   it('shows "unknown" when health_status is absent', async () => {
     axios.get.mockResolvedValue({
       data: {

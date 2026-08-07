@@ -383,6 +383,28 @@ describe('Dashboard', () => {
     });
   });
 
+  it('renders the default activity icon for an unrecognized activity type', async () => {
+    const recentActivity = {
+      activity: [{ type: 'unknown_type', title: 'Mystery event', timestamp: new Date().toISOString() }],
+    };
+
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary') return Promise.resolve({ data: mockSummaryData });
+      if (url === '/api/v1/ailb/status') return Promise.resolve({ data: { providers: [] } });
+      if (url.startsWith('/api/v1/usage/recent')) return Promise.resolve({ data: recentActivity });
+    });
+
+    render(<Dashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Mystery event')).toBeInTheDocument();
+    });
+
+    const iconEl = document.querySelector('.activity-icon.info');
+    expect(iconEl).toBeInTheDocument();
+    expect(iconEl).toHaveTextContent('ℹ️');
+  });
+
   it('renders activity provider and token info in detail line', async () => {
     setupSuccessfulAxios();
     render(<Dashboard />);
@@ -392,5 +414,63 @@ describe('Dashboard', () => {
       expect(screen.getByText(/Provider: openai/)).toBeInTheDocument();
       expect(screen.getByText(/1,500 tokens/)).toBeInTheDocument();
     });
+  });
+
+  it('falls back to empty lists when providers/activity fields are absent from the API response', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary') return Promise.resolve({ data: mockSummaryData });
+      if (url === '/api/v1/ailb/status') return Promise.resolve({ data: {} });
+      if (url.startsWith('/api/v1/usage/recent')) return Promise.resolve({ data: {} });
+    });
+
+    render(<Dashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No recent activity')).toBeInTheDocument();
+      expect(screen.getByText('No providers configured')).toBeInTheDocument();
+    });
+  });
+
+  it('shows 0 fallback for total requests and tokens when API omits those fields', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary')
+        return Promise.resolve({ data: { total_cost: 0, active_keys: 0 } });
+      if (url === '/api/v1/ailb/status') return Promise.resolve({ data: { providers: [] } });
+      if (url.startsWith('/api/v1/usage/recent')) return Promise.resolve({ data: { activity: [] } });
+    });
+
+    render(<Dashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No providers configured')).toBeInTheDocument();
+    });
+
+    const requestsCard = screen.getByText('Total Requests').closest('.stat-card');
+    expect(requestsCard).toHaveTextContent('0');
+
+    const tokensCard = screen.getByText('Tokens Processed').closest('.stat-card');
+    expect(tokensCard).toHaveTextContent('0');
+  });
+
+  it('shows "unknown" health badge for a provider missing health_status', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/usage/summary') return Promise.resolve({ data: mockSummaryData });
+      if (url === '/api/v1/ailb/status')
+        return Promise.resolve({ data: { providers: [{ name: 'No Health Provider' }] } });
+      if (url.startsWith('/api/v1/usage/recent')) return Promise.resolve({ data: { activity: [] } });
+    });
+
+    render(<Dashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No Health Provider')).toBeInTheDocument();
+    });
+
+    const badge = screen
+      .getByText('No Health Provider')
+      .closest('.provider-item')
+      .querySelector('.health-badge');
+    expect(badge).toHaveClass('unknown');
+    expect(badge).toHaveTextContent('unknown');
   });
 });

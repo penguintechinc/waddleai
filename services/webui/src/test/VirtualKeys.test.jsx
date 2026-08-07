@@ -456,6 +456,193 @@ describe('VirtualKeys', () => {
     });
   });
 
+  it('updates allowed models, providers, rate limits, budget, and expiration fields in create form', async () => {
+    render(<VirtualKeys />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '+ Create New Key' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ Create New Key' }));
+
+    fireEvent.change(screen.getByPlaceholderText('gpt-4, claude-3-opus-20240229'), {
+      target: { value: 'gpt-4' },
+    });
+    expect(screen.getByPlaceholderText('gpt-4, claude-3-opus-20240229')).toHaveValue('gpt-4');
+
+    fireEvent.change(screen.getByPlaceholderText('openai, anthropic, ollama'), {
+      target: { value: 'openai' },
+    });
+    expect(screen.getByPlaceholderText('openai, anthropic, ollama')).toHaveValue('openai');
+
+    fireEvent.change(screen.getByDisplayValue('60'), { target: { value: '120' } });
+    expect(screen.getByDisplayValue('120')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('10000'), { target: { value: '20000' } });
+    expect(screen.getByDisplayValue('20000')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('100'), { target: { value: '250' } });
+    expect(screen.getByDisplayValue('250')).toBeInTheDocument();
+
+    const expiresInput = document.querySelector('input[type="datetime-local"]');
+    fireEvent.change(expiresInput, { target: { value: '2026-12-31T23:59' } });
+    expect(expiresInput).toHaveValue('2026-12-31T23:59');
+  });
+
+  it('dismisses success alert when close button clicked', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    axios.delete.mockResolvedValue({ data: {} });
+    render(<VirtualKeys />);
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('button[title="Revoke key"]').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(document.querySelectorAll('button[title="Revoke key"]')[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Key revoked successfully')).toBeInTheDocument();
+    });
+
+    const successAlert = screen.getByText('Key revoked successfully').closest('.alert');
+    fireEvent.click(successAlert.querySelector('button'));
+    expect(screen.queryByText('Key revoked successfully')).not.toBeInTheDocument();
+
+    confirmSpy.mockRestore();
+  });
+
+  it('copies key prefix to clipboard via the per-row copy button', async () => {
+    render(<VirtualKeys />);
+    await waitFor(() => {
+      expect(screen.getByText('Production Key')).toBeInTheDocument();
+    });
+
+    const copyButtons = document.querySelectorAll('button.copy-btn');
+    fireEvent.click(copyButtons[0]);
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('wk-prod-12345678');
+    });
+  });
+
+  it('renders empty key text when key_prefix is missing', async () => {
+    axios.get.mockResolvedValue({ data: { keys: [{ ...mockKeys[0], key_prefix: undefined }] } });
+    render(<VirtualKeys />);
+    await waitFor(() => {
+      expect(screen.getByText('Production Key')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.key-text')).toHaveTextContent('');
+  });
+
+  it('renders $0.00 budget fallback when budget_used/budget_limit are missing', async () => {
+    axios.get.mockResolvedValue({
+      data: { keys: [{ ...mockKeys[0], budget_used: undefined, budget_limit: undefined }] },
+    });
+    render(<VirtualKeys />);
+    await waitFor(() => {
+      expect(screen.getByText('$0.00 / $0.00')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when revoke fails without response error field', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    axios.delete.mockRejectedValue(new Error('boom'));
+
+    render(<VirtualKeys />);
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('button[title="Revoke key"]').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(document.querySelectorAll('button[title="Revoke key"]')[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to revoke key')).toBeInTheDocument();
+    });
+
+    confirmSpy.mockRestore();
+  });
+
+  it('shows generic error when rotate fails without response error field', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    axios.post.mockRejectedValue(new Error('boom'));
+
+    render(<VirtualKeys />);
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('button[title="Rotate key"]').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(document.querySelectorAll('button[title="Rotate key"]')[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to rotate key')).toBeInTheDocument();
+    });
+
+    confirmSpy.mockRestore();
+  });
+
+  it('submits create form with allowed models/providers and sends parsed array payload', async () => {
+    axios.post.mockResolvedValue({ data: { key: 'wk-full-payload' } });
+    axios.get
+      .mockResolvedValueOnce({ data: { keys: mockKeys } })
+      .mockResolvedValueOnce({ data: { keys: mockKeys } });
+
+    const user = userEvent.setup();
+    render(<VirtualKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '+ Create New Key' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ Create New Key' }));
+
+    await user.type(screen.getByPlaceholderText('Production API Key'), 'Full Payload Key');
+    fireEvent.change(screen.getByPlaceholderText('gpt-4, claude-3-opus-20240229'), {
+      target: { value: 'gpt-4, claude-3-opus' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('openai, anthropic, ollama'), {
+      target: { value: 'openai, anthropic' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Key' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Key Created Successfully')).toBeInTheDocument();
+    });
+
+    expect(axios.post).toHaveBeenCalledWith(
+      '/api/v1/keys',
+      expect.objectContaining({
+        allowed_models: ['gpt-4', 'claude-3-opus'],
+        allowed_providers: ['openai', 'anthropic'],
+      })
+    );
+  });
+
+  it('shows generic error when create key fails without response error field', async () => {
+    axios.post.mockRejectedValue(new Error('boom'));
+
+    const user = userEvent.setup();
+    render(<VirtualKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '+ Create New Key' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ Create New Key' }));
+    await user.type(screen.getByPlaceholderText('Production API Key'), 'fail-generic');
+    fireEvent.click(screen.getByRole('button', { name: 'Create Key' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to create virtual key')).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to an empty keys list when API response omits the field', async () => {
+    axios.get.mockResolvedValue({ data: {} });
+    render(<VirtualKeys />);
+    await waitFor(() => {
+      expect(screen.getByText('No virtual keys created yet')).toBeInTheDocument();
+    });
+  });
+
   it('handles clipboard copy failure gracefully', async () => {
     const newKeyValue = 'wk-copy-fail-test';
     axios.post.mockResolvedValue({ data: { key: newKeyValue } });
