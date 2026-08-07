@@ -346,7 +346,9 @@ class PromptSecurityScanner:
             prompt_sample = original_prompt[:1000] if original_prompt else ""
 
             # Generate request hash
-            request_hash = hashlib.md5((original_prompt + str(datetime.utcnow().timestamp())).encode()).hexdigest()
+            request_hash = hashlib.md5(
+                (original_prompt + str(datetime.utcnow().timestamp())).encode(), usedforsecurity=False
+            ).hexdigest()
 
             # Log to database
             self.db.security_logs.insert(
