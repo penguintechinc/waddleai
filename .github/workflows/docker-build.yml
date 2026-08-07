@@ -5,17 +5,19 @@ on:
     branches: [ main, 'v*' ]
     paths:
       - 'proxy/**'
-      - 'management/**'
       - 'services/**'
       - 'shared/**'
       - '.version'
       - '.github/workflows/docker-build.yml'
     tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    # release/** matters as much as main: feature/fix/chore branches merge into
+    # the release branch first, and that merge is auto-approved when "fully
+    # green". Without this, release-targeted PRs ran no tests and no builds at
+    # all, so the green gate passed on PRs that had never been built.
+    branches: [ main, 'release/**' ]
     paths:
       - 'proxy/**'
-      - 'management/**'
       - 'services/**'
       - 'shared/**'
       - '.version'
