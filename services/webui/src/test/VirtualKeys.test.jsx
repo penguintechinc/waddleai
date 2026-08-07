@@ -1,6 +1,6 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import VirtualKeys from '../pages/VirtualKeys';
 
 // Mock CSS import
@@ -38,15 +38,41 @@ const mockKeys = [
 ];
 
 describe('VirtualKeys', () => {
+  // jsdom exposes `navigator.clipboard` as a getter-only accessor, so
+  // Object.assign(navigator, { clipboard: ... }) throws. Redefine the
+  // property instead, and restore the original descriptor afterward so
+  // the stub doesn't leak into other test files.
+  const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
+    window.navigator,
+    'clipboard'
+  );
+
+  // `userEvent.setup()` installs its own navigator.clipboard stub
+  // (@testing-library/user-event/.../Clipboard.js attachClipboardStubToView),
+  // clobbering whatever mock was in place. Re-apply after every
+  // `userEvent.setup()` call in tests that assert on clipboard writes.
+  const mockClipboard = () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+      configurable: true,
+      writable: true,
+    });
+  };
+
   beforeEach(() => {
     vi.resetAllMocks();
     axios.get.mockResolvedValue({ data: { keys: mockKeys } });
-    // Mock clipboard API
-    Object.assign(navigator, {
-      clipboard: {
-        writeText: vi.fn().mockResolvedValue(undefined),
-      },
-    });
+    mockClipboard();
+  });
+
+  afterEach(() => {
+    if (originalClipboardDescriptor) {
+      Object.defineProperty(navigator, 'clipboard', originalClipboardDescriptor);
+    } else {
+      delete navigator.clipboard;
+    }
   });
 
   it('shows loading state initially', async () => {
@@ -198,6 +224,7 @@ describe('VirtualKeys', () => {
       .mockResolvedValueOnce({ data: { keys: mockKeys } });
 
     const user = userEvent.setup();
+    mockClipboard(); // re-apply: userEvent.setup() replaces navigator.clipboard
     render(<VirtualKeys />);
 
     await waitFor(() => {
@@ -430,8 +457,6 @@ describe('VirtualKeys', () => {
   });
 
   it('handles clipboard copy failure gracefully', async () => {
-    navigator.clipboard.writeText = vi.fn().mockRejectedValue(new Error('Clipboard denied'));
-
     const newKeyValue = 'wk-copy-fail-test';
     axios.post.mockResolvedValue({ data: { key: newKeyValue } });
     axios.get
@@ -439,6 +464,9 @@ describe('VirtualKeys', () => {
       .mockResolvedValueOnce({ data: { keys: mockKeys } });
 
     const user = userEvent.setup();
+    // userEvent.setup() replaces navigator.clipboard with its own stub, so
+    // the rejecting mock must be installed after setup(), not before.
+    navigator.clipboard.writeText = vi.fn().mockRejectedValue(new Error('Clipboard denied'));
     render(<VirtualKeys />);
 
     await waitFor(() => {
