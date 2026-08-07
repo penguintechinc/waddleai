@@ -75,6 +75,9 @@ export function AuthProvider({ children }) {
   );
 }
 
+// Context + companion hook pattern; splitting `useAuth` into its own file
+// would only hurt readability for no HMR benefit in this small context file.
+// eslint-disable-next-line react-refresh/only-export-components -- deliberate
 export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) {
