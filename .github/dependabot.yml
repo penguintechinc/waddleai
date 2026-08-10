@@ -49,9 +49,20 @@ updates:
     labels:
       - "dependencies"
       - "docker"
+    ignore:
+      # Hold the base image on the 3.13 line. The house standard is Python
+      # 3.13.x and CI runs 3.13, so a 3.14 image would put the container ahead
+      # of both and diverge from what the test job actually exercises.
+      # Patch and minor updates within 3.13 still come through normally.
+      # Remove this once the standard moves to 3.14.
+      - dependency-name: "python"
+        versions: [">=3.14"]
 
+  # Path is services/management, not management — the service moved during the
+  # Phase-1 consolidation. The old entry pointed at a directory that no longer
+  # exists, so Dockerfile updates for this service were silently never scanned.
   - package-ecosystem: "docker"
-    directory: "/management"
+    directory: "/services/management"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -63,3 +74,7 @@ updates:
     labels:
       - "dependencies"
       - "docker"
+    ignore:
+      # Same 3.13 hold as the proxy image above.
+      - dependency-name: "python"
+        versions: [">=3.14"]
