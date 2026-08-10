@@ -66,10 +66,10 @@ usage = requests.get("/analytics/usage",
 - **[Getting Started](getting-started/)** - Installation and setup
 - **[API Reference](api/)** - Complete API documentation
 - **[Integrations](integrations/)** - VS Code extension, OpenWebUI, and LLM provider setup
-- **[Administration](administration/)** - User and system management
 - **[Deployment](deployment/)** - Production deployment guides
-- **[Testing Setup](../TESTING_SETUP.md)** - Complete testing environment with OpenWebUI
-- **[Troubleshooting](troubleshooting/)** - Common issues and solutions
+- **[Local Development](DEVELOPMENT.md)** - Local dev environment setup and workflow
+- **[Testing Setup](TESTING_SETUP.md)** - Manual testing environment with OpenWebUI
+- **[Troubleshooting](DEVELOPMENT.md#troubleshooting)** - Common issues and solutions
 
 ## Roles and Permissions
 

@@ -6,10 +6,15 @@ This document describes all GitHub Actions workflows for WaddleAI and the servic
 
 WaddleAI is an AI proxy system with the following core services:
 
-| Service | Language | Purpose | Location |
-|---------|----------|---------|----------|
-| **Proxy** | Python 3.13 | AI request routing, rate limiting, caching | `/proxy` |
-| **Management** | Python 3.13 | Admin dashboard, user management, monitoring | `/management` |
+| Service | Language | Purpose | Location | Port |
+|---------|----------|---------|----------|------|
+| **Proxy** | Python 3.13 (Quart/hypercorn) | OpenAI-compatible request routing, rate limiting, caching | `proxy/` | 8080 |
+| **Management** | Python 3.13 (Quart/hypercorn) | Admin API, user management, monitoring | `services/management/` | 8001 |
+| **WebUI** | React/Vite | Operator/admin frontend | `services/webui/` | — |
+
+Runtime database access goes through `penguin-dal`; SQLAlchemy + Alembic
+(`services/management/alembic/`) are schema/migration only. Cache/session store is Valkey,
+not Redis (see `k8s/helm/waddleai/values.yaml`).
 
 ### Service Architecture
 
@@ -19,7 +24,7 @@ WaddleAI is an AI proxy system with the following core services:
 └──────────────────────┬──────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────┐
-│      Proxy Service (Port 8000)                  │
+│      Proxy Service (Port 8080)                  │
 │  - OpenAI-compatible API endpoints              │
 │  - Request routing and load balancing           │
 │  - Rate limiting and caching                    │
@@ -29,10 +34,10 @@ WaddleAI is an AI proxy system with the following core services:
         ┌──────────────┴──────────────┐
         │                             │
 ┌───────▼──────────┐      ┌──────────▼────────────┐
-│  Management UI   │      │  Backend Services    │
-│  (Port 8001)     │      │  - Database          │
-│                  │      │  - Redis Cache       │
-│  - Dashboard     │      │  - External APIs     │
+│  Management API  │      │  Backend Services    │
+│  (Port 8001)     │      │  - PostgreSQL        │
+│                  │      │  - Valkey Cache      │
+│  - WebUI backend │      │  - External LLM APIs │
 │  - Settings      │      │                      │
 │  - User Mgmt     │      │                      │
 └──────────────────┘      └──────────────────────┘
@@ -40,176 +45,137 @@ WaddleAI is an AI proxy system with the following core services:
 
 ## Workflow Files
 
+WaddleAI ships three workflows under `.github/workflows/`: `docker-build.yml`,
+`codeql.yml`, and `version-release.yml`. There is no website deploy workflow — no
+`deploy-cloudflare-pages.yml` exists and no `website/` directory exists in this repo.
+
 ### 1. **docker-build.yml**
 
 **Trigger Events:**
-- Push to `main`, `v1.x` branches
+- Push to `main` or `v*` branches
 - Push of version tags (`v*`)
-- Pull requests to `main`
-- Path-based: changes to `proxy/**`, `management/**`, `.version`, or workflow file itself
+- Pull requests targeting `main` **and** `release/**` (release-targeted PRs used to run no
+  tests or builds at all; this was fixed so the auto-merge green gate has something to
+  actually gate on)
+- Path-based: changes to `proxy/**`, `services/**`, `shared/**`, `.version`, or the
+  workflow file itself
 
-**Jobs:**
+**Jobs (in dependency order):**
 
 #### test
-- **Purpose**: Unit tests and security scanning
+- **Purpose**: Python unit tests and security scanning
 - **Matrix**: Python 3.13
-- **Steps**:
-  1. Checkout with full history
-  2. Generate epoch64 timestamp
-  3. Detect version file changes
-  4. Set up Python 3.13
-  5. Cache pip dependencies
-  6. Install dependencies (includes bandit)
-  7. Run pytest with coverage reporting
-  8. Run bandit security analysis
-  9. Upload coverage to Codecov
+- **Steps**: checkout → epoch64 timestamp → `.version` change detection → set up Python →
+  cache pip → install `requirements.txt` + `services/management/requirements.txt` +
+  `pytest`/`bandit` → `pytest tests/unit/ -v --cov=shared --cov-report=xml --cov-report=html`
+  → bandit (two passes: `-ll` non-blocking JSON report, `-lll` HIGH-severity gate over
+  `proxy services/management shared`) → upload coverage to Codecov
 
-**Security Features**:
-- Bandit security scanning for all Python code
-- Coverage reporting for test quality metrics
-- Codecov integration for continuous monitoring
+#### test-webui
+- **Purpose**: Lint, unit test, and build `services/webui` — added after the service went
+  unnoticed for a while with 19 lint errors and 17 failing tests because it was only ever
+  Docker-built, never linted/tested in CI
+- **Steps**: checkout → set up Node.js 24 → `npm ci` → `npm run lint` → `npm test`
+  (vitest with `--coverage`, enforces the 90% thresholds in `vitest.config.js`) → `npm run build`
 
-#### build-and-push
+#### build-platform
 - **Purpose**: Build multi-architecture Docker images and push to registry
-- **Needs**: `test` job
-- **Matrix**: `proxy`, `management` services
-- **Platforms**: linux/amd64, linux/arm64
-- **Steps**:
-  1. Checkout with full history
-  2. Generate epoch64 timestamp
-  3. Detect version file changes
-  4. Set up QEMU for multi-arch builds
-  5. Set up Docker Buildx
-  6. Login to GHCR if not a PR
-  7. Extract metadata with conditional tagging
-  8. Build and push Docker images
-  9. Run Trivy vulnerability scan
-  10. Upload scan results to GitHub Security tab
+- **Needs**: `test`
+- **Matrix**: `platform: [linux/amd64, linux/arm64]` × `service: [proxy, management]`, plus
+  an explicit `webui` include
+- **Per-service build context** (not uniform — `management` moved into `services/` during
+  the Phase-1 consolidation and needs the repo root as build context to `COPY` `shared/`):
+  - `proxy`: context `.`/`proxy` default, `./proxy/Dockerfile`
+  - `management`: context `.` (repo root), `./services/management/Dockerfile`
+  - `webui`: context `./services/webui`, `./services/webui/Dockerfile`
+- **Steps**: checkout → epoch64 timestamp → `.version` change detection → QEMU → Buildx →
+  registry login (skipped on PR) → compute per-arch tags → build and push (skipped on PR)
 
-**Image Tagging Logic**:
+**Image Tagging Logic** (per architecture, then merged into a manifest — see
+`merge-manifests` below):
 
-| Scenario | Main Branch | Other Branches |
-|----------|------------|-----------------|
-| Regular build (no `.version` change) | `beta-<epoch64>` | `alpha-<epoch64>` |
-| Version release (`.version` changed) | `vX.X.X-beta` | `vX.X.X-alpha` |
-| Tagged release | `vX.X.X` + `latest` | N/A |
+| Scenario | On a `v*` branch | On `main` | Other branches |
+|----------|-------------------|-----------|-----------------|
+| `.version` unchanged | `beta-<epoch64>-<arch>` | `gamma-<epoch64>-<arch>` | `alpha-<epoch64>-<arch>` |
+| `.version` changed | `<semver>-<arch>-beta` | `<semver>-<arch>-gamma` | — |
+| Any push event | `ci-<arch>-<sha>` (long SHA) | | |
 
-**Artifact Handling**:
-- Container images automatically tagged based on branch and version status
-- GitHub Artifacts: Trivy vulnerability scan results (SARIF format)
+#### merge-manifests
+- **Purpose**: Combine the per-arch images from `build-platform` into a single
+  multi-arch manifest per tag
+- **Needs**: `build-platform`
 
 #### security-scan
-- **Purpose**: Run Trivy vulnerability scanner on built images
-- **Needs**: `build-and-push` job
-- **Matrix**: `proxy`, `management` services
-- **Conditions**: Skipped on PRs
-- **Steps**:
-  1. Run Trivy vulnerability scanner on image
-  2. Upload results to GitHub Security tab
+- **Purpose**: Trivy vulnerability scan on the built images
+- **Needs**: `merge-manifests`
+- **Matrix**: `service: [proxy, management, webui]`
+- **Conditions**: Trivy run + SARIF upload both skipped on PRs
+- Trivy pinned to `v0.69.3`
 
 #### integration-test
-- **Purpose**: Test services in containerized environment
-- **Needs**: `build-and-push` job
-- **Conditions**: Skipped on PRs
-- **Services**:
-  - PostgreSQL 15-Alpine (test database)
-- **Steps**:
-  1. Checkout code
-  2. Create docker-compose override for testing
-  3. Start services with docker-compose
-  4. Test Proxy health endpoints
-  5. Test Management health endpoints
-  6. Test OpenAI-compatible API endpoint (401 expected without auth)
-  7. Cleanup on exit
+- **Purpose**: Smoke-check the built images against a real Postgres + Valkey via an
+  ephemeral, CI-generated `docker-compose.test.yml` (not a committed file, and not the
+  local-dev workflow — see `docs/PRE_COMMIT.md`)
+- **Needs**: `merge-manifests`
+- **Conditions**: Skipped on PRs; `continue-on-error: true`
+- **Steps**: log in to GHCR → write `docker-compose.test.yml` → `docker compose up -d` →
+  curl proxy/management health endpoints → curl the chat-completions endpoint expecting
+  `401` without auth → `docker compose down -v` (always)
 
 #### release
-- **Purpose**: Create GitHub release on version tag
-- **Needs**: `test`, `build-and-push`, `security-scan`, `integration-test`
+- **Purpose**: Create a GitHub release on a version tag
+- **Needs**: `test`, `security-scan`, `integration-test`
 - **Conditions**: Only on tags matching `refs/tags/v*`
-- **Steps**:
-  1. Checkout with full history
-  2. Generate changelog from git log
-  3. Create GitHub release with changelog
+- **Steps**: checkout with full history → generate changelog from `git log` → create
+  GitHub release with the changelog
 
 #### cleanup
-- **Purpose**: Remove untagged images from registry
-- **Needs**: `test`, `build-and-push`, `security-scan`, `integration-test`
+- **Purpose**: Remove untagged images from GHCR
+- **Needs**: `test`, `security-scan`, `integration-test`
 - **Conditions**: Always runs (even on failures)
-- **Steps**:
-  1. Delete untagged images from GHCR to save storage
 
 ---
 
-### 2. **version-release.yml**
+### 2. **version-release.yml** (`name: Create Release on Version Change`)
 
 **Trigger Events:**
 - Push to `main` branch
 - Path-based: changes to `.version` file only
 
-**Purpose**: Automatically create GitHub pre-releases when `.version` file is updated
+**Purpose**: Automatically create a GitHub pre-release when `.version` changes.
 
-**Jobs:**
+**Job: create-release**
+- Reads `.version`, extracts the semver (`Major.Minor.Patch`, stripping the trailing
+  epoch64 build component)
+- Skips if the version is the default `0.0.0`, or if a release with that tag already
+  exists (checked via `gh release view`)
+- Generates release notes (semver, full version string, commit SHA, branch) and creates
+  the pre-release via `gh release create ... --prerelease`
 
-#### create-release
-- **Purpose**: Parse version file and create pre-release
-- **Permissions**: `contents: write`
-- **Steps**:
-  1. Checkout with depth 2
-  2. Check if `.version` file exists
-     - Creates with `0.0.0` if missing
-     - Extracts semantic version (first 3 parts)
-     - Parses full version string
-  3. Check if release already exists
-     - Skips if release with same version already exists
-     - Prevents duplicate releases
-  4. Generate release notes with version details
-  5. Create pre-release via `gh release create`
-  6. Report results (skip if default or exists)
-
-**Version File Format**:
-- Plain text file containing semantic version
-- Example: `1.2.3`
-- Whitespace is trimmed automatically
-
-**Release Notes Include**:
-- Semantic version (vX.X.X)
-- Full version string
-- Commit SHA reference
-- Branch name
-- Link to commit history since previous release
+**Version File Format**: plain text, `Major.Minor.Patch.epoch64build` (e.g. current
+`.version` is `v0.1.0.1775747698`); whitespace trimmed automatically.
 
 ---
 
-### 3. **deploy-cloudflare-pages.yml**
+### 3. **codeql.yml**
 
 **Trigger Events:**
-- Push to `main`, `v1.x` branches
-- Pull requests to `main`
-- Path-based: changes to `website/**`, `.version`, or workflow file
+- Push to `main` or `release/**`
+- Pull requests targeting `main` or `release/**`
+- Weekly schedule (`0 8 * * 1`) so advisories published after a merge still surface
 
-**Purpose**: Build and deploy website to Cloudflare Pages
+**Purpose**: Supplies the code-scanning results the org ruleset's `require_code_scanning`
+rule expects. `docker-build.yml`'s own Trivy SARIF upload lives in `security-scan`, which
+is gated on `github.event_name != 'pull_request'` and therefore never runs on a PR — without
+this workflow, PRs into `main`/`release/**` sat at "Waiting for Code Scanning results"
+forever.
 
-**Jobs:**
-
-#### build-and-deploy
-- **Purpose**: Build and deploy website
-- **Steps**:
-  1. Checkout code
-  2. Setup Node.js 18.17.0
-  3. Install dependencies via `npm ci`
-  4. Run npm audit security check (non-blocking)
-  5. Build website with `npm run build`
-  6. Deploy to Cloudflare Pages
-  7. Post deployment preview URL to PR comments
-
-**Security Features**:
-- npm audit for dependency vulnerability scanning
-- Audit level set to moderate (allows low severity issues)
-- Non-blocking to allow deployment to proceed
-
-**PR Integration**:
-- Posts deployment preview URL as comment
-- Provides real-time feedback on website changes
+**Matrix**: `python` (build-mode: none), `javascript-typescript` (build-mode: none),
+`actions` (build-mode: none). Go is intentionally excluded for now — it's a compiled
+language needing autobuild verification across two independent Go modules
+(`shared/go_libs`, `services/penguincode/shared/go_libs`), and Go is being phased out in
+favor of Rust per the language standard, so the existing `.go` files are library code
+rather than a shipped service.
 
 ---
 
@@ -219,72 +185,48 @@ WaddleAI is an AI proxy system with the following core services:
 
 **Location**: Repository root (`.version`)
 
-**Format**: Semantic versioning
-```
-MAJOR.MINOR.PATCH
-1.2.3
-```
+**Format**: `Major.Minor.Patch.epoch64build` — e.g. `v0.1.0.1775747698`
 
 **Usage**:
-- Edit `.version` file to trigger version-release workflow
-- Commit with message like: `Release v1.2.3`
-- Both workflows (docker-build and version-release) detect changes
-- Images are automatically tagged with version info
+- Edit `.version` to trigger the `version-release.yml` pre-release workflow
+- `docker-build.yml` also detects `.version` changes and switches its image tags from the
+  `<env>-<epoch64>-<arch>` scheme to the `<semver>-<arch>-<env>` scheme (see Image Tagging
+  Logic above)
+- Only increment Major/Minor/Patch once the current version has a published tag/release —
+  otherwise update the build/epoch component only (see the `versioning` skill)
 
-**Detection Logic**:
+**Detection Logic** (used by both workflows):
 ```bash
-# Check if .version was changed in latest commit
 git diff --name-only HEAD^ HEAD | grep -q "^.version$"
 ```
-
-### Epoch64 Timestamp
-
-**Purpose**: Unique identifier for non-version builds
-
-**Format**: Unix timestamp in seconds since epoch
-
-**Usage**:
-```
-# Regular builds on non-main branches
-alpha-<epoch64>        # Feature branches
-beta-<epoch64>         # Main branch without version change
-
-# Version release builds
-v1.2.3-alpha          # Feature branches with version change
-v1.2.3-beta           # Main branch with version change
-```
-
-**Example**: `beta-1702312159` = built at 2023-12-11 14:09:19 UTC
 
 ---
 
 ## Security Scanning
 
 ### bandit (Python)
-- **Location**: `proxy/`, `management/`, `shared/` directories
-- **Severity Level**: `-ll` (low and above)
-- **Format**: JSON output
-- **Purpose**: Detect security issues in Python code
-- **Status**: Non-blocking (uses `|| true` to allow failures)
-
-### gosec (Go)
-- **Note**: Currently no Go services in WaddleAI
-- **When to add**: If Go-based services are introduced
-- **Configuration**: Severity high, confidence medium
-- **Location**: Service-specific workflow
+- **Location**: `proxy/`, `services/management/`, `shared/`
+- **Two passes in CI** (`test` job): `-ll` (low+) writes a non-blocking JSON report;
+  `-lll` (HIGH only) gates the build
+- Locally: `make test-security` runs `bandit -r . -x ./tests,./venv,./.git --quiet`
+  (non-blocking, repo-wide) — narrower and stricter than CI; match CI's exact invocation
+  when you need to reproduce a CI failure locally
 
 ### npm audit
-- **Location**: `website/` directory
-- **Level**: Moderate
-- **Purpose**: Detect dependency vulnerabilities
-- **Status**: Non-blocking (allows deployment to proceed)
+- Run per `package.json` found in the repo (`make test-security`), non-blocking
+- `services/webui` additionally runs `npm run lint` and `npm test` (coverage-gated) in
+  the dedicated `test-webui` CI job, not as a security scan
 
 ### Trivy (Container Scanning)
-- **Purpose**: Scan built Docker images for vulnerabilities
-- **Format**: SARIF (GitHub Security compatible)
-- **Triggers**: `build-and-push` job
-- **Upload**: Automatic to GitHub Security tab
-- **Conditions**: Skipped on PRs
+- **Purpose**: Scan the merged multi-arch images for vulnerabilities
+- **Format**: SARIF, uploaded to the GitHub Security tab
+- **Version pinned**: `v0.69.3`
+- **Conditions**: Skipped on PRs (see `codeql.yml` above for why PRs still get scanning
+  results)
+
+### CodeQL
+- Runs on every push/PR to `main`/`release/**` plus a weekly schedule
+- Languages: python, javascript-typescript, actions (see `codeql.yml` section above)
 
 ---
 
@@ -293,30 +235,24 @@ v1.2.3-beta           # Main branch with version change
 ### Updating Workflows
 
 1. **Path Filters**: Always include `.version` and `.github/workflows/*.yml`
-2. **Checkout Depth**: Use `fetch-depth: 0` for version detection
+2. **Checkout Depth**: Use `fetch-depth: 0` where version/tag history detection is needed
 3. **Epoch64**: Generate in every build job (stateless timestamp)
-4. **Version Detection**: Check for `.version` changes in every main build
-5. **Conditional Tags**: Use enable conditions for branch-specific tags
+4. **Version Detection**: Check for `.version` changes in every relevant job
+5. **Conditional Tags**: Use `enable=` conditions for branch/version-specific tags
 6. **Security Scanning**: Always include language-specific security tools
-
-### Creating New Workflows
-
-1. **Use matrix strategy** for multi-service builds
-2. **Add path filters** to reduce unnecessary runs
-3. **Include epoch64 timestamp** generation
-4. **Add version file detection**
-5. **Use conditional tags** with semver and epoch64
-6. **Add security scanning** appropriate to language
-7. **Document in this file** with service details
+7. **PR triggers**: Remember `release/**` branches need the same triggers as `main` —
+   that gap already caused release-targeted PRs to merge with a green gate that had
+   nothing behind it
 
 ### Version Release Process
 
-1. Update `.version` file with new version number
+1. Update `.version` file with the new version number
 2. Commit: `git add .version && git commit -m "Release vX.X.X"`
-3. Push to main: `git push`
-4. docker-build workflow tags images automatically
-5. version-release workflow creates GitHub pre-release
-6. Optionally create GitHub release manually for final release
+3. Push to `main` (only via an approved release → main PR, never directly — see
+   `.claude/rules` `devops.md` Branch & Release Strategy)
+4. `docker-build.yml` tags images with the semver-based scheme automatically
+5. `version-release.yml` creates a GitHub pre-release
+6. Promote to a final GitHub release manually once validated
 
 ---
 
@@ -324,21 +260,21 @@ v1.2.3-beta           # Main branch with version change
 
 ### Required Secrets
 
-- `GITHUB_TOKEN`: Provided by GitHub Actions (permissions: contents: write for releases)
+- `GITHUB_TOKEN`: Provided by GitHub Actions (`contents: write` for releases,
+  `packages: write` for image push/cleanup, `security-events: write` for SARIF upload)
 
 ### Optional Secrets
 
-- `CODECOV_TOKEN`: For Codecov integration (if using Codecov)
-- `CLOUDFLARE_API_TOKEN`: For Cloudflare Pages deployment
-- `CLOUDFLARE_ACCOUNT_ID`: For Cloudflare Pages deployment
+- `CODECOV_TOKEN`: For Codecov integration, if enabled for this repo
 
 ### Container Registry
 
-- **Registry**: GitHub Container Registry (ghcr.io)
+- **Registry**: GitHub Container Registry (`ghcr.io`)
 - **Image Prefix**: `ghcr.io/penguintechinc/waddleai`
 - **Images**:
   - `ghcr.io/penguintechinc/waddleai/proxy`
   - `ghcr.io/penguintechinc/waddleai/management`
+  - `ghcr.io/penguintechinc/waddleai/webui`
 
 ---
 
@@ -347,41 +283,41 @@ v1.2.3-beta           # Main branch with version change
 ### Workflow Not Triggering
 
 1. **Check path filters**: Ensure modified files match `paths:` configuration
-2. **Check branches**: Ensure pushing to configured branches
-3. **Verify permissions**: Token must have `contents: write`
+2. **Check branches**: Ensure pushing to/PR-targeting a configured branch (`main`,
+   `v*`, or `release/**` depending on the workflow)
+3. **Verify permissions**: Token must have the permissions the job declares
 4. **Check workflow file**: Syntax errors prevent execution
 
 ### Build Failures
 
-1. **Python errors**: Check bandit output for security issues
-2. **Docker build errors**: Check Dockerfile syntax and dependencies
-3. **Integration test failures**: Check docker-compose configuration
-4. **Registry login errors**: Verify GITHUB_TOKEN permissions
+1. **Python errors**: Check the `test` job's bandit/pytest output
+2. **Web UI errors**: Check the `test-webui` job's ESLint/vitest output — this job exists
+   specifically because these failures used to go unnoticed
+3. **Docker build errors**: Check the Dockerfile and the per-service build context/
+   dockerfile pairing in `build-platform`'s matrix `include` (management's context is the
+   repo root, not `services/management/`)
+4. **Integration test failures**: Check the generated `docker-compose.test.yml` step's
+   output in the `integration-test` job log — the file itself is not committed
+5. **Registry login errors**: Verify `GITHUB_TOKEN` permissions
 
 ### Version Not Detected
 
-1. **Fetch depth**: Ensure `fetch-depth: 0` on checkout
-2. **File format**: `.version` should contain only version number (no newlines)
-3. **Git history**: First commit after creating `.version` won't detect change
-
-### Images Not Tagged Correctly
-
-1. **Epoch64 generation**: Verify timestamp step completed
-2. **Version detection**: Check version file parsing output
-3. **Conditional logic**: Review `enable=` conditions for branch/change detection
-4. **Registry login**: Verify login step succeeded before push
+1. **Fetch depth**: Ensure `fetch-depth: 0` (or `2`) on checkout, as required by the job
+2. **File format**: `.version` should contain only the version string
+3. **Git history**: The first commit after creating `.version` won't detect a change
+   (there's no prior commit to diff against)
 
 ---
 
 ## Related Documentation
 
-- [WaddleAI Architecture](NETWORK-ARCHITECTURE.md)
+- [WaddleAI Network Architecture](../NETWORK-ARCHITECTURE.md)
 - [Development Standards](STANDARDS.md)
-- [License Integration](licensing/license-server-integration.md)
-- [Project Template CI/CD](../project-template/.github/workflows/)
+- [Testing Guide](TESTING.md)
+- [Pre-Commit Checklist](PRE_COMMIT.md)
 
 ---
 
-**Last Updated**: 2025-12-11
-**WaddleAI Version**: 0.0.0-beta
-**Services**: Proxy (Python), Management (Python)
+**Last Updated**: 2026-08-10
+**WaddleAI Version**: v0.1.0 (see `.version` for the full build string)
+**Services**: Proxy, Management (Python/Quart), WebUI (React)

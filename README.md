@@ -19,7 +19,7 @@ An empowering, open-source AI infrastructure suite for developers and teams who 
  ╚══╝╚══╝ ╚═╝  ╚═╝╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝
 ```
 
-**For developers and teams**: Run cutting-edge AI assistance on your own hardware, with your data staying local, using open-source models like Llama and Mistral. No expensive subscriptions. No vendor lock-in. Full control.
+**For developers and teams**: Run cutting-edge AI assistance on your own hardware, with your data staying local, using open-source models like Llama and Mistral, or route to commercial providers when you need them. No expensive subscriptions. No vendor lock-in. Full control.
 
 ---
 
@@ -27,9 +27,9 @@ An empowering, open-source AI infrastructure suite for developers and teams who 
 
 WaddleAI is built on the principle that powerful AI capabilities should be accessible to everyone, not just those who can afford Claude Max or GPT-4 Pro subscriptions. We use:
 
-- **Open-source models** (Ollama, Llama 3.2, Mistral, CodeLlama)
+- **Open-source models** (Ollama, llama.cpp, Llama 3.2, Mistral, CodeLlama)
 - **Open embeddings** (Nomic, open-source alternatives to proprietary APIs)
-- **Self-hosted infrastructure** (Docker, Kubernetes — your servers, your data)
+- **Self-hosted infrastructure** (Kubernetes — your servers, your data)
 - **Permissive licensing** (AGPL with commercial exception)
 
 While our models may not match Claude's capability, WaddleAI empowers teams to run powerful AI locally with full infrastructure control.
@@ -43,17 +43,17 @@ This repo contains the complete WaddleAI ecosystem:
 ### 1. **WaddleAI Platform** — Intelligent AI Gateway & Management
 **For**: Platform engineers, DevOps teams, enterprise AI infrastructure
 
-Enterprise-grade management platform that orchestrates AI provider connections (both open-source and commercial), Ollama model deployments, and intelligent routing through MarchProxy's AI Load Balancer (AILB).
+Enterprise-grade platform that owns the full data plane itself: a Quart-based proxy exposes OpenAI-compatible (`/v1/chat/completions`) and Anthropic-compatible (`/v1/messages`) endpoints and routes them across providers, while a separate Quart management API handles provider config, quotas, and usage analytics.
 
 **Key Features**:
-- 🔌 **Multi-provider support**: OpenAI, Anthropic, Gemini, AWS Bedrock, Azure, Cohere, local Ollama
-- 🔄 **Auto-sync to AILB**: Automatic route creation with rate limits and quotas
-- 🚀 **Ollama orchestration**: Docker, Kubernetes, external instances
-- 📊 **Usage tracking**: LiteLLM-style token counting and cost analytics
+- 🔌 **Multi-provider support**: OpenAI, Anthropic, Google Gemini, xAI, AWS Bedrock, local Ollama, self-hosted llama.cpp
+- 🚀 **GPU inference fleet**: Ollama and llama.cpp both deploy as Kubernetes DaemonSets across GPU nodes; the llama.cpp fleet shares one RWX PVC as a model cache across every `llama-server` instance
+- 🧠 **Memory scopes**: personal vs. organizational memory, enforced at the API layer
+- 📊 **Usage tracking**: token counting and cost analytics, with OpenTelemetry `gen_ai.*` span attributes emitted per request for tracing
 - 💰 **Budget enforcement**: Daily/monthly quotas per user, team, or API key
 - 🔑 **Virtual key management**: Granular permissions and expiration
 
-**Quick Links**: [Platform Docs](docs/DEVELOPMENT.md) | [Architecture](docs/ARCHITECTURE.md) | [API Reference](docs/api/) | [Deployment](docs/DEPLOYMENT.md)
+**Quick Links**: [Platform Docs](docs/DEVELOPMENT.md) | [Architecture](docs/docs-site/docs/architecture.md) | [API Reference](docs/api/openai-compatible.md) | [Kubernetes Deployment](DEPLOY_K8S.md)
 
 ---
 
@@ -108,26 +108,26 @@ Everything runs locally — your code never leaves your machine. Use open-source
 
 **Best for**: Teams, production deployments, need provider routing/quotas/usage tracking
 
+Kubernetes via Helm is the only supported deployment path — Docker Compose is deprecated for every environment.
+
 ```bash
 # Clone and setup
 git clone https://github.com/penguintechinc/waddleai.git
 cd waddleai
 
-# Create environment
-cat > .env << EOF
-POSTGRES_PASSWORD=$(openssl rand -hex 16)
-JWT_SECRET=$(openssl rand -hex 32)
-FLASK_SECRET_KEY=$(openssl rand -hex 32)
-MARCHPROXY_AILB_HOST=localhost
-MARCHPROXY_AILB_GRPC_PORT=50051
-MARCHPROXY_AILB_HTTP_PORT=8080
-WEBHOOK_SECRET=$(openssl rand -hex 16)
-EOF
+# Create the secrets referenced by k8s/helm/waddleai/values.yaml
+kubectl create namespace waddleai
+kubectl create secret generic waddleai-secrets -n waddleai \
+  --from-literal=postgres-password="$(openssl rand -hex 16)" \
+  --from-literal=jwt-secret="$(openssl rand -hex 32)"
 
-# Start Platform + Assistant
-docker compose up -d
+# Install the chart (see DEPLOY_K8S.md for full prerequisites)
+helm install waddleai k8s/helm/waddleai \
+  --namespace waddleai \
+  --values k8s/helm/waddleai/values-beta.yaml
 
 # Check health
+kubectl port-forward -n waddleai svc/waddleai-management 8001:8001 &
 curl http://localhost:8001/healthz
 
 # WaddleAI Assistant now connects to Platform for advanced features
@@ -153,10 +153,10 @@ The Assistant automatically detects the Platform and enables:
 ### WaddleAI Documentation
 - **[Installation & Development](docs/DEVELOPMENT.md)** — Local setup, database config, running services
 - **[Testing & Validation](docs/TESTING.md)** — Unit tests, integration tests, smoke tests
-- **[API Reference](docs/api/README.md)** — Complete REST API documentation
-- **[Deployment Guide](docs/DEPLOYMENT.md)** — Production deployment on Kubernetes
+- **[Architecture](docs/docs-site/docs/architecture.md)** — Data plane, control plane, and inference fleet design
+- **[API Reference](docs/api/openai-compatible.md)** — OpenAI-compatible and Anthropic-compatible endpoint docs
+- **[Kubernetes Deployment](DEPLOY_K8S.md)** — Helm-based deployment, secrets, and post-deploy configuration
 - **[Standards & Guidelines](docs/STANDARDS.md)** — Code standards, architecture patterns
-- **[K8s Deployment](docs/k8s-deployment.md)** — Kubernetes setup and configuration
 
 ### Penguin Code Documentation
 - **[Usage Guide](docs/penguincode/USAGE.md)** — Installation, native client, server mode, VS Code
@@ -178,29 +178,30 @@ The Assistant automatically detects the Platform and enables:
 ┌────────────────────────────────────────────────────────┐
 │          WaddleAI Unified Platform (This Repo)         │
 └────────────────────────────────────────────────────────┘
-   │                          │                       │
-   ▼                          ▼                       ▼
-┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│  WaddleAI    │      │  WaddleAI    │      │  MarchProxy  │
-│  Platform    │◄────►│  Assistant   │      │  AILB        │
-│              │      │              │      │              │
-│• Management  │      │• Multi-agent │      │• High-perf   │
-│  API         │      │  system      │      │  gateway     │
-│• Provider    │      │• Ollama      │      │• Route sync  │
-│  mgmt        │      │  integration │      │• Rate limits │
-│• Usage       │      │• RAG + mem0  │      │• Webhooks    │
-│  tracking    │      │• CLI/VS Code │      │              │
-│• Quotas      │      │  extension   │      │              │
-└──────────────┘      └──────────────┘      └──────────────┘
-        │                    │                       │
-        │ gRPC Sync         │ Integrated CLI       │ HTTP/gRPC
-        │                    │ Optional Platform    │
-        ▼                    ▼                       ▼
+   │                          │
+   ▼                          ▼
+┌──────────────┐      ┌──────────────┐
+│  WaddleAI    │      │  WaddleAI    │
+│  Platform    │◄────►│  Assistant   │
+│              │      │              │
+│• Proxy: data │      │• Multi-agent │
+│  plane, 8080 │      │  system      │
+│• Management  │      │• Ollama      │
+│  API, 8001   │      │  integration │
+│• Usage       │      │• RAG + mem0  │
+│  tracking    │      │• CLI/VS Code │
+│• Quotas      │      │  extension   │
+└──────────────┘      └──────────────┘
+        │                    │
+        │ Shared DB/cache   │ Integrated CLI
+        │                    │ Optional Platform
+        ▼                    ▼
 ┌────────────────────────────────────────────────────────┐
 │           Your AI Infrastructure                       │
-├─ Local Ollama instances (Llama 3.2, Mistral, etc.)    │
+├─ Ollama + llama.cpp DaemonSets (Llama 3.2, Mistral...) │
 ├─ Kubernetes clusters (model serving)                   │
-├─ Commercial providers (OpenAI, Anthropic, Gemini)      │
+├─ Commercial providers (OpenAI, Anthropic, Gemini, xAI, │
+│  AWS Bedrock)                                           │
 └─ Custom LLM deployments (vLLM, LM Studio, etc.)       │
 ```
 
@@ -209,15 +210,6 @@ The Assistant automatically detects the Platform and enables:
 ---
 
 ## 🔌 Integration
-
-### WaddleAI + MarchProxy AILB
-
-WaddleAI manages configuration, quotas, and analytics for **MarchProxy AILB**, the high-performance AI load balancer:
-
-- **Route Sync**: Automatic provider/model route creation
-- **Rate Limits**: Virtual key limits enforced at gateway
-- **Usage Webhooks**: Real-time usage events for tracking
-- **Health Checks**: Continuous provider monitoring
 
 ### Penguin Code + Ollama
 
@@ -232,27 +224,34 @@ Penguin Code runs agents on **Ollama** or connects to remote LLM servers:
 ## 🛠️ Development
 
 ### Prerequisites
-- Docker & Docker Compose
-- Python 3.13+ (for WaddleAI)
-- Go 1.24+ (for MarchProxy integration)
-- Ollama (for Penguin Code)
-- PostgreSQL 15+ (for WaddleAI database)
+- Kubernetes cluster + Helm v4 (deployment)
+- Python 3.13+ (for WaddleAI proxy and management)
+- Node.js 24+ (for the WebUI)
+- Ollama and/or llama.cpp (for local/self-hosted inference)
+- PostgreSQL 17 with pgvector (for WaddleAI database)
 
-### Running Both Services Locally
+### Running Services Locally
 
 ```bash
-# Terminal 1: Start WaddleAI
+# Terminal 1: Start the proxy (data plane, port 8080)
+cd proxy
+python3.13 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080
+
+# Terminal 2: Start the management API (control plane, port 8001)
 cd services/management
 python3.13 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python wsgi.py
+hypercorn asgi:app --bind 0.0.0.0:8001
 
-# Terminal 2: Start Penguin Code
+# Terminal 3: Start Penguin Code
 cd services/penguincode
 ./penguincode chat
 
-# Terminal 3: Start Ollama
+# Terminal 4: Start Ollama
 ollama serve
 ```
 
@@ -264,11 +263,11 @@ See [WaddleAI Development Guide](docs/DEVELOPMENT.md) and [Penguin Code Usage Gu
 
 | Component | Type | Language | Status |
 |-----------|------|----------|--------|
-| WaddleAI Management | Service | Python (Flask) | Production Ready |
 | WaddleAI Proxy | Service | Python (Quart) | Production Ready |
+| WaddleAI Management | Service | Python (Quart) | Production Ready |
+| WaddleAI WebUI | Service | React 18 / Vite (Node 24) | Production Ready |
 | Penguin Code CLI | CLI Tool | Python | Production Ready |
 | Penguin Code VS Code Ext | Extension | TypeScript | Production Ready |
-| MarchProxy AILB | Separate Repo | Go | Production Ready |
 
 ---
 
@@ -276,14 +275,14 @@ See [WaddleAI Development Guide](docs/DEVELOPMENT.md) and [Penguin Code Usage Gu
 
 Both services follow enterprise security standards:
 
-- **Authentication**: Flask-Security-Too (WaddleAI), JWT (Penguin Code)
+- **Authentication**: `penguin-aaa` (OIDC/JWT) for WaddleAI, JWT for Penguin Code
 - **Encryption**: TLS 1.2+, Fernet-encrypted credentials
 - **Input Validation**: Server-side validation on all inputs
 - **Audit Logging**: Comprehensive security event logging
 - **Rate Limiting**: Request throttling and quota enforcement
-- **Supply Chain**: SHA256 digest pinning for all dependencies
+- **Supply Chain**: SHA256 digest pinning for all dependencies; CodeQL runs on every PR and weekly on a schedule
 
-See [WaddleAI Security Guide](docs/SECURITY.md) and [Penguin Code Security Guide](docs/penguincode/SECURITY.md).
+See [WaddleAI Security Recommendations](docs/docs-site/docs/administration/ai-security-recommendations.md) and [Penguin Code Security Guide](docs/penguincode/SECURITY.md).
 
 ---
 
@@ -296,13 +295,13 @@ See [WaddleAI Security Guide](docs/SECURITY.md) and [Penguin Code Security Guide
 - ⚠️ **Commercial/SaaS Requires License**
 - 🏢 **Contributor Employer Exception** (GPL-2.0 grant)
 
-See [LICENSE.md](LICENSE.md) for details.
+See [LICENSE.md](LICENSE.md) for the full terms.
 
 ---
 
 ## 🆘 Support & Contact
 
-- **WaddleAI Platform Docs**: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | [docs/API](docs/api/)
+- **WaddleAI Platform Docs**: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | [DEPLOY_K8S.md](DEPLOY_K8S.md) | [API Reference](docs/api/openai-compatible.md)
 - **WaddleAI Assistant Docs**: [docs/penguincode/USAGE.md](docs/penguincode/USAGE.md) | [docs/penguincode/ARCHITECTURE.md](docs/penguincode/ARCHITECTURE.md)
 - **Issues**: [GitHub Issues](https://github.com/penguintechinc/waddleai/issues)
 - **Email**: support@penguintech.io
@@ -313,11 +312,11 @@ See [LICENSE.md](LICENSE.md) for details.
 ## 🙏 Acknowledgments
 
 - [Ollama](https://ollama.ai) — Bringing LLMs to every machine
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — Efficient, self-hosted LLM inference
 - [Llama](https://www.llama.com/) — State-of-the-art open-source models
-- [MarchProxy](https://github.com/penguintechinc/marchproxy) — High-performance AI load balancer
 - [mem0](https://mem0.ai/) — Persistent memory for AI systems
-- Flask, Quart, FastAPI, and the Python community
-- OpenAI, Anthropic, Google, Meta for advancing the field
+- Quart and the Python community
+- OpenAI, Anthropic, Google, xAI, AWS, Meta for advancing the field
 
 ---
 

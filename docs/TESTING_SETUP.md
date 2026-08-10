@@ -1,53 +1,64 @@
 # WaddleAI Testing Setup with OpenWebUI
 
-This guide provides instructions for setting up a complete testing environment with WaddleAI proxy server and OpenWebUI for comprehensive LLM testing.
+This guide provides instructions for setting up a manual testing environment with the WaddleAI proxy server and OpenWebUI for interactive LLM testing.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Docker and Docker Compose installed
+- Docker installed
 - At least 4GB RAM available for containers
-- Ports 3001, 8000, 8001 available on your system
+- Ports 3000, 3001, 8001, 8080 available on your system
+- WaddleAI's own Postgres + Valkey dependencies and the management/proxy services running — see [Local Development Guide](DEVELOPMENT.md) to bring those up first
 
 ### 1. Environment Setup
-```bash
-# Copy environment template
-cp .env.testing .env
 
-# Edit .env file with your configuration
-# At minimum, set your WaddleAI API key:
-# WADDLEAI_API_KEY=wa-your-api-key-here
+Export the values OpenWebUI needs to reach the proxy — there is no `.env.testing` template in this repo, so set these directly:
+
+```bash
+export WADDLEAI_API_KEY=wa-your-api-key-here
 ```
 
-### 2. Launch Testing Environment
-```bash
-# Start all services
-docker-compose -f docker-compose.testing.yml up -d
+### 2. Launch OpenWebUI
 
-# Check service status
-docker-compose -f docker-compose.testing.yml ps
+WaddleAI does not ship a Compose file for this (Docker Compose is deprecated for this project) — run OpenWebUI as a single standalone container pointed at the proxy you already have running on the host:
+
+```bash
+docker run -d --name openwebui \
+  -p 3001:8080 \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8080/v1 \
+  -e OPENAI_API_KEY="$WADDLEAI_API_KEY" \
+  -e WEBUI_AUTH=true \
+  -v openwebui-data:/app/backend/data \
+  ghcr.io/open-webui/open-webui:main
+```
+
+`host.docker.internal` resolves to the host from inside the container on Docker Desktop (macOS/Windows). On Linux, either add `--add-host=host.docker.internal:host-gateway` to the `docker run` command above, or use the host's LAN/bridge IP directly.
+
+Check it started:
+```bash
+docker ps --filter name=openwebui
+docker logs -f openwebui
 ```
 
 ### 3. Access Interfaces
 
 | Service | URL | Purpose |
 |---------|-----|---------|
-| **OpenWebUI** | http://localhost:3001 | Modern chat interface for testing |
-| **WaddleAI Proxy** | http://localhost:8000 | OpenAI-compatible API endpoint |
+| **OpenWebUI** | http://localhost:3001 | Chat interface for manual testing |
+| **WaddleAI Proxy** | http://localhost:8080 | OpenAI-compatible API endpoint |
 | **WaddleAI Management** | http://localhost:8001 | Admin and monitoring interface |
-| **Documentation** | http://localhost:8080 | WaddleAI documentation |
-| **Website** | http://localhost:3000 | Marketing website |
+| **Web UI** | http://localhost:3000 | WaddleAI's own management frontend (`npm run dev` in `services/webui`) |
 
 ## 🧪 Testing Scenarios
 
 ### OpenWebUI Testing
 1. **First Time Setup**:
    - Go to http://localhost:3001
-   - Create an account (signup enabled in testing)
-   - OpenWebUI will automatically detect WaddleAI models
+   - Create an account (first account becomes admin)
+   - OpenWebUI detects models via the proxy's `/v1/models` endpoint
 
 2. **Model Testing**:
-   - Test different models: GPT-4, Claude, LLaMA, etc.
+   - Test different configured backends (OpenAI, Anthropic, Ollama, etc. — whatever is configured in the management service)
    - Verify model switching works correctly
    - Check response streaming functionality
 
@@ -58,17 +69,17 @@ docker-compose -f docker-compose.testing.yml ps
 
 ### API Testing
 ```bash
-# Test WaddleAI health endpoint
-curl http://localhost:8000/health
+# Test WaddleAI proxy health endpoint
+curl http://localhost:8080/healthz
 
 # List available models
-curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer your-api-key"
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY"
 
 # Test chat completion
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key" \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -d '{
     "model": "gpt-4",
     "messages": [{"role": "user", "content": "Hello, World!"}],
@@ -78,7 +89,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ### VS Code Extension Testing
 1. **Setup Extension**:
-   - Open `/vscode-extension/waddleai-copilot/` in VS Code
+   - Open `vscode-extension/waddleai-copilot/` in VS Code
    - Press F5 to launch Extension Development Host
    - Configure API key: "WaddleAI: Set API Key"
 
@@ -87,18 +98,21 @@ curl http://localhost:8000/v1/chat/completions \
    - Type `@waddleai Hello, can you help me code?`
    - Verify responses stream correctly
 
+See `vscode-extension/waddleai-copilot/TESTING.md` for the extension's own test suite.
+
 ## 🔧 Configuration Options
 
 ### WaddleAI Proxy Settings
-- `SECURITY_POLICY`: balanced, strict, or permissive
-- `CORS_ALLOWED_ORIGINS`: Configure for your domain
-- `OPENAI_COMPATIBILITY_MODE`: Enable full OpenAI API compatibility
+- `SECURITY_POLICY`: `balanced` (default), `strict`, or `permissive`
+- `MANAGEMENT_SERVER_URL`: where the proxy reaches the management service (default `http://localhost:8001`)
+- `GRPC_PORT` / `HTTP_PORT`: proxy listen ports (defaults `50051` / `8080`)
 
 ### OpenWebUI Settings
-- `ENABLE_SIGNUP`: Allow new user registration
-- `DEFAULT_USER_ROLE`: Default permissions for new users
-- `ENABLE_MODEL_FILTER`: Filter available models
-- `RAG_EMBEDDING_ENGINE`: Configure document processing
+Pass these as additional `-e` flags on the `docker run` command above:
+- `ENABLE_SIGNUP`: allow new user registration
+- `DEFAULT_USER_ROLE`: default permissions for new users
+- `ENABLE_MODEL_FILTER`: filter available models
+- `RAG_EMBEDDING_ENGINE`: configure document processing
 
 ## 🐛 Troubleshooting
 
@@ -106,49 +120,35 @@ curl http://localhost:8000/v1/chat/completions \
 
 **OpenWebUI can't connect to WaddleAI**:
 ```bash
-# Check if WaddleAI proxy is healthy
-docker-compose -f docker-compose.testing.yml exec openwebui curl http://waddleai-proxy:8000/health
+# Confirm the proxy is healthy and reachable from inside the container
+docker exec openwebui curl -f http://host.docker.internal:8080/healthz
 ```
 
 **Models not appearing in OpenWebUI**:
-- Verify API key is set correctly
-- Check WaddleAI proxy logs: `docker-compose -f docker-compose.testing.yml logs waddleai-proxy`
+- Verify `WADDLEAI_API_KEY` is set correctly in the OpenWebUI container's environment
+- Check the proxy's own logs (the terminal running `hypercorn apps.proxy_server.main:app`, or `docker logs waddleai-proxy` if running the built image)
 
 **Database connection issues**:
 ```bash
-# Check PostgreSQL health
-docker-compose -f docker-compose.testing.yml exec postgres pg_isready -U waddleai
+docker exec waddleai-postgres pg_isready -U waddleai
 ```
 
 ### Logs and Debugging
 ```bash
-# View all logs
-docker-compose -f docker-compose.testing.yml logs
+# OpenWebUI logs
+docker logs -f openwebui
 
-# View specific service logs
-docker-compose -f docker-compose.testing.yml logs waddleai-proxy
-docker-compose -f docker-compose.testing.yml logs openwebui
-
-# Follow logs in real-time
-docker-compose -f docker-compose.testing.yml logs -f waddleai-proxy
+# WaddleAI proxy/management logs — the terminal each is running in
+# (or, if running the built images):
+docker logs -f waddleai-proxy
+docker logs -f waddleai-management
 ```
 
 ## 🧹 Cleanup
 
-### Stop Services
 ```bash
-# Stop all containers
-docker-compose -f docker-compose.testing.yml down
-
-# Stop and remove volumes (WARNING: Deletes all data)
-docker-compose -f docker-compose.testing.yml down -v
-```
-
-### Reset Environment
-```bash
-# Complete cleanup
-docker-compose -f docker-compose.testing.yml down -v --remove-orphans
-docker system prune -f
+docker rm -f openwebui
+docker volume rm openwebui-data   # WARNING: deletes OpenWebUI's chat history/accounts
 ```
 
 ## 🏗️ Architecture Overview
@@ -156,7 +156,7 @@ docker system prune -f
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌──────────────────┐
 │   OpenWebUI     │────│  WaddleAI Proxy │────│   LLM Providers  │
-│  (Port 3001)    │    │   (Port 8000)   │    │ (GPT, Claude,etc)│
+│  (Port 3001)    │    │   (Port 8080)   │    │ (GPT, Claude,etc)│
 └─────────────────┘    └─────────────────┘    └──────────────────┘
          │                       │
          │              ┌─────────────────┐
@@ -165,31 +165,24 @@ docker system prune -f
          │              └─────────────────┘
          │                       │
     ┌─────────────────────────────────────┐
-    │           PostgreSQL + Redis        │
-    │         (Ports 5432, 6379)          │
+    │        PostgreSQL + Valkey          │
+    │        (Ports 5432, 6379)           │
     └─────────────────────────────────────┘
 ```
 
 ## 🚀 Production Deployment
 
-For production deployment:
-1. Use `docker-compose.yml` instead of `docker-compose.testing.yml`
-2. Set secure passwords in `.env`
-3. Configure proper SSL/TLS certificates
-4. Set up monitoring and backup strategies
-5. Review security policies and CORS settings
+Production and beta deployments use the Helm chart at `k8s/helm/waddleai` — see `DEPLOY_K8S.md`. This page covers local/manual testing only.
 
 ## 📝 API Compatibility
 
-WaddleAI provides OpenAI-compatible endpoints:
+WaddleAI's proxy provides OpenAI-compatible endpoints:
 - `/v1/models` - List available models
 - `/v1/chat/completions` - Chat completions with streaming
-- `/v1/completions` - Text completions
-- `/v1/embeddings` - Text embeddings (if supported)
 
 This ensures compatibility with:
 - OpenWebUI
-- VS Code Extension
+- The WaddleAI VS Code extension
 - OpenAI Python/JavaScript clients
 - Any OpenAI-compatible tool
 
@@ -200,15 +193,17 @@ This ensures compatibility with:
 A running llama-server. Quick local setup via Docker:
 
 ```bash
-docker run -p 8080:8080 ghcr.io/ggerganov/llama.cpp:server \
+docker run -p 8090:8080 ghcr.io/ggerganov/llama.cpp:server \
     --hf-repo ggml-org/models --hf-file tinyllamas/stories15M-q8_0.gguf \
     --port 8080 --host 0.0.0.0
 ```
 
+(Mapped to host port `8090` here to avoid colliding with the WaddleAI proxy on `8080`.)
+
 ### Running integration tests
 
 ```bash
-export LLAMACPP_ENDPOINT=http://localhost:8080
+export LLAMACPP_ENDPOINT=http://localhost:8090
 pytest tests/integration/test_llamacpp_integration.py -v
 ```
 
