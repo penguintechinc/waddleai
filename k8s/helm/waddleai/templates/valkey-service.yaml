@@ -1,0 +1,20 @@
+{{- if .Values.valkey.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waddleai.fullname" . }}-valkey
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+spec:
+  type: {{ .Values.valkey.service.type }}
+  ports:
+    - port: {{ .Values.valkey.service.port }}
+      targetPort: {{ .Values.valkey.service.targetPort }}
+      protocol: TCP
+      name: valkey
+  selector:
+    {{- include "waddleai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+{{- end }}

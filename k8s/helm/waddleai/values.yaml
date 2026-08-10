@@ -89,6 +89,77 @@ management:
       secretName: waddleai-secrets
       key: postgres-password
 
+# AIProxy Service (data plane — /v1/chat/completions, /v1/messages, /v1/models, /mem0/*)
+# Plain Quart + hypercorn app; Cilium handles networking at the cluster level (no XDP/NET_ADMIN needed).
+proxy:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: waddleai/proxy
+    tag: latest
+    # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+    grpcPort: 50051
+    grpcTargetPort: 50051
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /readyz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  env:
+    LOG_LEVEL: INFO
+    HTTP_PORT: "8080"
+    GRPC_PORT: "50051"
+
+  # Secret env vars (from k8s secrets) — mirrors management's DATABASE_URL source
+  secretEnv:
+    - name: DATABASE_URL
+      secretName: waddleai-secrets
+      key: database-url
+    - name: PROXY_GRPC_AUTH_TOKEN
+      secretName: waddleai-secrets
+      key: proxy-grpc-auth-token
+
+  # gRPC NetworkPolicy configuration (fail-closed: defaults to deny all)
+  grpc:
+    networkPolicy:
+      enabled: true
+      # allowedPodSelectors: list of pod selector labels allowed to call gRPC
+      # Default: empty list (all ingress denied until explicitly configured)
+      # Example:
+      #   - matchLabels:
+      #       app: marchproxy
+      allowedPodSelectors: []
+
 # WebUI Service
 webui:
   enabled: true
@@ -137,7 +208,8 @@ postgres:
   replicaCount: 1
   image:
     repository: postgres
-    tag: "15"
+    tag: "17-bookworm"
+    digest: "sha256:5530681ea5d3e2ed4ce396f9b5cb443efbac6baf2a8a19c0c0635e40ae7eadce"
     pullPolicy: IfNotPresent
 
   service:
@@ -191,8 +263,8 @@ postgres:
     timeoutSeconds: 3
     failureThreshold: 3
 
-# Redis Cache
-redis:
+# Valkey Cache
+valkey:
   enabled: true
   replicaCount: 1
   image:
@@ -228,7 +300,7 @@ redis:
     enabled: true
     exec:
       command:
-        - redis-cli
+        - valkey-cli
         - ping
     initialDelaySeconds: 10
     periodSeconds: 10
@@ -239,7 +311,7 @@ redis:
     enabled: true
     exec:
       command:
-        - redis-cli
+        - valkey-cli
         - ping
     initialDelaySeconds: 5
     periodSeconds: 5
@@ -252,6 +324,11 @@ httproute:
   gatewayName: shared
   gatewayNamespace: gateway
   host: ""
+  # Example rules (populate + set enabled:true per environment; see values-beta.yaml):
+  #   - path: /v1/      { service: waddleai-proxy, port: 8080, timeoutSeconds: 600 }
+  #   - path: /mem0/    { service: waddleai-proxy, port: 8080 }
+  #   - path: /api      { service: waddleai-management, port: 8001 }
+  #   - path: /         { service: waddleai-webui, port: 8080 }
   rules: []
 
 # Ingress configuration
@@ -338,6 +415,7 @@ ollama:
   image:
     repository: ollama/ollama
     tag: "0.7.1"
+    digest: "sha256:de659b95818c5ea17dc287a2e4f147f81e202d84f1dc4ad3f256c53fb81e8dd0"
     pullPolicy: IfNotPresent
 
   service:
@@ -399,6 +477,103 @@ ollama:
     httpGet:
       path: /
       port: 11434
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# llama.cpp Inference Engine (self-managed alternative to Ollama)
+# llama-server serves exactly ONE model per process (unlike `ollama serve`, which
+# multiplexes). Each entry in `models` renders its own DaemonSet + Service, named
+# "<fullname>-llamacpp-<model.name>". Every model DaemonSet mounts the SAME shared
+# cache PVC below — GGUF weights are downloaded once and reused across pod restarts
+# instead of the emptyDir the management API's runtime deploy path still uses.
+llamacpp:
+  enabled: false
+  image:
+    repository: ghcr.io/ggml-org/llama.cpp
+    tag: "server"
+    digest: "sha256:51570a4f93c5ce81ac6f2b1ea16a58771cfded2adb34241df7e75329b24fe76e"
+    pullPolicy: IfNotPresent
+
+  # Model-download init container image (guarded, cache-aware curl)
+  downloaderImage:
+    repository: curlimages/curl
+    tag: "8.21.0"
+    digest: "sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+
+  # Label GPU nodes: kubectl label node <nodename> gpu=true
+  # Overridable per-model via models[].nodeSelector
+  nodeSelector:
+    gpu: "true"
+
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+  gpu:
+    enabled: true
+    type: nvidia
+
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "2000m"
+    limits:
+      memory: "16Gi"
+      cpu: "4000m"
+
+  # Shared RWX PVC for the whole llamacpp fleet — one volume, mounted by every
+  # model's DaemonSet, not one PVC per model.
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClass: ""
+    accessMode: ReadWriteMany
+    hostPath: ""
+
+  # One DaemonSet + one Service is rendered PER entry (llama-server = one model
+  # per process, unlike ollama's multiplexed `ollama pull` list).
+  # Fields:
+  #   name        - required; used in resource naming + pod selectors
+  #   url         - required; GGUF download URL
+  #   filename    - required; target filename on the shared cache volume
+  #   ctxSize     - optional; default 4096
+  #   nGpuLayers  - optional; default 0
+  #   gpuCount    - optional; default 1 (only used when gpu.enabled)
+  #   nodeSelector - optional; overrides the fleet-wide nodeSelector above
+  models: []
+  # Example:
+  # models:
+  #   - name: llama3-8b
+  #     url: https://huggingface.co/example/llama3-8b/resolve/main/llama3-8b.Q4_K_M.gguf
+  #     filename: llama3-8b.Q4_K_M.gguf
+  #     ctxSize: 8192
+  #     nGpuLayers: 999
+  #     gpuCount: 1
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 5
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 8080
     initialDelaySeconds: 30
     periodSeconds: 10
     timeoutSeconds: 5

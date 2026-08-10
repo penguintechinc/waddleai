@@ -1,5 +1,5 @@
 .PHONY: dev test test-unit test-integration test-e2e test-functional test-security \
-        smoke-test lint build docker-build docker-push deploy-dev deploy-prod \
+        test-contract smoke-test lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit
 
 dev:
@@ -41,6 +41,10 @@ test-e2e:
 test-functional:
 	@echo "No functional tests defined"
 
+test-contract:
+	@echo "Running contract snapshot tests..."
+	python3 -m pytest tests/contract -v --no-cov
+
 test-security:
 	@echo "=== Security Scans ==="
 	@if command -v bandit >/dev/null 2>&1; then echo "-- bandit --"; bandit -r . -x ./tests,./venv,./.git --quiet || true; fi
@@ -49,6 +53,7 @@ test-security:
 	@if command -v govulncheck >/dev/null 2>&1; then echo "-- govulncheck --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && govulncheck ./... || true'; fi
 	@find . -name "package.json" -not -path "*/.git/*" -not -path "*/node_modules/*" -maxdepth 3 | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && npm audit 2>/dev/null || true'
 	@if command -v gitleaks >/dev/null 2>&1; then echo "-- gitleaks --"; gitleaks detect --source . --no-git 2>/dev/null || true; fi
+	@echo "-- pip-licenses (OSI gate) --"; bash scripts/check-licenses.sh
 
 smoke-test:
 	@echo "Running smoke tests..."

@@ -72,6 +72,23 @@ Image name for management service
 {{- end }}
 
 {{/*
+Image name for proxy service (AIProxy)
+*/}}
+{{- define "waddleai.proxy.image" -}}
+{{- if .Values.proxy.image.digest }}
+{{- if .Values.global.imageRegistry }}
+{{- printf "%s/%s@%s" .Values.global.imageRegistry .Values.proxy.image.repository .Values.proxy.image.digest }}
+{{- else }}
+{{- printf "%s@%s" .Values.proxy.image.repository .Values.proxy.image.digest }}
+{{- end }}
+{{- else if .Values.global.imageRegistry }}
+{{- printf "%s/%s:%s" .Values.global.imageRegistry .Values.proxy.image.repository .Values.proxy.image.tag }}
+{{- else }}
+{{- printf "%s:%s" .Values.proxy.image.repository .Values.proxy.image.tag }}
+{{- end }}
+{{- end }}
+
+{{/*
 Image name for webui service
 */}}
 {{- define "waddleai.webui.image" -}}
@@ -86,17 +103,21 @@ Image name for webui service
 Image name for postgres
 */}}
 {{- define "waddleai.postgres.image" -}}
+{{- if .Values.postgres.image.digest -}}
+{{- printf "%s@%s" .Values.postgres.image.repository .Values.postgres.image.digest }}
+{{- else -}}
 {{- printf "%s:%s" .Values.postgres.image.repository .Values.postgres.image.tag }}
+{{- end -}}
 {{- end }}
 
 {{/*
-Image name for redis
+Image name for valkey
 */}}
-{{- define "waddleai.redis.image" -}}
-{{- if .Values.redis.image.digest -}}
-{{- printf "%s@%s" .Values.redis.image.repository .Values.redis.image.digest }}
+{{- define "waddleai.valkey.image" -}}
+{{- if .Values.valkey.image.digest -}}
+{{- printf "%s@%s" .Values.valkey.image.repository .Values.valkey.image.digest }}
 {{- else -}}
-{{- printf "%s:%s" .Values.redis.image.repository .Values.redis.image.tag }}
+{{- printf "%s:%s" .Values.valkey.image.repository .Values.valkey.image.tag }}
 {{- end -}}
 {{- end }}
 
@@ -104,5 +125,31 @@ Image name for redis
 Image name for ollama
 */}}
 {{- define "waddleai.ollama.image" -}}
+{{- if .Values.ollama.image.digest -}}
+{{- printf "%s@%s" .Values.ollama.image.repository .Values.ollama.image.digest }}
+{{- else -}}
 {{- printf "%s:%s" .Values.ollama.image.repository .Values.ollama.image.tag }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Image name for llamacpp (llama-server)
+*/}}
+{{- define "waddleai.llamacpp.image" -}}
+{{- if .Values.llamacpp.image.digest -}}
+{{- printf "%s@%s" .Values.llamacpp.image.repository .Values.llamacpp.image.digest }}
+{{- else -}}
+{{- printf "%s:%s" .Values.llamacpp.image.repository .Values.llamacpp.image.tag }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Image name for the llamacpp model-download init container
+*/}}
+{{- define "waddleai.llamacpp.downloaderImage" -}}
+{{- if .Values.llamacpp.downloaderImage.digest -}}
+{{- printf "%s@%s" .Values.llamacpp.downloaderImage.repository .Values.llamacpp.downloaderImage.digest }}
+{{- else -}}
+{{- printf "%s:%s" .Values.llamacpp.downloaderImage.repository .Values.llamacpp.downloaderImage.tag }}
+{{- end -}}
 {{- end }}

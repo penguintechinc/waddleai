@@ -3,21 +3,25 @@ WaddleAI Management API v1 - AILB Webhook Endpoints
 Receives usage events and health updates from MarchProxy AILB
 """
 
+import asyncio
 import hashlib
 import hmac
 from datetime import date, datetime
 
-from flask import current_app, jsonify, request
+from quart import current_app, jsonify, request
 
 from ...extensions import db
 from . import api_v1_bp
 
 
-def verify_webhook_signature(payload: bytes, signature: str) -> bool:
-    """Verify webhook signature from AILB"""
-    secret = current_app.config.get("WEBHOOK_SECRET", "")
+def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """
+    Verify webhook signature from AILB.
+
+    Rejects (returns False) if no secret is configured — never skips verification.
+    """
     if not secret:
-        return True  # Skip verification if no secret configured
+        return False  # REJECT: verification requires a secret (never skip)
 
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
@@ -25,7 +29,7 @@ def verify_webhook_signature(payload: bytes, signature: str) -> bool:
 
 
 @api_v1_bp.route("/webhooks/ailb/usage", methods=["POST"])
-def handle_usage_webhook():
+async def handle_usage_webhook():
     """
     Receive usage events from MarchProxy AILB after each request.
 
@@ -48,12 +52,15 @@ def handle_usage_webhook():
     if not current_app.config.get("ENABLE_USAGE_WEBHOOKS", True):
         return jsonify({"error": "Webhooks disabled"}), 403
 
+    secret = current_app.config.get("WEBHOOK_SECRET", "")
+
     # Verify signature
     signature = request.headers.get("X-Webhook-Signature", "")
-    if not verify_webhook_signature(request.data, signature):
+    raw_body = await request.data
+    if not verify_webhook_signature(raw_body, signature, secret):
         return jsonify({"error": "Invalid signature"}), 401
 
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -62,53 +69,61 @@ def handle_usage_webhook():
     if not event_id:
         return jsonify({"error": "event_id required"}), 400
 
-    # Check for duplicate event
-    existing = db(db.ailb_usage_events.event_id == event_id).select().first()
-    if existing:
+    def _process():
+        # Check for duplicate event
+        existing = db(db.ailb_usage_events.event_id == event_id).select().first()
+        if existing:
+            return "duplicate"
+
+        # Find virtual key by AILB key ID or key prefix
+        key_id = data.get("key_id", "")
+        virtual_key = None
+
+        if key_id:
+            # Try to find by ailb_key_id first
+            virtual_key = db(db.virtual_keys.ailb_key_id == key_id).select().first()
+
+            # If not found, try by key prefix
+            if not virtual_key and key_id.startswith("wa-"):
+                virtual_key = db(db.virtual_keys.key_prefix.like(f"{key_id[:12]}%")).select().first()
+
+        # Store raw event
+        db.ailb_usage_events.insert(
+            event_id=event_id,
+            virtual_key_id=virtual_key.id if virtual_key else None,
+            ailb_key_id=key_id,
+            request_id=data.get("request_id"),
+            model=data.get("model"),
+            provider=data.get("provider"),
+            input_tokens=data.get("input_tokens", 0),
+            output_tokens=data.get("output_tokens", 0),
+            cost_usd=data.get("cost_usd", 0),
+            latency_ms=data.get("latency_ms"),
+            status=data.get("status", "unknown"),
+            error_message=data.get("error_message"),
+            timestamp=(
+                datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
+                if data.get("timestamp")
+                else datetime.utcnow()
+            ),
+            processed=False,
+            created_at=datetime.utcnow(),
+        )
+
+        # Process usage if key found
+        if virtual_key:
+            process_usage_event(virtual_key, data)
+
+        db.commit()
+
+        return "accepted" if virtual_key else "accepted_unprocessed"
+
+    result = await asyncio.to_thread(_process)
+
+    if result == "duplicate":
         return jsonify({"status": "duplicate", "message": "Event already processed"})
 
-    # Find virtual key by AILB key ID or key prefix
-    key_id = data.get("key_id", "")
-    virtual_key = None
-
-    if key_id:
-        # Try to find by ailb_key_id first
-        virtual_key = db(db.virtual_keys.ailb_key_id == key_id).select().first()
-
-        # If not found, try by key prefix
-        if not virtual_key and key_id.startswith("wa-"):
-            virtual_key = db(db.virtual_keys.key_prefix.like(f"{key_id[:12]}%")).select().first()
-
-    # Store raw event
-    db.ailb_usage_events.insert(
-        event_id=event_id,
-        virtual_key_id=virtual_key.id if virtual_key else None,
-        ailb_key_id=key_id,
-        request_id=data.get("request_id"),
-        model=data.get("model"),
-        provider=data.get("provider"),
-        input_tokens=data.get("input_tokens", 0),
-        output_tokens=data.get("output_tokens", 0),
-        cost_usd=data.get("cost_usd", 0),
-        latency_ms=data.get("latency_ms"),
-        status=data.get("status", "unknown"),
-        error_message=data.get("error_message"),
-        timestamp=(
-            datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
-            if data.get("timestamp")
-            else datetime.utcnow()
-        ),
-        processed=False,
-        created_at=datetime.utcnow(),
-    )
-
-    # Process usage if key found
-    if virtual_key:
-        process_usage_event(virtual_key, data)
-
-    db.commit()
-
-    return jsonify({"status": "accepted", "event_id": event_id, "processed": virtual_key is not None})
+    return jsonify({"status": "accepted", "event_id": event_id, "processed": result == "accepted"})
 
 
 def process_usage_event(virtual_key, event_data: dict):
@@ -207,7 +222,7 @@ def calculate_waddleai_tokens(provider: str, model: str, input_tokens: int, outp
 
 
 @api_v1_bp.route("/webhooks/ailb/health", methods=["POST"])
-def handle_health_webhook():
+async def handle_health_webhook():
     """
     Receive health status updates from MarchProxy AILB.
 
@@ -225,12 +240,15 @@ def handle_health_webhook():
     if not current_app.config.get("ENABLE_USAGE_WEBHOOKS", True):
         return jsonify({"error": "Webhooks disabled"}), 403
 
+    secret = current_app.config.get("WEBHOOK_SECRET", "")
+
     # Verify signature
     signature = request.headers.get("X-Webhook-Signature", "")
-    if not verify_webhook_signature(request.data, signature):
+    raw_body = await request.data
+    if not verify_webhook_signature(raw_body, signature, secret):
         return jsonify({"error": "Invalid signature"}), 401
 
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -243,7 +261,7 @@ def handle_health_webhook():
 
 
 @api_v1_bp.route("/webhooks/ailb/batch", methods=["POST"])
-def handle_batch_webhook():
+async def handle_batch_webhook():
     """
     Receive batch of usage events from MarchProxy AILB.
     More efficient for high-volume scenarios.
@@ -263,73 +281,83 @@ def handle_batch_webhook():
     if not current_app.config.get("ENABLE_USAGE_WEBHOOKS", True):
         return jsonify({"error": "Webhooks disabled"}), 403
 
+    secret = current_app.config.get("WEBHOOK_SECRET", "")
+
     # Verify signature
     signature = request.headers.get("X-Webhook-Signature", "")
-    if not verify_webhook_signature(request.data, signature):
+    raw_body = await request.data
+    if not verify_webhook_signature(raw_body, signature, secret):
         return jsonify({"error": "Invalid signature"}), 401
 
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data or "events" not in data:
         return jsonify({"error": "events array required"}), 400
 
     events = data["events"]
-    results = {"accepted": 0, "duplicates": 0, "errors": 0}
+    logger = current_app.logger
 
-    for event_data in events:
-        event_id = event_data.get("event_id")
-        if not event_id:
-            results["errors"] += 1
-            continue
+    def _process_batch():
+        results = {"accepted": 0, "duplicates": 0, "errors": 0}
 
-        # Check for duplicate
-        existing = db(db.ailb_usage_events.event_id == event_id).select().first()
-        if existing:
-            results["duplicates"] += 1
-            continue
+        for event_data in events:
+            event_id = event_data.get("event_id")
+            if not event_id:
+                results["errors"] += 1
+                continue
 
-        try:
-            # Find virtual key
-            key_id = event_data.get("key_id", "")
-            virtual_key = None
+            # Check for duplicate
+            existing = db(db.ailb_usage_events.event_id == event_id).select().first()
+            if existing:
+                results["duplicates"] += 1
+                continue
 
-            if key_id:
-                virtual_key = db(db.virtual_keys.ailb_key_id == key_id).select().first()
-                if not virtual_key and key_id.startswith("wa-"):
-                    virtual_key = db(db.virtual_keys.key_prefix.like(f"{key_id[:12]}%")).select().first()
+            try:
+                # Find virtual key
+                key_id = event_data.get("key_id", "")
+                virtual_key = None
 
-            # Store event
-            db.ailb_usage_events.insert(
-                event_id=event_id,
-                virtual_key_id=virtual_key.id if virtual_key else None,
-                ailb_key_id=key_id,
-                request_id=event_data.get("request_id"),
-                model=event_data.get("model"),
-                provider=event_data.get("provider"),
-                input_tokens=event_data.get("input_tokens", 0),
-                output_tokens=event_data.get("output_tokens", 0),
-                cost_usd=event_data.get("cost_usd", 0),
-                latency_ms=event_data.get("latency_ms"),
-                status=event_data.get("status", "unknown"),
-                error_message=event_data.get("error_message"),
-                timestamp=(
-                    datetime.fromisoformat(event_data["timestamp"].replace("Z", "+00:00"))
-                    if event_data.get("timestamp")
-                    else datetime.utcnow()
-                ),
-                processed=False,
-                created_at=datetime.utcnow(),
-            )
+                if key_id:
+                    virtual_key = db(db.virtual_keys.ailb_key_id == key_id).select().first()
+                    if not virtual_key and key_id.startswith("wa-"):
+                        virtual_key = db(db.virtual_keys.key_prefix.like(f"{key_id[:12]}%")).select().first()
 
-            if virtual_key:
-                process_usage_event(virtual_key, event_data)
+                # Store event
+                db.ailb_usage_events.insert(
+                    event_id=event_id,
+                    virtual_key_id=virtual_key.id if virtual_key else None,
+                    ailb_key_id=key_id,
+                    request_id=event_data.get("request_id"),
+                    model=event_data.get("model"),
+                    provider=event_data.get("provider"),
+                    input_tokens=event_data.get("input_tokens", 0),
+                    output_tokens=event_data.get("output_tokens", 0),
+                    cost_usd=event_data.get("cost_usd", 0),
+                    latency_ms=event_data.get("latency_ms"),
+                    status=event_data.get("status", "unknown"),
+                    error_message=event_data.get("error_message"),
+                    timestamp=(
+                        datetime.fromisoformat(event_data["timestamp"].replace("Z", "+00:00"))
+                        if event_data.get("timestamp")
+                        else datetime.utcnow()
+                    ),
+                    processed=False,
+                    created_at=datetime.utcnow(),
+                )
 
-            results["accepted"] += 1
+                if virtual_key:
+                    process_usage_event(virtual_key, event_data)
 
-        except Exception as e:
-            current_app.logger.error(f"Error processing event {event_id}: {e}")
-            results["errors"] += 1
+                results["accepted"] += 1
 
-    db.commit()
+            except Exception as e:
+                logger.error(f"Error processing event {event_id}: {e}")
+                results["errors"] += 1
+
+        db.commit()
+
+        return results
+
+    results = await asyncio.to_thread(_process_batch)
 
     return jsonify({"status": "completed", "results": results})

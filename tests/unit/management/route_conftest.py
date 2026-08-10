@@ -1,5 +1,5 @@
 """
-Shared fixtures for Flask route tests in the management service.
+Shared fixtures for Quart route tests in the management service.
 
 This module provides the flask_app, client, and auth token fixtures used by
 all route-level test modules. Import via conftest.py using pytest_plugins.
@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Dict, Generator
+from typing import AsyncGenerator, Dict
 from unittest.mock import MagicMock, patch
 
 import jwt as _jwt
@@ -47,7 +47,7 @@ def _patch_route_module_db(module_name: str, mock_db: MagicMock) -> patch:
 
 @pytest.fixture(scope="module")
 def flask_app():
-    """Create Flask test app with mocked DB and Redis, module-scoped for speed."""
+    """Create Quart test app with mocked DB and Redis, module-scoped for speed."""
     mock_db = _make_mock_db()
     mock_redis = _make_mock_redis()
 
@@ -114,15 +114,15 @@ def flask_app():
 
 
 @pytest.fixture
-def client(flask_app) -> Generator:
-    """Return a Flask test client."""
-    with flask_app.test_client() as c:
+async def client(flask_app) -> AsyncGenerator:
+    """Return a Quart test client."""
+    async with flask_app.test_client() as c:
         yield c
 
 
 @pytest.fixture
 def app_mock_db(flask_app) -> MagicMock:
-    """Return the mock DB that is wired into the Flask route modules.
+    """Return the mock DB that is wired into the Quart route modules.
 
     This OVERRIDES the tests/conftest.py mock_db intentionally — route tests
     must use the DB that was patched into the route modules, not a fresh mock.

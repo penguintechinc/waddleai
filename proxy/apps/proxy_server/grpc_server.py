@@ -13,11 +13,12 @@ Usage:
 
 from __future__ import annotations
 
+import hmac
 import threading
 from concurrent import futures
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import grpc
 import structlog
@@ -28,6 +29,67 @@ from shared.agents.usage_tracker import UsageReport as AgentUsageReport
 from shared.utils.memory_integration import WaddleAIMemoryManager
 
 logger = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# gRPC Authentication Interceptor (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+class GrpcAuthInterceptor(grpc.ServerInterceptor):
+    """Server-side interceptor requiring Bearer token in call metadata.
+
+    Mandatory authentication for all gRPC calls. Every call must include
+    Authorization metadata with value 'Bearer <token>' where <token>
+    matches the configured secret (constant-time comparison via hmac).
+
+    Fail-closed: if the configured token is unset/None/empty, all calls
+    are rejected with UNAUTHENTICATED. This ensures that if the env var
+    is not set (accidental misconfiguration), the gRPC surface remains
+    protected rather than falling open.
+    """
+
+    def __init__(self, configured_token: Optional[str]) -> None:
+        """Initialize with configured secret token.
+
+        Args:
+            configured_token: Pre-shared Bearer token. If None or empty,
+                all calls are rejected.
+        """
+        self.configured_token = configured_token
+
+    def intercept_service(
+        self, continuation: Callable, handler_call_details: grpc.HandlerCallDetails
+    ) -> grpc.RpcMethodHandler:
+        """Intercept all service calls and validate Bearer token."""
+        # Fail-closed: if no token configured, reject all calls
+        if not self.configured_token:
+            return self._abort(grpc.StatusCode.UNAUTHENTICATED, "gRPC auth not configured")
+
+        # Extract authorization metadata (gRPC metadata keys are lowercase)
+        metadata = dict(handler_call_details.invocation_metadata)
+        auth_header = metadata.get("authorization", "")
+
+        # Validate format: "Bearer <token>"
+        if not auth_header.startswith("Bearer "):
+            return self._abort(grpc.StatusCode.UNAUTHENTICATED, "Missing or invalid authorization header")
+
+        # Extract token and validate with constant-time comparison
+        provided_token = auth_header[7:]  # Strip "Bearer "
+        if not hmac.compare_digest(provided_token, self.configured_token):
+            return self._abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        # Token valid, proceed to handler
+        return continuation(handler_call_details)
+
+    @staticmethod
+    def _abort(code: grpc.StatusCode, details: str) -> grpc.RpcMethodHandler:
+        """Return a handler that immediately aborts with the given code and details."""
+
+        def abort_handler(request, context: grpc.ServicerContext):
+            context.abort(code, details)
+
+        return grpc.unary_unary_rpc_method_handler(abort_handler)
+
 
 # ---------------------------------------------------------------------------
 # Server components container
@@ -167,6 +229,9 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
             metadata.setdefault("model", request.model)
             metadata.setdefault("provider", request.provider)
 
+            # TODO (Feature A): Derive organization_id from verified gRPC credential
+            # instead of hardcoding to 0. Currently bounded by GrpcAuthInterceptor
+            # which validates Bearer token; long-term fix is to extract org from token.
             success = asyncio.run(
                 mgr.add_conversation_turn(
                     user_id=user_id_int,
@@ -327,17 +392,23 @@ def start_grpc_server(
     port: int = 50051,
     server_components: Optional[ServerComponents] = None,
     max_workers: int = 10,
+    grpc_auth_token: Optional[str] = None,
 ) -> grpc.Server:
     """Create, configure, and start the gRPC server.
 
     The server binds to an insecure port. TLS termination is expected to
     be handled by the Kubernetes ingress / service mesh.
 
+    All calls require Bearer token authentication via the GrpcAuthInterceptor.
+    If grpc_auth_token is unset/empty, all calls are rejected (fail-closed).
+
     Args:
         port: TCP port to listen on.
         server_components: Pre-built agent/memory components.  When
             ``None`` the server starts with all subsystems unavailable.
         max_workers: Thread-pool size for the gRPC executor.
+        grpc_auth_token: Pre-shared Bearer token (from PROXY_GRPC_AUTH_TOKEN env).
+            If None or empty, all gRPC calls are rejected.
 
     Returns:
         The running :class:`grpc.Server` instance.  The caller is
@@ -345,8 +416,13 @@ def start_grpc_server(
         ``server.stop(grace)``.
     """
     components = server_components or ServerComponents()
+
+    # Create auth interceptor (fail-closed if token not configured)
+    auth_interceptor = GrpcAuthInterceptor(grpc_auth_token)
+
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=max_workers),
+        interceptors=[auth_interceptor],
     )
 
     servicer = WaddleAIServiceServicer(components)
@@ -355,10 +431,12 @@ def start_grpc_server(
     bound_port = server.add_insecure_port(f"[::]:{port}")
     server.start()
 
+    auth_status = "configured" if grpc_auth_token else "NOT CONFIGURED (all calls rejected)"
     logger.info(
         "gRPC server started",
         port=bound_port,
         max_workers=max_workers,
+        auth=auth_status,
         routing_agent="ok" if components.routing_agent else "unavailable",
         security_agent="ok" if components.security_agent else "unavailable",
         usage_tracker="ok" if components.usage_tracker else "unavailable",
@@ -372,6 +450,7 @@ def run_grpc_in_thread(
     port: int = 50051,
     components: Optional[ServerComponents] = None,
     max_workers: int = 10,
+    grpc_auth_token: Optional[str] = None,
 ) -> grpc.Server:
     """Start the gRPC server in a daemon thread.
 
@@ -381,6 +460,7 @@ def run_grpc_in_thread(
         port: TCP port to listen on.
         components: Pre-built agent/memory components.
         max_workers: Thread-pool size for the gRPC executor.
+        grpc_auth_token: Pre-shared Bearer token (from PROXY_GRPC_AUTH_TOKEN env).
 
     Returns:
         The running :class:`grpc.Server` instance.
@@ -389,6 +469,7 @@ def run_grpc_in_thread(
         port=port,
         server_components=components,
         max_workers=max_workers,
+        grpc_auth_token=grpc_auth_token,
     )
 
     def _wait() -> None:

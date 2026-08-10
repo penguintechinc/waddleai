@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,7 @@ class PromptSecurityScanner:
             r'(?:username|user|login)\s*[:=]\s*["\']?\w{3,}',
             r"sk-[a-zA-Z0-9]{20,}",  # OpenAI API key pattern
             r"xoxb-[a-zA-Z0-9\-]{10,}",  # Slack token pattern
+            r"anthropic-[a-zA-Z0-9]{20,}",  # Anthropic API key pattern
         ],
     }
 
@@ -187,7 +188,11 @@ class PromptSecurityScanner:
             ]
 
     def scan_prompt(
-        self, prompt: str, user_id: int = None, api_key_id: int = None, ip_address: str = None
+        self,
+        prompt: str,
+        user_id: Optional[int] = None,
+        api_key_id: Optional[int] = None,
+        ip_address: Optional[str] = None,
     ) -> Tuple[List[ThreatDetection], str]:
         """
         Scan prompt for security threats
@@ -219,7 +224,7 @@ class PromptSecurityScanner:
             for pattern in patterns:
                 found_matches = pattern.findall(prompt)
                 if found_matches:
-                    matches.extend([str(match) for match in found_matches])
+                    matches.extend([str(match) if isinstance(match, str) else str(match[0]) for match in found_matches])
 
             if len(matches) >= self.policy.suspicious_pattern_threshold:
                 confidence = min(1.0, len(matches) / 5.0)  # Scale confidence
@@ -245,6 +250,33 @@ class PromptSecurityScanner:
             self._log_threat(threat, prompt, user_id, api_key_id, ip_address)
 
         return detected_threats, sanitized_prompt
+
+    def scan_messages(
+        self,
+        messages: List[Dict[str, str]],
+        user_id: Optional[int] = None,
+        api_key_id: Optional[int] = None,
+        ip_address: Optional[str] = None,
+    ) -> Tuple[List[ThreatDetection], List[Dict[str, str]]]:
+        """
+        Scan a list of messages for security threats
+        Returns (all_threats, sanitized_messages)
+        """
+        all_threats = []
+        sanitized_messages = []
+
+        for message in messages:
+            content = message.get("content", "")
+            threats, sanitized = self.scan_prompt(content, user_id, api_key_id, ip_address)
+
+            all_threats.extend(threats)
+            sanitized_messages.append({**message, "content": sanitized})
+
+        return all_threats, sanitized_messages
+
+    def should_block(self, threats: List[ThreatDetection]) -> bool:
+        """Check if any threat requires blocking"""
+        return any(t.suggested_action == Action.BLOCK for t in threats)
 
     def _calculate_severity(self, threat_type: ThreatType, match_count: int) -> Severity:
         """Calculate threat severity based on type and match count"""
@@ -290,9 +322,9 @@ class PromptSecurityScanner:
         self,
         threat: ThreatDetection,
         original_prompt: str,
-        user_id: int = None,
-        api_key_id: int = None,
-        ip_address: str = None,
+        user_id: Optional[int] = None,
+        api_key_id: Optional[int] = None,
+        ip_address: Optional[str] = None,
     ):
         """Log security threat to database"""
         try:
@@ -314,7 +346,9 @@ class PromptSecurityScanner:
             prompt_sample = original_prompt[:1000] if original_prompt else ""
 
             # Generate request hash
-            request_hash = hashlib.md5((original_prompt + str(datetime.utcnow().timestamp())).encode()).hexdigest()
+            request_hash = hashlib.md5(
+                (original_prompt + str(datetime.utcnow().timestamp())).encode(), usedforsecurity=False
+            ).hexdigest()
 
             # Log to database
             self.db.security_logs.insert(
@@ -343,7 +377,33 @@ class PromptSecurityScanner:
         except Exception as e:
             logger.error(f"Failed to log security threat: {e}")
 
-    def check_rate_limit(self, user_id: int = None, api_key_id: int = None, ip_address: str = None) -> bool:
+    def set_policy(self, policy_name: str) -> bool:
+        """Change the security policy"""
+        if policy_name in self.SECURITY_POLICIES:
+            self.policy = self.SECURITY_POLICIES[policy_name]
+            logger.info(f"Security policy changed to: {policy_name}")
+            return True
+        return False
+
+    def add_custom_pattern(self, threat_type: ThreatType, pattern: str) -> bool:
+        """Add a custom detection pattern"""
+        try:
+            compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+            if threat_type not in self.compiled_patterns:
+                self.compiled_patterns[threat_type] = []
+            self.compiled_patterns[threat_type].append(compiled)
+            logger.info(f"Added custom pattern for {threat_type.value}")
+            return True
+        except re.error as e:
+            logger.error(f"Invalid regex pattern: {e}")
+            return False
+
+    def check_rate_limit(
+        self,
+        user_id: Optional[int] = None,
+        api_key_id: Optional[int] = None,
+        ip_address: Optional[str] = None,
+    ) -> bool:
         """Check if user/IP has exceeded threat rate limit"""
         if not self.policy.enabled:
             return True
@@ -368,13 +428,13 @@ class PromptSecurityScanner:
 
         return threat_count < self.policy.rate_limit_threshold
 
-    def get_security_stats(self, hours: int = 24) -> Dict:
+    def get_security_stats(self, hours: int = 24) -> Dict[str, Any]:
         """Get security statistics for the specified time period"""
         since = datetime.utcnow() - timedelta(hours=hours)
 
         logs = self.db(self.db.security_logs.timestamp > since).select()
 
-        stats = {
+        stats: Dict[str, Any] = {
             "total_threats": len(logs),
             "blocked_requests": len([log for log in logs if log.blocked]),
             "threat_types": {},

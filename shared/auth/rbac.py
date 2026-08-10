@@ -65,6 +65,9 @@ class Permission(Enum):
     PROXY_USE = "proxy:use"
     PROXY_ROUTE = "proxy:route"
 
+    # Memory (org-scoped shared memory moderation)
+    MEMORY_MODERATE = "memory:moderate"
+
 
 @dataclass
 class UserContext:
@@ -108,6 +111,7 @@ ROLE_PERMISSIONS = {
         Permission.LLM_MODELS,
         Permission.PROXY_USE,
         Permission.PROXY_ROUTE,
+        Permission.MEMORY_MODERATE,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,
@@ -123,6 +127,7 @@ ROLE_PERMISSIONS = {
         Permission.QUOTA_RESET,  # For assigned orgs
         Permission.ANALYTICS_READ,
         Permission.PROXY_USE,
+        Permission.MEMORY_MODERATE,
     },
     Role.REPORTER: {
         Permission.SYSTEM_HEALTH,
@@ -164,7 +169,11 @@ class RBACManager:
 
     def authenticate_user(self, username: str, password: str) -> UserContext:
         """Authenticate user with username/password"""
-        user = self.db((self.db.users.username == username) & (self.db.users.enabled is True)).select().first()
+        user = (
+            self.db((self.db.users.username == username) & (self.db.users.enabled == True))  # noqa: E712
+            .select()
+            .first()
+        )
 
         if not user:
             raise AuthenticationError("Invalid username or password")
@@ -185,7 +194,7 @@ class RBACManager:
             raise AuthenticationError("Invalid API key format")
 
         # Find API key by checking hash
-        api_keys = self.db((self.db.api_keys.enabled is True)).select()
+        api_keys = self.db((self.db.api_keys.enabled == True)).select()  # noqa: E712
 
         for key_record in api_keys:
             if bcrypt.verify(api_key, key_record.key_hash):

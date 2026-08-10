@@ -64,7 +64,7 @@ def make_mock_route(model_id=1, synced=False):
 class TestListAllOllamaModels:
     """Tests for GET /ollama/models"""
 
-    def test_list_models_admin_success(self, app_mock_db, client, auth_headers):
+    async def test_list_models_admin_success(self, app_mock_db, client, auth_headers):
         """Admin can list all models with deployment info and route status."""
         deployment = make_mock_deployment(dep_id=1, name="node-1")
         model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
@@ -77,10 +77,10 @@ class TestListAllOllamaModels:
                 make_select_result([route]),  # ollama_model_routes
             ]
 
-            resp = client.get("/api/v1/ollama/models", headers=auth_headers)
+            resp = await client.get("/api/v1/ollama/models", headers=auth_headers)
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["total"] == 1
         assert len(data["models"]) == 1
         assert data["models"][0]["model_name"] == "llama3.2"
@@ -88,26 +88,26 @@ class TestListAllOllamaModels:
         assert data["models"][0]["route_synced"] is True
         assert data["models"][0]["route_id"] == "route-001"
 
-    def test_list_models_empty(self, app_mock_db, client, auth_headers):
+    async def test_list_models_empty(self, app_mock_db, client, auth_headers):
         """List returns empty array when no models assigned."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.get("/api/v1/ollama/models", headers=auth_headers)
+            resp = await client.get("/api/v1/ollama/models", headers=auth_headers)
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["total"] == 0
         assert data["models"] == []
 
-    def test_list_models_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_list_models_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.get("/api/v1/ollama/models", headers=user_auth_headers)
+        resp = await client.get("/api/v1/ollama/models", headers=user_auth_headers)
         assert resp.status_code == 403
 
-    def test_list_models_no_auth_forbidden(self, client):
+    async def test_list_models_no_auth_forbidden(self, client):
         """Missing auth header returns 401."""
-        resp = client.get("/api/v1/ollama/models")
+        resp = await client.get("/api/v1/ollama/models")
         assert resp.status_code == 401
 
 
@@ -119,7 +119,7 @@ class TestListAllOllamaModels:
 class TestListDeploymentModels:
     """Tests for GET /ollama/deployments/<id>/models"""
 
-    def test_list_deployment_models_success(self, app_mock_db, client, auth_headers):
+    async def test_list_deployment_models_success(self, app_mock_db, client, auth_headers):
         """Admin can list models for specific deployment."""
         deployment = make_mock_deployment(dep_id=1, name="node-1")
         model1 = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
@@ -135,28 +135,28 @@ class TestListDeploymentModels:
                 make_select_result([route2]),  # route for model2
             ]
 
-            resp = client.get("/api/v1/ollama/deployments/1/models", headers=auth_headers)
+            resp = await client.get("/api/v1/ollama/deployments/1/models", headers=auth_headers)
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["deployment_id"] == 1
         assert data["deployment_name"] == "node-1"
         assert data["total"] == 2
         assert len(data["models"]) == 2
 
-    def test_list_deployment_models_deployment_not_found(self, app_mock_db, client, auth_headers):
+    async def test_list_deployment_models_deployment_not_found(self, app_mock_db, client, auth_headers):
         """404 when deployment doesn't exist."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.get("/api/v1/ollama/deployments/999/models", headers=auth_headers)
+            resp = await client.get("/api/v1/ollama/deployments/999/models", headers=auth_headers)
 
         assert resp.status_code == 404
-        assert "Deployment not found" in resp.get_json()["error"]
+        assert "Deployment not found" in (await resp.get_json())["error"]
 
-    def test_list_deployment_models_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_list_deployment_models_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.get("/api/v1/ollama/deployments/1/models", headers=user_auth_headers)
+        resp = await client.get("/api/v1/ollama/deployments/1/models", headers=user_auth_headers)
         assert resp.status_code == 403
 
 
@@ -168,7 +168,7 @@ class TestListDeploymentModels:
 class TestAssignModelToDeployment:
     """Tests for POST /ollama/models/assign"""
 
-    def test_assign_model_success(self, app_mock_db, client, auth_headers):
+    async def test_assign_model_success(self, app_mock_db, client, auth_headers):
         """Admin can assign model to deployment."""
         deployment = make_mock_deployment(dep_id=1)
         app_mock_db.return_value.ollama_models.insert.return_value = 1
@@ -180,38 +180,38 @@ class TestAssignModelToDeployment:
             ]
             app_mock_db.return_value.ollama_models.insert.return_value = 1
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/assign",
                 json={"deployment_id": 1, "model_name": "llama3.2", "sync_to_ailb": False},
                 headers=auth_headers,
             )
 
         assert resp.status_code == 201
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["success"] is True
         assert data["model_id"] == 1
 
-    def test_assign_model_missing_required_field(self, client, auth_headers):
+    async def test_assign_model_missing_required_field(self, client, auth_headers):
         """400 when required field missing."""
-        resp = client.post("/api/v1/ollama/models/assign", json={"deployment_id": 1}, headers=auth_headers)
+        resp = await client.post("/api/v1/ollama/models/assign", json={"deployment_id": 1}, headers=auth_headers)
         assert resp.status_code == 400
-        assert "model_name is required" in resp.get_json()["error"]
+        assert "model_name is required" in (await resp.get_json())["error"]
 
-    def test_assign_model_no_deployment(self, app_mock_db, client, auth_headers):
+    async def test_assign_model_no_deployment(self, app_mock_db, client, auth_headers):
         """404 when deployment not found."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/assign",
                 json={"deployment_id": 999, "model_name": "llama3.2"},
                 headers=auth_headers,
             )
 
         assert resp.status_code == 404
-        assert "Deployment not found" in resp.get_json()["error"]
+        assert "Deployment not found" in (await resp.get_json())["error"]
 
-    def test_assign_model_already_assigned(self, app_mock_db, client, auth_headers):
+    async def test_assign_model_already_assigned(self, app_mock_db, client, auth_headers):
         """409 when model already assigned to deployment."""
         deployment = make_mock_deployment(dep_id=1)
         existing_model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
@@ -222,18 +222,18 @@ class TestAssignModelToDeployment:
                 make_select_result([existing_model]),  # existing model check
             ]
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/assign",
                 json={"deployment_id": 1, "model_name": "llama3.2"},
                 headers=auth_headers,
             )
 
         assert resp.status_code == 409
-        assert "already assigned" in resp.get_json()["error"]
+        assert "already assigned" in (await resp.get_json())["error"]
 
-    def test_assign_model_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_assign_model_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.post(
+        resp = await client.post(
             "/api/v1/ollama/models/assign",
             json={"deployment_id": 1, "model_name": "llama3.2"},
             headers=user_auth_headers,
@@ -249,7 +249,7 @@ class TestAssignModelToDeployment:
 class TestReassignModel:
     """Tests for POST /ollama/models/<id>/reassign"""
 
-    def test_reassign_model_success(self, app_mock_db, client, auth_headers):
+    async def test_reassign_model_success(self, app_mock_db, client, auth_headers):
         """Admin can reassign model to different deployment."""
         new_deployment = make_mock_deployment(dep_id=2, name="node-2")
         model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
@@ -261,31 +261,31 @@ class TestReassignModel:
                 make_select_result([]),  # existing model on new deployment
             ]
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/1/reassign",
                 json={"new_deployment_id": 2, "sync_to_ailb": False},
                 headers=auth_headers,
             )
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["success"] is True
         assert data["old_deployment_id"] == 1
         assert data["new_deployment_id"] == 2
 
-    def test_reassign_model_not_found(self, app_mock_db, client, auth_headers):
+    async def test_reassign_model_not_found(self, app_mock_db, client, auth_headers):
         """404 when model not found."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/999/reassign", json={"new_deployment_id": 2}, headers=auth_headers
             )
 
         assert resp.status_code == 404
-        assert "Model not found" in resp.get_json()["error"]
+        assert "Model not found" in (await resp.get_json())["error"]
 
-    def test_reassign_model_new_deployment_not_found(self, app_mock_db, client, auth_headers):
+    async def test_reassign_model_new_deployment_not_found(self, app_mock_db, client, auth_headers):
         """404 when new deployment not found."""
         model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
 
@@ -295,16 +295,18 @@ class TestReassignModel:
                 make_select_result([]),  # new deployment not found
             ]
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/1/reassign", json={"new_deployment_id": 999}, headers=auth_headers
             )
 
         assert resp.status_code == 404
-        assert "New deployment not found" in resp.get_json()["error"]
+        assert "New deployment not found" in (await resp.get_json())["error"]
 
-    def test_reassign_model_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_reassign_model_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.post("/api/v1/ollama/models/1/reassign", json={"new_deployment_id": 2}, headers=user_auth_headers)
+        resp = await client.post(
+            "/api/v1/ollama/models/1/reassign", json={"new_deployment_id": 2}, headers=user_auth_headers
+        )
         assert resp.status_code == 403
 
 
@@ -316,33 +318,33 @@ class TestReassignModel:
 class TestUnassignModel:
     """Tests for DELETE /ollama/models/<id>"""
 
-    def test_unassign_model_success(self, app_mock_db, client, auth_headers):
+    async def test_unassign_model_success(self, app_mock_db, client, auth_headers):
         """Admin can unassign model."""
         model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
 
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([model])
 
-            resp = client.delete("/api/v1/ollama/models/1", headers=auth_headers)
+            resp = await client.delete("/api/v1/ollama/models/1", headers=auth_headers)
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["success"] is True
         assert data["deployment_id"] == 1
 
-    def test_unassign_model_not_found(self, app_mock_db, client, auth_headers):
+    async def test_unassign_model_not_found(self, app_mock_db, client, auth_headers):
         """404 when model not found."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.delete("/api/v1/ollama/models/999", headers=auth_headers)
+            resp = await client.delete("/api/v1/ollama/models/999", headers=auth_headers)
 
         assert resp.status_code == 404
-        assert "Model not found" in resp.get_json()["error"]
+        assert "Model not found" in (await resp.get_json())["error"]
 
-    def test_unassign_model_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_unassign_model_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.delete("/api/v1/ollama/models/1", headers=user_auth_headers)
+        resp = await client.delete("/api/v1/ollama/models/1", headers=user_auth_headers)
         assert resp.status_code == 403
 
 
@@ -354,7 +356,7 @@ class TestUnassignModel:
 class TestSyncModelRoute:
     """Tests for POST /ollama/models/<id>/sync"""
 
-    def test_sync_model_route_success(self, app_mock_db, client, auth_headers):
+    async def test_sync_model_route_success(self, app_mock_db, client, auth_headers):
         """Admin can sync model route to AILB."""
         model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
 
@@ -368,25 +370,25 @@ class TestSyncModelRoute:
                 sync_svc.sync_ollama_deployment.return_value = sync_result
                 sync_svc.get_model_route_status.return_value = {"synced": True, "route_id": "route-001"}
 
-                resp = client.post("/api/v1/ollama/models/1/sync", headers=auth_headers)
+                resp = await client.post("/api/v1/ollama/models/1/sync", headers=auth_headers)
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["success"] is True
 
-    def test_sync_model_route_not_found(self, app_mock_db, client, auth_headers):
+    async def test_sync_model_route_not_found(self, app_mock_db, client, auth_headers):
         """404 when model not found."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.post("/api/v1/ollama/models/999/sync", headers=auth_headers)
+            resp = await client.post("/api/v1/ollama/models/999/sync", headers=auth_headers)
 
         assert resp.status_code == 404
-        assert "Model not found" in resp.get_json()["error"]
+        assert "Model not found" in (await resp.get_json())["error"]
 
-    def test_sync_model_route_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_sync_model_route_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.post("/api/v1/ollama/models/1/sync", headers=user_auth_headers)
+        resp = await client.post("/api/v1/ollama/models/1/sync", headers=user_auth_headers)
         assert resp.status_code == 403
 
 
@@ -398,7 +400,7 @@ class TestSyncModelRoute:
 class TestGetModelRouteStatus:
     """Tests for GET /ollama/models/<id>/route-status"""
 
-    def test_get_model_route_status_success(self, app_mock_db, client, auth_headers):
+    async def test_get_model_route_status_success(self, app_mock_db, client, auth_headers):
         """Admin can get model route status."""
         model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
 
@@ -409,26 +411,26 @@ class TestGetModelRouteStatus:
                 sync_service_mock.return_value = sync_svc
                 sync_svc.get_model_route_status.return_value = {"synced": True, "route_id": "route-001"}
 
-                resp = client.get("/api/v1/ollama/models/1/route-status", headers=auth_headers)
+                resp = await client.get("/api/v1/ollama/models/1/route-status", headers=auth_headers)
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["synced"] is True
         assert data["route_id"] == "route-001"
 
-    def test_get_model_route_status_not_found(self, app_mock_db, client, auth_headers):
+    async def test_get_model_route_status_not_found(self, app_mock_db, client, auth_headers):
         """404 when model not found."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.get("/api/v1/ollama/models/999/route-status", headers=auth_headers)
+            resp = await client.get("/api/v1/ollama/models/999/route-status", headers=auth_headers)
 
         assert resp.status_code == 404
-        assert "Model not found" in resp.get_json()["error"]
+        assert "Model not found" in (await resp.get_json())["error"]
 
-    def test_get_model_route_status_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_get_model_route_status_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.get("/api/v1/ollama/models/1/route-status", headers=user_auth_headers)
+        resp = await client.get("/api/v1/ollama/models/1/route-status", headers=user_auth_headers)
         assert resp.status_code == 403
 
 
@@ -440,7 +442,7 @@ class TestGetModelRouteStatus:
 class TestBulkAssignModels:
     """Tests for POST /ollama/models/bulk-assign"""
 
-    def test_bulk_assign_success(self, app_mock_db, client, auth_headers):
+    async def test_bulk_assign_success(self, app_mock_db, client, auth_headers):
         """Admin can bulk assign models."""
         dep1 = make_mock_deployment(dep_id=1, name="node-1")
         dep2 = make_mock_deployment(dep_id=2, name="node-2")
@@ -454,7 +456,7 @@ class TestBulkAssignModels:
                 make_select_result([]),  # model 2 not existing
             ]
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/bulk-assign",
                 json={
                     "assignments": [
@@ -467,17 +469,17 @@ class TestBulkAssignModels:
             )
 
         assert resp.status_code == 201
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["success"] is True
         assert data["total_assigned"] == 2
 
-    def test_bulk_assign_missing_assignments(self, client, auth_headers):
+    async def test_bulk_assign_missing_assignments(self, client, auth_headers):
         """400 when assignments array missing."""
-        resp = client.post("/api/v1/ollama/models/bulk-assign", json={}, headers=auth_headers)
+        resp = await client.post("/api/v1/ollama/models/bulk-assign", json={}, headers=auth_headers)
         assert resp.status_code == 400
-        assert "assignments array is required" in resp.get_json()["error"]
+        assert "assignments array is required" in (await resp.get_json())["error"]
 
-    def test_bulk_assign_partial_success(self, app_mock_db, client, auth_headers):
+    async def test_bulk_assign_partial_success(self, app_mock_db, client, auth_headers):
         """Bulk assign returns partial results on mixed success/failure."""
         dep1 = make_mock_deployment(dep_id=1, name="node-1")
         app_mock_db.return_value.ollama_models.insert.return_value = 1
@@ -489,7 +491,7 @@ class TestBulkAssignModels:
                 make_select_result([]),  # deployment 2 not found
             ]
 
-            resp = client.post(
+            resp = await client.post(
                 "/api/v1/ollama/models/bulk-assign",
                 json={
                     "assignments": [
@@ -502,13 +504,15 @@ class TestBulkAssignModels:
             )
 
         assert resp.status_code == 201
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["total_assigned"] == 1
         assert data["total_failed"] == 1
 
-    def test_bulk_assign_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_bulk_assign_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.post("/api/v1/ollama/models/bulk-assign", json={"assignments": []}, headers=user_auth_headers)
+        resp = await client.post(
+            "/api/v1/ollama/models/bulk-assign", json={"assignments": []}, headers=user_auth_headers
+        )
         assert resp.status_code == 403
 
 
@@ -520,7 +524,7 @@ class TestBulkAssignModels:
 class TestSyncDeploymentModels:
     """Tests for POST /ollama/deployments/<id>/sync-models"""
 
-    def test_sync_deployment_models_success(self, app_mock_db, client, auth_headers):
+    async def test_sync_deployment_models_success(self, app_mock_db, client, auth_headers):
         """Admin can sync all models for deployment."""
         deployment = make_mock_deployment(dep_id=1, name="node-1")
         model1 = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
@@ -543,24 +547,24 @@ class TestSyncDeploymentModels:
                     {"synced": True, "route_id": "route-002"},
                 ]
 
-                resp = client.post("/api/v1/ollama/deployments/1/sync-models", headers=auth_headers)
+                resp = await client.post("/api/v1/ollama/deployments/1/sync-models", headers=auth_headers)
 
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = await resp.get_json()
         assert data["success"] is True
         assert data["models_synced"] == 2
 
-    def test_sync_deployment_models_deployment_not_found(self, app_mock_db, client, auth_headers):
+    async def test_sync_deployment_models_deployment_not_found(self, app_mock_db, client, auth_headers):
         """404 when deployment not found."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
 
-            resp = client.post("/api/v1/ollama/deployments/999/sync-models", headers=auth_headers)
+            resp = await client.post("/api/v1/ollama/deployments/999/sync-models", headers=auth_headers)
 
         assert resp.status_code == 404
-        assert "Deployment not found" in resp.get_json()["error"]
+        assert "Deployment not found" in (await resp.get_json())["error"]
 
-    def test_sync_deployment_models_non_admin_forbidden(self, client, user_auth_headers):
+    async def test_sync_deployment_models_non_admin_forbidden(self, client, user_auth_headers):
         """Non-admin users get 403."""
-        resp = client.post("/api/v1/ollama/deployments/1/sync-models", headers=user_auth_headers)
+        resp = await client.post("/api/v1/ollama/deployments/1/sync-models", headers=user_auth_headers)
         assert resp.status_code == 403

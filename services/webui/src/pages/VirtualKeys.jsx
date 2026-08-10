@@ -241,7 +241,7 @@ function VirtualKeys() {
         <div className="modal">
           <div className="modal-content key-created-modal">
             <h2>Key Created Successfully</h2>
-            <p>Please copy and save this key now. You won't be able to see it again.</p>
+            <p>Please copy and save this key now. You won&apos;t be able to see it again.</p>
             <div className="key-display-large">
               <div className="key-value">{createdKeyValue}</div>
               <button className="btn-primary" onClick={() => copyToClipboard(createdKeyValue)}>

@@ -30,6 +30,26 @@ management:
     LOG_LEVEL: INFO
     FLASK_ENV: production
 
+# AIProxy Service - Beta
+# NOTE: prod values (not in scope here) MUST pin proxy.image.digest per house SHA256 rule.
+proxy:
+  replicaCount: 1
+  image:
+    repository: proxy
+    tag: beta-1776182785
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  env:
+    LOG_LEVEL: INFO
+
 # WebUI Service - Beta
 webui:
   replicaCount: 1
@@ -63,8 +83,8 @@ postgres:
     size: 20Gi
     storageClass: "nest-block"
 
-# Redis - Beta
-redis:
+# Valkey - Beta
+valkey:
   replicaCount: 1
 
   resources:
@@ -113,6 +133,13 @@ httproute:
   gatewayNamespace: gateway
   host: "waddleai.penguintech.cloud"
   rules:
+    - path: /v1/
+      service: "waddleai-proxy"
+      port: 8080
+      timeoutSeconds: 600
+    - path: /mem0/
+      service: "waddleai-proxy"
+      port: 8080
     - path: /api
       service: "waddleai-management"
       port: 8001

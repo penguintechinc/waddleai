@@ -26,6 +26,7 @@ function UsageAnalytics() {
 
   useEffect(() => {
     fetchUsageData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchUsageData = async () => {

@@ -1,0 +1,17 @@
+{
+  "body": {
+    "created_at": "<VOLATILE>",
+    "email": "admin@localhost.local",
+    "enabled": true,
+    "id": "<VOLATILE>",
+    "organization": {
+      "id": "<VOLATILE>",
+      "name": "default"
+    },
+    "role": "admin",
+    "token_quota_daily": 999999,
+    "token_quota_monthly": 999999999,
+    "username": "admin"
+  },
+  "status": 200
+}

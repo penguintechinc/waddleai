@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Dict, Generator
+from typing import AsyncGenerator, Dict
 from unittest.mock import MagicMock, patch
 
 import jwt as _jwt
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../services/ma
 
 
 # ---------------------------------------------------------------------------
-# Flask route-test infrastructure
+# Quart route-test infrastructure
 # ---------------------------------------------------------------------------
 
 
@@ -263,7 +263,7 @@ ROUTE_MODULES = [
 
 @pytest.fixture(scope="module")
 def flask_app():
-    """Flask test app with mocked DB and Redis, module-scoped for speed."""
+    """Quart test app with mocked DB and Redis, module-scoped for speed."""
     mock_db = _make_mock_db()
     mock_redis = _make_mock_redis()
 
@@ -312,8 +312,8 @@ def flask_app():
 
 
 @pytest.fixture
-def client(flask_app) -> Generator:
-    with flask_app.test_client() as c:
+async def client(flask_app) -> AsyncGenerator:
+    async with flask_app.test_client() as c:
         yield c
 
 

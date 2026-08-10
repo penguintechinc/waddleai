@@ -15,6 +15,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -191,6 +192,13 @@ class LlamaCppDeployment(Base):
     k8s_daemonset_name = Column(String(255))
     node_selector = Column(JSON)   # e.g. {"waddleai/gpu-tier": "a100"}
     node_affinity = Column(JSON)   # optional advanced scheduling
+    model_cache_claim = Column(String(255))  # PVC name for model cache; None = emptyDir
+
+    # Resource limits for containers
+    cpu_request = Column(String(50))      # e.g. "2000m", "2"
+    cpu_limit = Column(String(50))        # e.g. "4000m", "4"
+    memory_request = Column(String(50))   # e.g. "8Gi", "8192Mi"
+    memory_limit = Column(String(50))     # e.g. "16Gi", "16384Mi"
 
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -227,6 +235,8 @@ class VirtualKey(Base):
     budget_limit_monthly = Column(Integer)
     tpm_limit = Column(Integer)  # Tokens per minute
     rpm_limit = Column(Integer)  # Requests per minute
+    budget_monthly_tokens = Column(Integer, nullable=True)  # Monthly token limit; None = unlimited
+    budget_monthly_usd = Column(Integer, nullable=True)  # Monthly USD limit in micro-USD; None = unlimited
     enabled = Column(Boolean, default=True)
     expires_at = Column(DateTime)
     last_used = Column(DateTime)
@@ -283,6 +293,8 @@ class TokenUsage(Base):
     request_count = Column(Integer, default=0)
     cost_usd_total = Column(Integer, default=0)  # Store as cents
     last_updated = Column(DateTime, default=datetime.utcnow)
+    source = Column(String(50), default="aiproxy")  # aiproxy, ailb, etc
+    estimated = Column(Boolean, default=False)  # True if usage was estimated (missing from provider)
 
 
 class UsageCache(Base):
@@ -401,6 +413,10 @@ class MemoryEmbedding(Base):
     role = Column(String(50), nullable=False)  # user, assistant
     created_at = Column(DateTime, default=datetime.utcnow)
     metadata_ = Column("metadata", JSON, default=dict)
+    # Memory access-control scope: 'user' (personal, default) | 'org' (shared).
+    # Spec §9.7 field names; v0.4 adds more scope values without renaming.
+    scope_type = Column(String(20), nullable=False, default="user", server_default="user", index=True)
+    author_user_id = Column(Integer, nullable=False, index=True)
 
 
 class RAGDocument(Base):
@@ -495,8 +511,8 @@ class ContentFilterRule(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
-        sa.Index("idx_cfr_org_enabled", "organization_id", "enabled"),
-        sa.Index("idx_cfr_target", "target"),
+        Index("idx_cfr_org_enabled", "organization_id", "enabled"),
+        Index("idx_cfr_target", "target"),
     )
 
 
@@ -518,10 +534,10 @@ class ContentFilterAuditLog(Base):
     request_id = Column(String(64), nullable=True)  # For correlation with proxy logs
 
     __table_args__ = (
-        sa.Index("idx_cfal_timestamp", "timestamp"),
-        sa.Index("idx_cfal_user", "user_id", "timestamp"),
-        sa.Index("idx_cfal_org", "organization_id", "timestamp"),
-        sa.Index("idx_cfal_action", "action_taken"),
+        Index("idx_cfal_timestamp", "timestamp"),
+        Index("idx_cfal_user", "user_id", "timestamp"),
+        Index("idx_cfal_org", "organization_id", "timestamp"),
+        Index("idx_cfal_action", "action_taken"),
     )
 
 

@@ -1,0 +1,9 @@
+{
+  "body": {
+    "error": "Insufficient permissions",
+    "required_roles": [
+      "admin"
+    ]
+  },
+  "status": 403
+}

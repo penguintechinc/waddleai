@@ -1,0 +1,30 @@
+{{- if .Values.llamacpp.enabled -}}
+{{- range .Values.llamacpp.models }}
+{{- $model := . }}
+{{- $modelName := lower $model.name }}
+{{- $modelName = regexReplaceAll "[^a-z0-9-]" $modelName "-" }}
+{{- $modelName = regexReplaceAll "-+" $modelName "-" }}
+{{- $modelName = trimSuffix "-" (trimPrefix "-" $modelName) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-llamacpp-{{ $modelName }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: llamacpp
+    app.kubernetes.io/instance-model: {{ $modelName }}
+spec:
+  type: {{ $.Values.llamacpp.service.type }}
+  ports:
+    - port: {{ $.Values.llamacpp.service.port }}
+      targetPort: {{ $.Values.llamacpp.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "waddleai.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: llamacpp
+    app.kubernetes.io/instance-model: {{ $modelName }}
+{{- end }}
+{{- end }}

@@ -2,10 +2,11 @@
 WaddleAI Management API v1 - User Management Endpoints
 """
 
+import asyncio
 from datetime import datetime
 
-from flask import g, jsonify, request
 from passlib.hash import bcrypt
+from quart import g, jsonify, request
 
 from ...extensions import db
 from . import api_v1_bp
@@ -14,17 +15,21 @@ from .auth import require_auth, require_role
 
 @api_v1_bp.route("/users", methods=["GET"])
 @require_auth
-def list_users():
+async def list_users():
     """List users (filtered by role permissions)"""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
+    current_user_id = g.user["user_id"]
 
-    if user_role == "admin":
-        users = db(db.users.id > 0).select()
-    elif user_role == "resource_manager":
-        users = db(db.users.organization_id == org_id).select()
-    else:
-        users = db(db.users.id == g.user["user_id"]).select()
+    def _fetch():
+        if user_role == "admin":
+            return db(db.users.id > 0).select()
+        elif user_role == "resource_manager":
+            return db(db.users.organization_id == org_id).select()
+        else:
+            return db(db.users.id == current_user_id).select()
+
+    users = await asyncio.to_thread(_fetch)
 
     result = []
     for user in users:
@@ -46,12 +51,12 @@ def list_users():
 
 @api_v1_bp.route("/users/<int:user_id>", methods=["GET"])
 @require_auth
-def get_user(user_id):
+async def get_user(user_id):
     """Get user details"""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
-    user = db(db.users.id == user_id).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
@@ -63,7 +68,7 @@ def get_user(user_id):
         elif user_role not in ["resource_manager"] and user.id != g.user["user_id"]:
             return jsonify({"error": "Access denied"}), 403
 
-    org = db(db.organizations.id == user.organization_id).select().first()
+    org = await asyncio.to_thread(lambda: db(db.organizations.id == user.organization_id).select().first())
 
     return jsonify(
         {
@@ -86,9 +91,9 @@ def get_user(user_id):
 @api_v1_bp.route("/users", methods=["POST"])
 @require_auth
 @require_role("admin", "resource_manager")
-def create_user():
+async def create_user():
     """Create a new user"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -107,12 +112,14 @@ def create_user():
         target_org_id = org_id  # Force own organization
 
     # Check if organization exists
-    org = db(db.organizations.id == target_org_id).select().first()
+    org = await asyncio.to_thread(lambda: db(db.organizations.id == target_org_id).select().first())
     if not org:
         return jsonify({"error": "Organization not found"}), 404
 
     # Check for existing user
-    existing = db((db.users.username == data["username"]) | (db.users.email == data["email"])).select().first()
+    existing = await asyncio.to_thread(
+        lambda: db((db.users.username == data["username"]) | (db.users.email == data["email"])).select().first()
+    )
 
     if existing:
         return jsonify({"error": "Username or email already exists"}), 409
@@ -123,19 +130,23 @@ def create_user():
         role = "user"
 
     # Create user
-    user_id = db.users.insert(
-        username=data["username"],
-        email=data["email"],
-        password_hash=bcrypt.hash(data["password"]),
-        role=role,
-        organization_id=target_org_id,
-        token_quota_daily=data.get("token_quota_daily", 10000),
-        token_quota_monthly=data.get("token_quota_monthly", 100000),
-        default_model=data.get("default_model"),
-        enabled=True,
-        created_at=datetime.utcnow(),
-    )
-    db.commit()
+    def _insert():
+        new_user_id = db.users.insert(
+            username=data["username"],
+            email=data["email"],
+            password_hash=bcrypt.hash(data["password"]),
+            role=role,
+            organization_id=target_org_id,
+            token_quota_daily=data.get("token_quota_daily", 10000),
+            token_quota_monthly=data.get("token_quota_monthly", 100000),
+            default_model=data.get("default_model"),
+            enabled=True,
+            created_at=datetime.utcnow(),
+        )
+        db.commit()
+        return new_user_id
+
+    user_id = await asyncio.to_thread(_insert)
 
     return (
         jsonify(
@@ -155,9 +166,9 @@ def create_user():
 @api_v1_bp.route("/users/<int:user_id>", methods=["PUT"])
 @require_auth
 @require_role("admin", "resource_manager")
-def update_user(user_id):
+async def update_user(user_id):
     """Update user"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -165,21 +176,26 @@ def update_user(user_id):
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
-    user = db(db.users.id == user_id).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Permission check
+    # Permission check — Vuln C fix: prevent non-admin from modifying admin users
     if user_role == "resource_manager" and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
+    # Non-admin cannot modify admin users
+    if user_role != "admin" and user.role == "admin":
+        return jsonify({"error": "Cannot modify admin user"}), 403
 
     # Build update fields
     update_fields = {}
 
     if "email" in data:
         # Check email uniqueness
-        existing = db((db.users.email == data["email"]) & (db.users.id != user_id)).select().first()
+        existing = await asyncio.to_thread(
+            lambda: db((db.users.email == data["email"]) & (db.users.id != user_id)).select().first()
+        )
         if existing:
             return jsonify({"error": "Email already exists"}), 409
         update_fields["email"] = data["email"]
@@ -206,8 +222,12 @@ def update_user(user_id):
         update_fields["password_hash"] = bcrypt.hash(data["password"])
 
     if update_fields:
-        db(db.users.id == user_id).update(**update_fields)
-        db.commit()
+
+        def _update():
+            db(db.users.id == user_id).update(**update_fields)
+            db.commit()
+
+        await asyncio.to_thread(_update)
 
     return jsonify({"message": "User updated successfully"})
 
@@ -215,9 +235,9 @@ def update_user(user_id):
 @api_v1_bp.route("/users/<int:user_id>", methods=["DELETE"])
 @require_auth
 @require_role("admin")
-def delete_user(user_id):
+async def delete_user(user_id):
     """Delete user (admin only)"""
-    user = db(db.users.id == user_id).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
@@ -227,8 +247,11 @@ def delete_user(user_id):
         return jsonify({"error": "Cannot delete own account"}), 400
 
     # Soft delete by disabling
-    db(db.users.id == user_id).update(enabled=False)
-    db.commit()
+    def _disable():
+        db(db.users.id == user_id).update(enabled=False)
+        db.commit()
+
+    await asyncio.to_thread(_disable)
 
     return jsonify({"message": "User disabled successfully"})
 
@@ -236,20 +259,26 @@ def delete_user(user_id):
 @api_v1_bp.route("/users/<int:user_id>/enable", methods=["POST"])
 @require_auth
 @require_role("admin", "resource_manager")
-def enable_user(user_id):
+async def enable_user(user_id):
     """Enable a disabled user"""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
-    user = db(db.users.id == user_id).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
 
     if user_role == "resource_manager" and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
+    # Vuln C fix: prevent non-admin from enabling admin users
+    if user_role != "admin" and user.role == "admin":
+        return jsonify({"error": "Cannot enable admin user"}), 403
 
-    db(db.users.id == user_id).update(enabled=True)
-    db.commit()
+    def _enable():
+        db(db.users.id == user_id).update(enabled=True)
+        db.commit()
+
+    await asyncio.to_thread(_enable)
 
     return jsonify({"message": "User enabled successfully"})

@@ -1,0 +1,6 @@
+{
+  "body": {
+    "error": "invalid scope"
+  },
+  "status": 400
+}

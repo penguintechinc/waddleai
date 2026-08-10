@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import App from '../App';
 
@@ -10,6 +10,8 @@ vi.mock('../pages/Providers.css', () => ({}));
 vi.mock('../pages/OllamaDeployments.css', () => ({}));
 vi.mock('../pages/VirtualKeys.css', () => ({}));
 vi.mock('../pages/UsageAnalytics.css', () => ({}));
+vi.mock('../pages/Routing.css', () => ({}));
+vi.mock('../pages/Memory.css', () => ({}));
 vi.mock('../components/Header.css', () => ({}));
 
 // Mock axios used by child pages

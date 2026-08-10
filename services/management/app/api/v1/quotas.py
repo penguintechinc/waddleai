@@ -2,9 +2,10 @@
 WaddleAI Management API v1 - Quota Management Endpoints
 """
 
+import asyncio
 from datetime import date
 
-from flask import g, jsonify, request
+from quart import g, jsonify, request
 
 from ...extensions import db
 from . import api_v1_bp
@@ -14,19 +15,34 @@ from .auth import require_auth, require_role
 @api_v1_bp.route("/quotas", methods=["GET"])
 @require_auth
 @require_role("admin", "resource_manager")
-def list_quotas():
+async def list_quotas():
     """List all quota configurations"""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
+    def _fetch():
+        if user_role == "admin":
+            orgs = db(db.organizations.id > 0).select()
+        else:
+            orgs = db(db.organizations.id == org_id).select()
+
+        if user_role == "admin":
+            users = db(db.users.id > 0).select()
+        else:
+            users = db(db.users.organization_id == org_id).select()
+
+        if user_role == "admin":
+            keys = db(db.virtual_keys.id > 0).select()
+        else:
+            keys = db(db.virtual_keys.organization_id == org_id).select()
+
+        return orgs, users, keys
+
+    orgs, users, keys = await asyncio.to_thread(_fetch)
+
     quotas = []
 
     # Organization quotas
-    if user_role == "admin":
-        orgs = db(db.organizations.id > 0).select()
-    else:
-        orgs = db(db.organizations.id == org_id).select()
-
     for org in orgs:
         quotas.append(
             {
@@ -40,11 +56,6 @@ def list_quotas():
         )
 
     # User quotas
-    if user_role == "admin":
-        users = db(db.users.id > 0).select()
-    else:
-        users = db(db.users.organization_id == org_id).select()
-
     for user in users:
         quotas.append(
             {
@@ -59,11 +70,6 @@ def list_quotas():
         )
 
     # Virtual key quotas
-    if user_role == "admin":
-        keys = db(db.virtual_keys.id > 0).select()
-    else:
-        keys = db(db.virtual_keys.organization_id == org_id).select()
-
     for key in keys:
         quotas.append(
             {
@@ -86,9 +92,9 @@ def list_quotas():
 @api_v1_bp.route("/quotas/user/<int:user_id>", methods=["PUT"])
 @require_auth
 @require_role("admin", "resource_manager")
-def set_user_quota(user_id):
+async def set_user_quota(user_id):
     """Set user quota"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -96,7 +102,7 @@ def set_user_quota(user_id):
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
-    user = db(db.users.id == user_id).select().first()
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
@@ -104,6 +110,9 @@ def set_user_quota(user_id):
     # Permission check
     if user_role == "resource_manager" and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
+    # Vuln C fix: prevent non-admin from modifying admin quota
+    if user_role != "admin" and user.role == "admin":
+        return jsonify({"error": "Cannot modify admin quota"}), 403
 
     update_fields = {}
 
@@ -114,8 +123,12 @@ def set_user_quota(user_id):
         update_fields["token_quota_monthly"] = data["token_quota_monthly"]
 
     if update_fields:
-        db(db.users.id == user_id).update(**update_fields)
-        db.commit()
+
+        def _update():
+            db(db.users.id == user_id).update(**update_fields)
+            db.commit()
+
+        await asyncio.to_thread(_update)
 
     return jsonify({"user_id": user_id, "username": user.username, "message": "User quota updated successfully"})
 
@@ -123,14 +136,14 @@ def set_user_quota(user_id):
 @api_v1_bp.route("/quotas/org/<int:org_id>", methods=["PUT"])
 @require_auth
 @require_role("admin")
-def set_organization_quota(org_id):
+async def set_organization_quota(org_id):
     """Set organization quota (admin only)"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
 
-    org = db(db.organizations.id == org_id).select().first()
+    org = await asyncio.to_thread(lambda: db(db.organizations.id == org_id).select().first())
 
     if not org:
         return jsonify({"error": "Organization not found"}), 404
@@ -144,8 +157,12 @@ def set_organization_quota(org_id):
         update_fields["token_quota_monthly"] = data["token_quota_monthly"]
 
     if update_fields:
-        db(db.organizations.id == org_id).update(**update_fields)
-        db.commit()
+
+        def _update():
+            db(db.organizations.id == org_id).update(**update_fields)
+            db.commit()
+
+        await asyncio.to_thread(_update)
 
     return jsonify(
         {"organization_id": org_id, "organization_name": org.name, "message": "Organization quota updated successfully"}
@@ -154,9 +171,9 @@ def set_organization_quota(org_id):
 
 @api_v1_bp.route("/quotas/key/<int:key_id>", methods=["PUT"])
 @require_auth
-def set_key_quota(key_id):
+async def set_key_quota(key_id):
     """Set virtual key quota"""
-    data = request.get_json()
+    data = await request.get_json()
 
     if not data:
         return jsonify({"error": "Request body required"}), 400
@@ -165,7 +182,7 @@ def set_key_quota(key_id):
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
 
-    key = db(db.virtual_keys.id == key_id).select().first()
+    key = await asyncio.to_thread(lambda: db(db.virtual_keys.id == key_id).select().first())
 
     if not key:
         return jsonify({"error": "Key not found"}), 404
@@ -194,8 +211,12 @@ def set_key_quota(key_id):
     if update_fields:
         # Mark for re-sync
         update_fields["ailb_sync_status"] = "pending"
-        db(db.virtual_keys.id == key_id).update(**update_fields)
-        db.commit()
+
+        def _update():
+            db(db.virtual_keys.id == key_id).update(**update_fields)
+            db.commit()
+
+        await asyncio.to_thread(_update)
 
     return jsonify(
         {"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully. Re-sync to AILB required."}
@@ -204,7 +225,7 @@ def set_key_quota(key_id):
 
 @api_v1_bp.route("/quotas/status/<int:entity_id>", methods=["GET"])
 @require_auth
-def get_quota_status(entity_id):
+async def get_quota_status(entity_id):
     """Get current quota status for an entity"""
     entity_type = request.args.get("type", "key")  # key, user, or org
 
@@ -216,21 +237,34 @@ def get_quota_status(entity_id):
     month_start = today.replace(day=1)
 
     if entity_type == "key":
-        key = db(db.virtual_keys.id == entity_id).select().first()
+
+        def _fetch_key():
+            key = db(db.virtual_keys.id == entity_id).select().first()
+            if not key:
+                return None, None, None
+            daily_usage = (
+                db((db.token_usage.virtual_key_id == entity_id) & (db.token_usage.date == today)).select().first()
+            )
+            monthly_usage = db(
+                (db.token_usage.virtual_key_id == entity_id) & (db.token_usage.date >= month_start)
+            ).select()
+            return key, daily_usage, monthly_usage
+
+        key, daily_usage, monthly_usage = await asyncio.to_thread(_fetch_key)
+
         if not key:
             return jsonify({"error": "Key not found"}), 404
 
-        # Permission check
-        if user_role not in ["admin", "reporter"]:
-            if user_role == "resource_manager" and key.organization_id != org_id:
+        # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter
+        if user_role == "admin":
+            # Admin can access any key
+            pass
+        elif user_role == "resource_manager":
+            if key.organization_id != org_id:
                 return jsonify({"error": "Access denied"}), 403
-            elif user_role not in ["resource_manager"] and key.user_id != user_id:
+        else:  # user, reporter, or any other role
+            if key.user_id != user_id:
                 return jsonify({"error": "Access denied"}), 403
-
-        # Get usage
-        daily_usage = db((db.token_usage.virtual_key_id == entity_id) & (db.token_usage.date == today)).select().first()
-
-        monthly_usage = db((db.token_usage.virtual_key_id == entity_id) & (db.token_usage.date >= month_start)).select()
 
         daily_tokens = daily_usage.waddleai_tokens if daily_usage else 0
         monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
@@ -265,7 +299,19 @@ def get_quota_status(entity_id):
         )
 
     elif entity_type == "user":
-        user = db(db.users.id == entity_id).select().first()
+
+        def _fetch_user():
+            user = db(db.users.id == entity_id).select().first()
+            if not user:
+                return None, None, None
+            daily_usage = db((db.token_usage.user_id == entity_id) & (db.token_usage.date == today)).select()
+            monthly_usage = db(
+                (db.token_usage.user_id == entity_id) & (db.token_usage.date >= month_start)
+            ).select()
+            return user, daily_usage, monthly_usage
+
+        user, daily_usage, monthly_usage = await asyncio.to_thread(_fetch_user)
+
         if not user:
             return jsonify({"error": "User not found"}), 404
 
@@ -275,10 +321,6 @@ def get_quota_status(entity_id):
                 return jsonify({"error": "Access denied"}), 403
             elif user_role not in ["resource_manager"] and user.id != user_id:
                 return jsonify({"error": "Access denied"}), 403
-
-        daily_usage = db((db.token_usage.user_id == entity_id) & (db.token_usage.date == today)).select()
-
-        monthly_usage = db((db.token_usage.user_id == entity_id) & (db.token_usage.date >= month_start)).select()
 
         daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)
         monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
@@ -308,19 +350,27 @@ def get_quota_status(entity_id):
         )
 
     elif entity_type == "org":
-        org = db(db.organizations.id == entity_id).select().first()
+
+        def _fetch_org():
+            org = db(db.organizations.id == entity_id).select().first()
+            if not org:
+                return None, None, None
+            daily_usage = db(
+                (db.token_usage.organization_id == entity_id) & (db.token_usage.date == today)
+            ).select()
+            monthly_usage = db(
+                (db.token_usage.organization_id == entity_id) & (db.token_usage.date >= month_start)
+            ).select()
+            return org, daily_usage, monthly_usage
+
+        org, daily_usage, monthly_usage = await asyncio.to_thread(_fetch_org)
+
         if not org:
             return jsonify({"error": "Organization not found"}), 404
 
         # Permission check
         if user_role not in ["admin"] and entity_id != org_id:
             return jsonify({"error": "Access denied"}), 403
-
-        daily_usage = db((db.token_usage.organization_id == entity_id) & (db.token_usage.date == today)).select()
-
-        monthly_usage = db(
-            (db.token_usage.organization_id == entity_id) & (db.token_usage.date >= month_start)
-        ).select()
 
         daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)
         monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)

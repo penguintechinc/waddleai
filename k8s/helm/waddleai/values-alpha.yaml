@@ -22,6 +22,24 @@ management:
     LOG_LEVEL: DEBUG
     FLASK_ENV: development
 
+# AIProxy Service - Alpha
+proxy:
+  replicaCount: 1
+  image:
+    tag: alpha-latest
+    pullPolicy: Never
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  env:
+    LOG_LEVEL: DEBUG
+
 # WebUI Service - Alpha
 webui:
   replicaCount: 1
@@ -53,8 +71,8 @@ postgres:
     enabled: true
     size: 5Gi
 
-# Redis - Alpha
-redis:
+# Valkey - Alpha
+valkey:
   replicaCount: 1
 
   resources:

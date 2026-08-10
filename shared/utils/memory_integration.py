@@ -41,6 +41,10 @@ class MemoryEntry:
     embedding: Optional[List[float]]
     created_at: datetime
     relevance_score: float = 0.0
+    # Access-control scope: 'user' (personal, default) | 'org' (shared).
+    scope_type: str = "user"
+    # Who wrote it; 0 means "same as user_id" (resolved at store time).
+    author_user_id: int = 0
 
 
 @dataclass
@@ -77,8 +81,13 @@ class MemoryStore(ABC):
         session_id: Optional[str] = None,
         limit: int = 10,
         min_relevance: float = 0.7,
+        scope: str = "user",
     ) -> List[MemoryEntry]:
-        """Search for relevant memories"""
+        """Search for relevant memories.
+
+        scope: 'user' (caller's personal rows), 'org' (org-shared rows),
+        'all' (merged personal + org, relevance-ranked).
+        """
         pass
 
     @abstractmethod
@@ -134,7 +143,7 @@ class Mem0MemoryStore(MemoryStore):
             if not self.client:
                 await self.initialize()
 
-            # Prepare metadata
+            # Prepare metadata — 'scope' mirror + author for the schemaless backend
             metadata = {
                 **entry.metadata,
                 "user_id": entry.user_id,
@@ -142,10 +151,14 @@ class Mem0MemoryStore(MemoryStore):
                 "session_id": entry.session_id or "",
                 "created_at": entry.created_at.isoformat(),
                 "memory_id": entry.id,
+                "scope": entry.scope_type,
+                "author_user_id": entry.author_user_id or entry.user_id,
             }
 
-            # Store in mem0
-            self.client.add(entry.content, user_id=str(entry.user_id), metadata=metadata)
+            # mem0's API is user-keyed: org-shared entries live under a
+            # synthetic per-org user so any org member can retrieve them.
+            mem0_user = f"org-{entry.organization_id}" if entry.scope_type == "org" else str(entry.user_id)
+            self.client.add(entry.content, user_id=mem0_user, metadata=metadata)
 
             logger.debug(f"Stored memory in mem0: {entry.id}")
             return True
@@ -162,49 +175,65 @@ class Mem0MemoryStore(MemoryStore):
         session_id: Optional[str] = None,
         limit: int = 10,
         min_relevance: float = 0.7,
+        scope: str = "user",
     ) -> List[MemoryEntry]:
-        """Search memories in mem0"""
+        """Search memories in mem0.
+
+        mem0's search is user-keyed, so the merged view ('all') issues two
+        queries — the caller's personal bucket and the synthetic org bucket
+        ('org-{organization_id}') — and merges by relevance score.
+        """
         try:
             if not self.client:
                 await self.initialize()
 
-            # Search in mem0
-            results = self.client.search(query, user_id=str(user_id), limit=limit)
+            def _convert(results: list, personal_bucket: bool) -> List[MemoryEntry]:
+                memories: List[MemoryEntry] = []
+                for result in results:
+                    metadata = result.get("metadata", {})
+                    entry_scope = metadata.get("scope", "user")
+                    if personal_bucket and entry_scope == "org":
+                        continue  # org rows come from the org bucket only
+                    if metadata.get("organization_id") != organization_id:
+                        continue
+                    if session_id and metadata.get("session_id") != session_id:
+                        continue
+                    relevance_score = result.get("score", 0.0)
+                    if relevance_score < min_relevance:
+                        continue
+                    memories.append(
+                        MemoryEntry(
+                            id=metadata.get("memory_id", result.get("id", "")),
+                            user_id=metadata.get("user_id", user_id),
+                            organization_id=organization_id,
+                            session_id=metadata.get("session_id"),
+                            content=result.get("memory", ""),
+                            metadata={
+                                k: v
+                                for k, v in metadata.items()
+                                if k not in ["user_id", "organization_id", "session_id", "created_at", "memory_id"]
+                            },
+                            embedding=None,
+                            created_at=datetime.fromisoformat(
+                                metadata.get("created_at", datetime.utcnow().isoformat())
+                            ),
+                            relevance_score=relevance_score,
+                            scope_type=entry_scope,
+                            author_user_id=int(metadata.get("author_user_id", metadata.get("user_id", user_id))),
+                        )
+                    )
+                return memories
 
-            # Convert to MemoryEntry objects
-            memories = []
-            for result in results:
-                metadata = result.get("metadata", {})
+            memories: List[MemoryEntry] = []
+            if scope in ("user", "all"):
+                personal = self.client.search(query, user_id=str(user_id), limit=limit)
+                memories.extend(_convert(personal, personal_bucket=True))
+            if scope in ("org", "all"):
+                org = self.client.search(query, user_id=f"org-{organization_id}", limit=limit)
+                memories.extend(_convert(org, personal_bucket=False))
 
-                # Filter by organization and session if needed
-                if metadata.get("organization_id") != organization_id:
-                    continue
-                if session_id and metadata.get("session_id") != session_id:
-                    continue
-
-                # Check relevance
-                relevance_score = result.get("score", 0.0)
-                if relevance_score < min_relevance:
-                    continue
-
-                memory = MemoryEntry(
-                    id=metadata.get("memory_id", result.get("id", "")),
-                    user_id=user_id,
-                    organization_id=organization_id,
-                    session_id=metadata.get("session_id"),
-                    content=result.get("memory", ""),
-                    metadata={
-                        k: v
-                        for k, v in metadata.items()
-                        if k not in ["user_id", "organization_id", "session_id", "created_at", "memory_id"]
-                    },
-                    embedding=None,
-                    created_at=datetime.fromisoformat(metadata.get("created_at", datetime.utcnow().isoformat())),
-                    relevance_score=relevance_score,
-                )
-                memories.append(memory)
-
-            return memories
+            memories.sort(key=lambda m: m.relevance_score, reverse=True)
+            return memories[:limit]
 
         except Exception as e:
             logger.error(f"Failed to search memories in mem0: {e}")
@@ -349,7 +378,7 @@ class ChromaDBMemoryStore(MemoryStore):
 
         try:
             embedding = self.encoder.encode(text, convert_to_tensor=False)
-            return embedding.tolist()
+            return embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
         except Exception as e:
             logger.error(f"Failed to generate embedding: {e}")
             return None
@@ -364,7 +393,8 @@ class ChromaDBMemoryStore(MemoryStore):
             if entry.embedding is None:
                 entry.embedding = self._generate_embedding(entry.content)
 
-            # Prepare metadata
+            # Prepare metadata — 'scope' is the authoritative scope marker on
+            # this schemaless backend (absent key == personal/legacy).
             metadata = {
                 **entry.metadata,
                 "user_id": entry.user_id,
@@ -372,6 +402,8 @@ class ChromaDBMemoryStore(MemoryStore):
                 "session_id": entry.session_id or "",
                 "created_at": entry.created_at.isoformat(),
                 "content_length": len(entry.content),
+                "scope": entry.scope_type,
+                "author_user_id": entry.author_user_id or entry.user_id,
             }
 
             # Store in ChromaDB
@@ -397,48 +429,61 @@ class ChromaDBMemoryStore(MemoryStore):
         session_id: Optional[str] = None,
         limit: int = 10,
         min_relevance: float = 0.7,
+        scope: str = "user",
     ) -> List[MemoryEntry]:
-        """Search for relevant memories"""
+        """Search for relevant memories.
+
+        Two-query merge: the personal bucket (user_id match, post-filtered to
+        exclude org rows) and the org bucket (scope=='org' within the org).
+        scope='user' | 'org' selects one bucket; 'all' merges both by
+        relevance and truncates to limit. Chroma's where-filter language
+        cannot express "key absent or != value", so the org-row exclusion in
+        the personal bucket is a Python post-filter.
+        """
         try:
             if not self.collection:
                 await self.initialize()
 
-            # Build where clause
-            where_clause = {"user_id": user_id, "organization_id": organization_id}
-
-            if session_id:
-                where_clause["session_id"] = session_id
-
-            # Generate query embedding
             query_embedding = self._generate_embedding(query)
 
-            # Search in ChromaDB
-            if query_embedding:
-                results = self.collection.query(
-                    query_embeddings=[query_embedding],
-                    where=where_clause,
-                    n_results=limit,
-                    include=["documents", "metadatas", "distances"],
-                )
-            else:
-                # Fallback to text search if no embedding
-                results = self.collection.query(
+            def _run_query(where_clause: dict) -> list:
+                if session_id:
+                    where_clause = {**where_clause, "session_id": session_id}
+                if len(where_clause) > 1:
+                    # This chromadb version requires an explicit boolean
+                    # operator for multi-key where dicts (no implicit AND).
+                    where_clause = {"$and": [{k: v} for k, v in where_clause.items()]}
+                if query_embedding:
+                    return self.collection.query(
+                        query_embeddings=[query_embedding],
+                        where=where_clause,
+                        n_results=limit,
+                        include=["documents", "metadatas", "distances"],
+                    )
+                return self.collection.query(
                     query_texts=[query],
                     where=where_clause,
                     n_results=limit,
                     include=["documents", "metadatas", "distances"],
                 )
 
-            # Convert results to MemoryEntry objects
-            memories = []
-            if results and results["documents"]:
+            def _to_entries(results: dict, personal_bucket: bool) -> List[MemoryEntry]:
+                memories: List[MemoryEntry] = []
+                if not results or not results["documents"]:
+                    return memories
                 for i in range(len(results["documents"][0])):
                     metadata = results["metadatas"][0][i]
+                    entry_scope = metadata.get("scope", "user")
+                    if personal_bucket and entry_scope == "org":
+                        # Author's own org rows come from the org bucket —
+                        # skipping here prevents merged-view duplicates.
+                        continue
                     distance = results["distances"][0][i] if results.get("distances") else 0.0
-                    relevance_score = 1.0 - distance  # Convert distance to relevance
-
-                    if relevance_score >= min_relevance:
-                        memory = MemoryEntry(
+                    relevance_score = 1.0 - distance
+                    if relevance_score < min_relevance:
+                        continue
+                    memories.append(
+                        MemoryEntry(
                             id=results["ids"][0][i],
                             user_id=metadata["user_id"],
                             organization_id=metadata["organization_id"],
@@ -452,10 +497,22 @@ class ChromaDBMemoryStore(MemoryStore):
                             embedding=None,
                             created_at=datetime.fromisoformat(metadata["created_at"]),
                             relevance_score=relevance_score,
+                            scope_type=entry_scope,
+                            author_user_id=int(metadata.get("author_user_id", metadata["user_id"])),
                         )
-                        memories.append(memory)
+                    )
+                return memories
 
-            return memories
+            memories: List[MemoryEntry] = []
+            if scope in ("user", "all"):
+                personal = _run_query({"user_id": user_id, "organization_id": organization_id})
+                memories.extend(_to_entries(personal, personal_bucket=True))
+            if scope in ("org", "all"):
+                org = _run_query({"organization_id": organization_id, "scope": "org"})
+                memories.extend(_to_entries(org, personal_bucket=False))
+
+            memories.sort(key=lambda m: m.relevance_score, reverse=True)
+            return memories[:limit]
 
         except Exception as e:
             logger.error(f"Failed to search memories: {e}")
@@ -1102,17 +1159,23 @@ class PgvectorMemoryStore(MemoryStore):
     async def store_memory(self, entry: MemoryEntry) -> bool:
         """Store a memory entry, generating its embedding vector.
 
-        Always writes to the primary (write_db).
+        Always writes to the primary (write_db). Writes the authoritative
+        scope_type/author_user_id columns AND mirrors the scope into the
+        metadata JSON so metadata-only backends/clients see it too.
         """
         try:
             loop = asyncio.get_event_loop()
             embedding = await loop.run_in_executor(None, self.embedding_manager.embed, entry.content)
             embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
 
+            author_id = entry.author_user_id or entry.user_id
+            metadata = {**entry.metadata, "scope": entry.scope_type}
+
             self.write_db.executesql(
                 "INSERT INTO memory_embeddings "
-                "(user_id, organization_id, session_id, content, embedding, role, metadata) "
-                "VALUES (%s, %s, %s, %s, %s::vector, %s, %s::jsonb)",
+                "(user_id, organization_id, session_id, content, embedding, role, metadata, "
+                "scope_type, author_user_id) "
+                "VALUES (%s, %s, %s, %s, %s::vector, %s, %s::jsonb, %s, %s)",
                 (
                     entry.user_id,
                     entry.organization_id,
@@ -1120,7 +1183,9 @@ class PgvectorMemoryStore(MemoryStore):
                     entry.content,
                     embedding_str,
                     entry.metadata.get("role", "user"),
-                    json.dumps(entry.metadata),
+                    json.dumps(metadata),
+                    entry.scope_type,
+                    author_id,
                 ),
             )
             return True
@@ -1136,10 +1201,14 @@ class PgvectorMemoryStore(MemoryStore):
         session_id: Optional[str] = None,
         limit: int = 10,
         min_relevance: float = 0.7,
+        scope: str = "user",
     ) -> List[MemoryEntry]:
         """Search for relevant memories using cosine similarity.
 
-        Routes the query to a read replica for scalability.
+        scope='user' returns the caller's personal rows (default — preserves
+        pre-scope behavior for internal callers); 'org' returns org-shared
+        rows; 'all' returns the merged view in one indexed query, ranked
+        purely by relevance.
         """
         try:
             loop = asyncio.get_event_loop()
@@ -1148,27 +1217,29 @@ class PgvectorMemoryStore(MemoryStore):
 
             read_db = self._read_db()
 
-            params: list = [embedding_str, user_id, organization_id, embedding_str, min_relevance, embedding_str, limit]
+            params: list = [embedding_str, organization_id]
+            if scope == "org":
+                scope_filter = " AND scope_type = 'org'"
+            elif scope == "all":
+                scope_filter = " AND (scope_type = 'org' OR (scope_type = 'user' AND user_id = %s))"
+                params.append(user_id)
+            else:
+                scope_filter = " AND scope_type = 'user' AND user_id = %s"
+                params.append(user_id)
+
             session_filter = ""
             if session_id:
                 session_filter = " AND session_id = %s"
-                params = [
-                    embedding_str,
-                    user_id,
-                    organization_id,
-                    session_id,
-                    embedding_str,
-                    min_relevance,
-                    embedding_str,
-                    limit,
-                ]
+                params.append(session_id)
+
+            params.extend([embedding_str, min_relevance, embedding_str, limit])
 
             sql = (
                 "SELECT id, user_id, organization_id, session_id, content, role, "
-                "created_at, metadata, "
+                "created_at, metadata, scope_type, author_user_id, "
                 "1 - (embedding <=> %s::vector) AS similarity "
                 "FROM memory_embeddings "
-                "WHERE user_id = %s AND organization_id = %s" + session_filter + " AND embedding IS NOT NULL "
+                "WHERE organization_id = %s" + scope_filter + session_filter + " AND embedding IS NOT NULL "
                 "AND 1 - (embedding <=> %s::vector) >= %s "
                 "ORDER BY embedding <=> %s::vector "
                 "LIMIT %s"
@@ -1180,7 +1251,19 @@ class PgvectorMemoryStore(MemoryStore):
 
             entries = []
             for row in rows:
-                row_id, uid, org_id, sess_id, content, role, created_at, metadata_raw, similarity = row
+                (
+                    row_id,
+                    uid,
+                    org_id,
+                    sess_id,
+                    content,
+                    role,
+                    created_at,
+                    metadata_raw,
+                    scope_type,
+                    author_uid,
+                    similarity,
+                ) = row
 
                 try:
                     meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
@@ -1199,6 +1282,8 @@ class PgvectorMemoryStore(MemoryStore):
                         embedding=None,
                         created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
                         relevance_score=float(similarity),
+                        scope_type=scope_type or "user",
+                        author_user_id=int(author_uid or uid),
                     )
                 )
             return entries
@@ -1213,27 +1298,52 @@ class PgvectorMemoryStore(MemoryStore):
         organization_id: int,
         session_id: str,
         limit: int = 20,
+        scope: str = "user",
     ) -> List[MemoryEntry]:
         """Retrieve recent conversation history ordered by time (no vector search).
 
-        Uses a read replica for scalability.
+        scope semantics match search_memories ('user' default | 'org' | 'all').
         """
         try:
             read_db = self._read_db()
+
+            params: list = [organization_id]
+            if scope == "org":
+                scope_filter = " AND scope_type = 'org'"
+            elif scope == "all":
+                scope_filter = " AND (scope_type = 'org' OR (scope_type = 'user' AND user_id = %s))"
+                params.append(user_id)
+            else:
+                scope_filter = " AND scope_type = 'user' AND user_id = %s"
+                params.append(user_id)
+
+            params.extend([session_id, limit])
+
             rows = read_db.executesql(
                 "SELECT id, user_id, organization_id, session_id, content, role, "
-                "created_at, metadata "
+                "created_at, metadata, scope_type, author_user_id "
                 "FROM memory_embeddings "
-                "WHERE user_id = %s AND organization_id = %s AND session_id = %s "
+                "WHERE organization_id = %s" + scope_filter + " AND session_id = %s "
                 "ORDER BY created_at DESC LIMIT %s",
-                (user_id, organization_id, session_id, limit),
+                params,
             )
             if not rows:
                 return []
 
             entries = []
             for row in rows:
-                row_id, uid, org_id, sess_id, content, role, created_at, metadata_raw = row
+                (
+                    row_id,
+                    uid,
+                    org_id,
+                    sess_id,
+                    content,
+                    role,
+                    created_at,
+                    metadata_raw,
+                    scope_type,
+                    author_uid,
+                ) = row
                 try:
                     meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
                 except (json.JSONDecodeError, TypeError):
@@ -1250,6 +1360,8 @@ class PgvectorMemoryStore(MemoryStore):
                         embedding=None,
                         created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
                         relevance_score=1.0,
+                        scope_type=scope_type or "user",
+                        author_user_id=int(author_uid or uid),
                     )
                 )
             return entries
@@ -1258,19 +1370,40 @@ class PgvectorMemoryStore(MemoryStore):
             logger.error("PgvectorMemoryStore.get_conversation_history failed: %s", exc)
             return []
 
-    async def clear_memories(self, user_id: int, organization_id: int, session_id: Optional[str] = None) -> bool:
-        """Delete memories for a user/org. Always writes to primary."""
+    async def clear_memories(
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        scope: str = "user",
+        org_all: bool = False,
+    ) -> bool:
+        """Delete memories. Always writes to primary.
+
+        scope='user' (default): the caller's personal rows only — an
+        unscoped clear must never remove shared org knowledge.
+        scope='org', org_all=False: org rows AUTHORED by the caller.
+        scope='org', org_all=True: all org rows (moderator-gated upstream).
+        """
         try:
-            if session_id:
-                self.write_db.executesql(
-                    "DELETE FROM memory_embeddings " "WHERE user_id = %s AND organization_id = %s AND session_id = %s",
-                    (user_id, organization_id, session_id),
-                )
+            if scope == "org" and org_all:
+                where = "scope_type = 'org' AND organization_id = %s"
+                params: list = [organization_id]
+            elif scope == "org":
+                where = "scope_type = 'org' AND author_user_id = %s AND organization_id = %s"
+                params = [user_id, organization_id]
             else:
-                self.write_db.executesql(
-                    "DELETE FROM memory_embeddings WHERE user_id = %s AND organization_id = %s",
-                    (user_id, organization_id),
-                )
+                where = "scope_type = 'user' AND user_id = %s AND organization_id = %s"
+                params = [user_id, organization_id]
+
+            if session_id:
+                where += " AND session_id = %s"
+                params.append(session_id)
+
+            self.write_db.executesql(
+                "DELETE FROM memory_embeddings WHERE " + where,
+                params,
+            )
             return True
         except Exception as exc:
             logger.error("PgvectorMemoryStore.clear_memories failed: %s", exc)
@@ -1298,3 +1431,93 @@ class PgvectorMemoryStore(MemoryStore):
         except Exception as exc:
             logger.error("PgvectorMemoryStore.get_memory_stats failed: %s", exc)
             return {"total_memories": 0, "backend": "pgvector", "error": str(exc)}
+
+    async def get_recent_memories(
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: Optional[str] = None,
+        hours: int = 24,
+        limit: int = 20,
+    ) -> List[MemoryEntry]:
+        """Get recent memories within a time window (no vector search).
+
+        Routes to a read replica. Required by the MemoryStore ABC -- this was
+        previously unimplemented, which made PgvectorMemoryStore (and hence
+        create_memory_manager(backend="pgvector")) impossible to instantiate
+        in any environment (TypeError: Can't instantiate abstract class).
+        """
+        try:
+            read_db = self._read_db()
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            session_filter = ""
+            params: list = [user_id, organization_id, cutoff]
+            if session_id:
+                session_filter = " AND session_id = %s"
+                params.append(session_id)
+            params.append(limit)
+
+            sql = (
+                "SELECT id, user_id, organization_id, session_id, content, role, "
+                "created_at, metadata "
+                "FROM memory_embeddings "
+                "WHERE user_id = %s AND organization_id = %s AND created_at >= %s" + session_filter + " "
+                "ORDER BY created_at DESC LIMIT %s"
+            )
+            rows = read_db.executesql(sql, params)
+            if not rows:
+                return []
+
+            entries = []
+            for row in rows:
+                row_id, uid, org_id, sess_id, content, role, created_at, metadata_raw = row
+                try:
+                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta["role"] = role
+                entries.append(
+                    MemoryEntry(
+                        id=str(row_id),
+                        user_id=uid,
+                        organization_id=org_id,
+                        session_id=sess_id,
+                        content=content,
+                        metadata=meta,
+                        embedding=None,
+                        created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
+                        relevance_score=1.0,
+                    )
+                )
+            return entries
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.get_recent_memories failed: %s", exc)
+            return []
+
+    async def delete_memory(self, memory_id: str) -> bool:
+        """Delete a specific memory by id. Always writes to primary.
+
+        Required by the MemoryStore ABC (see get_recent_memories docstring).
+        """
+        try:
+            self.write_db.executesql("DELETE FROM memory_embeddings WHERE id = %s", (int(memory_id),))
+            return True
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.delete_memory failed: %s", exc)
+            return False
+
+    async def cleanup_old_memories(self, days: int = 90) -> int:
+        """Delete memories older than the given number of days. Always writes to primary.
+
+        Required by the MemoryStore ABC (see get_recent_memories docstring).
+        """
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            rows = self.write_db.executesql(
+                "DELETE FROM memory_embeddings WHERE created_at < %s RETURNING id",
+                (cutoff,),
+            )
+            return len(rows) if rows else 0
+        except Exception as exc:
+            logger.error("PgvectorMemoryStore.cleanup_old_memories failed: %s", exc)
+            return 0

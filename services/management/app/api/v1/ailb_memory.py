@@ -7,9 +7,10 @@ Manages per-organization configuration for:
 - Embedding backend settings (ollama/openai/anthropic)
 """
 
+import asyncio
 import logging
 
-from flask import jsonify, request
+from quart import jsonify, request
 
 from ...extensions import db
 from . import api_v1_bp
@@ -26,15 +27,18 @@ logger = logging.getLogger(__name__)
 @api_v1_bp.route("/ailb/memory-config", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_memory_config():
+async def get_memory_config():
     """Get memory injection config for an organization."""
     org_id = request.args.get("organization_id", type=int)
     if not org_id:
         return jsonify({"error": "organization_id required"}), 400
 
     try:
-        rows = db(db.conversation_memory_configs.organization_id == org_id).select()
-        config = rows.first() if rows else None
+        def _fetch():
+            rows = db(db.conversation_memory_configs.organization_id == org_id).select()
+            return rows.first() if rows else None
+
+        config = await asyncio.to_thread(_fetch)
         if not config:
             return (
                 jsonify(
@@ -69,30 +73,36 @@ def get_memory_config():
 @api_v1_bp.route("/ailb/memory-config", methods=["POST"])
 @require_auth
 @require_role("admin")
-def set_memory_config():
+async def set_memory_config():
     """Create or update memory injection config for an organization."""
-    data = request.get_json(force=True) or {}
+    data = (await request.get_json(force=True)) or {}
     org_id = data.get("organization_id")
     if not org_id:
         return jsonify({"error": "organization_id required"}), 400
 
     try:
-        existing = db(db.conversation_memory_configs.organization_id == org_id).select().first()
-        if existing:
-            existing.update_record(
-                enabled=data.get("enabled", existing.enabled),
-                max_messages=data.get("max_messages", existing.max_messages),
-                similarity_threshold=data.get("similarity_threshold", existing.similarity_threshold),
-            )
+        def _upsert():
+            existing = db(db.conversation_memory_configs.organization_id == org_id).select().first()
+            if existing:
+                existing.update_record(
+                    enabled=data.get("enabled", existing.enabled),
+                    max_messages=data.get("max_messages", existing.max_messages),
+                    similarity_threshold=data.get("similarity_threshold", existing.similarity_threshold),
+                )
+                return "updated"
+            else:
+                db.conversation_memory_configs.insert(
+                    organization_id=org_id,
+                    enabled=data.get("enabled", True),
+                    max_messages=data.get("max_messages", 20),
+                    similarity_threshold=data.get("similarity_threshold", 0.7),
+                )
+                return "created"
+
+        status = await asyncio.to_thread(_upsert)
+        if status == "updated":
             return jsonify({"status": "updated", "organization_id": org_id}), 200
-        else:
-            db.conversation_memory_configs.insert(
-                organization_id=org_id,
-                enabled=data.get("enabled", True),
-                max_messages=data.get("max_messages", 20),
-                similarity_threshold=data.get("similarity_threshold", 0.7),
-            )
-            return jsonify({"status": "created", "organization_id": org_id}), 201
+        return jsonify({"status": "created", "organization_id": org_id}), 201
     except Exception as exc:
         logger.error("set_memory_config error: %s", exc)
         return jsonify({"error": str(exc)}), 500
@@ -106,15 +116,18 @@ def set_memory_config():
 @api_v1_bp.route("/ailb/rag-config", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_rag_config():
+async def get_rag_config():
     """Get RAG injection config for an organization."""
     org_id = request.args.get("organization_id", type=int)
     if not org_id:
         return jsonify({"error": "organization_id required"}), 400
 
     try:
-        rows = db(db.rag_configs.organization_id == org_id).select()
-        config = rows.first() if rows else None
+        def _fetch():
+            rows = db(db.rag_configs.organization_id == org_id).select()
+            return rows.first() if rows else None
+
+        config = await asyncio.to_thread(_fetch)
         if not config:
             return (
                 jsonify(
@@ -151,32 +164,38 @@ def get_rag_config():
 @api_v1_bp.route("/ailb/rag-config", methods=["POST"])
 @require_auth
 @require_role("admin")
-def set_rag_config():
+async def set_rag_config():
     """Create or update RAG injection config for an organization."""
-    data = request.get_json(force=True) or {}
+    data = (await request.get_json(force=True)) or {}
     org_id = data.get("organization_id")
     if not org_id:
         return jsonify({"error": "organization_id required"}), 400
 
     try:
-        existing = db(db.rag_configs.organization_id == org_id).select().first()
-        if existing:
-            existing.update_record(
-                enabled=data.get("enabled", existing.enabled),
-                collection=data.get("collection", existing.collection),
-                top_k=data.get("top_k", existing.top_k),
-                similarity_threshold=data.get("similarity_threshold", existing.similarity_threshold),
-            )
+        def _upsert():
+            existing = db(db.rag_configs.organization_id == org_id).select().first()
+            if existing:
+                existing.update_record(
+                    enabled=data.get("enabled", existing.enabled),
+                    collection=data.get("collection", existing.collection),
+                    top_k=data.get("top_k", existing.top_k),
+                    similarity_threshold=data.get("similarity_threshold", existing.similarity_threshold),
+                )
+                return "updated"
+            else:
+                db.rag_configs.insert(
+                    organization_id=org_id,
+                    enabled=data.get("enabled", False),
+                    collection=data.get("collection", "default"),
+                    top_k=data.get("top_k", 5),
+                    similarity_threshold=data.get("similarity_threshold", 0.7),
+                )
+                return "created"
+
+        status = await asyncio.to_thread(_upsert)
+        if status == "updated":
             return jsonify({"status": "updated", "organization_id": org_id}), 200
-        else:
-            db.rag_configs.insert(
-                organization_id=org_id,
-                enabled=data.get("enabled", False),
-                collection=data.get("collection", "default"),
-                top_k=data.get("top_k", 5),
-                similarity_threshold=data.get("similarity_threshold", 0.7),
-            )
-            return jsonify({"status": "created", "organization_id": org_id}), 201
+        return jsonify({"status": "created", "organization_id": org_id}), 201
     except Exception as exc:
         logger.error("set_rag_config error: %s", exc)
         return jsonify({"error": str(exc)}), 500
@@ -190,17 +209,19 @@ def set_rag_config():
 @api_v1_bp.route("/ailb/embedding-config", methods=["GET"])
 @require_auth
 @require_role("admin")
-def get_embedding_config():
+async def get_embedding_config():
     """Get embedding backend config (global or per-org)."""
     org_id = request.args.get("organization_id", type=int)  # optional; None = global
 
     try:
-        if org_id:
-            rows = db(db.embedding_settings.organization_id == org_id).select()
-        else:
-            rows = db(db.embedding_settings.organization_id == None).select()  # noqa: E711
+        def _fetch():
+            if org_id:
+                rows = db(db.embedding_settings.organization_id == org_id).select()
+            else:
+                rows = db(db.embedding_settings.organization_id == None).select()  # noqa: E711
+            return rows.first() if rows else None
 
-        config = rows.first() if rows else None
+        config = await asyncio.to_thread(_fetch)
         if not config:
             return (
                 jsonify(
@@ -237,9 +258,9 @@ def get_embedding_config():
 @api_v1_bp.route("/ailb/embedding-config", methods=["POST"])
 @require_auth
 @require_role("admin")
-def set_embedding_config():
+async def set_embedding_config():
     """Create or update embedding backend config."""
-    data = request.get_json(force=True) or {}
+    data = (await request.get_json(force=True)) or {}
 
     backend = data.get("backend", "ollama")
     if backend not in ("ollama", "openai", "anthropic"):
@@ -248,28 +269,34 @@ def set_embedding_config():
     org_id = data.get("organization_id")  # None = global default
 
     try:
-        if org_id:
-            existing = db(db.embedding_settings.organization_id == org_id).select().first()
-        else:
-            existing = db(db.embedding_settings.organization_id == None).select().first()  # noqa: E711
+        def _upsert():
+            if org_id:
+                existing = db(db.embedding_settings.organization_id == org_id).select().first()
+            else:
+                existing = db(db.embedding_settings.organization_id == None).select().first()  # noqa: E711
 
-        if existing:
-            existing.update_record(
-                backend=backend,
-                model=data.get("model", existing.model),
-                ollama_host=data.get("ollama_host", existing.ollama_host),
-                dimensions=data.get("dimensions", existing.dimensions),
-            )
+            if existing:
+                existing.update_record(
+                    backend=backend,
+                    model=data.get("model", existing.model),
+                    ollama_host=data.get("ollama_host", existing.ollama_host),
+                    dimensions=data.get("dimensions", existing.dimensions),
+                )
+                return "updated"
+            else:
+                db.embedding_settings.insert(
+                    organization_id=org_id,
+                    backend=backend,
+                    model=data.get("model", "nomic-embed-text"),
+                    ollama_host=data.get("ollama_host", "http://localhost:11434"),
+                    dimensions=data.get("dimensions", 768),
+                )
+                return "created"
+
+        status = await asyncio.to_thread(_upsert)
+        if status == "updated":
             return jsonify({"status": "updated", "backend": backend}), 200
-        else:
-            db.embedding_settings.insert(
-                organization_id=org_id,
-                backend=backend,
-                model=data.get("model", "nomic-embed-text"),
-                ollama_host=data.get("ollama_host", "http://localhost:11434"),
-                dimensions=data.get("dimensions", 768),
-            )
-            return jsonify({"status": "created", "backend": backend}), 201
+        return jsonify({"status": "created", "backend": backend}), 201
     except Exception as exc:
         logger.error("set_embedding_config error: %s", exc)
         return jsonify({"error": str(exc)}), 500

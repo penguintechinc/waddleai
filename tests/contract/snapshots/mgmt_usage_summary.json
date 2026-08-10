@@ -1,0 +1,21 @@
+{
+  "body": {
+    "summary": {
+      "daily": {
+        "cost_usd": 0,
+        "requests": 0,
+        "tokens_input": 0,
+        "tokens_output": 0,
+        "waddleai_tokens": 0
+      },
+      "monthly": {
+        "cost_usd": 0,
+        "requests": 0,
+        "tokens_input": 0,
+        "tokens_output": 0,
+        "waddleai_tokens": 0
+      }
+    }
+  },
+  "status": 200
+}
