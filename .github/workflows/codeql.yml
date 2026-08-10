@@ -1,0 +1,66 @@
+name: CodeQL
+
+# The org ruleset "main protections" carries a code_scanning rule, but nothing
+# in this repo ever produced code scanning results for a pull request: the only
+# SARIF upload lives in docker-build.yml's security-scan job, which is gated on
+# `github.event_name != 'pull_request'` and therefore always skips on PRs. The
+# rule consequently sat at "Waiting for Code Scanning results" forever and
+# blocked release merges into main. This workflow supplies those results.
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+    branches: [main, 'release/**']
+  schedule:
+    # Weekly re-scan so advisories published after a merge still surface.
+    - cron: '0 8 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # build-mode: none is correct for interpreted languages — CodeQL reads
+          # the source directly, so there is nothing to compile and no build to
+          # break. Go is deliberately absent; see the note below.
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3  # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3  # v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+# Go is not analysed here yet. It is a compiled language, so CodeQL needs
+# autobuild or a manual build, and this repo has two independent modules
+# (shared/go_libs and services/penguincode/shared/go_libs) that autobuild would
+# have to be verified against before it can be trusted not to fail the job.
+# Go is also being phased out in favour of Rust per the language standard, so
+# the 36 .go files here are library code rather than a shipped service. Adding
+# it belongs in its own change, where a failing autobuild can be diagnosed
+# without holding up the scanning that does work.
