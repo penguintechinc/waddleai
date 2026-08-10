@@ -3422,9 +3422,9 @@ qdrant-client==1.17.1 \
     # via
     #   -r requirements.txt
     #   mem0ai
-quart==0.20.0 \
-    --hash=sha256:003c08f551746710acb757de49d9b768986fd431517d0eb127380b656b98b8f1 \
-    --hash=sha256:08793c206ff832483586f5ae47018c7e40bdd75d886fee3fabbdaa70c2cf505d
+quart==0.21.0 \
+    --hash=sha256:a21377754d52ee3a9de7f9bff140dc3bb055e2eec8ac187da1789b36cf4c66ca \
+    --hash=sha256:ec05a784151386cf87df51f764825d55f3ac402df4f04fd1dc81faca8897ceda
     # via -r proxy/requirements.in
 realtime==2.28.3 \
     --hash=sha256:5cc83a6217874426799d8bf74e96d904ac6fa77c39fa8982fa99287947eb2cbf \
