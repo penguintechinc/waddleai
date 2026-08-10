@@ -16,7 +16,7 @@ bcrypt>=4.1.0
 cryptography>=41.0.0
 passlib>=1.7.4
 # Token Processing and AI
-tiktoken>=0.5.2
+tiktoken>=0.13.0
 transformers>=4.36.0
 torch>=2.1.0
 # Memory and Vector Databases
