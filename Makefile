@@ -1,6 +1,15 @@
-.PHONY: dev test test-unit test-integration test-e2e test-functional test-security \
+.PHONY: dev setup install-hooks verify-hooks test test-unit test-integration test-e2e test-functional test-security \
         test-contract smoke-test lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit
+
+setup: install-hooks
+	@echo "Setup complete"
+
+install-hooks: ## Install pre-commit framework + register pre-commit and pre-push hooks
+	@./scripts/install-pre-commit.sh
+
+verify-hooks: ## Report whether pre-commit/pre-push hooks are installed and non-empty
+	@./scripts/install-pre-commit.sh --verify
 
 dev:
 	docker-compose up
@@ -15,9 +24,7 @@ docker-push:
 
 lint:
 	@echo "=== Linting ==="
-	@if command -v flake8 >/dev/null 2>&1; then echo "-- flake8 --"; python3 -m flake8 . --max-line-length=120 --exclude=.git,__pycache__,venv,node_modules || true; fi
-	@if command -v black >/dev/null 2>&1; then echo "-- black --"; black --check . --exclude '/(\.git|venv|__pycache__|node_modules)/' || true; fi
-	@if command -v isort >/dev/null 2>&1; then echo "-- isort --"; isort --check-only . || true; fi
+	@if command -v ruff >/dev/null 2>&1; then echo "-- ruff check --"; ruff check . || true; echo "-- ruff format --"; ruff format --check . || true; fi
 	@if command -v mypy >/dev/null 2>&1; then echo "-- mypy --"; python3 -m mypy . --ignore-missing-imports || true; fi
 	@if command -v golangci-lint >/dev/null 2>&1; then echo "-- golangci-lint --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && golangci-lint run || true'; fi
 	@if command -v hadolint >/dev/null 2>&1; then echo "-- hadolint --"; find . -name "Dockerfile*" -not -path "*/.git/*" | xargs hadolint || true; fi
