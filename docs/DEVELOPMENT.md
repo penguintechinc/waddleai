@@ -18,40 +18,42 @@ Complete guide to setting up a local development environment for WaddleAI, runni
 ### System Requirements
 
 - **macOS 12+**, **Linux (Ubuntu 20.04+)**, or **Windows 10+ with WSL2**
-- **Docker Desktop** 4.0+ (or Docker Engine 20.10+)
-- **Docker Compose** 2.0+
+- **Docker Desktop** 4.0+ (or Docker Engine 20.10+) — used to run standalone dependency containers (database, cache) and to build service images; not used for orchestrating the app itself
 - **Git** 2.30+
-- **Python** 3.13+ (for local development)
-- **PostgreSQL** 13+ (optional: for local database, or use Docker)
+- **Python** 3.13
+- **Node.js** 24.x (webui)
+- **kubectl** + **MicroK8s** (Linux) or **Docker Desktop Kubernetes** (macOS/Windows) — only needed if you want to run the full stack in a local cluster instead of running services directly (see [Full Stack via Local Kubernetes](#full-stack-via-local-kubernetes))
 
 ### Optional Tools
 
 - **Docker Buildx** (for multi-architecture builds)
-- **Helm** (for Kubernetes deployments)
-- **kubectl** (for Kubernetes clusters)
+- **Helm v4** (chart at `k8s/helm/waddleai`, used for beta/prod deploys — see `DEPLOY_K8S.md`)
+- **psql** client (for inspecting the local database directly)
 
 ### Installation
 
 **macOS (Homebrew)**:
 ```bash
-brew install docker docker-compose git python postgresql
+brew install git python@3.13 node@24 kubectl helm
 brew install --cask docker
 ```
 
 **Ubuntu/Debian**:
 ```bash
 sudo apt-get update
-sudo apt-get install -y docker.io docker-compose git python3.13 postgresql
-sudo usermod -aG docker $USER  # Allow docker without sudo
-newgrp docker                   # Activate group change
+sudo apt-get install -y git python3.13 python3.13-venv nodejs npm postgresql-client
+# kubectl: https://kubernetes.io/docs/tasks/tools/#install-kubectl-linux
+# Helm v4: https://helm.sh/docs/intro/install/
+# MicroK8s (optional, local Kubernetes): sudo snap install microk8s --classic
 ```
 
 **Verify Installation**:
 ```bash
-docker --version      # Docker 20.10+
-docker-compose --version  # Docker Compose 2.0+
+docker --version       # Docker 20.10+
 git --version
-python3 --version     # Python 3.13+
+python3.13 --version   # Python 3.13.x
+node --version          # v24.x
+kubectl version --client
 ```
 
 ---
@@ -61,88 +63,81 @@ python3 --version     # Python 3.13+
 ### Clone Repository
 
 ```bash
-git clone <repository-url>
-cd WaddleAI
+git clone <repository-url> waddleai
+cd waddleai
 ```
 
 ### Install Python Dependencies
 
+The proxy and management services share `shared/`, so tests and most local dev work run out of a single virtual environment at the repo root — this mirrors what CI installs:
+
 ```bash
-# Create virtual environment
 python3.13 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
+pip install -r services/management/requirements.txt
+```
+
+### Install Web UI Dependencies
+
+```bash
+cd services/webui
+npm ci
+cd ../..
 ```
 
 ### Environment Configuration
 
-Copy and customize environment files:
+There is no `.env.example` in this repo — each service reads environment variables directly (see `services/management/app/config.py`, `proxy/apps/proxy_server/main.py`, and `k8s/helm/waddleai/values.yaml` for the full list and defaults). For local development, exporting these is enough to get both backend services running:
 
 ```bash
-# Copy example environment file
-cp .env.example .env
+# Database — always a postgresql:// URI (PostgreSQL + pgvector; no other DB is supported)
+export DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai
+
+# Used to sign JWTs issued by the management service and verified by the proxy
+export JWT_SECRET=$(openssl rand -hex 32)
+
+export LOG_LEVEL=DEBUG
 ```
 
-**Key Environment Variables**:
-```bash
-# Database (supports: postgres, mysql, sqlite)
-DB_TYPE=postgres
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=waddleai
-DB_USER=waddleai
-DB_PASSWORD=waddleai-dev
+The cache (Valkey) needs no configuration if it's reachable at `localhost:6379` — both services default to that address. To point them elsewhere, note that the two services read *different* variables:
 
-# Flask Backend
-FLASK_ENV=development
-FLASK_DEBUG=1
-SECRET_KEY=dev-secret-key-change-in-production
-SECURITY_PASSWORD_SALT=dev-salt-key
+| Service | Variable(s) |
+|---|---|
+| Proxy (`proxy/apps/proxy_server/main.py`) | `REDIS_URL` — a full URL, e.g. `redis://cache-host:6379/0` |
+| Management (`services/management/app/config.py`) | `CACHE_HOST` / `CACHE_PORT` / `CACHE_USER` / `CACHE_PASS`, and also honours `REDIS_URL` |
 
-# Proxy Service
-PROXY_PORT=8000
-REQUEST_TIMEOUT=30
-RATE_LIMIT_REQUESTS=1000
-RATE_LIMIT_WINDOW=3600
+The `REDIS_URL` name is historical — the deployed cache is Valkey, not Redis. Setting only `CACHE_HOST` will not move the proxy.
 
-# Management Service
-MANAGEMENT_PORT=8001
-ENABLE_ANALYTICS=true
-ANALYTICS_RETENTION_DAYS=90
+### Start Dependency Containers
 
-# Redis Cache
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-
-# License (Development - all features available)
-RELEASE_MODE=false
-LICENSE_KEY=not-required-in-dev
-
-# Logging
-LOG_LEVEL=DEBUG
-```
-
-### Database Initialization
+Postgres and Valkey run as two standalone containers — there is no Compose file in this repo (Docker Compose is deprecated here; Kubernetes/Helm is the only supported way to run the full application, see [Full Stack via Local Kubernetes](#full-stack-via-local-kubernetes)):
 
 ```bash
-# Start PostgreSQL via Docker
-docker run -d \
-  --name waddleai-postgres \
+docker run -d --name waddleai-postgres \
   -e POSTGRES_DB=waddleai \
   -e POSTGRES_USER=waddleai \
   -e POSTGRES_PASSWORD=waddleai-dev \
   -p 5432:5432 \
-  postgres:15
+  pgvector/pgvector:pg16
 
-# Or use SQLite for lightweight development
-export DB_TYPE=sqlite
-export DATABASE_URL=sqlite:///waddleai.db
+docker run -d --name waddleai-valkey \
+  -p 6379:6379 \
+  valkey/valkey:8-bookworm
+```
 
-# Run migrations
-cd shared && python -c "from db import init_db; init_db()"
+### Database Schema
+
+No manual step is needed the first time you start the management service: `init_schema()` (`services/management/app/models_sqlalchemy.py`) enables the `pgvector` extension and creates any missing tables automatically and idempotently on startup.
+
+Alembic (`services/management/alembic/`) is the schema of record for applying versioned migrations after that — it is run manually, never automatically at app startup:
+
+```bash
+cd services/management
+DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai alembic upgrade head
+cd ../..
 ```
 
 ---
@@ -151,73 +146,52 @@ cd shared && python -c "from db import init_db; init_db()"
 
 ### Quick Start (All Services)
 
+Run each service in its own terminal from the repo root, with the virtual environment activated. `PYTHONPATH` includes both the repo root (for the shared `shared` package) and the service's own subdirectory (matching how each Dockerfile lays out `/app` at runtime).
+
+**Management API** (port 8001):
 ```bash
-# Start all services with Docker Compose
-docker-compose -f docker-compose.dev.yml up -d
-
-# This runs:
-# - PostgreSQL database (port 5432)
-# - Redis cache (port 6379)
-# - Proxy service (port 8000)
-# - Management service (port 8001)
-
-# Access the services:
-# Proxy API:        http://localhost:8000
-# Management UI:    http://localhost:8001
-# Health Check:     http://localhost:8000/health
-# Metrics:          http://localhost:8000/metrics
+export PYTHONPATH="$(pwd):$(pwd)/services/management"
+export DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai
+export JWT_SECRET=$(openssl rand -hex 32)
+cd services/management
+hypercorn asgi:app --bind 0.0.0.0:8001 --reload
 ```
 
-### Individual Service Management
-
-**Start specific services**:
+**Proxy** (port 8080, gRPC 50051) — start after the management service is up, since the proxy talks to it for OIDC/route discovery:
 ```bash
-# Start only Proxy service
-docker-compose up -d proxy
-
-# Start Proxy and Management
-docker-compose up -d proxy management
-
-# Start without detaching (see logs)
-docker-compose up proxy
+export PYTHONPATH="$(pwd):$(pwd)/proxy"
+export DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai
+cd proxy
+hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080 --reload
 ```
 
-**View service logs**:
+**Web UI** (port 3000, proxies `/api/*` to `localhost:8001`):
 ```bash
-# All services
-docker-compose logs -f
-
-# Specific service
-docker-compose logs -f proxy
-
-# Last 100 lines, follow new entries
-docker-compose logs -f --tail=100 management
+cd services/webui
+npm run dev
 ```
 
-**Stop services**:
-```bash
-# Stop all services (keep data)
-docker-compose down
-
-# Stop and remove volumes (clean slate)
-docker-compose down -v
-
-# Restart services
-docker-compose restart
-
-# Rebuild and restart (apply code changes)
-docker-compose down && docker-compose up -d --build
+**Access the services**:
+```
+Proxy API:        http://localhost:8080
+Management API:   http://localhost:8001
+Web UI:           http://localhost:3000
+Proxy health:      http://localhost:8080/healthz
+Management health: http://localhost:8001/healthz  (also /readyz)
 ```
 
-### Development Docker Compose Files
+> `make dev` currently shells out to `docker-compose up`, but there is no `docker-compose.yml` in this repo, so that target does not work as-is. Use the commands above until the Makefile is updated.
 
-- **`docker-compose.dev.yml`**: Local development (hot-reload, debug ports, fake SMTP)
-- **`docker-compose.yml`**: Production-like (health checks, resource limits, no debug)
+### Full Stack via Local Kubernetes
 
-Use dev version locally:
+For testing against a real cluster instead of directly-run processes, this repo ships a MicroK8s-based alpha deploy script:
+
 ```bash
-docker-compose -f docker-compose.dev.yml up
+./scripts/deploy-alpha.sh          # builds proxy/management/webui images, imports into MicroK8s, applies the Kustomize alpha overlay
+./scripts/deploy-alpha.sh --help   # all options: --skip-build, --service, --dry-run, --rollback
 ```
+
+It requires a `local-alpha` kubectl context pointing at a running MicroK8s (or Docker Desktop Kubernetes) cluster — see the `deploying-app` skill for cluster setup. As of this writing, `k8s/kustomize/overlays/alpha` only defines the management Deployment/Service (`k8s/kustomize/base/management/`) — it's useful for exercising that one service's built image in-cluster, not yet a full proxy+database+cache stack. The Helm chart at `k8s/helm/waddleai` is what `./scripts/deploy-beta.sh` deploys to the shared beta cluster; see `DEPLOY_K8S.md` for that path.
 
 ---
 
@@ -225,18 +199,13 @@ docker-compose -f docker-compose.dev.yml up
 
 ### 1. Start Development Environment
 
-```bash
-make dev        # Start all services
-make seed-data  # Populate with test data
-```
+Start Postgres + Valkey, then the management and proxy services and the web UI, as shown above.
 
 ### 2. Make Code Changes
 
-Edit files in your favorite editor. Services auto-reload:
-
-- **Python (Flask)**: Reload on file save (FLASK_DEBUG=1)
-- **Proxy/Management**: Hot reload with watchdog
-- **Changes in shared/**: Requires container restart
+- **Management / Proxy (Python)**: `hypercorn ... --reload` restarts the process on file save
+- **Web UI**: Vite's dev server hot-reloads on save
+- **Changes in `shared/`**: picked up automatically by `--reload` since it re-imports on restart; no separate rebuild step needed for direct-run dev
 
 ### 3. Verify Changes
 
@@ -247,128 +216,76 @@ make smoke-test
 # Run linters
 make lint
 
-# Run unit tests (specific service)
-cd proxy && pytest tests/unit/ -v
+# Run unit tests
+make test-unit
+# or directly:
+PYTHONPATH="$(pwd)" pytest tests/unit -v
 
 # Run all tests
 make test
 ```
 
-### 4. Populate Mock Data for Feature Testing
+### 4. Populate Data for Feature Testing
 
-After implementing a new feature, create mock data scripts:
+`make seed-mock-data` is currently a no-op placeholder in the Makefile. Two real seed scripts exist and take `DATABASE_URL` as an env var:
 
 ```bash
-# Create mock data script for tokens
-cat > scripts/mock-data/seed-tokens.py << 'EOF'
-from shared.db import get_db
+DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai \
+  python3 scripts/seed_routing_matrix.py
 
-def seed_tokens():
-    db = get_db()
-
-    # Create test API keys for dual token system
-    tokens = [
-        {"name": "Test Token 1", "waddleai_quota": 100000, "llm_quota": 50000},
-        {"name": "Test Token 2", "waddleai_quota": 200000, "llm_quota": 100000},
-        {"name": "Limited Token", "waddleai_quota": 10000, "llm_quota": 5000},
-        {"name": "Demo Token", "waddleai_quota": 50000, "llm_quota": 25000},
-    ]
-
-    for token in tokens:
-        db.api_keys.insert(**token)
-
-    print(f"✓ Seeded {len(tokens)} API tokens")
-
-if __name__ == "__main__":
-    seed_tokens()
-EOF
-
-# Run the mock data script
-python scripts/mock-data/seed-tokens.py
-
-# Add to seed-all.py orchestrator
-echo "from seed_tokens import seed_tokens; seed_tokens()" >> scripts/mock-data/seed-all.py
+DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai \
+  python3 scripts/seed_security_rag.py
 ```
+
+When adding mock data for a new feature, follow this same pattern (a standalone, re-runnable `scripts/seed_*.py` script driven by `DATABASE_URL`) rather than introducing a new directory convention.
 
 ### 5. Test Multi-Backend Routing
 
-WaddleAI's dual token system and multi-backend routing:
+WaddleAI's dual token system and multi-backend routing, exercised through the proxy's OpenAI-compatible API:
 
 ```bash
-# Create mock backend connections
-python scripts/mock-data/seed-backends.py
-
-# Test routing with different backends
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer wa-test-token" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "waddleai_route": "openai"  # Force backend selection
+    "messages": [{"role": "user", "content": "Hello"}]
   }'
 
-# Monitor dual token consumption
-curl http://localhost:8001/analytics/tokens \
-  -H "Authorization: Bearer admin-token"
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer wa-test-token"
 ```
 
 ### 6. Run Pre-Commit Checklist
 
-Before committing, run the comprehensive pre-commit script:
-
 ```bash
-./scripts/pre-commit/pre-commit.sh
+make pre-commit
 ```
 
-**Steps**:
-1. ✅ Linters (flake8, black, isort, mypy)
-2. ✅ Security scans (bandit)
-3. ✅ Secret detection (no API keys, passwords, tokens)
-4. ✅ Build & Run (build containers, verify runtime)
-5. ✅ Smoke tests (proxy health, management health, dual token validation)
-6. ✅ Unit tests (isolated component testing)
-7. ✅ Integration tests (service interactions with multi-backend routing)
-8. ✅ Version update & Docker standards
-
-**Troubleshooting Pre-Commit**:
-
-See [Pre-Commit Documentation](PRE_COMMIT.md) for detailed guidance on:
-- Fixing linting errors
-- Resolving security vulnerabilities
-- Excluding files from checks
-- Bypassing specific checks (with justification)
+Runs, in order: `make lint`, `make test-security`, `make test`. See [Pre-Commit Documentation](PRE_COMMIT.md) for details on each step and how to fix common failures.
 
 ### 7. Testing & Validation
 
-Comprehensive testing guide for proxy/management architecture:
+Complete guide: [Testing Documentation](TESTING.md).
 
-**Complete Testing Guide**: [Testing Documentation](TESTING.md)
-
-**Quick Test Commands**:
 ```bash
-# Smoke tests only (fast, <2 min)
+# Smoke tests only (fast)
 make smoke-test
 
 # Unit tests only
 make test-unit
 
-# Integration tests only (including dual token validation)
+# Integration tests
 make test-integration
 
 # All tests
 make test
 
 # Specific test file
-pytest tests/unit/test_proxy_auth.py
-
-# Cross-architecture testing (QEMU)
-make test-multiarch
+pytest tests/unit/proxy/test_proxy_auth.py -v
 ```
 
 ### 8. Create Pull Request
-
-Once tests pass:
 
 ```bash
 # Push branch
@@ -377,8 +294,6 @@ git push origin feature-branch-name
 # Create PR via GitHub CLI
 gh pr create --title "Brief feature description" \
   --body "Detailed description of changes"
-
-# Or use web UI: https://github.com/penguintechinc/WaddleAI/compare
 ```
 
 ---
@@ -387,86 +302,66 @@ gh pr create --title "Brief feature description" \
 
 ### Adding a New Python Dependency
 
+Dependencies are pinned with hashes via `uv` (`uv pip compile --generate-hashes`), not edited by hand:
+
 ```bash
-# Add to requirements.txt
-echo "new-package==1.0.0" >> requirements.txt
+# Add to the appropriate requirements.in (root, or services/management/requirements.in)
+echo "new-package>=1.0.0" >> requirements.in
 
-# Rebuild containers
-docker-compose up -d --build
+# Recompile the pinned, hashed requirements.txt
+uv pip compile requirements.in --generate-hashes --python-version 3.13 -o requirements.txt
 
-# Verify import works
-docker-compose exec proxy python -c "import new_package"
+# Reinstall in your venv
+pip install -r requirements.txt
+
+# Verify the import works
+python3 -c "import new_package"
 ```
 
 ### Adding a New Environment Variable
 
-```bash
-# Add to .env
-echo "NEW_VAR=value" >> .env
-
-# Restart services to pick up new variable
-docker-compose restart
-
-# Verify it's set
-docker-compose exec proxy printenv | grep NEW_VAR
-```
+Add the `os.getenv(...)` call in the relevant service's config (`services/management/app/config.py` for management, or directly in `proxy/apps/proxy_server/main.py` for the proxy), export it in your shell before starting that service, and document the default in the Helm chart's `values.yaml` if it's needed beyond local dev.
 
 ### Debugging a Service
 
-**View logs in real-time**:
+Each service logs to stdout/stderr of the terminal it's running in — no separate log aggregation step for direct-run local dev.
+
+**Check service health directly**:
 ```bash
-docker-compose logs -f proxy
-docker-compose logs -f management
+curl http://localhost:8080/healthz    # proxy
+curl http://localhost:8001/healthz    # management
+curl http://localhost:8001/readyz     # management readiness
 ```
 
-**Access container shell**:
+**Attach a debugger / run a one-off script against the same environment**:
 ```bash
-# Proxy service
-docker-compose exec proxy bash
-
-# Management service
-docker-compose exec management bash
-```
-
-**Execute commands in container**:
-```bash
-# Run Python script
-docker-compose exec proxy python -c "print('hello')"
-
-# Check service health
-docker-compose exec proxy curl http://localhost:8000/health
+PYTHONPATH="$(pwd):$(pwd)/services/management" python3
+>>> from app import create_app
 ```
 
 ### Database Operations
 
-**Connect to database**:
+**Connect to the database**:
 ```bash
-# PostgreSQL
-docker-compose exec postgres psql -U waddleai -d waddleai
-
-# SQLite
-sqlite3 waddleai.db
-
-# View schema
-\dt                    # PostgreSQL tables
-.tables                # SQLite tables
+psql postgresql://waddleai:waddleai-dev@localhost:5432/waddleai
+```
+```sql
+\dt   -- list tables
 ```
 
-**Reset database**:
+**Reset the database** (deletes all data):
 ```bash
-# Full reset (deletes all data)
-docker-compose down -v
-make db-init
-make seed-mock-data
+docker rm -f waddleai-postgres
+docker run -d --name waddleai-postgres \
+  -e POSTGRES_DB=waddleai -e POSTGRES_USER=waddleai -e POSTGRES_PASSWORD=waddleai-dev \
+  -p 5432:5432 pgvector/pgvector:pg16
+# Restart the management service — init_schema() recreates all tables automatically
 ```
 
-**Run migrations**:
+**Apply pending migrations**:
 ```bash
-# Auto-migrate on startup
-docker-compose restart proxy
-
-# Or manually run migration
-docker-compose exec proxy python -m shared.db migrate
+cd services/management
+DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai alembic upgrade head
 ```
 
 ### Working with Git Branches
@@ -475,56 +370,12 @@ docker-compose exec proxy python -m shared.db migrate
 # Create feature branch
 git checkout -b feature/new-feature-name
 
-# Keep branch updated with main
+# Keep branch updated with the release branch you branched from
 git fetch origin
-git rebase origin/main
-
-# Clean commit history before PR
-git rebase -i origin/main  # Interactive rebase
+git rebase origin/release/vX.Y.X
 
 # Push branch
 git push origin feature/new-feature-name
-```
-
-### Testing Dual Token System
-
-```bash
-# Create test tokens with different quotas
-python scripts/mock-data/seed-tokens.py
-
-# Monitor token consumption
-curl http://localhost:8001/api/v1/analytics/tokens \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# View per-token breakdown (WaddleAI vs LLM tokens)
-curl http://localhost:8001/api/v1/analytics/tokens/token-id \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-### Testing Multi-Backend Routing
-
-```bash
-# Configure backend connections
-python scripts/mock-data/seed-backends.py
-
-# Test smart routing
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer wa-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "smart-router",
-    "messages": [{"role": "user", "content": "Complex reasoning"}]
-  }'
-
-# Force specific backend
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer wa-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Use OpenAI"}],
-    "waddleai_route": "openai"
-  }'
 ```
 
 ---
@@ -535,160 +386,108 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 
 **Check if ports are already in use**:
 ```bash
-# Find what's using port 8000
-lsof -i :8000
+lsof -i :8080   # proxy
+lsof -i :8001   # management
+lsof -i :3000   # webui
 
-# Kill the process
 kill -9 <PID>
 
-# Or use different ports in .env
-PROXY_PORT=8080
-MANAGEMENT_PORT=8082
+# Or bind to a different port
+hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8888 --reload
 ```
 
-**Docker daemon not running**:
+**Docker daemon not running** (needed for the Postgres/Valkey containers):
 ```bash
 # macOS
 open /Applications/Docker.app
 
 # Linux
 sudo systemctl start docker
-
-# Windows (Docker Desktop)
-# Start Docker Desktop from Applications
 ```
 
 ### Database Connection Error
 
 ```bash
-# Verify database container is running
-docker-compose ps postgres
+# Verify the container is running
+docker ps --filter name=waddleai-postgres
 
-# Check database credentials in .env
-cat .env | grep DB_
+# Check DATABASE_URL is exported in the shell running the service
+echo "$DATABASE_URL"
 
-# Connect to database directly
-docker-compose exec postgres psql -U waddleai -d waddleai
+# Connect directly to confirm credentials/reachability
+psql "$DATABASE_URL"
 
-# View logs
-docker-compose logs postgres
+# View container logs
+docker logs waddleai-postgres
 ```
 
-### Proxy Service Won't Start
+### Proxy or Management Service Won't Start
 
 ```bash
-# Check logs
-docker-compose logs proxy
+# Re-run in the foreground to see the traceback directly (no --reload)
+cd proxy && PYTHONPATH="$(pwd)/..:$(pwd)" hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080
 
-# Verify database migration
-docker-compose exec proxy python -c "from shared.db import init_db; init_db()"
-
-# Reset and rebuild
-docker-compose down
-docker-compose up -d --build proxy
+# Common cause: PYTHONPATH not exported before the hypercorn invocation,
+# causing "ModuleNotFoundError: No module named 'shared'" or 'apps'
 ```
 
 ### Smoke Tests Failing
 
-**Check which test failed**:
 ```bash
-# Run individually
-./tests/smoke/health-check.sh
-./tests/smoke/dual-token-validation.sh
-./tests/smoke/backend-routing-check.sh
+make smoke-test
 ```
 
 **Common issues**:
-- Service not healthy (logs: `docker-compose logs <service>`)
-- Port not exposed (check docker-compose.yml)
-- API endpoint not implemented
-- Missing environment variables
+- Service not healthy — check the terminal running that service for the traceback
+- Wrong port — confirm the service is bound to the port the test expects (8080 proxy, 8001 management)
+- Missing environment variables — `DATABASE_URL` / `JWT_SECRET` not exported in the shell that started the service
 
-See [Testing Documentation - Smoke Tests](TESTING.md#smoke-tests) for detailed troubleshooting.
+See [Testing Documentation](TESTING.md) for detailed troubleshooting.
 
 ### Git Merge Conflicts
 
 ```bash
-# View conflicts
 git status
 
 # Edit conflicted files (marked with <<<<, ====, >>>>)
 # Remove conflict markers and keep desired code
 
-# Mark as resolved
 git add <resolved-file>
-
-# Complete merge
 git commit -m "Resolve merge conflicts"
 ```
 
 ### Slow Docker Builds
 
 ```bash
-# Check Docker disk usage
 docker system df
-
-# Clean up unused images/containers
 docker system prune
-
-# Rebuild without cache (slow, but fresh)
-docker-compose build --no-cache proxy
+docker build --no-cache -f proxy/Dockerfile -t waddleai/proxy:local .
 ```
 
 ---
 
 ## Tips & Best Practices
 
-### Hot Reload Development
+### Fast Iteration
 
-For fastest iteration:
-```bash
-# Start services once
-docker-compose up -d
-
-# Edit Python files → auto-reload (FLASK_DEBUG=1)
-# Changes in proxy/management auto-apply
-# Changes in shared/ → restart service
-```
+For the fastest edit-test loop, skip containers entirely and run services directly with `--reload` (Python) / `npm run dev` (webui) as shown in [Starting Development Environment](#starting-development-environment). Only fall back to Docker builds or the local Kubernetes path when you specifically need to validate the built image.
 
 ### Environment-Specific Configuration
 
 ```bash
-# Development settings (auto-loaded)
-.env              # Default development config
-.env.local        # Local machine overrides (gitignored)
-
-# Production settings (via secret management)
-Kubernetes secrets
-AWS Secrets Manager
-HashiCorp Vault
+# Local shell exports (this guide)      — development
+# Kubernetes Secret/ConfigMap           — beta/gamma/prod (see k8s/helm/waddleai)
 ```
 
 ### Code Organization
 
-Keep project clean:
 ```bash
 # Remove old branches
 git branch -D old-branch
 
 # Clean local Docker images
 docker image prune -a
-
-# Clean unused containers
 docker container prune
-```
-
-### Performance Tips
-
-```bash
-# Use specific services to reduce memory usage
-docker-compose up postgres proxy  # Skip management, redis
-
-# Use lightweight testing
-make smoke-test  # Instead of full test suite while developing
-
-# Cache Docker layers by building in order of frequency of change
-Dockerfile: base → dependencies → code → entrypoint
 ```
 
 ---
@@ -696,11 +495,12 @@ Dockerfile: base → dependencies → code → entrypoint
 ## Related Documentation
 
 - **Testing**: [Testing Documentation](TESTING.md)
-  - Mock data scripts for dual token system
   - Smoke tests for proxy/management
   - Unit/integration/E2E tests
-  - Performance tests
   - Cross-architecture testing
+
+- **Testing Setup (OpenWebUI)**: [Testing Setup](TESTING_SETUP.md)
+  - Local proxy + OpenWebUI environment for manual LLM testing
 
 - **Pre-Commit**: [Pre-Commit Checklist](PRE_COMMIT.md)
   - Linting requirements
@@ -708,27 +508,16 @@ Dockerfile: base → dependencies → code → entrypoint
   - Build verification
   - Test requirements
 
-- **Deployment**: [Deployment Guide](deployment/)
-  - Containerization
-  - Kubernetes deployment
-  - Docker Compose production
-  - Health checks
-
-- **Standards**: [Development Standards](STANDARDS.md)
-  - Architecture decisions
-  - Code style
-  - API conventions
-  - Database patterns
-  - Dual token system design
-  - Multi-backend routing patterns
+- **Deployment**: [Beta K8s Deployment Guide](../DEPLOY_K8S.md)
+  - Helm chart at `k8s/helm/waddleai`
+  - Beta cluster deployment via `./scripts/deploy-beta.sh`
 
 - **Workflows**: [CI/CD Workflows](WORKFLOWS.md)
   - GitHub Actions pipelines
   - Build automation
   - Test automation
-  - Release processes
 
 ---
 
-**Last Updated**: 2026-01-06
+**Last Updated**: 2026-08-10
 **Maintained by**: Penguin Tech Inc

@@ -2,80 +2,86 @@
 
 **CRITICAL: This checklist MUST be followed before every commit.**
 
-## Automated Pre-Commit Script
+## Automated Pre-Commit Target
 
-**Run the automated pre-commit script to execute all checks:**
+**Run the Makefile target to execute the checks in order:**
 
 ```bash
-./scripts/pre-commit/pre-commit.sh
+make pre-commit
 ```
 
-This script will:
-1. Run all checks in the correct order
-2. Log output to `/tmp/pre-commit-waddleai-<epoch>.log`
-3. Provide a summary of pass/fail status
-4. Echo the log file location for review
+This runs, in order: `lint` → `test-security` → `test` (currently `test-unit` only — see
+[Required Steps](#required-steps-in-order)). There is no standalone
+`scripts/pre-commit/*.sh` suite; `make pre-commit` and the individual `make` targets below
+are the only supported entry points.
 
-**Individual check scripts** (run separately if needed):
-- `./scripts/pre-commit/check-python.sh` - Python linting & security
-- `./scripts/pre-commit/check-security.sh` - All security scans
-- `./scripts/pre-commit/check-secrets.sh` - Secret detection
-- `./scripts/pre-commit/check-docker.sh` - Docker build & validation
-- `./scripts/pre-commit/check-tests.sh` - Unit tests
-- `./scripts/pre-commit/check-tokens.sh` - Dual token system validation
-- `./scripts/pre-commit/check-routing.sh` - Multi-backend routing validation
+**Individual targets** (run separately if needed — all defined in the root `Makefile`):
+- `make lint` — flake8, black, isort, mypy (best-effort; each step is skipped with a warning
+  if the tool isn't installed, so a clean run is not proof the tool actually executed —
+  confirm the tool ran before trusting a pass)
+- `make test-security` — bandit, pip-audit, npm audit, gitleaks, OSI license gate
+  (`scripts/check-licenses.sh`)
+- `make test-unit` — `pytest tests/unit`
+- `make test-integration` — `pytest tests/integration` (directory currently has no test
+  files; the target passes trivially — see [TESTING.md](TESTING.md#integration-tests))
+- `make test-contract` — `pytest tests/contract` (request/response snapshot tests)
+- `make smoke-test` — `pytest tests/smoke` (directory currently has no `pytest`-discoverable
+  tests, only standalone shell scripts — see
+  [TESTING.md](TESTING.md#smoke-tests))
+- `make seed-mock-data` — currently a no-op placeholder (no seeder scripts exist yet)
 
 ---
 
 ## Required Steps (In Order)
 
-Before committing, run in this order (or use `./scripts/pre-commit/pre-commit.sh`):
+Before committing, run in this order (or use `make pre-commit` for the first three):
 
 ### Foundation Checks
-- [ ] **Linters**: `flake8 proxy management shared` or equivalent
-- [ ] **Code formatting**: `black --check proxy management shared`
-- [ ] **Import sorting**: `isort --check-only proxy management shared`
-- [ ] **Type checking**: `mypy proxy management shared`
-- [ ] **Security scans**: `bandit -r proxy management shared -ll`
+- [ ] **Linters**: `make lint` (flake8, black --check, isort --check-only, mypy — see
+      `pyproject.toml` for black/isort/mypy config, `.flake8` for flake8 config)
+- [ ] **Security scans**: `make test-security` (bandit, pip-audit, npm audit, gitleaks,
+      license gate)
 
 ### Build & Integration Verification
-- [ ] **Build & Run**: Verify code compiles and containers start successfully
-- [ ] **Smoke tests** (mandatory, <2 min): `make smoke-test`
-  - Proxy service health check (HTTP 200)
-  - Management service health check (HTTP 200)
-  - Dual token validation working
-  - Backend routing responds correctly
+- [ ] **Build & Run**: Verify each service's container builds (see
+      [Docker / Containers](#docker--containers) below)
+- [ ] **Smoke tests**: `make smoke-test`
+  - Currently collects zero tests (`tests/smoke/` has two standalone bash scripts,
+    `test-production.sh` and `test_management_build.sh`, but no `pytest`-discoverable
+    `test_*.py` files) — run the scripts directly if you need smoke coverage today
   - See: [Testing Documentation - Smoke Tests](TESTING.md#smoke-tests)
 
 ### Feature Testing & Documentation
-- [ ] **Mock data** (for testing features): Ensure 3-4 test items per feature via `make seed-mock-data`
-  - Populate development database with realistic test data for dual token testing
-  - Needed before capturing screenshots and UI testing
-  - See: [Testing Documentation - Mock Data Scripts](TESTING.md#mock-data-scripts)
-- [ ] **API testing** (for endpoint changes): Create and run API testing scripts
-  - Location: `tests/api/` directory with service-specific subdirectories
-  - Test coverage: Health checks, authentication, dual token validation, routing
-  - Run before commit: Each test script should be executable and pass completely
+- [ ] **Mock data**: `make seed-mock-data` — currently a no-op placeholder; no
+      `scripts/mock-data/` seeders exist yet. If you add a feature that needs seed data,
+      write the seeder and wire it into this target
+- [ ] **API/contract testing** (for endpoint changes): `pytest tests/contract -v` covers
+      request/response shape for proxy and management endpoints via stored snapshots in
+      `tests/contract/snapshots/`. There is no separate `tests/api/` directory
 
 ### Comprehensive Testing
 - [ ] **Unit tests**: `pytest tests/unit/ -v`
-  - Network isolated, mocked dependencies
-  - Must pass before committing
-  - Token validation tests included
-  - Routing logic tests included
-- [ ] **Integration tests**: Component interaction verification
-  - Tests with real database and service communication
-  - Dual token consumption tracking validation
-  - Multi-backend routing decision logic validation
-  - See: [Testing Documentation - Integration Tests](TESTING.md#integration-tests)
+  - Mocked dependencies; ~1141 tests today (a handful skipped) — see
+    [TESTING.md](TESTING.md#unit-tests)
+  - Coverage gate: 60% (`.coveragerc`, `fail_under = 60`) — see
+    [TESTING.md](TESTING.md#unit-tests)
+- [ ] **Integration tests**: `pytest tests/integration/ -v`
+  - 35 tests across 4 modules (Claude, llama.cpp, mem0, Ollama). They hit live
+    backends, so they need the relevant service reachable; skip locally if it
+    isn't. CI does not run them — the `integration-test` job is gated on
+    non-pull-request events
+- [ ] **Web UI tests** (if `services/webui` changed): `npm test` from `services/webui/`
+  (runs `vitest run --coverage`); coverage gate 90% (see
+  [TESTING.md](TESTING.md#unit-tests))
 
 ### Finalization
-- [ ] **Version updates**: Update `.version` if releasing new version
+- [ ] **Version updates**: Update `.version` if releasing new version (only increment
+      Major/Minor/Patch once the current version is tagged — see `versioning` skill)
 - [ ] **Documentation**: Update docs if adding/changing workflows or token system
-- [ ] **Docker builds**: Verify Dockerfile uses debian-slim base (no alpine)
-- [ ] **Cross-architecture**: (Optional) Test alternate architecture with QEMU
-  - `docker buildx build --platform linux/arm64 proxy/` (if on amd64)
-  - `docker buildx build --platform linux/amd64 proxy/` (if on arm64)
+- [ ] **Docker builds**: Verify Dockerfiles use a Debian bookworm-slim base (no alpine) and
+      pin external images by SHA256 digest
+- [ ] **Cross-architecture**: (Optional) Test alternate architecture with QEMU —
+      `docker buildx build --platform linux/arm64 -f proxy/Dockerfile proxy/` (if on amd64)
   - See: [Testing Documentation - Cross-Architecture Testing](TESTING.md#cross-architecture-testing)
 
 ---
@@ -85,45 +91,55 @@ Before committing, run in this order (or use `./scripts/pre-commit/pre-commit.sh
 ### Python
 
 ```bash
-# Linting
-flake8 proxy management shared --max-line-length=100
-black --check proxy management shared
-isort --check-only proxy management shared
-mypy proxy management shared --ignore-missing-imports
+# Linting (paths match .flake8 / pyproject.toml exclusions)
+flake8 . --max-line-length=120
+black --check .
+isort --check-only .
+mypy . --ignore-missing-imports
 
-# Security
-bandit -r proxy management shared -ll
-safety check
+# Security (paths match CI's docker-build.yml test job)
+bandit -r proxy services/management shared -ll
+pip-audit -r requirements.txt
 
 # Build & Run
-python -m py_compile proxy/**/*.py management/**/*.py shared/**/*.py  # Syntax check
-pip install -r requirements.txt    # Dependencies
-python proxy/apps/proxy_server/main.py &  # Verify proxy starts (then kill)
-python management/apps/management_server/main.py &  # Verify management starts
+python3 -m py_compile proxy/apps/proxy_server/main.py services/management/app/__init__.py
+pip install -r requirements.txt
+pip install -r services/management/requirements.txt
+
+# Verify proxy starts (Quart app, hypercorn ASGI server, port 8080), then kill
+cd proxy && hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080 &
+
+# Verify management starts (Quart app, hypercorn ASGI server, port 8001), then kill
+cd services/management && hypercorn asgi:app --bind 0.0.0.0:8001 &
 
 # Tests
-pytest tests/unit/ -v --cov=proxy,management,shared
-pytest tests/integration/ -v
-pytest tests/unit/proxy/test_token_validation.py -v  # Token tests
-pytest tests/unit/proxy/test_routing.py -v  # Routing tests
+pytest tests/unit/ -v                      # coverage config comes from .coveragerc via pytest.ini
+pytest tests/contract/ -v --no-cov         # request/response snapshot tests
+pytest tests/unit/test_token_manager.py -v      # token accounting tests
+pytest tests/unit/test_request_router.py -v     # routing tests
 ```
+
+Database access at runtime goes through `penguin-dal`; SQLAlchemy + Alembic are schema/
+migration only (`services/management/alembic/`) — never used for runtime queries. See
+`docs/TESTING.md` and `.claude/rules` `backend-database.md` for the full pattern.
 
 ### Docker / Containers
 
 ```bash
 # Lint Dockerfiles
-hadolint proxy/Dockerfile management/Dockerfile
+hadolint proxy/Dockerfile services/management/Dockerfile services/webui/Dockerfile
 
-# Verify base image (debian-slim, NOT alpine)
-grep -E "^FROM.*slim" proxy/Dockerfile management/Dockerfile
+# Verify base image (Debian bookworm-slim, NOT alpine)
+grep -E "^FROM.*bookworm" proxy/Dockerfile services/management/Dockerfile
 
-# Build & Run
-docker build -t waddleai-proxy:test proxy/             # Build proxy
-docker build -t waddleai-management:test management/   # Build management
+# Build (note differing build contexts)
+docker build -t waddleai-proxy:test -f proxy/Dockerfile proxy/
+docker build -t waddleai-management:test -f services/management/Dockerfile .   # context = repo root (COPYs shared/)
+docker build -t waddleai-webui:test -f services/webui/Dockerfile services/webui/
 
 # Start containers
-docker run -d --name test-proxy waddleai-proxy:test
-docker run -d --name test-management waddleai-management:test
+docker run -d --name test-proxy -p 8080:8080 waddleai-proxy:test
+docker run -d --name test-management -p 8001:8001 waddleai-management:test
 
 # Check logs
 docker logs test-proxy
@@ -132,18 +148,19 @@ docker logs test-management
 # Cleanup
 docker stop test-proxy test-management
 docker rm test-proxy test-management
-
-# Docker Compose (if applicable)
-docker-compose -f docker-compose.dev.yml build  # Build all services
-docker-compose -f docker-compose.dev.yml up -d  # Start all services
-docker-compose -f docker-compose.dev.yml logs   # Check logs
-docker-compose -f docker-compose.dev.yml down   # Cleanup
 ```
+
+**Docker Compose is deprecated for every environment** — there is no root
+`docker-compose.yml`/`docker-compose.dev.yml` in this repo. Local multi-service run and
+deployment go through the Helm chart at `k8s/helm/waddleai` (see the `deploying-app` skill).
+CI's `integration-test` job generates its own throwaway `docker-compose.test.yml` purely to
+stand up proxy + management + Postgres + Valkey for that one job — that file is not
+committed and is not a local-dev artifact.
 
 ### YAML Linting
 
 ```bash
-yamllint .github/workflows/*.yml docker-compose*.yml
+yamllint .github/workflows/*.yml k8s/helm/waddleai/*.yml k8s/helm/waddleai/*.yaml
 ```
 
 ### Markdown
@@ -167,9 +184,12 @@ markdownlint docs/*.md README.md
 
 ### Before Every Commit
 - **Run security audits on all modified packages**:
-  - **Python packages**: Run `bandit -r proxy management shared -ll`
-  - **Dependency checks**: Run `safety check` for vulnerable packages
-  - **CodeQL**: All code must pass CodeQL security analysis (GitHub)
+  - **Python packages**: `bandit -r proxy services/management shared -ll` (CI additionally
+    gates the build on `bandit -r proxy services/management shared -lll`, HIGH severity only)
+  - **Dependency checks**: `pip-audit -r requirements.txt` (and per-service
+    `requirements.txt` for any service you touched)
+  - **CodeQL**: All code must pass CodeQL security analysis (`.github/workflows/codeql.yml`,
+    languages: python, javascript-typescript, actions)
 - **Do NOT commit if security vulnerabilities are found** - fix all issues first
 - **Document vulnerability fixes** in commit message if applicable
 
@@ -182,48 +202,36 @@ markdownlint docs/*.md README.md
 
 ---
 
-## API Testing Requirements
+## API / Contract Testing Requirements
 
-Before committing changes to proxy/management services:
+Before committing changes to proxy/management endpoints:
 
-- **Create and run API testing scripts** for each modified service
-- **Testing scope**: All new endpoints and modified functionality
-- **Test files location**: `tests/api/` directory with service-specific subdirectories
-  - `tests/api/proxy/` - Proxy service API tests
-  - `tests/api/management/` - Management service API tests
-- **Run before commit**: Each test script should be executable and pass completely
-- **Test coverage**: Health checks, authentication, token validation, routing, error cases
+- **There is no `tests/api/` directory.** Endpoint-shape coverage lives in
+  `tests/contract/` (`test_proxy_contract.py`, `test_proxy_health.py`,
+  `test_management_contract.py`, `test_management_mutations.py`), which asserts responses
+  against stored snapshots in `tests/contract/snapshots/`
+- **Run before commit**: `pytest tests/contract -v --no-cov`
+- **Test coverage**: health checks, auth, CRUD, error cases, memory/mem0 scoping — see the
+  snapshot filenames in `tests/contract/snapshots/` for the current surface
 
-**Example API Test Script**:
+**Example manual API check (proxy, port 8080)**:
 ```bash
 #!/bin/bash
-# tests/api/proxy/test_dual_tokens.sh
-
 set -e
 
-API_URL="http://localhost:8000"
-ADMIN_TOKEN="wa-admin-token"
+PROXY_URL="http://localhost:8080"
+MGMT_URL="http://localhost:8001"
+TOKEN="wa-test-token"
 
-# Test 1: Token validation
-echo "Testing token validation..."
-curl -X POST "$API_URL/v1/chat/completions" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+# Health
+curl -sf "$PROXY_URL/healthz"
+curl -sf "$MGMT_URL/healthz"
+
+# Chat completion (expect 401 without a valid key, 200 with one)
+curl -X POST "$PROXY_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "test"}]}'
-
-# Test 2: Dual token consumption
-echo "Testing dual token consumption..."
-curl -X GET "http://localhost:8001/api/v1/analytics/tokens/$ADMIN_TOKEN" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Test 3: Backend routing
-echo "Testing backend routing..."
-curl -X POST "$API_URL/v1/chat/completions" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "test"}], "waddleai_route": "openai"}'
-
-echo "✓ All API tests passed"
 ```
 
 ---
@@ -232,12 +240,13 @@ echo "✓ All API tests passed"
 
 Before committing changes to token handling:
 
-- [ ] **Token validation works**: `pytest tests/unit/proxy/test_token_validation.py -v`
-- [ ] **Quota enforcement works**: `pytest tests/unit/proxy/test_quota_management.py -v`
-- [ ] **Token consumption tracked**: `pytest tests/integration/test_token_consumption.py -v`
+- [ ] **Token accounting works**: `pytest tests/unit/test_token_manager.py tests/unit/test_token_manager_costmodel.py tests/unit/test_token_limiter.py -v`
+- [ ] **Metering works**: `pytest tests/unit/test_metering.py -v`
 - [ ] **WaddleAI tokens calculated correctly**: Conversion from LLM tokens verified
 - [ ] **LLM tokens tracked separately**: Input/output tokens tracked independently
-- [ ] **Usage analytics accurate**: Billing data is correct
+- [ ] **Consumption/analytics integration coverage**: `tests/integration/` covers
+      the provider and memory paths but not token-consumption accounting — add
+      coverage alongside any change that touches consumption tracking
 
 ---
 
@@ -245,36 +254,28 @@ Before committing changes to token handling:
 
 Before committing changes to routing logic:
 
-- [ ] **Routing selection works**: `pytest tests/unit/proxy/test_routing.py -v`
-- [ ] **Backend fallback works**: Test fallback scenarios when backend unavailable
-- [ ] **Explicit backend selection works**: `waddleai_route` parameter tested
-- [ ] **Smart routing works**: Automatic backend selection based on model
-- [ ] **Rate limiting enforced**: Requests per minute limits tested
-- [ ] **Error handling**: Invalid backend errors handled gracefully
+- [ ] **Routing selection works**: `pytest tests/unit/test_request_router.py tests/unit/test_request_router_merge.py tests/unit/test_routing_matrix.py -v`
+- [ ] **Backend fallback / circuit breaking works**: `pytest tests/unit/test_request_router_breaker.py -v`
+- [ ] **Pipeline stages work**: `pytest tests/unit/proxy/test_pipeline.py tests/unit/proxy/test_pipeline_stages.py -v`
+- [ ] **Endpoint parity**: `pytest tests/unit/proxy/test_endpoint_parity.py -v`
 
 ---
 
 ## Smoke Tests Requirements
 
-Mandatory smoke tests must pass before committing:
-
 ```bash
-# Run all smoke tests
+# Via Makefile — currently a no-op (no pytest-discoverable tests in tests/smoke/)
 make smoke-test
 
-# Or run individually:
-./tests/smoke/health/test-proxy-health.sh
-./tests/smoke/health/test-management-health.sh
-./tests/smoke/tokens/test-token-validation.sh
-./tests/smoke/routing/test-backend-routing.sh
+# The two smoke scripts that do exist are standalone bash, run directly:
+BASE_URL=https://waddleai.penguintech.io ./tests/smoke/test-production.sh
+./tests/smoke/test_management_build.sh
 ```
 
-**Required to pass**:
-- ✅ Proxy service responds with health 200
-- ✅ Management service responds with health 200
-- ✅ Dual token validation passes
-- ✅ Backend routing responds correctly
-- ✅ API authentication required and working
+`test_management_build.sh` predates the Phase-1 consolidation and checks for `docker-compose.yml`,
+`flask`, `flask-security-too`, and `pydal` in `services/management/requirements.txt` — none
+of which are current (the service uses Quart/hypercorn and `penguin-dal`). Treat its output
+with that in mind until it's updated; don't use it as a source of truth for the current stack.
 
 ---
 
@@ -286,29 +287,24 @@ Use this checklist before every commit:
 Before EVERY commit, verify:
 
 [ ] Linting passes
-    - Python: flake8, black, isort, mypy, bandit
+    - Python: flake8, black, isort, mypy
     - Docker: hadolint
     - YAML: yamllint
 
 [ ] Security checks pass
-    - Python: bandit, safety check
+    - Python: bandit, pip-audit
     - CodeQL analysis passes (GitHub)
-    - No hardcoded secrets
+    - No hardcoded secrets (gitleaks)
 
 [ ] Tests pass locally
-    - Unit tests complete successfully
-    - Integration tests pass
-    - No test failures or errors
+    - Unit tests complete successfully (integration tests need live backends — not a gate)
+    - Contract/snapshot tests pass
 
-[ ] Smoke tests pass
-    - Proxy health: HTTP 200
-    - Management health: HTTP 200
-    - Dual token validation works
-    - Backend routing works
+[ ] Web UI tests pass (if services/webui touched)
+    - npm test (vitest) from services/webui/, coverage ≥90%
 
 [ ] Manual testing complete
-    - Token validation endpoints respond
-    - Routing selection works correctly
+    - Endpoints respond as expected
     - Logs show expected output
     - No debug code left in
 
@@ -319,13 +315,11 @@ Before EVERY commit, verify:
 
 [ ] Configuration is correct
     - Environment variables correct
-    - Database connections working
+    - Database connections working (penguin-dal at runtime)
     - API endpoints accessible
-    - Backend connections configured
 
 [ ] Documentation updated
     - Comments added/updated if needed
-    - API docs updated if endpoints changed
     - README updated if major changes
     - DEVELOPMENT.md updated if workflow changed
 
@@ -337,5 +331,5 @@ Before EVERY commit, verify:
 
 ---
 
-**Last Updated**: 2026-01-06
+**Last Updated**: 2026-08-10
 **Maintained by**: Penguin Tech Inc
