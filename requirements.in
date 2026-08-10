@@ -23,7 +23,7 @@ torch>=2.1.0
 chromadb>=0.4.20
 mem0ai>=0.1.0
 sentence-transformers>=2.2.2
-numpy>=1.24.0
+numpy>=2.5.1
 # RAG Vector Stores
 supabase>=2.3.0
 qdrant-client>=1.7.0
