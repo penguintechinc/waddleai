@@ -172,7 +172,7 @@ docker volume rm openwebui-data   # WARNING: deletes OpenWebUI's chat history/ac
 
 ## 🚀 Production Deployment
 
-Production and beta deployments use the Helm chart at `k8s/helm/waddleai` — see `DEPLOY_K8S.md`. This page covers local/manual testing only.
+Production and beta deployments use the Helm chart at `k8s/helm/waddleai`. This page covers local/manual testing only.
 
 ## 📝 API Compatibility
 

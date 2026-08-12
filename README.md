@@ -53,7 +53,7 @@ Enterprise-grade platform that owns the full data plane itself: a Quart-based pr
 - 💰 **Budget enforcement**: Daily/monthly quotas per user, team, or API key
 - 🔑 **Virtual key management**: Granular permissions and expiration
 
-**Quick Links**: [Platform Docs](docs/DEVELOPMENT.md) | [Architecture](docs/docs-site/docs/architecture.md) | [API Reference](docs/api/openai-compatible.md) | [Kubernetes Deployment](DEPLOY_K8S.md)
+**Quick Links**: [Platform Docs](docs/DEVELOPMENT.md) | [Architecture](docs/docs-site/docs/architecture.md) | [API Reference](docs/api/openai-compatible.md) | [Kubernetes Deployment](k8s/helm/waddleai/)
 
 ---
 
@@ -121,7 +121,7 @@ kubectl create secret generic waddleai-secrets -n waddleai \
   --from-literal=postgres-password="$(openssl rand -hex 16)" \
   --from-literal=jwt-secret="$(openssl rand -hex 32)"
 
-# Install the chart (see DEPLOY_K8S.md for full prerequisites)
+# Install the chart
 helm install waddleai k8s/helm/waddleai \
   --namespace waddleai \
   --values k8s/helm/waddleai/values-beta.yaml
@@ -155,7 +155,7 @@ The Assistant automatically detects the Platform and enables:
 - **[Testing & Validation](docs/TESTING.md)** — Unit tests, integration tests, smoke tests
 - **[Architecture](docs/docs-site/docs/architecture.md)** — Data plane, control plane, and inference fleet design
 - **[API Reference](docs/api/openai-compatible.md)** — OpenAI-compatible and Anthropic-compatible endpoint docs
-- **[Kubernetes Deployment](DEPLOY_K8S.md)** — Helm-based deployment, secrets, and post-deploy configuration
+- **[Kubernetes Deployment](k8s/helm/waddleai/)** — Helm chart for beta/prod deployment
 - **[Standards & Guidelines](docs/STANDARDS.md)** — Code standards, architecture patterns
 
 ### Penguin Code Documentation
@@ -301,7 +301,7 @@ See [LICENSE.md](LICENSE.md) for the full terms.
 
 ## 🆘 Support & Contact
 
-- **WaddleAI Platform Docs**: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | [DEPLOY_K8S.md](DEPLOY_K8S.md) | [API Reference](docs/api/openai-compatible.md)
+- **WaddleAI Platform Docs**: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | [k8s/helm/waddleai/](k8s/helm/waddleai/) | [API Reference](docs/api/openai-compatible.md)
 - **WaddleAI Assistant Docs**: [docs/penguincode/USAGE.md](docs/penguincode/USAGE.md) | [docs/penguincode/ARCHITECTURE.md](docs/penguincode/ARCHITECTURE.md)
 - **Issues**: [GitHub Issues](https://github.com/penguintechinc/waddleai/issues)
 - **Email**: support@penguintech.io
