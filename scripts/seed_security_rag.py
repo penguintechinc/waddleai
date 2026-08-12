@@ -25,7 +25,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from pydal import DAL  # noqa: E402
+from penguin_dal import DAL  # noqa: E402
 
 from shared.utils.embedding_manager import EmbeddingConfig, EmbeddingManager  # noqa: E402
 from shared.utils.rag_integration import Document, PgvectorRAGStore  # noqa: E402

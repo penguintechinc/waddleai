@@ -145,14 +145,12 @@ class ProxyServer:
 
         # Initialize database (pgvector-enabled PostgreSQL primary).
         #
-        # get_db() (shared.database.models) is the raw-PyDAL connection that
+        # get_db() (shared.database.models) is the penguin-dal connection that
         # RBACManager, TokenManager, PromptSecurityScanner, ContentFilter, and
         # LLMConnectionManager are all actually written against (synchronous
         # `self.db(query).select()`/`.update_record()` calls -- see the module
-        # docstring in shared/database/models.py). The previous
-        # `from penguin_dal import get_dal` import does not exist anywhere in
-        # penguin-dal and never has; this line has never worked in any
-        # environment. `migrate=True` only in contract-test mode, so the
+        # docstring in shared/database/models.py). penguin-dal exposes DAL/Field
+        # directly, not a `get_dal` factory. `migrate=True` only in contract-test mode, so the
         # harness's empty per-session sqlite file gets real tables; production
         # keeps migrate=False (Alembic/management remains schema authority).
         database_url = os.getenv("DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai")

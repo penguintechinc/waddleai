@@ -1100,7 +1100,7 @@ class ReadReplicaPool:
         """
         import os
 
-        from pydal import DAL
+        from penguin_dal import DAL
 
         urls_raw = os.getenv(replica_url_env, "").strip()
         if not urls_raw:
