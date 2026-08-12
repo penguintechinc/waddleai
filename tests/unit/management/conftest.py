@@ -1,5 +1,4 @@
-"""
-Pytest configuration and fixtures for management service tests.
+"""Pytest configuration and fixtures for management service tests.
 
 Route-test fixtures (flask_app, client, auth_headers, etc.) are defined inline
 here because pytest_plugins is not allowed in non-top-level conftest files.
@@ -7,9 +6,9 @@ here because pytest_plugins is not allowed in non-top-level conftest files.
 
 import os
 import sys
+from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import AsyncGenerator, Dict
 from unittest.mock import MagicMock, patch
 
 import jwt as _jwt
@@ -20,6 +19,12 @@ from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
 
 # Ensure management service is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../services/management"))
+
+# Fixture-only credentials, never used against a real service. Hoisted to
+# named constants (rather than inline string defaults) so their test-only
+# purpose is explicit at both definition and call sites.
+TEST_ONLY_JWT_SECRET = "test-secret-key-32chars-minimum!!"  # noqa: S105 -- test fixture, not a real secret
+TEST_ONLY_PASSWORD = "password123"  # noqa: S105 -- test fixture, not a real credential
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +195,8 @@ def _make_mock_db() -> MagicMock:
     original_getattr = MagicMock.__getattribute__
 
     def _getattr(self, name):
-        # Use original for internal attributes and special methods, return DBTable for db.table access
+        # Use original for internal attributes/special methods; else return
+        # a DBTable for db.table access.
         internal_attrs = [
             "side_effect",
             "return_value",
@@ -258,6 +264,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.quotas",
     "services.management.app.api.v1.webhooks",
     "services.management.app.api.v1.routing_matrix",
+    "services.management.app.api.v1.cilium",
 ]
 
 
@@ -313,6 +320,7 @@ def flask_app():
 
 @pytest.fixture
 async def client(flask_app) -> AsyncGenerator:
+    """Quart async test client bound to the shared `flask_app` fixture."""
     async with flask_app.test_client() as c:
         yield c
 
@@ -347,9 +355,10 @@ def make_token(
     user_id: int = 1,
     org_id: int = 1,
     username: str = "testuser",
-    secret: str = "test-secret-key-32chars-minimum!!",  # unused, kept for call-site compat
+    secret: str = TEST_ONLY_JWT_SECRET,  # unused, kept for call-site compat
     expires_hours: int = 1,
 ) -> str:
+    """Encode a JWT via penguin-aaa (RS256), or a raw expired token when expires_hours<=0."""
     from datetime import UTC
 
     provider = _test_oidc_provider()
@@ -387,31 +396,37 @@ def make_token(
 
 @pytest.fixture
 def admin_token() -> str:
+    """JWT bearer token for a user with the admin role."""
     return make_token(role="admin")
 
 
 @pytest.fixture
 def user_token() -> str:
+    """JWT bearer token for a user with the plain user role."""
     return make_token(role="user", user_id=2)
 
 
 @pytest.fixture
 def resource_manager_token() -> str:
+    """JWT bearer token for a user with the resource_manager role."""
     return make_token(role="resource_manager", user_id=3)
 
 
 @pytest.fixture
-def auth_headers(admin_token: str) -> Dict[str, str]:
+def auth_headers(admin_token: str) -> dict[str, str]:
+    """Authorization + Content-Type headers carrying an admin bearer token."""
     return {"Authorization": f"Bearer {admin_token}", "Content-Type": "application/json"}
 
 
 @pytest.fixture
-def user_auth_headers(user_token: str) -> Dict[str, str]:
+def user_auth_headers(user_token: str) -> dict[str, str]:
+    """Authorization + Content-Type headers carrying a plain-user bearer token."""
     return {"Authorization": f"Bearer {user_token}", "Content-Type": "application/json"}
 
 
 @pytest.fixture
-def rm_auth_headers(resource_manager_token: str) -> Dict[str, str]:
+def rm_auth_headers(resource_manager_token: str) -> dict[str, str]:
+    """Authorization + Content-Type headers carrying a resource_manager bearer token."""
     return {"Authorization": f"Bearer {resource_manager_token}", "Content-Type": "application/json"}
 
 
@@ -422,8 +437,9 @@ def make_mock_user(
     role: str = "admin",
     org_id: int = 1,
     enabled: bool = True,
-    password: str = "password123",
+    password: str = TEST_ONLY_PASSWORD,
 ) -> MagicMock:
+    """Return a MagicMock representing a db `users` row."""
     from passlib.hash import bcrypt as _bcrypt
 
     user = MagicMock()
@@ -447,6 +463,7 @@ def make_mock_user(
 
 
 def make_mock_org(org_id: int = 1, name: str = "default", enabled: bool = True) -> MagicMock:
+    """Return a MagicMock representing a db `organizations` row."""
     org = MagicMock()
     org.id = org_id
     org.name = name
@@ -466,6 +483,7 @@ def make_mock_key(
     name: str = "Test Key",
     enabled: bool = True,
 ) -> MagicMock:
+    """Return a MagicMock representing a db `virtual_keys` row."""
     key = MagicMock()
     key.id = key_id
     key.name = name
@@ -494,6 +512,7 @@ def make_mock_provider(
     enabled: bool = True,
     ailb_sync_enabled: bool = True,
 ) -> MagicMock:
+    """Return a MagicMock representing a db `ai_providers` row."""
     provider = MagicMock()
     provider.id = provider_id
     provider.name = name
@@ -519,27 +538,32 @@ def make_mock_provider(
 
 @pytest.fixture
 def standalone_mock_db() -> MagicMock:
+    """A fresh mock DB, independent of the route-test `flask_app`'s patched instance."""
     return _make_mock_db()
 
 
 @pytest.fixture
 def standalone_mock_redis() -> MagicMock:
+    """A fresh mock Redis client, independent of the route-test `flask_app`'s instance."""
     return _make_mock_redis()
 
 
 # Keep old name so existing tests don't break
 @pytest.fixture
 def mock_db() -> MagicMock:
+    """Alias for `standalone_mock_db`, kept for pre-existing non-route test call sites."""
     return _make_mock_db()
 
 
 @pytest.fixture
 def mock_redis() -> MagicMock:
+    """Alias for `standalone_mock_redis`, kept for pre-existing non-route test call sites."""
     return _make_mock_redis()
 
 
 @pytest.fixture
 def mock_ailb_client() -> MagicMock:
+    """A mock AILB gRPC client, connected and healthy by default."""
     client = MagicMock()
     client.is_connected.return_value = True
     client.get_status.return_value = MagicMock(health_status="HEALTH_STATUS_HEALTHY")
@@ -551,6 +575,7 @@ def mock_ailb_client() -> MagicMock:
 
 @pytest.fixture
 def sample_usage_event():
+    """A representative UsageEvent for usage-tracker tests."""
     from services.management.app.services.usage_tracker import UsageEvent
 
     return UsageEvent(
@@ -570,6 +595,7 @@ def sample_usage_event():
 
 @pytest.fixture
 def sample_provider_config() -> dict:
+    """A representative AI provider config payload for provider-creation tests."""
     return {
         "name": "Test OpenAI",
         "provider_type": "openai",
@@ -583,6 +609,7 @@ def sample_provider_config() -> dict:
 
 @pytest.fixture
 def sample_ollama_config():
+    """A representative OllamaDeploymentConfig for ollama-manager tests."""
     from services.management.app.services.ollama_manager import OllamaDeploymentConfig
 
     return OllamaDeploymentConfig(
@@ -596,6 +623,7 @@ def sample_ollama_config():
 
 @pytest.fixture
 def admin_user_context():
+    """A UserContext with the admin role and its full permission set."""
     from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
 
     return UserContext(
@@ -610,6 +638,7 @@ def admin_user_context():
 
 @pytest.fixture
 def sample_user_context():
+    """A UserContext with the plain user role and its limited permission set."""
     from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
 
     return UserContext(
@@ -624,6 +653,7 @@ def sample_user_context():
 
 @pytest.fixture
 def rbac_manager(mock_db):
+    """An RBACManager wired to the standalone `mock_db` fixture."""
     from shared.auth.rbac import RBACManager
 
     return RBACManager(mock_db)

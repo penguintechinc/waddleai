@@ -1,6 +1,4 @@
-"""
-WaddleAI Management API v1
-"""
+"""WaddleAI Management API v1."""
 
 from quart import Blueprint
 
@@ -11,6 +9,7 @@ from . import (
     ailb,
     ailb_memory,
     auth,
+    cilium,
     keys,
     llamacpp,
     ollama,

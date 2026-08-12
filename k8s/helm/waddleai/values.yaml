@@ -398,6 +398,45 @@ networkPolicy:
     - Ingress
     - Egress
 
+# Cilium integration (platform spec §12) — Management renders and upserts
+# CiliumEnvoyConfig (per-org edge rate limiting) and CiliumNetworkPolicy
+# (default-deny + explicit topology flows) via services/management/app/
+# services/cilium_policy.py. Every CRD-emitting template below is guarded by
+# both cilium.enabled AND a `.Capabilities.APIVersions.Has "cilium.io/v2"`
+# check, so a non-Cilium cluster (e.g. plain kind/MicroK8s in alpha) skips
+# these resources cleanly instead of failing `helm install` (§12.3). The
+# reconciler itself is additionally gated at runtime by the
+# `waddleai.native_rate_limit` PostHog flag (default OFF) — the master switch
+# below only controls whether the *chart* ships the RBAC/bootstrap objects
+# that let the reconciler operate at all.
+cilium:
+  enabled: true # master switch for all Cilium integration
+  rbac:
+    create: true # ClusterRole/Binding granting the Management SA cilium.io CRD access
+  networkPolicy:
+    enabled: true # bootstrap default-deny + topology-flow CiliumNetworkPolicy
+  rateLimit:
+    enabled: true # reconciler manages the per-org CiliumEnvoyConfig (also needs the native_rate_limit flag ON)
+  # Selector labels + serving ports consumed by the Python reconciler (via the
+  # CILIUM_TOPOLOGY env var, JSON-encoded by the waddleai.cilium.topology
+  # helper) AND by the bootstrap CiliumNetworkPolicy template below — single
+  # source of truth so the two never drift.
+  topology:
+    gatewayName: shared
+    gatewayNamespace: gateway
+    aiproxyPort: 8080
+    postgresPort: 5432
+    valkeyPort: 6379
+    fleetPorts: [8080, 11434] # llamacpp (8080) + ollama (11434)
+    fleetComponentKey: app.kubernetes.io/component
+    fleetComponents: [ollama, llamacpp]
+    selectors:
+      gateway: { "app.kubernetes.io/name": cilium-gateway }
+      aiproxy: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": proxy }
+      management: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": management }
+      postgres: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": postgres }
+      valkey: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": valkey }
+
 # Secret management
 # Set manage: false to skip chart-managed secret (use externally created secret instead)
 secrets:

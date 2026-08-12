@@ -248,3 +248,18 @@ amd-rocm-plugin:
 
 intel-gpu-plugin:
   enabled: false
+
+# Cilium integration - Beta
+# dal2-beta runs Cilium as CNI with the real Gateway API resources this
+# topology targets (see httproute.gatewayName/gatewayNamespace above).
+cilium:
+  enabled: true
+  rbac:
+    create: true
+  networkPolicy:
+    enabled: true
+  rateLimit:
+    enabled: true
+  topology:
+    gatewayName: shared
+    gatewayNamespace: gateway

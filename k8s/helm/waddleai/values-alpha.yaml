@@ -114,3 +114,21 @@ ingress:
 # Pod Disruption Budget - Disabled for Alpha
 podDisruptionBudget:
   enabled: false
+
+# Cilium integration - Alpha
+# Local K8s (MicroK8s/Docker Desktop) frequently has no Cilium CNI installed
+# at all. Leave the reconciler + RBAC + bootstrap-CNP toggle ON regardless --
+# the `.Capabilities.APIVersions.Has "cilium.io/v2"` guard on the CNP
+# template and the reconciler's own cilium_capabilities() check both degrade
+# cleanly when the CRDs are absent (§12.3), so this is safe to leave on and
+# exercises the same code path alpha would run in beta/prod.
+cilium:
+  enabled: true
+  rbac:
+    create: true
+  networkPolicy:
+    enabled: true
+  rateLimit:
+    enabled: true
+  topology:
+    gatewayNamespace: gateway
