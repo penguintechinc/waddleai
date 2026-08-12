@@ -52,13 +52,37 @@ curl https://your-waddleai-proxy.com/v1/chat/completions \
 | `stop` | string/array | No | Stop sequences |
 | `stream` | boolean | No | Whether to stream responses |
 
+#### Selecting a provider — provider-qualified model strings
+
+Prefix the `model` field with a provider name to pin **both** the provider and the model:
+
+```python
+model="anthropic:claude-opus-5-1m"   # this model, from Anthropic directly
+model="bedrock:claude-opus-5-1m"     # the same model, via AWS Bedrock
+model="ollama:gemma4:e2b"            # local Ollama
+model="gemma4:e2b"                   # no provider pinned — WaddleAI routes
+```
+
+This matters because naming a model does not determine who serves it. The same Claude model is reachable through Anthropic direct, AWS Bedrock and GCP Vertex, each with different data residency, contractual terms, quota pools and pricing. Without a pin, WaddleAI chooses.
+
+It works in the plain `model` field rather than a header, so any OpenAI-compatible SDK supports it with no special handling.
+
+**Parsing**: the prefix is treated as a provider **only if it exactly matches a known provider** — `openai`, `anthropic`, `ollama`, `llamacpp`, `gemini`, `bedrock`, `azure_openai`, `cohere`, `xai` — and only the first colon is split on. Otherwise the whole string is the model name. That rule is why `gemma4:e2b` still resolves as a model: Ollama tags contain colons natively, and there is no provider called `gemma4`.
+
+**A pin disables substitution.** If the pinned provider is unavailable the request fails with a typed error rather than being served by another provider — pinning is usually a data-residency or contractual decision, and silently substituting would fail open on exactly that constraint. Org allow-lists and capability checks still apply; a pin cannot reach a provider your org is not permitted to use.
+
+> **Status:** specified, not yet implemented. See the platform spec §7.2 Stage 0. Today only the model name is honoured (see `X-Preferred-Model` below); the provider is chosen by the router.
+
 #### WaddleAI-Specific Headers
 
-| Header | Description |
-|--------|-------------|
-| `X-WaddleAI-Route` | Force routing to specific provider (e.g., "openai", "anthropic") |
-| `X-WaddleAI-Memory` | Enable conversation memory with session ID |
-| `X-WaddleAI-Security` | Override security policy ("strict", "balanced", "permissive") |
+| Header | Status | Description |
+|--------|--------|-------------|
+| `X-Preferred-Model` | **Implemented** | Overrides the `model` field in the request body |
+| `X-Session-ID` | **Implemented** | Conversation/session identifier (also accepted as `session_id` in the body) |
+| `X-WaddleAI-Tool-Type` | Specified, not implemented | Declares the tool type explicitly, skipping classification (spec §7.2 stage 0) |
+| `X-WaddleAI-Route` | ⚠️ **Not implemented** | Previously documented as forcing a provider. Nothing reads it. Use a provider-qualified model string instead — it is provider *and* model, and needs no custom header |
+| `X-WaddleAI-Memory` | ⚠️ **Not implemented** | Previously documented; nothing reads it |
+| `X-WaddleAI-Security` | ⚠️ **Not implemented** | Previously documented; nothing reads it. Security policy is resolved from `security_policies` scopes, not per-request |
 
 #### Response
 

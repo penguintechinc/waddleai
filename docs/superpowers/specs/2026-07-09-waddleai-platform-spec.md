@@ -424,6 +424,18 @@ Org **policy filters and sorts** on top of both: allow-lists and tier caps filte
 ### 7.2 Decision cascade (cheapest first)
 
 - **Stage 0 — explicit model.** Client named a concrete model → resolve through `model_aliases`, honor exactly, subject to org allow-lists and the capability veto. **Admin-controlled aliasing**: alias rules (`gpt-4o` → local `mistral-large`; `claude-*` → policy X) are the migration lever that localizes existing tools without touching client config. Redirects always visible in `waddleai.routed_from`.
+
+  **Provider-qualified model strings.** A client may pin the provider as well as the model, in the plain `model` field: `anthropic:claude-opus-5-1m`, `bedrock:claude-opus-5-1m`, `ollama:gemma4:e2b`. This is deliberately *not* a header — it works through the standard OpenAI/Anthropic `model` field, so every SDK and every tool that cannot set custom headers gets it for free.
+
+  Pinning matters because model identity does not determine provider: the same Claude model is reachable via Anthropic direct, AWS Bedrock and GCP Vertex, with different data residency, contractual terms, quota pools and pricing. Naming only the model leaves that choice to the router.
+
+  **Parsing rule — a prefix is a provider only if it exactly matches a registered provider name** (`openai`, `anthropic`, `ollama`, `llamacpp`, `gemini`, `bedrock`, `azure_openai`, `cohere`, `xai`); split on the **first** colon only. Otherwise the entire string is the model name. This disambiguation is required, not cosmetic: Ollama tags contain colons natively, so a naive split would parse bare `gemma4:e2b` as provider `gemma4`, model `e2b`. Under this rule `gemma4:e2b` stays a model (no provider named `gemma4`) while `ollama:gemma4:e2b` splits correctly. Model names therefore MUST NOT collide with provider names; on collision the provider interpretation wins and registration of such a model is rejected.
+
+  **Order of resolution**: strip the provider prefix first (it is syntax), then resolve the remainder through `model_aliases`. If an alias resolves to a model the pinned provider does not serve, **fail fast** with the §5.3 typed error — do not silently honour one and drop the other.
+
+  **A provider pin disables substitution.** `provider_failover` (§7.3) MUST NOT substitute another provider when the pinned one is unavailable; the request fails with the taxonomy error instead. Pinning is most often done for data-residency, contractual or quota reasons, and silently serving from a different provider would fail open on precisely the constraint the pin expressed. The capability veto and org allow-lists still apply — a pin cannot reach a provider the org is not permitted to use, and cannot override a hard capability mismatch.
+
+  `waddleai.routed_from` records the pin, so a served response always shows whether the provider was chosen or demanded.
 - **Stage 1 — heuristics** (<1ms, no LLM): `routing_rules_v2(priority, match jsonb, action jsonb)` — determines tool type / route from cheap signals; target ~70% of `auto` requests.
 - **Stage 2 — classifier** (only when heuristics punt): structured JSON → assignment lookup → capability check.
 
