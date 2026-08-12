@@ -187,11 +187,11 @@ Management health: http://localhost:8001/healthz  (also /readyz)
 For testing against a real cluster instead of directly-run processes, this repo ships a MicroK8s-based alpha deploy script:
 
 ```bash
-./scripts/deploy-alpha.sh          # builds proxy/management/webui images, imports into MicroK8s, applies the Kustomize alpha overlay
+./scripts/deploy-alpha.sh          # builds proxy/management/webui images, imports into MicroK8s, helm upgrade --install's the alpha release
 ./scripts/deploy-alpha.sh --help   # all options: --skip-build, --service, --dry-run, --rollback
 ```
 
-It requires a `local-alpha` kubectl context pointing at a running MicroK8s (or Docker Desktop Kubernetes) cluster — see the `deploying-app` skill for cluster setup. As of this writing, `k8s/kustomize/overlays/alpha` only defines the management Deployment/Service (`k8s/kustomize/base/management/`) — it's useful for exercising that one service's built image in-cluster, not yet a full proxy+database+cache stack. The Helm chart at `k8s/helm/waddleai` is what `./scripts/deploy-beta.sh` deploys to the shared beta cluster.
+It requires a `local-alpha` kubectl context pointing at a running MicroK8s (or Docker Desktop Kubernetes) cluster — see the `deploying-app` skill for cluster setup. Under the hood it runs `helm upgrade --install waddleai k8s/helm/waddleai --kube-context local-alpha --namespace waddleai --create-namespace --values k8s/helm/waddleai/values-alpha.yaml`. The Helm chart at `k8s/helm/waddleai` is the only supported deployment path for every environment — it's what `./scripts/deploy-beta.sh` deploys to the shared beta cluster too.
 
 ---
 

@@ -30,6 +30,14 @@ convention = "google"
 "tests/conftest.py" = ["E402"]
 "**/grpc_proto/*/__init__.py" = ["F401", "F403"]
 "**/grpc/proto/*/__init__.py" = ["F401", "F403"]
+# S101 (flake8-bandit "use of assert") exists because `assert` is stripped under
+# `python -O`, which makes it unsafe to enforce invariants in production code.
+# In a test suite asserting IS the contract, so the rule only ever fires as
+# noise — it accounted for 113 of the 180 findings on the first new test file
+# added after ruff was adopted, effectively blocking new tests. Scoped to tests
+# only; production code still gets the full S ruleset. Docstring (D) rules are
+# deliberately NOT exempted here — they are mandatory per PEP 257.
+"tests/**/*.py" = ["S101"]
 
 [tool.mypy]
 ignore_missing_imports = true
