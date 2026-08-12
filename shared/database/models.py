@@ -6,7 +6,7 @@ Shared database models for both proxy and management servers
 import os
 from datetime import date, datetime
 
-from pydal import DAL, Field
+from penguin_dal import DAL, Field
 
 
 def get_db(db_uri=None, migrate=False):
@@ -23,12 +23,12 @@ def get_db(db_uri=None, migrate=False):
     if db_uri is None:
         db_uri = os.getenv("DATABASE_URL", "sqlite://waddleai.db")
 
-    # fake_migrate_all always False: that flag skips real CREATE TABLE/ALTER
-    # and only (re)writes PyDAL's .table fingerprint files -- it is for
-    # adopting an already-existing external schema, not for actually creating
-    # one. migrate=True must produce real tables (contract-test harness runs
-    # against a brand-new, empty sqlite file).
-    db = DAL(db_uri, migrate=migrate, fake_migrate_all=False)
+    # penguin_dal.DAL has no fake_migrate_all param (PyDAL-only concept: it
+    # skips CREATE TABLE/ALTER and only rewrites PyDAL's .table fingerprint
+    # files for adopting an already-existing external schema). penguin_dal's
+    # define_table() always does CREATE TABLE IF NOT EXISTS, matching the
+    # fake_migrate_all=False behavior this call previously requested.
+    db = DAL(db_uri, migrate=migrate)
     define_tables(db)
     return db
 
@@ -39,41 +39,39 @@ def define_tables(db):
     # Organizations for Multi-tenancy
     db.define_table(
         "organizations",
-        Field("name", unique=True, required=True),
+        Field("name", unique=True, notnull=True),
         Field("description", "text"),
         Field("token_quota_monthly", "integer", default=1000000),
         Field("token_quota_daily", "integer", default=100000),
         Field("default_model", "string"),  # Default model for organization
         Field("enabled", "boolean", default=True),
         Field("created_at", "datetime", default=datetime.utcnow),
-        format="%(name)s",
     )
 
     # Users and Authentication
     db.define_table(
         "users",
-        Field("username", unique=True, required=True),
-        Field("email", unique=True, required=True),
-        Field("password_hash", "password", required=True),
-        Field("role", "string", required=True),  # admin, resource_manager, reporter, user
-        Field("organization_id", "reference organizations", required=True),
+        Field("username", unique=True, notnull=True),
+        Field("email", unique=True, notnull=True),
+        Field("password_hash", "password", notnull=True),
+        Field("role", "string", notnull=True),  # admin, resource_manager, reporter, user
+        Field("organization_id", "reference organizations", notnull=True),
         Field("managed_orgs", "list:reference organizations"),  # For resource managers
         Field("created_at", "datetime", default=datetime.utcnow),
         Field("token_quota_monthly", "integer", default=100000),
         Field("token_quota_daily", "integer", default=10000),
         Field("default_model", "string"),  # Default model for user
         Field("enabled", "boolean", default=True),
-        format="%(username)s",
     )
 
     # API Keys with Usage Limits
     db.define_table(
         "api_keys",
-        Field("key_id", unique=True, required=True),
-        Field("key_hash", "password", required=True),  # Hashed API key
-        Field("user_id", "reference users", required=True),
-        Field("organization_id", "reference organizations", required=True),
-        Field("name", "string", required=True),  # Human readable name
+        Field("key_id", unique=True, notnull=True),
+        Field("key_hash", "password", notnull=True),  # Hashed API key
+        Field("user_id", "reference users", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("name", "string", notnull=True),  # Human readable name
         Field("token_quota_monthly", "integer"),  # Override user quota
         Field("token_quota_daily", "integer"),  # Override user quota
         Field("rate_limit_rpm", "integer", default=60),  # Requests per minute
@@ -85,7 +83,6 @@ def define_tables(db):
         Field("permissions", "json"),  # Scoped permissions
         Field("allowed_endpoints", "list:string"),  # Endpoint restrictions
         Field("api_access_level", "string"),  # admin_api, management_api, proxy_api
-        format="%(name)s",
     )
 
     # Connection Links (LLM Providers)
@@ -96,23 +93,22 @@ def define_tables(db):
     # See: services/management/app/models_sqlalchemy.py for the canonical schema.
     db.define_table(
         "connection_links",
-        Field("name", unique=True, required=True),
-        Field("provider", "string", required=True),  # ollama, anthropic, openai
-        Field("endpoint_url", required=True),
+        Field("name", unique=True, notnull=True),
+        Field("provider", "string", notnull=True),  # ollama, anthropic, openai
+        Field("endpoint_url", notnull=True),
         Field("api_key", "password"),
         Field("model_list", "json"),
         Field("rate_limits", "json"),
         Field("enabled", "boolean", default=True),
         Field("tls_config", "json"),
         Field("management_capabilities", "json"),  # For Ollama: pull, remove, list
-        format="%(name)s",
     )
 
     # Ollama Model Registry
     db.define_table(
         "ollama_models",
-        Field("link_id", "reference connection_links", required=True),
-        Field("model_name", required=True),
+        Field("link_id", "reference connection_links", notnull=True),
+        Field("model_name", notnull=True),
         Field("model_tag", default="latest"),
         Field("status", "string", default="unknown"),  # available, pulling, failed, removed
         Field("size_bytes", "bigint"),
@@ -124,7 +120,7 @@ def define_tables(db):
     # Routing Rules
     db.define_table(
         "routing_rules",
-        Field("name", required=True),
+        Field("name", notnull=True),
         Field("routing_llm_id", "reference connection_links"),
         Field("conditions", "json"),  # request patterns, user criteria
         Field("target_links", "list:reference connection_links"),
@@ -135,7 +131,7 @@ def define_tables(db):
     # Conversation Memory Configurations
     db.define_table(
         "conversation_memory_configs",
-        Field("name", required=True),
+        Field("name", notnull=True),
         Field("provider", "string", default="mem0"),  # mem0, chromadb
         Field("connection_string"),
         Field("api_key", "password"),
@@ -148,7 +144,7 @@ def define_tables(db):
     # RAG/Knowledge Base Configurations
     db.define_table(
         "rag_configs",
-        Field("name", required=True),
+        Field("name", notnull=True),
         Field("provider", "string", default="supabase"),  # supabase, qdrant, chromadb
         Field("connection_string"),
         Field("api_key", "password"),
@@ -163,10 +159,10 @@ def define_tables(db):
     # Token Conversion Rates (LLM tokens to WaddleAI tokens)
     db.define_table(
         "token_conversion_rates",
-        Field("provider", "string", required=True),  # openai, anthropic, ollama
-        Field("model", "string", required=True),
-        Field("input_rate", "double", required=True),  # LLM tokens per WaddleAI token
-        Field("output_rate", "double", required=True),  # LLM tokens per WaddleAI token
+        Field("provider", "string", notnull=True),  # openai, anthropic, ollama
+        Field("model", "string", notnull=True),
+        Field("input_rate", "double", notnull=True),  # LLM tokens per WaddleAI token
+        Field("output_rate", "double", notnull=True),  # LLM tokens per WaddleAI token
         Field("base_cost_per_waddleai_token", "double", default=0.001),
         Field("effective_date", "datetime", default=datetime.utcnow),
         Field("enabled", "boolean", default=True),
@@ -175,9 +171,9 @@ def define_tables(db):
     # Token Usage Tracking
     db.define_table(
         "token_usage",
-        Field("api_key_id", "reference api_keys", required=True),
-        Field("user_id", "reference users", required=True),
-        Field("organization_id", "reference organizations", required=True),
+        Field("api_key_id", "reference api_keys", notnull=True),
+        Field("user_id", "reference users", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
         Field("date", "date", default=date.today),
         # WaddleAI Tokens (normalized usage units)
         Field("waddleai_tokens", "integer", default=0),
@@ -192,10 +188,10 @@ def define_tables(db):
     # Real-time Usage Cache (for quota enforcement)
     db.define_table(
         "usage_cache",
-        Field("api_key_id", "reference api_keys", required=True),
-        Field("organization_id", "reference organizations", required=True),
-        Field("period", "string", required=True),  # daily, monthly
-        Field("period_start", "datetime", required=True),
+        Field("api_key_id", "reference api_keys", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("period", "string", notnull=True),  # daily, monthly
+        Field("period_start", "datetime", notnull=True),
         Field("waddleai_tokens_used", "integer", default=0),
         Field("llm_tokens_used", "json"),  # Per-LLM breakdown
         Field("requests_made", "integer", default=0),
@@ -246,11 +242,11 @@ def define_tables(db):
     # Content Filter Rules
     db.define_table(
         "content_filter_rules",
-        Field("name", "string", required=True),
+        Field("name", "string", notnull=True),
         Field("description", "text"),
-        Field("rule_type", "string", required=True),  # 'builtin_pii', 'custom_string', 'custom_regex'
+        Field("rule_type", "string", notnull=True),  # 'builtin_pii', 'custom_string', 'custom_regex'
         Field("target", "string", default="both"),  # 'input', 'output', 'both'
-        Field("pattern", "text", required=True),
+        Field("pattern", "text", notnull=True),
         Field("action", "string", default="log"),  # 'block', 'redact', 'log'
         Field("redact_with", "string", default="[REDACTED]"),
         Field("enabled", "boolean", default=True),
@@ -264,12 +260,12 @@ def define_tables(db):
     db.define_table(
         "content_filter_audit_log",
         Field("timestamp", "datetime", default=datetime.utcnow),
-        Field("phase", "string", required=True),  # 'input', 'output'
+        Field("phase", "string", notnull=True),  # 'input', 'output'
         Field("user_id", "reference users"),
         Field("organization_id", "reference organizations"),
         Field("api_key_id", "reference api_keys"),
         Field("ip_address", "string"),
-        Field("action_taken", "string", required=True),  # 'allow', 'block', 'redact', 'log'
+        Field("action_taken", "string", notnull=True),  # 'allow', 'block', 'redact', 'log'
         Field("violations_json", "json"),
         Field("text_sample", "text"),  # First 200 chars for audit
         Field("auditor_used", "boolean", default=False),
@@ -280,7 +276,7 @@ def define_tables(db):
     # Content Filter Configuration (key-value store for auditor settings)
     db.define_table(
         "content_filter_config",
-        Field("key", "string", required=True),
+        Field("key", "string", notnull=True),
         Field("value", "text"),
         Field("organization_id", "reference organizations"),
         Field("created_by", "reference users"),
