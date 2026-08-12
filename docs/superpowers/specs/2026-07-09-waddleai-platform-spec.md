@@ -102,7 +102,20 @@ New-dependency review gate: license check is part of PR review; `pip-licenses` a
 
 **No models or libraries of Chinese origin** (e.g., Qwen, DeepSeek, GLM/ChatGLM, Yi, Kimi, MiniMax, **CogVideoX** (Zhipu AI / 智谱 / Z.ai, Beijing — the same organization as GLM/ChatGLM already named above, so this is the existing rule applied, not a new exception), **Kolors** (Kuaishou) — and library equivalents), consistent with the existing PRC supply-chain rule. EU/NORAM-origin components are fine (Mistral, HuggingFace, IBM, Google, Meta, Microsoft, Nomic). Enforced by the model registry (§2.3): registry entries carry `origin` and `license` fields; the deny-list is checked at model registration and at fleet `place_model` time.
 
-**Excluded on review**: **Open-Sora** (HPC-AI Tech) — parent entity HPC AI Technology Pte Ltd is Singapore-domiciled, but R&D/staffing runs through Beijing via 北京潞晨科技 (Beijing Luchen Technology) with PRC state-fund backing, so it's treated as PRC-origin under this policy despite the Singapore incorporation. Separately, its code LICENSE reportedly appends the Tencent Hunyuan Community License, which bars use in the EU/UK/South Korea — **that clause detail is unconfirmed against a primary source** and needs verification before it's relied on for anything beyond this note.
+**Treated as PRC-origin**: **Open-Sora** (HPC-AI Tech) — parent entity HPC AI Technology Pte Ltd is Singapore-domiciled, but R&D/staffing runs through Beijing via 北京潞晨科技 (Beijing Luchen Technology) with PRC state-fund backing, so it's treated as PRC-origin under this policy despite the Singapore incorporation. Separately, its code LICENSE reportedly appends the Tencent Hunyuan Community License, which bars use in the EU/UK/South Korea — **that clause detail is unconfirmed against a primary source** and needs verification before it's relied on. That is a *licence* constraint, not an origin one, and the acknowledged-risk exception below does **not** cure it.
+
+#### 2.2a Acknowledged-risk exception (PRC-origin generative models)
+
+A narrow, deliberate exception to the rule above, currently covering **Kolors** (Kuaishou) and **Open-Sora** (HPC-AI Tech) only. It exists because these are usable generative-media models with no close non-PRC equivalent in their niche, and the residual risk is one an informed operator can choose to carry. It is **not** a general relaxation: every other PRC-origin model remains denied outright, and nothing here weakens §2.2's deny-list for text or utility models.
+
+Mechanically this is the same shape as §2.3's non-commercial class — off by default, per-model, recorded acceptance — because the mechanism is sound; only the risk being accepted differs.
+
+- **Never deployed by default, never seeded.** Not a default, not a dual-default alternative, and absent from any seeded registry row.
+- **Admin-gated.** Enabling requires an administrator, not any operator with model-config rights.
+- **Per-model risk acceptance**, recording operator identity, timestamp, model, and the version of the risk text accepted, audited to `security_logs` per §9.7. The text must state plainly that the model originates from the PRC and that its training data and weights may contain deliberately poisoned or backdoored content that inspection cannot reliably rule out. Accepting Kolors must not enable Open-Sora.
+- **Generation roles only — never a classifier or utility role.** These models MUST NOT be assignable to `security-audit`, `routing-classifier`, `embeddings`, `summarize`, or any other §7.1 internal-function row. The asymmetry is the point: a poisoned *generation* model produces bad output that §8.3a's guardrails still inspect, whereas a poisoned *classifier* silently fails open and takes the safety layer down with it. The registry MUST reject the assignment rather than warn.
+- **Output is not exempt from anything.** Generated media routes through the §8.3a per-modality guardrails exactly as any other model's output does (§16).
+- The registry enforcement point in §2.2 gains an explicit *acknowledged-exception* branch. It must be an affirmative, logged code path — not a hole in the deny-list, and not an `origin` field quietly set to something other than PRC.
 
 ### 2.3 Model weights — dual-default pattern
 
@@ -122,7 +135,7 @@ Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Communit
 | Axis | Rule |
 |---|---|
 | Commercial use | MUST be permitted outright — no revenue threshold, no separately negotiated licence. This is what excludes **SD3.5** (Stability Community License — free under $1M/yr revenue, then a paid Enterprise licence) and **FLUX.1 [dev]** (non-commercial): both would impose licensing obligations on WaddleAI's *customers*, not just on WaddleAI |
-| Copyleft reach | MUST NOT impose copyleft on the deploying application — no AGPL/SSPL-style network clause |
+| Copyleft reach | Ordinary copyleft is **acceptable** — `GPL-2.0+`, `GPL-3.0`, `MPL-2.0`, matching what §2.1 already permits for code. What is forbidden is copyleft that reaches the deploying application over a network boundary: **`AGPL`, `SSPL`**. A GPL-2.0 video model is admissible; an AGPL one is not |
 | Acceptable-use restrictions | PERMITTED — OpenRAIL-style field-of-use limits bind operator conduct, not our code. This is what admits **SDXL** (CreativeML OpenRAIL++-M) |
 | Redistribution | Runtime-pulled only, never vendored into images (unchanged from the rule above) |
 
@@ -944,7 +957,7 @@ Gathered against the §2.2 origin policy and the §2.3 licence admissibility tes
 | SD3.5 | Stability AI (UK) | Stability Community License — free <$1M/yr revenue, then paid Enterprise | Selectable, not default — fails the §2.3 commercial-use axis |
 | SDXL 1.0 | Stability AI (UK) | CreativeML OpenRAIL++-M — acceptable-use restrictions | Selectable, not default — admitted under the §2.3 acceptable-use-restrictions axis |
 | FLUX.1 [dev] | Black Forest Labs (Germany) | Non-commercial | Selectable, not default — fails the §2.3 commercial-use axis |
-| Kolors | Kuaishou (PRC) | — | Excluded — §2.2 origin deny-list |
+| Kolors | Kuaishou (PRC) | Apache-2.0 weights (origin, not licence, is the constraint) | **§2.2a acknowledged-risk exception** — admin opt-in only, off by default, generation role only |
 
 **Video**
 
@@ -954,7 +967,7 @@ Gathered against the §2.2 origin policy and the §2.3 licence admissibility tes
 | Allegro | Rhymes.AI (US) | Apache-2.0 — model card: "This repo is released under the Apache 2.0 License" | Default candidate |
 | LTX-2 | Lightricks (Israel) | Custom "LTX-Video Open Weights License", non-OSI | Selectable pending legal review. **Clause specifics UNVERIFIED** — the model card links the licence rather than displaying it. Research reports a $10M/yr revenue gate, liquidated double-damages, a ban on building competing products, and viral terms forcing derivatives to stay restrictive; the competing-products clause is a direct risk for an AI platform vendor. Do not admit as a default until the primary licence text is read |
 | Wan, HunyuanVideo, CogVideoX | PRC | — | Excluded — §2.2 origin deny-list |
-| Open-Sora | HPC-AI Tech | — | Excluded — §2.2's Beijing R&D / PRC state-fund note |
+| Open-Sora | HPC-AI Tech (Singapore parent, Beijing R&D) | Weights Apache-2.0; **code LICENSE reportedly appends the Tencent Hunyuan Community License barring EU/UK/South Korea use — unverified** | **§2.2a acknowledged-risk exception** — admin opt-in only, off by default, generation role only. The Hunyuan clause is a *licence* constraint the exception does **not** cure; confirm against the primary LICENSE before enabling in those markets |
 
 Hosted passthrough for video (not self-hostable, not scoped here) is where Google **Veo** belongs — Veo is a video model, not a music one; see the Music passthrough note below.
 
