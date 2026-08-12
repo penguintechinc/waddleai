@@ -742,9 +742,66 @@ WaddleAI also *consumes* external MCP servers (e.g., the Elder MCP server): admi
 - **Identity mode per endpoint**: *shared account* (one org-wide credential) or *per-user identity* — the user links by logging in via WebUI/CLI and completing the OAuth2 authorization-code flow against the external server; WaddleAI stores the per-user+endpoint token (encrypted at rest, external-KMS envelope at Enterprise) and refreshes it, so calls carry the real caller's identity and the external system applies its own permissions. Unlinked users get a link-your-account URL in the tool result; unattributed keys fall back to the shared account if configured, else the tool is withheld.
 - **Policy chokepoint**: external tool calls traverse the §8 per-tool security policies (block/flag/audit) — WaddleAI governs third-party MCP tools, not just models.
 
-### 11.5 Acceptance
+### 11.5 MCP assistants — user and admin endpoints
+
+Two **in-cluster** Streamable-HTTP MCP endpoints on the AIProxy, extending §11.1's `/mcp` mount. Not laptop-resident binaries.
+
+**These are servers, not an embedded library, and not the code-writing agent.** PenguinCode (the local code agent) is a *consumer* of them, alongside the `penguin` desktop client and any MCP-capable agent (Claude Code, Cursor, OpenCode). All three connect over the protocol, so there is one implementation and no FFI, PyO3, or Go↔Rust bindings to keep in sync — the implementation language stays a private detail. PenguinCode already ships a generic MCP client (`MCPClient`/`HTTPMCPClient`/`MCPToolManager` with local-over-org name precedence), so it consumes these by config rather than by code.
+
+Hosting them server-side rather than on the client also removes three problems: no laptop-resident process becomes a writer into shared org memory; no duplicate OAuth sessions when the code agent and desktop agent both run; and the `waddleai-mcp` Rust binary (§11.2) stays a **transport adapter** for clients that cannot speak HTTP MCP, rather than acquiring business logic it is specified not to hold.
+
+#### Two endpoints, not one tool set filtered by role
+
+| Endpoint | Audience | Gate |
+|---|---|---|
+| `/mcp` | End users | Authenticated `wa-` key / OAuth2 session |
+| `/mcp/admin` | Administrators | `Role.ADMIN` (`shared/auth/rbac.py`) |
+
+Separate mounts, one deployment. **The reason is tool-list disclosure**: MCP clients enumerate available tools on connect, so admin tools that appear-then-fail would advertise the entire management surface to every user. A user's client must never see them listed. This is the same reasoning as the house rule against serving the full OpenAPI document unauthenticated.
+
+#### Scope by tool schema, not by runtime authorization
+
+**User tools take no subject parameter at all.** `usage_summary()` means "mine" — the subject is the authenticated key, and there is no field an agent could populate with someone else's ID. Admin tools take an explicit `user_id` / `org_id`, because company-wide is their purpose.
+
+This is deliberate defence in depth, not stylistic: #55 fixed **IDOR and privilege-escalation** findings in this exact management API, and re-exposing those endpoints through MCP with an LLM-populatable `user_id` would reintroduce the same class of bug through a new door. A parameter that does not exist cannot be abused.
+
+#### `/mcp` — user tools
+
+`list_models` (returns each model's **exact pinnable provider-qualified string** per §7.2, so the pin syntax is discoverable rather than folklore), `get_routing_policy`, `usage_summary` (self only), `memory_search`, `memory_add`, `set_preference`.
+
+**`set_preference` is weight-only.** A stated preference ("prefer Opus for code generation", "use this model for video generation") contributes to the routing score; it never pins and never overrides policy. It is subordinate to org allow-lists, tier caps, the `local_only` sensitivity clamp and budget pressure (§7.3) — otherwise any user could route themselves onto the most expensive model by asserting a preference, spending the org's money by request.
+
+Preferences are **structured tool calls only, never inferred from conversation text.** Memory is user-writable and §3.6 already records indirect prompt injection via memory as a known risk; if free text could establish a routing preference, a poisoned document could plant one. Preference writes therefore carry their own trust tier under §9.7, below server-side writes, and expire — a preference stated during one debugging session should not steer routing months later. Any preference that influenced a decision appears in `waddleai.routed_from` and the §7.4 trace, so a surprising route stays explainable.
+
+#### `/mcp/admin` — administrator tools
+
+Split by consequence.
+
+**Read** — the common case, safe and frequent: usage by user, org, model and provider; cost attribution over a period (`token_usage.cost_estimate_usd`); quota status; and provider budget headroom. Budget queries target §7.3's **plan budgets**, which attach to `provider_credentials`, are window-based rather than cumulative, and correct remaining headroom from provider rate-limit/usage response headers — that is what answers "where is our Anthropic budget this month" properly, as opposed to the cumulative approximation `/usage/by-provider` gives today.
+
+**Write** — deliberate changes: add and remove models; add and remove destinations (providers and endpoints); quota changes; provider configuration.
+
+#### Carve-out — risk acknowledgements are NOT MCP tools
+
+**Neither endpoint exposes the §2.2a PRC-origin acknowledgement or the §2.3 non-commercial licence acknowledgement.** These require deliberate UI.
+
+An LLM agent must not be able to accept, on an administrator's behalf, that a model's weights may be deliberately poisoned or that a licence forbids the commercial use the deployment is engaged in. Those acceptances are the entire basis on which those exceptions are permitted at all; routing them through a conversational agent that can be argued into things would hollow them out. Adding a model is a configuration act and belongs here; accepting a supply-chain risk is a legal and security act and does not.
+
+#### Admin outputs are business-sensitive
+
+Per-user cost attribution and vendor spend positions are sensitive company data, and **an MCP tool's output lands in the calling agent's context** — so an admin working from a commercially-hosted agent sends "what each user cost us" and "how much Anthropic budget remains" to whichever provider serves that session, possibly the very vendor being queried. This is the default path, not an edge case.
+
+Therefore: admin responses carry a sensitivity marking so §7.3's `local_only` clamp applies (admin analytics route to a local model unless the org opts out), and per-user figures return **UUIDs by default**, resolving to names only on explicit request, consistent with the PII-tokenisation rule in §9.7.
+
+#### Authentication
+
+OAuth2 with **periodic re-authentication**, not a single login at setup — token in OS keychain per the client standards, refreshed ahead of expiry, and re-authentication forced on a configured cadence. On expiry, **write tools fail before read tools**: a stale session must not be able to change models, destinations or quotas.
+
+### 11.6 Acceptance
 
 MCP v2 exercised via the official `mcp` client SDK over both transports; OpenCode + Claude Code config templates actually connect and complete a turn (beta checklist, scripted where possible); external-MCP gateway integration test against a fixture MCP server covering header + OAuth2 (client-credentials and auth-code) and both identity modes; namespaced tool collision handling; per-tool security policy applied to an external tool call.
+
+For §11.5: a non-admin key connecting to `/mcp` sees **no admin tool in the listing** (not merely a denial on call); user tool schemas contain no subject parameter (asserted against the emitted JSON Schema, so the guarantee cannot regress silently); `set_preference` loses to an org allow-list, a tier cap and a `local_only` clamp in three separate tests; neither endpoint exposes an acknowledgement tool; admin usage responses return UUIDs unless names are explicitly requested; and an expired session fails a write tool while a read tool still succeeds.
 
 ## 12. Kubernetes & Cilium Integration
 
