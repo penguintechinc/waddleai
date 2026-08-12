@@ -1,0 +1,150 @@
+# PenguinTech standard git hooks.
+#
+# Install:  make install-hooks
+# Run all:  pre-commit run --all-files
+#
+# Two stages, matching devops.md "Git Hooks (Mandatory)":
+#   pre-commit — fast checks only (<30s), blocks the commit
+#   pre-push   — heavier security scans, blocks the push
+#
+# Stacks in this repo: Python (proxy/, services/management, services/penguincode),
+# Node/React (services/webui), Go (shared/go_libs — legacy AILB/MarchProxy libs).
+#
+# Revs are pinned. Update deliberately via `pre-commit autoupdate` or Renovate,
+# never by floating to a branch.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  # ── Hygiene ────────────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-yaml
+        # --unsafe: allow custom YAML tags (mkdocs.yml uses !!python/name:...
+        # for Material theme extensions) without a registered constructor.
+        # Excludes Helm chart templates, which are Go-template text that only
+        # becomes valid YAML after `helm template` renders it — `helm lint`
+        # is the correct validator for those, not a generic YAML parser.
+        args: [--allow-multiple-documents, --unsafe]
+        exclude: k8s/helm/.*/templates/
+      - id: check-json
+      - id: check-executables-have-shebangs
+      - id: detect-private-key
+
+  # ── Secrets ────────────────────────────────────────────────────────────────
+  # Mandatory — this service handles AI provider credentials. Every finding is
+  # treated as real; never silenced via an allowlist entry.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # ── Shell ──────────────────────────────────────────────────────────────────
+  # Bash must stay 3.2-compatible (macOS ships 3.2) — see general.md.
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
+  # ── Python — ruff ONLY, never alongside flake8/black/isort ─────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # ── Go (shared/go_libs — legacy AILB/MarchProxy libs) ───────────────────────
+  # No root go.mod — each copy is its own module, so the pinned golangci-lint
+  # build is invoked from within each module directory.
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.62.2
+    hooks:
+      - id: golangci-lint
+        name: golangci-lint (shared/go_libs)
+        entry: bash -c 'cd shared/go_libs && golangci-lint run --new-from-rev HEAD --fix'
+        files: ^shared/go_libs/.*\.go$
+        pass_filenames: false
+      - id: golangci-lint
+        name: golangci-lint (services/penguincode/shared/go_libs)
+        entry: bash -c 'cd services/penguincode/shared/go_libs && golangci-lint run --new-from-rev HEAD --fix'
+        files: ^services/penguincode/shared/go_libs/.*\.go$
+        pass_filenames: false
+
+  # ── Node/React (services/webui) ─────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: eslint-webui
+        name: eslint (services/webui)
+        entry: bash -c 'cd services/webui && npx eslint src --ext js,jsx --max-warnings 0'
+        language: system
+        files: ^services/webui/src/.*\.(js|jsx)$
+        pass_filenames: false
+
+  # ── Dockerfiles ────────────────────────────────────────────────────────────
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.13.1-beta
+    hooks:
+      - id: hadolint-docker
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.4
+    hooks:
+      - id: actionlint
+
+  # ── Security (pre-push — heavier, keeps commits fast) ──────────────────────
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.0
+    hooks:
+      - id: bandit
+        stages: [pre-push]
+
+  - repo: local
+    hooks:
+      - id: dockerfile-rootless
+        name: Dockerfile runs as non-root
+        entry: scripts/hooks/check-dockerfile-rootless.sh
+        language: script
+        files: (^|/)Dockerfile[^/]*$
+        stages: [pre-push]
+
+      - id: gosec
+        name: gosec (shared/go_libs)
+        entry: bash -c 'cd shared/go_libs && gosec ./...'
+        language: system
+        files: ^shared/go_libs/.*\.go$
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: gosec-penguincode
+        name: gosec (services/penguincode/shared/go_libs)
+        entry: bash -c 'cd services/penguincode/shared/go_libs && gosec ./...'
+        language: system
+        files: ^services/penguincode/shared/go_libs/.*\.go$
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: govulncheck
+        name: govulncheck (shared/go_libs)
+        entry: bash -c 'cd shared/go_libs && govulncheck ./...'
+        language: system
+        files: ^shared/go_libs/go\.(mod|sum)$
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: govulncheck-penguincode
+        name: govulncheck (services/penguincode/shared/go_libs)
+        entry: bash -c 'cd services/penguincode/shared/go_libs && govulncheck ./...'
+        language: system
+        files: ^services/penguincode/shared/go_libs/go\.(mod|sum)$
+        pass_filenames: false
+        stages: [pre-push]
