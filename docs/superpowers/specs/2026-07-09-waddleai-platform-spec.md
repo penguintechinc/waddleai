@@ -100,7 +100,29 @@ New-dependency review gate: license check is part of PR review; `pip-licenses` a
 
 ### 2.2 Supply-chain origin policy
 
-**No models or libraries of Chinese origin** (e.g., Qwen, DeepSeek, GLM/ChatGLM, Yi, Kimi, MiniMax — and library equivalents), consistent with the existing PRC supply-chain rule. EU/NORAM-origin components are fine (Mistral, HuggingFace, IBM, Google, Meta, Microsoft, Nomic). Enforced by the model registry (§2.3): registry entries carry `origin` and `license` fields; the deny-list is checked at model registration and at fleet `place_model` time.
+**No models or libraries of Chinese origin** (e.g., Qwen, DeepSeek, GLM/ChatGLM, Yi, Kimi, MiniMax, **CogVideoX** (Zhipu AI / 智谱 / Z.ai, Beijing — the same organization as GLM/ChatGLM already named above, so this is the existing rule applied, not a new exception), **Kolors** (Kuaishou) — and library equivalents), consistent with the existing PRC supply-chain rule. EU/NORAM-origin components are fine (Mistral, HuggingFace, IBM, Google, Meta, Microsoft, Nomic). Enforced by the model registry (§2.3): registry entries carry `origin` and `license` fields; the deny-list is checked at model registration and at fleet `place_model` time.
+
+**Treated as PRC-origin**: **Open-Sora** (HPC-AI Tech) — parent entity HPC AI Technology Pte Ltd is Singapore-domiciled, but R&D/staffing runs through Beijing via 北京潞晨科技 (Beijing Luchen Technology) with PRC state-fund backing, so it's treated as PRC-origin under this policy despite the Singapore incorporation. Separately, its code LICENSE reportedly appends the Tencent Hunyuan Community License, which bars use in the EU/UK/South Korea — **that clause detail is unconfirmed against a primary source** and needs verification before it's relied on. That is a *licence* constraint, not an origin one, and the acknowledged-risk exception below does **not** cure it.
+
+#### 2.2a Acknowledged-risk exception (PRC-origin generative models)
+
+A deliberate exception to the rule above, **bounded by model role rather than by a model whitelist**. PRC-origin models are admissible for **generative media only — image, video, music, and speech generation** — once a global administrator opts the deployment in and accepts the risk warning. Current instances: **Kolors** (Kuaishou, image) and **Open-Sora** (HPC-AI Tech, video); the exception admits future generative-media models of the same class on the same terms, without needing this list edited.
+
+The rationale is that generative media is where the non-PRC open-weights field is thinnest, and the residual risk is one an informed operator can knowingly carry — *provided* the model can only ever produce content that the guardrails downstream still inspect.
+
+**The bound is the role, and it is hard.** Every PRC-origin model remains denied outright for **text and reasoning models, embeddings, and every classifier or internal utility role** — `security-audit`, `routing-classifier`, `embeddings`, `summarize`, `docs-fetch`. No acknowledgement unlocks those; §2.2's deny-list is unweakened there.
+
+**Scope: this repository only.** This exception is local to WaddleAI, whose product surface is generative media. It does **not** amend the org-wide PenguinTech supply-chain rule, which continues to apply unchanged to every other repository. Nothing here should be read across into another project, and it is recorded in `.claude/security.local.md` as a repo-local addendum precisely so it cannot be mistaken for a standards change.
+
+Mechanically this is the same shape as §2.3's non-commercial class — off by default, per-model, recorded acceptance — because the mechanism is sound; only the risk being accepted differs.
+
+- **Never deployed by default, never seeded.** Not a default, not a dual-default alternative, and absent from any seeded registry row.
+- **Global-admin-gated.** Enabling requires a user holding `Role.ADMIN` (`shared/auth/rbac.py`), which is cross-org by construction — `check_permission` short-circuits with "Admin has access to everything" before any org scoping is applied. A **Resource Manager MUST NOT be able to accept this**, even for an org they legitimately manage, and neither may a Reporter or ordinary user, whatever model-configuration rights they hold.
+  Two reasons. First, accepting a supply-chain risk is a different act from configuring a model, so the permission check belongs on the acceptance itself, not on the model edit that follows it. Second, and decisive in multi-tenant deployments: **the risk is not org-scoped.** Model weights execute on shared fleet infrastructure (§10.1) — a backdoored model runs in a pod on the same cluster, with that pod's network and storage reach, regardless of which org's request invoked it. An org-scoped admin approving it would be accepting risk on every other tenant's behalf. The blast radius is the deployment, so the approval has to sit at deployment scope.
+- **Per-model risk acceptance**, recording operator identity, timestamp, model, and the version of the risk text accepted, audited to `security_logs` per §9.7. The text must state plainly that the model originates from the PRC and that its training data and weights may contain deliberately poisoned or backdoored content that inspection cannot reliably rule out. Accepting Kolors must not enable Open-Sora.
+- **Generation roles only — never a classifier or utility role.** These models MUST NOT be assignable to `security-audit`, `routing-classifier`, `embeddings`, `summarize`, or any other §7.1 internal-function row. The asymmetry is the point: a poisoned *generation* model produces bad output that §8.3a's guardrails still inspect, whereas a poisoned *classifier* silently fails open and takes the safety layer down with it. The registry MUST reject the assignment rather than warn.
+- **Output is not exempt from anything.** Generated media routes through the §8.3a per-modality guardrails exactly as any other model's output does (§16).
+- The registry enforcement point in §2.2 gains an explicit *acknowledged-exception* branch. It must be an affirmative, logged code path — not a hole in the deny-list, and not an `origin` field quietly set to something other than PRC.
 
 ### 2.3 Model weights — dual-default pattern
 
@@ -114,6 +136,25 @@ Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Communit
 | Local generation tiers | org-configured | — | Mistral family (Apache-2.0) | `gemma4` family (Apache-2.0 — no longer flagged), Gemma 3, Llama 3.x (flagged licenses) |
 
 **ShieldGemma remains Gemma ToU** — it is Gemma-2-based (Google ships no Gemma-4 generation of ShieldGemma), so the security auditor keeps the dual-default requirement and its Apache-2.0 alternatives are refreshed to `granite3-guardian:2b`/`granite4.1-guardian`. §8.3a extends this single text-tier row into a full per-modality classifier registry (text/image/audio).
+
+**Licence admissibility test.** Because §2.2's deny-list is checked mechanically at model registration and again at fleet `place_model` time, "non-OSI-but-commercial" needs an explicit, checkable test rather than a case-by-case call. Four axes — all four must pass:
+
+| Axis | Rule |
+|---|---|
+| Commercial use | MUST be permitted outright — no revenue threshold, no separately negotiated licence. This is what excludes **SD3.5** (Stability Community License — free under $1M/yr revenue, then a paid Enterprise licence) and **FLUX.1 [dev]** (non-commercial): both would impose licensing obligations on WaddleAI's *customers*, not just on WaddleAI |
+| Copyleft reach | Ordinary copyleft is **acceptable** — `GPL-2.0+`, `GPL-3.0`, `MPL-2.0`, matching what §2.1 already permits for code. What is forbidden is copyleft that reaches the deploying application over a network boundary: **`AGPL`, `SSPL`**. A GPL-2.0 video model is admissible; an AGPL one is not |
+| Acceptable-use restrictions | PERMITTED — OpenRAIL-style field-of-use limits bind operator conduct, not our code. This is what admits **SDXL** (CreativeML OpenRAIL++-M) |
+| Redistribution | Runtime-pulled only, never vendored into images (unchanged from the rule above) |
+
+The Apache-2.0 dual-default alternative is required **wherever one exists that clears §2.2** — as of this pass, one exists for every modality specified so far (see §16.1), so no exemption from the dual-default requirement is currently in use.
+
+**Third licence class — non-commercial weights (CC-BY-NC and similar).** The carve-out above covers Gemma ToU / Llama Community, both of which permit commercial use with conditions — the carve-out's operative word is *commercial*. It does **not** cover licences that forbid commercial use outright. Non-commercial weights get their own, stricter rule instead of falling under the carve-out:
+
+- **Free tier only** — hard-disabled in Professional and Enterprise. **This inverts the usual licence-gate direction**: every other tier gate asks "does this tier unlock X?"; this one asks "does this tier forbid X?" — a deny, not an allow. Implement it as an explicit deny, not as an accidental omission.
+- Rationale: the Free tier is defined by **scale** (≤5 nodes, ≤3 models, §2.4), **not** by commercial status — a funded startup on the Free tier generating music for its product still breaches CC-BY-NC even though it never crosses a node/model cap. The acknowledgement below is what shifts this from shipping a violation to the operator affirming the term.
+- **Off by default.** Enabling requires an **explicit, recorded acknowledgement by a user holding `Role.ADMIN`** — never a Resource Manager, Reporter, or ordinary user, regardless of what model-config rights they otherwise hold — affirming the deployment is non-commercial, audited to `security_logs` under §9.7's rules. The record captures **admin identity, timestamp, model, and the licence identifier *and version* accepted** — not a bare boolean. "Someone acknowledged" is only defensible if the deployment can later show *who*, and *what* they accepted; licence texts get restated.
+- The acknowledgement is **per model, not per deployment**: accepting MusicGen's terms must not silently enable AudioLDM 2.
+- UI/API label these models **"non-commercial use only"** prominently wherever they are selectable.
 
 Every model reference in code/config/Helm resolves through a **model registry** (DB-backed, seeded by migration) recording: name, role, license, origin, min VRAM, Ollama tag. No hardcoded model strings outside the registry seed. Weights are pinned by Ollama tag + recorded digest at pull time (logged for reproducibility; Ollama tags are mutable, so the registry stores the resolved digest).
 
@@ -636,6 +677,8 @@ Flag: `waddleai.fleet_v2`.
 - **EXO** — `type: exo, mode: external` API-only plugin; GPLv3 boundary — no EXO code in-repo, network calls only.
 - **Vertex AI / Bedrock** (Professional-gated at backend creation): `VertexAIFleetBackend` via `google-cloud-aiplatform`, `BedrockFleetBackend` via `boto3` (both Apache-2.0). Per Q#9 the admin chooses `management_scope` per backend: `register_and_route` (route/health/meter existing endpoints) or `full_lifecycle` (deploy/scale/undeploy — with **mandatory idle-teardown cost controls**: configurable idle window → automatic endpoint teardown, redeploy-on-demand, every action audit-logged). Cloud credentials per-org via the provider-credential pattern; cloud endpoints count as managed nodes for Pro metering (§2.4).
 
+**Open gap, not yet designed**: the `InferenceFleetBackend` interface above is shaped for text-LLM serving (token streaming, request/response, context-length-driven placement) and does not fit diffusion/generative backends (§16), which need a **second interface shape**: no token streaming; long-running asynchronous jobs rather than request/response; artifacts (images, video, audio files) requiring storage, retention, and serving policy; placement driven by VRAM and job duration rather than context length; and queue/concurrency semantics closer to a batch scheduler than a request router. This needs its own scoping pass — no interface signature, schema, migration, or delivery wave is defined here.
+
 ### 10.2 Hardened Ollama image
 
 `ghcr.io/penguintechinc/waddleai/ollama` — digest-pinned upstream base, non-root UID, `readOnlyRootFilesystem: true` (writable mounts only for the model store PVC and tmp emptyDir), `allowPrivilegeEscalation: false`, all capabilities dropped, seccomp `RuntimeDefault`; model pulls in an initContainer running the same binary. Two tags: **`hardened`** (minimal, no shell) and **`debug`** (adds shell for `kubectl exec` troubleshooting). Trivy scan gate in CI; the Helm `ollama-daemonset.yaml` and GPU plugin subcharts (nvidia gpu-operator, amd-rocm, intel) update to consume it.
@@ -907,7 +950,55 @@ Product intent, not yet a specified feature: image, audio, music, and video **ge
 | **Generation events are audited** to `security_logs` under the same PII-tokenization rules as every other event (§9.7) | An operator must be able to answer "who generated this, when, under which policy" — for incident response and for regulatory response |
 | **No unfiltered mode.** There is no configuration that disables §8.3a guardrails on a generation path | This is the explicit anti-feature. It is the one capability the MuAPI-class reference above sells as its headline, and shipping it would forfeit the only reason an enterprise would put this platform in front of a generation backend |
 
-**Not yet scoped**: model selection (local vs. hosted, OSI/non-PRC constraints per §2.1/§2.2 apply the same as everywhere else), fleet-backend integration (§10.1), storage/serving of generated artifacts, licensing-tier placement (§2.4), and delivery timing are all open. This section exists to record product direction and the safety-layer non-negotiables above it — a full spec pass (data model, migration, acceptance criteria, release wave) is required before this becomes buildable work.
+### 16.1 Per-modality model candidates (research findings, not a locked selection)
+
+Gathered against the §2.2 origin policy and the §2.3 licence admissibility test, to inform the eventual scoping pass — not yet wired into the model registry. Licences and origins below were verified directly against model cards unless flagged otherwise.
+
+**Image**
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| FLUX.1 [schnell] | Black Forest Labs (Germany) | Apache-2.0 — model card: "Released under the apache-2.0 licence… personal, scientific, and commercial purposes" | Default candidate |
+| SANA 1.6B | NVIDIA + MIT Han Lab (US) | Apache-2.0 | Default candidate |
+| AuraFlow | Fal.ai (US) | Apache-2.0 | Default candidate |
+| SD3.5 | Stability AI (UK) | Stability Community License — free <$1M/yr revenue, then paid Enterprise | Selectable, not default — fails the §2.3 commercial-use axis |
+| SDXL 1.0 | Stability AI (UK) | CreativeML OpenRAIL++-M — acceptable-use restrictions | Selectable, not default — admitted under the §2.3 acceptable-use-restrictions axis |
+| FLUX.1 [dev] | Black Forest Labs (Germany) | Non-commercial | Selectable, not default — fails the §2.3 commercial-use axis |
+| Kolors | Kuaishou (PRC) | Apache-2.0 weights (origin, not licence, is the constraint) | **§2.2a acknowledged-risk exception** — admin opt-in only, off by default, generation role only |
+
+**Video**
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| Mochi 1 | Genmo (US) | Apache-2.0 — model card: "releasing the model under a permissive Apache 2.0 license" | Default candidate |
+| Allegro | Rhymes.AI (US) | Apache-2.0 — model card: "This repo is released under the Apache 2.0 License" | Default candidate |
+| LTX-2 | Lightricks (Israel) | Custom "LTX-Video Open Weights License", non-OSI | Selectable pending legal review. **Clause specifics UNVERIFIED** — the model card links the licence rather than displaying it. Research reports a $10M/yr revenue gate, liquidated double-damages, a ban on building competing products, and viral terms forcing derivatives to stay restrictive; the competing-products clause is a direct risk for an AI platform vendor. Do not admit as a default until the primary licence text is read |
+| Wan, HunyuanVideo, CogVideoX | PRC | — | Excluded — §2.2 origin deny-list |
+| Open-Sora | HPC-AI Tech (Singapore parent, Beijing R&D) | Weights Apache-2.0; **code LICENSE reportedly appends the Tencent Hunyuan Community License barring EU/UK/South Korea use — unverified** | **§2.2a acknowledged-risk exception** — admin opt-in only, off by default, generation role only. The Hunyuan clause is a *licence* constraint the exception does **not** cure; confirm against the primary LICENSE before enabling in those markets |
+
+Hosted passthrough for video (not self-hostable, not scoped here) is where Google **Veo** belongs — Veo is a video model, not a music one; see the Music passthrough note below.
+
+**Speech**
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| Moshi | Kyutai (France) | CC-BY 4.0 — attribution only, commercial use permitted | Default in **all** tiers — does not carry the non-commercial label or the §2.3 tier gate |
+
+**Music**
+
+**No qualifying self-hostable model exists** — every self-hostable candidate fails the §2.3 commercial-use axis:
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| MusicGen / AudioCraft | Meta (US) | CC-BY-NC weights (note: AudioCraft *code* is MIT, so training a model on separately-licensed data is a legitimate path) | Free-tier-only, non-commercial-labelled per the §2.3 third licence class |
+| AudioLDM 2 | University of Surrey (UK) | CC-BY-NC-SA | Free-tier-only, non-commercial-labelled per the §2.3 third licence class |
+| Stable Audio | Stability AI | Revenue-gated | Fails the §2.3 commercial-use axis — excluded |
+
+Commercial music generation is therefore **passthrough only**, to hosted providers — Google **Lyria**, Suno, Udio, ElevenLabs. (Google **Veo** is *video*, not music, and does not belong in this list — see the video passthrough note above.)
+
+**Confidence caveat**: the specific 2026 version numbers gathered in research (LTX-2.5, FLUX.2, Cosmos 3, Stable Audio 3.0) are low-confidence single-source and need primary-source confirmation before procurement; the corporate origins and base licence families above are well-corroborated.
+
+**Not yet scoped**: model selection (local vs. hosted, OSI/non-PRC constraints per §2.1/§2.2 apply the same as everywhere else), fleet-backend integration (§10.1), storage/serving of generated artifacts, licensing-tier placement (§2.4), and delivery timing are all open — §16.1's candidates inform this future pass but do not lock it in. This section exists to record product direction and the safety-layer non-negotiables above it — a full spec pass (data model, migration, acceptance criteria, release wave) is required before this becomes buildable work.
 
 ---
 
