@@ -6,22 +6,44 @@ is a narrow, deliberate exception with its own guardrails.
 
 ---
 
-## ⚠️ Deliberate exception: two PRC-origin generative-media models are permitted
+## ⚠️ Deliberate exception: PRC-origin **generative-media** models are permitted
 
 **Do not "fix" this. It is intentional and was approved explicitly.**
 
-The global rule says *"NEVER use dependencies from PRC-based organizations or
-sanctioned entities."* That rule stands for everything except the two models named
-below, which are admissible under **spec §2.2a — Acknowledged-risk exception**.
+**Scope: this repository only.** The org-wide PenguinTech supply-chain rule —
+*"NEVER use dependencies from PRC-based organizations or sanctioned entities"* — is
+**unchanged and still applies to every other repo**. This is a WaddleAI-local
+addendum because generative media is WaddleAI's product surface. Do not carry it
+into another project.
 
-| Model | Origin | Why excepted |
+Under **spec §2.2a**, PRC-origin models are admissible for **generative media only —
+image, video, music, and speech generation** — once a **global administrator** opts
+the deployment in and accepts the risk warning.
+
+The exception is **bounded by model role, not by a model whitelist.** It admits
+future generative-media models on the same terms without this list being edited.
+
+| Current instance | Origin | Modality |
 |---|---|---|
-| **Kolors** | Kuaishou (PRC) | Image generation; no close non-PRC equivalent in its niche |
-| **Open-Sora** | HPC-AI Tech — Singapore parent, Beijing R&D via 北京潞晨科技, PRC state-fund backing | Video generation; treated as PRC-origin despite Singapore incorporation |
+| **Kolors** | Kuaishou (PRC) | Image |
+| **Open-Sora** | HPC-AI Tech — Singapore parent, Beijing R&D via 北京潞晨科技, PRC state-fund backing | Video |
 
-Every other PRC-origin model remains denied outright — Qwen, DeepSeek, GLM/ChatGLM,
-Yi, Kimi, MiniMax, **CogVideoX** (Zhipu AI — the same organisation as GLM, so the
-existing rule already catches it), Wan, HunyuanVideo.
+### The role bound is hard — this is the part that matters
+
+PRC-origin models remain **denied outright** for:
+
+- **text and reasoning models** — Qwen, DeepSeek, GLM/ChatGLM, Yi, Kimi, MiniMax
+- **embeddings**
+- **every classifier and internal utility role** — `security-audit`,
+  `routing-classifier`, `embeddings`, `summarize`, `docs-fetch`
+
+**No acknowledgement unlocks those.** A global admin cannot opt into a PRC-origin
+guard model or router; the registry must reject the assignment, not warn.
+
+Also still denied regardless of modality: **CogVideoX** (Zhipu AI — the same
+organisation as GLM/ChatGLM, so §2.2 already catches it), Wan, HunyuanVideo. Being
+a video model does not by itself qualify a model for the exception; a human has to
+add it as an instance and a global admin has to accept it.
 
 ### The guardrails are the exception — do not remove them
 

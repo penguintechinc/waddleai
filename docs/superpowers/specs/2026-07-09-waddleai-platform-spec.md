@@ -106,7 +106,13 @@ New-dependency review gate: license check is part of PR review; `pip-licenses` a
 
 #### 2.2a Acknowledged-risk exception (PRC-origin generative models)
 
-A narrow, deliberate exception to the rule above, currently covering **Kolors** (Kuaishou) and **Open-Sora** (HPC-AI Tech) only. It exists because these are usable generative-media models with no close non-PRC equivalent in their niche, and the residual risk is one an informed operator can choose to carry. It is **not** a general relaxation: every other PRC-origin model remains denied outright, and nothing here weakens §2.2's deny-list for text or utility models.
+A deliberate exception to the rule above, **bounded by model role rather than by a model whitelist**. PRC-origin models are admissible for **generative media only — image, video, music, and speech generation** — once a global administrator opts the deployment in and accepts the risk warning. Current instances: **Kolors** (Kuaishou, image) and **Open-Sora** (HPC-AI Tech, video); the exception admits future generative-media models of the same class on the same terms, without needing this list edited.
+
+The rationale is that generative media is where the non-PRC open-weights field is thinnest, and the residual risk is one an informed operator can knowingly carry — *provided* the model can only ever produce content that the guardrails downstream still inspect.
+
+**The bound is the role, and it is hard.** Every PRC-origin model remains denied outright for **text and reasoning models, embeddings, and every classifier or internal utility role** — `security-audit`, `routing-classifier`, `embeddings`, `summarize`, `docs-fetch`. No acknowledgement unlocks those; §2.2's deny-list is unweakened there.
+
+**Scope: this repository only.** This exception is local to WaddleAI, whose product surface is generative media. It does **not** amend the org-wide PenguinTech supply-chain rule, which continues to apply unchanged to every other repository. Nothing here should be read across into another project, and it is recorded in `.claude/security.local.md` as a repo-local addendum precisely so it cannot be mistaken for a standards change.
 
 Mechanically this is the same shape as §2.3's non-commercial class — off by default, per-model, recorded acceptance — because the mechanism is sound; only the risk being accepted differs.
 

@@ -24,10 +24,17 @@ Both are approved, narrow, and carry their own guardrails. Full detail and the e
 constraints live in **`.claude/security.local.md`**; read it before touching model
 registration, fleet placement, or the model registry.
 
-1. **Two PRC-origin generative-media models are permitted** — `Kolors` and
-   `Open-Sora`, under spec §2.2a. Global-admin opt-in, off by default, **generation
-   roles only** (never `security-audit` / `routing-classifier` / `embeddings` /
-   `summarize`). Every other PRC-origin model stays denied, CogVideoX included.
+1. **PRC-origin models are permitted for generative media only** — image, video,
+   music and speech generation — under spec §2.2a, after a **global administrator**
+   opts the deployment in and accepts the risk warning. Current instances: `Kolors`
+   (image) and `Open-Sora` (video); the exception is bounded by **model role, not a
+   whitelist**, so future generative-media models qualify on the same terms.
+   **The role bound is hard:** PRC-origin text and reasoning models, embeddings, and
+   every classifier or utility role (`security-audit`, `routing-classifier`,
+   `embeddings`, `summarize`, `docs-fetch`) stay denied outright — no acknowledgement
+   unlocks them. CogVideoX remains denied regardless of modality.
+   **This exception is local to this repository.** The org-wide PenguinTech
+   supply-chain rule is unchanged and still applies everywhere else.
 2. **Non-commercial weights are permitted in the Free tier only** — `MusicGen`,
    `AudioLDM 2`, under spec §2.3's third licence class. Hard-disabled in
    Professional and Enterprise; the gate is a **deny**, not a missing unlock.
