@@ -75,7 +75,7 @@ Migration promise: pointing an existing tool at WaddleAI is a one-line config ch
 
 ### 1.4 Open + commercial, together by design
 
-WaddleAI treats commercial ecosystems as first-class escalation targets, not competitors. The canonical flow: a request classified as trivial runs on a local gemma3/granite/mistral model at near-zero cost; a request classified as hard routes to Claude or Codex-class models with the org's key — with WaddleAI's cache having already stripped every redundant token, its memory layer having supplied local context, and its response always reporting which model actually served it (`waddleai.routed_from`; never silent substitution).
+WaddleAI treats commercial ecosystems as first-class escalation targets, not competitors. The canonical flow: a request classified as trivial runs on a local gemma4/granite/mistral model at near-zero cost; a request classified as hard routes to Claude or Codex-class models with the org's key — with WaddleAI's cache having already stripped every redundant token, its memory layer having supplied local context, and its response always reporting which model actually served it (`waddleai.routed_from`; never silent substitution).
 
 ### 1.5 Non-goals (v0.2–v0.6)
 
@@ -104,14 +104,16 @@ New-dependency review gate: license check is part of PR review; `pip-licenses` a
 
 ### 2.3 Model weights — dual-default pattern
 
-Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Community) **only for runtime-pulled models, never vendored into images**, and every Gemma/Llama default MUST have an Apache-2.0 alternative selectable in config ("dual-default pattern"):
+Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Community) **only for runtime-pulled models, never vendored into images**, and every Gemma-ToU/Llama-Community default MUST have an Apache-2.0 alternative selectable in config ("dual-default pattern"). **Gemma 4 ships under Apache-2.0** — Google's own Gemma 4 terms page routes to the Apache-2.0 license, and the custom Gemma Terms of Use now cover only Gemma 1–3 and their variants (ShieldGemma included — see below). The routing classifier's default therefore moved to Gemma 4 (`gemma4:e2b` — note: **no `2b` tag exists**, only `e2b`/`e4b`/`12b`/`26b`/`31b`/`cloud`), and the dual-default rationale no longer applies to that role: an already-Apache default doesn't need a second Apache alternative to satisfy the license policy. This is a licensing-policy consequence, not a cosmetic rename.
 
 | Role | Default | License | Apache-2.0 alternative | Also selectable |
 |---|---|---|---|---|
-| Routing classifier | `gemma3:1b` | Gemma ToU | `granite3.3:2b` (IBM) | `phi4-mini` (MIT), `smollm2:1.7b` (Apache-2.0) |
-| Security auditor / intent classifier | `shieldgemma:2b` | Gemma ToU | `granite-guardian3:2b` (IBM) | `granite-guardian3:8b` |
+| Routing classifier | `gemma4:e2b` | Apache-2.0 | — (already Apache; dual-default requirement no longer applies) | `phi4-mini` (MIT), `smollm2:1.7b` (Apache-2.0) |
+| Security auditor / intent classifier (text) | `shieldgemma:2b` | Gemma ToU | `granite3-guardian:2b` (IBM, size-matched) | `granite4.1-guardian` (IBM, 8B) |
 | Embeddings | `nomic-embed-text` | Apache-2.0 | — (already Apache) | `mxbai-embed-large` (Apache-2.0) |
-| Local generation tiers | org-configured | — | Mistral family (Apache-2.0) | Gemma 3, Llama 3.x (flagged licenses) |
+| Local generation tiers | org-configured | — | Mistral family (Apache-2.0) | `gemma4` family (Apache-2.0 — no longer flagged), Gemma 3, Llama 3.x (flagged licenses) |
+
+**ShieldGemma remains Gemma ToU** — it is Gemma-2-based (Google ships no Gemma-4 generation of ShieldGemma), so the security auditor keeps the dual-default requirement and its Apache-2.0 alternatives are refreshed to `granite3-guardian:2b`/`granite4.1-guardian`. §8.3a extends this single text-tier row into a full per-modality classifier registry (text/image/audio).
 
 Every model reference in code/config/Helm resolves through a **model registry** (DB-backed, seeded by migration) recording: name, role, license, origin, min VRAM, Ollama tag. No hardcoded model strings outside the registry seed. Weights are pinned by Ollama tag + recorded digest at pull time (logged for reproducibility; Ollama tags are mutable, so the registry stores the resolved digest).
 
@@ -235,6 +237,7 @@ Proxy reads config from Postgres with Valkey-cached hot paths (policy resolution
 ### 3.6 Security posture (cross-cutting)
 
 - Known AI-specific risks tracked from prior audit and addressed in-spec: **output guardrails** (stage 8), **indirect prompt injection via memory** (retrieved context is provenance-tagged and scanned by stage-3 filters before injection, §9), **semantic-cache poisoning** (semantic cache is org-scoped, opt-in, and entries are keyed to post-filter content, §6).
+- **Known limitation, current release: image content bypasses security filtering entirely.** `/v1/messages`'s Claude-content-array handling (`_extract_text_from_claude_messages` in `proxy/apps/proxy_server/main.py`) collects only `type == "text"` items, and `ContentFilter.filter_input(text: str)` (`shared/security/content_filter.py`) takes a plain string — an `image` content part is never passed to tiers 1–4, so it reaches the provider having passed zero safety checks. No `image_url`/`input_audio` handling exists anywhere in `proxy/` or `shared/`, and tiers 1–3 (regex, org rules, NER) are inherently text-only regardless of wiring. §8.3a's image/audio registry rows are the path to closing this, gated on a serving path for a non-Ollama-hosted model (image) and an undesigned transcribe-then-scan approach (audio) — not closed today.
 - Org boundary is the hard isolation wall for cache/memory/CodeRAG; tenant claim boundary above it at Enterprise.
 - Fleet pods are unauthenticated by nature (Ollama) → reachable only from proxy pods via CNP; never exposed via Service type other than ClusterIP.
 - Everything rootless, digest-pinned, Debian bookworm per house container standards; Tetragon policies (optional) block exec/unexpected egress in proxy and fleet pods.
@@ -411,12 +414,12 @@ One DB-driven engine (`shared/routing/engine.py`), in-process in the AIProxy (pi
 
 Two co-equal decision surfaces, composed with org policy:
 
-1. **Tool-type model assignments (the admin's steering wheel).** A `model_assignments` table (evolves the existing `routing_matrix`) maps each tool type to a default model and optional escalation model — e.g., `research → gemma3:4b`, `command-run → claude-haiku ⤴ claude-sonnet`, `code-gen → local code model ⤴ claude-sonnet`. **WaddleAI's internal functions are pre-declared rows in the same table** (`security-audit → shieldgemma:2b`, `routing-classifier → gemma3:1b`, `embeddings → nomic-embed-text`, `docs-fetch/summarize`) — one WebUI screen ("Model Assignments") configures the whole deployment's model-per-job matrix; the §2.3 dual-default pattern is its seed data. Scopes: global defaults overridable per org.
+1. **Tool-type model assignments (the admin's steering wheel).** A `model_assignments` table (evolves the existing `routing_matrix`) maps each tool type to a default model and optional escalation model — e.g., `research → gemma4:e4b`, `command-run → claude-haiku ⤴ claude-sonnet`, `code-gen → local code model ⤴ claude-sonnet`. **WaddleAI's internal functions are pre-declared rows in the same table** (`security-audit → shieldgemma:2b`, `routing-classifier → gemma4:e2b`, `embeddings → nomic-embed-text`, `docs-fetch/summarize`) — one WebUI screen ("Model Assignments") configures the whole deployment's model-per-job matrix; the §2.3 dual-default pattern (and its §8.3a per-modality extension for the security auditor) is its seed data. Scopes: global defaults overridable per org.
 2. **Capability matching (co-equal — it can veto).** Every request derives a requirements vector (min context from token count, `needs_tools`, `needs_vision`, structured-output, complexity when classified); every registry model carries offers (`capability_score 1–5`, `supports_tools/vision`, `context_window`, cost, `location: local|commercial`, live fleet state). If the assigned model **fails a hard requirement** (images to a text-only model, context overflow), capability matching **vetoes and re-routes** to the best qualified candidate rather than failing the request — the veto is logged in the decision trace and surfaced to the admin (assignment misconfiguration warning, also checked at save time). Capability matching alone also decides tool types with no assignment row and arbitrates escalation.
 
 Org **policy filters and sorts** on top of both: allow-lists and tier caps filter; mode (`local_only | local_first | commercial_only | cost | latency`) sorts the qualified candidates — the sorted list *is* the fallback chain, so failover never lands on a model that couldn't serve the request.
 
-**Tool-type determination** (cheapest first): explicit — `X-WaddleAI-Tool-Type` header, the invoked MCP tool implies it, or a `model: "waddleai/<tool-type>"` alias; else stage-1 heuristics (tool names present, endpoint, modality); else the stage-2 classifier, whose *primary* output is now `tool_type` (plus `{complexity: 1-5, domain, needs_reasoning}`), cached in Valkey by prefix hash. Classifier models per §2.3 dual-default: `gemma3:1b` default, `granite3.3:2b` Apache alternative, `phi4-mini`/`smollm2:1.7b` selectable.
+**Tool-type determination** (cheapest first): explicit — `X-WaddleAI-Tool-Type` header, the invoked MCP tool implies it, or a `model: "waddleai/<tool-type>"` alias; else stage-1 heuristics (tool names present, endpoint, modality); else the stage-2 classifier, whose *primary* output is now `tool_type` (plus `{complexity: 1-5, domain, needs_reasoning}`), cached in Valkey by prefix hash. Classifier model per §2.3: `gemma4:e2b` default (Apache-2.0 — no dual-default alternative required), `phi4-mini`/`smollm2:1.7b` selectable.
 
 ### 7.2 Decision cascade (cheapest first)
 
@@ -465,7 +468,7 @@ Within the chosen route, the merged AILB router logic (§5.2) picks the concrete
 
 ### 7.7 Acceptance
 
-Assignment CRUD + save-time capability validation warnings; capability-veto tests (image request against text-only assignment → re-routed + trace records veto); heuristic rule-table property tests; classifier recorded-output fixture set (stub Ollama in unit tests; real `gemma3:1b` nightly/GPU CI); escalation state machine covering all four triggers + idle_reset boundaries + per-row escalation_model precedence; sensitivity clamp test (PII-flagged request never dispatches commercial under `local_only`); budget-pressure threshold tests incl. toggle-off; chaos test (provider unhealthy mid-conversation → failover, no client-visible error); availability-failover tests (explicit-model request with provider down: `off` fails fast with the taxonomy error, `same_class` serves from `fallback_models` with `routed_from` cause `provider_unavailable`; a 4xx never substitutes; no substitution after first streamed byte; `local_only` sensitivity clamp beats `provider_failover`); alias redirect visible in `routed_from`; `usage` additive-only vs contract snapshots; flag-off = legacy routing byte-identical.
+Assignment CRUD + save-time capability validation warnings; capability-veto tests (image request against text-only assignment → re-routed + trace records veto); heuristic rule-table property tests; classifier recorded-output fixture set (stub Ollama in unit tests; real `gemma4:e2b` nightly/GPU CI); escalation state machine covering all four triggers + idle_reset boundaries + per-row escalation_model precedence; sensitivity clamp test (PII-flagged request never dispatches commercial under `local_only`); budget-pressure threshold tests incl. toggle-off; chaos test (provider unhealthy mid-conversation → failover, no client-visible error); availability-failover tests (explicit-model request with provider down: `off` fails fast with the taxonomy error, `same_class` serves from `fallback_models` with `routed_from` cause `provider_unavailable`; a 4xx never substitutes; no substitution after first streamed byte; `local_only` sensitivity clamp beats `provider_failover`); alias redirect visible in `routed_from`; `usage` additive-only vs contract snapshots; flag-off = legacy routing byte-identical.
 
 ## 8. Phase 3 — Security Layer v2
 
@@ -475,7 +478,7 @@ Extends the existing 4-tier content filter (`shared/security/content_filter.py`)
 
 New `security_policies` table with resolution chain **global → org → model → tool/function** (most-specific wins; full chain ships in the first cut per Q#6 — tool scope keys on `tools[].function.name` and namespaced MCP tool names like `elder.*`):
 
-`security_policies(id, scope_type enum(global|org|model|tool), scope_ref, tier1_enabled, tier2_enabled, tier3_enabled, tier4_enabled, tier4_model, intent_classifier_enabled, intent_categories jsonb, direction enum(input|output|both), block_action enum(block|redact|flag), fail_mode enum(open|closed|degrade), auditor_timeout_ms, latency_budget_ms)`
+`security_policies(id, scope_type enum(global|org|model|tool), scope_ref, tier1_enabled, tier2_enabled, tier3_enabled, tier4_enabled, tier4_model, intent_classifier_enabled, intent_categories jsonb, direction enum(input|output|both), block_action enum(block|redact|flag), fail_mode enum(open|closed|degrade), on_unclassifiable enum(reject|degrade), auditor_timeout_ms, latency_budget_ms)`
 
 Resolution results are Valkey-cached, invalidated on policy write. Existing per-org `content_filter_config`/`content_filter_rules` data-migrate into the new model (custom rules remain tier 2).
 
@@ -485,7 +488,19 @@ Tiers per resolved policy: **1** builtin regex PII/PCI (~23 patterns), **2** org
 
 ### 8.3 Request-intent classifier ("open-source Auto Mode-lite")
 
-A pre-dispatch classifier distinct from content filtering: a guard model evaluates the request for **security/legal concern categories** — malware generation, exploit development, credential harvesting, plus org-configurable legal categories — and returns per-category verdicts → block/flag per policy. Implementation reuses the tier-4 Ollama call path with structured category output. Scope: **last user message + system-prompt hash**, escalating to a full-context scan when flagged. Guard models are **assignment rows in §7.1's Model Assignments** (`security-audit` tool type): default `shieldgemma:2b` (existing formatter), selectable `granite-guardian3:2b|8b` (Apache-2.0) via a new `_build_granite_guardian_messages` formatter honoring Granite Guardian's prompt template and Yes/No token semantics.
+A pre-dispatch classifier distinct from content filtering: a guard model evaluates the request for **security/legal concern categories** — malware generation, exploit development, credential harvesting, plus org-configurable legal categories — and returns per-category verdicts → block/flag per policy. Implementation reuses the tier-4 Ollama call path with structured category output. Scope: **last user message + system-prompt hash**, escalating to a full-context scan when flagged. Guard models are **assignment rows in §7.1's Model Assignments** (`security-audit` tool type) — the **text tier** of the §8.3a per-modality classifier registry: default `shieldgemma:2b` (existing formatter), selectable `granite3-guardian:2b` (IBM, Apache-2.0, size-matched) or `granite4.1-guardian` (IBM, Apache-2.0, 8B) via a new `_build_granite_guardian_messages` formatter honoring Granite Guardian's prompt template and Yes/No token semantics.
+
+### 8.3a Per-modality classifier registry
+
+§8.3's single `security-audit` assignment covers text only, but content reaching the pipeline is not text-only — Claude Code's `/v1/messages` content arrays carry `image` parts, and vision/audio-capable providers accept more. The security auditor is therefore a **registry of one guard model per modality**, not one guard model overall:
+
+| Modality | Default | Apache-2.0 alternative | Status |
+|---|---|---|---|
+| Text | `shieldgemma:2b` | `granite3-guardian:2b` (size-matched), `granite4.1-guardian` (8B) | Production — wired into pipeline stages 3/8 |
+| Image | `shieldgemma-2-4b-it` | — (Gemma ToU; no Apache-2.0 image-safety alternative identified yet) | **Needs a serving path** — ShieldGemma 2 is image-only, Gemma-3-based, and **not distributed on Ollama** (confirmed 404); the fleet backend (§10.1) would need a non-Ollama serving path (e.g. vLLM/HF Transformers/TGI) before this tier is usable |
+| Audio | none available | — | **Unverified** — no dedicated audio-safety guard model identified; the likely approach is transcribe-then-scan (Whisper → the text tier above), not yet designed or tested |
+
+Each `security_policies` scope (§8.1) carries a required **`on_unclassifiable`** field, `enum(reject|degrade)`, **default `reject`**. Reasoning: §8.2's tier-4 `fail_mode` default of `degrade` means "the tiers-1–3 verdict stands" — sound when tiers 1–3 (regex, custom rules, NER) actually inspected the content. But tiers 1–3 are **text-only**; for a modality with no registry entry (audio today) or a registered-but-unserved entry (image, until §10.1 gains a serving path), those tiers produce no verdict at all — so `degrade` silently collapses to `allow` on content nothing has inspected. Refusing content the deployment cannot classify is the safe default; `on_unclassifiable: degrade` is available as an explicit per-scope opt-in for operators who knowingly want passthrough.
 
 ### 8.4 Output guardrails (stage 8)
 
@@ -874,9 +889,31 @@ Net-new schema (chargeback tags G5, SCIM mappings G1, secrets-backend config G2,
 
 ---
 
+## 16. Generative Media — Roadmap (Not Yet Scoped)
+
+Product intent, not yet a specified feature: image, audio, music, and video **generation** should become a first-class WaddleAI capability — on par with code generation today — rather than opaque passthrough to whatever provider a client happens to call.
+
+**Product-surface reference (UI/UX only): [`anil-matcha/open-generative-ai`](https://github.com/anil-matcha/open-generative-ai)** (26k GitHub stars, MIT). Its per-modality studio decomposition (Image, Video, Audio, Lip Sync, Workflows), model catalogue presentation, and generation-queue UX are useful reference points for what a generative-media surface can look like. It is **not** an architecture or model-sourcing reference: the project is a thin front end over **MuAPI**, a commercial hosted generation API ("no servers, workers, or model hosting to run yourself," a $49/mo white-label tier), whose own headline feature is **no content filters**. A thin client over a paid third-party API with filtering deliberately absent is the inverse of what WaddleAI is — a self-hosted deployment with a mandatory security layer (§8) — so nothing about MuAPI's model sourcing, hosting, or (lack of) safety posture transfers here.
+
+**The differentiator**: WaddleAI would do generative media **with** the safety layer intact. Output generated by the platform needs the same scrutiny as content a user uploads — an image WaddleAI *generates* is not exempt from the §8.3a per-modality classifier registry just because the platform produced it rather than received it. Whatever generation backends WaddleAI eventually fronts, their output would route through the same image/audio guardrail tiers §8.3a defines (once those tiers have a serving path), not a separate unfiltered path.
+
+**Security-first constraints — binding on any future scoping pass.** "With the safety layer" means more than filtering the artifact after the fact; the following are design constraints, not nice-to-haves:
+
+| Constraint | Why |
+|---|---|
+| **Generation prompts are screened pre-dispatch** by §8.3's request-intent classifier, not only post-hoc by §8.3a and §8.4's output guardrails | The prompt is itself the policy surface. A request for sexual imagery of minors, non-consensual intimate imagery, or a deepfake of an identifiable person must be refused *before* a backend is invoked — filtering the returned artifact means the platform generated it first. §8.3's concern categories extend with generation-specific ones |
+| **Generated artifacts carry machine-readable provenance** (C2PA-style content credentials or equivalent) | Attribution of synthetic media is a live regulatory obligation, not a courtesy. §15's EU AI Act readiness item covers the transparency duties for AI-generated content; the exact obligation and its scope need legal confirmation, but designing artifacts as unmarked-by-default would be the wrong starting point |
+| **Likeness and identity controls** are a first-class policy category, org-configurable per §8.1 scopes | Deepfake generation is the highest-severity abuse case for this feature and the one most likely to create legal exposure for a deployment operator |
+| **Generation events are audited** to `security_logs` under the same PII-tokenization rules as every other event (§9.7) | An operator must be able to answer "who generated this, when, under which policy" — for incident response and for regulatory response |
+| **No unfiltered mode.** There is no configuration that disables §8.3a guardrails on a generation path | This is the explicit anti-feature. It is the one capability the MuAPI-class reference above sells as its headline, and shipping it would forfeit the only reason an enterprise would put this platform in front of a generation backend |
+
+**Not yet scoped**: model selection (local vs. hosted, OSI/non-PRC constraints per §2.1/§2.2 apply the same as everywhere else), fleet-backend integration (§10.1), storage/serving of generated artifacts, licensing-tier placement (§2.4), and delivery timing are all open. This section exists to record product direction and the safety-layer non-negotiables above it — a full spec pass (data model, migration, acceptance criteria, release wave) is required before this becomes buildable work.
+
+---
+
 ## Status
 
-**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review). All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
+**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
 
 ---
 
