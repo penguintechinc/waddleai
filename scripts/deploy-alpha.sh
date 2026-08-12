@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # waddleai Alpha Deployment Script
-# Local MicroK8s Deployment via Kustomize
+# Local MicroK8s Deployment via Helm
 #
 # Usage:
 #   ./scripts/deploy-alpha.sh [OPTIONS]
@@ -17,8 +17,11 @@
 #
 # Environment:
 #   KUBE_CONTEXT          Kubernetes context (default: local-alpha)
-#   NAMESPACE             Target namespace (default: waddleai-alpha)
+#   NAMESPACE             Target namespace (default: waddleai — product name only,
+#                          never environment-suffixed)
 #   APP_HOST              Application hostname (default: waddleai.localhost.local)
+#   HELM_CHART_PATH        Helm chart path (default: k8s/helm/waddleai)
+#   HELM_VALUES_FILE       Helm values file (default: k8s/helm/waddleai/values-alpha.yaml)
 #
 # =============================================================================
 
@@ -33,9 +36,10 @@ readonly PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 
 readonly APP_NAME="${APP_NAME:-waddleai}"
 readonly KUBE_CONTEXT="${KUBE_CONTEXT:-local-alpha}"
-readonly NAMESPACE="${NAMESPACE:-waddleai-alpha}"
+readonly NAMESPACE="${NAMESPACE:-waddleai}"
 readonly APP_HOST="${APP_HOST:-waddleai.localhost.local}"
-readonly OVERLAY_PATH="${OVERLAY_PATH:-k8s/kustomize/overlays/alpha}"
+readonly HELM_CHART_PATH="${HELM_CHART_PATH:-k8s/helm/waddleai}"
+readonly HELM_VALUES_FILE="${HELM_VALUES_FILE:-k8s/helm/waddleai/values-alpha.yaml}"
 
 # Services with Dockerfiles (customize per repo)
 declare -a SERVICES=("management" "webui")
@@ -92,7 +96,7 @@ check_prerequisites() {
     print_info "Checking prerequisites..."
     local missing=()
 
-    for cmd in kubectl docker microk8s; do
+    for cmd in kubectl docker microk8s helm; do
         if ! command -v "${cmd}" &>/dev/null; then
             missing+=("${cmd}")
         fi
@@ -118,9 +122,15 @@ check_prerequisites() {
         exit 1
     fi
 
-    # Verify overlay exists
-    if [[ ! -d "${PROJECT_ROOT}/${OVERLAY_PATH}" ]]; then
-        print_error "Kustomize overlay not found: ${OVERLAY_PATH}"
+    # Verify Helm chart exists
+    if [[ ! -f "${PROJECT_ROOT}/${HELM_CHART_PATH}/Chart.yaml" ]]; then
+        print_error "Helm chart not found: ${HELM_CHART_PATH}"
+        exit 1
+    fi
+
+    # Verify Helm values file exists
+    if [[ ! -f "${PROJECT_ROOT}/${HELM_VALUES_FILE}" ]]; then
+        print_error "Helm values file not found: ${HELM_VALUES_FILE}"
         exit 1
     fi
 
@@ -176,14 +186,15 @@ build_and_import() {
 }
 
 # =============================================================================
-# Kustomize deployment
+# Helm deployment
 # =============================================================================
 
 do_deploy() {
     print_info "Deploying to local MicroK8s cluster..."
     print_info "  Context:   ${KUBE_CONTEXT}"
     print_info "  Namespace: ${NAMESPACE}"
-    print_info "  Overlay:   ${OVERLAY_PATH}"
+    print_info "  Chart:     ${HELM_CHART_PATH}"
+    print_info "  Values:    ${HELM_VALUES_FILE}"
     print_info "  Host:      ${APP_HOST}"
 
     # Create namespace if missing
@@ -192,19 +203,27 @@ do_deploy() {
         kctl create namespace "${NAMESPACE}"
     fi
 
-    # Apply kustomize overlay
+    # Render/apply the Helm chart
     if [[ "${DRY_RUN}" == "true" ]]; then
-        print_info "DRY-RUN: Rendering kustomize output..."
-        kctl apply -k "${PROJECT_ROOT}/${OVERLAY_PATH}" --dry-run=client -o yaml
+        print_info "DRY-RUN: Rendering Helm chart output..."
+        helm template "${APP_NAME}" "${PROJECT_ROOT}/${HELM_CHART_PATH}" \
+            --namespace "${NAMESPACE}" \
+            --values "${PROJECT_ROOT}/${HELM_VALUES_FILE}" \
+            --set "namespace=${NAMESPACE}"
         return 0
     fi
 
-    if ! kctl apply -k "${PROJECT_ROOT}/${OVERLAY_PATH}"; then
-        print_error "Failed to apply kustomize overlay"
+    if ! helm upgrade --install "${APP_NAME}" "${PROJECT_ROOT}/${HELM_CHART_PATH}" \
+        --kube-context "${KUBE_CONTEXT}" \
+        --namespace "${NAMESPACE}" \
+        --create-namespace \
+        --values "${PROJECT_ROOT}/${HELM_VALUES_FILE}" \
+        --set "namespace=${NAMESPACE}"; then
+        print_error "Failed to apply Helm chart"
         return 1
     fi
 
-    print_success "Kustomize manifests applied"
+    print_success "Helm chart applied"
 }
 
 # =============================================================================
@@ -303,7 +322,7 @@ show_help() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Deploy ${APP_NAME} to local MicroK8s alpha environment using Kustomize.
+Deploy ${APP_NAME} to local MicroK8s alpha environment using Helm.
 
 OPTIONS:
     --build               Build images and import into MicroK8s (default)
@@ -315,11 +334,12 @@ OPTIONS:
     --help                Show this help message
 
 ENVIRONMENT:
-    KUBE_CONTEXT:   ${KUBE_CONTEXT}
-    NAMESPACE:      ${NAMESPACE}
-    APP_HOST:       ${APP_HOST}
-    OVERLAY_PATH:   ${OVERLAY_PATH}
-    SERVICES:       ${SERVICES[*]}
+    KUBE_CONTEXT:      ${KUBE_CONTEXT}
+    NAMESPACE:         ${NAMESPACE}
+    APP_HOST:          ${APP_HOST}
+    HELM_CHART_PATH:   ${HELM_CHART_PATH}
+    HELM_VALUES_FILE:  ${HELM_VALUES_FILE}
+    SERVICES:          ${SERVICES[*]}
 
 EXAMPLES:
     # Full build and deploy
