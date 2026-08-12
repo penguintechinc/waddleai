@@ -2,7 +2,7 @@
   "body": {
     "data": {
       "instructions": "No routing instructions configured",
-      "routing_llm": "gemma4:2b"
+      "routing_llm": "gemma4:e2b"
     },
     "meta": {
       "timestamp": "<VOLATILE>"

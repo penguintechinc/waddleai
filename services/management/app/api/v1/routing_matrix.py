@@ -33,7 +33,10 @@ routing_matrix_bp = Blueprint("routing_matrix", __name__, url_prefix="/api/v1/ro
 # Defaults mirror the legacy management plane's fallback text exactly, so
 # behavior is unchanged for callers that never configured routing instructions.
 _DEFAULT_ROUTING_INSTRUCTIONS = "No routing instructions configured"
-_DEFAULT_ROUTING_LLM = "gemma4:2b"
+# Matches shared/utils/request_router.py. This was "gemma4:2b", which is not a
+# pullable tag — Gemma 4 publishes e2b/e4b/12b/26b/31b and has no 2b, so the
+# default could never resolve. e2b is the smallest (2.3B effective params).
+_DEFAULT_ROUTING_LLM = "gemma4:e2b"
 
 # Default routing matrix spec used by the /seed endpoint
 DEFAULT_ROUTING_MATRIX: List[Dict[str, Any]] = [

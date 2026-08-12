@@ -77,7 +77,11 @@ class LLMRequestRouter:
         self.breaker_cooldown = timedelta(minutes=5)
 
         # Routing LLM configuration
-        self.routing_llm_model = os.getenv("ROUTING_LLM", "llama3.2:1b")
+        # gemma4:e2b, matching services/management's _DEFAULT_ROUTING_LLM.
+        # Note the tag: Gemma 4 publishes e2b/e4b/12b/26b/31b and has NO 2b, so
+        # "gemma4:2b" is not pullable. e2b is the smallest (2.3B effective).
+        # Gemma 4 is Apache-2.0, unlike Gemma 1-3's custom Terms of Use.
+        self.routing_llm_model = os.getenv("ROUTING_LLM", "gemma4:e2b")
         self.use_intelligent_routing = os.getenv("USE_INTELLIGENT_ROUTING", "true").lower() == "true"
 
         # RAG configuration

@@ -214,7 +214,13 @@ class ContentFilter:
         self,
         db: Any,
         ollama_base_url: str = "http://localhost:11434",
-        auditor_model: str = "llama3.2:3b",
+        # shieldgemma:2b, matching the only call site
+        # (proxy/apps/proxy_server/main.py, SECURITY_AUDITOR_MODEL). This was
+        # llama3.2:3b — a general chat model, not a safety classifier — so any
+        # caller relying on the default got materially different behaviour from
+        # the proxy. ShieldGemma is text-only by design; image and audio need
+        # their own classifiers rather than this one.
+        auditor_model: str = "shieldgemma:2b",
     ) -> None:
         """
         Initialize content filter.
