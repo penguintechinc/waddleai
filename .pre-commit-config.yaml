@@ -107,6 +107,14 @@ repos:
     hooks:
       - id: bandit
         stages: [pre-push]
+        # Bandit fails on ANY finding including Low, and B101 ("assert used")
+        # fires on every assert in the suite -- 113 of the 115 findings that
+        # blocked the first push after ruff adoption. B101 exists because
+        # asserts are stripped under `python -O`, which is a production
+        # concern; in tests the assert IS the contract. Same reasoning and
+        # same scope as the S101 per-file-ignore in pyproject.toml: tests are
+        # excluded, production code keeps the full ruleset at every severity.
+        exclude: ^tests/
 
   - repo: local
     hooks:
