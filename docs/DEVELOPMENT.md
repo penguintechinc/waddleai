@@ -27,7 +27,7 @@ Complete guide to setting up a local development environment for WaddleAI, runni
 ### Optional Tools
 
 - **Docker Buildx** (for multi-architecture builds)
-- **Helm v4** (chart at `k8s/helm/waddleai`, used for beta/prod deploys — see `DEPLOY_K8S.md`)
+- **Helm v4** (chart at `k8s/helm/waddleai`, used for beta/prod deploys)
 - **psql** client (for inspecting the local database directly)
 
 ### Installation
@@ -191,7 +191,7 @@ For testing against a real cluster instead of directly-run processes, this repo 
 ./scripts/deploy-alpha.sh --help   # all options: --skip-build, --service, --dry-run, --rollback
 ```
 
-It requires a `local-alpha` kubectl context pointing at a running MicroK8s (or Docker Desktop Kubernetes) cluster — see the `deploying-app` skill for cluster setup. As of this writing, `k8s/kustomize/overlays/alpha` only defines the management Deployment/Service (`k8s/kustomize/base/management/`) — it's useful for exercising that one service's built image in-cluster, not yet a full proxy+database+cache stack. The Helm chart at `k8s/helm/waddleai` is what `./scripts/deploy-beta.sh` deploys to the shared beta cluster; see `DEPLOY_K8S.md` for that path.
+It requires a `local-alpha` kubectl context pointing at a running MicroK8s (or Docker Desktop Kubernetes) cluster — see the `deploying-app` skill for cluster setup. As of this writing, `k8s/kustomize/overlays/alpha` only defines the management Deployment/Service (`k8s/kustomize/base/management/`) — it's useful for exercising that one service's built image in-cluster, not yet a full proxy+database+cache stack. The Helm chart at `k8s/helm/waddleai` is what `./scripts/deploy-beta.sh` deploys to the shared beta cluster.
 
 ---
 
@@ -508,7 +508,7 @@ docker container prune
   - Build verification
   - Test requirements
 
-- **Deployment**: [Beta K8s Deployment Guide](../DEPLOY_K8S.md)
+- **Deployment**: [Helm Chart](../k8s/helm/waddleai/)
   - Helm chart at `k8s/helm/waddleai`
   - Beta cluster deployment via `./scripts/deploy-beta.sh`
 
