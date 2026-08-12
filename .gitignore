@@ -96,6 +96,11 @@ coverage
 # directory only, not coverage.py's `.coverage` data file.
 .coverage
 .coverage.*
+htmlcov/
+coverage.xml
+
+# Stray top-level management/ dir (distinct from services/management/)
+management/
 
 # nyc test coverage
 .nyc_output
