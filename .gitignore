@@ -99,8 +99,11 @@ coverage
 htmlcov/
 coverage.xml
 
-# Stray top-level management/ dir (distinct from services/management/)
-management/
+# Stray top-level management/ dir (distinct from services/management/).
+# MUST stay anchored with a leading slash: a bare `management/` matches at every
+# depth, which silently blackholed every NEW file under services/management/,
+# tests/unit/management/ and services/management/alembic/versions/.
+/management/
 
 # nyc test coverage
 .nyc_output
