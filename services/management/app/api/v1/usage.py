@@ -1,6 +1,4 @@
-"""
-WaddleAI Management API v1 - Usage Tracking Endpoints
-"""
+"""WaddleAI Management API v1 - Usage Tracking Endpoints."""
 
 import asyncio
 import csv
@@ -31,11 +29,17 @@ async def get_usage_summary():
             daily_query = db.token_usage.date == today
             monthly_query = db.token_usage.date >= month_start
         elif user_role in ["resource_manager", "reporter"]:
-            daily_query = (db.token_usage.date == today) & (db.token_usage.organization_id == org_id)
-            monthly_query = (db.token_usage.date >= month_start) & (db.token_usage.organization_id == org_id)
+            daily_query = (db.token_usage.date == today) & (
+                db.token_usage.organization_id == org_id
+            )
+            monthly_query = (db.token_usage.date >= month_start) & (
+                db.token_usage.organization_id == org_id
+            )
         else:
             daily_query = (db.token_usage.date == today) & (db.token_usage.user_id == user_id)
-            monthly_query = (db.token_usage.date >= month_start) & (db.token_usage.user_id == user_id)
+            monthly_query = (db.token_usage.date >= month_start) & (
+                db.token_usage.user_id == user_id
+            )
 
         return db(daily_query).select(), db(monthly_query).select()
 
@@ -79,15 +83,17 @@ async def get_usage_by_model():
     def _fetch():
         # Build query based on role
         if user_role == "admin":
-            base_query = db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
+            base_query = db.usage_logs.timestamp >= datetime.combine(
+                start_date, datetime.min.time()
+            )
         elif user_role in ["resource_manager", "reporter"]:
-            base_query = (db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())) & (
-                db.usage_logs.organization_id == org_id
-            )
+            base_query = (
+                db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
+            ) & (db.usage_logs.organization_id == org_id)
         else:
-            base_query = (db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())) & (
-                db.usage_logs.user_id == user_id
-            )
+            base_query = (
+                db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
+            ) & (db.usage_logs.user_id == user_id)
 
         return db(base_query).select()
 
@@ -120,15 +126,17 @@ async def get_usage_by_provider():
     def _fetch():
         # Build query based on role
         if user_role == "admin":
-            base_query = db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
+            base_query = db.usage_logs.timestamp >= datetime.combine(
+                start_date, datetime.min.time()
+            )
         elif user_role in ["resource_manager", "reporter"]:
-            base_query = (db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())) & (
-                db.usage_logs.organization_id == org_id
-            )
+            base_query = (
+                db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
+            ) & (db.usage_logs.organization_id == org_id)
         else:
-            base_query = (db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())) & (
-                db.usage_logs.user_id == user_id
-            )
+            base_query = (
+                db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
+            ) & (db.usage_logs.user_id == user_id)
 
         return db(base_query).select()
 
@@ -177,7 +185,9 @@ async def get_usage_by_user():
         if user_role == "admin":
             base_query = db.token_usage.date >= start_date
         else:
-            base_query = (db.token_usage.date >= start_date) & (db.token_usage.organization_id == org_id)
+            base_query = (db.token_usage.date >= start_date) & (
+                db.token_usage.organization_id == org_id
+            )
 
         records = db(base_query).select()
 
@@ -221,7 +231,9 @@ async def get_usage_by_key():
         if user_role == "admin":
             base_query = db.token_usage.date >= start_date
         elif user_role in ["resource_manager", "reporter"]:
-            base_query = (db.token_usage.date >= start_date) & (db.token_usage.organization_id == org_id)
+            base_query = (db.token_usage.date >= start_date) & (
+                db.token_usage.organization_id == org_id
+            )
         else:
             base_query = (db.token_usage.date >= start_date) & (db.token_usage.user_id == user_id)
 
@@ -269,7 +281,9 @@ async def get_cost_analytics():
         if user_role == "admin":
             base_query = db.token_usage.date >= start_date
         elif user_role in ["resource_manager", "reporter"]:
-            base_query = (db.token_usage.date >= start_date) & (db.token_usage.organization_id == org_id)
+            base_query = (db.token_usage.date >= start_date) & (
+                db.token_usage.organization_id == org_id
+            )
         else:
             base_query = (db.token_usage.date >= start_date) & (db.token_usage.user_id == user_id)
 
@@ -318,7 +332,9 @@ async def export_usage():
         if user_role == "admin":
             base_query = db.token_usage.date >= start_date
         elif user_role in ["resource_manager", "reporter"]:
-            base_query = (db.token_usage.date >= start_date) & (db.token_usage.organization_id == org_id)
+            base_query = (db.token_usage.date >= start_date) & (
+                db.token_usage.organization_id == org_id
+            )
         else:
             base_query = (db.token_usage.date >= start_date) & (db.token_usage.user_id == user_id)
 
@@ -354,7 +370,83 @@ async def export_usage():
         return Response(
             output.getvalue(),
             mimetype="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=usage-export-{date.today().isoformat()}.csv"},
+            headers={
+                "Content-Disposition": f"attachment; filename=usage-export-{date.today().isoformat()}.csv"
+            },
         )
 
     return jsonify({"data": data, "count": len(data)})
+
+
+@api_v1_bp.route("/usage/cache-stats", methods=["GET"])
+@require_auth
+async def get_cache_stats():
+    """Response-cache hit rates and estimated $ saved per org/key (spec §6.4).
+
+    Aggregates token_usage.cache_status/tokens_saved over a window (days).
+    Non-admin callers are scoped to their own organization; an org_id query
+    param for a *different* organization is rejected (403), matching the
+    org-isolation posture the cache layers themselves enforce.
+    """
+    user_role = g.user.get("role")
+    caller_org_id = g.user.get("organization_id")
+
+    org_id_param = request.args.get("org_id", type=int)
+    vkey_id_param = request.args.get("virtual_key_id", type=int)
+    days = request.args.get("window", 30, type=int)
+
+    if user_role != "admin":
+        if org_id_param is not None and org_id_param != caller_org_id:
+            return jsonify(
+                {"status": "error", "error": "Cannot query another organization's cache stats"}
+            ), 403
+        org_id_param = org_id_param or caller_org_id
+
+    start_date = date.today() - timedelta(days=days)
+
+    def _fetch():
+        query = db.token_usage.date >= start_date
+        if org_id_param is not None:
+            query &= db.token_usage.organization_id == org_id_param
+        if vkey_id_param is not None:
+            query &= db.token_usage.virtual_key_id == vkey_id_param
+        return db(query).select()
+
+    records = await asyncio.to_thread(_fetch)
+
+    by_layer = {"exact": 0, "semantic": 0, "upstream": 0, "miss": 0}
+    tokens_saved_total = 0
+    cost_cents_total = 0
+    tokens_total = 0
+
+    for record in records:
+        status = record.cache_status or "miss"
+        by_layer[status] = by_layer.get(status, 0) + (record.request_count or 0)
+        tokens_saved_total += record.tokens_saved or 0
+        cost_cents_total += record.cost_usd_total or 0
+        tokens_total += (record.tokens_input_total or 0) + (record.tokens_output_total or 0)
+
+    total_requests = sum(by_layer.values())
+    hit_requests = by_layer["exact"] + by_layer["semantic"] + by_layer["upstream"]
+    hit_rate = (hit_requests / total_requests) if total_requests else 0.0
+    # Blended $/token over the window (cost_usd_total is stored in cents) --
+    # an approximation, since token_usage rows aggregate by day/key, not by
+    # individual cache event, so there's no exact per-hit cost to sum.
+    avg_cost_cents_per_token = (cost_cents_total / tokens_total) if tokens_total else 0.0
+    usd_saved_estimate = round(tokens_saved_total * avg_cost_cents_per_token / 100, 6)
+
+    return jsonify(
+        {
+            "status": "success",
+            "data": {
+                "window_days": days,
+                "organization_id": org_id_param,
+                "virtual_key_id": vkey_id_param,
+                "by_layer": by_layer,
+                "total_requests": total_requests,
+                "hit_rate": round(hit_rate, 4),
+                "tokens_saved_total": tokens_saved_total,
+                "usd_saved_estimate": usd_saved_estimate,
+            },
+        }
+    )

@@ -9,6 +9,7 @@ from . import (
     ailb,
     ailb_memory,
     auth,
+    cache_configs,
     cilium,
     keys,
     llamacpp,

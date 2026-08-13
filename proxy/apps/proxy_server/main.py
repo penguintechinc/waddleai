@@ -1,6 +1,4 @@
-"""
-WaddleAI Proxy Server
-OpenAI-compatible API proxy with routing, security, and token management
+"""WaddleAI Proxy Server: OpenAI-compatible API proxy with routing, security, and token management.
 
 Quart-based async HTTP server with gRPC sidecar for MarchProxy AILB.
 """
@@ -19,7 +17,6 @@ sys.path.append(os.path.dirname(__file__))
 import asyncio
 import time
 from datetime import datetime
-from typing import Optional
 
 import aiohttp
 import structlog
@@ -33,6 +30,7 @@ from proxy.apps.proxy_server.grpc_server import ServerComponents, run_grpc_in_th
 from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
 from proxy.apps.proxy_server.pipeline import (
     AuthStage,
+    CacheStage,
     DispatchStage,
     MeterStage,
     PipelineContext,
@@ -50,17 +48,25 @@ from shared.auth.penguin_auth import (
     user_context_to_claims_dict,
     verify_token,
 )
-from shared.auth.rbac import ROLE_PERMISSIONS, AuthenticationError, Permission, RBACManager, Role, UserContext
+from shared.auth.rbac import (
+    ROLE_PERMISSIONS,
+    AuthenticationError,
+    Permission,
+    RBACManager,
+    Role,
+    UserContext,
+)
+from shared.cache.response_cache import RESPONSE_CACHE_FLAG, create_response_cache
 from shared.database.models import get_db
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import create_security_scanner
+from shared.utils.feature_flags import is_feature_enabled
 from shared.utils.health_checks import WaddleAIHealthMonitor
 from shared.utils.llm_connectors import create_llm_connection_manager
 from shared.utils.memory_integration import create_memory_manager
 from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
-from shared.utils.feature_flags import is_feature_enabled
 
 # Configure structured logging
 structlog.configure(
@@ -103,6 +109,62 @@ def _stub_llm_response(model: str, messages: list) -> tuple:
     )
 
 
+def _cache_flag_enabled(distinct_id: str) -> bool:
+    """Whether waddleai.response_cache is on for this caller (spec §14.5, fail-safe OFF)."""
+    return is_feature_enabled(RESPONSE_CACHE_FLAG, distinct_id, default=False)
+
+
+def _build_waddleai_cache_usage(ctx: PipelineContext) -> dict:
+    """Additive `usage.waddleai` block (spec §6.4): cache status + tokens saved.
+
+    Response-shape-additive only: existing usage fields are never touched.
+    On an exact/semantic hit, CacheStage already populated
+    ctx.cache_status/ctx.tokens_saved. On a miss, checks whether the
+    *upstream* provider itself reported prompt-cache usage (Anthropic
+    cache_read_input_tokens, OpenAI cached_tokens, Gemini
+    cached_content_token_count) and reports status="upstream" if so.
+    """
+    if ctx.cache_status in ("exact", "semantic"):
+        return {
+            "cache": ctx.cache_status,
+            "cached_tokens": ctx.tokens_saved,
+            "tokens_saved": ctx.tokens_saved,
+        }
+
+    usage = ctx.usage or {}
+    from shared.cache.upstream import (
+        AnthropicPromptCacheOrchestrator,
+        extract_gemini_cached_tokens,
+        extract_openai_cached_tokens,
+    )
+
+    cached_tokens = 0
+    if ctx.provider == "anthropic":
+        _creation, cached_tokens = AnthropicPromptCacheOrchestrator.extract_cache_usage(usage)
+    elif ctx.provider in ("openai", "xai"):
+        cached_tokens = extract_openai_cached_tokens(usage)
+    elif ctx.provider == "gemini":
+        cached_tokens = extract_gemini_cached_tokens(usage)
+
+    if cached_tokens > 0:
+        return {"cache": "upstream", "cached_tokens": cached_tokens, "tokens_saved": cached_tokens}
+
+    return {"cache": "miss", "cached_tokens": 0, "tokens_saved": 0}
+
+
+def _maybe_write_back_cache(ctx: PipelineContext, response_dict: dict, usage: dict) -> None:
+    """Fire the CacheStage-provided write-back, if any, once the response is known safe to cache.
+
+    Poisoning defense (spec §3.6): called only from route handlers, only
+    after `pipeline.run()` has returned with ctx.blocked == False -- i.e.
+    only after SecurityOutStage has already passed. A cache hit is never
+    re-written (ctx.cache_hit).
+    """
+    if ctx.cache_hit or ctx.cache_write_back is None:
+        return
+    asyncio.ensure_future(ctx.cache_write_back(response_dict, usage))
+
+
 class ProxyServer:
     """WaddleAI Proxy Server"""
 
@@ -121,6 +183,7 @@ class ProxyServer:
         self.grpc_server = None
         self.pipeline = None  # Built once in startup
         self.features = None  # Feature flag helper for pipeline
+        self.response_cache = None  # ResponseCache facade (shared.cache), built in startup
 
         # penguin-aaa components
         self.oidc_provider = None
@@ -153,7 +216,9 @@ class ProxyServer:
         # directly, not a `get_dal` factory. `migrate=True` only in contract-test mode, so the
         # harness's empty per-session sqlite file gets real tables; production
         # keeps migrate=False (Alembic/management remains schema authority).
-        database_url = os.getenv("DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai")
+        database_url = os.getenv(
+            "DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai"
+        )
         self.db = get_db(database_url, migrate=_TEST_MODE)
 
         # Initialize components
@@ -231,6 +296,7 @@ class ProxyServer:
         # Create a simple wrapper around the is_feature_enabled function
         class FeatureFlagsHelper:
             """Simple wrapper to provide is_feature_enabled method for pipeline."""
+
             @staticmethod
             def is_feature_enabled(flag_key: str, distinct_id: str = None) -> bool:
                 return is_feature_enabled(flag_key, distinct_id or "server", default=False)
@@ -249,7 +315,12 @@ class ProxyServer:
                     finish_reason = "end_turn" if "claude" in str(model or "").lower() else "stop"
                     return (
                         _STUB_COMPLETION_TEXT,
-                        {"provider": "stub", "input_tokens": 12, "output_tokens": 11, "finish_reason": finish_reason},
+                        {
+                            "provider": "stub",
+                            "input_tokens": 12,
+                            "output_tokens": 11,
+                            "finish_reason": finish_reason,
+                        },
                     )
 
                 async def stream_chat_completion(self, messages, model=None, **kwargs):
@@ -259,8 +330,13 @@ class ProxyServer:
                     yield StreamChunk(delta=_STUB_COMPLETION_TEXT, done=False)
                     yield StreamChunk(
                         delta="",
-                        usage={"provider": "stub", "input_tokens": 12, "output_tokens": 11, "finish_reason": finish_reason},
-                        done=True
+                        usage={
+                            "provider": "stub",
+                            "input_tokens": 12,
+                            "output_tokens": 11,
+                            "finish_reason": finish_reason,
+                        },
+                        done=True,
                     )
 
                 async def count_tokens(self, messages, model=None, **kwargs):
@@ -387,7 +463,12 @@ class ProxyServer:
             api_key_id=None,
         )
         self.contract_test_member_token = issue_token(member_context, self.oidc_provider)
-        logger.info("Seeded contract-test org/user/api_key", org_id=org_id, user_id=user_id, api_key_id=api_key_id)
+        logger.info(
+            "Seeded contract-test org/user/api_key",
+            org_id=org_id,
+            user_id=user_id,
+            api_key_id=api_key_id,
+        )
 
     def _build_pipeline(self) -> ProxyPipeline:
         """Build the ProxyPipeline with all stages in standard order.
@@ -417,33 +498,35 @@ class ProxyServer:
             AuthStage(name="auth", flag=None),
         ]
 
+        # Shared Valkey client for TokenBudgetStage and CacheStage. redis.asyncio
+        # clients are lazy (from_url never blocks/connects), so it's always safe
+        # to construct one -- CacheStage is flag-gated OFF by default (spec §14.5)
+        # and never issues a command unless waddleai.response_cache is enabled.
+        import redis.asyncio as redis
+
+        valkey_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        try:
+            valkey = redis.from_url(valkey_url, decode_responses=True)
+        except Exception as e:
+            logger.warning("Valkey client initialization failed: %s", e)
+            valkey = None
+
         # Token budget stage - requires Redis/Valkey client
         # In test mode (_TEST_MODE), use a mock limiter
-        if _TEST_MODE:
-            # Simple mock token limiter for test mode
+        if _TEST_MODE or valkey is None:
+            # Simple mock token limiter for test mode / Valkey unavailable
             class MockTokenLimiter:
                 async def reserve(self, vkey_id, estimated_tokens, estimated_usd, limits):
                     from shared.utils.token_limiter import GateDecision
+
                     return GateDecision(allowed=True, reason=None, reservation_id=f"mock-{vkey_id}")
+
                 async def reconcile(self, reservation_id, actual_tokens, actual_usd):
                     pass
+
             token_limiter = MockTokenLimiter()
         else:
-            import redis.asyncio as redis
-            valkey_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-            try:
-                valkey = redis.from_url(valkey_url, decode_responses=True)
-                token_limiter = TokenLimiter(valkey=valkey, features=self.features)
-            except Exception as e:
-                logger.warning("Token limiter initialization failed: %s", e)
-                # Create a simple mock in case Redis is not available
-                class MockTokenLimiter:
-                    async def reserve(self, vkey_id, estimated_tokens, estimated_usd, limits):
-                        from shared.utils.token_limiter import GateDecision
-                        return GateDecision(allowed=True, reason=None, reservation_id=f"mock-{vkey_id}")
-                    async def reconcile(self, reservation_id, actual_tokens, actual_usd):
-                        pass
-                token_limiter = MockTokenLimiter()
+            token_limiter = TokenLimiter(valkey=valkey, features=self.features)
 
         stages.append(
             TokenBudgetStage(
@@ -454,32 +537,54 @@ class ProxyServer:
             )
         )
 
-        # Security and dispatch stages
-        stages.extend([
-            SecurityInStage(
-                name="security_in",
-                scanner=self.security_scanner,
-                content_filter=self.content_filter,
-                flag=None,
-            ),
-            DispatchStage(
-                name="dispatch",
-                router=self.request_router,
-                connectors=connectors_dict,
-                flag=None,
-            ),
-            SecurityOutStage(
-                name="security_out",
-                content_filter=self.content_filter,
-                flag=None,
-            ),
-        ])
+        # Response cache (spec §6) -- flag-gated on waddleai.response_cache,
+        # default OFF. Built even when Valkey is unreachable/test-mode; the
+        # stage never issues a call unless the flag is on (see CacheStage).
+        embedder = None
+        try:
+            from shared.utils.embedding_manager import create_embedding_manager
+
+            embedder = create_embedding_manager()
+        except Exception as e:  # pragma: no cover - optional dependency path
+            logger.warning("Embedding manager unavailable; semantic cache layer disabled: %s", e)
+        self.response_cache = create_response_cache(
+            db=self.db, valkey=valkey, embedder=embedder, features=self.features
+        )
+
+        # Security, cache, and dispatch stages
+        stages.extend(
+            [
+                SecurityInStage(
+                    name="security_in",
+                    scanner=self.security_scanner,
+                    content_filter=self.content_filter,
+                    flag=None,
+                ),
+                CacheStage(
+                    name="cache",
+                    response_cache=self.response_cache,
+                ),
+                DispatchStage(
+                    name="dispatch",
+                    router=self.request_router,
+                    connectors=connectors_dict,
+                    flag=None,
+                ),
+                SecurityOutStage(
+                    name="security_out",
+                    content_filter=self.content_filter,
+                    flag=None,
+                ),
+            ]
+        )
 
         # Metering stage - requires Redis/Valkey and database
         if _TEST_MODE:
             # In test mode, use a mock metering buffer
             class MockMeteringBuffer:
-                def record(self, event): pass
+                def record(self, event):
+                    pass
+
             metering_buffer = MockMeteringBuffer()
         else:
             usage_writer = PenguinDALUsageWriter(db=self.db)
@@ -532,6 +637,7 @@ async def _api_key_verifier(credential: str) -> dict:
     uc = proxy_server.rbac.authenticate_api_key(credential)
     return user_context_to_claims_dict(uc)
 
+
 # Quart app
 app = Quart(__name__)
 
@@ -579,7 +685,8 @@ if _TEST_MODE:
     async def _contract_test_token():
         """Contract-test-only: hand the harness a real signed Bearer JWT and
         the seeded wa- API key. Never registered in production (route
-        definition itself is gated by the module-level _TEST_MODE flag)."""
+        definition itself is gated by the module-level _TEST_MODE flag).
+        """
         return jsonify(
             {
                 "token": proxy_server.contract_test_bearer_token,
@@ -690,9 +797,11 @@ async def get_current_user():
         abort(401, description="Authentication failed")
 
 
-def determine_target_model(request_model: Optional[str], user_context, x_preferred_model: Optional[str] = None) -> str:
-    """
-    Determine target model using hierarchy:
+def determine_target_model(
+    request_model: str | None, user_context, x_preferred_model: str | None = None
+) -> str:
+    """Determine target model using a fallback hierarchy.
+
     1. Request model parameter (if provided)
     2. X-Preferred-Model header (if provided)
     3. API key default_model
@@ -722,7 +831,11 @@ def determine_target_model(request_model: Optional[str], user_context, x_preferr
     # Priority 3: API key default_model
     if user_context.api_key_id:
         try:
-            api_key = proxy_server.db(proxy_server.db.api_keys.id == user_context.api_key_id).select().first()
+            api_key = (
+                proxy_server.db(proxy_server.db.api_keys.id == user_context.api_key_id)
+                .select()
+                .first()
+            )
 
             if api_key and api_key.default_model:
                 logger.debug(f"Using API key default model: {api_key.default_model}")
@@ -742,7 +855,11 @@ def determine_target_model(request_model: Optional[str], user_context, x_preferr
 
     # Priority 5: Organization default_model
     try:
-        org = proxy_server.db(proxy_server.db.organizations.id == user_context.organization_id).select().first()
+        org = (
+            proxy_server.db(proxy_server.db.organizations.id == user_context.organization_id)
+            .select()
+            .first()
+        )
 
         if org and org.default_model:
             logger.debug(f"Using organization default model: {org.default_model}")
@@ -823,7 +940,9 @@ async def detailed_status():
         dependencies = {
             "database": {"status": "healthy"},
             "management_server": {"status": "unknown"},
-            "security_scanner": {"status": "healthy" if proxy_server.security_scanner.policy.enabled else "disabled"},
+            "security_scanner": {
+                "status": "healthy" if proxy_server.security_scanner.policy.enabled else "disabled"
+            },
             "token_manager": {"status": "healthy"},
         }
 
@@ -833,7 +952,11 @@ async def detailed_status():
                 "timestamp": datetime.utcnow().isoformat(),
                 "version": "1.0.0",
                 "dependencies": dependencies,
-                "performance": {"requests_per_minute": 0, "avg_response_time": "0ms", "error_rate": "0%"},
+                "performance": {
+                    "requests_per_minute": 0,
+                    "avg_response_time": "0ms",
+                    "error_rate": "0%",
+                },
             }
         )
     except Exception as e:
@@ -876,7 +999,9 @@ async def chat_completions():
         # Determine target model using hierarchy
         model = (
             determine_target_model(
-                request_model=request_model, user_context=user_context, x_preferred_model=x_preferred_model
+                request_model=request_model,
+                user_context=user_context,
+                x_preferred_model=x_preferred_model,
             )
             or "gpt-3.5-turbo"
         )  # Final fallback
@@ -902,6 +1027,7 @@ async def chat_completions():
             model=model,
             messages=enhanced_messages,
             stream=stream,
+            response_format="openai",
         )
 
         # Run the pipeline
@@ -922,7 +1048,9 @@ async def chat_completions():
 
         # Process token usage record
         token_usage = proxy_server.token_manager.process_usage(
-            input_text="\n".join([msg.get("content", "") for msg in messages if msg.get("content")]),
+            input_text="\n".join(
+                [msg.get("content", "") for msg in messages if msg.get("content")]
+            ),
             output_text=response_text,
             provider=provider,
             model=model,
@@ -965,27 +1093,46 @@ async def chat_completions():
             )
         )
 
-        # Return OpenAI-compatible response
-        return jsonify(
-            {
-                "id": f"chatcmpl-{int(time.time())}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": response_text}, "finish_reason": finish_reason}
-                ],
-                "usage": {
-                    "prompt_tokens": usage.get("input_tokens", 0),
-                    "completion_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
-                    "waddleai_tokens": token_usage.waddleai_tokens,
-                },
-            }
-        )
+        # Build the OpenAI-compatible response
+        response_dict = {
+            "id": f"chatcmpl-{int(time.time())}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": response_text},
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": usage.get("input_tokens", 0),
+                "completion_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                "waddleai_tokens": token_usage.waddleai_tokens,
+            },
+        }
+        # Additive-only, and only when the flag is on (spec §14.2): with the
+        # flag off, CacheStage never ran and this key must not appear at all
+        # -- not even as {"cache": "miss", ...} -- so flag-off responses stay
+        # byte-identical to pre-cache-feature snapshots.
+        if _cache_flag_enabled(str(user_context.user_id)):
+            response_dict["usage"]["waddleai"] = _build_waddleai_cache_usage(ctx)
+
+        # Write-back only after SecurityOutStage has already passed (spec §3.6
+        # poisoning defense) -- pipeline.run() completed without ctx.blocked,
+        # which is guaranteed by having reached this line.
+        _maybe_write_back_cache(ctx, response_dict, usage)
+
+        return jsonify(response_dict)
 
     except Exception as e:
-        logger.error("Chat completion failed", error=str(e), user=getattr(user_context, "username", "unknown"))
+        logger.error(
+            "Chat completion failed",
+            error=str(e),
+            user=getattr(user_context, "username", "unknown"),
+        )
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
     finally:
         duration = time.time() - start_time
@@ -1019,11 +1166,16 @@ async def get_routing_stats():
     try:
         stats = proxy_server.request_router.get_provider_stats()
         return jsonify(
-            {"routing_strategy": proxy_server.request_router.default_strategy.value, "provider_stats": stats}
+            {
+                "routing_strategy": proxy_server.request_router.default_strategy.value,
+                "provider_stats": stats,
+            }
         )
     except Exception as e:
         logger.error(f"Failed to get routing stats: {e}")
-        return jsonify({"error": {"message": "Failed to get routing stats", "type": "server_error"}}), 500
+        return jsonify(
+            {"error": {"message": "Failed to get routing stats", "type": "server_error"}}
+        ), 500
 
 
 @app.route("/api/routing/strategy", methods=["POST"])
@@ -1033,7 +1185,9 @@ async def set_routing_strategy():
     try:
         # Check admin permission
         if not proxy_server.rbac.check_permission(user_context, Permission.SYSTEM_CONFIG):
-            return jsonify({"error": {"message": "Admin permission required", "type": "forbidden"}}), 403
+            return jsonify(
+                {"error": {"message": "Admin permission required", "type": "forbidden"}}
+            ), 403
 
         body = await request.get_json()
         strategy_name = body.get("strategy")
@@ -1043,11 +1197,15 @@ async def set_routing_strategy():
             proxy_server.request_router.set_routing_strategy(strategy)
             return jsonify({"status": "success", "strategy": strategy.value})
         except ValueError:
-            return jsonify({"error": {"message": f"Invalid strategy: {strategy_name}", "type": "bad_request"}}), 400
+            return jsonify(
+                {"error": {"message": f"Invalid strategy: {strategy_name}", "type": "bad_request"}}
+            ), 400
 
     except Exception as e:
         logger.error(f"Failed to set routing strategy: {e}")
-        return jsonify({"error": {"message": "Failed to set routing strategy", "type": "server_error"}}), 500
+        return jsonify(
+            {"error": {"message": "Failed to set routing strategy", "type": "server_error"}}
+        ), 500
 
 
 @app.route("/api/memory/stats", methods=["GET"])
@@ -1061,7 +1219,9 @@ async def get_memory_stats():
         return jsonify(stats)
     except Exception as e:
         logger.error(f"Failed to get memory stats: {e}")
-        return jsonify({"error": {"message": "Failed to get memory stats", "type": "server_error"}}), 500
+        return jsonify(
+            {"error": {"message": "Failed to get memory stats", "type": "server_error"}}
+        ), 500
 
 
 @app.route("/api/memory/cleanup", methods=["DELETE"])
@@ -1076,11 +1236,15 @@ async def cleanup_old_memories():
             cleaned = await proxy_server.memory_manager.cleanup_old_memories(days)
             return jsonify({"cleaned_memories": cleaned, "scope": "system"})
         else:
-            return jsonify({"error": {"message": "Admin permission required", "type": "forbidden"}}), 403
+            return jsonify(
+                {"error": {"message": "Admin permission required", "type": "forbidden"}}
+            ), 403
 
     except Exception as e:
         logger.error(f"Failed to cleanup memories: {e}")
-        return jsonify({"error": {"message": "Failed to cleanup memories", "type": "server_error"}}), 500
+        return jsonify(
+            {"error": {"message": "Failed to cleanup memories", "type": "server_error"}}
+        ), 500
 
 
 @app.route("/api/usage", methods=["GET"])
@@ -1088,11 +1252,15 @@ async def get_usage():
     """Get current API key usage stats"""
     user_context = await get_current_user()
     try:
-        stats = proxy_server.token_manager.get_usage_stats(api_key_id=user_context.api_key_id, days=30)
+        stats = proxy_server.token_manager.get_usage_stats(
+            api_key_id=user_context.api_key_id, days=30
+        )
         return jsonify(stats)
     except Exception as e:
         logger.error("Failed to get usage stats", error=str(e))
-        return jsonify({"error": {"message": "Failed to get usage stats", "type": "server_error"}}), 500
+        return jsonify(
+            {"error": {"message": "Failed to get usage stats", "type": "server_error"}}
+        ), 500
 
 
 @app.route("/api/quota", methods=["GET"])
@@ -1104,7 +1272,9 @@ async def get_quota():
         return jsonify({"quota_ok": quota_ok, **quota_info})
     except Exception as e:
         logger.error("Failed to get quota info", error=str(e))
-        return jsonify({"error": {"message": "Failed to get quota info", "type": "server_error"}}), 500
+        return jsonify(
+            {"error": {"message": "Failed to get quota info", "type": "server_error"}}
+        ), 500
 
 
 # ---------------------------------------------------------------------------
@@ -1136,7 +1306,12 @@ async def claude_messages():
 
         # Determine target model
         x_preferred_model = request.headers.get("X-Preferred-Model")
-        model = determine_target_model(request_model=model, user_context=user_context, x_preferred_model=x_preferred_model) or model
+        model = (
+            determine_target_model(
+                request_model=model, user_context=user_context, x_preferred_model=x_preferred_model
+            )
+            or model
+        )
 
         # Get session ID for memory
         session_id = body.get("session_id") or request.headers.get("X-Session-ID")
@@ -1160,6 +1335,7 @@ async def claude_messages():
             model=model,
             messages=enhanced_messages,
             stream=stream,
+            response_format="anthropic",
         )
 
         # Run the pipeline (now includes SecurityInStage and SecurityOutStage
@@ -1170,7 +1346,9 @@ async def claude_messages():
         if ctx.blocked:
             status_code = ctx.status_code or 500
             error_msg = ctx.block_reason or "Request blocked"
-            return jsonify({"error": {"type": "invalid_request_error", "message": error_msg}}), status_code
+            return jsonify(
+                {"error": {"type": "invalid_request_error", "message": error_msg}}
+            ), status_code
 
         # Extract results from pipeline
         response_text = ctx.response_text
@@ -1225,19 +1403,30 @@ async def claude_messages():
             )
         )
 
-        # Return Claude Messages API compatible response
-        return jsonify(
-            {
-                "id": f"msg_{int(time.time() * 1000)}",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": response_text}],
-                "model": model,
-                "stop_reason": finish_reason,
-                "stop_sequence": None,
-                "usage": {"input_tokens": usage_info.get("input_tokens", 0), "output_tokens": usage_info.get("output_tokens", 0)},
-            }
-        )
+        # Build the Claude Messages API compatible response
+        response_dict = {
+            "id": f"msg_{int(time.time() * 1000)}",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": response_text}],
+            "model": model,
+            "stop_reason": finish_reason,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": usage_info.get("input_tokens", 0),
+                "output_tokens": usage_info.get("output_tokens", 0),
+            },
+        }
+        # Additive-only, and only when the flag is on -- see the matching
+        # comment in chat_completions() above.
+        if _cache_flag_enabled(str(user_context.user_id)):
+            response_dict["usage"]["waddleai"] = _build_waddleai_cache_usage(ctx)
+
+        # Write-back only after SecurityOutStage has already passed (spec §3.6
+        # poisoning defense) -- see _maybe_write_back_cache docstring.
+        _maybe_write_back_cache(ctx, response_dict, usage_info)
+
+        return jsonify(response_dict)
 
     except Exception as e:
         logger.error("Claude messages API failed", error=str(e))
@@ -1287,7 +1476,11 @@ async def count_tokens():
         # Try to use connector's count_tokens if available
         try:
             provider, target_model = proxy_server.request_router.select_provider(model)
-            connector = proxy_server.llm_manager.connectors.get(provider) if hasattr(proxy_server.llm_manager, "connectors") else None
+            connector = (
+                proxy_server.llm_manager.connectors.get(provider)
+                if hasattr(proxy_server.llm_manager, "connectors")
+                else None
+            )
 
             if connector and hasattr(connector, "count_tokens"):
                 input_tokens = await connector.count_tokens(messages=messages, model=target_model)
@@ -1302,7 +1495,9 @@ async def count_tokens():
 
     except Exception as e:
         logger.error("Token counting failed", error=str(e))
-        return jsonify({"error": {"message": "Failed to count tokens", "type": "server_error"}}), 500
+        return jsonify(
+            {"error": {"message": "Failed to count tokens", "type": "server_error"}}
+        ), 500
 
 
 if __name__ == "__main__":

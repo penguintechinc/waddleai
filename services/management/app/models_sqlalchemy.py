@@ -1,7 +1,7 @@
-"""
-SQLAlchemy models for database schema initialization and migrations
-Use SQLAlchemy for schema creation and Alembic for migrations
-Use PyDAL for runtime database operations
+"""SQLAlchemy models for database schema initialization and migrations.
+
+Use SQLAlchemy for schema creation and Alembic for migrations. Use PyDAL for
+runtime database operations.
 """
 
 import logging
@@ -51,7 +51,9 @@ class User(Base):
     username = Column(String(255), unique=True, nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False, default="user")  # admin, resource_manager, reporter, user
+    role = Column(
+        String(50), nullable=False, default="user"
+    )  # admin, resource_manager, reporter, user
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     managed_orgs = Column(JSON)  # List of organization IDs for resource managers
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -171,12 +173,14 @@ class LlamaCppDeployment(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), unique=True, nullable=False)
     deployment_type = Column(String(50), nullable=False, default="kubernetes")  # kubernetes, remote
-    status = Column(String(50), nullable=False, default="pending")  # pending, deploying, running, stopped, error
+    status = Column(
+        String(50), nullable=False, default="pending"
+    )  # pending, deploying, running, stopped, error
     status_message = Column(Text)
 
     # Model
     model_name = Column(String(255), nullable=False)
-    model_url = Column(String(512))       # GGUF download URL (kubernetes mode)
+    model_url = Column(String(512))  # GGUF download URL (kubernetes mode)
     model_filename = Column(String(255))  # filename inside volume
 
     # Inference params
@@ -185,20 +189,22 @@ class LlamaCppDeployment(Base):
     gpu_count = Column(Integer, default=1)
 
     # Connection
-    endpoint_url = Column(String(512))    # set by manager after deploy, or provided directly for remote
+    endpoint_url = Column(
+        String(512)
+    )  # set by manager after deploy, or provided directly for remote
 
     # Kubernetes
     k8s_namespace = Column(String(255), default="waddleai")
     k8s_daemonset_name = Column(String(255))
-    node_selector = Column(JSON)   # e.g. {"waddleai/gpu-tier": "a100"}
-    node_affinity = Column(JSON)   # optional advanced scheduling
+    node_selector = Column(JSON)  # e.g. {"waddleai/gpu-tier": "a100"}
+    node_affinity = Column(JSON)  # optional advanced scheduling
     model_cache_claim = Column(String(255))  # PVC name for model cache; None = emptyDir
 
     # Resource limits for containers
-    cpu_request = Column(String(50))      # e.g. "2000m", "2"
-    cpu_limit = Column(String(50))        # e.g. "4000m", "4"
-    memory_request = Column(String(50))   # e.g. "8Gi", "8192Mi"
-    memory_limit = Column(String(50))     # e.g. "16Gi", "16384Mi"
+    cpu_request = Column(String(50))  # e.g. "2000m", "2"
+    cpu_limit = Column(String(50))  # e.g. "4000m", "4"
+    memory_request = Column(String(50))  # e.g. "8Gi", "8192Mi"
+    memory_limit = Column(String(50))  # e.g. "16Gi", "16384Mi"
 
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -236,7 +242,9 @@ class VirtualKey(Base):
     tpm_limit = Column(Integer)  # Tokens per minute
     rpm_limit = Column(Integer)  # Requests per minute
     budget_monthly_tokens = Column(Integer, nullable=True)  # Monthly token limit; None = unlimited
-    budget_monthly_usd = Column(Integer, nullable=True)  # Monthly USD limit in micro-USD; None = unlimited
+    budget_monthly_usd = Column(
+        Integer, nullable=True
+    )  # Monthly USD limit in micro-USD; None = unlimited
     enabled = Column(Boolean, default=True)
     expires_at = Column(DateTime)
     last_used = Column(DateTime)
@@ -294,7 +302,14 @@ class TokenUsage(Base):
     cost_usd_total = Column(Integer, default=0)  # Store as cents
     last_updated = Column(DateTime, default=datetime.utcnow)
     source = Column(String(50), default="aiproxy")  # aiproxy, ailb, etc
-    estimated = Column(Boolean, default=False)  # True if usage was estimated (missing from provider)
+    estimated = Column(
+        Boolean, default=False
+    )  # True if usage was estimated (missing from provider)
+    # Response cache accounting (spec §6.4, migration 009a). cache_status is
+    # one of exact|semantic|upstream|miss (None for rows predating the cache
+    # feature). tokens_saved is 0 for misses and non-cache-aware rows.
+    cache_status = Column(String(16), nullable=True)
+    tokens_saved = Column(Integer, default=0)
 
 
 class UsageCache(Base):
@@ -415,7 +430,9 @@ class MemoryEmbedding(Base):
     metadata_ = Column("metadata", JSON, default=dict)
     # Memory access-control scope: 'user' (personal, default) | 'org' (shared).
     # Spec §9.7 field names; v0.4 adds more scope values without renaming.
-    scope_type = Column(String(20), nullable=False, default="user", server_default="user", index=True)
+    scope_type = Column(
+        String(20), nullable=False, default="user", server_default="user", index=True
+    )
     author_user_id = Column(Integer, nullable=False, index=True)
 
 
@@ -473,7 +490,9 @@ class RoutingMatrixEntry(Base):
     # credential directly. When None, pool selection applies normally.
     credential_label = Column(String(255), nullable=True)
 
-    __table_args__ = (UniqueConstraint("tool_type", "complexity", "region", name="uq_routing_matrix_lookup"),)
+    __table_args__ = (
+        UniqueConstraint("tool_type", "complexity", "region", name="uq_routing_matrix_lookup"),
+    )
 
 
 class AILBUsageRecord(Base):
@@ -505,7 +524,9 @@ class ContentFilterRule(Base):
     action = Column(String(10), nullable=False, default="log")  # 'block', 'redact', 'log'
     redact_with = Column(String(100), nullable=True, default="[REDACTED]")
     enabled = Column(Boolean, nullable=False, default=True)
-    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -522,9 +543,15 @@ class ContentFilterAuditLog(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
     phase = Column(String(10), nullable=False)  # 'input', 'output'
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
-    api_key_id = Column(Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    api_key_id = Column(
+        Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     ip_address = Column(String(45), nullable=True)
     action_taken = Column(String(10), nullable=False)  # 'allow', 'block', 'redact', 'log'
     violations_json = Column(JSON, nullable=True)
@@ -539,6 +566,58 @@ class ContentFilterAuditLog(Base):
         Index("idx_cfal_org", "organization_id", "timestamp"),
         Index("idx_cfal_action", "action_taken"),
     )
+
+
+class CacheConfig(Base):
+    """Response-cache configuration, resolved at key > org > global precedence.
+
+    One global default row is seeded by migration 009a (scope_type='global',
+    scope_ref=NULL); org- and key-scoped rows override it. See
+    shared.cache.config.CacheConfigResolver for the resolution logic and
+    services.management.app.api.v1.cache_configs for the CRUD surface (§6.4).
+    """
+
+    __tablename__ = "cache_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope_type = Column(String(20), nullable=False)  # 'global' | 'org' | 'key'
+    scope_ref = Column(String(255), nullable=True)  # org_id/vkey_id as string; NULL for global
+    exact_enabled = Column(Boolean, nullable=False, default=True)
+    semantic_enabled = Column(Boolean, nullable=False, default=False)
+    semantic_threshold = Column(Float, nullable=False, default=0.95)
+    ttl_seconds = Column(Integer, nullable=False, default=86400)
+    max_entry_kb = Column(Integer, nullable=False, default=256)
+    anthropic_cache_control = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("scope_type", "scope_ref", name="uq_cache_configs_scope"),)
+
+
+class ResponseCacheEntry(Base):
+    """Restricted semantic response-cache row (spec §6.2).
+
+    prompt_embedding_json is the portable (SQLite-safe) JSON-serialized float
+    array, following the MemoryEmbedding pattern. init_schema() additionally
+    adds a native pgvector `prompt_embedding vector(768)` column + HNSW index
+    when running against PostgreSQL; migration 009a does the equivalent for
+    already-provisioned databases.
+    """
+
+    __tablename__ = "response_cache_entries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, nullable=False, index=True)
+    scope_key = Column(String(255), nullable=True)
+    model_class = Column(String(255), nullable=False)
+    prompt_embedding_json = Column(Text)  # JSON-serialized float array; SQLite-safe fallback
+    context_hash = Column(String(64), nullable=False)
+    response = Column(JSON, nullable=False)
+    hit_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (Index("idx_rce_org_model_expires", "org_id", "model_class", "expires_at"),)
 
 
 def init_schema(database_url: str):
@@ -575,8 +654,15 @@ def init_schema(database_url: str):
     if vector_available:
         with engine.connect() as conn:
             # Add vector columns if not present
-            conn.execute(text("ALTER TABLE memory_embeddings " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
-            conn.execute(text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
+            conn.execute(
+                text(
+                    "ALTER TABLE memory_embeddings "
+                    "ADD COLUMN IF NOT EXISTS embedding vector(768)"
+                )
+            )
+            conn.execute(
+                text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)")
+            )
             # IVFFlat indexes for cosine similarity search
             conn.execute(
                 text(
@@ -590,6 +676,20 @@ def init_schema(database_url: str):
                     "CREATE INDEX IF NOT EXISTS rag_documents_emb_idx "
                     "ON rag_documents USING ivfflat (embedding vector_cosine_ops) "
                     "WITH (lists = 100)"
+                )
+            )
+            # Response cache: native vector column + HNSW (spec §6.2). HNSW
+            # (not IVFFlat) matches migration 009a's index type exactly.
+            conn.execute(
+                text(
+                    "ALTER TABLE response_cache_entries "
+                    "ADD COLUMN IF NOT EXISTS prompt_embedding vector(768)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_rce_prompt_embedding_hnsw "
+                    "ON response_cache_entries USING hnsw (prompt_embedding vector_cosine_ops)"
                 )
             )
             conn.commit()

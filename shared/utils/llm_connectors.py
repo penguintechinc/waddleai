@@ -1,6 +1,7 @@
-"""
-LLM Provider Connection Management
-Handles connections to OpenAI, Anthropic, Gemini, Ollama, and llama.cpp (llama-server) providers
+"""LLM provider connection management.
+
+Handles connections to OpenAI, Anthropic, Gemini, Ollama, and llama.cpp
+(llama-server) providers.
 """
 
 import asyncio
@@ -8,9 +9,10 @@ import logging
 import random
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 import aiohttp
 import anthropic
@@ -41,7 +43,7 @@ class ProviderError(Exception):
         provider: str,
         model: str,
         message: str,
-        status_code: Optional[int] = None,
+        status_code: int | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -51,21 +53,25 @@ class ProviderError(Exception):
 
 class ProviderTimeoutError(ProviderError):
     """Timeout error (retryable)."""
+
     pass
 
 
 class ProviderRateLimitError(ProviderError):
     """Rate limit error HTTP 429 (retryable)."""
+
     pass
 
 
 class ProviderServerError(ProviderError):
     """Server error HTTP 5xx or Anthropic 529 (retryable)."""
+
     pass
 
 
 class ProviderClientError(ProviderError):
     """Client error HTTP 4xx, auth, schema (not retryable, not breaker-counted)."""
+
     pass
 
 
@@ -77,7 +83,7 @@ class AttemptRecord:
     provider: str
     model: str
     error_type: str
-    status_code: Optional[int] = None
+    status_code: int | None = None
 
 
 @dataclass(slots=True)
@@ -100,8 +106,9 @@ class StreamChunk:
         usage: Optional token usage dict (populated on final chunk where provider reports it)
         done: True for final chunk, False for incremental chunks
     """
+
     delta: str
-    usage: Optional[Dict[str, Any]] = None
+    usage: dict[str, Any] | None = None
     done: bool = False
 
 
@@ -112,9 +119,9 @@ async def _with_retries(
     max_attempts: int = 3,
     base_delay_ms: float = 100.0,
     max_delay_ms: float = 10000.0,
-    sleep_fn: Optional[Callable[[float], Any]] = None,
-    clock_fn: Optional[Callable[[], datetime]] = None,
-) -> Tuple[Any, List[AttemptRecord]]:
+    sleep_fn: Callable[[float], Any] | None = None,
+    clock_fn: Callable[[], datetime] | None = None,
+) -> tuple[Any, list[AttemptRecord]]:
     """Retry helper with jittered exponential backoff.
 
     Args:
@@ -138,7 +145,7 @@ async def _with_retries(
     if clock_fn is None:
         clock_fn = datetime.utcnow
 
-    attempts: List[AttemptRecord] = []
+    attempts: list[AttemptRecord] = []
 
     for attempt_num in range(1, max_attempts + 1):
         try:
@@ -146,7 +153,9 @@ async def _with_retries(
             return result, attempts
         except ProviderError as e:
             # Only retry on retryable errors (timeout, rate limit, server)
-            if not isinstance(e, (ProviderTimeoutError, ProviderRateLimitError, ProviderServerError)):
+            if not isinstance(
+                e, (ProviderTimeoutError, ProviderRateLimitError, ProviderServerError)
+            ):
                 # Non-retryable (client error) — raise immediately
                 attempts.append(
                     AttemptRecord(
@@ -251,7 +260,7 @@ class WeightedSelector(CredentialSelector):
 class LLMConnector(ABC):
     """Abstract base class for LLM provider connections"""
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         self.name = name
         self.config = config
         self.enabled = config.get("enabled", True)
@@ -260,13 +269,15 @@ class LLMConnector(ABC):
         self.model_list = config.get("model_list", [])
 
     @abstractmethod
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         """Generate chat completion"""
         pass
 
     @abstractmethod
     async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
+        self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream chat completion, yielding chunks with delta text and usage on final chunk"""
         pass
@@ -277,12 +288,12 @@ class LLMConnector(ABC):
         pass
 
     @abstractmethod
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List available models"""
         pass
 
     @abstractmethod
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check provider health"""
         pass
 
@@ -293,7 +304,7 @@ class OpenAIConnector(LLMConnector):
     # Label reported in usage metadata; OpenAI-wire subclasses override it.
     provider_label: str = "openai"
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         self.client = openai.AsyncOpenAI(api_key=self.api_key, base_url=self.endpoint_url)
 
@@ -304,10 +315,14 @@ class OpenAIConnector(LLMConnector):
         }
         self.default_encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         """Generate OpenAI chat completion"""
         try:
-            response = await self.client.chat.completions.create(model=model, messages=messages, **kwargs)
+            response = await self.client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
 
             content = response.choices[0].message.content
             usage_info = {
@@ -318,6 +333,12 @@ class OpenAIConnector(LLMConnector):
                 "finish_reason": response.choices[0].finish_reason,
                 "provider": "openai",
             }
+
+            # OpenAI caches automatically upstream; surface it if reported
+            # (spec §6.3) -- additive, absent/malformed details -> 0.
+            details = getattr(response.usage, "prompt_tokens_details", None)
+            cached_tokens = getattr(details, "cached_tokens", 0) if details else 0
+            usage_info["cached_tokens"] = cached_tokens if isinstance(cached_tokens, int) else 0
 
             return content, usage_info
 
@@ -359,7 +380,7 @@ class OpenAIConnector(LLMConnector):
             ) from e
 
     async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
+        self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream OpenAI chat completion using native stream=True.
 
@@ -376,7 +397,7 @@ class OpenAIConnector(LLMConnector):
                 stream_options=stream_options,
                 **kwargs,
             )
-            usage: Optional[Dict[str, Any]] = None
+            usage: dict[str, Any] | None = None
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
@@ -438,7 +459,7 @@ class OpenAIConnector(LLMConnector):
             # Fallback: rough estimation
             return len(text) // 4
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List OpenAI models"""
         try:
             models_response = await self.client.models.list()
@@ -474,7 +495,7 @@ class OpenAIConnector(LLMConnector):
         }
         return context_lengths.get(model, 4096)
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check OpenAI API health"""
         try:
             # Simple API call to check connectivity
@@ -505,17 +526,21 @@ class XAIConnector(OpenAIConnector):
 
     provider_label: str = "xai"
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         # Override the endpoint_url default if not explicitly set
         if not self.endpoint_url or self.endpoint_url == "https://api.openai.com/v1":
             self.endpoint_url = "https://api.x.ai/v1"
             self.client = openai.AsyncOpenAI(api_key=self.api_key, base_url=self.endpoint_url)
 
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         """Generate xAI chat completion"""
         try:
-            response = await self.client.chat.completions.create(model=model, messages=messages, **kwargs)
+            response = await self.client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
 
             content = response.choices[0].message.content
             usage_info = {
@@ -566,7 +591,7 @@ class XAIConnector(OpenAIConnector):
                 message=f"xAI completion failed: {str(e)[:100]}",
             ) from e
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List xAI models"""
         try:
             models_response = await self.client.models.list()
@@ -600,7 +625,7 @@ class XAIConnector(OpenAIConnector):
         }
         return context_lengths.get(model, 128000)
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check xAI API health"""
         try:
             # Simple API call to check connectivity
@@ -620,17 +645,37 @@ class XAIConnector(OpenAIConnector):
             }
 
 
+def _extract_anthropic_text(content: Any) -> str:
+    """Plain text from an Anthropic message `content` field (string or block array).
+
+    Used for the tiktoken fallback token estimate -- shared.cache.upstream's
+    cache_control injection turns a string message into a block array, so
+    this connector must handle both shapes.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
 class AnthropicConnector(LLMConnector):
     """Anthropic Claude API connector"""
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
 
         # Anthropic doesn't have tokenizers, so we estimate
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         """Generate Anthropic chat completion"""
         try:
             # Convert messages to Anthropic format
@@ -653,8 +698,13 @@ class AnthropicConnector(LLMConnector):
 
             content = response.content[0].text
 
-            # Estimate token usage (Anthropic doesn't provide exact counts)
-            input_text = system_message + " ".join([msg["content"] for msg in user_messages])
+            # Estimate token usage (fallback for when the API doesn't report
+            # real usage -- see below). Content may be a block array (e.g.
+            # shared.cache.upstream's cache_control injection converts a
+            # string message to [{"type": "text", ...}]), not just a string.
+            input_text = system_message + " ".join(
+                _extract_anthropic_text(msg["content"]) for msg in user_messages
+            )
             input_tokens = len(self.token_estimator.encode(input_text))
             output_tokens = len(self.token_estimator.encode(content))
 
@@ -666,6 +716,21 @@ class AnthropicConnector(LLMConnector):
                 "finish_reason": response.stop_reason,
                 "provider": "anthropic",
             }
+
+            # Real prompt-cache usage fields (spec §6.3), when the API reports
+            # them -- surfaced additively; existing keys above are unchanged
+            # so this is safe for callers that don't know about caching yet.
+            response_usage = getattr(response, "usage", None)
+            cache_creation = (
+                getattr(response_usage, "cache_creation_input_tokens", 0) if response_usage else 0
+            )
+            cache_read = (
+                getattr(response_usage, "cache_read_input_tokens", 0) if response_usage else 0
+            )
+            usage_info["cache_creation_input_tokens"] = (
+                cache_creation if isinstance(cache_creation, int) else 0
+            )
+            usage_info["cache_read_input_tokens"] = cache_read if isinstance(cache_read, int) else 0
 
             return content, usage_info
 
@@ -714,7 +779,7 @@ class AnthropicConnector(LLMConnector):
         except Exception:
             return len(text) // 4
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List Anthropic models"""
         # Anthropic doesn't have a models endpoint, return configured models
         models = []
@@ -742,7 +807,7 @@ class AnthropicConnector(LLMConnector):
         return context_lengths.get(model, 100000)
 
     async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
+        self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream Anthropic chat completion using messages.stream() API"""
         try:
@@ -808,7 +873,7 @@ class AnthropicConnector(LLMConnector):
                 message=f"Anthropic stream failed: {str(e)[:100]}",
             ) from e
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check Anthropic API health"""
         try:
             # Simple test message
@@ -835,15 +900,15 @@ class AnthropicConnector(LLMConnector):
 class GeminiConnector(LLMConnector):
     """Google Gemini API connector using the google-genai SDK."""
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         self.client = genai.Client(api_key=self.api_key)
         # Gemini doesn't have tokenizers, so we estimate using tiktoken
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
     async def chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
-    ) -> Tuple[str, Dict[str, Any]]:
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         """Generate Gemini chat completion.
 
         Converts OpenAI/Anthropic-style messages to Gemini format,
@@ -860,13 +925,23 @@ class GeminiConnector(LLMConnector):
                 else:
                     # Gemini uses "user" and "model" (not "assistant")
                     gemini_role = "user" if msg["role"] == "user" else "model"
-                    gemini_messages.append({"role": gemini_role, "parts": [{"text": msg["content"]}]})
+                    gemini_messages.append(
+                        {"role": gemini_role, "parts": [{"text": msg["content"]}]}
+                    )
 
-            # Prepare generation config
-            generation_config = genai.types.GenerateContentConfig(
-                max_output_tokens=kwargs.get("max_tokens", 1024),
-                temperature=kwargs.get("temperature", 0.7),
-            )
+            # Prepare generation config. cached_content (spec §6.3) is an
+            # optional CachedContent resource name from
+            # shared.cache.upstream.GeminiCachedContentManager -- only set
+            # when a prior request already created/reused a cache for this
+            # prefix, so ordinary (uncached) calls are unaffected.
+            config_kwargs: dict[str, Any] = {
+                "max_output_tokens": kwargs.get("max_tokens", 1024),
+                "temperature": kwargs.get("temperature", 0.7),
+            }
+            cached_content = kwargs.get("cached_content")
+            if cached_content:
+                config_kwargs["cached_content"] = cached_content
+            generation_config = genai.types.GenerateContentConfig(**config_kwargs)
 
             # Call Gemini API
             response = await self.client.aio.models.generate_content(
@@ -888,9 +963,20 @@ class GeminiConnector(LLMConnector):
                 "output_tokens": output_tokens,
                 "total_tokens": input_tokens + output_tokens,
                 "model": model,
-                "finish_reason": response.candidates[0].finish_reason.name if response.candidates else "unknown",
+                "finish_reason": response.candidates[0].finish_reason.name
+                if response.candidates
+                else "unknown",
                 "provider": "gemini",
             }
+
+            # Gemini CachedContent usage (spec §6.3), when reported.
+            usage_metadata = getattr(response, "usage_metadata", None)
+            cached_count = (
+                getattr(usage_metadata, "cached_content_token_count", 0) if usage_metadata else 0
+            )
+            usage_info["cached_content_token_count"] = (
+                cached_count if isinstance(cached_count, int) else 0
+            )
 
             return content, usage_info
 
@@ -935,7 +1021,7 @@ class GeminiConnector(LLMConnector):
             # Fallback to tiktoken estimation if API call fails
             return len(self.token_estimator.encode(text))
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List Gemini models using the native API, filtered by configured model_list.
 
         Queries the Gemini API for available base models and returns only
@@ -951,7 +1037,7 @@ class GeminiConnector(LLMConnector):
             # Collect all pages
             async for model in response:
                 # Extract model name (e.g., "gemini-2.0-flash" from "publishers/google/models/gemini-2.0-flash")
-                model_id = model.name.split("/")[-1] if hasattr(model, 'name') else model.id
+                model_id = model.name.split("/")[-1] if hasattr(model, "name") else model.id
                 # Only include models in our configured model_list
                 if model_id in self.model_list:
                     models.append(
@@ -970,7 +1056,7 @@ class GeminiConnector(LLMConnector):
             # Fallback to configured model_list if API fails
             return self._fallback_model_list()
 
-    def _fallback_model_list(self) -> List[Dict[str, Any]]:
+    def _fallback_model_list(self) -> list[dict[str, Any]]:
         """Fallback model list from configuration."""
         models = []
         for model_id in self.model_list:
@@ -998,7 +1084,7 @@ class GeminiConnector(LLMConnector):
         return context_lengths.get(model, 32768)
 
     async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
+        self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream Gemini chat completion using generate_content_stream"""
         try:
@@ -1010,13 +1096,23 @@ class GeminiConnector(LLMConnector):
                     system_message = msg["content"]
                 else:
                     gemini_role = "user" if msg["role"] == "user" else "model"
-                    gemini_messages.append({"role": gemini_role, "parts": [{"text": msg["content"]}]})
+                    gemini_messages.append(
+                        {"role": gemini_role, "parts": [{"text": msg["content"]}]}
+                    )
 
-            # Prepare generation config
-            generation_config = genai.types.GenerateContentConfig(
-                max_output_tokens=kwargs.get("max_tokens", 1024),
-                temperature=kwargs.get("temperature", 0.7),
-            )
+            # Prepare generation config. cached_content (spec §6.3) is an
+            # optional CachedContent resource name from
+            # shared.cache.upstream.GeminiCachedContentManager -- only set
+            # when a prior request already created/reused a cache for this
+            # prefix, so ordinary (uncached) calls are unaffected.
+            config_kwargs: dict[str, Any] = {
+                "max_output_tokens": kwargs.get("max_tokens", 1024),
+                "temperature": kwargs.get("temperature", 0.7),
+            }
+            cached_content = kwargs.get("cached_content")
+            if cached_content:
+                config_kwargs["cached_content"] = cached_content
+            generation_config = genai.types.GenerateContentConfig(**config_kwargs)
 
             # Stream Gemini content
             async for chunk in await self.client.aio.models.generate_content_stream(
@@ -1059,7 +1155,7 @@ class GeminiConnector(LLMConnector):
                     message=f"Gemini stream failed: {str(e)[:100]}",
                 ) from e
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check Gemini API health with a minimal test call."""
         try:
             # Minimal test message to verify connectivity
@@ -1086,25 +1182,32 @@ class GeminiConnector(LLMConnector):
 class OllamaConnector(LLMConnector):
     """Ollama local LLM connector"""
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         self.session = aiohttp.ClientSession()
 
         # Use OpenAI tokenizer for estimation
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         """Generate Ollama chat completion"""
         try:
             payload = {
                 "model": model,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": kwargs.get("temperature", 0.7), "num_predict": kwargs.get("max_tokens", -1)},
+                "options": {
+                    "temperature": kwargs.get("temperature", 0.7),
+                    "num_predict": kwargs.get("max_tokens", -1),
+                },
             }
 
             async with self.session.post(
-                f"{self.endpoint_url}/api/chat", json=payload, timeout=aiohttp.ClientTimeout(total=300)
+                f"{self.endpoint_url}/api/chat",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=300),
             ) as response:
                 if response.status != 200:
                     if response.status >= 500:
@@ -1143,7 +1246,7 @@ class OllamaConnector(LLMConnector):
 
         except ProviderError:
             raise
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             raise ProviderTimeoutError(
                 provider="ollama",
                 model=model,
@@ -1164,7 +1267,7 @@ class OllamaConnector(LLMConnector):
         except Exception:
             return len(text) // 4
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List Ollama models"""
         try:
             async with self.session.get(f"{self.endpoint_url}/api/tags") as response:
@@ -1194,7 +1297,7 @@ class OllamaConnector(LLMConnector):
             logger.error(f"Failed to list Ollama models: {e}")
             return []
 
-    async def pull_model(self, model: str) -> Dict[str, Any]:
+    async def pull_model(self, model: str) -> dict[str, Any]:
         """Pull a model in Ollama"""
         try:
             payload = {"name": model}
@@ -1215,12 +1318,14 @@ class OllamaConnector(LLMConnector):
             logger.error(f"Failed to pull Ollama model {model}: {e}")
             return {"status": "error", "error": str(e)}
 
-    async def remove_model(self, model: str) -> Dict[str, Any]:
+    async def remove_model(self, model: str) -> dict[str, Any]:
         """Remove a model from Ollama"""
         try:
             payload = {"name": model}
 
-            async with self.session.delete(f"{self.endpoint_url}/api/delete", json=payload) as response:
+            async with self.session.delete(
+                f"{self.endpoint_url}/api/delete", json=payload
+            ) as response:
                 if response.status != 200:
                     raise Exception(f"Failed to remove model: {response.status}")
 
@@ -1231,7 +1336,7 @@ class OllamaConnector(LLMConnector):
             return {"status": "error", "error": str(e)}
 
     async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
+        self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream Ollama chat completion using NDJSON streaming"""
         try:
@@ -1239,11 +1344,16 @@ class OllamaConnector(LLMConnector):
                 "model": model,
                 "messages": messages,
                 "stream": True,
-                "options": {"temperature": kwargs.get("temperature", 0.7), "num_predict": kwargs.get("max_tokens", -1)},
+                "options": {
+                    "temperature": kwargs.get("temperature", 0.7),
+                    "num_predict": kwargs.get("max_tokens", -1),
+                },
             }
 
             async with self.session.post(
-                f"{self.endpoint_url}/api/chat", json=payload, timeout=aiohttp.ClientTimeout(total=300)
+                f"{self.endpoint_url}/api/chat",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=300),
             ) as response:
                 if response.status != 200:
                     if response.status >= 500:
@@ -1267,6 +1377,7 @@ class OllamaConnector(LLMConnector):
                         continue
                     try:
                         import json
+
                         chunk = json.loads(line)
                         if "message" in chunk and "content" in chunk["message"]:
                             content = chunk["message"]["content"]
@@ -1280,7 +1391,7 @@ class OllamaConnector(LLMConnector):
 
         except ProviderError:
             raise
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             raise ProviderTimeoutError(
                 provider="ollama",
                 model=model,
@@ -1294,7 +1405,7 @@ class OllamaConnector(LLMConnector):
                 message=f"Ollama stream failed: {str(e)[:100]}",
             ) from e
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check Ollama health"""
         try:
             async with self.session.get(f"{self.endpoint_url}/api/tags") as response:
@@ -1329,10 +1440,10 @@ class LlamaCppConnector(LLMConnector):
     Uses /tokenize for exact token counts; falls back to tiktoken on failure.
     """
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         self.model_name: str = config.get("model_name", "")
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
         self._headers = {}
         if config.get("api_key"):
             self._headers["Authorization"] = f"Bearer {config['api_key']}"
@@ -1343,8 +1454,8 @@ class LlamaCppConnector(LLMConnector):
         return self._session
 
     async def chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
-    ) -> Tuple[str, Dict[str, Any]]:
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         session = self._get_session()
         payload = {"model": model or self.model_name, "messages": messages, **kwargs}
         try:
@@ -1382,7 +1493,7 @@ class LlamaCppConnector(LLMConnector):
                 return content, usage
         except ProviderError:
             raise
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             raise ProviderTimeoutError(
                 provider="llamacpp",
                 model=model,
@@ -1417,7 +1528,7 @@ class LlamaCppConnector(LLMConnector):
         except Exception:
             return len(text.split())
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         session = self._get_session()
         try:
             async with session.get(
@@ -1441,11 +1552,16 @@ class LlamaCppConnector(LLMConnector):
             return []
 
     async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
+        self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream llama-server chat completion using SSE format"""
         session = self._get_session()
-        payload = {"model": model or self.model_name, "messages": messages, "stream": True, **kwargs}
+        payload = {
+            "model": model or self.model_name,
+            "messages": messages,
+            "stream": True,
+            **kwargs,
+        }
         try:
             async with session.post(
                 f"{self.endpoint_url}/v1/chat/completions",
@@ -1480,6 +1596,7 @@ class LlamaCppConnector(LLMConnector):
                         break
                     try:
                         import json
+
                         chunk = json.loads(data_str)
                         if "choices" in chunk and chunk["choices"]:
                             delta = chunk["choices"][0].get("delta", {})
@@ -1493,7 +1610,7 @@ class LlamaCppConnector(LLMConnector):
 
         except ProviderError:
             raise
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             raise ProviderTimeoutError(
                 provider="llamacpp",
                 model=model,
@@ -1507,7 +1624,7 @@ class LlamaCppConnector(LLMConnector):
                 message=f"LlamaCpp stream failed: {str(e)[:100]}",
             ) from e
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         session = self._get_session()
         try:
             async with session.get(
@@ -1545,7 +1662,7 @@ class BedrockConnector(LLMConnector):
     blocking the event loop. Credentials are passed via the config.
     """
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         if boto3 is None:
             logger.warning("boto3 not installed; BedrockConnector will not function")
@@ -1558,12 +1675,16 @@ class BedrockConnector(LLMConnector):
     async def _get_client(self):
         """Get or create boto3 bedrock-runtime client (async-wrapped)."""
         if self.client is None and boto3 is not None:
+
             def _create_client():
                 return boto3.client("bedrock-runtime", region_name="us-east-1")
+
             self.client = await asyncio.to_thread(_create_client)
         return self.client
 
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
         """Generate Bedrock chat completion via converse API (async-wrapped)."""
         try:
             client = await self._get_client()
@@ -1577,10 +1698,12 @@ class BedrockConnector(LLMConnector):
                 if msg["role"] == "system":
                     system_message = msg["content"]
                 else:
-                    bedrock_messages.append({
-                        "role": msg["role"],
-                        "content": [{"text": msg["content"]}],
-                    })
+                    bedrock_messages.append(
+                        {
+                            "role": msg["role"],
+                            "content": [{"text": msg["content"]}],
+                        }
+                    )
 
             def _invoke():
                 return client.converse(
@@ -1616,6 +1739,7 @@ class BedrockConnector(LLMConnector):
             if boto3 is not None:
                 try:
                     from botocore.exceptions import ClientError
+
                     if isinstance(e, ClientError):
                         status_code = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
                         if status_code:
@@ -1667,7 +1791,7 @@ class BedrockConnector(LLMConnector):
             logger.warning(f"Token counting failed: {e}")
             return len(text) // 4
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List configured Bedrock models (no live API query)."""
         models = []
         for model_id in self.model_list:
@@ -1694,7 +1818,7 @@ class BedrockConnector(LLMConnector):
         return context_lengths.get(model, 100000)
 
     async def stream_chat_completion(
-        self, messages: List[Dict[str, str]], model: str, **kwargs
+        self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream Bedrock chat completion using invoke_model_with_response_stream (wrapped in thread).
 
@@ -1713,16 +1837,19 @@ class BedrockConnector(LLMConnector):
                 if msg["role"] == "system":
                     system_message = msg["content"]
                 else:
-                    bedrock_messages.append({
-                        "role": msg["role"],
-                        "content": [{"text": msg["content"]}],
-                    })
+                    bedrock_messages.append(
+                        {
+                            "role": msg["role"],
+                            "content": [{"text": msg["content"]}],
+                        }
+                    )
 
             # Queue to move chunks from blocking thread to async context
-            queue: asyncio.Queue[Optional[dict]] = asyncio.Queue()
+            queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
             async def _drain_stream():
                 """Drain the blocking event-stream iterator in a thread, feed to async queue"""
+
                 def _invoke_stream():
                     try:
                         response = client.invoke_model_with_response_stream(
@@ -1770,6 +1897,7 @@ class BedrockConnector(LLMConnector):
             if boto3 is not None:
                 try:
                     from botocore.exceptions import ClientError
+
                     if isinstance(e, ClientError):
                         status_code = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
                         if status_code:
@@ -1811,7 +1939,7 @@ class BedrockConnector(LLMConnector):
                 message=f"Bedrock stream failed: {str(e)[:100]}",
             ) from e
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check Bedrock API health (async-wrapped)."""
         try:
             client = await self._get_client()
@@ -1846,7 +1974,7 @@ class LLMConnectionManager:
         selector: CredentialSelector | None = None,
     ) -> None:
         self.db = db
-        self.connectors: Dict[str, LLMConnector] = {}
+        self.connectors: dict[str, LLMConnector] = {}
         self._selector: CredentialSelector = selector or RoundRobinSelector()
         self._load_connectors()
 
@@ -1940,7 +2068,9 @@ class LLMConnectionManager:
             return self._selector.select(pool).api_key
 
         except Exception as e:
-            logger.warning(f"Credential pool lookup failed for {link.name}, " f"falling back to api_key: {e}")
+            logger.warning(
+                f"Credential pool lookup failed for {link.name}, " f"falling back to api_key: {e}"
+            )
             return decrypt_credential(link.api_key or "")
 
     def reload_connectors(self):
@@ -1948,22 +2078,24 @@ class LLMConnectionManager:
         self.connectors.clear()
         self._load_connectors()
 
-    def get_connector(self, name: str) -> Optional[LLMConnector]:
+    def get_connector(self, name: str) -> LLMConnector | None:
         """Get connector by name"""
         return self.connectors.get(name)
 
-    def get_connector_for_model(self, model: str) -> Optional[LLMConnector]:
+    def get_connector_for_model(self, model: str) -> LLMConnector | None:
         """Get connector that supports the specified model"""
         for connector in self.connectors.values():
             if model in connector.model_list or not connector.model_list:
                 return connector
         return None
 
-    def get_connectors_by_provider(self, provider: str) -> List[LLMConnector]:
+    def get_connectors_by_provider(self, provider: str) -> list[LLMConnector]:
         """Get all connectors for a provider"""
-        return [conn for conn in self.connectors.values() if conn.config.get("provider") == provider]
+        return [
+            conn for conn in self.connectors.values() if conn.config.get("provider") == provider
+        ]
 
-    async def list_all_models(self) -> List[Dict[str, Any]]:
+    async def list_all_models(self) -> list[dict[str, Any]]:
         """List models from all connectors"""
         all_models = []
 
@@ -1976,7 +2108,7 @@ class LLMConnectionManager:
 
         return all_models
 
-    async def health_check_all(self) -> Dict[str, Any]:
+    async def health_check_all(self) -> dict[str, Any]:
         """Check health of all connectors"""
         health_results = {}
 

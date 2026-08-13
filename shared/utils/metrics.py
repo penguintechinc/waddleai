@@ -1,11 +1,10 @@
-"""
-Prometheus metrics collection for WaddleAI
-Provides comprehensive metrics for proxy and management servers
+"""Prometheus metrics collection for WaddleAI.
+
+Provides comprehensive metrics for proxy and management servers.
 """
 
 import logging
 import time
-from typing import Dict, Optional
 
 from prometheus_client import Counter, Gauge, Histogram, Info, generate_latest
 
@@ -20,43 +19,61 @@ class WaddleAIMetrics:
 
         # Request metrics
         self.requests_total = Counter(
-            "waddleai_requests_total", "Total number of requests", ["service", "endpoint", "method", "status_code"]
+            "waddleai_requests_total",
+            "Total number of requests",
+            ["service", "endpoint", "method", "status_code"],
         )
 
         self.request_duration = Histogram(
-            "waddleai_request_duration_seconds", "Request duration in seconds", ["service", "endpoint", "method"]
+            "waddleai_request_duration_seconds",
+            "Request duration in seconds",
+            ["service", "endpoint", "method"],
         )
 
         # LLM-specific metrics
         self.llm_requests_total = Counter(
-            "waddleai_llm_requests_total", "Total LLM requests by provider and model", ["provider", "model", "status"]
+            "waddleai_llm_requests_total",
+            "Total LLM requests by provider and model",
+            ["provider", "model", "status"],
         )
 
         self.llm_tokens_total = Counter(
-            "waddleai_llm_tokens_total", "Total LLM tokens processed", ["provider", "model", "token_type"]
+            "waddleai_llm_tokens_total",
+            "Total LLM tokens processed",
+            ["provider", "model", "token_type"],
         )
 
         self.waddleai_tokens_total = Counter(
-            "waddleai_normalized_tokens_total", "Total WaddleAI normalized tokens", ["organization", "user", "provider"]
+            "waddleai_normalized_tokens_total",
+            "Total WaddleAI normalized tokens",
+            ["organization", "user", "provider"],
         )
 
         # Security metrics
         self.security_events_total = Counter(
-            "waddleai_security_events_total", "Total security events detected", ["event_type", "severity", "action"]
+            "waddleai_security_events_total",
+            "Total security events detected",
+            ["event_type", "severity", "action"],
         )
 
         # Database metrics
         self.database_operations_total = Counter(
-            "waddleai_database_operations_total", "Total database operations", ["operation", "table", "status"]
+            "waddleai_database_operations_total",
+            "Total database operations",
+            ["operation", "table", "status"],
         )
 
         self.database_operation_duration = Histogram(
-            "waddleai_database_operation_duration_seconds", "Database operation duration", ["operation", "table"]
+            "waddleai_database_operation_duration_seconds",
+            "Database operation duration",
+            ["operation", "table"],
         )
 
         # Connection pool metrics
         self.active_connections = Gauge(
-            "waddleai_active_connections", "Number of active connections", ["service", "connection_type"]
+            "waddleai_active_connections",
+            "Number of active connections",
+            ["service", "connection_type"],
         )
 
         # Authentication metrics
@@ -66,7 +83,9 @@ class WaddleAIMetrics:
 
         # Provider health metrics
         self.provider_health = Gauge(
-            "waddleai_provider_health", "Provider health status (1=healthy, 0=unhealthy)", ["provider", "endpoint"]
+            "waddleai_provider_health",
+            "Provider health status (1=healthy, 0=unhealthy)",
+            ["provider", "endpoint"],
         )
 
         # Token quota metrics
@@ -76,7 +95,20 @@ class WaddleAIMetrics:
 
         # Rate limiting metrics
         self.rate_limit_exceeded = Counter(
-            "waddleai_rate_limit_exceeded_total", "Rate limit exceeded events", ["endpoint", "limit_type"]
+            "waddleai_rate_limit_exceeded_total",
+            "Rate limit exceeded events",
+            ["endpoint", "limit_type"],
+        )
+
+        # Response cache metrics (spec §6.4)
+        self.cache_lookups_total = Counter(
+            "waddleai_cache_lookups_total", "Cache lookups by layer and result", ["layer", "result"]
+        )
+        self.cache_tokens_saved_total = Counter(
+            "waddleai_cache_tokens_saved_total", "Tokens saved by cache layer", ["layer"]
+        )
+        self.cache_entries_evicted_total = Counter(
+            "waddleai_cache_entries_evicted_total", "Cache entries evicted (LRU/quota)", ["layer"]
         )
 
         # System info
@@ -89,9 +121,13 @@ class WaddleAIMetrics:
             service=self.service_name, endpoint=endpoint, method=method, status_code=status_code
         ).inc()
 
-        self.request_duration.labels(service=self.service_name, endpoint=endpoint, method=method).observe(duration)
+        self.request_duration.labels(
+            service=self.service_name, endpoint=endpoint, method=method
+        ).observe(duration)
 
-    def record_llm_request(self, provider: str, model: str, status: str, token_usage: Dict[str, int]):
+    def record_llm_request(
+        self, provider: str, model: str, status: str, token_usage: dict[str, int]
+    ):
         """Record LLM request metrics"""
         self.llm_requests_total.labels(provider=provider, model=model, status=status).inc()
 
@@ -115,10 +151,12 @@ class WaddleAIMetrics:
 
     def record_security_event(self, event_type: str, severity: str, action: str):
         """Record security event"""
-        self.security_events_total.labels(event_type=event_type, severity=severity, action=action).inc()
+        self.security_events_total.labels(
+            event_type=event_type, severity=severity, action=action
+        ).inc()
 
     def record_database_operation(
-        self, operation: str, table: str, duration: Optional[float] = None, success: bool = True
+        self, operation: str, table: str, duration: float | None = None, success: bool = True
     ):
         """Record database operation"""
         status = "success" if success else "error"
@@ -126,11 +164,15 @@ class WaddleAIMetrics:
         self.database_operations_total.labels(operation=operation, table=table, status=status).inc()
 
         if duration is not None:
-            self.database_operation_duration.labels(operation=operation, table=table).observe(duration)
+            self.database_operation_duration.labels(operation=operation, table=table).observe(
+                duration
+            )
 
     def set_active_connections(self, connection_type: str, count: int):
         """Set active connection count"""
-        self.active_connections.labels(service=self.service_name, connection_type=connection_type).set(count)
+        self.active_connections.labels(
+            service=self.service_name, connection_type=connection_type
+        ).set(count)
 
     def record_auth_attempt(self, auth_type: str, success: bool):
         """Record authentication attempt"""
@@ -148,6 +190,19 @@ class WaddleAIMetrics:
     def record_rate_limit_exceeded(self, endpoint: str, limit_type: str):
         """Record rate limit exceeded event"""
         self.rate_limit_exceeded.labels(endpoint=endpoint, limit_type=limit_type).inc()
+
+    def record_cache_lookup(self, layer: str, result: str) -> None:
+        """Record a response-cache lookup outcome (spec §6.4). layer: exact|semantic; result: hit|miss."""
+        self.cache_lookups_total.labels(layer=layer, result=result).inc()
+
+    def record_cache_tokens_saved(self, layer: str, tokens: int) -> None:
+        """Record tokens saved by a cache hit on the given layer."""
+        if tokens > 0:
+            self.cache_tokens_saved_total.labels(layer=layer).inc(tokens)
+
+    def record_cache_eviction(self, layer: str) -> None:
+        """Record an LRU/quota eviction on the given cache layer."""
+        self.cache_entries_evicted_total.labels(layer=layer).inc()
 
     def get_metrics(self) -> str:
         """Get Prometheus metrics in text format"""
@@ -171,8 +226,8 @@ class MetricsMiddleware:
 
 
 # Global metrics instances
-proxy_metrics: Optional[WaddleAIMetrics] = None
-management_metrics: Optional[WaddleAIMetrics] = None
+proxy_metrics: WaddleAIMetrics | None = None
+management_metrics: WaddleAIMetrics | None = None
 
 
 def get_proxy_metrics() -> WaddleAIMetrics:
