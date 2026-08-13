@@ -75,6 +75,20 @@ spec:
             - name: OLLAMA_HOST
               value: "http://{{ include "waddleai.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"
             {{- end }}
+            {{- if .Values.cilium.enabled }}
+            - name: CILIUM_ENABLED
+              value: "true"
+            - name: CILIUM_RATELIMIT_ENABLED
+              value: {{ .Values.cilium.rateLimit.enabled | quote }}
+            - name: CILIUM_TOPOLOGY
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "waddleai.fullname" . }}-cilium-topology
+                  key: topology.json
+            {{- else }}
+            - name: CILIUM_ENABLED
+              value: "false"
+            {{- end }}
           {{- if .Values.management.livenessProbe.enabled }}
           livenessProbe:
             httpGet:

@@ -153,3 +153,26 @@ Image name for the llamacpp model-download init container
 {{- printf "%s:%s" .Values.llamacpp.downloaderImage.repository .Values.llamacpp.downloaderImage.tag }}
 {{- end -}}
 {{- end }}
+
+{{/*
+Cilium reconciler topology, JSON-encoded — single source of truth shared by
+the CILIUM_TOPOLOGY env var (consumed by services/management/app/services/
+cilium_policy.py) and the bootstrap CiliumNetworkPolicy template, so the
+Python renderer and the day-0 bootstrap policy can never drift apart.
+Shape must match services/management/app/services/cilium_policy.py::DEFAULT_TOPOLOGY.
+*/}}
+{{- define "waddleai.cilium.topology" -}}
+{{- $t := dict
+      "namespace" .Values.namespace
+      "gateway_name" .Values.cilium.topology.gatewayName
+      "gateway_namespace" .Values.cilium.topology.gatewayNamespace
+      "aiproxy_port" .Values.cilium.topology.aiproxyPort
+      "postgres_port" .Values.cilium.topology.postgresPort
+      "valkey_port" .Values.cilium.topology.valkeyPort
+      "fleet_ports" .Values.cilium.topology.fleetPorts
+      "fleet_component_key" .Values.cilium.topology.fleetComponentKey
+      "fleet_components" .Values.cilium.topology.fleetComponents
+      "selectors" .Values.cilium.topology.selectors
+-}}
+{{- $t | toJson }}
+{{- end }}

@@ -66,6 +66,9 @@ marshmallow>=3.20.0
 python-dotenv>=1.0.0
 structlog>=24.1.0
 
+# Kubernetes control-plane (Cilium reconciler) — pin matches proxy/requirements.in
+kubernetes==35.0.0
+
 # Schema migrations — Alembic is the sole schema authority for this service.
 # Every file under alembic/versions imports it, as do the migration round-trip
 # tests. It was previously undeclared and only present incidentally, so CI

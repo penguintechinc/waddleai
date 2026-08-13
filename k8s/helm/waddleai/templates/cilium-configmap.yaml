@@ -1,0 +1,17 @@
+{{- if .Values.cilium.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "waddleai.fullname" . }}-cilium-topology
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+data:
+  # Consumed by services/management/app/services/cilium_policy.py via the
+  # CILIUM_TOPOLOGY env var (see management-deployment.yaml). Also the source
+  # for the bootstrap CiliumNetworkPolicy template's selectors, so the
+  # runtime reconciler and the day-0 bootstrap policy can never drift apart.
+  topology.json: |
+    {{- include "waddleai.cilium.topology" . | nindent 4 }}
+{{- end }}
