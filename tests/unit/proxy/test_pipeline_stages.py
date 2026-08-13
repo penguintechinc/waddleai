@@ -11,7 +11,8 @@ Covers:
 """
 
 
-from unittest.mock import AsyncMock, Mock, patch
+import inspect
+from unittest.mock import AsyncMock, Mock, create_autospec, patch
 
 import pytest
 
@@ -24,7 +25,7 @@ from proxy.apps.proxy_server.pipeline import (
     SecurityOutStage,
     TokenBudgetStage,
 )
-from shared.security.content_filter import FilterResult, FilterViolation
+from shared.security.content_filter import ContentFilter, FilterResult, FilterViolation
 from shared.security.prompt_security import Action, Severity, ThreatDetection, ThreatType
 from shared.utils.llm_connectors import (
     ProviderClientError,
@@ -537,6 +538,168 @@ class TestSecurityOutStageImplementation:
 
         assert result.blocked is True
         assert result.status_code == 400
+
+
+@pytest.mark.asyncio
+class TestSecurityOutStageContentFilterContract:
+    """Regression tests for the SecurityOutStage/ContentFilter.filter_output signature drift bug.
+
+    See fix/output-filter-fails-open. The stage called
+    `filter_output(text=..., user_id=..., org_id=..., ip=None)`
+    but the real `ContentFilter.filter_output` took no `ip` kwarg. Every call
+    raised TypeError, which a bare `except Exception` ("fail open: don't block
+    the response on filter errors") swallowed identically to a genuine filter
+    timeout -- so the output PII filter never actually ran, for any response,
+    and the only trace was an error log line.
+
+    These tests use `create_autospec(ContentFilter, instance=True)` rather
+    than a bare `Mock()` specifically because a bare Mock accepts any kwargs
+    and would not have caught this bug (see the pre-existing tests above,
+    which all use `Mock()` and passed throughout the incident). An autospec'd
+    mock enforces the *real* method signature via `inspect.signature(...).bind()`,
+    just like the real object would.
+    """
+
+    async def test_filter_output_actually_invoked_and_redaction_applied(self):
+        """Old bug: filter_output never ran, so redaction never landed.
+
+        With the real call signature enforced (autospec), this only passes
+        if the stage calls filter_output with kwargs it actually accepts
+        AND applies the returned filtered_text to ctx.response_text.
+        """
+        content_filter = create_autospec(ContentFilter, instance=True)
+        content_filter.filter_output.return_value = FilterResult(
+            allowed=True,
+            action="redact",
+            violations=[
+                FilterViolation(
+                    rule_name="email",
+                    rule_type="builtin_pii",
+                    matched_text="test@example.com",
+                    action="redact",
+                    confidence=0.90,
+                )
+            ],
+            filtered_text="Contact: [REDACTED]",
+            auditor_used=False,
+        )
+
+        stage = SecurityOutStage(name="security_out", content_filter=content_filter, flag=None)
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, response_text="Contact: test@example.com")
+
+        result = await stage(ctx)
+
+        content_filter.filter_output.assert_awaited_once()
+        assert result.blocked is False
+        assert result.response_text == "Contact: [REDACTED]"
+        assert result.status_code == 200
+        assert result.block_reason is None
+
+    async def test_filter_output_denial_blocks_response(self):
+        """Old bug: a `allowed=False` verdict never reached ctx.blocked.
+
+        With the real signature enforced, this only passes if the stage's
+        call succeeds AND the denial is actually applied to ctx.
+        """
+        content_filter = create_autospec(ContentFilter, instance=True)
+        content_filter.filter_output.return_value = FilterResult(
+            allowed=False,
+            action="block",
+            violations=[
+                FilterViolation(
+                    rule_name="api_key_openai",
+                    rule_type="builtin_pii",
+                    matched_text="sk-...",
+                    action="block",
+                    confidence=0.99,
+                )
+            ],
+            filtered_text="",
+            auditor_used=False,
+        )
+
+        stage = SecurityOutStage(name="security_out", content_filter=content_filter, flag=None)
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, response_text="Your API key is sk-1234567890")
+
+        result = await stage(ctx)
+
+        content_filter.filter_output.assert_awaited_once()
+        assert result.blocked is True
+        assert result.status_code == 400
+        assert result.block_reason == "response_blocked_pii"
+
+    async def test_signature_mismatch_does_not_pass_content_through_unfiltered(self):
+        """A signature-mismatched filter must not silently pass content through.
+
+        Reproduces the exact bug: a filter object whose `filter_output` has
+        the old (pre-fix) signature -- no `ip` parameter -- so the stage's
+        real call raises TypeError, exactly as the real ContentFilter did
+        before shared/security/content_filter.py was fixed. The response
+        must not silently reach the caller unfiltered (the pre-fix
+        behavior); it must fail loudly/closed instead.
+        """
+
+        class OldSignatureFilter:
+            """Stand-in for the pre-fix ContentFilter.filter_output (no `ip`)."""
+
+            async def filter_output(
+                self,
+                text: str,
+                user_id: int | None = None,
+                org_id: int | None = None,
+            ) -> FilterResult:
+                return FilterResult(
+                    allowed=True,
+                    action="allow",
+                    violations=[],
+                    filtered_text="SHOULD NOT BE REACHED",
+                    auditor_used=False,
+                )
+
+        stage = SecurityOutStage(
+            name="security_out",
+            content_filter=OldSignatureFilter(),  # type: ignore[arg-type]
+            flag=None,
+        )
+        user = Mock(id=1, tenant_id="org1")
+        original_text = "Contact: test@example.com"
+        ctx = PipelineContext(user=user, body={}, response_text=original_text)
+
+        result = await stage(ctx)
+
+        # Must NOT silently pass the original, unfiltered content through
+        # as a 200 (the old fail-open bug). Must fail loudly/closed instead.
+        assert result.response_text == original_text
+        assert result.blocked is True
+        assert result.status_code == 500
+        assert result.block_reason == "output_filter_defect"
+
+
+def test_filter_output_signature_pinned_to_stage_call_site():
+    """Pins ContentFilter.filter_output's signature against the stage's call site.
+
+    If either side drifts again (a renamed/removed/added required
+    parameter), this fails immediately via inspect.signature(...).bind()
+    instead of silently disabling output filtering behind a fail-open
+    except block.
+
+    Not part of TestSecurityOutStageContentFilterContract (sync, not
+    async) -- that class carries a blanket @pytest.mark.asyncio for its
+    coroutine tests, which pytest-asyncio (mode=auto) warns about on sync
+    methods.
+    """
+    stage_call_kwargs = {
+        "text": "sample response text",
+        "user_id": 1,
+        "org_id": 2,
+        "ip": None,
+    }
+    sig = inspect.signature(ContentFilter.filter_output)
+    # bind() raises TypeError on any drift (missing/renamed/extra kwarg);
+    # `self` is unbound on the class-level signature.
+    sig.bind(Mock(), **stage_call_kwargs)
 
 
 @pytest.mark.asyncio

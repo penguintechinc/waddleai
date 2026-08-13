@@ -306,6 +306,7 @@ class ContentFilter:
         text: str,
         user_id: int | None = None,
         org_id: int | None = None,
+        ip: str | None = None,
     ) -> FilterResult:
         """
         Filter LLM response output before returning to user.
@@ -314,6 +315,8 @@ class ContentFilter:
             text: Output text to filter
             user_id: User ID for audit logging
             org_id: Organization ID for scoped rules
+            ip: IP address for audit logging (parity with filter_input;
+                recorded in content_filter_audit_log for both phases)
 
         Returns:
             FilterResult with filtering decision and details
@@ -323,7 +326,7 @@ class ContentFilter:
             phase="output",
             user_id=user_id,
             org_id=org_id,
-            ip=None,
+            ip=ip,
         )
 
     async def _filter(

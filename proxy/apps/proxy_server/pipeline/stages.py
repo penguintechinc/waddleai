@@ -557,34 +557,59 @@ class SecurityOutStage(Stage):
         user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
         # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
         org_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
+        ip_address = None  # Would come from request context
 
         try:
             filter_result = await self.content_filter.filter_output(
                 text=ctx.response_text,
                 user_id=user_id,
                 org_id=org_id,
-                ip=None,
+                ip=ip_address,
             )
-
-            if not filter_result.allowed:
-                ctx.blocked = True
-                ctx.status_code = 400
-                ctx.block_reason = "response_blocked_pii"
-                logger.warning("SecurityOutStage: response blocked due to PII for user %s", user_id)
-                return ctx
-
-            # Update response with redacted version
-            ctx.response_text = filter_result.filtered_text
-            logger.debug(
-                "SecurityOutStage: filtered output for user %s (violations=%d)",
+        except (TypeError, AttributeError) as e:
+            # Programming error at the call boundary (wrong kwargs, wrong
+            # attribute) -- NOT a transient failure. ContentFilter._filter()
+            # already fails open internally for genuine runtime/IO errors
+            # (network, DB, LLM auditor unreachable), so anything reaching
+            # here is a code defect that would otherwise silently disable
+            # output PII filtering for every response (see bug: a stale
+            # `ip=` kwarg made every call raise TypeError, and this branch
+            # used to swallow it identically to a filter timeout). Fail
+            # CLOSED and log loudly so this class of bug can never again
+            # be indistinguishable from an ordinary fail-open path.
+            logger.error(
+                "SecurityOutStage: filter_output call is broken (%s: %s) for user %s -- "
+                "this is a code defect, not a transient failure; blocking response.",
+                type(e).__name__,
+                e,
                 user_id,
-                len(filter_result.violations),
+                exc_info=True,
             )
-
+            ctx.blocked = True
+            ctx.status_code = 500
+            ctx.block_reason = "output_filter_defect"
+            return ctx
         except Exception as e:
             logger.error("SecurityOutStage: filter error for user %s: %s", user_id, e, exc_info=True)
-            # Fail open: don't block the response on filter errors
-            # (security through-put > absolute certainty)
+            # Fail open: don't block the response on genuine runtime/IO
+            # errors reaching this far (ContentFilter._filter() already
+            # fail-opens internally for the expected transient cases).
+            return ctx
+
+        if not filter_result.allowed:
+            ctx.blocked = True
+            ctx.status_code = 400
+            ctx.block_reason = "response_blocked_pii"
+            logger.warning("SecurityOutStage: response blocked due to PII for user %s", user_id)
+            return ctx
+
+        # Update response with redacted version
+        ctx.response_text = filter_result.filtered_text
+        logger.debug(
+            "SecurityOutStage: filtered output for user %s (violations=%d)",
+            user_id,
+            len(filter_result.violations),
+        )
 
         return ctx
 
