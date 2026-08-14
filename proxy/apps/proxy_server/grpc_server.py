@@ -22,7 +22,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import grpc
 import structlog
-from grpc_proto.marchproxy import waddleai_pb2, waddleai_pb2_grpc
+from grpc_proto.waddleai.v1 import proxy_pb2 as waddleai_pb2
+from grpc_proto.waddleai.v1 import proxy_pb2_grpc as waddleai_pb2_grpc
 
 from shared.agents import RoutingAgent, SecurityAgent, UsageTracker
 from shared.agents.usage_tracker import UsageReport as AgentUsageReport

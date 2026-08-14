@@ -63,7 +63,6 @@ management:
     DB_TYPE: postgres
     FLASK_ENV: production
     ENABLE_OLLAMA_MANAGEMENT: "true"
-    ENABLE_USAGE_WEBHOOKS: "true"
     ENABLE_GEMINI: "true"
     ENABLE_BEDROCK: "true"
     ENABLE_AZURE_OPENAI: "true"
@@ -157,7 +156,7 @@ proxy:
       # Default: empty list (all ingress denied until explicitly configured)
       # Example:
       #   - matchLabels:
-      #       app: marchproxy
+      #       app: waddleai-proxy
       allowedPodSelectors: []
 
 # WebUI Service

@@ -2,15 +2,16 @@
 WaddleAI Proxy Server
 OpenAI-compatible API proxy with routing, security, and token management
 
-Quart-based async HTTP server with gRPC sidecar for MarchProxy AILB.
+Quart-based async HTTP server with a gRPC sidecar (routing/security/memory
+evaluation) for tool callers.
 """
 
 import os
 import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-# grpc_server.py does `from grpc_proto.marchproxy import ...` (bare import, no
-# `apps.proxy_server.` prefix) -- that package only resolves when this
+# grpc_server.py does `from grpc_proto.waddleai.v1 import ...` (bare import,
+# no `apps.proxy_server.` prefix) -- that package only resolves when this
 # directory itself is on sys.path. Production's Docker WORKDIR happens to be
 # here; the contract-test harness launches with cwd=proxy (one level up), so
 # add it explicitly rather than depending on invocation-specific cwd.
@@ -290,7 +291,7 @@ class ProxyServer:
             logger.info("Skipping gRPC server startup (WADDLEAI_STUB_UPSTREAM=1)")
             self._seed_contract_test_data()
         else:
-            # Start gRPC server in a daemon thread for MarchProxy AILB
+            # Start gRPC server in a daemon thread (routing/security/memory RPCs)
             grpc_port = int(os.getenv("GRPC_PORT", "50051"))
             grpc_auth_token = os.getenv("PROXY_GRPC_AUTH_TOKEN")
             components = ServerComponents(

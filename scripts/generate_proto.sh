@@ -1,89 +1,82 @@
 #!/bin/bash
-# Generate Protocol Buffer files for MarchProxy AILB services
+# Generate Protocol Buffer files for the in-repo WaddleAI proto definitions.
 #
-# This script generates Python gRPC stubs from MarchProxy proto files
-# for both the management and proxy services.
+# Generates Python gRPC stubs from proto/waddleai/**/*.proto into the proxy
+# service's grpc_proto/waddleai/ package. Protos are authored in-repo under
+# proto/waddleai/ — no external proto vendor checkout or env var is needed.
+#
+# Bash 3.2 compatible (macOS default) — no declare -A, no mapfile.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-MARCHPROXY_PROTO_DIR="${MARCHPROXY_PROTO_DIR:-$HOME/code/marchproxy/proto}"
-MANAGEMENT_OUTPUT_DIR="$PROJECT_ROOT/services/management/app/grpc/proto"
+PROTO_ROOT="$PROJECT_ROOT/proto"
+WADDLEAI_PROTO_DIR="$PROTO_ROOT/waddleai"
 PROXY_OUTPUT_DIR="$PROJECT_ROOT/proxy/apps/proxy_server/grpc_proto"
+WADDLEAI_OUTPUT_DIR="$PROXY_OUTPUT_DIR/waddleai"
 
 echo "=== WaddleAI Proto Generation ==="
-echo "MarchProxy proto dir: $MARCHPROXY_PROTO_DIR"
-echo "Management output dir: $MANAGEMENT_OUTPUT_DIR"
-echo "Proxy output dir: $PROXY_OUTPUT_DIR"
+echo "Proto source dir: $WADDLEAI_PROTO_DIR"
+echo "Proxy output dir: $WADDLEAI_OUTPUT_DIR"
 
-# Check if MarchProxy proto directory exists
-if [ ! -d "$MARCHPROXY_PROTO_DIR" ]; then
-    echo "Error: MarchProxy proto directory not found at $MARCHPROXY_PROTO_DIR"
-    echo "Set MARCHPROXY_PROTO_DIR environment variable to the correct path"
+if [ ! -d "$WADDLEAI_PROTO_DIR" ]; then
+    echo "Error: proto source directory not found at $WADDLEAI_PROTO_DIR"
     exit 1
 fi
 
-# Define all output directories
-OUTPUT_DIRS=(
-    "$MANAGEMENT_OUTPUT_DIR"
-    "$PROXY_OUTPUT_DIR"
-)
+if [ -z "$(find "$WADDLEAI_PROTO_DIR" -name '*.proto' -print -quit)" ]; then
+    echo "Error: no .proto files found under $WADDLEAI_PROTO_DIR"
+    exit 1
+fi
 
-# Ensure output directories exist
-for out_dir in "${OUTPUT_DIRS[@]}"; do
-    mkdir -p "$out_dir/marchproxy"
-done
+mkdir -p "$PROXY_OUTPUT_DIR"
 
-# Generate Python gRPC stubs for each proto file into each output directory
-for proto_file in "$MARCHPROXY_PROTO_DIR"/marchproxy/*.proto; do
-    filename=$(basename "$proto_file")
-    echo "Generating stubs for $filename..."
+# Generate Python gRPC stubs for every proto under proto/waddleai/**/*.proto,
+# preserving the version subdirectory (waddleai/v1, waddleai/v2, ...) in the
+# generated output.
+while IFS= read -r proto_file; do
+    rel_path="${proto_file#"$PROTO_ROOT"/}"
+    echo "Generating stubs for $rel_path..."
+    python3 -m grpc_tools.protoc \
+        -I "$PROTO_ROOT" \
+        --python_out="$PROXY_OUTPUT_DIR" \
+        --grpc_python_out="$PROXY_OUTPUT_DIR" \
+        "$rel_path"
+done < <(find "$WADDLEAI_PROTO_DIR" -name '*.proto' | sort)
 
-    for out_dir in "${OUTPUT_DIRS[@]}"; do
-        python3 -m grpc_tools.protoc \
-            -I "$MARCHPROXY_PROTO_DIR" \
-            --python_out="$out_dir" \
-            --grpc_python_out="$out_dir" \
-            "marchproxy/$filename"
-    done
-done
-
-# Fix imports in all generated files across all output directories
+# Fix imports to be package-relative. grpc_proto/ is appended to sys.path as
+# a bare package root by proxy/apps/proxy_server/main.py, so generated
+# cross-file imports (e.g. `from waddleai.v1 import proxy_pb2`) must become
+# relative (`from . import proxy_pb2`) to resolve the same way the previously
+# vendored proto stubs did.
 echo "Fixing import paths..."
-for out_dir in "${OUTPUT_DIRS[@]}"; do
-    for py_file in "$out_dir"/marchproxy/*_pb2*.py; do
-        [ -f "$py_file" ] || continue
-        sed -i 's/from marchproxy import/from . import/g' "$py_file"
-    done
+find "$WADDLEAI_OUTPUT_DIR" -name '*_pb2*.py' -print0 | while IFS= read -r -d '' py_file; do
+    sed -i.bak -E 's/from waddleai\.v[0-9]+ import/from . import/g' "$py_file"
+    rm -f "$py_file.bak"
 done
 
-# Create __init__.py for marchproxy package in each output directory
-for out_dir in "${OUTPUT_DIRS[@]}"; do
-    # Ensure parent __init__.py exists
-    touch "$out_dir/__init__.py"
-
-    # Build __init__.py from generated pb2 modules (excluding grpc stubs for wildcard imports)
-    init_file="$out_dir/marchproxy/__init__.py"
-    cat > "$init_file" << 'HEADER'
-"""
-Generated Protocol Buffer stubs for MarchProxy
-"""
-
-HEADER
-    # Add wildcard imports for all pb2 and pb2_grpc modules found
-    for py_file in "$out_dir"/marchproxy/*_pb2.py "$out_dir"/marchproxy/*_pb2_grpc.py; do
+# Ensure every generated package directory has an __init__.py, wildcard
+# importing its own pb2/pb2_grpc modules for convenient access.
+find "$WADDLEAI_OUTPUT_DIR" -type d | sort | while IFS= read -r pkg_dir; do
+    init_file="$pkg_dir/__init__.py"
+    {
+        echo '"""'
+        echo "Generated Protocol Buffer stubs for WaddleAI (in-repo proto)."
+        echo '"""'
+        echo
+    } > "$init_file"
+    for py_file in "$pkg_dir"/*_pb2.py "$pkg_dir"/*_pb2_grpc.py; do
         [ -f "$py_file" ] || continue
         module=$(basename "$py_file" .py)
         echo "from .$module import *" >> "$init_file"
     done
 done
 
+touch "$PROXY_OUTPUT_DIR/__init__.py"
+
 echo ""
 echo "Done! Proto files generated."
 echo ""
-for out_dir in "${OUTPUT_DIRS[@]}"; do
-    echo "Generated files in $out_dir/marchproxy/:"
-    ls -la "$out_dir/marchproxy/"
-    echo ""
-done
+echo "Generated files under $WADDLEAI_OUTPUT_DIR:"
+find "$WADDLEAI_OUTPUT_DIR" -type f -name '*.py' | sort
