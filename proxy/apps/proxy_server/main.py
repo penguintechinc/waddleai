@@ -42,7 +42,9 @@ from proxy.apps.proxy_server.pipeline import (
     SecurityOutStage,
     TokenBudgetStage,
 )
+from shared.routing.classifier_connector import LLMConnectorClassifierClient
 from shared.routing.engine import RoutingEngine
+from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -297,7 +299,16 @@ class ProxyServer:
             grpc_port = int(os.getenv("GRPC_PORT", "50051"))
             grpc_auth_token = os.getenv("PROXY_GRPC_AUTH_TOKEN")
             components = ServerComponents(
-                routing_agent=getattr(self.request_router, "routing_agent", None),
+                # RoutingEngine-backed (§7.6) -- the retired RoutingAgent
+                # wiring here was always None in practice (LLMRequestRouter
+                # never set a routing_agent attribute), so EvaluateRoute
+                # unconditionally returned UNAVAILABLE; this repoints it at
+                # the real engine instead of leaving it permanently broken.
+                routing_agent=(
+                    RoutingEngineRouteEvaluator(self.routing_engine, self.db)
+                    if self.routing_engine is not None
+                    else None
+                ),
                 security_agent=getattr(self.security_scanner, "security_agent", None),
                 usage_tracker=getattr(self.token_manager, "usage_tracker", None),
                 memory_manager=self.memory_manager,
@@ -464,10 +475,15 @@ class ProxyServer:
 
         # RoutingEngine (§7): built once here, alongside the token limiter's
         # valkey client, so it shares the same cache/sticky-escalation store.
-        # classifier_client=None for now -- the stage-2 cascade classifier
-        # connector is a follow-up; heuristics + explicit signals still work,
-        # and determine_tool_type() degrades to a safe "general" fallback.
-        self.routing_engine = RoutingEngine(self.db, valkey=valkey, classifier_client=None)
+        # classifier_client wires the real stage-2 guard model (gemma4:e2b,
+        # §2.3) through the same LLMConnectionManager used for provider
+        # dispatch -- heuristics + explicit signals still resolve first
+        # (cascade is cheapest-first); a classifier call failure degrades to
+        # the safe "general" fallback rather than breaking the request.
+        classifier_client = LLMConnectorClassifierClient(self.llm_manager)
+        self.routing_engine = RoutingEngine(
+            self.db, valkey=valkey, classifier_client=classifier_client
+        )
 
         # Security and dispatch stages
         stages.extend([
@@ -1003,6 +1019,12 @@ async def chat_completions():
                     "completion_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
                     "waddleai_tokens": token_usage.waddleai_tokens,
+                    # §7.6 transparency: additive-only nested key (never
+                    # replaces the existing flat waddleai_tokens field above).
+                    # None when RoutingStage didn't redirect the model (flag
+                    # off, or no alias/escalation/capability-veto fired) --
+                    # always present so callers never have to guess.
+                    "waddleai": {"routed_from": ctx.routed_from},
                 },
             }
         )
@@ -1260,7 +1282,13 @@ async def claude_messages():
                 "model": model,
                 "stop_reason": finish_reason,
                 "stop_sequence": None,
-                "usage": {"input_tokens": usage_info.get("input_tokens", 0), "output_tokens": usage_info.get("output_tokens", 0)},
+                "usage": {
+                    "input_tokens": usage_info.get("input_tokens", 0),
+                    "output_tokens": usage_info.get("output_tokens", 0),
+                    # §7.6 transparency, additive-only -- see the matching
+                    # comment in chat_completions() above.
+                    "waddleai": {"routed_from": ctx.routed_from},
+                },
             }
         )
 

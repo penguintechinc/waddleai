@@ -227,15 +227,21 @@ make test
 
 ### 4. Populate Data for Feature Testing
 
-`make seed-mock-data` is currently a no-op placeholder in the Makefile. Two real seed scripts exist and take `DATABASE_URL` as an env var:
+`make seed-mock-data` is currently a no-op placeholder in the Makefile. One real seed script exists and takes `DATABASE_URL` as an env var:
 
 ```bash
 DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai \
-  python3 scripts/seed_routing_matrix.py
-
-DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai \
   python3 scripts/seed_security_rag.py
 ```
+
+Model-assignment seeding (formerly `scripts/seed_routing_matrix.py`, tied to
+the retired tool_type x complexity x region routing_matrix grid, §7.6) is now
+handled by migration 010's built-in internal-function rows plus the
+management API's `POST /api/v1/routing/assignments/seed` convenience
+endpoint (upserts a small default spec) or ad-hoc `POST
+/api/v1/routing/assignments` calls -- the smart-routing engine (spec §7)
+resolves complexity from the stage-2 classifier at request time rather than
+from a pre-seeded per-complexity row.
 
 When adding mock data for a new feature, follow this same pattern (a standalone, re-runnable `scripts/seed_*.py` script driven by `DATABASE_URL`) rather than introducing a new directory convention.
 

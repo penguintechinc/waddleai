@@ -1,0 +1,11 @@
+{
+  "body": {
+    "data": [],
+    "meta": {
+      "timestamp": "<VOLATILE>",
+      "total": 0
+    },
+    "status": "success"
+  },
+  "status": 200
+}

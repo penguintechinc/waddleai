@@ -263,8 +263,12 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.usage",
     "services.management.app.api.v1.quotas",
     "services.management.app.api.v1.webhooks",
-    "services.management.app.api.v1.routing_matrix",
+    "services.management.app.api.v1.routing_assignments",
     "services.management.app.api.v1.cilium",
+    "services.management.app.api.v1.routing_policies",
+    "services.management.app.api.v1.routing_rules",
+    "services.management.app.api.v1.model_aliases",
+    "services.management.app.api.v1.routing_decisions",
 ]
 
 
