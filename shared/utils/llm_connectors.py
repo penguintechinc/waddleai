@@ -186,7 +186,7 @@ async def _with_retries(
             # Calculate jittered backoff: base * 2^(attempt-1) + jitter
             delay_ms = base_delay_ms * (2 ** (attempt_num - 1))
             delay_ms = min(delay_ms, max_delay_ms)
-            jitter_ms = random.uniform(0, delay_ms * 0.1)  # 10% jitter
+            jitter_ms = random.uniform(0, delay_ms * 0.1)  # nosec B311 -- retry-backoff jitter timing, not security-sensitive
             total_delay_ms = delay_ms + jitter_ms
 
             await sleep_fn(total_delay_ms / 1000.0)
@@ -248,7 +248,7 @@ class WeightedSelector(CredentialSelector):
 
     def select(self, credentials: list[CredentialInfo]) -> CredentialInfo:
         total = sum(c.weight for c in credentials)
-        r = random.uniform(0, total)
+        r = random.uniform(0, total)  # nosec B311 -- picks which already-valid stored credential to use for load balancing; does not derive or generate the credential value itself
         cumulative = 0
         for cred in credentials:
             cumulative += cred.weight
