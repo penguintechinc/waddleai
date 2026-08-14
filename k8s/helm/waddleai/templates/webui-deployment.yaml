@@ -33,6 +33,8 @@ spec:
             runAsUser: 1000
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
               drop:
                 - ALL

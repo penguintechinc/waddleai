@@ -30,6 +30,21 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: valkey
+          # readOnlyRootFilesystem: true — valkey's default working
+          # directory (dir) is /data, already volume-backed below
+          # (valkey-data); /tmp is mounted for parity with the rest of this
+          # chart's containers even though the default config here doesn't
+          # require it.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
           image: {{ include "waddleai.valkey.image" . }}
           imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
           {{- if .Values.valkey.args }}
@@ -65,6 +80,8 @@ spec:
           volumeMounts:
             - name: valkey-data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: valkey-data
           {{- if .Values.valkey.persistence.enabled }}
@@ -73,6 +90,8 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

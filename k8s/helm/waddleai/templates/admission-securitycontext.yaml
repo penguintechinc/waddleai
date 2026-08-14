@@ -1,0 +1,70 @@
+{{/*
+ValidatingAdmissionPolicy — securityContext hardening on WaddleAI workloads
+(spec §12.2): non-root, read-only root filesystem, dropped capabilities, no
+privilege escalation, no hostPath volumes, no hostNetwork. Each CEL check is
+individually toggled (see values.yaml comment on why several default off
+today) so classes not yet compliant chart-wide can stay disabled without
+turning off the others.
+
+Guarded by BOTH the values toggle AND a live capability check
+(.Capabilities.APIVersions.Has, or admissionPolicies.forceRender for offline
+golden renders), mirroring cilium-network-policy.yaml's pattern, so clusters
+without the VAP feature-gate (<1.30, or the gate disabled) render every
+other template cleanly and simply skip this object.
+*/}}
+{{- if and .Values.admissionPolicies.enabled .Values.admissionPolicies.validatingAdmissionPolicy.enabled (or .Values.admissionPolicies.forceRender (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy")) -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "waddleai.fullname" . }}-securitycontext
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  failurePolicy: {{ .Values.admissionPolicies.failurePolicy }}
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    {{- if .Values.admissionPolicies.validatingAdmissionPolicy.enforceNonRoot }}
+    - expression: "(has(object.spec.securityContext) && object.spec.securityContext.runAsNonRoot == true) || object.spec.containers.all(c, has(c.securityContext) && c.securityContext.runAsNonRoot == true)"
+      message: "WaddleAI workloads must run as non-root (runAsNonRoot: true, pod- or container-level)"
+    {{- end }}
+    {{- if .Values.admissionPolicies.validatingAdmissionPolicy.enforceReadOnlyRootFs }}
+    - expression: "object.spec.containers.all(c, has(c.securityContext) && c.securityContext.readOnlyRootFilesystem == true)"
+      message: "WaddleAI containers must set readOnlyRootFilesystem: true"
+    {{- end }}
+    {{- if .Values.admissionPolicies.validatingAdmissionPolicy.enforceDropAllCaps }}
+    - expression: "object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities) && has(c.securityContext.capabilities.drop) && c.securityContext.capabilities.drop.exists(d, d == 'ALL'))"
+      message: "WaddleAI containers must drop ALL capabilities"
+    {{- end }}
+    {{- if .Values.admissionPolicies.validatingAdmissionPolicy.enforceNoPrivilegeEscalation }}
+    - expression: "object.spec.containers.all(c, has(c.securityContext) && c.securityContext.allowPrivilegeEscalation == false)"
+      message: "WaddleAI containers must set allowPrivilegeEscalation: false"
+    {{- end }}
+    - expression: "!has(object.spec.volumes) || object.spec.volumes.all(v, !has(v.hostPath))"
+      message: "WaddleAI workloads must not mount hostPath volumes"
+    - expression: "!has(object.spec.hostNetwork) || object.spec.hostNetwork == false"
+      message: "WaddleAI workloads must not use hostNetwork"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "waddleai.fullname" . }}-securitycontext-binding
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "waddleai.fullname" . }}-securitycontext
+  validationActions: {{ .Values.admissionPolicies.validationActions | toJson }}
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [{{ .Values.namespace | quote }}]
+    objectSelector:
+      matchLabels:
+        {{- include "waddleai.selectorLabels" . | nindent 8 }}
+{{- end }}

@@ -5,3 +5,10 @@ metadata:
   labels:
     {{- include "waddleai.labels" . | nindent 4 }}
     name: {{ .Values.namespace }}
+    {{- if .Values.podSecurityAdmission.enabled }}
+    # Pod Security Admission baseline (spec §12.2). See values.yaml /
+    # values-beta.yaml for why `enforce` differs from `restricted` today.
+    pod-security.kubernetes.io/enforce: {{ .Values.podSecurityAdmission.enforce }}
+    pod-security.kubernetes.io/audit: {{ .Values.podSecurityAdmission.audit }}
+    pod-security.kubernetes.io/warn: {{ .Values.podSecurityAdmission.warn }}
+    {{- end }}

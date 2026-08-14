@@ -132,3 +132,30 @@ cilium:
     enabled: true
   topology:
     gatewayNamespace: gateway
+
+# Tetragon + admission policies - Alpha
+# Dev-friendly: AIProxy/Management exec allowlists relaxed to observe (no
+# enforced kills while iterating locally) and admission failurePolicy
+# relaxed to Ignore. Local MicroK8s frequently lacks the Tetragon/VAP CRDs
+# entirely — the capability guard in each template already no-ops cleanly
+# there; these overrides just make the alpha experience non-disruptive on
+# clusters that DO have the CRDs.
+tetragon:
+  exec:
+    components:
+      proxy:
+        mode: observe
+      management:
+        mode: observe
+
+admissionPolicies:
+  failurePolicy: Ignore
+
+# Pod Security Admission - Alpha
+# Alpha never enables ollama (no hostPath volume) or the GPU-operator
+# subcharts (no node-feature-discovery hostPaths), and this chart's own
+# containers are now seccompProfile/drop-ALL-capabilities compliant (see
+# values.yaml comment) — `restricted` is fully reachable here. `audit`/
+# `warn` were already `restricted`; this raises `enforce` to match.
+podSecurityAdmission:
+  enforce: restricted

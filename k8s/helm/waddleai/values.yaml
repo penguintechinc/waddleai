@@ -376,6 +376,8 @@ securityContext:
   readOnlyRootFilesystem: false
   runAsNonRoot: true
   runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
 
 # Node selector
 nodeSelector: {}
@@ -659,3 +661,122 @@ intel-gpu-plugin:
   namespace: kube-system
   nodeSelector: {}
   sharedDevNum: 1
+
+# ---------------------------------------------------------------------------
+# Tetragon runtime-security TracingPolicies + Kubernetes admission policies
+# (platform spec §12.2). ON by default, each protection class independently
+# switchable via its own values toggle. Every CRD-emitting template below is
+# guarded by BOTH its values toggle AND a live capability check
+# (`.Capabilities.APIVersions.Has`), mirroring the cilium-reconciler branch's
+# pattern above (cilium-network-policy.yaml), so a cluster without
+# Tetragon/the VAP feature-gate still renders every other template cleanly
+# and simply skips these objects (§12.3) instead of failing `helm install`.
+# `forceRender: true` bypasses the live capability check — only meant for
+# offline `helm template` golden-file rendering (CI), never set in a real
+# values-*.yaml that gets `helm install`ed against a live cluster.
+tetragon:
+  enabled: true
+  forceRender: false
+  exec:
+    # ENFORCED allowlist of each targeted component's own runtime binaries —
+    # not observe-only (house security mandate: an allowlist that only logs
+    # is the failure mode this policy exists to prevent). One
+    # TracingPolicyNamespaced per component so the allowlist stays scoped to
+    # that pod's actual process inventory (a Python service's allowed
+    # binaries are not ollama's) rather than one policy loose enough to
+    # cover everyone and therefore covering no one. `mode: enforce` kills
+    # any exec outside `allowedExecs`; `mode: observe` logs only.
+    enabled: true
+    components:
+      # AIProxy — this repo's own image (proxy/Dockerfile). System-wide pip
+      # install puts console-script binaries under /usr/local/bin; full
+      # binary inventory known. Enforced by default — spec §12.2 names
+      # AIProxy explicitly as the primary exec-guard target.
+      proxy:
+        enabled: true
+        mode: enforce
+        allowedExecs:
+          - /usr/local/bin/python3
+          - /usr/local/bin/hypercorn
+      # Management — this repo's own image (services/management/Dockerfile),
+      # installed into a venv at /opt/venv.
+      management:
+        enabled: true
+        mode: enforce
+        allowedExecs:
+          - /opt/venv/bin/python3
+          - /opt/venv/bin/hypercorn
+      # Ollama — third-party vendor image (ollama/ollama). Binary path is
+      # believed stable (/bin/ollama) but not verified against a live
+      # cluster by this branch, and the model-pull initContainer execs
+      # /bin/sh (the pod selector matches the whole pod, not per-container).
+      # Default observe until confirmed in kind/beta; flip to enforce once
+      # validated.
+      ollama:
+        enabled: true
+        mode: observe
+        allowedExecs:
+          - /bin/ollama
+          - /bin/sh
+      # llama.cpp server — third-party vendor image; same caveat as ollama
+      # (curl-based model-download initContainer shares the pod).
+      llamacpp:
+        enabled: true
+        mode: observe
+        allowedExecs:
+          - /llama-server
+          - /bin/sh
+          - /usr/bin/curl
+  egress:
+    # Observe/flag AIProxy egress + unexpected file-write activity (spec
+    # §12.2). FQDN allow-listing to provider endpoints is the
+    # cilium-reconciler CNP's job (§12.1) — this policy observes and logs
+    # only; it does not duplicate that allow-list, and does not yet
+    # implement CIDR-scoped hard blocking (tracked follow-up, not silently
+    # dropped).
+    enabled: true
+    flagUnexpectedFileWrites: true
+
+# Kubernetes admission policies enforcing pod-security baseline on WaddleAI
+# workloads (spec §12.2): ValidatingAdmissionPolicy core, Kyverno optional
+# (additive-only per house rule — never the default posture). Each CEL check
+# individually toggled. `validationActions` defaults to `Warn`
+# (non-blocking) chart-wide: an implementation-time audit found
+# postgres/valkey containers ship with no container-level `securityContext`
+# at all today (only pod-level), and several containers still set
+# `readOnlyRootFilesystem: false` — defaulting straight to `Deny` would
+# reject those pods on every `helm install`. `Warn` surfaces every violation
+# (visible on `kubectl apply`/`helm install` output) with zero blast radius;
+# flip to `Deny` once the flagged workloads are hardened (tracked follow-up,
+# not silently dropped).
+admissionPolicies:
+  enabled: true
+  forceRender: false
+  failurePolicy: Fail
+  validationActions: [Warn]
+  validatingAdmissionPolicy:
+    enabled: true
+    enforceNonRoot: true              # already compliant: podSecurityContext.runAsNonRoot=true chart-wide
+    enforceReadOnlyRootFs: false      # webui/management/postgres/valkey/ollama set false today; enable once hardened
+    enforceDropAllCaps: true          # flags postgres/valkey (no container securityContext yet) under Warn
+    enforceNoPrivilegeEscalation: true
+    enforceDigestPinnedImages: false  # alpha/beta intentionally use mutable tags (house pinning rule); enable in a prod values file
+  kyverno:
+    enabled: false   # optional alternative engine; only renders if opted in AND its CRDs are present
+
+# Pod Security Admission namespace labels (spec §12.2 "restricted" baseline).
+# `audit`/`warn` default to `restricted` everywhere (non-blocking, surfaces
+# every violation via the API audit log / kubectl warnings). `enforce`
+# defaults to `baseline` here (this chart's own containers — proxy,
+# management, webui, postgres, valkey, plus the wait-for-postgres/valkey
+# initContainers — are now `seccompProfile: RuntimeDefault` +
+# drop-ALL-capabilities compliant, but `restricted` is only actually
+# reachable in environments free of third-party subchart / hostPath gaps).
+# values-alpha.yaml overrides to `restricted` (no ollama hostPath, no
+# gpu-operator/node-feature-discovery there). See values-beta.yaml for why
+# beta stays lower.
+podSecurityAdmission:
+  enabled: true
+  enforce: baseline
+  audit: restricted
+  warn: restricted

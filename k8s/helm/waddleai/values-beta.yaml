@@ -263,3 +263,21 @@ cilium:
   topology:
     gatewayName: shared
     gatewayNamespace: gateway
+
+# Tetragon + admission policies - Beta (spec §12.2)
+# AIProxy/Management exec allowlists already default to `enforce` in
+# values.yaml — nothing to override here. `admissionPolicies.validationActions`
+# also stays inherited at `Warn` rather than `Deny`: implementation-time
+# audit found postgres/valkey ship with no container-level `securityContext`
+# at all, so `Deny` would reject those pods on every beta install (tracked
+# follow-up, not silently dropped). Pod Security Admission `enforce` is
+# relaxed below for the same class of reason plus dal2-beta's ollama
+# DaemonSet using a hostPath volume for model storage (see
+# ollama.persistence.hostPath above) — hostPath volumes are forbidden
+# starting at the `baseline` PSA level, so the chart default would reject
+# every ollama pod on this cluster. `audit`/`warn` stay `restricted` so the
+# gap remains visible. Tracked follow-up: migrate beta ollama to the
+# PVC-backed path this chart already supports (ollama.persistence.enabled)
+# so `baseline` can be restored here.
+podSecurityAdmission:
+  enforce: privileged
