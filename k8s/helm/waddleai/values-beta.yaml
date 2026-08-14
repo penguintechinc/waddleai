@@ -174,10 +174,12 @@ affinity:
 #   kubectl label node svr03-dal2 gpu=true  (gets device plugin but NOT ollama)
 ollama:
   enabled: true
-  image:
-    repository: ollama/ollama
-    tag: "0.7.1"
-    pullPolicy: IfNotPresent
+  # No image override here (Task 14) — inherits the hardened
+  # ghcr.io/penguintechinc/waddleai/ollama:hardened default from values.yaml.
+  # This used to pin ollama/ollama:0.7.1 directly from upstream; leaving that
+  # override in place would have silently defeated the hardened-image
+  # migration for beta specifically, since a values file always wins over
+  # the chart default for any key it sets.
 
   nodeSelector:
     ollama: "true"
