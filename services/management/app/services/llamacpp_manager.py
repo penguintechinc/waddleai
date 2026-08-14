@@ -6,11 +6,26 @@ Manages llama-server instances in two modes:
 - remote:     Registers an existing llama-server endpoint after a health check
 """
 
+import asyncio
 import logging
 import re
+from dataclasses import dataclass
+from typing import Any
 
 import requests
 import yaml
+
+from shared.fleet.base import (
+    BackendType,
+    Endpoint,
+    FleetHealth,
+    InferenceFleetBackend,
+    ManagementScope,
+    ModelPlacement,
+    NodeInfo,
+    ProvisionSpec,
+)
+from shared.fleet.registry import register
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +62,50 @@ def get_k8s_core_client():
     return client.CoreV1Api()
 
 
-class LlamaCppManager:
-    """Manages llama-server deployment lifecycle."""
+@dataclass(slots=True)
+class LlamaCppDeploymentConfig:
+    """Configuration for creating a llama.cpp deployment record.
 
-    def __init__(self, db):
+    Mirrors the fields ``api/v1/llamacpp.py``'s create route already
+    inserts directly — factored out here so ``LlamaCppManager.provision``
+    (the ``InferenceFleetBackend`` entry point) has the same single
+    construction path instead of duplicating the insert.
+    """
+
+    name: str
+    model_name: str
+    deployment_type: str = "kubernetes"  # kubernetes | remote
+    model_url: str | None = None
+    model_filename: str | None = None
+    n_ctx: int = 4096
+    n_gpu_layers: int = -1
+    gpu_count: int = 1
+    endpoint_url: str | None = None
+    k8s_namespace: str = "waddleai"
+    node_selector: dict[str, str] | None = None
+    node_affinity: dict[str, Any] | None = None
+
+
+@register(BackendType.LLAMACPP)
+class LlamaCppManager(InferenceFleetBackend):
+    """Manages llama-server deployment lifecycle.
+
+    Implements ``InferenceFleetBackend`` (spec §10.1) by wrapping the
+    existing sync PyDAL/K8s/HTTP methods below in ``asyncio.to_thread`` —
+    a restructure, not a rewrite; every pre-existing method keeps its exact
+    signature and behavior for the legacy ``api/v1/llamacpp.py`` routes.
+    """
+
+    type = BackendType.LLAMACPP
+    management_scope = ManagementScope.FULL_LIFECYCLE
+
+    def __init__(self, db, *, config: dict[str, Any] | None = None, credentials: str | None = None):
         self.db = db
+        # registry.build_backend construction contract (§10.1 Task 3).
+        # llama.cpp has no cloud credentials of its own; `credentials` is
+        # accepted for interface uniformity and currently unused.
+        self.config = config or {}
+        self.credentials = credentials
 
     def _daemonset_name(self, deployment_name: str) -> str:
         """Generate a K8s-safe DaemonSet name from a deployment name."""
@@ -293,3 +347,203 @@ class LlamaCppManager:
         db = self.db
         db(db.llamacpp_deployments.id == deployment.id).update(status="running")
         logger.info(f"Registered remote llama.cpp endpoint: {url}")
+
+    # Deployment CRUD (factored out of api/v1/llamacpp.py's create/delete
+    # routes so InferenceFleetBackend.provision/deprovision have one path)
+
+    def create_deployment(self, config: LlamaCppDeploymentConfig) -> dict[str, Any]:
+        """Insert a new ``llamacpp_deployments`` row. Does not deploy it — see provision()."""
+        db = self.db
+        existing = db(db.llamacpp_deployments.name == config.name).select().first()
+        if existing:
+            return {"success": False, "error": "Deployment with this name already exists"}
+
+        deployment_id = db.llamacpp_deployments.insert(
+            name=config.name,
+            deployment_type=config.deployment_type,
+            status="pending",
+            model_name=config.model_name,
+            model_url=config.model_url,
+            model_filename=config.model_filename,
+            n_ctx=config.n_ctx,
+            n_gpu_layers=config.n_gpu_layers,
+            gpu_count=config.gpu_count,
+            endpoint_url=config.endpoint_url,
+            k8s_namespace=config.k8s_namespace,
+            k8s_daemonset_name=self._daemonset_name(config.name),
+            node_selector=config.node_selector,
+            node_affinity=config.node_affinity,
+        )
+        db.commit()
+        logger.info(f"Created llama.cpp deployment: {config.name}")
+        return {"success": True, "deployment_id": deployment_id, "name": config.name}
+
+    def delete_deployment(self, deployment_id: int, force: bool = False) -> dict[str, Any]:
+        """Delete a deployment, tearing down its DaemonSet first if running and forced."""
+        db = self.db
+        deployment = db(db.llamacpp_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return {"success": False, "error": "Deployment not found"}
+
+        if deployment.status == "running":
+            if not force:
+                return {
+                    "success": False,
+                    "error": f"Deployment '{deployment.name}' is running. Pass force=True.",
+                }
+            if deployment.deployment_type == "kubernetes":
+                try:
+                    self.remove_daemonset(deployment, force=True)
+                except Exception as exc:
+                    logger.warning(f"Error during forced removal of {deployment.name}: {exc}")
+
+        db(db.llamacpp_deployments.id == deployment_id).delete()
+        db.commit()
+        logger.info(f"Deleted llama.cpp deployment: {deployment.name}")
+        return {"success": True}
+
+    # InferenceFleetBackend interface (spec §10.1)
+    #
+    # Each llamacpp_deployments row is single-model (unlike Ollama's
+    # multi-model-per-node), so `loaded_models` is a 0-or-1-element list and
+    # `place_model`/`endpoints_for` match on `model_name` directly rather
+    # than a join table. VRAM fields default to 0 (unknown) — no metrics
+    # source is wired up yet, same caveat as the Ollama backend.
+
+    def _node_info_from_deployment(self, deployment) -> NodeInfo:
+        """Map a ``llamacpp_deployments`` row to a ``NodeInfo`` value object."""
+        kind = "k8s" if deployment.deployment_type == "kubernetes" else "external"
+        loaded_models = [deployment.model_name] if deployment.model_name else []
+        return NodeInfo(
+            node_id=deployment.name,
+            node_uid=getattr(deployment, "node_uid", None),
+            kind=kind,
+            loaded_models=loaded_models,
+            vram_total_mb=0,
+            vram_free_mb=0,
+            healthy=deployment.status == "running",
+        )
+
+    def _reachable(self, deployment) -> bool:
+        """Same reachability check as the ``/health`` route: GET {endpoint}/health."""
+        if not deployment.endpoint_url:
+            return False
+        try:
+            resp = requests.get(f"{deployment.endpoint_url}/health", timeout=10)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    async def provision(self, spec: ProvisionSpec) -> list[NodeInfo]:
+        """Create and deploy a llama.cpp instance for ``spec``.
+
+        ``spec.mode`` selects ``kubernetes`` (DaemonSet, the default) or
+        ``remote`` (register-and-health-check an existing endpoint).
+        """
+
+        def _provision() -> list[NodeInfo]:
+            deployment_type = spec.mode or "kubernetes"
+            model_name = spec.models[0] if spec.models else spec.constraints.get("model_name", "")
+            config = LlamaCppDeploymentConfig(
+                name=spec.name,
+                model_name=model_name,
+                deployment_type=deployment_type,
+                model_url=spec.constraints.get("model_url"),
+                model_filename=spec.constraints.get("model_filename"),
+                gpu_count=int(spec.constraints.get("gpu_count", 1)),
+                endpoint_url=spec.constraints.get("endpoint_url"),
+                k8s_namespace=spec.constraints.get("namespace", "waddleai"),
+            )
+            result = self.create_deployment(config)
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "llama.cpp provision failed")
+
+            db = self.db
+            deployment = db(db.llamacpp_deployments.id == result["deployment_id"]).select().first()
+            if deployment_type == "kubernetes":
+                self.deploy_daemonset(deployment)
+            else:
+                self.register_remote(deployment)
+            deployment = db(db.llamacpp_deployments.id == deployment.id).select().first()
+            return [self._node_info_from_deployment(deployment)]
+
+        return await asyncio.to_thread(_provision)
+
+    async def deprovision(self, node_id: str) -> None:
+        """Delete the deployment named ``node_id`` (force-removing its DaemonSet)."""
+
+        def _deprovision() -> None:
+            db = self.db
+            deployment = db(db.llamacpp_deployments.name == node_id).select().first()
+            if deployment is None:
+                return
+            self.delete_deployment(deployment.id, force=True)
+
+        await asyncio.to_thread(_deprovision)
+
+    async def health(self) -> FleetHealth:
+        """Aggregate the ``/health`` reachability check across every deployment."""
+
+        def _health() -> FleetHealth:
+            db = self.db
+            deployments = db(db.llamacpp_deployments.id > 0).select()
+            total = 0
+            healthy_count = 0
+            for deployment in deployments:
+                total += 1
+                if self._reachable(deployment):
+                    healthy_count += 1
+            return FleetHealth(
+                backend_id=self.fleet_backend_id,
+                healthy=(healthy_count == total),
+                node_count=total,
+                detail={"healthy_nodes": healthy_count},
+            )
+
+        return await asyncio.to_thread(_health)
+
+    async def list_nodes(self) -> list[NodeInfo]:
+        """Return every tracked llama.cpp deployment as a ``NodeInfo``."""
+
+        def _list() -> list[NodeInfo]:
+            db = self.db
+            deployments = db(db.llamacpp_deployments.id > 0).select()
+            return [self._node_info_from_deployment(d) for d in deployments]
+
+        return await asyncio.to_thread(_list)
+
+    async def place_model(self, model: str, constraints: dict[str, Any]) -> ModelPlacement:
+        """Find the (single-model) deployment already serving ``model``.
+
+        llama.cpp deployments are provisioned pre-bound to one model, so
+        placement here is lookup, not a live pull like Ollama's.
+        """
+
+        def _place() -> ModelPlacement:
+            db = self.db
+            deployment = db(db.llamacpp_deployments.model_name == model).select().first()
+            if deployment is None:
+                raise RuntimeError(f"No llama.cpp deployment serving model {model!r}")
+            status = "placed" if deployment.status == "running" else "pulling"
+            return ModelPlacement(model=model, node_id=deployment.name, status=status)
+
+        return await asyncio.to_thread(_place)
+
+    async def endpoints_for(self, model: str) -> list[Endpoint]:
+        """Return endpoints for deployments currently serving ``model``."""
+
+        def _endpoints() -> list[Endpoint]:
+            db = self.db
+            deployments = db(db.llamacpp_deployments.model_name == model).select()
+            return [
+                Endpoint(
+                    url=d.endpoint_url,
+                    node_id=d.name,
+                    loaded_models=[d.model_name],
+                    healthy=d.status == "running",
+                )
+                for d in deployments
+                if d.endpoint_url
+            ]
+
+        return await asyncio.to_thread(_endpoints)
