@@ -157,10 +157,20 @@ def test_register_decorator_populates_registry() -> None:
 
 
 def test_ensure_imported_swallows_missing_optional_module(caplog) -> None:
-    """A cloud backend module that fails to import degrades gracefully, not a crash."""
+    """A backend module that fails to import degrades gracefully, not a crash.
+
+    All five ``_MODULE_MAP`` entries now resolve to real modules, so this
+    points ``BackendType.BEDROCK`` at a deliberately nonexistent module for
+    the duration of the test rather than relying on one of the real modules
+    being absent.
+    """
     fleet_registry._REGISTRY.pop(BackendType.BEDROCK, None)
-    with caplog.at_level("WARNING"):
-        fleet_registry._ensure_imported(BackendType.BEDROCK)
-    # shared.fleet.bedrock does not exist yet on this branch — import fails,
-    # is logged, and does not raise.
-    assert BackendType.BEDROCK not in fleet_registry._REGISTRY
+    original_module = fleet_registry._MODULE_MAP[BackendType.BEDROCK]
+    fleet_registry._MODULE_MAP[BackendType.BEDROCK] = "shared.fleet._does_not_exist"
+    try:
+        with caplog.at_level("WARNING"):
+            fleet_registry._ensure_imported(BackendType.BEDROCK)
+        # Import fails, is logged, and does not raise.
+        assert BackendType.BEDROCK not in fleet_registry._REGISTRY
+    finally:
+        fleet_registry._MODULE_MAP[BackendType.BEDROCK] = original_module

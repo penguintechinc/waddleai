@@ -1,14 +1,16 @@
 """Cross-backend conformance suite for ``InferenceFleetBackend`` (spec §10.5).
 
 Parametrized over every backend that implements the interface: Ollama
-(Task 4) and llama.cpp (Task 5) so far. Runs against the in-memory
-``FakeDAL`` (see ``_fake_dal.py``) rather than a live kind cluster or
-Docker/K8s daemon — this is the unit-level conformance pass; the
-real-infra acceptance pass lives in
+(Task 4), llama.cpp (Task 5), EXO (Task 8), Vertex AI (Task 10), and
+Bedrock (Task 11) — all five spec-mandated backend types. Runs against the
+in-memory ``FakeDAL`` (see ``_fake_dal.py``) or mocked HTTP/boto3 transports
+rather than a live kind cluster, EXO cluster, or cloud account — this is the
+unit-level conformance pass; the real-infra acceptance pass lives in
 ``tests/integration/test_fleet_acceptance.py`` (§10.5, out of scope here).
 """
 
-from unittest.mock import MagicMock, patch
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -19,7 +21,10 @@ from services.management.app.services.ollama_manager import (
     OllamaDeploymentManager,
     PullStatus,
 )
-from shared.fleet.base import BackendType, ProvisionSpec
+from shared.fleet.base import BackendType, ManagementScope, ProvisionSpec
+from shared.fleet.bedrock import BedrockFleetBackend
+from shared.fleet.exo import ExoFleetBackend
+from shared.fleet.vertex_ai import VertexAIFleetBackend
 from tests.conformance._fake_dal import FakeDAL
 
 
@@ -35,11 +40,58 @@ def llamacpp_backend() -> LlamaCppManager:
     return LlamaCppManager(db=FakeDAL())
 
 
-# BACKENDS: (fixture_name, expected BackendType) — extended per backend as
-# each is wired into the interface.
+@pytest.fixture
+def exo_backend() -> ExoFleetBackend:
+    """A fresh ``ExoFleetBackend`` pointed at a fake cluster endpoint."""
+    return ExoFleetBackend(db=None, config={"endpoint_url": "http://exo-cluster.internal:8000"})
+
+
+@pytest.fixture
+def vertex_backend() -> VertexAIFleetBackend:
+    """A fresh ``VertexAIFleetBackend`` with a throwaway service-account key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_key_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    credentials = json.dumps(
+        {
+            "type": "service_account",
+            "project_id": "waddleai-test",
+            "private_key": private_key_pem,
+            "client_email": "fleet@waddleai-test.iam.gserviceaccount.com",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    )
+    return VertexAIFleetBackend(
+        db=None, config={"location": "us-central1"}, credentials=credentials
+    )
+
+
+@pytest.fixture
+def bedrock_backend() -> BedrockFleetBackend:
+    """A fresh ``BedrockFleetBackend`` with explicit fake AWS credentials."""
+    return BedrockFleetBackend(
+        db=None,
+        config={"region": "us-east-1"},
+        credentials=json.dumps(
+            {"aws_access_key_id": "AKIAFAKE", "aws_secret_access_key": "fake-secret"}
+        ),
+    )
+
+
+# BACKENDS: (fixture_name, expected BackendType) — all five spec-mandated
+# backend types (§10.1) are represented.
 BACKENDS = [
     ("ollama_backend", BackendType.OLLAMA),
     ("llamacpp_backend", BackendType.LLAMACPP),
+    ("exo_backend", BackendType.EXO),
+    ("vertex_backend", BackendType.VERTEX_AI),
+    ("bedrock_backend", BackendType.BEDROCK),
 ]
 
 
@@ -393,3 +445,184 @@ class TestLlamaCppConformance:
     async def test_deprovision_unknown_node_is_noop(self, llamacpp_backend) -> None:
         """Deprovisioning a node that doesn't exist is a no-op, not an error."""
         await llamacpp_backend.deprovision("does-not-exist")  # must not raise
+
+
+def _mock_aiohttp_session(status: int, payload: dict) -> MagicMock:
+    """Build a mocked ``aiohttp.ClientSession`` context manager returning ``payload``."""
+    response = AsyncMock()
+    response.status = status
+    response.json = AsyncMock(return_value=payload)
+    response.__aenter__ = AsyncMock(return_value=response)
+    response.__aexit__ = AsyncMock(return_value=False)
+
+    session = MagicMock()
+    session.get = MagicMock(return_value=response)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session
+
+
+class TestExoConformance:
+    """§10.5 conformance for the EXO backend (external-only, register_and_route)."""
+
+    async def test_provision_validates_and_returns_single_external_node(
+        self, exo_backend, monkeypatch
+    ) -> None:
+        """A reachable cluster validates and reports one ``kind="external"`` node."""
+        monkeypatch.setenv("WADDLEAI_FLAG_FLEET_V2", "1")
+        session = _mock_aiohttp_session(200, {"data": [{"id": "llama-3.1-70b"}]})
+        with patch("aiohttp.ClientSession", return_value=session):
+            nodes = await exo_backend.provision(
+                ProvisionSpec(name="exo-a", models=[], mode="external", constraints={})
+            )
+        assert len(nodes) == 1
+        assert nodes[0].kind == "external"
+        assert nodes[0].loaded_models == ["llama-3.1-70b"]
+
+    async def test_list_nodes_and_endpoints_for_and_place_model_round_trip(
+        self, exo_backend
+    ) -> None:
+        """list_nodes/endpoints_for/place_model agree on the same served-model set."""
+        session = _mock_aiohttp_session(200, {"data": [{"id": "m1"}]})
+        with patch("aiohttp.ClientSession", return_value=session):
+            nodes = await exo_backend.list_nodes()
+        assert nodes[0].loaded_models == ["m1"]
+
+        session = _mock_aiohttp_session(200, {"data": [{"id": "m1"}]})
+        with patch("aiohttp.ClientSession", return_value=session):
+            endpoints = await exo_backend.endpoints_for("m1")
+        assert len(endpoints) == 1
+
+        session = _mock_aiohttp_session(200, {"data": [{"id": "m1"}]})
+        with patch("aiohttp.ClientSession", return_value=session):
+            placement = await exo_backend.place_model("m1", {})
+        assert placement.status == "placed"
+
+    async def test_deprovision_unknown_node_is_noop(self, exo_backend) -> None:
+        """Deprovisioning is always a no-op — EXO clusters are never WaddleAI-lifecycled."""
+        await exo_backend.deprovision("does-not-exist")  # must not raise
+
+    async def test_health_reflects_endpoint_reachability(self, exo_backend) -> None:
+        """``health()`` is unhealthy when the cluster is unreachable, healthy otherwise."""
+        session = _mock_aiohttp_session(503, {})
+        with patch("aiohttp.ClientSession", return_value=session):
+            health = await exo_backend.health()
+        assert health.healthy is False
+        assert health.node_count == 1
+
+
+class TestVertexAiConformance:
+    """§10.5 conformance for the Vertex AI backend (Pro-gated, per-backend scope)."""
+
+    async def test_register_and_route_reflects_existing_endpoints(self, vertex_backend) -> None:
+        """``register_and_route`` (the default scope) reads existing endpoints via list_nodes."""
+        assert vertex_backend.management_scope == ManagementScope.REGISTER_AND_ROUTE
+        token_response = MagicMock(status_code=200)
+        token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+        list_response = MagicMock(status_code=200)
+        list_response.json.return_value = {
+            "endpoints": [
+                {"name": ".../endpoints/1", "deployedModels": [{"model": ".../models/m1"}]}
+            ]
+        }
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=token_response)
+        client.request = AsyncMock(return_value=list_response)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("httpx.AsyncClient", return_value=client):
+            nodes = await vertex_backend.list_nodes()
+        assert nodes[0].kind == "cloud"
+        assert nodes[0].loaded_models == ["m1"]
+
+    async def test_full_lifecycle_provision_calls_deploy_deprovision_calls_undeploy(
+        self, vertex_backend, monkeypatch
+    ) -> None:
+        """``full_lifecycle`` provision deploys a model; deprovision undeploys + deletes."""
+        monkeypatch.setenv("WADDLEAI_FLAG_FLEET_V2", "1")
+        vertex_backend.management_scope = ManagementScope.FULL_LIFECYCLE
+
+        token_response = MagicMock(status_code=200)
+        token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+        create_response = MagicMock(status_code=201)
+        create_response.json.return_value = {"name": ".../endpoints/789"}
+        deploy_response = MagicMock(status_code=200)
+        deploy_response.json.return_value = {}
+
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=token_response)
+        client.request = AsyncMock(side_effect=[create_response, deploy_response])
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("httpx.AsyncClient", return_value=client):
+            nodes = await vertex_backend.provision(
+                ProvisionSpec(name="ep-a", models=["m1"], mode="cloud", constraints={"model": "m1"})
+            )
+        assert nodes[0].kind == "cloud"
+
+    async def test_provision_refused_under_register_and_route(
+        self, vertex_backend, monkeypatch
+    ) -> None:
+        """The register_and_route/full_lifecycle boundary is enforced, not merely documented."""
+        monkeypatch.setenv("WADDLEAI_FLAG_FLEET_V2", "1")
+        with pytest.raises(PermissionError):
+            await vertex_backend.provision(
+                ProvisionSpec(name="ep-a", models=[], mode="cloud", constraints={"model": "m1"})
+            )
+
+
+class TestBedrockConformance:
+    """§10.5 conformance for the Bedrock backend (Pro-gated, boto3 off event loop)."""
+
+    async def test_register_and_route_reflects_existing_provisioned_throughput(
+        self, bedrock_backend
+    ) -> None:
+        """``register_and_route`` (the default scope) reads existing capacity via list_nodes."""
+        assert bedrock_backend.management_scope == ManagementScope.REGISTER_AND_ROUTE
+        mock_client = MagicMock()
+        mock_client.list_provisioned_model_throughputs.return_value = {
+            "provisionedModelSummaries": [
+                {"provisionedModelName": "node-a", "modelId": "m1", "status": "InService"}
+            ]
+        }
+        with patch("shared.fleet.bedrock.boto3") as mock_boto3:
+            mock_boto3.client.return_value = mock_client
+            nodes = await bedrock_backend.list_nodes()
+        assert nodes[0].kind == "cloud"
+        assert nodes[0].healthy is True
+
+    async def test_full_lifecycle_provision_and_deprovision_map_to_create_and_delete(
+        self, bedrock_backend, monkeypatch
+    ) -> None:
+        """``full_lifecycle`` provision/deprovision map to create/delete provisioned throughput."""
+        monkeypatch.setenv("WADDLEAI_FLAG_FLEET_V2", "1")
+        bedrock_backend.management_scope = ManagementScope.FULL_LIFECYCLE
+        mock_client = MagicMock()
+        mock_client.create_provisioned_model_throughput.return_value = {
+            "provisionedModelArn": "arn:aws:bedrock:us-east-1:1:provisioned-model/node-a"
+        }
+        with patch("shared.fleet.bedrock.boto3") as mock_boto3:
+            mock_boto3.client.return_value = mock_client
+            nodes = await bedrock_backend.provision(
+                ProvisionSpec(
+                    name="node-a", models=["m1"], mode="cloud", constraints={"model_id": "m1"}
+                )
+            )
+            await bedrock_backend.deprovision("node-a")
+
+        assert nodes[0].kind == "cloud"
+        mock_client.delete_provisioned_model_throughput.assert_called_once_with(
+            provisionedModelId="node-a"
+        )
+
+    async def test_provision_refused_under_register_and_route(
+        self, bedrock_backend, monkeypatch
+    ) -> None:
+        """The register_and_route/full_lifecycle boundary is enforced, not merely documented."""
+        monkeypatch.setenv("WADDLEAI_FLAG_FLEET_V2", "1")
+        with pytest.raises(PermissionError):
+            await bedrock_backend.provision(
+                ProvisionSpec(
+                    name="node-a", models=[], mode="cloud", constraints={"model_id": "m1"}
+                )
+            )
