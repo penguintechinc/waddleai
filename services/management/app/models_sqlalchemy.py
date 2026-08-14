@@ -541,6 +541,73 @@ class ContentFilterAuditLog(Base):
     )
 
 
+class McpEndpoint(Base):
+    """Admin-registered external MCP server WaddleAI re-serves via its gateway (§11.4).
+
+    Discovered tools are namespaced (`elder.*`) and merged into WaddleAI's
+    own `/mcp` surface. `namespace` is unique per org (migration 014) so
+    two endpoints registered by the same org can never collide on tool
+    names at aggregation time.
+    """
+
+    __tablename__ = "mcp_endpoints"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name = Column(String(255), nullable=False)
+    url = Column(String(1024), nullable=False)
+    transport = Column(String(20), nullable=False)  # 'streamable_http', 'stdio'
+    # 'none', 'header', 'oauth2_client_credentials', 'oauth2_auth_code'
+    auth_type = Column(String(40), nullable=False)
+    auth_config = Column(JSON, nullable=True)
+    identity_mode = Column(String(20), nullable=False, default="shared")  # 'shared', 'per_user'
+    namespace = Column(String(100), nullable=False)
+    credentials_ref = Column(String(255), nullable=True)
+    status = Column(String(20), nullable=False, default="active")  # 'active', 'disabled', 'error'
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    user_links = relationship(
+        "McpUserLink", back_populates="endpoint", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "namespace", name="uq_mcp_endpoints_org_namespace"),
+    )
+
+
+class McpUserLink(Base):
+    """Per-user encrypted OAuth token for a `per_user` identity `McpEndpoint` (§11.4/§11.5).
+
+    Links the authenticated caller's opaque id to their own token at the
+    external MCP server so calls carry the real caller's identity.
+    `access_token_enc`/`refresh_token_enc` are Fernet-encrypted at rest via
+    `shared.security.credential_encryption` (the same helper
+    `ProviderCredential.api_key` uses) -- never plaintext, never returned
+    in an API response, never logged.
+    """
+
+    __tablename__ = "mcp_user_links"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    endpoint_id = Column(
+        Integer, ForeignKey("mcp_endpoints.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_uuid = Column(String(36), nullable=False)
+    access_token_enc = Column(String(2048), nullable=True)
+    refresh_token_enc = Column(String(2048), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    status = Column(String(20), nullable=False, default="linked")  # 'linked', 'expired', 'revoked'
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    endpoint = relationship("McpEndpoint", back_populates="user_links")
+
+    __table_args__ = (
+        UniqueConstraint("endpoint_id", "user_uuid", name="uq_mcp_user_links_endpoint_user"),
+    )
+
+
 def init_schema(database_url: str):
     """Initialize database schema using SQLAlchemy.
 

@@ -30,6 +30,7 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from quart import Quart, Response, abort, jsonify, request
 
 from proxy.apps.proxy_server.grpc_server import ServerComponents, run_grpc_in_thread
+from proxy.apps.proxy_server.mcp_mount import MCPMount
 from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
 from proxy.apps.proxy_server.pipeline import (
     AuthStage,
@@ -571,6 +572,16 @@ async def on_startup():
     audit_mw = AuditMiddleware(oidc_mw, emitter=audit_emitter)
     app.asgi_app = audit_mw
     logger.info("penguin-aaa OIDC + Audit ASGI middleware applied")
+
+    # §11.1/§11.5: /mcp and /mcp/admin get their own auth path (wa-/sk-/
+    # Bearer, same underlying rbac/verify_token as get_current_user) ahead
+    # of the OIDC/audit chain above -- see mcp_mount.py module docstring.
+    # Neither path is in _PUBLIC_PATHS; unauthenticated/non-admin callers
+    # never reach a FastMCP app, so no tool list is ever advertised to them.
+    app.asgi_app = MCPMount(
+        app.asgi_app, rbac=proxy_server.rbac, oidc_provider=proxy_server.oidc_provider
+    )
+    logger.info("MCP /mcp and /mcp/admin mounted (flag-gated: waddleai.mcp_v2)")
 
 
 if _TEST_MODE:
