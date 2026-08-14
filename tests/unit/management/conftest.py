@@ -265,6 +265,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.webhooks",
     "services.management.app.api.v1.routing_matrix",
     "services.management.app.api.v1.cilium",
+    "services.management.app.api.v1.integrations",
 ]
 
 

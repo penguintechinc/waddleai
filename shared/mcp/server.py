@@ -17,11 +17,28 @@ request's already-resolved ``ToolContext`` via the ``WaddleAITools``/
 instance whose tool functions must re-derive "who is calling" from
 framework session state. ``stateless_http=True`` matches this: each HTTP
 request gets its own transport, no server-held session across calls.
+
+``build_user_server`` optionally registers namespaced external-MCP tools
+(§11.4 gateway, ``elder.*``) alongside the native ``USER_TOOL_NAMES`` --
+never on ``build_admin_server``, whose forbidden-tool guarantees are
+unaffected by this addition. Every ``ExternalToolBinding`` (see
+``shared/mcp/gateway/aggregator.py``) already closes over identity/auth
+resolution and the §8 policy chokepoint, so registration here only needs
+to reconstruct a Python signature matching the upstream's JSON Schema --
+official ``mcp`` SDK tool registration derives its wire-level
+``inputSchema`` from ``inspect.signature()``, which respects a function's
+``__signature__`` override, so a generic ``**kwargs``-forwarding function
+can carry an arbitrary upstream schema without hand-rolling SDK internals.
 """
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Sequence
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
+from shared.mcp.gateway.aggregator import ExternalToolBinding
 from shared.mcp.tools import AdminTools, WaddleAITools
 
 USER_SERVER_NAME = "waddleai"
@@ -84,11 +101,18 @@ FORBIDDEN_TOOL_NAME_SUBSTRINGS: tuple[str, ...] = (
 )
 
 
-def build_user_server(tools: WaddleAITools, *, instructions: str | None = None) -> FastMCP:
+def build_user_server(
+    tools: WaddleAITools,
+    *,
+    instructions: str | None = None,
+    external_tools: Sequence[ExternalToolBinding] = (),
+) -> FastMCP:
     """Assemble the `/mcp` user-scoped MCP server.
 
-    Registers exactly ``USER_TOOL_NAMES``. Nothing from ``AdminTools`` is
-    reachable from the returned object at all, let alone advertised.
+    Registers exactly ``USER_TOOL_NAMES``, plus any namespaced
+    ``external_tools`` (§11.4 gateway aggregation — empty by default, so
+    every existing caller/test is unaffected). Nothing from ``AdminTools``
+    is reachable from the returned object at all, let alone advertised.
     """
     mcp = FastMCP(USER_SERVER_NAME, instructions=instructions, stateless_http=True)
     mcp.tool(name="search_code")(tools.search_code)
@@ -101,7 +125,71 @@ def build_user_server(tools: WaddleAITools, *, instructions: str | None = None) 
     mcp.tool(name="get_routing_policy")(tools.get_routing_policy)
     mcp.tool(name="usage_summary")(tools.usage_summary)
     mcp.tool(name="set_preference")(tools.set_preference)
+    for binding in external_tools:
+        _register_external_tool(mcp, binding)
     return mcp
+
+
+# JSON Schema `type` -> Python annotation, for reconstructing a signature
+# from an upstream external tool's `inputSchema`. Unrecognized/absent
+# types fall back to `Any` rather than guessing.
+_JSON_SCHEMA_TYPES: dict[str, type] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def _signature_from_json_schema(schema: dict[str, Any]) -> inspect.Signature:
+    """Build an ``inspect.Signature`` whose parameters mirror an external tool's JSON Schema.
+
+    Best-effort for typical flat parameter objects — nested/composed
+    schemas (``anyOf``, nested ``object``s) fall back to ``Any`` per
+    property rather than attempting a full JSON-Schema-to-Python
+    translation. Required-without-default parameters are ordered first,
+    since Python signatures disallow a required parameter after a
+    defaulted one.
+    """
+    properties: dict[str, Any] = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+
+    parameters = []
+    for name, prop in properties.items():
+        annotation = _JSON_SCHEMA_TYPES.get((prop or {}).get("type"), Any)
+        if name in required:
+            parameters.append(
+                inspect.Parameter(
+                    name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=annotation
+                )
+            )
+        else:
+            default = (prop or {}).get("default")
+            parameters.append(
+                inspect.Parameter(
+                    name,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    annotation=annotation,
+                    default=default,
+                )
+            )
+    # Stable sort: required (no default) first, preserving declaration
+    # order within each group -- Python raises on default-before-required.
+    parameters.sort(key=lambda p: p.default is not inspect.Parameter.empty)
+    return inspect.Signature(parameters)
+
+
+def _register_external_tool(mcp: FastMCP, binding: ExternalToolBinding) -> None:
+    """Register one namespaced external tool on ``mcp``, preserving its upstream schema shape."""
+
+    async def _external_tool(**kwargs: Any) -> Any:
+        return await binding.invoke(kwargs)
+
+    _external_tool.__name__ = binding.namespaced_name.replace(".", "_").replace("-", "_")
+    _external_tool.__signature__ = _signature_from_json_schema(binding.input_schema)  # type: ignore[attr-defined]
+    mcp.add_tool(_external_tool, name=binding.namespaced_name, description=binding.description)
 
 
 def build_admin_server(tools: AdminTools, *, instructions: str | None = None) -> FastMCP:
