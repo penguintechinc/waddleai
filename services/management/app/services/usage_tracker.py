@@ -1,7 +1,10 @@
 """
 WaddleAI Usage Tracking Service
 
-Tracks AI usage from MarchProxy AILB webhooks.
+Records usage events directly into `token_usage` (the AILB webhook ingest
+path and its raw per-event AILB bookkeeping table were retired alongside
+migration 007 -- there is no successor raw-event log, only the
+`token_usage` aggregate this module already maintained).
 Provides LiteLLM-style usage tracking, quotas, and billing.
 """
 
@@ -25,7 +28,7 @@ class QuotaStatus(str, Enum):
 
 @dataclass
 class UsageEvent:
-    """Usage event from AILB webhook"""
+    """A single completed-request usage event to fold into token_usage."""
 
     event_id: str
     key_id: str
@@ -88,10 +91,10 @@ class QuotaInfo:
 
 class UsageTrackingService:
     """
-    Tracks usage from AILB webhooks and enforces quotas.
+    Tracks usage events and enforces quotas.
 
     Features:
-    - Record usage events from webhooks
+    - Record usage events directly into token_usage
     - Convert LLM tokens to WaddleAI normalized tokens
     - Aggregate usage by day, user, organization, key
     - Quota checking and enforcement
@@ -105,50 +108,36 @@ class UsageTrackingService:
 
     def record_usage(self, event: UsageEvent) -> bool:
         """
-        Record a usage event from AILB webhook.
+        Record a usage event by updating the `token_usage` aggregate.
 
         Args:
-            event: UsageEvent from webhook
+            event: UsageEvent to record
 
         Returns:
-            True if recorded successfully
+            True if recorded successfully. False if event.key_id does not
+            resolve to a known virtual key -- there is no raw-event fallback
+            table to fall back to, so an unresolvable key means nothing is
+            persisted (callers should treat this as a signal to investigate,
+            not silently retry).
         """
         db = self.db
 
-        # Find virtual key
+        # Find virtual key by its public prefix (the only stable lookup
+        # left once the AILB-specific key-id column was dropped).
         virtual_key = None
-        if event.key_id:
-            virtual_key = db(db.virtual_keys.ailb_key_id == event.key_id).select().first()
-            if not virtual_key and event.key_id.startswith("wa-"):
-                virtual_key = db(db.virtual_keys.key_prefix.like(f"{event.key_id[:12]}%")).select().first()
+        if event.key_id and event.key_id.startswith("wa-"):
+            virtual_key = db(db.virtual_keys.key_prefix.like(f"{event.key_id[:12]}%")).select().first()
+
+        if not virtual_key:
+            logger.warning("record_usage: no key for key_id=%s, dropping event", event.key_id)
+            return False
 
         # Calculate WaddleAI tokens
         waddleai_tokens = self.calculate_waddleai_tokens(
             event.provider, event.model, event.input_tokens, event.output_tokens
         )
 
-        # Store raw event
-        db.ailb_usage_events.insert(
-            event_id=event.event_id,
-            virtual_key_id=virtual_key.id if virtual_key else None,
-            ailb_key_id=event.key_id,
-            request_id=event.request_id,
-            model=event.model,
-            provider=event.provider,
-            input_tokens=event.input_tokens,
-            output_tokens=event.output_tokens,
-            cost_usd=event.cost_usd,
-            latency_ms=event.latency_ms,
-            status=event.status,
-            error_message=event.error_message,
-            timestamp=event.timestamp,
-            processed=True,
-            created_at=datetime.utcnow(),
-        )
-
-        # Update aggregated usage if key found
-        if virtual_key:
-            self._update_usage_aggregates(virtual_key, event, waddleai_tokens)
+        self._update_usage_aggregates(virtual_key, event, waddleai_tokens)
 
         db.commit()
         return True

@@ -43,7 +43,6 @@ def make_mock_key(key_id: int = 1, user_id: int = 1, org_id: int = 1, **kwargs) 
     key.tpm_limit = 10000
     key.rpm_limit = 60
     key.enabled = kwargs.get("enabled", True)
-    key.ailb_sync_status = "pending"
     key.expires_at = None
     key.created_at = datetime(2025, 1, 1)
     return key

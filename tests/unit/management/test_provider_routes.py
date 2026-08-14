@@ -2,7 +2,6 @@
 Unit tests for AI provider management routes: /api/v1/providers/*
 """
 
-from datetime import datetime
 from typing import Dict
 from unittest.mock import MagicMock
 
@@ -57,11 +56,7 @@ class TestListProviders:
     async def test_list_providers_admin(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
         """Admin can list all providers."""
         provider = make_mock_provider()
-        # First select → providers list; subsequent selects (ailb sync) → empty
-        app_mock_db.return_value.select.side_effect = [
-            make_select_result([provider]),
-            make_select_result([]),  # ailb sync for provider 1
-        ]
+        app_mock_db.return_value.select.return_value = make_select_result([provider])
 
         resp = await client.get("/api/v1/providers", headers=auth_headers)
         assert resp.status_code == 200
@@ -90,7 +85,7 @@ class TestGetProvider:
     async def test_get_provider_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
         """Admin can get a provider by ID."""
         provider = make_mock_provider()
-        app_mock_db.return_value.select.return_value.first.side_effect = [provider, None]
+        app_mock_db.return_value.select.return_value.first.return_value = provider
 
         resp = await client.get("/api/v1/providers/1", headers=auth_headers)
         assert resp.status_code == 200
@@ -192,7 +187,6 @@ class TestCreateProvider:
         """Ollama provider does not require an API key."""
         app_mock_db.return_value.select.return_value.first.return_value = None
         app_mock_db.ai_providers.insert.return_value = 6
-        app_mock_db.marchproxy_ailb_sync.insert.return_value = 1
 
         resp = await client.post(
             "/api/v1/providers",
@@ -334,68 +328,22 @@ class TestTestProvider:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/providers/<id>/sync
+# POST /api/v1/providers/<id>/sync, GET .../sync-status
+# -- removed (AILB retired, migration 007 dropped marchproxy_ailb_sync)
 # ---------------------------------------------------------------------------
 
 
-class TestSyncProvider:
-    """Tests for POST /api/v1/providers/<provider_id>/sync"""
+class TestProviderSyncEndpointsRemoved:
+    """Both AILB provider-sync routes had no successor and are gone."""
 
-    async def test_sync_provider_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
-        """Admin can sync a provider to AILB."""
-        provider = make_mock_provider()
-        app_mock_db.return_value.select.return_value.first.return_value = provider
-
+    async def test_sync_provider_endpoint_no_longer_exists(self, client, auth_headers: Dict) -> None:
+        """The route is unregistered -- Quart returns 404, not 200/400/404-with-body."""
         resp = await client.post("/api/v1/providers/1/sync", headers=auth_headers)
-        assert resp.status_code == 200
-        data = (await resp.get_json())
-        assert data["sync_status"] == "synced"
-
-    async def test_sync_provider_sync_disabled(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
-        """Sync disabled for provider returns 400."""
-        provider = make_mock_provider(ailb_sync_enabled=False)
-        app_mock_db.return_value.select.return_value.first.return_value = provider
-
-        resp = await client.post("/api/v1/providers/1/sync", headers=auth_headers)
-        assert resp.status_code == 400
-
-    async def test_sync_provider_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
-        """Missing provider returns 404."""
-        app_mock_db.return_value.select.return_value.first.return_value = None
-
-        resp = await client.post("/api/v1/providers/999/sync", headers=auth_headers)
         assert resp.status_code == 404
 
-
-# ---------------------------------------------------------------------------
-# GET /api/v1/providers/<id>/sync-status
-# ---------------------------------------------------------------------------
-
-
-class TestGetSyncStatus:
-    """Tests for GET /api/v1/providers/<provider_id>/sync-status"""
-
-    async def test_get_sync_status_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
-        """Admin can get sync status for a provider."""
-        provider = make_mock_provider()
-        sync = MagicMock()
-        sync.sync_status = "synced"
-        sync.ailb_route_id = "route-1"
-        sync.last_synced = datetime(2025, 1, 1, 12, 0, 0)
-        sync.sync_error = None
-        sync.config_hash = "abc123"
-        app_mock_db.return_value.select.return_value.first.side_effect = [provider, sync]
-
+    async def test_get_sync_status_endpoint_no_longer_exists(self, client, auth_headers: Dict) -> None:
+        """The route is unregistered -- Quart returns 404."""
         resp = await client.get("/api/v1/providers/1/sync-status", headers=auth_headers)
-        assert resp.status_code == 200
-        data = (await resp.get_json())
-        assert data["sync_status"] == "synced"
-
-    async def test_get_sync_status_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
-        """Missing provider returns 404."""
-        app_mock_db.return_value.select.return_value.first.return_value = None
-
-        resp = await client.get("/api/v1/providers/999/sync-status", headers=auth_headers)
         assert resp.status_code == 404
 
 

@@ -265,18 +265,27 @@ class TestRecordUsage:
         mock_key.organization_id = 5
 
         mock_select = MagicMock()
-        mock_select.first.side_effect = [mock_key, None, None]  # key lookup, usage lookup, virtual_keys update
+        # key lookup -> mock_key; calculate_waddleai_tokens's conversion-rate
+        # lookup -> None (falls back to defaults); usage lookup -> None (insert path)
+        mock_select.first.side_effect = [mock_key, None, None]
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 
         result = tracker.record_usage(event)
 
         assert result is True
-        # Verify ailb_usage_events insert was called
-        mock_db.ailb_usage_events.insert.assert_called_once()
+        # The AILB raw-event insert was dropped by migration 007 -- the
+        # aggregate write into token_usage/usage_logs is the whole effect now.
+        mock_db.token_usage.insert.assert_called_once()
+        mock_db.usage_logs.insert.assert_called_once()
 
     def test_record_usage_without_virtual_key(self, tracker, mock_db):
-        """Test recording usage when virtual key not found"""
+        """Unresolvable key_id records nothing.
+
+        There is no raw-event fallback table anymore (ailb_usage_events was
+        dropped with no successor) -- an unresolved key means the event is
+        dropped, not silently attributed to nobody.
+        """
         event = make_usage_event(key_id="wa-unknown")
 
         # Mock virtual key not found
@@ -287,16 +296,21 @@ class TestRecordUsage:
 
         result = tracker.record_usage(event)
 
-        assert result is True
-        # Should still record the event
-        mock_db.ailb_usage_events.insert.assert_called_once()
+        assert result is False
+        mock_db.token_usage.insert.assert_not_called()
+        mock_db.usage_logs.insert.assert_not_called()
 
     def test_record_usage_calls_calculate_waddleai_tokens(self, tracker, mock_db):
-        """Test record_usage calls token conversion"""
+        """Test record_usage calls token conversion once a virtual key resolves"""
         event = make_usage_event(model="gpt-4o")
 
+        mock_key = MagicMock()
+        mock_key.id = 1
+        mock_key.user_id = 10
+        mock_key.organization_id = 5
+
         mock_select = MagicMock()
-        mock_select.first.return_value = None
+        mock_select.first.side_effect = [mock_key, None]  # key lookup, usage lookup
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 

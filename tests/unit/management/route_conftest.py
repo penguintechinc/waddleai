@@ -297,8 +297,6 @@ def make_mock_key(
     key.tpm_limit = 10000
     key.rpm_limit = 60
     key.enabled = enabled
-    key.ailb_sync_status = "pending"
-    key.ailb_key_id = None
     key.expires_at = None
     key.last_used = None
     key.created_at = datetime(2025, 1, 1, 12, 0, 0)

@@ -11,7 +11,7 @@ from quart import g, jsonify, request
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth
 
 
 @api_v1_bp.route("/keys", methods=["GET"])
@@ -48,7 +48,6 @@ async def list_keys():
                 "tpm_limit": key.tpm_limit,
                 "rpm_limit": key.rpm_limit,
                 "enabled": key.enabled,
-                "ailb_sync_status": key.ailb_sync_status,
                 "expires_at": key.expires_at.isoformat() if key.expires_at else None,
                 "last_used": key.last_used.isoformat() if key.last_used else None,
                 "created_at": key.created_at.isoformat() if key.created_at else None,
@@ -105,8 +104,6 @@ async def get_key(key_id):
             "tpm_limit": key.tpm_limit,
             "rpm_limit": key.rpm_limit,
             "enabled": key.enabled,
-            "ailb_key_id": key.ailb_key_id,
-            "ailb_sync_status": key.ailb_sync_status,
             "expires_at": key.expires_at.isoformat() if key.expires_at else None,
             "last_used": key.last_used.isoformat() if key.last_used else None,
             "created_at": key.created_at.isoformat() if key.created_at else None,
@@ -192,7 +189,6 @@ async def create_key():
             tpm_limit=data.get("tpm_limit", 10000),
             rpm_limit=data.get("rpm_limit", 60),
             enabled=True,
-            ailb_sync_status="pending",
             expires_at=expires_at,
             created_at=datetime.utcnow(),
         )
@@ -209,7 +205,6 @@ async def create_key():
                 "api_key": api_key,
                 "key_prefix": key_prefix,
                 "expires_at": expires_at.isoformat() if expires_at else None,
-                "ailb_sync_status": "pending",
                 "message": "Key created successfully. Save the api_key - it will not be shown again.",
             }
         ),
@@ -275,8 +270,6 @@ async def update_key(key_id):
             update_fields["expires_at"] = None
 
     if update_fields:
-        # Mark for re-sync
-        update_fields["ailb_sync_status"] = "pending"
 
         def _update():
             db(db.virtual_keys.id == key_id).update(**update_fields)
@@ -284,7 +277,7 @@ async def update_key(key_id):
 
         await asyncio.to_thread(_update)
 
-    return jsonify({"message": "Key updated successfully. Re-sync to AILB required."})
+    return jsonify({"message": "Key updated successfully."})
 
 
 @api_v1_bp.route("/keys/<int:key_id>", methods=["DELETE"])
@@ -309,7 +302,7 @@ async def delete_key(key_id):
 
     # Soft delete by disabling
     def _disable():
-        db(db.virtual_keys.id == key_id).update(enabled=False, ailb_sync_status="deleted")
+        db(db.virtual_keys.id == key_id).update(enabled=False)
         db.commit()
 
     await asyncio.to_thread(_disable)
@@ -343,9 +336,7 @@ async def rotate_key(key_id):
     key_prefix = f"wa-{key_secret[:8]}..."
 
     def _rotate():
-        db(db.virtual_keys.id == key_id).update(
-            key_hash=bcrypt.hash(new_api_key), key_prefix=key_prefix, ailb_sync_status="pending"
-        )
+        db(db.virtual_keys.id == key_id).update(key_hash=bcrypt.hash(new_api_key), key_prefix=key_prefix)
         db.commit()
 
     await asyncio.to_thread(_rotate)
@@ -355,31 +346,9 @@ async def rotate_key(key_id):
             "id": key_id,
             "api_key": new_api_key,
             "key_prefix": key_prefix,
-            "ailb_sync_status": "pending",
             "message": "Key rotated successfully. Save the new api_key - it will not be shown again.",
         }
     )
-
-
-@api_v1_bp.route("/keys/<int:key_id>/sync", methods=["POST"])
-@require_auth
-@require_role("admin")
-async def sync_key(key_id):
-    """Sync key to AILB"""
-    key = await asyncio.to_thread(lambda: db(db.virtual_keys.id == key_id).select().first())
-
-    if not key:
-        return jsonify({"error": "Key not found"}), 404
-
-    # TODO: Implement actual sync to AILB
-    # For now, update sync status
-    def _sync():
-        db(db.virtual_keys.id == key_id).update(ailb_sync_status="synced", ailb_key_id=f"ailb-{key_id}")
-        db.commit()
-
-    await asyncio.to_thread(_sync)
-
-    return jsonify({"key_id": key_id, "ailb_sync_status": "synced", "message": "Key synced to AILB successfully"})
 
 
 @api_v1_bp.route("/keys/<int:key_id>/usage", methods=["GET"])

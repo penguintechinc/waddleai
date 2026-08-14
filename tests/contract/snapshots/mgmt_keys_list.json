@@ -2,7 +2,6 @@
   "body": {
     "keys": [
       {
-        "ailb_sync_status": null,
         "allowed_models": null,
         "allowed_providers": null,
         "budget_limit_daily": null,

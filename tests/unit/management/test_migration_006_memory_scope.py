@@ -69,7 +69,7 @@ def test_upgrade_backfills_scope_and_author(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "005_add_content_filter_tables")
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "006_add_memory_scope")
 
     with engine.connect() as conn:
         row = conn.execute(sa.text("SELECT scope_type, author_user_id, user_id FROM memory_embeddings")).one()
@@ -82,7 +82,7 @@ def test_downgrade_drops_columns(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "005_add_content_filter_tables")
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "006_add_memory_scope")
     command.downgrade(cfg, "-1")
 
     with engine.connect() as conn:

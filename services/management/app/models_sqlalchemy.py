@@ -42,6 +42,7 @@ class Organization(Base):
     default_model = Column(String(255))
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    rpm_limit = Column(Integer, nullable=True)  # Per-org Cilium edge RPM (§12.1); None = unlimited
 
 
 class User(Base):
@@ -144,6 +145,7 @@ class ProviderCredential(Base):
     token_count = Column(BigInteger, nullable=False, default=0)
     last_used_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
+    plan_budget = Column(JSON, nullable=True)  # §7.3 window-based plan budget config
 
     provider = relationship("AIProvider", back_populates="credentials")
 
@@ -227,8 +229,6 @@ class VirtualKey(Base):
     name = Column(String(255), nullable=False)
     key_prefix = Column(String(20))  # wa-xxx for display
     key_hash = Column(String(255))  # Hashed full key
-    ailb_key_id = Column(String(255))  # Synced AILB key ID
-    ailb_sync_status = Column(String(50))  # synced, pending, failed
     allowed_models = Column(JSON)
     allowed_providers = Column(JSON)
     budget_limit_daily = Column(Integer)
@@ -240,41 +240,6 @@ class VirtualKey(Base):
     enabled = Column(Boolean, default=True)
     expires_at = Column(DateTime)
     last_used = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class MarchProxyAILBSync(Base):
-    __tablename__ = "marchproxy_ailb_sync"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("ai_providers.id"))
-    ailb_instance_id = Column(String(255))
-    ailb_route_id = Column(String(255))
-    sync_status = Column(String(50))  # synced, pending, failed, deleted
-    last_synced = Column(DateTime)
-    sync_error = Column(Text)
-    config_hash = Column(String(64))  # Hash to detect config changes
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class AILBUsageEvent(Base):
-    __tablename__ = "ailb_usage_events"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    event_id = Column(String(255), unique=True)
-    virtual_key_id = Column(Integer, ForeignKey("virtual_keys.id"))
-    ailb_key_id = Column(String(255))
-    request_id = Column(String(255))
-    model = Column(String(255))
-    provider = Column(String(100))
-    input_tokens = Column(Integer)
-    output_tokens = Column(Integer)
-    cost_usd = Column(Integer)  # Store as cents to avoid floating point
-    latency_ms = Column(Integer)
-    status = Column(String(50))  # success, error, rate_limited
-    error_message = Column(Text)
-    timestamp = Column(DateTime)
-    processed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -293,7 +258,7 @@ class TokenUsage(Base):
     request_count = Column(Integer, default=0)
     cost_usd_total = Column(Integer, default=0)  # Store as cents
     last_updated = Column(DateTime, default=datetime.utcnow)
-    source = Column(String(50), default="aiproxy")  # aiproxy, ailb, etc
+    source = Column(String(50), default="aiproxy")  # aiproxy, ailb_import (migration 007 fold), etc
     estimated = Column(Boolean, default=False)  # True if usage was estimated (missing from provider)
 
 
@@ -317,11 +282,40 @@ class TokenConversionRate(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider = Column(String(100), nullable=False)
     model = Column(String(255), nullable=False)
-    input_rate = Column(Integer, nullable=False)  # Cost per token
-    output_rate = Column(Integer, nullable=False)  # Cost per token
-    base_cost_per_waddleai_token = Column(Integer, default=1)  # Base cost multiplier
+    # Float, not Integer: real rates carry sub-cent decimals (e.g. 0.00015).
+    # Widened from Integer by migration 007 immediately before seeding.
+    input_rate = Column(Float, nullable=False)  # Cost per token
+    output_rate = Column(Float, nullable=False)  # Cost per token
+    base_cost_per_waddleai_token = Column(Float, default=0.001)  # Base cost multiplier
     effective_date = Column(DateTime, default=datetime.utcnow)
     enabled = Column(Boolean, default=True)
+
+
+class ModelRegistry(Base):
+    """Catalog of admissible model weights (§2.2/§2.3 platform spec).
+
+    One row per selectable model: carries the license/origin metadata the
+    §2.2 PRC-origin deny-list and §2.3 dual-default license-admissibility
+    test are checked against, at both registration and fleet `place_model`
+    time. `is_utility` marks internal-function models (routing classifier,
+    security auditor, embeddings) that are excluded from Free-tier model
+    count caps (§2.4 Q#7). Seeded by migration 008 with the §2.3
+    dual-default set; §7.1 `model_assignments` (migration 010) is what
+    later maps a tool type to one of these rows as its active default.
+    """
+
+    __tablename__ = "model_registry"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    role = Column(String(100), nullable=False)  # routing_classifier, security_auditor, embeddings
+    license = Column(String(100), nullable=False)
+    origin = Column(String(100), nullable=False)  # Org/country; checked vs. the §2.2 deny-list
+    min_vram = Column(Integer, nullable=True)  # Approx. min VRAM in GB; operator-adjustable
+    ollama_tag = Column(String(255), nullable=True)
+    resolved_digest = Column(String(128), nullable=True)  # sha256, set once resolved at first pull
+    is_utility = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class RoutingRule(Base):
@@ -474,23 +468,6 @@ class RoutingMatrixEntry(Base):
     credential_label = Column(String(255), nullable=True)
 
     __table_args__ = (UniqueConstraint("tool_type", "complexity", "region", name="uq_routing_matrix_lookup"),)
-
-
-class AILBUsageRecord(Base):
-    __tablename__ = "ailb_usage_records"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String(255), nullable=False, index=True)
-    api_key_id = Column(String(255), index=True)
-    model = Column(String(255), nullable=False)
-    provider = Column(String(100), nullable=False)
-    input_tokens = Column(Integer, default=0)
-    output_tokens = Column(Integer, default=0)
-    total_tokens = Column(Integer, default=0)
-    latency_ms = Column(Integer)
-    request_id = Column(String(255))
-    timestamp = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class ContentFilterRule(Base):

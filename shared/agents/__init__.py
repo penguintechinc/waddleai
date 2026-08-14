@@ -22,7 +22,7 @@ from shared.agents.mf_classifier import MatrixFactorizationClassifier
 from shared.agents.routing_agent import RoutingAgent
 from shared.agents.routing_matrix import RouteDecision, RoutingMatrix, RoutingMatrixEntry
 from shared.agents.security_agent import SecurityAgent, SecurityDecision
-from shared.agents.usage_tracker import AILBUsageRecord, UsageAck, UsageTracker
+from shared.agents.usage_tracker import UsageAck, UsageTracker
 
 __all__ = [
     "MatrixFactorizationClassifier",
@@ -34,5 +34,4 @@ __all__ = [
     "SecurityDecision",
     "UsageTracker",
     "UsageAck",
-    "AILBUsageRecord",
 ]
