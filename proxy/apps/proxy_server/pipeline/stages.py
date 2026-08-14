@@ -1,5 +1,4 @@
-"""
-ProxyPipeline stage classes with ordered execution and OpenTelemetry instrumentation.
+"""ProxyPipeline stage classes with ordered execution and OpenTelemetry instrumentation.
 
 Standard Execution Order (§3.2, cheapest-first):
   auth → token_budget → security_in → [CACHE_INSERTION_POINT] → dispatch →
@@ -24,7 +23,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from shared.observability.tracing import get_tracer
 from shared.security.content_filter import ContentFilter
@@ -50,31 +49,37 @@ class PipelineContext:
 
     user: Any
     body: dict
-    model: Optional[str] = None
+    model: str | None = None
     messages: list = field(default_factory=list)
     prompt_text: str = ""
     response_text: str = ""
-    usage: Optional[dict] = None
+    usage: dict | None = None
     blocked: bool = False
-    block_reason: Optional[str] = None
+    block_reason: str | None = None
     status_code: int = 200
     stream: bool = False
-    stage_log: List[str] = field(default_factory=list)
+    stage_log: list[str] = field(default_factory=list)
     # Set by the dispatch stage; feeds the gen_ai.* span attributes (§15.3) and
     # lets routing report the actually-served model rather than the requested one.
-    provider: Optional[str] = None
-    requested_model: Optional[str] = None
-    finish_reason: Optional[str] = None
+    provider: str | None = None
+    requested_model: str | None = None
+    finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
-    reservation_id: Optional[str] = None
+    reservation_id: str | None = None
+    # §6A memory layers (proxy/apps/proxy_server/pipeline/memory_stages.py):
+    # X-WaddleAI-Session header, plumbed in by the endpoint handler; conversation/
+    # scratchpad identity is keyed off this, never off unauthenticated request state.
+    session_id: str | None = None
+    # Additive-only accounting surfaced as the `usage.waddleai` response object
+    # (§6A.5): {summarized, tokens_elided, tokens_saved, scratchpad_substitutions}.
+    usage_meta: dict[str, Any] = field(default_factory=dict)
 
 
 class Stage(ABC):
     """Base class for pipeline stages."""
 
-    def __init__(self, name: str, flag: Optional[str] = None) -> None:
-        """
-        Initialize a stage.
+    def __init__(self, name: str, flag: str | None = None) -> None:
+        """Initialize a stage.
 
         Args:
             name: Stage name (e.g., 'auth', 'dispatch')
@@ -85,8 +90,7 @@ class Stage(ABC):
 
     @abstractmethod
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Execute stage logic.
+        """Execute stage logic.
 
         Args:
             ctx: Pipeline context
@@ -100,9 +104,8 @@ class Stage(ABC):
 class ProxyPipeline:
     """Orchestrates stage execution with short-circuit and tracing."""
 
-    def __init__(self, stages: List[Stage], features: Any) -> None:
-        """
-        Initialize pipeline.
+    def __init__(self, stages: list[Stage], features: Any) -> None:
+        """Initialize pipeline.
 
         Args:
             stages: List of Stage instances in execution order
@@ -113,8 +116,7 @@ class ProxyPipeline:
         self.tracer = get_tracer("waddleai-proxy-pipeline")
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Execute all stages in order, short-circuiting if ctx.blocked is set.
+        """Execute all stages in order, short-circuiting if ctx.blocked is set.
 
         Stage-log is updated with:
         - 'ran:{stage_name}' if stage executed
@@ -199,8 +201,7 @@ class AuthStage(Stage):
     """Authenticate user and validate tenant/organization context."""
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Validate that ctx.user is present with valid organization/tenant.
+        """Validate that ctx.user is present with valid organization/tenant.
 
         Middleware already authenticated the user; this stage ensures a valid
         organizational context exists for multi-tenant isolation.
@@ -215,7 +216,9 @@ class AuthStage(Stage):
 
         # User must have an organization/tenant ID
         # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
-        tenant_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
+        tenant_id = getattr(ctx.user, "tenant_id", None) or getattr(
+            ctx.user, "organization_id", None
+        )
         if not tenant_id:
             ctx.blocked = True
             ctx.status_code = 403
@@ -232,9 +235,10 @@ class AuthStage(Stage):
 class TokenBudgetStage(Stage):
     """Check TPM and monthly token/USD budgets."""
 
-    def __init__(self, name: str, token_limiter: TokenLimiter, features: Any, flag: Optional[str] = None) -> None:
-        """
-        Initialize TokenBudgetStage.
+    def __init__(
+        self, name: str, token_limiter: TokenLimiter, features: Any, flag: str | None = None
+    ) -> None:
+        """Initialize TokenBudgetStage.
 
         Args:
             name: Stage name
@@ -247,8 +251,7 @@ class TokenBudgetStage(Stage):
         self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Reserve tokens from budget via TokenLimiter.
+        """Reserve tokens from budget via TokenLimiter.
 
         Estimates input tokens, calls reserve, and stashes reservation_id
         for MeterStage to reconcile with actual usage. Sets ctx.blocked if
@@ -283,7 +286,9 @@ class TokenBudgetStage(Stage):
             ctx.blocked = True
             ctx.status_code = 429
             ctx.block_reason = decision.reason
-            logger.warning("TokenBudgetStage: quota exceeded for vkey %s: %s", vkey_id, decision.reason)
+            logger.warning(
+                "TokenBudgetStage: quota exceeded for vkey %s: %s", vkey_id, decision.reason
+            )
             return ctx
 
         # Stash reservation ID for reconciliation in MeterStage
@@ -305,10 +310,9 @@ class SecurityInStage(Stage):
         name: str,
         scanner: PromptSecurityScanner,
         content_filter: ContentFilter,
-        flag: Optional[str] = None,
+        flag: str | None = None,
     ) -> None:
-        """
-        Initialize SecurityInStage.
+        """Initialize SecurityInStage.
 
         Args:
             name: Stage name
@@ -321,8 +325,7 @@ class SecurityInStage(Stage):
         self.content_filter = content_filter
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Scan messages for threats and PII, in order of fail-fast.
+        """Scan messages for threats and PII, in order of fail-fast.
 
         1. PromptSecurityScanner: checks for injection/jailbreak/data-extraction attacks
            (BLOCKS immediately on detection — fail fast)
@@ -390,11 +393,10 @@ class DispatchStage(Stage):
         self,
         name: str,
         router: LLMRequestRouter,
-        connectors: Dict[str, LLMConnector],
-        flag: Optional[str] = None,
+        connectors: dict[str, LLMConnector],
+        flag: str | None = None,
     ) -> None:
-        """
-        Initialize DispatchStage.
+        """Initialize DispatchStage.
 
         Args:
             name: Stage name
@@ -407,8 +409,7 @@ class DispatchStage(Stage):
         self.connectors = connectors
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Route to provider and dispatch request.
+        """Route to provider and dispatch request.
 
         1. Select provider via router
         2. Call connector (streaming or non-streaming based on ctx.stream)
@@ -461,8 +462,10 @@ class DispatchStage(Stage):
             if ctx.stream:
                 # Streaming: accumulate chunks
                 ctx.response_text = ""
-                usage: Optional[Dict[str, Any]] = None
-                async for chunk in connector.stream_chat_completion(ctx.messages, model=target_model):
+                usage: dict[str, Any] | None = None
+                async for chunk in connector.stream_chat_completion(
+                    ctx.messages, model=target_model
+                ):
                     ctx.response_text += chunk.delta
                     if chunk.done and chunk.usage:
                         usage = chunk.usage
@@ -471,7 +474,9 @@ class DispatchStage(Stage):
                     ctx.finish_reason = usage.get("finish_reason", "stop")
             else:
                 # Non-streaming: single call
-                response_text, usage_info = await connector.chat_completion(ctx.messages, model=target_model)
+                response_text, usage_info = await connector.chat_completion(
+                    ctx.messages, model=target_model
+                )
                 ctx.response_text = response_text
                 ctx.usage = usage_info
                 ctx.finish_reason = usage_info.get("finish_reason", "stop")
@@ -504,7 +509,9 @@ class DispatchStage(Stage):
 
             ctx.blocked = True
             ctx.block_reason = f"provider_error_{e.status_code}"
-            logger.warning("DispatchStage: provider error from %s (retries exhausted): %s", provider, e)
+            logger.warning(
+                "DispatchStage: provider error from %s (retries exhausted): %s", provider, e
+            )
 
         except ProviderError as e:
             # Generic provider error
@@ -530,10 +537,9 @@ class SecurityOutStage(Stage):
         self,
         name: str,
         content_filter: ContentFilter,
-        flag: Optional[str] = None,
+        flag: str | None = None,
     ) -> None:
-        """
-        Initialize SecurityOutStage.
+        """Initialize SecurityOutStage.
 
         Args:
             name: Stage name
@@ -544,8 +550,7 @@ class SecurityOutStage(Stage):
         self.content_filter = content_filter
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Filter LLM response for PII/PCI before returning to user.
+        """Filter LLM response for PII/PCI before returning to user.
 
         Redacts sensitive data from ctx.response_text. If filter denies the
         response (e.g., contains API keys), sets ctx.blocked.
@@ -590,7 +595,9 @@ class SecurityOutStage(Stage):
             ctx.block_reason = "output_filter_defect"
             return ctx
         except Exception as e:
-            logger.error("SecurityOutStage: filter error for user %s: %s", user_id, e, exc_info=True)
+            logger.error(
+                "SecurityOutStage: filter error for user %s: %s", user_id, e, exc_info=True
+            )
             # Fail open: don't block the response on genuine runtime/IO
             # errors reaching this far (ContentFilter._filter() already
             # fail-opens internally for the expected transient cases).
@@ -622,10 +629,9 @@ class MeterStage(Stage):
         name: str,
         metering_buffer: MeteringBuffer,
         token_limiter: TokenLimiter,
-        flag: Optional[str] = None,
+        flag: str | None = None,
     ) -> None:
-        """
-        Initialize MeterStage.
+        """Initialize MeterStage.
 
         Args:
             name: Stage name
@@ -638,8 +644,7 @@ class MeterStage(Stage):
         self.token_limiter = token_limiter
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Record actual token usage and reconcile budget reservation.
+        """Record actual token usage and reconcile budget reservation.
 
         This stage runs EVEN IF ctx.blocked is True (e.g., if provider returned
         an error after we sent tokens). Metering must be accurate for billing

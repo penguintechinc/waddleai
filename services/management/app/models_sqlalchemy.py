@@ -1,5 +1,4 @@
-"""
-SQLAlchemy models for database schema initialization and migrations
+"""SQLAlchemy models for database schema initialization and migrations
 Use SQLAlchemy for schema creation and Alembic for migrations
 Use PyDAL for runtime database operations
 """
@@ -51,7 +50,9 @@ class User(Base):
     username = Column(String(255), unique=True, nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False, default="user")  # admin, resource_manager, reporter, user
+    role = Column(
+        String(50), nullable=False, default="user"
+    )  # admin, resource_manager, reporter, user
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     managed_orgs = Column(JSON)  # List of organization IDs for resource managers
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -87,6 +88,10 @@ class APIKey(Base):
     permissions = Column(JSON)
     allowed_endpoints = Column(JSON)
     api_access_level = Column(String(50))
+    # §6A.5 per-key proxy-memory config block (scratchpad/summarization/
+    # embedding_cache/schema_dedup). NULL = feature defaults apply.
+    # See shared/memory/config.py::resolve_proxy_memory_config.
+    proxy_memory = Column(JSON, nullable=True)
 
 
 class AIProvider(Base):
@@ -171,12 +176,14 @@ class LlamaCppDeployment(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), unique=True, nullable=False)
     deployment_type = Column(String(50), nullable=False, default="kubernetes")  # kubernetes, remote
-    status = Column(String(50), nullable=False, default="pending")  # pending, deploying, running, stopped, error
+    status = Column(
+        String(50), nullable=False, default="pending"
+    )  # pending, deploying, running, stopped, error
     status_message = Column(Text)
 
     # Model
     model_name = Column(String(255), nullable=False)
-    model_url = Column(String(512))       # GGUF download URL (kubernetes mode)
+    model_url = Column(String(512))  # GGUF download URL (kubernetes mode)
     model_filename = Column(String(255))  # filename inside volume
 
     # Inference params
@@ -185,20 +192,22 @@ class LlamaCppDeployment(Base):
     gpu_count = Column(Integer, default=1)
 
     # Connection
-    endpoint_url = Column(String(512))    # set by manager after deploy, or provided directly for remote
+    endpoint_url = Column(
+        String(512)
+    )  # set by manager after deploy, or provided directly for remote
 
     # Kubernetes
     k8s_namespace = Column(String(255), default="waddleai")
     k8s_daemonset_name = Column(String(255))
-    node_selector = Column(JSON)   # e.g. {"waddleai/gpu-tier": "a100"}
-    node_affinity = Column(JSON)   # optional advanced scheduling
+    node_selector = Column(JSON)  # e.g. {"waddleai/gpu-tier": "a100"}
+    node_affinity = Column(JSON)  # optional advanced scheduling
     model_cache_claim = Column(String(255))  # PVC name for model cache; None = emptyDir
 
     # Resource limits for containers
-    cpu_request = Column(String(50))      # e.g. "2000m", "2"
-    cpu_limit = Column(String(50))        # e.g. "4000m", "4"
-    memory_request = Column(String(50))   # e.g. "8Gi", "8192Mi"
-    memory_limit = Column(String(50))     # e.g. "16Gi", "16384Mi"
+    cpu_request = Column(String(50))  # e.g. "2000m", "2"
+    cpu_limit = Column(String(50))  # e.g. "4000m", "4"
+    memory_request = Column(String(50))  # e.g. "8Gi", "8192Mi"
+    memory_limit = Column(String(50))  # e.g. "16Gi", "16384Mi"
 
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -236,7 +245,9 @@ class VirtualKey(Base):
     tpm_limit = Column(Integer)  # Tokens per minute
     rpm_limit = Column(Integer)  # Requests per minute
     budget_monthly_tokens = Column(Integer, nullable=True)  # Monthly token limit; None = unlimited
-    budget_monthly_usd = Column(Integer, nullable=True)  # Monthly USD limit in micro-USD; None = unlimited
+    budget_monthly_usd = Column(
+        Integer, nullable=True
+    )  # Monthly USD limit in micro-USD; None = unlimited
     enabled = Column(Boolean, default=True)
     expires_at = Column(DateTime)
     last_used = Column(DateTime)
@@ -294,7 +305,9 @@ class TokenUsage(Base):
     cost_usd_total = Column(Integer, default=0)  # Store as cents
     last_updated = Column(DateTime, default=datetime.utcnow)
     source = Column(String(50), default="aiproxy")  # aiproxy, ailb, etc
-    estimated = Column(Boolean, default=False)  # True if usage was estimated (missing from provider)
+    estimated = Column(
+        Boolean, default=False
+    )  # True if usage was estimated (missing from provider)
 
 
 class UsageCache(Base):
@@ -415,8 +428,109 @@ class MemoryEmbedding(Base):
     metadata_ = Column("metadata", JSON, default=dict)
     # Memory access-control scope: 'user' (personal, default) | 'org' (shared).
     # Spec §9.7 field names; v0.4 adds more scope values without renaming.
-    scope_type = Column(String(20), nullable=False, default="user", server_default="user", index=True)
+    scope_type = Column(
+        String(20), nullable=False, default="user", server_default="user", index=True
+    )
     author_user_id = Column(Integer, nullable=False, index=True)
+    # §9.7 retrofit (migration 009b) -- the remaining scope/trust/attribution
+    # columns; scope_type/author_user_id above predate this (migration 006).
+    scope_ref = Column(String(255), nullable=True)
+    trust_tier = Column(
+        String(20), nullable=False, default="unverified", server_default="unverified"
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(
+        String(20), nullable=False, default="active", server_default="active", index=True
+    )
+    expires_at = Column(DateTime, nullable=True)
+
+
+class SessionScratchpad(Base):
+    """Per-(org, session, user) KV working set (§6A.1).
+
+    Valkey holds the hot path; this table is the durable spill/re-warm
+    tier. All rows are session-scoped, trust `unverified`, and pass
+    through shared.memory.provenance.filter_on_write before persist.
+    """
+
+    __tablename__ = "session_scratchpad"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(255), nullable=False, index=True)
+    key = Column(String(255), nullable=False)
+    value = Column(Text, nullable=True)
+    scope_type = Column(String(20), nullable=False, default="session", server_default="session")
+    scope_ref = Column(String(255), nullable=True)
+    author_user_id = Column(Integer, nullable=True)
+    trust_tier = Column(
+        String(20), nullable=False, default="unverified", server_default="unverified"
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "session_id", "user_id", "key", name="uq_scratchpad_key"),
+    )
+
+
+class ConversationSummary(Base):
+    """Threshold-triggered rolling conversation summary (§6A.2).
+
+    Versioned via ``superseded_by`` -- a repeat summarization never mutates
+    a prior row; it writes a new version and points the old one forward.
+    """
+
+    __tablename__ = "conversation_summaries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String(255), nullable=False, index=True)
+    org_id = Column(Integer, nullable=False, index=True)
+    summary = Column(Text, nullable=False)
+    covers_through_turn = Column(Integer, nullable=False)
+    tokens_summarized = Column(Integer, nullable=False, default=0, server_default="0")
+    model_used = Column(String(255), nullable=True)
+    scope_type = Column(String(20), nullable=False, default="session", server_default="session")
+    scope_ref = Column(String(255), nullable=True)
+    author_user_id = Column(Integer, nullable=True)
+    trust_tier = Column(
+        String(20), nullable=False, default="unverified", server_default="unverified"
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "conversation_id", "version", name="uq_convsum_version"),
+    )
+
+
+class EmbeddingCacheEntry(Base):
+    """Content-addressed embedding cache (§6A.3): (model, content_hash) -> vector.
+
+    Deterministic function cache only -- no org column, no plaintext. A
+    caller must already possess the content to compute the key, so no
+    org-readable data can leak from this table (see shared/memory/embedding_cache.py).
+    """
+
+    __tablename__ = "embedding_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model = Column(String(255), nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    # SQLite/ORM fallback; native vector(768) added on postgres only.
+    embedding_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("model", "content_hash", name="uq_embcache_model_hash"),)
 
 
 class RAGDocument(Base):
@@ -473,7 +587,9 @@ class RoutingMatrixEntry(Base):
     # credential directly. When None, pool selection applies normally.
     credential_label = Column(String(255), nullable=True)
 
-    __table_args__ = (UniqueConstraint("tool_type", "complexity", "region", name="uq_routing_matrix_lookup"),)
+    __table_args__ = (
+        UniqueConstraint("tool_type", "complexity", "region", name="uq_routing_matrix_lookup"),
+    )
 
 
 class AILBUsageRecord(Base):
@@ -505,7 +621,9 @@ class ContentFilterRule(Base):
     action = Column(String(10), nullable=False, default="log")  # 'block', 'redact', 'log'
     redact_with = Column(String(100), nullable=True, default="[REDACTED]")
     enabled = Column(Boolean, nullable=False, default=True)
-    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -522,9 +640,15 @@ class ContentFilterAuditLog(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
     phase = Column(String(10), nullable=False)  # 'input', 'output'
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
-    api_key_id = Column(Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    api_key_id = Column(
+        Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     ip_address = Column(String(45), nullable=True)
     action_taken = Column(String(10), nullable=False)  # 'allow', 'block', 'redact', 'log'
     violations_json = Column(JSON, nullable=True)
@@ -575,8 +699,15 @@ def init_schema(database_url: str):
     if vector_available:
         with engine.connect() as conn:
             # Add vector columns if not present
-            conn.execute(text("ALTER TABLE memory_embeddings " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
-            conn.execute(text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)"))
+            conn.execute(
+                text(
+                    "ALTER TABLE memory_embeddings "
+                    "ADD COLUMN IF NOT EXISTS embedding vector(768)"
+                )
+            )
+            conn.execute(
+                text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)")
+            )
             # IVFFlat indexes for cosine similarity search
             conn.execute(
                 text(
