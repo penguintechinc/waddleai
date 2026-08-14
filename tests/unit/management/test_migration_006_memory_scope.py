@@ -69,7 +69,11 @@ def test_upgrade_backfills_scope_and_author(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "005_add_content_filter_tables")
-    command.upgrade(cfg, "head")
+    # Pinned to 006 specifically, not "head": this test's scratch fixture only
+    # creates the 005-era memory_embeddings table, so it doesn't carry the
+    # other tables later migrations (e.g. 012_knowledge) alter. Upgrading to
+    # "head" would couple this test to every migration appended after 006.
+    command.upgrade(cfg, "006_add_memory_scope")
 
     with engine.connect() as conn:
         row = conn.execute(sa.text("SELECT scope_type, author_user_id, user_id FROM memory_embeddings")).one()
@@ -82,7 +86,8 @@ def test_downgrade_drops_columns(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "005_add_content_filter_tables")
-    command.upgrade(cfg, "head")
+    # Pinned to 006, see comment in test_upgrade_backfills_scope_and_author.
+    command.upgrade(cfg, "006_add_memory_scope")
     command.downgrade(cfg, "-1")
 
     with engine.connect() as conn:

@@ -417,6 +417,20 @@ class MemoryEmbedding(Base):
     # Spec §9.7 field names; v0.4 adds more scope values without renaming.
     scope_type = Column(String(20), nullable=False, default="user", server_default="user", index=True)
     author_user_id = Column(Integer, nullable=False, index=True)
+    # §9.7 (migration 012): remaining scope/trust/version/status/provenance
+    # columns. scope_type/author_user_id above already shipped in 006 and are
+    # NOT redefined here.
+    scope_ref = Column(String(255), nullable=True)
+    trust_tier = Column(
+        String(20), nullable=False, default="unverified", server_default="unverified"
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(
+        String(20), nullable=False, default="active", server_default="active", index=True
+    )
+    expires_at = Column(DateTime, nullable=True)
+    provenance = Column(JSON, nullable=True)
 
 
 class RAGDocument(Base):
@@ -430,6 +444,115 @@ class RAGDocument(Base):
     source = Column(String(500))
     created_at = Column(DateTime, default=datetime.utcnow)
     metadata_ = Column("metadata", JSON, default=dict)
+    # §9.7 (migration 012) scope/trust/version/status/provenance columns.
+    scope_type = Column(String(20), nullable=False, default="org", server_default="org")
+    scope_ref = Column(String(255), nullable=True)
+    author_user_id = Column(Integer, nullable=True)
+    trust_tier = Column(String(20), nullable=False, default="verified", server_default="verified")
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(
+        String(20), nullable=False, default="active", server_default="active", index=True
+    )
+    expires_at = Column(DateTime, nullable=True)
+    provenance = Column(JSON, nullable=True)
+
+
+class CodeRepo(Base):
+    """A git repository registered for CodeRAG indexing (§9.1)."""
+
+    __tablename__ = "code_repos"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    source_url = Column(String(1024), nullable=False)
+    credentials_ref = Column(String(255), nullable=True)  # provider-credential pattern
+    index_status = Column(String(50), nullable=False, default="pending", server_default="pending")
+    last_commit = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_code_repos_org_name"),)
+
+
+class CodeChunk(Base):
+    """A tree-sitter-chunked slice of a repo file, branch-scoped (§9.1/§9.7)."""
+
+    __tablename__ = "code_chunks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    repo_id = Column(
+        Integer, ForeignKey("code_repos.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    path = Column(String(1024), nullable=False)
+    symbol = Column(String(512), nullable=True)
+    kind = Column(String(20), nullable=False)  # function|method|class|module|window
+    start_line = Column(Integer, nullable=False)
+    end_line = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    embedding_json = Column(Text)  # non-Postgres fallback; real installs use the vector column
+    content_hash = Column(String(64), nullable=False, index=True)
+    branch_ref = Column(String(255), nullable=False, default="main", server_default="main")
+    scope_type = Column(String(20), nullable=False, default="repo", server_default="repo")
+    scope_ref = Column(String(255), nullable=True)
+    trust_tier = Column(String(20), nullable=False, default="derived", server_default="derived")
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(
+        String(20), nullable=False, default="active", server_default="active", index=True
+    )
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_code_chunks_repo_branch", "repo_id", "branch_ref"),
+        Index("idx_code_chunks_repo_branch_hash", "repo_id", "branch_ref", "content_hash"),
+    )
+
+
+class DocsSource(Base):
+    """Per-ecosystem license/rate-limit config for the docs research cache (§9.2/§2.5)."""
+
+    __tablename__ = "docs_sources"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ecosystem = Column(String(50), nullable=False, unique=True)
+    base_url = Column(String(512), nullable=False)
+    license = Column(String(100), nullable=False)
+    attribution_required = Column(Boolean, nullable=False, default=False, server_default="false")
+    robots_ttl = Column(Integer, nullable=False, default=86400, server_default="86400")
+    rate_limit_rps = Column(Float, nullable=False, default=1.0, server_default="1.0")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DocsCachePage(Base):
+    """A fetched-and-converted documentation page, cached with TTL (§9.2).
+
+    No org_id by design: cached content is public, generically-licensed
+    language documentation -- never org-private data -- so a shared cache is
+    the point (one fetch serves every org).
+    """
+
+    __tablename__ = "docs_cache_pages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ecosystem = Column(String(50), nullable=False, index=True)
+    package = Column(String(255), nullable=True)
+    version = Column(String(50), nullable=False, default="latest", server_default="latest")
+    url = Column(String(1024), nullable=False)
+    content_md = Column(Text, nullable=False)
+    embedding_json = Column(Text)  # non-Postgres fallback
+    license = Column(String(100), nullable=True)
+    attribution_required = Column(Boolean, nullable=False, default=False, server_default="false")
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+    ttl = Column(Integer, nullable=False, default=2592000, server_default="2592000")  # 30d
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ecosystem", "package", "version", "url", name="uq_docs_cache_lookup"),
+    )
 
 
 class ConversationMemoryConfig(Base):
@@ -589,6 +712,31 @@ def init_schema(database_url: str):
                 text(
                     "CREATE INDEX IF NOT EXISTS rag_documents_emb_idx "
                     "ON rag_documents USING ivfflat (embedding vector_cosine_ops) "
+                    "WITH (lists = 100)"
+                )
+            )
+            # Knowledge layer (§9): code_chunks + docs_cache_pages vector columns.
+            # Guarded the same way as above -- idempotent, skipped gracefully
+            # if pgvector is unavailable. Table-level DDL/FTS for these lives
+            # in migration 012; this block only adds the vector column so a
+            # fresh install via create_all() gets vector search too.
+            conn.execute(
+                text("ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS embedding vector(768)")
+            )
+            conn.execute(
+                text("ALTER TABLE docs_cache_pages ADD COLUMN IF NOT EXISTS embedding vector(768)")
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS code_chunks_emb_idx "
+                    "ON code_chunks USING ivfflat (embedding vector_cosine_ops) "
+                    "WITH (lists = 100)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS docs_cache_pages_emb_idx "
+                    "ON docs_cache_pages USING ivfflat (embedding vector_cosine_ops) "
                     "WITH (lists = 100)"
                 )
             )
