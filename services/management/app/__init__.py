@@ -229,9 +229,11 @@ def register_blueprints(app):
     """Register API blueprints."""
     from .api.v1 import api_v1_bp
     from .api.v1.routing_matrix import routing_matrix_bp
+    from .api.v1.security_policies import security_policies_bp
 
     app.register_blueprint(api_v1_bp, url_prefix="/api/v1")
     app.register_blueprint(routing_matrix_bp)
+    app.register_blueprint(security_policies_bp)
 
     app.logger.info("Registered API v1 blueprints")
 

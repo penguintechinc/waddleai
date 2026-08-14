@@ -67,6 +67,10 @@ class PipelineContext:
     finish_reason: Optional[str] = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
     reservation_id: Optional[str] = None
+    # Security v2 (§8) bookkeeping -- only ever populated when
+    # waddleai.security_v2 is enabled; None under v1 (flag-off byte-identical).
+    security_degraded: bool = False
+    upstream_mapping_id: str | None = None
 
 
 class Stage(ABC):
@@ -306,6 +310,11 @@ class SecurityInStage(Stage):
         scanner: PromptSecurityScanner,
         content_filter: ContentFilter,
         flag: Optional[str] = None,
+        policy_resolver: Any = None,
+        policy_engine: Any = None,
+        intent_classifier: Any = None,
+        bypass_resolver: Any = None,
+        features: Any = None,
     ) -> None:
         """
         Initialize SecurityInStage.
@@ -315,10 +324,22 @@ class SecurityInStage(Stage):
             scanner: PromptSecurityScanner instance
             content_filter: ContentFilter instance
             flag: Optional feature flag to gate this stage
+            policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
+            policy_engine: Optional §8.2 SecurityPolicyEngine (security_v2 only)
+            intent_classifier: Optional §8.3 IntentClassifier (security_v2 only)
+            bypass_resolver: Optional §8.6 BypassResolver (security_v2 only)
+            features: Feature flag helper; when policy_engine is also set,
+                gates the security_v2 code path internally (this stage
+                always runs -- flag-off falls through to v1 below unchanged)
         """
         super().__init__(name, flag)
         self.scanner = scanner
         self.content_filter = content_filter
+        self.policy_resolver = policy_resolver
+        self.policy_engine = policy_engine
+        self.intent_classifier = intent_classifier
+        self.bypass_resolver = bypass_resolver
+        self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
         """
@@ -330,9 +351,21 @@ class SecurityInStage(Stage):
            (updated messages are written back to ctx.messages)
 
         Returns blocked context if threat detected, otherwise filtered context.
+
+        When `waddleai.security_v2` is enabled AND this stage was built with
+        the v2 collaborators (policy_engine etc.), delegates to
+        `_call_v2()` instead -- flag-off (the default) always takes this
+        v1 path unchanged, byte-identical to pre-security-v2 behavior.
         """
         if not ctx.messages:
             return ctx
+
+        if self.policy_engine is not None and self.features is not None:
+            org_id = getattr(ctx.user, "tenant_id", None) or getattr(
+                ctx.user, "organization_id", None
+            )
+            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+                return await self._call_v2(ctx, org_id)
 
         # STEP 1: Prompt security scan (fail fast on injection attacks)
         # Support both id (generic) and user_id (WaddleAI UserContext)
@@ -382,6 +415,75 @@ class SecurityInStage(Stage):
         logger.debug("SecurityInStage: scanned %d messages for user %s", len(ctx.messages), user_id)
         return ctx
 
+    async def _call_v2(self, ctx: PipelineContext, org_id: Any) -> PipelineContext:
+        """Security v2 (§8) input path: resolve -> bypass -> engine + intent classifier.
+
+        Bypass `skip` mode short-circuits enforcement entirely (tiers don't
+        run); `shadow` still runs the full evaluation below but never blocks
+        or redacts, matching §8.6.
+        """
+        from shared.security.intent_classifier import IntentResult
+
+        user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
+        model = ctx.model
+        bypass = None
+        if self.bypass_resolver is not None:
+            bypass = await self.bypass_resolver.resolve(ctx.user)
+
+        filtered_messages = []
+        for msg in ctx.messages:
+            content = msg.get("content", "")
+            resolved = await self.policy_resolver.resolve(
+                org_id, model, tool_name=None, direction="input"
+            )
+
+            if bypass is not None and bypass.active and bypass.mode == "skip":
+                ctx.security_degraded = False
+                filtered_messages.append(msg)
+                continue
+
+            verdict = await self.policy_engine.evaluate(content, "input", resolved, ctx.user)
+            intent_result = IntentResult(action="allow")
+            if self.intent_classifier is not None and resolved.intent_classifier_enabled:
+                intent_result = await self.intent_classifier.classify(
+                    ctx.messages, "", resolved, ctx.user
+                )
+
+            shadowed = bypass is not None and bypass.active and bypass.mode == "shadow"
+            final_action = verdict.action
+            if intent_result.action == "block":
+                final_action = "block"
+            elif intent_result.action == "flag" and final_action == "allow":
+                final_action = "flag"
+
+            if verdict.degraded or intent_result.degraded:
+                ctx.security_degraded = True
+
+            if final_action == "block" and not shadowed:
+                ctx.blocked = True
+                ctx.status_code = 400
+                ctx.block_reason = "security_v2_blocked"
+                logger.warning(
+                    "SecurityInStage(v2): blocked for user %s (degraded=%s)",
+                    user_id,
+                    ctx.security_degraded,
+                )
+                return ctx
+
+            new_content = verdict.filtered_text if not shadowed else content
+            filtered_messages.append({**msg, "content": new_content})
+
+        ctx.messages = filtered_messages
+        logger.debug(
+            "SecurityInStage(v2): scanned %d messages for user %s", len(ctx.messages), user_id
+        )
+        return ctx
+
+
+# §8.7 destination classification for DispatchStage's upstream-filter gate:
+# providers that leave the deployment ("commercial") vs. ones that never do.
+_COMMERCIAL_PROVIDERS = frozenset({"openai", "anthropic", "google", "azure", "bedrock", "gemini"})
+
 
 class DispatchStage(Stage):
     """Call upstream LLM provider and capture response."""
@@ -392,6 +494,9 @@ class DispatchStage(Stage):
         router: LLMRequestRouter,
         connectors: Dict[str, LLMConnector],
         flag: Optional[str] = None,
+        upstream_filter: Any = None,
+        policy_resolver: Any = None,
+        features: Any = None,
     ) -> None:
         """
         Initialize DispatchStage.
@@ -401,10 +506,19 @@ class DispatchStage(Stage):
             router: LLMRequestRouter for provider selection
             connectors: Dict mapping provider name to LLMConnector instance
             flag: Optional feature flag to gate this stage
+            upstream_filter: Optional §8.7 UpstreamFilter (security_v2 only)
+            policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
+            features: Feature flag helper; when upstream_filter is also
+                set, gates the security_v2 pre-dispatch redaction/
+                pseudonymize step internally (flag-off = v1 dispatch
+                unchanged, no upstream transform, no Valkey map)
         """
         super().__init__(name, flag)
         self.router = router
         self.connectors = connectors
+        self.upstream_filter = upstream_filter
+        self.policy_resolver = policy_resolver
+        self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
         """
@@ -457,6 +571,13 @@ class DispatchStage(Stage):
         ctx.requested_model = ctx.model
         ctx.model = target_model
 
+        if self.upstream_filter is not None and self.features is not None:
+            org_id = getattr(ctx.user, "tenant_id", None) or getattr(
+                ctx.user, "organization_id", None
+            )
+            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+                await self._apply_upstream_filter(ctx, org_id, provider, target_model)
+
         try:
             if ctx.stream:
                 # Streaming: accumulate chunks
@@ -475,6 +596,16 @@ class DispatchStage(Stage):
                 ctx.response_text = response_text
                 ctx.usage = usage_info
                 ctx.finish_reason = usage_info.get("finish_reason", "stop")
+
+            if ctx.upstream_mapping_id and self.upstream_filter is not None:
+                # §8.7: de-pseudonymize before the response reaches the
+                # client, then drop the Valkey map -- it must not outlive
+                # this request.
+                ctx.response_text = await self.upstream_filter.depseudonymize(
+                    ctx.response_text, ctx.upstream_mapping_id
+                )
+                await self.upstream_filter.cleanup(ctx.upstream_mapping_id)
+                ctx.upstream_mapping_id = None
 
             logger.debug(
                 "DispatchStage: dispatched to %s/%s (tokens: in=%s, out=%s)",
@@ -522,6 +653,29 @@ class DispatchStage(Stage):
 
         return ctx
 
+    async def _apply_upstream_filter(
+        self, ctx: PipelineContext, org_id: Any, provider: str, target_model: str
+    ) -> None:
+        """§8.7: redact/pseudonymize ctx.messages in place before the connector call.
+
+        Destination-aware via the resolved policy's `applies_to`
+        (commercial|all); `provider` is classified against
+        `_COMMERCIAL_PROVIDERS` to determine `destination_kind`.
+        """
+        destination_kind = "commercial" if provider in _COMMERCIAL_PROVIDERS else "local"
+        resolved = await self.policy_resolver.resolve(
+            org_id, target_model, tool_name=None, direction="input"
+        )
+        filtered_messages = []
+        for msg in ctx.messages:
+            result = await self.upstream_filter.apply(
+                msg.get("content", ""), resolved, destination_kind, ctx.user
+            )
+            filtered_messages.append({**msg, "content": result.text})
+            if result.mapping_id:
+                ctx.upstream_mapping_id = result.mapping_id
+        ctx.messages = filtered_messages
+
 
 class SecurityOutStage(Stage):
     """Filter response output for PII/sensitive data."""
@@ -531,6 +685,9 @@ class SecurityOutStage(Stage):
         name: str,
         content_filter: ContentFilter,
         flag: Optional[str] = None,
+        output_guardrails: Any = None,
+        policy_resolver: Any = None,
+        features: Any = None,
     ) -> None:
         """
         Initialize SecurityOutStage.
@@ -539,9 +696,17 @@ class SecurityOutStage(Stage):
             name: Stage name
             content_filter: ContentFilter instance
             flag: Optional feature flag to gate this stage
+            output_guardrails: Optional §8.4 OutputGuardrails (security_v2 only)
+            policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
+            features: Feature flag helper; when output_guardrails is also
+                set, gates the security_v2 code path internally (this stage
+                always runs -- flag-off falls through to v1 below unchanged)
         """
         super().__init__(name, flag)
         self.content_filter = content_filter
+        self.output_guardrails = output_guardrails
+        self.policy_resolver = policy_resolver
+        self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
         """
@@ -549,9 +714,21 @@ class SecurityOutStage(Stage):
 
         Redacts sensitive data from ctx.response_text. If filter denies the
         response (e.g., contains API keys), sets ctx.blocked.
+
+        When `waddleai.security_v2` is enabled AND this stage was built
+        with the v2 collaborators (output_guardrails etc.), delegates to
+        `_call_v2()` -- flag-off (the default) always takes the v1 path
+        below unchanged.
         """
         if not ctx.response_text:
             return ctx
+
+        if self.output_guardrails is not None and self.features is not None:
+            org_id = getattr(ctx.user, "tenant_id", None) or getattr(
+                ctx.user, "organization_id", None
+            )
+            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+                return await self._call_v2(ctx, org_id)
 
         # Support both id (generic) and user_id (WaddleAI UserContext)
         user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
@@ -611,6 +788,58 @@ class SecurityOutStage(Stage):
             len(filter_result.violations),
         )
 
+        return ctx
+
+    async def _call_v2(self, ctx: PipelineContext, org_id: Any) -> PipelineContext:
+        """Security v2 (§8.4) output path: resolve -> OutputGuardrails.scan_output.
+
+        Non-streaming only (ctx.response_text is already fully accumulated
+        by DispatchStage by the time this stage runs); streaming responses
+        use `OutputGuardrails.scan_stream()` directly at the dispatch
+        boundary, not through this stage.
+        """
+        user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
+        resolved = await self.policy_resolver.resolve(
+            org_id, ctx.model, tool_name=None, direction="output"
+        )
+
+        try:
+            verdict = await self.output_guardrails.scan_output(
+                ctx.response_text, resolved, ctx.user
+            )
+        except (TypeError, AttributeError) as e:
+            # Same fail-CLOSED-on-defect rule as the v1 path above: a
+            # programming error at this call boundary must never be
+            # indistinguishable from an ordinary fail-open transient error.
+            logger.error(
+                "SecurityOutStage(v2): scan_output call is broken (%s: %s) for user %s -- "
+                "blocking response.",
+                type(e).__name__,
+                e,
+                user_id,
+                exc_info=True,
+            )
+            ctx.blocked = True
+            ctx.status_code = 500
+            ctx.block_reason = "output_filter_defect"
+            return ctx
+
+        if verdict.degraded:
+            ctx.security_degraded = True
+
+        if verdict.action == "block":
+            ctx.blocked = True
+            ctx.status_code = 400
+            ctx.block_reason = "security_v2_output_blocked"
+            logger.warning("SecurityOutStage(v2): response blocked for user %s", user_id)
+            return ctx
+
+        ctx.response_text = verdict.filtered_text
+        logger.debug(
+            "SecurityOutStage(v2): filtered output for user %s (redactions=%d)",
+            user_id,
+            verdict.redactions,
+        )
         return ctx
 
 
