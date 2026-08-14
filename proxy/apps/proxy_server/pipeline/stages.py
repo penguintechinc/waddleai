@@ -12,14 +12,20 @@ Future Insertion Points:
     Implements prompt caching and completion reuse.
     Check cache before dispatch, store cache after dispatch (spec §6).
 
-  - RoutingStage: Currently handled inline by DispatchStage via router.select_provider().
-    Future: extract as standalone stage between dispatch provider selection and call
-    (for more granular metrics/control per release §7).
+Landed:
+  - RoutingStage (§7, flag waddleai.smart_routing): between security_in and
+    dispatch, after any CacheStage slot. Resolves tool type -> model
+    assignment -> capability veto -> policy fallback chain -> escalation ->
+    sensitivity -> budget pressure via shared.routing.RoutingEngine, setting
+    ctx.model/ctx.fallback_chain/ctx.routed_from. DispatchStage still owns
+    concrete-endpoint selection (§7.5) and now also consumes
+    ctx.fallback_chain for chaos failover.
 
 Removed:
   - No more empty placeholder stages; insertion points are documented above.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -27,6 +33,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from shared.observability.tracing import get_tracer
+from shared.routing.aliases import explicit_tool_type
+from shared.routing.capability import ModelOffer
+from shared.routing.engine import RoutingEngine, RoutingInput
+from shared.routing.heuristics import HeuristicRule, RequestSignals
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import PromptSecurityScanner
 from shared.utils.llm_connectors import (
@@ -67,6 +77,23 @@ class PipelineContext:
     finish_reason: Optional[str] = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
     reservation_id: Optional[str] = None
+    # Set by SecurityInStage when input PII/sensitive content was detected
+    # (redacted or not); consumed by RoutingStage's sensitivity clamp (§7.3).
+    pii_detected: bool = False
+    # Set by RoutingStage (§7): the policy-sorted qualified candidate chain,
+    # excluding the chosen ctx.model, consumed by DispatchStage for failover.
+    fallback_chain: list[str] = field(default_factory=list)
+    # Set by RoutingStage when an alias/escalation/capability-veto redirect
+    # occurred; surfaced to the client as usage.waddleai.routed_from (§7.6).
+    routed_from: dict | None = None
+    # Read by RoutingStage stage-0 cascade (§7.2): the X-WaddleAI-Tool-Type
+    # header value, threaded through by the caller (main.py) at ctx
+    # construction time rather than read from quart.request inside the
+    # stage, so RoutingStage stays unit-testable without a request context.
+    explicit_tool_type_hint: str | None = None
+    # Read by RoutingStage escalation trigger 4 (§7.3): X-WaddleAI-Escalate
+    # or an "auto:high"/"auto:low" model suffix, same threading rationale.
+    escalate_hint: str | None = None
 
 
 class Stage(ABC):
@@ -359,6 +386,7 @@ class SecurityInStage(Stage):
         # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
         org_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
         filtered_messages = []
+        pii_detected = False
         for msg in ctx.messages:
             content = msg.get("content", "")
             filter_result = await self.content_filter.filter_input(
@@ -375,12 +403,137 @@ class SecurityInStage(Stage):
                 logger.warning("SecurityInStage: PII detected in message for user %s", user_id)
                 return ctx
 
+            # Any violation (even a redacted, allowed one) flags the request
+            # for RoutingStage's sensitivity clamp (§7.3) -- distinct from
+            # ctx.blocked, which only fires on a hard block above.
+            if filter_result.violations:
+                pii_detected = True
+
             # Update message with filtered (redacted) content
             filtered_messages.append({**msg, "content": filter_result.filtered_text})
 
         ctx.messages = filtered_messages
+        ctx.pii_detected = pii_detected
         logger.debug("SecurityInStage: scanned %d messages for user %s", len(ctx.messages), user_id)
         return ctx
+
+
+class RoutingStage(Stage):
+    """Stage 5: unified smart routing (spec §7).
+
+    Resolves tool type (explicit/heuristic/classifier cascade), the model
+    assignment, capability veto, org policy fallback chain, escalation,
+    sensitivity clamp, and budget pressure via RoutingEngine, then sets
+    ctx.model/ctx.fallback_chain/ctx.routed_from for DispatchStage. Flag-gated
+    (waddleai.smart_routing) -- when off, this stage is skipped entirely by
+    ProxyPipeline.run() and ctx.model is left exactly as determine_target_model
+    set it (§14.2 flag-off byte-identical proof).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        engine: RoutingEngine,
+        db: Any,
+        rules: list[HeuristicRule] | None = None,
+        flag: str | None = None,
+    ) -> None:
+        """Initialize RoutingStage.
+
+        Args:
+            name: Stage name
+            engine: RoutingEngine facade composing the full §7 decision
+            db: penguin-dal DB instance exposing model_configs (candidate offers)
+            rules: Org routing_rules_v2 rows for the stage-1 heuristic cascade
+            flag: Optional feature flag to gate this stage
+        """
+        super().__init__(name, flag)
+        self.engine = engine
+        self.db = db
+        self.rules = rules or []
+
+    async def __call__(self, ctx: PipelineContext) -> PipelineContext:
+        """Run the RoutingEngine and apply its decision to ctx.
+
+        Never blocks the request on routing ambiguity -- RoutingEngine
+        always returns a usable model, falling back to ctx.model unchanged
+        if something goes wrong loading candidate offers.
+        """
+        org_id_raw = getattr(ctx.user, "tenant_id", None) or getattr(
+            ctx.user, "organization_id", None
+        )
+        try:
+            org_id = int(org_id_raw) if org_id_raw is not None else 0
+        except (TypeError, ValueError):
+            org_id = 0
+
+        explicit = explicit_tool_type(header_value=ctx.explicit_tool_type_hint, model=ctx.model)
+        signals = RequestSignals(model=ctx.model or "")
+
+        try:
+            offers = await self._load_offers()
+        except Exception as exc:  # pragma: no cover - defensive, DB I/O failure
+            logger.warning(
+                "RoutingStage: failed to load candidate offers, leaving ctx.model unchanged: %s",
+                exc,
+            )
+            return ctx
+
+        request_id = getattr(ctx.user, "request_id", None) or f"{id(ctx):x}"
+        routing_input = RoutingInput(
+            org_id=org_id,
+            request_id=str(request_id),
+            body=ctx.body,
+            explicit_tool_type=explicit,
+            signals=signals,
+            rules=self.rules,
+            offers=offers,
+            pii_detected=ctx.pii_detected,
+            explicit_escalate_hint=ctx.escalate_hint,
+        )
+
+        try:
+            decision = await self.engine.decide(routing_input)
+        except Exception as exc:  # pragma: no cover - defensive, routing must never break dispatch
+            logger.error(
+                "RoutingStage: decide() failed, leaving ctx.model unchanged: %s", exc, exc_info=True
+            )
+            return ctx
+
+        ctx.model = decision.model
+        ctx.fallback_chain = decision.fallback_chain
+        ctx.routed_from = decision.routed_from
+        return ctx
+
+    async def _load_offers(self) -> list[ModelOffer]:
+        """Build the candidate ModelOffer universe from model_configs (penguin-dal).
+
+        Interim capability source until migration 008 (model_registry) lands
+        -- location is inferred from preferred_providers, cost from the mean
+        of the per-provider cost_per_token map.
+        """
+        rows = await asyncio.to_thread(
+            lambda: self.db(self.db.model_configs.enabled == True).select()  # noqa: E712
+        )
+        offers: list[ModelOffer] = []
+        for row in rows:
+            providers = row.preferred_providers or []
+            is_local = any(p in ("ollama", "llamacpp") for p in providers)
+            location = "local" if is_local else "commercial"
+            costs = list((row.cost_per_token or {}).values())
+            avg_cost = sum(costs) / len(costs) if costs else 0.0
+            capabilities = row.capabilities or []
+            offers.append(
+                ModelOffer(
+                    model_name=row.model_name,
+                    context_window=row.context_length or 4096,
+                    cost_per_token=avg_cost,
+                    location=location,
+                    supports_tools=True,
+                    supports_vision="vision" in capabilities,
+                )
+            )
+        return offers
 
 
 class DispatchStage(Stage):
@@ -428,9 +581,21 @@ class DispatchStage(Stage):
         # applies availability filtering (and therefore the circuit breaker,
         # including its half-open probe). Reaching into the private helpers
         # here would let a caller bypass breaker semantics.
+        #
+        # ctx.fallback_chain (§7: populated only when RoutingStage ran, i.e.
+        # empty when the flag is off) is consulted only if the primary model
+        # has no available provider -- this is the chaos-failover path, not a
+        # general retry loop; DispatchStage still calls the router exactly
+        # once per candidate model.
         try:
             model = ctx.model or "gpt-4"
             selection = self.router.select_provider(model)
+            if not selection:
+                for fallback_model in ctx.fallback_chain:
+                    selection = self.router.select_provider(fallback_model)
+                    if selection:
+                        model = fallback_model
+                        break
             if not selection:
                 logger.error("DispatchStage: no available providers for model %s", model)
                 ctx.blocked = True

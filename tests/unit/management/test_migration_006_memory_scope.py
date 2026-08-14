@@ -69,7 +69,11 @@ def test_upgrade_backfills_scope_and_author(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "005_add_content_filter_tables")
-    command.upgrade(cfg, "head")
+    # Target this migration's own revision explicitly, not symbolic "head" --
+    # later migrations (010+) touch tables this scratch DB never creates, so
+    # "head" would drag in schema this test isn't about (see migration 010's
+    # TODO(rebase) note on down_revision chaining).
+    command.upgrade(cfg, "006_add_memory_scope")
 
     with engine.connect() as conn:
         row = conn.execute(sa.text("SELECT scope_type, author_user_id, user_id FROM memory_embeddings")).one()
@@ -82,7 +86,7 @@ def test_downgrade_drops_columns(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "005_add_content_filter_tables")
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "006_add_memory_scope")
     command.downgrade(cfg, "-1")
 
     with engine.connect() as conn:

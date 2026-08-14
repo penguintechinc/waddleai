@@ -455,13 +455,24 @@ class RAGConfig(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class RoutingMatrixEntry(Base):
-    __tablename__ = "routing_matrix"
+class ModelAssignment(Base):
+    """Tool-type -> model assignment (evolves the legacy routing_matrix, §7.1/§7.6).
+
+    The admin's steering wheel: maps a tool type to a default model plus an
+    optional escalation model, scoped global or per-org. Pre-declared rows
+    seed WaddleAI's own internal functions (security-audit, routing-classifier,
+    embeddings, docs-fetch, summarize) per the §2.3 dual-default pattern.
+    complexity/region are retained (now nullable) for backward-compat with the
+    original routing_matrix lookup shape; new rows written by the smart-routing
+    engine leave them unset.
+    """
+
+    __tablename__ = "model_assignments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     tool_type = Column(String(50), nullable=False)
-    complexity = Column(String(10), nullable=False)
-    region = Column(String(5), nullable=False)
+    complexity = Column(String(10), nullable=True)
+    region = Column(String(5), nullable=True)
     model_name = Column(String(255), nullable=False)
     model_params = Column(String(50))
     vram_gb = Column(Integer)
@@ -472,8 +483,151 @@ class RoutingMatrixEntry(Base):
     # When set, LLMConnectionManager bypasses the pool selector and uses this
     # credential directly. When None, pool selection applies normally.
     credential_label = Column(String(255), nullable=True)
+    # §7.1/§7.3: escalation target for this tool type (overrides the org
+    # policy's escalation_target when set); ordered cross-provider equivalents
+    # for §7.3 availability failover (provider_failover=same_class).
+    escalation_model = Column(String(255), nullable=True)
+    fallback_models = Column(JSON, nullable=True)
+    # 'global' (scope_ref NULL) or 'org' (scope_ref = organizations.id).
+    scope = Column(String(10), nullable=False, default="global", server_default="global")
+    scope_ref = Column(Integer, nullable=True)
 
-    __table_args__ = (UniqueConstraint("tool_type", "complexity", "region", name="uq_routing_matrix_lookup"),)
+    __table_args__ = (
+        UniqueConstraint("tool_type", "scope", "scope_ref", name="uq_model_assignments_lookup"),
+    )
+
+
+class ModelConfig(Base):
+    """Per-model routing metadata (§7.6: replaces the hardcoded model_configs dict).
+
+    Mirrors shared.utils.request_router.ModelConfig: preferred providers, cost
+    per token, context/max tokens, and capability tags. Read by the smart
+    routing engine and (once migration 010 is live) by request_router itself
+    instead of the in-process dict.
+    """
+
+    __tablename__ = "model_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_name = Column(String(255), unique=True, nullable=False)
+    preferred_providers = Column(JSON, nullable=False, default=list)
+    cost_per_token = Column(JSON, nullable=False, default=dict)
+    max_tokens = Column(Integer, nullable=False)
+    context_length = Column(Integer, nullable=False)
+    capabilities = Column(JSON, nullable=False, default=list)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ModelAlias(Base):
+    """Admin-controlled model aliasing (§7.2 stage 0).
+
+    Redirects a client-supplied model name (e.g. gpt-4o) to a target model,
+    optionally pinning a target provider. NULL organization_id is a global
+    rule; an org-scoped row overrides the global one for that org.
+    """
+
+    __tablename__ = "model_aliases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    source_model = Column(String(255), nullable=False)
+    target_model = Column(String(255), nullable=False)
+    target_provider = Column(String(100), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "source_model", name="uq_model_aliases_org_source"),
+    )
+
+
+class RoutingRuleV2(Base):
+    """Stage-1 heuristic routing rules (§7.2): cheap, deterministic, no LLM.
+
+    Rules are evaluated in priority order; the first whose ``match`` predicate
+    fits the request fires its ``action`` (tool_type and/or route). Replaces
+    ad-hoc keyword matching in the legacy routing agent.
+    """
+
+    __tablename__ = "routing_rules_v2"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    priority = Column(Integer, nullable=False, default=100)
+    match = Column(JSON, nullable=False, default=dict)
+    action = Column(JSON, nullable=False, default=dict)
+    enabled = Column(Boolean, default=True)
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RoutingPolicy(Base):
+    """Per-org smart-routing policy (§7.3): mode, escalation, sensitivity, budgets.
+
+    One row per organization; a missing row means engine defaults apply. Also
+    absorbs the legacy Valkey ``routing:instructions`` NL-routing UX via
+    classifier_prompt (§7.6).
+    """
+
+    __tablename__ = "routing_policies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    mode = Column(String(20), nullable=False, default="local_first")
+    escalation_threshold = Column(Integer, nullable=False, default=3)
+    escalation_target = Column(String(255), nullable=True)
+    classifier_prompt = Column(Text, nullable=True)
+    de_escalation = Column(String(20), nullable=False, default="idle_reset")
+    idle_reset_minutes = Column(Integer, nullable=False, default=10)
+    sensitivity_routing = Column(String(20), nullable=False, default="local_only")
+    budget_pressure_enabled = Column(Boolean, nullable=False, default=True)
+    provider_failover = Column(String(20), nullable=False, default="off")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RoutingDecisionTrace(Base):
+    """First-class routing decision trace (§7.4): the durable corpus.
+
+    One row per routed request: requirements vector, tool-type source, rules
+    fired, classifier output, assignment applied, capability vetoes, qualified
+    candidates + scores, pressure signals, and the final choice. Powers the
+    per-request WebUI view, aggregate tuning views, and future heuristics
+    training data.
+    """
+
+    __tablename__ = "routing_decision_traces"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, index=True)
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    requirements = Column(JSON, nullable=True)
+    tool_type = Column(String(50), nullable=True)
+    tool_type_source = Column(String(20), nullable=True)  # explicit | heuristic | classifier
+    rules_fired = Column(JSON, nullable=True)
+    classifier_output = Column(JSON, nullable=True)
+    assignment_model = Column(String(255), nullable=True)
+    capability_veto = Column(Boolean, default=False)
+    veto_reason = Column(String(255), nullable=True)
+    qualified_candidates = Column(JSON, nullable=True)
+    pressure_signals = Column(JSON, nullable=True)
+    final_model = Column(String(255), nullable=True)
+    routed_from = Column(JSON, nullable=True)
+    escalated = Column(Boolean, default=False)
+
+    __table_args__ = (
+        Index("idx_rdt_org_timestamp", "organization_id", "timestamp"),
+    )
 
 
 class AILBUsageRecord(Base):

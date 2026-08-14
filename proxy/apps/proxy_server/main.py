@@ -37,10 +37,12 @@ from proxy.apps.proxy_server.pipeline import (
     MeterStage,
     PipelineContext,
     ProxyPipeline,
+    RoutingStage,
     SecurityInStage,
     SecurityOutStage,
     TokenBudgetStage,
 )
+from shared.routing.engine import RoutingEngine
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -114,6 +116,7 @@ class ProxyServer:
         self.token_manager = None
         self.llm_manager = None
         self.request_router = None
+        self.routing_engine = None  # RoutingEngine (§7), built in _build_pipeline()
         self.memory_manager = None
         self.health_monitor = None
         self.http_session = None
@@ -428,6 +431,10 @@ class ProxyServer:
                 async def reconcile(self, reservation_id, actual_tokens, actual_usd):
                     pass
             token_limiter = MockTokenLimiter()
+            # No Valkey in test mode; RoutingEngine/RoutingStage degrade gracefully
+            # (see shared.routing resolvers) when valkey is None -- reads hit the
+            # DB directly with no caching, which is fine for the contract-test tier.
+            valkey = None
         else:
             import redis.asyncio as redis
             valkey_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -444,6 +451,7 @@ class ProxyServer:
                     async def reconcile(self, reservation_id, actual_tokens, actual_usd):
                         pass
                 token_limiter = MockTokenLimiter()
+                valkey = None  # Valkey unavailable; RoutingEngine/RoutingStage degrade gracefully
 
         stages.append(
             TokenBudgetStage(
@@ -454,6 +462,13 @@ class ProxyServer:
             )
         )
 
+        # RoutingEngine (§7): built once here, alongside the token limiter's
+        # valkey client, so it shares the same cache/sticky-escalation store.
+        # classifier_client=None for now -- the stage-2 cascade classifier
+        # connector is a follow-up; heuristics + explicit signals still work,
+        # and determine_tool_type() degrades to a safe "general" fallback.
+        self.routing_engine = RoutingEngine(self.db, valkey=valkey, classifier_client=None)
+
         # Security and dispatch stages
         stages.extend([
             SecurityInStage(
@@ -461,6 +476,12 @@ class ProxyServer:
                 scanner=self.security_scanner,
                 content_filter=self.content_filter,
                 flag=None,
+            ),
+            RoutingStage(
+                name="routing",
+                engine=self.routing_engine,
+                db=self.db,
+                flag="waddleai.smart_routing",
             ),
             DispatchStage(
                 name="dispatch",
@@ -902,6 +923,8 @@ async def chat_completions():
             model=model,
             messages=enhanced_messages,
             stream=stream,
+            explicit_tool_type_hint=request.headers.get("X-WaddleAI-Tool-Type"),
+            escalate_hint=request.headers.get("X-WaddleAI-Escalate"),
         )
 
         # Run the pipeline
@@ -1160,6 +1183,8 @@ async def claude_messages():
             model=model,
             messages=enhanced_messages,
             stream=stream,
+            explicit_tool_type_hint=request.headers.get("X-WaddleAI-Tool-Type"),
+            escalate_hint=request.headers.get("X-WaddleAI-Escalate"),
         )
 
         # Run the pipeline (now includes SecurityInStage and SecurityOutStage
