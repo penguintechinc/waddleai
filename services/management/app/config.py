@@ -74,9 +74,9 @@ class Config:
 
     # Flask-Security-Too settings
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "")
-    SECURITY_PASSWORD_HASH = "bcrypt"
-    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"
-    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"
+    SECURITY_PASSWORD_HASH = "bcrypt"  # nosec B105 -- password HASHING ALGORITHM name, not a password
+    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"  # nosec B105 -- HTTP header name, not a credential
+    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"  # nosec B105 -- session key NAME, not a token value
     SECURITY_TRACKABLE = True
     SECURITY_SEND_REGISTER_EMAIL = False
     SECURITY_REGISTERABLE = False
