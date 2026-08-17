@@ -14,9 +14,11 @@ Future Insertion Points:
 
 Landed:
   - RoutingStage (§7, flag waddleai.smart_routing): between security_in and
-    dispatch, after any CacheStage slot. Resolves tool type -> model
-    assignment -> capability veto -> policy fallback chain -> escalation ->
-    sensitivity -> budget pressure via shared.routing.RoutingEngine, setting
+    dispatch, after any CacheStage slot. Passes ctx.model through as
+    RoutingInput.requested_model, then resolves stage-0 model aliasing ->
+    tool type -> model assignment -> capability veto -> policy fallback
+    chain -> escalation -> sensitivity -> budget pressure via
+    shared.routing.RoutingEngine, setting
     ctx.model/ctx.fallback_chain/ctx.routed_from. DispatchStage still owns
     concrete-endpoint selection (§7.5) and now also consumes
     ctx.fallback_chain for chaos failover.
@@ -485,6 +487,7 @@ class RoutingStage(Stage):
             request_id=str(request_id),
             body=ctx.body,
             explicit_tool_type=explicit,
+            requested_model=ctx.model,
             signals=signals,
             rules=self.rules,
             offers=offers,

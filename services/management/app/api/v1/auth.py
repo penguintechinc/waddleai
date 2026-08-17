@@ -225,6 +225,7 @@ async def verify_auth():
                 "id": g.user["user_id"],
                 "username": g.user["username"],
                 "role": g.user["role"],
+                "organization_id": g.user["organization_id"],
             }
         }
     )

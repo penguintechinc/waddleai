@@ -23,13 +23,13 @@ stage/engine mocked out). What this suite adds that those don't:
    direct RoutingStage.__call__ with a mocked engine -- proves no
    routing_decision_traces row is written and the flag-gating short-circuit
    in ProxyPipeline itself works, not just the stage in isolation.
-5. Alias-redirect gap: shared.routing.aliases.AliasResolver is built and
-   unit-tested (tests/unit/routing/test_aliases.py) but RoutingEngine.decide()
-   never calls it -- a discovered pre-existing gap (see module docstring on
-   shared/routing/aliases.py: "Cascade stage 0"), not one of this pass's
-   named loose ends. test_alias_redirect_is_not_yet_wired_into_engine below
-   pins that gap explicitly rather than silently omitting the plan's
-   "alias redirect visible in routed_from" acceptance item.
+5. Alias redirect end-to-end: shared.routing.aliases.AliasResolver is now
+   wired into RoutingEngine.decide() as stage 0 (see module docstring on
+   shared/routing/aliases.py: "Cascade stage 0"), applied before capability
+   veto so an aliased target can still be vetoed/rerouted like any other
+   assignment. TestAliasRedirectWiredIntoEngine below proves the redirect
+   survives end-to-end through decide() and surfaces in routed_from, per the
+   plan's "alias redirect visible in routed_from" acceptance item.
 
 Coverage gate (spec §14.2, plan Task 15 step 11) is checked separately via
 `pytest tests/ --cov --cov-fail-under=90`, not inside this file.
@@ -325,8 +325,8 @@ class TestFlagOffByteIdenticalProof:
         assert fake_db._tables.get("routing_decision_traces", []) == []
 
 
-class TestAliasRedirectGap:
-    """Alias resolution (spec §7.2 stage 0) is built but not yet wired into the engine."""
+class TestAliasRedirectWiredIntoEngine:
+    """Alias resolution (spec §7.2 stage 0) is wired into RoutingEngine.decide()."""
 
     _ALIAS_ROW = {
         "id": 1,
@@ -353,36 +353,39 @@ class TestAliasRedirectGap:
         assert result.routed_from == "gpt-4o"
 
     @pytest.mark.asyncio
-    async def test_engine_decide_does_not_yet_apply_alias_redirects(self, fake_db: FakeDB) -> None:
-        """KNOWN GAP: RoutingEngine.decide() never calls AliasResolver.
+    async def test_engine_decide_applies_alias_redirects_end_to_end(self, fake_db: FakeDB) -> None:
+        """FIXED: RoutingEngine.decide() now calls AliasResolver as stage 0.
 
-        An aliased client-requested model is not redirected end-to-end yet
-        -- pinned here so this regresses loudly (test failure, not silence)
-        the day someone wires it, per the plan's "alias redirect visible in
-        routed_from" acceptance item (not yet satisfiable without an engine
-        change beyond this pass's scope).
+        A client requesting the aliased "gpt-4o" is redirected to
+        "mistral-large" end-to-end through decide(), with the redirect
+        visible on RouteDecision.routed_from, per the plan's "alias
+        redirect visible in routed_from" acceptance item. The alias target
+        must itself be a real, qualifying offer (as it always is in
+        production, where offers come from every enabled model_configs row)
+        -- otherwise it would be capability-vetoed like any other pick.
         """
         fake_db.seed(
             "model_aliases",
             [self._ALIAS_ROW],
         )
-        # No model_assignments row for "chat" -- capability matching alone
-        # decides, from whichever offers are supplied.
+        # No model_assignments row for "chat" -- without the alias, capability
+        # matching alone would decide, from whichever offers are supplied.
         engine = RoutingEngine(fake_db)
-        offers = [ModelOffer(model_name="gpt-4o", location="commercial", capability_score=3.0)]
+        offers = [
+            ModelOffer(model_name="gpt-4o", location="commercial", capability_score=3.0),
+            ModelOffer(model_name="mistral-large", location="local", capability_score=3.0),
+        ]
 
         decision = await engine.decide(
             RoutingInput(
                 org_id=1,
-                request_id="alias-gap-1",
+                request_id="alias-redirect-1",
                 body={"messages": [{"role": "user", "content": "hi"}]},
                 explicit_tool_type="chat",
+                requested_model="gpt-4o",
                 offers=offers,
             )
         )
 
-        # If this ever starts asserting routed_from == {"cause": "alias", ...}
-        # instead, AliasResolver has been wired in -- update this test's
-        # docstring (and the module docstring above) accordingly instead of
-        # deleting it.
-        assert decision.routed_from is None
+        assert decision.model == "mistral-large"
+        assert decision.routed_from == {"cause": "alias", "from": "gpt-4o", "to": "mistral-large"}

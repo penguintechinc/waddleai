@@ -1,7 +1,7 @@
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Routing from '../pages/Routing';
+import { useAuth } from '../contexts/AuthContext';
 
 // Mock CSS import
 vi.mock('../pages/Routing.css', () => ({}));
@@ -10,11 +10,18 @@ vi.mock('../pages/Routing.css', () => ({}));
 vi.mock('axios');
 import axios from 'axios';
 
-const mockInstructions = {
+// Mock the auth context: Routing.jsx sources organization_id from here, not
+// a prop or a hardcoded default (see AuthContext.jsx / /auth/verify).
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: vi.fn(),
+}));
+
+const mockPolicy = {
   status: 'success',
   data: {
-    instructions: 'Route programming tasks to claude-3-sonnet.',
-    routing_llm: 'llama3.2:1b',
+    organization_id: 1,
+    mode: 'local_first',
+    classifier_prompt: 'Route programming tasks to claude-3-sonnet.',
   },
   meta: { timestamp: '2026-01-01T00:00:00Z' },
 };
@@ -22,13 +29,21 @@ const mockInstructions = {
 describe('Routing page', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    axios.get.mockResolvedValue({ data: mockInstructions });
+    useAuth.mockReturnValue({ user: { id: 1, username: 'admin', organization_id: 1 } });
+    axios.get.mockResolvedValue({ data: mockPolicy });
   });
 
   it('shows loading state initially', () => {
     axios.get.mockReturnValue(new Promise(() => {}));
     render(<Routing />);
     expect(screen.getByText('Loading routing configuration...')).toBeInTheDocument();
+  });
+
+  it('shows loading state when organization_id is not yet available', () => {
+    useAuth.mockReturnValue({ user: { id: 1, username: 'admin' } });
+    render(<Routing />);
+    expect(screen.getByText('Loading routing configuration...')).toBeInTheDocument();
+    expect(axios.get).not.toHaveBeenCalled();
   });
 
   it('renders page header', async () => {
@@ -38,19 +53,19 @@ describe('Routing page', () => {
     });
   });
 
-  it('loads and displays current instructions and routing model', async () => {
+  it('loads and displays the current org-scoped policy classifier_prompt', async () => {
     render(<Routing />);
     await waitFor(() => {
       expect(screen.getByDisplayValue('Route programming tasks to claude-3-sonnet.')).toBeInTheDocument();
     });
-    expect(axios.get).toHaveBeenCalledWith('/api/v1/routing-matrix/instructions');
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/routing/policies/1');
   });
 
   it('shows error message when fetch fails', async () => {
-    axios.get.mockRejectedValue({ response: { data: { error: 'Redis unavailable' } } });
+    axios.get.mockRejectedValue({ response: { data: { error: 'Access denied' } } });
     render(<Routing />);
     await waitFor(() => {
-      expect(screen.getByText('Redis unavailable')).toBeInTheDocument();
+      expect(screen.getByText('Access denied')).toBeInTheDocument();
     });
   });
 
@@ -58,7 +73,7 @@ describe('Routing page', () => {
     axios.get.mockRejectedValue(new Error('Network error'));
     render(<Routing />);
     await waitFor(() => {
-      expect(screen.getByText('Failed to fetch routing instructions')).toBeInTheDocument();
+      expect(screen.getByText('Failed to fetch routing policy')).toBeInTheDocument();
     });
   });
 
@@ -66,14 +81,14 @@ describe('Routing page', () => {
     axios.get.mockRejectedValue(new Error('error'));
     render(<Routing />);
     await waitFor(() => {
-      expect(screen.getByText('Failed to fetch routing instructions')).toBeInTheDocument();
+      expect(screen.getByText('Failed to fetch routing policy')).toBeInTheDocument();
     });
     fireEvent.click(screen.getByRole('button', { name: '×' }));
-    expect(screen.queryByText('Failed to fetch routing instructions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch routing policy')).not.toBeInTheDocument();
   });
 
-  it('saves routing configuration and shows success message', async () => {
-    axios.post.mockResolvedValue({ data: { status: 'success', data: { instructions_length: 10 } } });
+  it('saves the classifier_prompt via PUT to the org-scoped policy route', async () => {
+    axios.put.mockResolvedValue({ data: { status: 'success', data: mockPolicy.data } });
     render(<Routing />);
 
     await waitFor(() => {
@@ -86,14 +101,13 @@ describe('Routing page', () => {
       expect(screen.getByText('Routing configuration saved successfully')).toBeInTheDocument();
     });
 
-    expect(axios.post).toHaveBeenCalledWith('/api/v1/routing-matrix/instructions', {
-      instructions: 'Route programming tasks to claude-3-sonnet.',
-      routing_llm: 'llama3.2:1b',
+    expect(axios.put).toHaveBeenCalledWith('/api/v1/routing/policies/1', {
+      classifier_prompt: 'Route programming tasks to claude-3-sonnet.',
     });
   });
 
   it('shows error when save fails', async () => {
-    axios.post.mockRejectedValue({ response: { data: { error: 'Admin permission required' } } });
+    axios.put.mockRejectedValue({ response: { data: { error: 'Access denied' } } });
     render(<Routing />);
 
     await waitFor(() => {
@@ -103,7 +117,22 @@ describe('Routing page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Routing Configuration' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Admin permission required')).toBeInTheDocument();
+      expect(screen.getByText('Access denied')).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error when save fails without response error field', async () => {
+    axios.put.mockRejectedValue(new Error('Network error'));
+    render(<Routing />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Routing Configuration' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Routing Configuration' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to save routing configuration')).toBeInTheDocument();
     });
   });
 
@@ -117,118 +146,26 @@ describe('Routing page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reload Current' }));
 
     await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledWith('/api/v1/routing-matrix/instructions');
+      expect(axios.get).toHaveBeenCalledWith('/api/v1/routing/policies/1');
     });
   });
 
-  it('tests a routing decision and displays the result', async () => {
-    axios.post.mockResolvedValue({
-      data: {
-        status: 'success',
-        data: {
-          prompt: 'Write a fibonacci function',
-          routing_decision: 'claude-3-sonnet',
-          routing_reasoning: 'Programming task detected',
-          request_type: 'programming',
-          confidence: 0.85,
-          alternative_models: ['gpt-4', 'llama-70b'],
-        },
-      },
-    });
-
-    const user = userEvent.setup();
-    render(<Routing />);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Test Prompt')).toBeInTheDocument();
-    });
-
-    await user.type(screen.getByLabelText('Test Prompt'), 'Write a fibonacci function');
-    fireEvent.click(screen.getByRole('button', { name: 'Test Routing' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('claude-3-sonnet')).toBeInTheDocument();
-    });
-
-    expect(screen.getByText('85.0%')).toBeInTheDocument();
-    expect(axios.post).toHaveBeenCalledWith('/api/v1/routing-matrix/test', {
-      prompt: 'Write a fibonacci function',
-    });
-  });
-
-  it('shows error when test routing fails', async () => {
-    axios.post.mockRejectedValue({ response: { data: { error: 'prompt field required' } } });
-
-    const user = userEvent.setup();
-    render(<Routing />);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Test Prompt')).toBeInTheDocument();
-    });
-
-    await user.type(screen.getByLabelText('Test Prompt'), 'x');
-    fireEvent.click(screen.getByRole('button', { name: 'Test Routing' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('prompt field required')).toBeInTheDocument();
-    });
-  });
-
-  it('disables Test Routing button when prompt is empty', async () => {
+  it('falls back to an empty instructions field when classifier_prompt is empty', async () => {
+    axios.get.mockResolvedValue({ data: { status: 'success', data: { organization_id: 1 }, meta: {} } });
     render(<Routing />);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Test Routing' })).toBeDisabled();
-    });
-  });
-
-  it('falls back to defaults when instructions/routing_llm are empty', async () => {
-    axios.get.mockResolvedValue({ data: { status: 'success', data: {}, meta: {} } });
-    render(<Routing />);
-    await waitFor(() => {
-      expect(screen.getByLabelText('Routing LLM Model')).toHaveValue('llama3.2:1b');
+      expect(screen.getByLabelText('Routing Instructions')).toBeInTheDocument();
     });
     expect(screen.getByLabelText('Routing Instructions')).toHaveValue('');
   });
 
-  it('renders test result without alternative models when field is missing', async () => {
-    axios.post.mockResolvedValue({
-      data: {
-        status: 'success',
-        data: {
-          prompt: 'x',
-          routing_decision: 'claude-3-sonnet',
-          routing_reasoning: 'reason',
-          request_type: 'chat',
-          confidence: 0.5,
-        },
-      },
-    });
-
-    const user = userEvent.setup();
-    render(<Routing />);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Test Prompt')).toBeInTheDocument();
-    });
-
-    await user.type(screen.getByLabelText('Test Prompt'), 'x');
-    fireEvent.click(screen.getByRole('button', { name: 'Test Routing' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('claude-3-sonnet')).toBeInTheDocument();
-    });
-
-    const alternatives = screen.getByText('Alternative Models:').closest('p');
-    expect(alternatives).toHaveTextContent('Alternative Models:');
-  });
-
-  it('changes routing LLM model via select', async () => {
+  it('falls back to an empty instructions field when response.data.data is entirely missing', async () => {
+    axios.get.mockResolvedValue({ data: { status: 'success' } });
     render(<Routing />);
     await waitFor(() => {
-      expect(screen.getByLabelText('Routing LLM Model')).toBeInTheDocument();
+      expect(screen.getByLabelText('Routing Instructions')).toBeInTheDocument();
     });
-    fireEvent.change(screen.getByLabelText('Routing LLM Model'), { target: { value: 'gpt-4o-mini' } });
-    expect(screen.getByLabelText('Routing LLM Model')).toHaveValue('gpt-4o-mini');
+    expect(screen.getByLabelText('Routing Instructions')).toHaveValue('');
   });
 
   it('updates routing instructions textarea', async () => {
@@ -241,7 +178,7 @@ describe('Routing page', () => {
   });
 
   it('dismisses success alert when close button clicked', async () => {
-    axios.post.mockResolvedValue({ data: { status: 'success', data: {} } });
+    axios.put.mockResolvedValue({ data: { status: 'success', data: mockPolicy.data } });
     render(<Routing />);
 
     await waitFor(() => {
@@ -260,7 +197,7 @@ describe('Routing page', () => {
   });
 
   it('clears success message automatically after 3 seconds', async () => {
-    axios.post.mockResolvedValue({ data: { status: 'success', data: {} } });
+    axios.put.mockResolvedValue({ data: { status: 'success', data: mockPolicy.data } });
     render(<Routing />);
 
     await waitFor(() => {
@@ -283,47 +220,5 @@ describe('Routing page', () => {
 
     expect(screen.queryByText('Routing configuration saved successfully')).not.toBeInTheDocument();
     vi.useRealTimers();
-  });
-
-  it('falls back to empty instructions object when response.data.data is entirely missing', async () => {
-    axios.get.mockResolvedValue({ data: { status: 'success' } });
-    render(<Routing />);
-    await waitFor(() => {
-      expect(screen.getByLabelText('Routing LLM Model')).toHaveValue('llama3.2:1b');
-    });
-    expect(screen.getByLabelText('Routing Instructions')).toHaveValue('');
-  });
-
-  it('shows generic error when save fails without response error field', async () => {
-    axios.post.mockRejectedValue(new Error('Network error'));
-    render(<Routing />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Save Routing Configuration' })).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Save Routing Configuration' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Failed to save routing configuration')).toBeInTheDocument();
-    });
-  });
-
-  it('shows generic error when test routing fails without response error field', async () => {
-    axios.post.mockRejectedValue(new Error('Network error'));
-
-    const user = userEvent.setup();
-    render(<Routing />);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Test Prompt')).toBeInTheDocument();
-    });
-
-    await user.type(screen.getByLabelText('Test Prompt'), 'x');
-    fireEvent.click(screen.getByRole('button', { name: 'Test Routing' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Routing test failed')).toBeInTheDocument();
-    });
   });
 });

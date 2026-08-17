@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from shared.routing.aliases import AliasResolver
 from shared.routing.assignments import AssignmentResolver
 from shared.routing.budgets import BudgetPressure, compute_pressure
 from shared.routing.capability import ModelOffer, veto_and_reroute
@@ -50,6 +51,7 @@ class RoutingInput:
     request_id: str
     body: dict
     explicit_tool_type: str | None = None
+    requested_model: str | None = None
     signals: RequestSignals = field(default_factory=RequestSignals)
     rules: list[HeuristicRule] = field(default_factory=list)
     offers: list[ModelOffer] = field(default_factory=list)
@@ -93,6 +95,7 @@ class RoutingEngine:
         self.classifier_client = classifier_client
         self.assignments = AssignmentResolver(db, valkey)
         self.policies = PolicyResolver(db, valkey)
+        self.aliases = AliasResolver(db, valkey)
         self.sticky = StickyState(valkey)
 
     async def decide(self, request: RoutingInput) -> RouteDecision:
@@ -138,6 +141,28 @@ class RoutingEngine:
         reqs = derive_requirements(request.body, complexity=complexity)
 
         assigned_model = assignment.default_model if assignment else None
+        alias_routed_from = None
+        # Stage 0 (spec §7.2): admin-controlled model aliasing. Only a
+        # concrete client-requested model is eligible -- a "waddleai/<tool
+        # type>" pseudo-model is a routing directive, not a real model name,
+        # so it's excluded before ever reaching model_aliases. The raw
+        # (possibly provider-qualified, e.g. "ollama:gemma4:e2b") string is
+        # passed through unstripped: AliasResolver.resolve_alias() does its
+        # own split_provider_prefix() first internally, so stripping again
+        # here would throw away a real provider prefix (misread as "no
+        # provider pin") before it ever reached the resolver -- provider
+        # stripping must happen exactly once, inside the resolver.
+        if request.requested_model and not request.requested_model.startswith("waddleai/"):
+            alias_resolution = await self.aliases.resolve_alias(
+                request.requested_model, request.org_id
+            )
+            if alias_resolution.routed_from is not None:
+                assigned_model = alias_resolution.model
+                alias_routed_from = {
+                    "cause": "alias",
+                    "from": alias_resolution.routed_from,
+                    "to": alias_resolution.model,
+                }
         assigned_offer = _find_offer(request.offers, assigned_model)
         chosen_offer, veto_reason = veto_and_reroute(assigned_offer, request.offers, reqs)
         trace.capability_veto = veto_reason is not None and veto_reason != "no_assignment"
@@ -184,7 +209,7 @@ class RoutingEngine:
             chain = sensitivity_result.candidates
 
         final_model, routed_from = self._pick_final(
-            chosen_offer, chain, assignment, escalation, policy, veto_reason
+            chosen_offer, chain, assignment, escalation, policy, veto_reason, alias_routed_from
         )
         trace.final_model = final_model
         trace.routed_from = routed_from
@@ -235,9 +260,16 @@ class RoutingEngine:
         escalation: EscalationDecision,
         policy: Any,
         veto_reason: str | None,
+        initial_routed_from: dict | None = None,
     ) -> tuple[str, dict | None]:
-        """Select the final model name + routed_from metadata from the composed state."""
-        routed_from: dict | None = None
+        """Select the final model name + routed_from metadata from the composed state.
+
+        ``initial_routed_from`` seeds the transparency metadata with an
+        alias redirect (stage 0, applied before capability veto) so it
+        survives to the final pick unless escalation or a capability veto
+        -- both higher-priority causes -- overrides it below.
+        """
+        routed_from: dict | None = initial_routed_from
 
         if escalation.escalate:
             target = escalation_target(
