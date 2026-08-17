@@ -73,6 +73,9 @@ def flask_app():
         "services.management.app.api.v1.keys",
         "services.management.app.api.v1.usage",
         "services.management.app.api.v1.quotas",
+        "services.management.app.api.v1.webhooks",
+        "services.management.app.api.v1.knowledge",
+        "services.management.app.api.v1.memory_scoping",
     ]
 
     # Ensure the app's OIDC provider uses the same keypair as the test token fixtures.
