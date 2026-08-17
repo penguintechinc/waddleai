@@ -269,6 +269,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.model_aliases",
     "services.management.app.api.v1.routing_decisions",
     "services.management.app.api.v1.routing_dry_run",
+    "services.management.app.api.v1.security_policies",
 ]
 
 

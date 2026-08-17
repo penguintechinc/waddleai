@@ -808,6 +808,20 @@ class ContentFilterAuditLog(Base):
     auditor_used = Column(Boolean, nullable=False, default=False)
     auditor_decision = Column(String(10), nullable=True)  # 'block', 'allow', NULL if not invoked
     request_id = Column(String(64), nullable=True)  # For correlation with proxy logs
+    # Security v2 (§8.9) -- migration 011
+    policy_id = Column(
+        Integer,
+        ForeignKey("security_policies.id", ondelete="SET NULL", name="fk_cfal_policy_id"),
+        nullable=True,
+    )
+    intent_categories = Column(JSON, nullable=True)  # Intent-classifier per-category verdicts
+    degraded = Column(Boolean, nullable=False, default=False)  # True if fail_mode=degrade fired
+    bypass_grant_id = Column(
+        Integer,
+        ForeignKey("security_bypass_grants.id", ondelete="SET NULL", name="fk_cfal_bypass_grant"),
+        nullable=True,
+    )
+    redaction_counts = Column(JSON, nullable=True)  # Per-category counts for metering (§8.7/§8.9)
 
     __table_args__ = (
         Index("idx_cfal_timestamp", "timestamp"),
@@ -867,6 +881,69 @@ class ResponseCacheEntry(Base):
     expires_at = Column(DateTime, nullable=False)
 
     __table_args__ = (Index("idx_rce_org_model_expires", "org_id", "model_class", "expires_at"),)
+class SecurityPolicy(Base):
+    """Scoped security policy row (§8.1).
+
+    Resolution chain is global -> org -> model -> tool/function, most-specific
+    field wins (per-field merge, not whole-row replace -- see
+    shared/security/policy_resolver.py::PolicyResolver).
+    """
+
+    __tablename__ = "security_policies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope_type = Column(String(10), nullable=False)  # 'global' | 'org' | 'model' | 'tool'
+    scope_ref = Column(String(255), nullable=True)  # NULL=global; else org id / model / tool name
+    # Configurable columns are nullable: NULL = inherit from the
+    # next-more-general scope (see migration 011 docstring). Only the
+    # seeded 'global' row is fully populated.
+    tier1_enabled = Column(Boolean, nullable=True)
+    tier2_enabled = Column(Boolean, nullable=True)
+    tier3_enabled = Column(Boolean, nullable=True)
+    tier4_enabled = Column(Boolean, nullable=True)
+    tier4_model = Column(String(100), nullable=True)
+    intent_classifier_enabled = Column(Boolean, nullable=True)
+    intent_categories = Column(JSON, nullable=True)
+    direction = Column(String(10), nullable=False, default="both")  # 'input'|'output'|'both'
+    block_action = Column(String(10), nullable=True)  # 'block' | 'redact' | 'flag'
+    fail_mode = Column(String(10), nullable=True)  # 'open' | 'closed' | 'degrade'
+    on_unclassifiable = Column(String(10), nullable=True)  # 'reject' | 'degrade'
+    auditor_timeout_ms = Column(Integer, nullable=True)
+    latency_budget_ms = Column(Integer, nullable=True)
+    sample_rate = Column(Integer, nullable=True)
+    upstream_filters = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_secpol_scope", "scope_type", "scope_ref", "direction", unique=True),
+    )
+
+
+class SecurityBypassGrant(Base):
+    """Scope-based authorized bypass grant (§8.6) -- researchers/red teams.
+
+    Grantable per user or virtual key; never a role check. Enforcement lives
+    in shared/security/bypass.py::BypassResolver, which additionally requires
+    the `security:bypass` OIDC scope on the caller's token.
+    """
+
+    __tablename__ = "security_bypass_grants"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    subject_type = Column(String(10), nullable=False)  # 'user' | 'vkey'
+    subject_ref = Column(String(255), nullable=False)
+    mode = Column(String(10), nullable=False, default="shadow")  # 'shadow' | 'skip'
+    scope_narrow = Column(JSON, nullable=True)
+    include_upstream = Column(Boolean, nullable=False, default=False)
+    granted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_secbypass_subject", "subject_type", "subject_ref"),
+        Index("idx_secbypass_expires", "expires_at"),
+    )
 
 
 def init_schema(database_url: str):

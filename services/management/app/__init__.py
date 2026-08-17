@@ -234,6 +234,7 @@ def register_blueprints(app):
     from .api.v1.routing_dry_run import routing_dry_run_bp
     from .api.v1.routing_policies import routing_policies_bp
     from .api.v1.routing_rules import routing_rules_bp
+    from .api.v1.security_policies import security_policies_bp
 
     app.register_blueprint(api_v1_bp, url_prefix="/api/v1")
     app.register_blueprint(routing_assignments_bp)
@@ -242,6 +243,7 @@ def register_blueprints(app):
     app.register_blueprint(model_aliases_bp)
     app.register_blueprint(routing_decisions_bp)
     app.register_blueprint(routing_dry_run_bp)
+    app.register_blueprint(security_policies_bp)
 
     app.logger.info("Registered API v1 blueprints")
 
