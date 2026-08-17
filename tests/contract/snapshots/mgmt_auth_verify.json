@@ -2,6 +2,7 @@
   "body": {
     "user": {
       "id": "<VOLATILE>",
+      "organization_id": 1,
       "role": "admin",
       "username": "admin"
     }

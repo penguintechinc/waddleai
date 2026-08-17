@@ -36,6 +36,7 @@ from proxy.apps.proxy_server.pipeline import (
     MeterStage,
     PipelineContext,
     ProxyPipeline,
+    RoutingStage,
     SecurityInStage,
     SecurityOutStage,
     TokenBudgetStage,
@@ -45,6 +46,9 @@ from proxy.apps.proxy_server.pipeline.memory_stages import (
     ScratchpadStage,
     SummarizationStage,
 )
+from shared.routing.classifier_connector import LLMConnectorClassifierClient
+from shared.routing.engine import RoutingEngine
+from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -226,6 +230,7 @@ class ProxyServer:
         self.token_manager = None
         self.llm_manager = None
         self.request_router = None
+        self.routing_engine = None  # RoutingEngine (§7), built in _build_pipeline()
         self.memory_manager = None
         self.health_monitor = None
         self.http_session = None
@@ -484,7 +489,16 @@ class ProxyServer:
             grpc_port = int(os.getenv("GRPC_PORT", "50051"))
             grpc_auth_token = os.getenv("PROXY_GRPC_AUTH_TOKEN")
             components = ServerComponents(
-                routing_agent=getattr(self.request_router, "routing_agent", None),
+                # RoutingEngine-backed (§7.6) -- the retired RoutingAgent
+                # wiring here was always None in practice (LLMRequestRouter
+                # never set a routing_agent attribute), so EvaluateRoute
+                # unconditionally returned UNAVAILABLE; this repoints it at
+                # the real engine instead of leaving it permanently broken.
+                routing_agent=(
+                    RoutingEngineRouteEvaluator(self.routing_engine, self.db)
+                    if self.routing_engine is not None
+                    else None
+                ),
                 security_agent=getattr(self.security_scanner, "security_agent", None),
                 usage_tracker=getattr(self.token_manager, "usage_tracker", None),
                 memory_manager=self.memory_manager,
@@ -639,6 +653,10 @@ class ProxyServer:
                     pass
 
             token_limiter = MockTokenLimiter()
+            # No Valkey in test mode; RoutingEngine/RoutingStage degrade gracefully
+            # (see shared.routing resolvers) when valkey is None -- reads hit the
+            # DB directly with no caching, which is fine for the contract-test tier.
+            valkey = None
         else:
             # `valkey` was already constructed above (shared by TokenBudgetStage
             # and CacheStage); TokenLimiter never issues a call on a client that
@@ -667,6 +685,18 @@ class ProxyServer:
             logger.warning("Embedding manager unavailable; semantic cache layer disabled: %s", e)
         self.response_cache = create_response_cache(
             db=self.db, valkey=valkey, embedder=embedder, features=self.features
+        )
+
+        # RoutingEngine (§7): built once here, alongside the token limiter's
+        # valkey client, so it shares the same cache/sticky-escalation store.
+        # classifier_client wires the real stage-2 guard model (gemma4:e2b,
+        # §2.3) through the same LLMConnectionManager used for provider
+        # dispatch -- heuristics + explicit signals still resolve first
+        # (cascade is cheapest-first); a classifier call failure degrades to
+        # the safe "general" fallback rather than breaking the request.
+        classifier_client = LLMConnectorClassifierClient(self.llm_manager)
+        self.routing_engine = RoutingEngine(
+            self.db, valkey=valkey, classifier_client=classifier_client
         )
 
         # Security-in stage
@@ -702,6 +732,12 @@ class ProxyServer:
         dedup_store = DedupStore(self.memory_valkey)
         self.proxy_memory_config_resolver = config_resolver
 
+        # RoutingStage (§7) is stage 5 per its own docstring, landing after any
+        # CacheStage slot and before DispatchStage: security_in -> scratchpad ->
+        # summarize -> dedup -> cache -> routing -> dispatch. A cache hit still
+        # short-circuits DispatchStage before any routing-engine work runs, and
+        # routing sees the fully-assembled dispatch context (post memory-layer
+        # substitutions) rather than the raw request.
         stages.extend(
             [
                 ScratchpadStage(
@@ -730,6 +766,12 @@ class ProxyServer:
                 CacheStage(
                     name="cache",
                     response_cache=self.response_cache,
+                ),
+                RoutingStage(
+                    name="routing",
+                    engine=self.routing_engine,
+                    db=self.db,
+                    flag="waddleai.smart_routing",
                 ),
             ]
         )
@@ -1209,6 +1251,8 @@ async def chat_completions():
             stream=stream,
             response_format="openai",
             session_id=session_id,
+            explicit_tool_type_hint=request.headers.get("X-WaddleAI-Tool-Type"),
+            escalate_hint=request.headers.get("X-WaddleAI-Escalate"),
         )
 
         # Run the pipeline
@@ -1295,18 +1339,24 @@ async def chat_completions():
             },
         }
         # Additive-only, and only when populated (spec §14.2): with the cache
-        # flag off and no memory-layer activity, the `waddleai` key must not
-        # appear at all -- not even as {} -- so responses stay byte-identical
-        # to pre-cache/pre-memory snapshots. Cache (§6.4) and proxy-memory
-        # (§6A.5) accounting share the single additive `usage.waddleai`
-        # object -- see _merge_waddleai_usage for how overlapping fields
-        # (tokens_saved) combine.
+        # flag off, no memory-layer activity, and no routing redirect, the
+        # `waddleai` key must not appear at all -- not even as {} -- so
+        # responses stay byte-identical to pre-cache/pre-memory/pre-routing
+        # snapshots. Cache (§6.4), proxy-memory (§6A.5), and routing (§7.6)
+        # accounting share the single additive `usage.waddleai` object -- see
+        # _merge_waddleai_usage for how overlapping fields (tokens_saved)
+        # combine; routed_from (None when RoutingStage didn't redirect the
+        # model -- flag off, or no alias/escalation/capability-veto fired) is
+        # disjoint from both, so it's merged in last.
         cache_meta = (
             _build_waddleai_cache_usage(ctx)
             if _cache_flag_enabled(str(user_context.user_id))
             else None
         )
-        waddleai_usage = _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx))
+        routing_meta = {"routed_from": ctx.routed_from} if ctx.routed_from else None
+        waddleai_usage = _merge_waddleai_usage(
+            _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx)), routing_meta
+        )
         if waddleai_usage is not None:
             response_dict["usage"]["waddleai"] = waddleai_usage
 
@@ -1532,6 +1582,8 @@ async def claude_messages():
             stream=stream,
             response_format="anthropic",
             session_id=session_id,
+            explicit_tool_type_hint=request.headers.get("X-WaddleAI-Tool-Type"),
+            escalate_hint=request.headers.get("X-WaddleAI-Escalate"),
         )
 
         # Run the pipeline (now includes SecurityInStage and SecurityOutStage
@@ -1614,14 +1666,17 @@ async def claude_messages():
             },
         }
         # Additive-only, and only when populated -- see the matching comment
-        # in chat_completions() above (cache + proxy-memory accounting share
-        # the single additive usage.waddleai object).
+        # in chat_completions() above (cache, proxy-memory, and routing
+        # accounting share the single additive usage.waddleai object).
         cache_meta = (
             _build_waddleai_cache_usage(ctx)
             if _cache_flag_enabled(str(user_context.user_id))
             else None
         )
-        waddleai_usage = _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx))
+        routing_meta = {"routed_from": ctx.routed_from} if ctx.routed_from else None
+        waddleai_usage = _merge_waddleai_usage(
+            _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx)), routing_meta
+        )
         if waddleai_usage is not None:
             response_dict["usage"]["waddleai"] = waddleai_usage
 

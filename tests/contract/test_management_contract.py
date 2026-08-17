@@ -230,22 +230,38 @@ def test_memory_config_embedding(management_url):
 
 
 # ---------------------------------------------------------------------------
-# routing_matrix
+# routing_assignments / routing_policies / routing_rules / model_aliases /
+# routing_decisions (spec §7.6) -- `routing_matrix` (and its Redis-backed
+# `/instructions` NL-routing surface, superseded by routing_policies'
+# classifier_prompt) was retired and renamed to routing_assignments.
 # ---------------------------------------------------------------------------
 
 
-def test_routing_matrix_list(management_url):
-    r = httpx.get(f"{management_url}/api/v1/routing-matrix/", headers=_login(management_url))
-    assert_snapshot("mgmt_routing_matrix_list", status=r.status_code, body=r.json())
+def test_routing_assignments_list(management_url):
+    r = httpx.get(f"{management_url}/api/v1/routing/assignments/", headers=_login(management_url))
+    assert_snapshot("mgmt_routing_assignments_list", status=r.status_code, body=r.json())
 
 
-def test_routing_config_instructions(management_url):
-    # Ported legacy routing-config admin surface parity (task C1): routing-LLM
-    # instructions + selected model, Redis-backed (REDIS_URL="" in the
-    # contract harness, so this exercises the graceful "not configured"
-    # default path -- same default text the legacy plane used).
-    r = httpx.get(f"{management_url}/api/v1/routing-matrix/instructions", headers=_login(management_url))
-    assert_snapshot("mgmt_routing_config_instructions", status=r.status_code, body=r.json())
+def test_routing_policies_get_defaults(management_url):
+    # Org 1 (the seeded admin's org) has no routing_policies row yet -- the
+    # engine-defaults fallback path.
+    r = httpx.get(f"{management_url}/api/v1/routing/policies/1", headers=_login(management_url))
+    assert_snapshot("mgmt_routing_policies_get_defaults", status=r.status_code, body=r.json())
+
+
+def test_routing_rules_list(management_url):
+    r = httpx.get(f"{management_url}/api/v1/routing/rules/", headers=_login(management_url))
+    assert_snapshot("mgmt_routing_rules_list", status=r.status_code, body=r.json())
+
+
+def test_model_aliases_list(management_url):
+    r = httpx.get(f"{management_url}/api/v1/routing/aliases/", headers=_login(management_url))
+    assert_snapshot("mgmt_model_aliases_list", status=r.status_code, body=r.json())
+
+
+def test_routing_decisions_summary(management_url):
+    r = httpx.get(f"{management_url}/api/v1/routing/decisions/", headers=_login(management_url))
+    assert_snapshot("mgmt_routing_decisions_summary", status=r.status_code, body=r.json())
 
 
 # ---------------------------------------------------------------------------
