@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "010_routing_engine"
-down_revision: str | None = "006_add_memory_scope"
+down_revision: str | None = "009b_proxy_memory"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
