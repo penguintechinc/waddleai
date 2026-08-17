@@ -179,6 +179,34 @@ class TestRoutingEngineTransparency:
         assert rows[0]["organization_id"] == 9
         assert rows[0]["final_model"] == "only-option"
 
+    @pytest.mark.asyncio
+    async def test_persist_false_writes_no_decision_trace(self, fake_db):
+        """persist=False (admin dry-run) computes a real decision but writes zero rows.
+
+        Regression guard for the routing_dry_run admin endpoint: a what-if
+        evaluation must never pollute the routing_decision_traces corpus
+        (spec §7.4 treats it as first-class training/tuning data).
+        """
+        fake_db.seed("model_assignments", [_assignment_row("research", "assigned-model")])
+        engine = RoutingEngine(fake_db)
+        offers = [_offer("assigned-model", score=2.0), _offer("higher-score", score=5.0)]
+        request = RoutingInput(
+            org_id=9,
+            request_id="dryrun-req",
+            body=_body(),
+            explicit_tool_type="research",
+            offers=offers,
+        )
+
+        decision = await engine.decide(request, persist=False)
+
+        # Still a genuine, fully-computed decision -- the assignment row is honored.
+        assert decision.model == "assigned-model"
+        assert decision.trace is not None
+        assert decision.trace.final_model == "assigned-model"
+        # ...but nothing durable was written (table never even created).
+        assert fake_db._tables.get("routing_decision_traces", []) == []
+
 
 class TestRoutingEngineSensitivityIntegration:
     """PII-flagged requests never dispatch commercial under local_only (security)."""

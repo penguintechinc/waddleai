@@ -470,3 +470,144 @@ class TestRoutingDecisions:
         data = await resp.get_json()
         # org query param is ignored for non-admins -- always their own org (1).
         assert data["meta"]["organization_id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# routing_dry_run
+# ---------------------------------------------------------------------------
+
+_DRY_RUN_FLAG_ENV = "WADDLEAI_FLAG_ROUTING_DRY_RUN"
+
+
+class TestRoutingDryRun:
+    """Tests for the admin-only /api/v1/routing/dry-run endpoint.
+
+    Genuine replacement for the retired static-response /routing-matrix/test
+    -- these assertions specifically prove the response is computed from the
+    supplied input (varies with tool_type/prompt) rather than hardcoded, and
+    that RoutingEngine.decide(persist=False) writes no decision trace.
+    """
+
+    async def test_requires_auth(self, client) -> None:
+        """Missing auth returns 401."""
+        resp = await client.post("/api/v1/routing/dry-run/", json={"prompt": "hi"})
+        assert resp.status_code == 401
+
+    async def test_non_admin_forbidden(self, client, rm_auth_headers: dict) -> None:
+        """resource_manager (or any non-admin role) cannot run a dry-run decision."""
+        resp = await client.post(
+            "/api/v1/routing/dry-run/", headers=rm_auth_headers, json={"prompt": "hi"}
+        )
+        assert resp.status_code == 403
+
+    async def test_missing_prompt_rejected(self, client, auth_headers: dict) -> None:
+        """An empty body / missing prompt is rejected before the flag or engine ever run."""
+        resp = await client.post("/api/v1/routing/dry-run/", headers=auth_headers, json={})
+        assert resp.status_code == 400
+
+    async def test_blank_prompt_rejected(self, client, auth_headers: dict) -> None:
+        """A whitespace-only prompt is rejected."""
+        resp = await client.post(
+            "/api/v1/routing/dry-run/", headers=auth_headers, json={"prompt": "   "}
+        )
+        assert resp.status_code == 400
+
+    async def test_invalid_tool_type_type_rejected(self, client, auth_headers: dict) -> None:
+        """tool_type must be a string, not e.g. an integer."""
+        resp = await client.post(
+            "/api/v1/routing/dry-run/",
+            headers=auth_headers,
+            json={"prompt": "hi", "tool_type": 123},
+        )
+        assert resp.status_code == 400
+
+    async def test_invalid_organization_id_rejected(self, client, auth_headers: dict) -> None:
+        """A non-integer organization_id is rejected."""
+        resp = await client.post(
+            "/api/v1/routing/dry-run/",
+            headers=auth_headers,
+            json={"prompt": "hi", "organization_id": "not-an-int"},
+        )
+        assert resp.status_code == 400
+
+    async def test_flag_disabled_returns_403(
+        self, client, auth_headers: dict, monkeypatch
+    ) -> None:
+        """The endpoint is gated behind waddleai.routing-dry-run, default OFF."""
+        monkeypatch.delenv(_DRY_RUN_FLAG_ENV, raising=False)
+        monkeypatch.delenv("POSTHOG_KEY", raising=False)
+
+        resp = await client.post(
+            "/api/v1/routing/dry-run/", headers=auth_headers, json={"prompt": "hi"}
+        )
+        assert resp.status_code == 403
+
+    async def test_dry_run_reflects_explicit_tool_type_and_writes_nothing(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """A genuine (input-dependent) decision is returned, with zero persistence side effects.
+
+        No model_configs/model_assignments rows are seeded, so RoutingEngine
+        falls through its documented last-resort default ("gpt-4") -- the
+        point of this test is that tool_type/tool_type_source echo the
+        *supplied* input (proving real computation, not a canned response)
+        while nothing is written to the database.
+        """
+        monkeypatch.setenv(_DRY_RUN_FLAG_ENV, "1")
+
+        resp = await client.post(
+            "/api/v1/routing/dry-run/",
+            headers=auth_headers,
+            json={"prompt": "Write a bubble sort in Python", "tool_type": "code"},
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["status"] == "success"
+        data = body["data"]
+        assert data["tool_type"] == "code"
+        assert data["tool_type_source"] == "explicit"
+        assert data["model"] == "gpt-4"
+        assert "confidence" not in data
+        assert body["meta"]["persisted"] is False
+
+        # Proves the dry run truly mutates nothing: no trace row inserted,
+        # no commit issued anywhere during the request.
+        app_mock_db.routing_decision_traces.insert.assert_not_called()
+        app_mock_db.commit.assert_not_called()
+
+    async def test_dry_run_without_explicit_tool_type_degrades_to_classifier_default(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """No explicit tool_type + no classifier connector -> the documented safe default.
+
+        Different input (no tool_type hint) yields a different tool_type/
+        source than the explicit-hint test above -- further proof this is a
+        live decision, not a hardcoded string.
+        """
+        monkeypatch.setenv(_DRY_RUN_FLAG_ENV, "1")
+
+        resp = await client.post(
+            "/api/v1/routing/dry-run/", headers=auth_headers, json={"prompt": "hello there"}
+        )
+        assert resp.status_code == 200
+        data = (await resp.get_json())["data"]
+        assert data["tool_type"] == "general"
+        assert data["tool_type_source"] == "classifier"
+
+        app_mock_db.routing_decision_traces.insert.assert_not_called()
+        app_mock_db.commit.assert_not_called()
+
+    async def test_admin_can_target_another_organization_id(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """Admin may override organization_id to dry-run against another org's config."""
+        monkeypatch.setenv(_DRY_RUN_FLAG_ENV, "1")
+
+        resp = await client.post(
+            "/api/v1/routing/dry-run/",
+            headers=auth_headers,
+            json={"prompt": "hi", "organization_id": 42},
+        )
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["organization_id"] == 42

@@ -98,7 +98,7 @@ class RoutingEngine:
         self.aliases = AliasResolver(db, valkey)
         self.sticky = StickyState(valkey)
 
-    async def decide(self, request: RoutingInput) -> RouteDecision:
+    async def decide(self, request: RoutingInput, persist: bool = True) -> RouteDecision:
         """Run the full routing decision cascade for one request.
 
         Never raises for ordinary routing ambiguity (missing assignment,
@@ -108,6 +108,14 @@ class RoutingEngine:
 
         Args:
             request: The composed RoutingInput for this request.
+            persist: When False, skip the ``routing_decision_traces`` insert
+                (spec §7.4) -- the decision is still fully computed via the
+                real cascade, only the durable trace write is suppressed.
+                Used by the admin dry-run endpoint
+                (``services/management/app/api/v1/routing_dry_run.py``) so a
+                what-if evaluation never pollutes the trace corpus. Defaults
+                to True so every existing caller (RoutingStage,
+                RoutingEngineRouteEvaluator) keeps writing traces unchanged.
 
         Returns:
             RouteDecision with the chosen model, ordered fallback chain, and
@@ -214,7 +222,8 @@ class RoutingEngine:
         trace.final_model = final_model
         trace.routed_from = routed_from
 
-        await persist_trace(self.db, trace)
+        if persist:
+            await persist_trace(self.db, trace)
 
         fallback_chain = [o.model_name for o in chain if o.model_name != final_model]
         return RouteDecision(
