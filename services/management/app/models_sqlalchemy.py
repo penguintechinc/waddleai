@@ -90,6 +90,10 @@ class APIKey(Base):
     permissions = Column(JSON)
     allowed_endpoints = Column(JSON)
     api_access_level = Column(String(50))
+    # §6A.5 per-key proxy-memory config block (scratchpad/summarization/
+    # embedding_cache/schema_dedup). NULL = feature defaults apply.
+    # See shared/memory/config.py::resolve_proxy_memory_config.
+    proxy_memory = Column(JSON, nullable=True)
 
 
 class AIProvider(Base):
@@ -428,6 +432,105 @@ class MemoryEmbedding(Base):
         String(20), nullable=False, default="user", server_default="user", index=True
     )
     author_user_id = Column(Integer, nullable=False, index=True)
+    # §9.7 retrofit (migration 009b) -- the remaining scope/trust/attribution
+    # columns; scope_type/author_user_id above predate this (migration 006).
+    scope_ref = Column(String(255), nullable=True)
+    trust_tier = Column(
+        String(20), nullable=False, default="unverified", server_default="unverified"
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(
+        String(20), nullable=False, default="active", server_default="active", index=True
+    )
+    expires_at = Column(DateTime, nullable=True)
+
+
+class SessionScratchpad(Base):
+    """Per-(org, session, user) KV working set (§6A.1).
+
+    Valkey holds the hot path; this table is the durable spill/re-warm
+    tier. All rows are session-scoped, trust `unverified`, and pass
+    through shared.memory.provenance.filter_on_write before persist.
+    """
+
+    __tablename__ = "session_scratchpad"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(255), nullable=False, index=True)
+    key = Column(String(255), nullable=False)
+    value = Column(Text, nullable=True)
+    scope_type = Column(String(20), nullable=False, default="session", server_default="session")
+    scope_ref = Column(String(255), nullable=True)
+    author_user_id = Column(Integer, nullable=True)
+    trust_tier = Column(
+        String(20), nullable=False, default="unverified", server_default="unverified"
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "session_id", "user_id", "key", name="uq_scratchpad_key"),
+    )
+
+
+class ConversationSummary(Base):
+    """Threshold-triggered rolling conversation summary (§6A.2).
+
+    Versioned via ``superseded_by`` -- a repeat summarization never mutates
+    a prior row; it writes a new version and points the old one forward.
+    """
+
+    __tablename__ = "conversation_summaries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String(255), nullable=False, index=True)
+    org_id = Column(Integer, nullable=False, index=True)
+    summary = Column(Text, nullable=False)
+    covers_through_turn = Column(Integer, nullable=False)
+    tokens_summarized = Column(Integer, nullable=False, default=0, server_default="0")
+    model_used = Column(String(255), nullable=True)
+    scope_type = Column(String(20), nullable=False, default="session", server_default="session")
+    scope_ref = Column(String(255), nullable=True)
+    author_user_id = Column(Integer, nullable=True)
+    trust_tier = Column(
+        String(20), nullable=False, default="unverified", server_default="unverified"
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    superseded_by = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "conversation_id", "version", name="uq_convsum_version"),
+    )
+
+
+class EmbeddingCacheEntry(Base):
+    """Content-addressed embedding cache (§6A.3): (model, content_hash) -> vector.
+
+    Deterministic function cache only -- no org column, no plaintext. A
+    caller must already possess the content to compute the key, so no
+    org-readable data can leak from this table (see shared/memory/embedding_cache.py).
+    """
+
+    __tablename__ = "embedding_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model = Column(String(255), nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    # SQLite/ORM fallback; native vector(768) added on postgres only.
+    embedding_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("model", "content_hash", name="uq_embcache_model_hash"),)
 
 
 class RAGDocument(Base):

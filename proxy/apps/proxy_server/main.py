@@ -40,6 +40,11 @@ from proxy.apps.proxy_server.pipeline import (
     SecurityOutStage,
     TokenBudgetStage,
 )
+from proxy.apps.proxy_server.pipeline.memory_stages import (
+    DedupStage,
+    ScratchpadStage,
+    SummarizationStage,
+)
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -166,6 +171,50 @@ def _maybe_write_back_cache(ctx: PipelineContext, response_dict: dict, usage: di
     asyncio.ensure_future(ctx.cache_write_back(response_dict, usage))
 
 
+def _waddleai_usage_meta(ctx: PipelineContext) -> dict | None:
+    """Build the additive `usage.waddleai` object from ctx.usage_meta (§6A.5).
+
+    Returns None when there is nothing to report (flag off, or the memory
+    stages ran but had no effect) so callers omit the key entirely rather
+    than adding an empty/zeroed object to every response -- additive-only,
+    never renames or removes an existing usage field (§14.2).
+    """
+    if not ctx.usage_meta:
+        return None
+    result: dict = {}
+    if "summarized" in ctx.usage_meta:
+        result["summarized"] = ctx.usage_meta["summarized"]
+    if ctx.usage_meta.get("tokens_elided"):
+        result["tokens_elided"] = ctx.usage_meta["tokens_elided"]
+    if ctx.usage_meta.get("tokens_saved"):
+        result["tokens_saved"] = ctx.usage_meta["tokens_saved"]
+    if ctx.usage_meta.get("scratchpad_substitutions"):
+        result["scratchpad_substitutions"] = ctx.usage_meta["scratchpad_substitutions"]
+    return result or None
+
+
+def _merge_waddleai_usage(cache_meta: dict | None, memory_meta: dict | None) -> dict | None:
+    """Combine §6.4 cache accounting and §6A.5 proxy-memory accounting into one `usage.waddleai`.
+
+    Both features report a `tokens_saved` figure; spec §6A.4 has memory
+    savings "surface in usage.waddleai.tokens_saved alongside cache
+    savings", so the two are summed into a single field rather than one
+    clobbering the other. Every other key is disjoint between the two
+    inputs. Returns None only when both inputs are None, so a flag-off,
+    no-memory-activity response omits the `waddleai` key entirely (§14.2)
+    instead of adding an empty object.
+    """
+    if cache_meta is None and memory_meta is None:
+        return None
+    merged: dict = dict(cache_meta or {})
+    for key, value in (memory_meta or {}).items():
+        if key == "tokens_saved" and "tokens_saved" in merged:
+            merged["tokens_saved"] += value
+        else:
+            merged[key] = value
+    return merged
+
+
 class ProxyServer:
     """WaddleAI Proxy Server"""
 
@@ -185,6 +234,8 @@ class ProxyServer:
         self.pipeline = None  # Built once in startup
         self.features = None  # Feature flag helper for pipeline
         self.response_cache = None  # ResponseCache facade (shared.cache), built in startup
+        self.memory_valkey = None  # §6A proxy memory layers' shared Valkey client
+        self.mcp_server = None  # §6A scratchpad MCP tool registry
 
         # penguin-aaa components
         self.oidc_provider = None
@@ -239,6 +290,18 @@ class ProxyServer:
         self.rbac_enforcer = build_rbac_enforcer()
         logger.info("penguin-aaa OIDC provider and RP initialized")
 
+        # Feature flags (moved ahead of memory-manager construction below --
+        # the §6A embedding/retrieval caches need self.features to resolve
+        # their startup-time enable gate).
+        class FeatureFlagsHelper:
+            """Simple wrapper to provide is_feature_enabled method for pipeline."""
+
+            @staticmethod
+            def is_feature_enabled(flag_key: str, distinct_id: str = None) -> bool:
+                return is_feature_enabled(flag_key, distinct_id or "server", default=False)
+
+        self.features = FeatureFlagsHelper()
+
         self.security_scanner = create_security_scanner(self.db, self.config["security_policy"])
         self.content_filter = ContentFilter(
             db=self.db,
@@ -251,10 +314,60 @@ class ProxyServer:
         from shared.utils.memory_integration import ReadReplicaPool
 
         replica_pool = ReadReplicaPool.from_env("DATABASE_REPLICA_URL")
+
+        # Shared Valkey client for the §6A proxy memory layers (scratchpad,
+        # summarizer, embedding/retrieval caches, dedup store) -- constructed
+        # once here rather than per-pipeline-build so memory_manager and the
+        # pipeline stages (built later, see _build_pipeline) share one
+        # connection. redis.from_url is lazy (no I/O at construction), so
+        # this is safe even when Valkey isn't actually reachable in this
+        # environment (e.g. contract-test mode) -- the flag defaults OFF,
+        # so nothing calls into it unless waddleai.proxy_memory is enabled.
+        try:
+            import redis.asyncio as redis
+
+            self.memory_valkey = redis.from_url(
+                os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
+            )
+        except Exception as e:
+            logger.warning("Memory-layer Valkey client init failed: %s", e)
+            self.memory_valkey = None
+
+        # §6A.3 embedding/retrieval caches (fail-safe: enabled only when the
+        # whole-feature flag is on at startup). Per-key `embedding_cache`/
+        # `schema_dedup` config narrows further at the pipeline-stage layer
+        # (DedupStage, and the memory-manager paths this backs); this
+        # startup-time gate is coarser -- WaddleAIMemoryManager is a single
+        # shared instance with no per-request org context threaded through
+        # it today, so a per-org check isn't wired at this layer yet.
+        from shared.memory.config import PROXY_MEMORY_FLAG
+
+        proxy_memory_flag_on = self.features.is_feature_enabled(
+            PROXY_MEMORY_FLAG, distinct_id="server"
+        )
+
+        from shared.utils.embedding_manager import create_embedding_manager
+
+        embedding_manager = create_embedding_manager()
+
+        embed_cache = None
+        retrieval_cache = None
+        if self.memory_valkey is not None:
+            from shared.memory.embedding_cache import CachedEmbedder
+            from shared.memory.retrieval_cache import RetrievalResultCache
+
+            embed_cache = CachedEmbedder(
+                self.memory_valkey, self.db, embedding_manager, enabled=proxy_memory_flag_on
+            )
+            retrieval_cache = RetrievalResultCache(self.memory_valkey, enabled=proxy_memory_flag_on)
+
         self.memory_manager = create_memory_manager(
             backend="pgvector",
             write_db=self.db,
             replica_pool=replica_pool,
+            embedding_manager=embedding_manager,
+            embed_cache=embed_cache,
+            retrieval_cache=retrieval_cache,
         )
 
         # Initialize HTTP session for external requests
@@ -292,17 +405,6 @@ class ProxyServer:
 
         # Wire memory manager into mem0-compatible API
         set_memory_manager(self.memory_manager)
-
-        # Initialize feature flags for pipeline stage gating
-        # Create a simple wrapper around the is_feature_enabled function
-        class FeatureFlagsHelper:
-            """Simple wrapper to provide is_feature_enabled method for pipeline."""
-
-            @staticmethod
-            def is_feature_enabled(flag_key: str, distinct_id: str = None) -> bool:
-                return is_feature_enabled(flag_key, distinct_id or "server", default=False)
-
-        self.features = FeatureFlagsHelper()
 
         # In test mode, add stub connector to llm_manager so pipeline dispatch works
         if _TEST_MODE:
@@ -357,9 +459,20 @@ class ProxyServer:
 
         # Build the ProxyPipeline once (reused for all requests).
         # Stages execute in order: auth → token_budget → security_in →
-        # dispatch → security_out → meter
+        # scratchpad → summarize → dedup → dispatch → security_out → meter
         self.pipeline = self._build_pipeline()
         logger.info("ProxyPipeline built with %d stages", len(self.pipeline.stages))
+
+        # §6A.1 scratchpad MCP tools (scratchpad_put/get/list) -- registered
+        # whenever the store was constructed (_build_pipeline always builds
+        # one; it's simply unreachable when the flag is off, per
+        # resolve_proxy_memory_config's fail-safe-OFF default).
+        from shared.utils.mcp_interface import MCPServer
+
+        self.mcp_server = MCPServer(
+            scratchpad_store=self.scratchpad_store,
+            proxy_memory_config_resolver=self.proxy_memory_config_resolver,
+        )
 
         if _TEST_MODE:
             # Skip gRPC (external sidecar port bind, irrelevant to the HTTP
@@ -527,6 +640,10 @@ class ProxyServer:
 
             token_limiter = MockTokenLimiter()
         else:
+            # `valkey` was already constructed above (shared by TokenBudgetStage
+            # and CacheStage); TokenLimiter never issues a call on a client that
+            # failed to construct in the first place (that path takes the
+            # MockTokenLimiter branch above via `valkey is None`).
             token_limiter = TokenLimiter(valkey=valkey, features=self.features)
 
         stages.append(
@@ -552,19 +669,73 @@ class ProxyServer:
             db=self.db, valkey=valkey, embedder=embedder, features=self.features
         )
 
-        # Security, cache, and dispatch stages
+        # Security-in stage
+        stages.append(
+            SecurityInStage(
+                name="security_in",
+                scanner=self.security_scanner,
+                content_filter=self.content_filter,
+                flag=None,
+            )
+        )
+
+        # §6A proxy memory layers -- inserted after SecurityInStage, before
+        # CacheStage/DispatchStage: context assembly runs on post-security-filter
+        # content (poisoning defense §3.6). Order: scratchpad -> summarize ->
+        # dedup -> cache. Memory assembly runs before CacheStage (settled per
+        # memory_stages.py's module docstring) so cache keys hash the
+        # fully-assembled dispatch context rather than the raw request.
+        from shared.memory.config import PROXY_MEMORY_FLAG, build_config_resolver
+        from shared.memory.dedup_store import DedupStore
+        from shared.memory.scratchpad import ScratchpadStore
+        from shared.memory.summarizer import ConversationSummarizer
+        from shared.memory.token_len_cache import TokenLenCache
+
+        config_resolver = build_config_resolver(self.db, self.features)
+        token_len_cache = TokenLenCache(self.memory_valkey)
+        self.scratchpad_store = ScratchpadStore(
+            self.memory_valkey, self.db, self.security_scanner, self.content_filter
+        )
+        summarizer = ConversationSummarizer(
+            self.db, self.llm_manager, token_len_cache, self.security_scanner, self.content_filter
+        )
+        dedup_store = DedupStore(self.memory_valkey)
+        self.proxy_memory_config_resolver = config_resolver
+
         stages.extend(
             [
-                SecurityInStage(
-                    name="security_in",
+                ScratchpadStage(
+                    name="scratchpad",
+                    store=self.scratchpad_store,
+                    config_resolver=config_resolver,
                     scanner=self.security_scanner,
                     content_filter=self.content_filter,
-                    flag=None,
+                    flag=PROXY_MEMORY_FLAG,
+                ),
+                SummarizationStage(
+                    name="summarize",
+                    summarizer=summarizer,
+                    config_resolver=config_resolver,
+                    scanner=self.security_scanner,
+                    content_filter=self.content_filter,
+                    flag=PROXY_MEMORY_FLAG,
+                ),
+                DedupStage(
+                    name="dedup",
+                    dedup_store=dedup_store,
+                    token_len_cache=token_len_cache,
+                    config_resolver=config_resolver,
+                    flag=PROXY_MEMORY_FLAG,
                 ),
                 CacheStage(
                     name="cache",
                     response_cache=self.response_cache,
                 ),
+            ]
+        )
+
+        stages.extend(
+            [
                 DispatchStage(
                     name="dispatch",
                     router=self.request_router,
@@ -801,7 +972,7 @@ async def get_current_user():
 def determine_target_model(
     request_model: str | None, user_context, x_preferred_model: str | None = None
 ) -> str:
-    """Determine target model using a fallback hierarchy.
+    """Determine target model using a fallback hierarchy:
 
     1. Request model parameter (if provided)
     2. X-Preferred-Model header (if provided)
@@ -1007,8 +1178,16 @@ async def chat_completions():
             or "gpt-3.5-turbo"
         )  # Final fallback
 
-        # Get session ID for memory (could be from headers or body)
-        session_id = body.get("session_id") or request.headers.get("X-Session-ID")
+        # Get session ID for memory (could be from headers or body).
+        # X-WaddleAI-Session (§6A) takes priority -- it's the identity the
+        # proxy memory layers (scratchpad/summarizer) key off; X-Session-ID
+        # and body.session_id remain supported for the pre-existing
+        # conversation-memory feature.
+        session_id = (
+            request.headers.get("X-WaddleAI-Session")
+            or body.get("session_id")
+            or request.headers.get("X-Session-ID")
+        )
 
         # Get conversation context from memory and enhance messages
         conversation_context = await proxy_server.memory_manager.get_conversation_context(
@@ -1029,6 +1208,7 @@ async def chat_completions():
             messages=enhanced_messages,
             stream=stream,
             response_format="openai",
+            session_id=session_id,
         )
 
         # Run the pipeline
@@ -1114,12 +1294,21 @@ async def chat_completions():
                 "waddleai_tokens": token_usage.waddleai_tokens,
             },
         }
-        # Additive-only, and only when the flag is on (spec §14.2): with the
-        # flag off, CacheStage never ran and this key must not appear at all
-        # -- not even as {"cache": "miss", ...} -- so flag-off responses stay
-        # byte-identical to pre-cache-feature snapshots.
-        if _cache_flag_enabled(str(user_context.user_id)):
-            response_dict["usage"]["waddleai"] = _build_waddleai_cache_usage(ctx)
+        # Additive-only, and only when populated (spec §14.2): with the cache
+        # flag off and no memory-layer activity, the `waddleai` key must not
+        # appear at all -- not even as {} -- so responses stay byte-identical
+        # to pre-cache/pre-memory snapshots. Cache (§6.4) and proxy-memory
+        # (§6A.5) accounting share the single additive `usage.waddleai`
+        # object -- see _merge_waddleai_usage for how overlapping fields
+        # (tokens_saved) combine.
+        cache_meta = (
+            _build_waddleai_cache_usage(ctx)
+            if _cache_flag_enabled(str(user_context.user_id))
+            else None
+        )
+        waddleai_usage = _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx))
+        if waddleai_usage is not None:
+            response_dict["usage"]["waddleai"] = waddleai_usage
 
         # Write-back only after SecurityOutStage has already passed (spec §3.6
         # poisoning defense) -- pipeline.run() completed without ctx.blocked,
@@ -1314,8 +1503,13 @@ async def claude_messages():
             or model
         )
 
-        # Get session ID for memory
-        session_id = body.get("session_id") or request.headers.get("X-Session-ID")
+        # Get session ID for memory. X-WaddleAI-Session (§6A) takes priority
+        # -- see the matching comment in chat_completions().
+        session_id = (
+            request.headers.get("X-WaddleAI-Session")
+            or body.get("session_id")
+            or request.headers.get("X-Session-ID")
+        )
 
         # Get conversation context from memory and enhance messages
         # (For Anthropic format, content arrays are preserved as-is)
@@ -1337,6 +1531,7 @@ async def claude_messages():
             messages=enhanced_messages,
             stream=stream,
             response_format="anthropic",
+            session_id=session_id,
         )
 
         # Run the pipeline (now includes SecurityInStage and SecurityOutStage
@@ -1418,10 +1613,17 @@ async def claude_messages():
                 "output_tokens": usage_info.get("output_tokens", 0),
             },
         }
-        # Additive-only, and only when the flag is on -- see the matching
-        # comment in chat_completions() above.
-        if _cache_flag_enabled(str(user_context.user_id)):
-            response_dict["usage"]["waddleai"] = _build_waddleai_cache_usage(ctx)
+        # Additive-only, and only when populated -- see the matching comment
+        # in chat_completions() above (cache + proxy-memory accounting share
+        # the single additive usage.waddleai object).
+        cache_meta = (
+            _build_waddleai_cache_usage(ctx)
+            if _cache_flag_enabled(str(user_context.user_id))
+            else None
+        )
+        waddleai_usage = _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx))
+        if waddleai_usage is not None:
+            response_dict["usage"]["waddleai"] = waddleai_usage
 
         # Write-back only after SecurityOutStage has already passed (spec §3.6
         # poisoning defense) -- see _maybe_write_back_cache docstring.

@@ -92,6 +92,13 @@ class PipelineContext:
     # main.py-level gap shared with the (also not yet implemented) streaming
     # miss path -- see shared.cache.response_cache module docstring.
     stream_iter: Any | None = None
+    # §6A memory layers (proxy/apps/proxy_server/pipeline/memory_stages.py):
+    # X-WaddleAI-Session header, plumbed in by the endpoint handler; conversation/
+    # scratchpad identity is keyed off this, never off unauthenticated request state.
+    session_id: str | None = None
+    # Additive-only accounting surfaced as the `usage.waddleai` response object
+    # (§6A.5): {summarized, tokens_elided, tokens_saved, scratchpad_substitutions}.
+    usage_meta: dict[str, Any] = field(default_factory=dict)
 
 
 class Stage(ABC):

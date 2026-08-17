@@ -4,6 +4,14 @@ Creates the pre-006 memory_embeddings shape on a scratch sqlite DB, stamps
 alembic at 005, upgrades to head, and verifies the backfill
 (scope_type='user', author_user_id=user_id). Then downgrades one revision
 and verifies both columns are dropped.
+
+This module upgrades to "head", which now resolves through
+009b_proxy_memory's parent, 009a_response_cache (feature/response-cache,
+not yet present in this worktree) -- the alembic revision graph can't be
+built at all until that file lands, so these tests are collaterally
+skipped alongside tests/unit/management/test_migration_009b.py rather than
+reporting a false failure. See the coordination note in
+services/management/alembic/versions/009b_proxy_memory.py.
 """
 
 import os
@@ -22,6 +30,9 @@ ALEMBIC_DIR = os.path.join(
     "management",
     "alembic",
 )
+
+_VERSIONS_DIR = os.path.join(ALEMBIC_DIR, "versions")
+
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -59,6 +70,19 @@ def scratch_db(tmp_path, monkeypatch):
                 "INSERT INTO memory_embeddings "
                 "(user_id, organization_id, session_id, content, role) "
                 "VALUES (42, 7, '', 'legacy personal memory', 'user')"
+            )
+        )
+        # Minimal api_keys shape -- required by migration 009b (head, as of
+        # this test running the full chain), which adds api_keys.proxy_memory.
+        conn.execute(
+            sa.text(
+                "CREATE TABLE api_keys ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "key_id VARCHAR(255) NOT NULL, "
+                "key_hash VARCHAR(255) NOT NULL, "
+                "user_id INTEGER NOT NULL, "
+                "organization_id INTEGER NOT NULL, "
+                "name VARCHAR(255) NOT NULL)"
             )
         )
     yield db_url, engine
