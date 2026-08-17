@@ -67,8 +67,8 @@ def test_upgrade_creates_cache_tables_and_seeds_default(scratch_db):
     """Upgrade creates cache tables and seeds default."""
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
-    command.stamp(cfg, "006_add_memory_scope")
-    command.upgrade(cfg, "head")
+    command.stamp(cfg, "008_model_registry")
+    command.upgrade(cfg, "009a_response_cache")
 
     with engine.connect() as conn:
         cc_cols = {r[1] for r in conn.execute(sa.text("PRAGMA table_info(cache_configs)"))}
@@ -126,8 +126,8 @@ def test_downgrade_drops_tables_and_columns(scratch_db):
     """Downgrade drops tables and columns."""
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
-    command.stamp(cfg, "006_add_memory_scope")
-    command.upgrade(cfg, "head")
+    command.stamp(cfg, "008_model_registry")
+    command.upgrade(cfg, "009a_response_cache")
     command.downgrade(cfg, "-1")
 
     with engine.connect() as conn:
@@ -153,4 +153,6 @@ def test_alembic_heads_single(scratch_db):
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
     assert len(heads) == 1
-    assert heads[0] == "009a_response_cache"
+    # Assert the single-head invariant, not that this revision IS the head:
+    # hardcoding that breaks the moment any later migration lands.
+    assert "009a_response_cache" in {sc.revision for sc in script.walk_revisions()}

@@ -103,7 +103,7 @@ def test_upgrade_creates_and_seeds_model_registry(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "007_drop_ailb_add_native_limits")
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "008_model_registry")
 
     assert "model_registry" in _table_names(engine)
 
@@ -133,7 +133,7 @@ def test_upgrade_adds_plan_budget_column(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "007_drop_ailb_add_native_limits")
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "008_model_registry")
 
     assert "plan_budget" in _columns(engine, "provider_credentials")
 
@@ -142,7 +142,7 @@ def test_downgrade_drops_model_registry_and_plan_budget(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "007_drop_ailb_add_native_limits")
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "008_model_registry")
     command.downgrade(cfg, "-1")
 
     assert "model_registry" not in _table_names(engine)
@@ -155,4 +155,6 @@ def test_single_head():
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
     assert len(heads) == 1
-    assert heads[0] == "008_model_registry"
+    # Assert the single-head invariant, not that this revision IS the head:
+    # hardcoding that breaks the moment any later migration lands.
+    assert "008_model_registry" in {sc.revision for sc in script.walk_revisions()}
