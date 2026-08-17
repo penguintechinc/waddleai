@@ -69,10 +69,15 @@ def test_upgrade_backfills_scope_and_author(scratch_db):
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "005_add_content_filter_tables")
+    # Pinned to 006 (not "head"): this fixture only creates the pre-006
+    # memory_embeddings shape, and later migrations (e.g. 009a) touch tables
+    # this scratch DB doesn't have. This test verifies 006 specifically.
     command.upgrade(cfg, "006_add_memory_scope")
 
     with engine.connect() as conn:
-        row = conn.execute(sa.text("SELECT scope_type, author_user_id, user_id FROM memory_embeddings")).one()
+        row = conn.execute(
+            sa.text("SELECT scope_type, author_user_id, user_id FROM memory_embeddings")
+        ).one()
     assert row.scope_type == "user"
     assert row.author_user_id == 42
     assert row.author_user_id == row.user_id

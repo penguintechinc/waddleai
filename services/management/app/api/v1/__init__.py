@@ -7,6 +7,7 @@ api_v1_bp = Blueprint("api_v1", __name__)
 # Import all route modules to register them
 from . import (
     auth,
+    cache_configs,
     cilium,
     keys,
     llamacpp,
