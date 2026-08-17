@@ -1,10 +1,15 @@
-"""
-AILB Memory Injection Configuration Routes
+"""Memory Injection Configuration Routes
 
 Manages per-organization configuration for:
 - Conversation memory injection (mem0 via pgvector)
 - RAG document retrieval injection
 - Embedding backend settings (ollama/openai/anthropic)
+
+Re-homed from the deleted MarchProxy AILB coupling (formerly
+``api/v1/ailb_memory.py`` under the ``/ailb/*`` prefix) -- this
+functionality is native to WaddleAI's own memory subsystem and was never
+actually AILB-specific, so it survives the MarchProxy deletion under its
+own top-level path.
 """
 
 import asyncio
@@ -24,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@api_v1_bp.route("/ailb/memory-config", methods=["GET"])
+@api_v1_bp.route("/memory-config", methods=["GET"])
 @require_auth
 @require_role("admin")
 async def get_memory_config():
@@ -34,6 +39,7 @@ async def get_memory_config():
         return jsonify({"error": "organization_id required"}), 400
 
     try:
+
         def _fetch():
             rows = db(db.conversation_memory_configs.organization_id == org_id).select()
             return rows.first() if rows else None
@@ -70,7 +76,7 @@ async def get_memory_config():
         return jsonify({"error": str(exc)}), 500
 
 
-@api_v1_bp.route("/ailb/memory-config", methods=["POST"])
+@api_v1_bp.route("/memory-config", methods=["POST"])
 @require_auth
 @require_role("admin")
 async def set_memory_config():
@@ -81,6 +87,7 @@ async def set_memory_config():
         return jsonify({"error": "organization_id required"}), 400
 
     try:
+
         def _upsert():
             existing = db(db.conversation_memory_configs.organization_id == org_id).select().first()
             if existing:
@@ -113,7 +120,7 @@ async def set_memory_config():
 # ---------------------------------------------------------------------------
 
 
-@api_v1_bp.route("/ailb/rag-config", methods=["GET"])
+@api_v1_bp.route("/rag-config", methods=["GET"])
 @require_auth
 @require_role("admin")
 async def get_rag_config():
@@ -123,6 +130,7 @@ async def get_rag_config():
         return jsonify({"error": "organization_id required"}), 400
 
     try:
+
         def _fetch():
             rows = db(db.rag_configs.organization_id == org_id).select()
             return rows.first() if rows else None
@@ -161,7 +169,7 @@ async def get_rag_config():
         return jsonify({"error": str(exc)}), 500
 
 
-@api_v1_bp.route("/ailb/rag-config", methods=["POST"])
+@api_v1_bp.route("/rag-config", methods=["POST"])
 @require_auth
 @require_role("admin")
 async def set_rag_config():
@@ -172,6 +180,7 @@ async def set_rag_config():
         return jsonify({"error": "organization_id required"}), 400
 
     try:
+
         def _upsert():
             existing = db(db.rag_configs.organization_id == org_id).select().first()
             if existing:
@@ -206,7 +215,7 @@ async def set_rag_config():
 # ---------------------------------------------------------------------------
 
 
-@api_v1_bp.route("/ailb/embedding-config", methods=["GET"])
+@api_v1_bp.route("/embedding-config", methods=["GET"])
 @require_auth
 @require_role("admin")
 async def get_embedding_config():
@@ -214,6 +223,7 @@ async def get_embedding_config():
     org_id = request.args.get("organization_id", type=int)  # optional; None = global
 
     try:
+
         def _fetch():
             if org_id:
                 rows = db(db.embedding_settings.organization_id == org_id).select()
@@ -255,7 +265,7 @@ async def get_embedding_config():
         return jsonify({"error": str(exc)}), 500
 
 
-@api_v1_bp.route("/ailb/embedding-config", methods=["POST"])
+@api_v1_bp.route("/embedding-config", methods=["POST"])
 @require_auth
 @require_role("admin")
 async def set_embedding_config():
@@ -269,6 +279,7 @@ async def set_embedding_config():
     org_id = data.get("organization_id")  # None = global default
 
     try:
+
         def _upsert():
             if org_id:
                 existing = db(db.embedding_settings.organization_id == org_id).select().first()

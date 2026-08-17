@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-from . import waddleai_pb2 as marchproxy_dot_waddleai__pb2
+from . import proxy_pb2 as waddleai_dot_v1_dot_proxy__pb2
 
-GRPC_GENERATED_VERSION = '1.69.0'
+GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in marchproxy/waddleai_pb2_grpc.py depends on'
+        + ' but the generated code in waddleai/v1/proxy_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -26,7 +26,9 @@ if _version_not_supported:
 
 
 class WaddleAIServiceStub(object):
-    """Missing associated documentation comment in .proto file."""
+    """Health checking uses the standard grpc.health.v1.Health service
+    (grpcio-health-checking), wired at server startup — not redefined here.
+    """
 
     def __init__(self, channel):
         """Constructor.
@@ -35,78 +37,74 @@ class WaddleAIServiceStub(object):
             channel: A grpc.Channel.
         """
         self.EvaluateRoute = channel.unary_unary(
-                '/marchproxy.WaddleAIService/EvaluateRoute',
-                request_serializer=marchproxy_dot_waddleai__pb2.RouteRequest.SerializeToString,
-                response_deserializer=marchproxy_dot_waddleai__pb2.RouteResponse.FromString,
+                '/waddleai.v1.WaddleAIService/EvaluateRoute',
+                request_serializer=waddleai_dot_v1_dot_proxy__pb2.RouteRequest.SerializeToString,
+                response_deserializer=waddleai_dot_v1_dot_proxy__pb2.RouteResponse.FromString,
                 _registered_method=True)
         self.EvaluateSecurity = channel.unary_unary(
-                '/marchproxy.WaddleAIService/EvaluateSecurity',
-                request_serializer=marchproxy_dot_waddleai__pb2.SecurityRequest.SerializeToString,
-                response_deserializer=marchproxy_dot_waddleai__pb2.SecurityResponse.FromString,
+                '/waddleai.v1.WaddleAIService/EvaluateSecurity',
+                request_serializer=waddleai_dot_v1_dot_proxy__pb2.SecurityRequest.SerializeToString,
+                response_deserializer=waddleai_dot_v1_dot_proxy__pb2.SecurityResponse.FromString,
                 _registered_method=True)
         self.StoreTurn = channel.unary_unary(
-                '/marchproxy.WaddleAIService/StoreTurn',
-                request_serializer=marchproxy_dot_waddleai__pb2.StoreTurnRequest.SerializeToString,
-                response_deserializer=marchproxy_dot_waddleai__pb2.StoreTurnResponse.FromString,
+                '/waddleai.v1.WaddleAIService/StoreTurn',
+                request_serializer=waddleai_dot_v1_dot_proxy__pb2.StoreTurnRequest.SerializeToString,
+                response_deserializer=waddleai_dot_v1_dot_proxy__pb2.StoreTurnResponse.FromString,
                 _registered_method=True)
         self.GetContext = channel.unary_unary(
-                '/marchproxy.WaddleAIService/GetContext',
-                request_serializer=marchproxy_dot_waddleai__pb2.GetContextRequest.SerializeToString,
-                response_deserializer=marchproxy_dot_waddleai__pb2.GetContextResponse.FromString,
+                '/waddleai.v1.WaddleAIService/GetContext',
+                request_serializer=waddleai_dot_v1_dot_proxy__pb2.GetContextRequest.SerializeToString,
+                response_deserializer=waddleai_dot_v1_dot_proxy__pb2.GetContextResponse.FromString,
                 _registered_method=True)
         self.SearchMemories = channel.unary_unary(
-                '/marchproxy.WaddleAIService/SearchMemories',
-                request_serializer=marchproxy_dot_waddleai__pb2.SearchMemoriesRequest.SerializeToString,
-                response_deserializer=marchproxy_dot_waddleai__pb2.SearchMemoriesResponse.FromString,
+                '/waddleai.v1.WaddleAIService/SearchMemories',
+                request_serializer=waddleai_dot_v1_dot_proxy__pb2.SearchMemoriesRequest.SerializeToString,
+                response_deserializer=waddleai_dot_v1_dot_proxy__pb2.SearchMemoriesResponse.FromString,
                 _registered_method=True)
         self.ReportUsage = channel.unary_unary(
-                '/marchproxy.WaddleAIService/ReportUsage',
-                request_serializer=marchproxy_dot_waddleai__pb2.UsageReport.SerializeToString,
-                response_deserializer=marchproxy_dot_waddleai__pb2.UsageAck.FromString,
+                '/waddleai.v1.WaddleAIService/ReportUsage',
+                request_serializer=waddleai_dot_v1_dot_proxy__pb2.UsageReport.SerializeToString,
+                response_deserializer=waddleai_dot_v1_dot_proxy__pb2.UsageAck.FromString,
                 _registered_method=True)
 
 
 class WaddleAIServiceServicer(object):
-    """Missing associated documentation comment in .proto file."""
+    """Health checking uses the standard grpc.health.v1.Health service
+    (grpcio-health-checking), wired at server startup — not redefined here.
+    """
 
     def EvaluateRoute(self, request, context):
-        """Routing: Evaluate prompt complexity, return model recommendation
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def EvaluateSecurity(self, request, context):
-        """Security: Evaluate raw tool command for threats
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def StoreTurn(self, request, context):
-        """Memory: Store conversation turn
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def GetContext(self, request, context):
-        """Memory: Retrieve context for session
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def SearchMemories(self, request, context):
-        """Memory: Search memories
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def ReportUsage(self, request, context):
-        """Usage: Report token usage per model/user (Premium — license-gated on WaddleAI side)
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -116,44 +114,46 @@ def add_WaddleAIServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'EvaluateRoute': grpc.unary_unary_rpc_method_handler(
                     servicer.EvaluateRoute,
-                    request_deserializer=marchproxy_dot_waddleai__pb2.RouteRequest.FromString,
-                    response_serializer=marchproxy_dot_waddleai__pb2.RouteResponse.SerializeToString,
+                    request_deserializer=waddleai_dot_v1_dot_proxy__pb2.RouteRequest.FromString,
+                    response_serializer=waddleai_dot_v1_dot_proxy__pb2.RouteResponse.SerializeToString,
             ),
             'EvaluateSecurity': grpc.unary_unary_rpc_method_handler(
                     servicer.EvaluateSecurity,
-                    request_deserializer=marchproxy_dot_waddleai__pb2.SecurityRequest.FromString,
-                    response_serializer=marchproxy_dot_waddleai__pb2.SecurityResponse.SerializeToString,
+                    request_deserializer=waddleai_dot_v1_dot_proxy__pb2.SecurityRequest.FromString,
+                    response_serializer=waddleai_dot_v1_dot_proxy__pb2.SecurityResponse.SerializeToString,
             ),
             'StoreTurn': grpc.unary_unary_rpc_method_handler(
                     servicer.StoreTurn,
-                    request_deserializer=marchproxy_dot_waddleai__pb2.StoreTurnRequest.FromString,
-                    response_serializer=marchproxy_dot_waddleai__pb2.StoreTurnResponse.SerializeToString,
+                    request_deserializer=waddleai_dot_v1_dot_proxy__pb2.StoreTurnRequest.FromString,
+                    response_serializer=waddleai_dot_v1_dot_proxy__pb2.StoreTurnResponse.SerializeToString,
             ),
             'GetContext': grpc.unary_unary_rpc_method_handler(
                     servicer.GetContext,
-                    request_deserializer=marchproxy_dot_waddleai__pb2.GetContextRequest.FromString,
-                    response_serializer=marchproxy_dot_waddleai__pb2.GetContextResponse.SerializeToString,
+                    request_deserializer=waddleai_dot_v1_dot_proxy__pb2.GetContextRequest.FromString,
+                    response_serializer=waddleai_dot_v1_dot_proxy__pb2.GetContextResponse.SerializeToString,
             ),
             'SearchMemories': grpc.unary_unary_rpc_method_handler(
                     servicer.SearchMemories,
-                    request_deserializer=marchproxy_dot_waddleai__pb2.SearchMemoriesRequest.FromString,
-                    response_serializer=marchproxy_dot_waddleai__pb2.SearchMemoriesResponse.SerializeToString,
+                    request_deserializer=waddleai_dot_v1_dot_proxy__pb2.SearchMemoriesRequest.FromString,
+                    response_serializer=waddleai_dot_v1_dot_proxy__pb2.SearchMemoriesResponse.SerializeToString,
             ),
             'ReportUsage': grpc.unary_unary_rpc_method_handler(
                     servicer.ReportUsage,
-                    request_deserializer=marchproxy_dot_waddleai__pb2.UsageReport.FromString,
-                    response_serializer=marchproxy_dot_waddleai__pb2.UsageAck.SerializeToString,
+                    request_deserializer=waddleai_dot_v1_dot_proxy__pb2.UsageReport.FromString,
+                    response_serializer=waddleai_dot_v1_dot_proxy__pb2.UsageAck.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'marchproxy.WaddleAIService', rpc_method_handlers)
+            'waddleai.v1.WaddleAIService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('marchproxy.WaddleAIService', rpc_method_handlers)
+    server.add_registered_method_handlers('waddleai.v1.WaddleAIService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
 class WaddleAIService(object):
-    """Missing associated documentation comment in .proto file."""
+    """Health checking uses the standard grpc.health.v1.Health service
+    (grpcio-health-checking), wired at server startup — not redefined here.
+    """
 
     @staticmethod
     def EvaluateRoute(request,
@@ -169,9 +169,9 @@ class WaddleAIService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/marchproxy.WaddleAIService/EvaluateRoute',
-            marchproxy_dot_waddleai__pb2.RouteRequest.SerializeToString,
-            marchproxy_dot_waddleai__pb2.RouteResponse.FromString,
+            '/waddleai.v1.WaddleAIService/EvaluateRoute',
+            waddleai_dot_v1_dot_proxy__pb2.RouteRequest.SerializeToString,
+            waddleai_dot_v1_dot_proxy__pb2.RouteResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -196,9 +196,9 @@ class WaddleAIService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/marchproxy.WaddleAIService/EvaluateSecurity',
-            marchproxy_dot_waddleai__pb2.SecurityRequest.SerializeToString,
-            marchproxy_dot_waddleai__pb2.SecurityResponse.FromString,
+            '/waddleai.v1.WaddleAIService/EvaluateSecurity',
+            waddleai_dot_v1_dot_proxy__pb2.SecurityRequest.SerializeToString,
+            waddleai_dot_v1_dot_proxy__pb2.SecurityResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -223,9 +223,9 @@ class WaddleAIService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/marchproxy.WaddleAIService/StoreTurn',
-            marchproxy_dot_waddleai__pb2.StoreTurnRequest.SerializeToString,
-            marchproxy_dot_waddleai__pb2.StoreTurnResponse.FromString,
+            '/waddleai.v1.WaddleAIService/StoreTurn',
+            waddleai_dot_v1_dot_proxy__pb2.StoreTurnRequest.SerializeToString,
+            waddleai_dot_v1_dot_proxy__pb2.StoreTurnResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -250,9 +250,9 @@ class WaddleAIService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/marchproxy.WaddleAIService/GetContext',
-            marchproxy_dot_waddleai__pb2.GetContextRequest.SerializeToString,
-            marchproxy_dot_waddleai__pb2.GetContextResponse.FromString,
+            '/waddleai.v1.WaddleAIService/GetContext',
+            waddleai_dot_v1_dot_proxy__pb2.GetContextRequest.SerializeToString,
+            waddleai_dot_v1_dot_proxy__pb2.GetContextResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -277,9 +277,9 @@ class WaddleAIService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/marchproxy.WaddleAIService/SearchMemories',
-            marchproxy_dot_waddleai__pb2.SearchMemoriesRequest.SerializeToString,
-            marchproxy_dot_waddleai__pb2.SearchMemoriesResponse.FromString,
+            '/waddleai.v1.WaddleAIService/SearchMemories',
+            waddleai_dot_v1_dot_proxy__pb2.SearchMemoriesRequest.SerializeToString,
+            waddleai_dot_v1_dot_proxy__pb2.SearchMemoriesResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -304,9 +304,9 @@ class WaddleAIService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/marchproxy.WaddleAIService/ReportUsage',
-            marchproxy_dot_waddleai__pb2.UsageReport.SerializeToString,
-            marchproxy_dot_waddleai__pb2.UsageAck.FromString,
+            '/waddleai.v1.WaddleAIService/ReportUsage',
+            waddleai_dot_v1_dot_proxy__pb2.UsageReport.SerializeToString,
+            waddleai_dot_v1_dot_proxy__pb2.UsageAck.FromString,
             options,
             channel_credentials,
             insecure,

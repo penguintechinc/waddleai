@@ -74,9 +74,9 @@ class Config:
 
     # Flask-Security-Too settings
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "")
-    SECURITY_PASSWORD_HASH = "bcrypt"
-    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"
-    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"
+    SECURITY_PASSWORD_HASH = "bcrypt"  # nosec B105 -- password HASHING ALGORITHM name, not a password
+    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"  # nosec B105 -- HTTP header name, not a credential
+    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"  # nosec B105 -- session key NAME, not a token value
     SECURITY_TRACKABLE = True
     SECURITY_SEND_REGISTER_EMAIL = False
     SECURITY_REGISTERABLE = False
@@ -87,17 +87,8 @@ class Config:
     SESSION_TYPE = "redis"
     PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
 
-    # MarchProxy AILB Integration
-    MARCHPROXY_AILB_HOST = os.getenv("MARCHPROXY_AILB_HOST", "localhost")
-    MARCHPROXY_AILB_GRPC_PORT = int(os.getenv("MARCHPROXY_AILB_GRPC_PORT", "50051"))
-    MARCHPROXY_AILB_HTTP_PORT = int(os.getenv("MARCHPROXY_AILB_HTTP_PORT", "8080"))
-    MARCHPROXY_AILB_TLS_ENABLED = os.getenv("MARCHPROXY_AILB_TLS_ENABLED", "false").lower() == "true"
-    MARCHPROXY_AILB_TLS_CERT_PATH = os.getenv("MARCHPROXY_AILB_TLS_CERT_PATH", "")
-    MARCHPROXY_AILB_TLS_KEY_PATH = os.getenv("MARCHPROXY_AILB_TLS_KEY_PATH", "")
-
     # Webhook settings
     WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-    WEBHOOK_CALLBACK_URL = os.getenv("WEBHOOK_CALLBACK_URL", "http://localhost:8001/api/v1/webhooks/ailb/usage")
 
     # Admin initial password (sourced from env; handled per-config-class)
     ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "")
@@ -108,7 +99,6 @@ class Config:
 
     # Feature flags
     ENABLE_OLLAMA_MANAGEMENT = os.getenv("ENABLE_OLLAMA_MANAGEMENT", "true").lower() == "true"
-    ENABLE_USAGE_WEBHOOKS = os.getenv("ENABLE_USAGE_WEBHOOKS", "true").lower() == "true"
 
     # Enterprise provider flags
     ENABLE_GEMINI = os.getenv("ENABLE_GEMINI", "true").lower() == "true"

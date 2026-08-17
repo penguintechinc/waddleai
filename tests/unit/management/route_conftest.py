@@ -73,7 +73,6 @@ def flask_app():
         "services.management.app.api.v1.keys",
         "services.management.app.api.v1.usage",
         "services.management.app.api.v1.quotas",
-        "services.management.app.api.v1.webhooks",
     ]
 
     # Ensure the app's OIDC provider uses the same keypair as the test token fixtures.
@@ -93,7 +92,6 @@ def flask_app():
         app.config["TESTING"] = True
         app.config["JWT_SECRET_KEY"] = "test-secret-key-32chars-minimum!!"
         app.config["WTF_CSRF_ENABLED"] = False
-        app.config["ENABLE_USAGE_WEBHOOKS"] = True
         app.config["ENABLE_OLLAMA_MANAGEMENT"] = True
         app.config["OLLAMA_MANAGEMENT_MODE"] = "both"
         app.config["WEBHOOK_SECRET"] = ""  # Disable signature verification by default

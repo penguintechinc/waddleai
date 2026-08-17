@@ -54,16 +54,6 @@ spec:
               value: "6379"
             - name: REDIS_URL
               value: "redis://{{ include "waddleai.fullname" . }}-valkey:6379/0"
-            - name: MARCHPROXY_AILB_HOST
-              value: "localhost"
-            - name: MARCHPROXY_AILB_GRPC_PORT
-              value: "50051"
-            - name: MARCHPROXY_AILB_HTTP_PORT
-              value: "8080"
-            - name: MARCHPROXY_AILB_TLS_ENABLED
-              value: "false"
-            - name: WEBHOOK_CALLBACK_URL
-              value: "http://{{ include "waddleai.fullname" . }}-management:8001/api/v1/webhooks/ailb/usage"
             {{- range .Values.management.secretEnv }}
             - name: {{ .name }}
               valueFrom:
