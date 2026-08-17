@@ -97,14 +97,14 @@ class WaddleAIMetrics:
 
         # Record token usage
         if "input_tokens" in token_usage:
-            self.llm_tokens_total.labels(provider=provider, model=model, token_type="input").inc(
-                token_usage["input_tokens"]
-            )
+            self.llm_tokens_total.labels(
+                provider=provider, model=model, token_type="input"  # nosec B106 -- Prometheus metric label value, not a credential
+            ).inc(token_usage["input_tokens"])
 
         if "output_tokens" in token_usage:
-            self.llm_tokens_total.labels(provider=provider, model=model, token_type="output").inc(
-                token_usage["output_tokens"]
-            )
+            self.llm_tokens_total.labels(
+                provider=provider, model=model, token_type="output"  # nosec B106 -- Prometheus metric label value, not a credential
+            ).inc(token_usage["output_tokens"])
 
         if "waddleai_tokens" in token_usage:
             self.waddleai_tokens_total.labels(

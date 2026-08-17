@@ -345,7 +345,7 @@ class LLMRequestRouter:
             return self._failover_selection(model, available_providers)
 
         elif strategy == RoutingStrategy.RANDOM:
-            return random.choice(available_providers)
+            return random.choice(available_providers)  # nosec B311 -- upstream provider selection for load distribution, not security-sensitive
 
         else:
             # Default to first available
