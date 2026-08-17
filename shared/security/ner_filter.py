@@ -126,7 +126,17 @@ class NERFilter:
             self._available = True
             self._mode = "presidio"
             logger.info(f"NER filter initialized: Presidio + spaCy ({spacy_model})")
-        except Exception as e:
+        except (Exception, SystemExit) as e:
+            # SystemExit is deliberate and load-bearing, not defensive padding.
+            # spaCy loads models through wasabi, which calls sys.exit() rather
+            # than raising when a model is not installed. SystemExit derives
+            # from BaseException, so a bare `except Exception` does NOT catch
+            # it: the interpreter dies instead of falling through to the
+            # documented "NER tier will be skipped" degradation below. spaCy
+            # models are not pip-installable alongside the spacy package, so a
+            # missing en_core_web_lg is the normal state of any environment
+            # that has not explicitly run `python -m spacy download` -- which
+            # made this an unhandled startup crash, not an edge case.
             logger.warning(
                 f"Presidio NER init failed ({e}). "
                 "Trying transformers fallback."
