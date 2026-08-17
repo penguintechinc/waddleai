@@ -84,8 +84,8 @@ proxy_metrics = get_proxy_metrics()
 # rationale behind each gate.
 # ---------------------------------------------------------------------------
 _TEST_MODE = os.getenv("WADDLEAI_STUB_UPSTREAM") == "1"
-_TEST_TOKEN_PATH = "/_contract_test/token"
-_TEST_API_KEY_SECRET = "wa-contract-test-0001-secretvalue"
+_TEST_AUTH_ROUTE = "/_contract_test/token"
+_TEST_API_KEY_VALUE = "wa-contract-test-0001-secretvalue"
 _STUB_COMPLETION_TEXT = "This is a deterministic stub completion for WaddleAI contract tests."
 
 
@@ -341,7 +341,7 @@ class ProxyServer:
         )
         api_key_id = self.db.api_keys.insert(
             key_id="contract-test-key",
-            key_hash=bcrypt.hash(_TEST_API_KEY_SECRET),
+            key_hash=bcrypt.hash(_TEST_API_KEY_VALUE),
             user_id=user_id,
             organization_id=org_id,
             name="Contract Test Key",
@@ -361,7 +361,7 @@ class ProxyServer:
             api_key_id=api_key_id,
         )
         self.contract_test_bearer_token = issue_token(user_context, self.oidc_provider)
-        self.contract_test_api_key = _TEST_API_KEY_SECRET
+        self.contract_test_api_key = _TEST_API_KEY_VALUE
 
         # Second same-org user with role 'user' (NOT a moderator) — lets
         # contract tests prove org-moderation denials and personal isolation.
@@ -554,7 +554,7 @@ async def on_startup():
 
     # Apply penguin-aaa ASGI middleware stack
     # AuditMiddleware wraps OIDCAuthMiddleware wraps the Quart ASGI app
-    public_paths = _PUBLIC_PATHS | ({_TEST_TOKEN_PATH} if _TEST_MODE else set())
+    public_paths = _PUBLIC_PATHS | ({_TEST_AUTH_ROUTE} if _TEST_MODE else set())
 
     # Wire the module-level _api_key_verifier for wa- virtual keys and x-api-key headers.
     # It offloads blocking authenticate_api_key to thread pool and returns full claims dict.
@@ -575,7 +575,7 @@ async def on_startup():
 
 if _TEST_MODE:
 
-    @app.route(_TEST_TOKEN_PATH, methods=["GET"])
+    @app.route(_TEST_AUTH_ROUTE, methods=["GET"])
     async def _contract_test_token():
         """Contract-test-only: hand the harness a real signed Bearer JWT and
         the seeded wa- API key. Never registered in production (route
@@ -1306,4 +1306,8 @@ async def count_tokens():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("HTTP_PORT", "8080")))
+    # Local-dev fallback entrypoint only -- the container's actual command is
+    # `hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080` (proxy/Dockerfile),
+    # which hardcodes the same all-interfaces bind for its containerized network
+    # namespace. This block never runs under that CMD.
+    app.run(host="0.0.0.0", port=int(os.getenv("HTTP_PORT", "8080")))  # nosec B104 -- containerized service, binds within pod network namespace only; matches Dockerfile CMD's hypercorn --bind
