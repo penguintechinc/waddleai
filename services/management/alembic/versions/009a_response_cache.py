@@ -29,7 +29,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "009a_response_cache"
-down_revision: str | None = "006_add_memory_scope"
+down_revision: str | None = "008_model_registry"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
