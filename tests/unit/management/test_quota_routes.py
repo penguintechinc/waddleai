@@ -284,7 +284,7 @@ class TestSetKeyQuota:
         data = await resp.get_json()
         assert data["key_id"] == 10
         assert data["key_name"] == "AdminKey"
-        assert "Re-sync" in data["message"]
+        assert "updated successfully" in data["message"]
 
     async def test_set_key_quota_resource_manager_own_key(
         self, client, app_mock_db: MagicMock, rm_auth_headers: Dict

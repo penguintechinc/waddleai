@@ -7,24 +7,76 @@ webhook ingest routes, the ``MARCHPROXY_AILB_*`` env surface, and the
 vendored ``marchproxy`` proto stubs under
 ``proxy/apps/proxy_server/grpc_proto/``. This test asserts those stay gone.
 
-Out of scope (deliberately left alone -- see task report for why):
-``services/management/app/services/provider_sync.py``, ``.../grpc/client.py``,
-and ``.../api/v1/ollama_models.py`` + ``keys.py``/``providers.py``/
-``quotas.py``/``usage_tracker.py``. Those still consume the live
-AILB-route-sync client and ``virtual_keys.ailb_*``/``marchproxy_ailb_sync``/
-``ailb_usage_events`` columns and tables that Task 14 (migration 007) drops;
-deleting their dependencies now would break working functionality before the
-schema that redefines it lands.
+Migration 007 follow-up repointed the remaining live consumers of the
+dropped ``marchproxy_ailb_sync``/``ailb_usage_events``/``ailb_usage_records``
+tables and ``virtual_keys.ailb_*`` columns: ``keys.py``, ``quotas.py``,
+``providers.py``, ``services/usage_tracker.py``, ``services/provider_sync.py``
+(the AILB provider-config/virtual-key sync methods were removed outright --
+no successor bookkeeping table -- while its unrelated Ollama-model-route
+sync to the still-live AILB gRPC module was left alone), and
+``shared/agents/usage_tracker.py`` (rewritten onto ``token_usage`` via
+penguin-dal, organization-scoped). ``.../grpc/client.py`` and
+``.../api/v1/ollama_models.py`` are intentionally untouched -- they drive
+Ollama model-route sync to the AILB gRPC module, a separate, still-live
+integration that migration 007 does not touch.
 """
 
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# Files repointed off the migration-007-dropped tables/columns. No live code
+# reference to any of these should remain -- explanatory prose in module
+# docstrings/comments naming the old table/column (e.g. "marchproxy_ailb_sync
+# had no live caller") is fine and expected; an actual `db.<table>` or
+# `.<column>` access is not.
+_REPOINTED_FILES = [
+    "services/management/app/api/v1/keys.py",
+    "services/management/app/api/v1/quotas.py",
+    "services/management/app/api/v1/providers.py",
+    "services/management/app/services/usage_tracker.py",
+    "services/management/app/services/provider_sync.py",
+    "shared/agents/usage_tracker.py",
+]
+
+# Actual code-access patterns for the dropped tables/columns, not bare
+# substrings -- so an explanatory docstring mentioning the name by itself
+# doesn't trip this guard, but `db.ailb_usage_events.insert(...)` would.
+_DROPPED_ACCESS_PATTERNS = (
+    re.compile(r"\bdb\.ailb_usage_records\b"),
+    re.compile(r"\bdb\.ailb_usage_events\b"),
+    re.compile(r"\bdb\.marchproxy_ailb_sync\b"),
+    re.compile(r"\.ailb_key_id\b"),
+    re.compile(r"\.ailb_sync_status\b"),
+)
+
+
+@pytest.mark.parametrize("relative_path", _REPOINTED_FILES)
+def test_repointed_file_has_no_dropped_table_or_column_references(relative_path: str) -> None:
+    """None of the migration-007-dropped tables/columns are accessed as code anymore."""
+    text = (REPO_ROOT / relative_path).read_text()
+    for pattern in _DROPPED_ACCESS_PATTERNS:
+        match = pattern.search(text)
+        assert match is None, f"{relative_path} still accesses {match.group(0) if match else ''!r}"
+
+
+def test_keys_sync_endpoint_removed() -> None:
+    """POST /keys/<id>/sync was a bookkeeping-only stub with no successor."""
+    text = (REPO_ROOT / "services/management/app/api/v1/keys.py").read_text()
+    assert '"/keys/<int:key_id>/sync"' not in text
+
+
+def test_providers_sync_endpoints_removed() -> None:
+    """POST .../sync and GET .../sync-status were bookkeeping-only stubs with no successor."""
+    text = (REPO_ROOT / "services/management/app/api/v1/providers.py").read_text()
+    assert '"/providers/<int:provider_id>/sync"' not in text
+    assert '"/providers/<int:provider_id>/sync-status"' not in text
 
 
 @pytest.mark.parametrize(

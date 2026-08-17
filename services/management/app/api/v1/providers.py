@@ -3,8 +3,6 @@ WaddleAI Management API v1 - AI Provider Management Endpoints
 """
 
 import asyncio
-import hashlib
-import json
 from datetime import datetime
 
 from quart import current_app, jsonify, request
@@ -106,13 +104,12 @@ async def list_providers():
     """List all configured AI providers"""
 
     def _fetch():
-        providers = db(db.ai_providers.id > 0).select()
-        return [(provider, db(db.marchproxy_ailb_sync.provider_id == provider.id).select().first()) for provider in providers]
+        return db(db.ai_providers.id > 0).select()
 
-    providers_with_sync = await asyncio.to_thread(_fetch)
+    providers = await asyncio.to_thread(_fetch)
 
     result = []
-    for provider, sync in providers_with_sync:
+    for provider in providers:
         result.append(
             {
                 "id": provider.id,
@@ -124,8 +121,6 @@ async def list_providers():
                 "enabled": provider.enabled,
                 "priority": provider.priority,
                 "ailb_sync_enabled": provider.ailb_sync_enabled,
-                "sync_status": sync.sync_status if sync else "not_synced",
-                "last_synced": sync.last_synced.isoformat() if sync and sync.last_synced else None,
                 "created_at": provider.created_at.isoformat() if provider.created_at else None,
             }
         )
@@ -140,13 +135,9 @@ async def get_provider(provider_id):
     """Get provider details"""
 
     def _fetch():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-        if not provider:
-            return None, None
-        sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
-        return provider, sync
+        return db(db.ai_providers.id == provider_id).select().first()
 
-    provider, sync = await asyncio.to_thread(_fetch)
+    provider = await asyncio.to_thread(_fetch)
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
@@ -165,12 +156,6 @@ async def get_provider(provider_id):
             "tls_config": provider.tls_config,
             "ailb_sync_enabled": provider.ailb_sync_enabled,
             "ailb_route_config": provider.ailb_route_config,
-            "sync_status": {
-                "status": sync.sync_status if sync else "not_synced",
-                "ailb_route_id": sync.ailb_route_id if sync else None,
-                "last_synced": sync.last_synced.isoformat() if sync and sync.last_synced else None,
-                "sync_error": sync.sync_error if sync else None,
-            },
             "created_at": provider.created_at.isoformat() if provider.created_at else None,
         }
     )
@@ -208,8 +193,6 @@ async def create_provider():
     if provider_info["requires_api_key"] and not data.get("api_key"):
         return jsonify({"error": f"{provider_type} requires an API key"}), 400
 
-    config_hash = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-
     def _create():
         provider_id = db.ai_providers.insert(
             name=data["name"],
@@ -227,12 +210,6 @@ async def create_provider():
         )
         db.commit()
 
-        # Create sync record
-        db.marchproxy_ailb_sync.insert(
-            provider_id=provider_id, sync_status="pending", config_hash=config_hash, created_at=datetime.utcnow()
-        )
-        db.commit()
-
         return provider_id
 
     provider_id = await asyncio.to_thread(_create)
@@ -243,8 +220,7 @@ async def create_provider():
                 "id": provider_id,
                 "name": data["name"],
                 "provider_type": provider_type,
-                "sync_status": "pending",
-                "message": "Provider created successfully. Use /sync endpoint to push to AILB.",
+                "message": "Provider created successfully.",
             }
         ),
         201,
@@ -309,9 +285,6 @@ async def update_provider(provider_id):
 
         if update_fields:
             db(db.ai_providers.id == provider_id).update(**update_fields)
-
-            # Update sync status to pending
-            db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="pending")
             db.commit()
 
         return "ok"
@@ -323,7 +296,7 @@ async def update_provider(provider_id):
     if result == "name_conflict":
         return jsonify({"error": "Provider name already exists"}), 409
 
-    return jsonify({"message": "Provider updated successfully. Re-sync required."})
+    return jsonify({"message": "Provider updated successfully."})
 
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["DELETE"])
@@ -338,9 +311,6 @@ async def delete_provider(provider_id):
         if not provider:
             return False
 
-        # Mark sync as deleted
-        db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="deleted")
-
         # Soft delete by disabling
         db(db.ai_providers.id == provider_id).update(enabled=False)
         db.commit()
@@ -352,7 +322,7 @@ async def delete_provider(provider_id):
     if not found:
         return jsonify({"error": "Provider not found"}), 404
 
-    return jsonify({"message": "Provider disabled successfully. Remove from AILB manually or via sync."})
+    return jsonify({"message": "Provider disabled successfully."})
 
 
 @api_v1_bp.route("/providers/<int:provider_id>/test", methods=["POST"])
@@ -375,76 +345,6 @@ async def test_provider(provider_id):
             "status": "connected",
             "latency_ms": 150,
             "message": "Connection test successful",
-        }
-    )
-
-
-@api_v1_bp.route("/providers/<int:provider_id>/sync", methods=["POST"])
-@require_auth
-@require_role("admin")
-async def sync_provider(provider_id):
-    """Sync provider to MarchProxy AILB"""
-
-    def _sync():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-
-        if not provider:
-            return "not_found"
-
-        if not provider.ailb_sync_enabled:
-            return "sync_disabled"
-
-        # TODO: Implement actual gRPC call to AILB
-        # For now, simulate sync
-
-        # Update sync status
-        db(db.marchproxy_ailb_sync.provider_id == provider_id).update(
-            sync_status="synced", last_synced=datetime.utcnow(), sync_error=None
-        )
-        db.commit()
-
-        return "ok"
-
-    result = await asyncio.to_thread(_sync)
-
-    if result == "not_found":
-        return jsonify({"error": "Provider not found"}), 404
-    if result == "sync_disabled":
-        return jsonify({"error": "AILB sync is disabled for this provider"}), 400
-
-    return jsonify(
-        {"provider_id": provider_id, "sync_status": "synced", "message": "Provider synced to AILB successfully"}
-    )
-
-
-@api_v1_bp.route("/providers/<int:provider_id>/sync-status", methods=["GET"])
-@require_auth
-@require_role("admin")
-async def get_sync_status(provider_id):
-    """Get provider sync status"""
-
-    def _fetch():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-        if not provider:
-            return None, None
-        sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
-        return provider, sync
-
-    provider, sync = await asyncio.to_thread(_fetch)
-
-    if not provider:
-        return jsonify({"error": "Provider not found"}), 404
-
-    return jsonify(
-        {
-            "provider_id": provider_id,
-            "provider_name": provider.name,
-            "ailb_sync_enabled": provider.ailb_sync_enabled,
-            "sync_status": sync.sync_status if sync else "not_synced",
-            "ailb_route_id": sync.ailb_route_id if sync else None,
-            "last_synced": sync.last_synced.isoformat() if sync and sync.last_synced else None,
-            "sync_error": sync.sync_error if sync else None,
-            "config_hash": sync.config_hash if sync else None,
         }
     )
 

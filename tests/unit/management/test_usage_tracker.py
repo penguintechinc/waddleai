@@ -20,7 +20,6 @@ class MockDB:
     def __init__(self):
         self.data = {
             "virtual_keys": [],
-            "ailb_usage_events": [],
             "token_usage": [],
             "usage_logs": [],
             "token_conversion_rates": [],
