@@ -24,6 +24,11 @@ Landed:
     ctx.model/ctx.fallback_chain/ctx.routed_from. DispatchStage still owns
     concrete-endpoint selection (§7.5) and now also consumes
     ctx.fallback_chain for chaos failover.
+  - KnowledgeInjectStage (§9.5/§9.6, flag waddleai.knowledge_inject, see
+    proxy/apps/proxy_server/pipeline/knowledge_stage.py): between
+    SummarizationStage and DedupStage (see memory_stages.py's module
+    docstring for the full placement rationale) -- auto-injects ranked
+    retrieved context for non-MCP clients before the cache key is derived.
 
 Removed:
   - No more empty placeholder stages; insertion points are documented above.
