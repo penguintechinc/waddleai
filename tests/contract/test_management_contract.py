@@ -8,10 +8,6 @@ Do not modify `conftest.py` or `snapshot.py` -- see tests/contract/ for the
 shared harness (`management_url` fixture, `assert_snapshot`).
 """
 
-import hashlib
-import hmac
-import json
-
 import httpx
 
 from tests.contract.snapshot import assert_snapshot
@@ -193,29 +189,28 @@ def test_llamacpp_deployments_list(management_url):
 
 
 # ---------------------------------------------------------------------------
-# ailb + ailb_memory (slated for later deletion -- snapshot pre-migration truth)
+# memory-config / rag-config / embedding-config
+#
+# Re-homed from the deleted MarchProxy AILB coupling (formerly under the
+# `/ailb/*` prefix) to their own top-level paths -- see
+# services/management/app/api/v1/memory_config.py.
 # ---------------------------------------------------------------------------
 
 
-def test_ailb_status(management_url):
-    r = httpx.get(f"{management_url}/api/v1/ailb/status", headers=_login(management_url))
-    assert_snapshot("mgmt_ailb_status", status=r.status_code, body=r.json())
-
-
-def test_ailb_memory_config(management_url):
+def test_memory_config(management_url):
     r = httpx.get(
-        f"{management_url}/api/v1/ailb/memory-config",
+        f"{management_url}/api/v1/memory-config",
         params={"organization_id": 1},
         headers=_login(management_url),
     )
-    assert_snapshot("mgmt_ailb_memory_config", status=r.status_code, body=r.json())
+    assert_snapshot("mgmt_memory_config", status=r.status_code, body=r.json())
 
 
 def test_memory_config_rag(management_url):
     # Ported legacy memory-config admin surface parity (task C1): RAG
     # injection config GET, same organization-scoped shape as memory-config.
     r = httpx.get(
-        f"{management_url}/api/v1/ailb/rag-config",
+        f"{management_url}/api/v1/rag-config",
         params={"organization_id": 1},
         headers=_login(management_url),
     )
@@ -225,7 +220,7 @@ def test_memory_config_rag(management_url):
 def test_memory_config_embedding(management_url):
     # Ported legacy memory-config admin surface parity (task C1): embedding
     # backend config GET, global default (no organization_id).
-    r = httpx.get(f"{management_url}/api/v1/ailb/embedding-config", headers=_login(management_url))
+    r = httpx.get(f"{management_url}/api/v1/embedding-config", headers=_login(management_url))
     assert_snapshot("mgmt_memory_config_embedding", status=r.status_code, body=r.json())
 
 
@@ -262,36 +257,6 @@ def test_model_aliases_list(management_url):
 def test_routing_decisions_summary(management_url):
     r = httpx.get(f"{management_url}/api/v1/routing/decisions/", headers=_login(management_url))
     assert_snapshot("mgmt_routing_decisions_summary", status=r.status_code, body=r.json())
-
-
-# ---------------------------------------------------------------------------
-# webhooks
-# ---------------------------------------------------------------------------
-
-
-def test_webhooks_usage(management_url):
-    # WEBHOOK_SECRET is set to "contract-webhook-secret" by the harness
-    # (tests/contract/conftest.py), so a correctly signed request is required
-    # for the 200 "accepted" path (empty/absent secret now fails closed).
-    # `key_id` is deliberately omitted so no virtual_key lookup/mutation occurs
-    # (keeps this test side-effect free for usage/quota snapshots).
-    payload = {
-        "event_id": "evt_contract_test",
-        "model": "gpt-4",
-        "provider": "openai",
-        "input_tokens": 10,
-        "output_tokens": 20,
-        "cost_usd": 0.001,
-        "status": "success",
-    }
-    body = json.dumps(payload).encode()
-    signature = "sha256=" + hmac.new(b"contract-webhook-secret", body, hashlib.sha256).hexdigest()
-    r = httpx.post(
-        f"{management_url}/api/v1/webhooks/ailb/usage",
-        content=body,
-        headers={"Content-Type": "application/json", "X-Webhook-Signature": signature},
-    )
-    assert_snapshot("mgmt_webhooks_usage", status=r.status_code, body=r.json())
 
 
 # ---------------------------------------------------------------------------
