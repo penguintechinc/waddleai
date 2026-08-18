@@ -29,6 +29,7 @@ function Header() {
           <Link to="/analytics" className="nav-link">Analytics</Link>
           <Link to="/routing" className="nav-link">Routing</Link>
           <Link to="/memory" className="nav-link">Memory</Link>
+          <Link to="/integrations" className="nav-link">Integrations</Link>
         </nav>
         <div className="header-user">
           <span className="user-name">{user?.username || 'User'}</span>

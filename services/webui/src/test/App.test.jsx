@@ -12,6 +12,7 @@ vi.mock('../pages/VirtualKeys.css', () => ({}));
 vi.mock('../pages/UsageAnalytics.css', () => ({}));
 vi.mock('../pages/Routing.css', () => ({}));
 vi.mock('../pages/Memory.css', () => ({}));
+vi.mock('../pages/Integrations.css', () => ({}));
 vi.mock('../components/Header.css', () => ({}));
 
 // Mock axios used by child pages

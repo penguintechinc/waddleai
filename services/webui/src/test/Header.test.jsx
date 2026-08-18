@@ -50,6 +50,7 @@ describe('Header', () => {
     expect(screen.getByText('Analytics')).toBeInTheDocument();
     expect(screen.getByText('Routing')).toBeInTheDocument();
     expect(screen.getByText('Memory')).toBeInTheDocument();
+    expect(screen.getByText('Integrations')).toBeInTheDocument();
   });
 
   it('renders navigation links with correct hrefs', () => {
@@ -62,6 +63,7 @@ describe('Header', () => {
     expect(screen.getByText('Analytics').closest('a')).toHaveAttribute('href', '/analytics');
     expect(screen.getByText('Routing').closest('a')).toHaveAttribute('href', '/routing');
     expect(screen.getByText('Memory').closest('a')).toHaveAttribute('href', '/memory');
+    expect(screen.getByText('Integrations').closest('a')).toHaveAttribute('href', '/integrations');
   });
 
   it('displays username from user context', () => {

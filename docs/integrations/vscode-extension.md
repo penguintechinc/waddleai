@@ -156,7 +156,7 @@ Access via Command Palette (`Ctrl+Shift+P`):
 | **WaddleAI: Select Model** | Choose from available models |
 | **WaddleAI: Test Connection** | Verify connection to WaddleAI proxy |
 | **WaddleAI: Show Token Usage** | View detailed usage statistics |
-| **WaddleAI: Clear Conversation Memory** | Reset conversation history |
+| **WaddleAI: Start New Conversation** | Reset the extension's session id so the next turn starts a fresh memory scope |
 
 ## Context Integration
 
@@ -204,31 +204,26 @@ The usage dashboard shows:
 - **Time-based usage trends**
 
 ### Usage Monitoring
-- **Real-time updates** - Live usage tracking during conversations
-- **Quota warnings** - Alerts when approaching limits
-- **Usage optimization tips** - Suggestions for efficient token usage
-- **Export capabilities** - CSV export for detailed analysis
+- **Point-in-time snapshot** - "WaddleAI: Show Token Usage" fetches `/api/usage` (rolling 30-day
+  totals) and `/api/quota` (current daily/monthly limits) and renders them in a webview; it does
+  not poll or update live during a conversation
+- **Model breakdown** - Per-model input/output token totals for the last 30 days
 
 ### Sample Usage Data
+The webview's data comes from combining `/api/usage` and `/api/quota`:
 ```json
 {
-  "total_tokens": 15450,
+  "total_waddleai_tokens": 15450,
+  "total_llm_input_tokens": 9200,
+  "total_llm_output_tokens": 6250,
   "total_requests": 127,
-  "daily_quota": {
-    "used": 1250,
-    "limit": 10000,
-    "percentage": 12.5
+  "average_daily": 515,
+  "llm_breakdown": {
+    "gpt-4": { "input": 6000, "output": 2500 },
+    "claude-3-sonnet": { "input": 3200, "output": 3750 }
   },
-  "monthly_quota": {
-    "used": 15450,
-    "limit": 200000,
-    "percentage": 7.7
-  },
-  "model_breakdown": {
-    "gpt-4": 8500,
-    "claude-3-sonnet": 4200,
-    "gpt-3.5-turbo": 2750
-  }
+  "daily": { "used": 1250, "limit": 10000, "remaining": 8750, "ok": true },
+  "monthly": { "used": 15450, "limit": 200000, "remaining": 184550, "ok": true }
 }
 ```
 
@@ -363,8 +358,10 @@ graph TD
 The extension uses WaddleAI's OpenAI-compatible API:
 
 ```typescript
-// Stream chat completion
-const stream = await client.streamChatCompletion(
+// Chat completion -- the proxy always returns one JSON envelope for
+// /v1/chat/completions today, so the extension requests stream: false
+// rather than parsing a text/event-stream response the server never sends.
+const response = await client.chatCompletion(
   messages,
   model,
   {
@@ -375,14 +372,14 @@ const stream = await client.streamChatCompletion(
   }
 );
 
-// Process streaming response
-for await (const chunk of stream) {
-  const content = chunk.choices?.[0]?.delta?.content;
-  if (content) {
-    // Display in VS Code chat
-    chatStream.markdown(content);
-  }
+const content = response.choices?.[0]?.message?.content;
+if (content) {
+  // Display in VS Code chat
+  chatStream.markdown(content);
 }
+
+// Additive cache/routing metadata (usage.waddleai), when present, is
+// rendered as a short footer -- see WaddleAIChatParticipant.renderUsageFooter.
 ```
 
 ### Context Building
