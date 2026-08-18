@@ -141,7 +141,12 @@ class StubConnector:
 class StaticRouter:
     """LLMRequestRouter stand-in: always routes to a fixed (provider, model)."""
 
-    def select_provider(self, model: str):
+    def select_provider(self, model: str, preferred_backend=None):
+        # preferred_backend is always passed by DispatchStage (the response
+        # cache's session-affinity hint, §6). A double omitting it raises
+        # TypeError, which DispatchStage catches and turns into an empty
+        # fallback chain -> no_available_providers/503, silently failing
+        # this test for an unrelated reason.
         """Always route to the fixed openai/gpt-4 pair."""
         return ("openai", "gpt-4")
 

@@ -89,7 +89,12 @@ class StubDispatchConnector:
 class StubRouter:
     """Always routes to the single "stub" provider, requested model unchanged."""
 
-    def select_provider(self, model):
+    def select_provider(self, model, preferred_backend=None):
+        # preferred_backend is always passed by DispatchStage (the response
+        # cache's session-affinity hint, §6). A double omitting it raises
+        # TypeError, which DispatchStage catches and turns into an empty
+        # fallback chain -> no_available_providers/503, silently failing
+        # this test for an unrelated reason.
         """Always route to the "stub" provider with the model unchanged."""
         return "stub", model
 

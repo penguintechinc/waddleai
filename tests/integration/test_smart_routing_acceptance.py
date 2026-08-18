@@ -140,7 +140,12 @@ class TestChaosFailoverThroughRealDispatch:
         )
         router = Mock()
         backup_selection = {"commercial-backup": ("anthropic", "commercial-backup")}
-        router.select_provider = Mock(side_effect=lambda model: backup_selection.get(model))
+        # Accepts preferred_backend because DispatchStage always passes it (the
+        # response cache's session-affinity hint, §6); a stricter lambda raises
+        # TypeError and DispatchStage degrades to no_available_providers.
+        router.select_provider = Mock(
+            side_effect=lambda model, preferred_backend=None: backup_selection.get(model)
+        )
         dispatch_stage = DispatchStage(
             name="dispatch", router=router, connectors={"anthropic": anthropic_connector}, flag=None
         )
