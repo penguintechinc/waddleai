@@ -69,6 +69,41 @@ _HF_LABEL_MAP: dict[str, str] = {
 }
 
 
+# Per-worker-process cache for the ProcessPoolExecutor path (§3.5). Each
+# worker process gets its own NERFilter instance, lazily built on first use
+# (spaCy/Presidio model load is slow -- happens once per worker, not once
+# per request).
+_worker_filter: "NERFilter | None" = None
+
+
+def ner_analyze(text: str, language: str = "en") -> list[dict]:
+    """Module-level, picklable NER worker for `ProcessPoolExecutor` (§3.5).
+
+    Tier-3 NER must never run on the event loop -- this function is the
+    submission target for `content_filter.py`'s shared process pool. Returns
+    plain dicts (not `NEREntity`) so the call contract has zero surprises
+    crossing the process boundary; results are reconstructed by the caller.
+    """
+    import os
+
+    global _worker_filter
+    if _worker_filter is None:
+        spacy_model = os.getenv("NER_SPACY_MODEL", "en_core_web_lg")
+        _worker_filter = NERFilter(spacy_model=spacy_model)
+
+    entities = _worker_filter.analyze(text, language=language)
+    return [
+        {
+            "entity_type": e.entity_type,
+            "text": e.text,
+            "start": e.start,
+            "end": e.end,
+            "score": e.score,
+        }
+        for e in entities
+    ]
+
+
 @dataclass(slots=True)
 class NEREntity:
     """Single entity detected by NER model."""

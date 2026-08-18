@@ -1,5 +1,4 @@
-"""
-Batched metering writer for token usage aggregation.
+"""Batched metering writer for token usage aggregation.
 
 MeteringBuffer batches token usage events per-second at scale, aggregating
 by (virtual_key, model, provider, minute-bucket) to reduce write load on the
@@ -14,8 +13,8 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional, Protocol
 from threading import Lock
+from typing import Any, Protocol
 
 import tiktoken
 
@@ -24,8 +23,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class MeteringEvent:
-    """
-    A single token usage event from an LLM request.
+    """A single token usage event from an LLM request.
 
     Attributes:
         virtual_key_id: ID of the virtual API key used
@@ -40,9 +38,13 @@ class MeteringEvent:
     virtual_key_id: int
     model: str
     provider: str
-    usage: Optional[Dict[str, int]]
+    usage: dict[str, int] | None
     timestamp: datetime
     estimated: bool = False
+    # Response cache accounting (spec §6.4). cache_status is one of
+    # exact|semantic|upstream|miss; tokens_saved is 0 for misses.
+    cache_status: str | None = None
+    tokens_saved: int = 0
 
 
 @dataclass(slots=True)
@@ -58,19 +60,24 @@ class AggregatedMetrics:
     request_count: int = 0
     has_estimated_usage: bool = False
     events: list = field(default_factory=list)
+    # Response cache accounting (spec §6.4): summed tokens_saved across every
+    # event in this bucket; cache_status is the bucket's last non-None
+    # status (a bucket is 1 minute of one vkey/model/provider, so mixed
+    # statuses within it are rare and last-write-wins is an acceptable
+    # simplification for a dashboard-level aggregate).
+    total_tokens_saved: int = 0
+    cache_status: str | None = None
 
 
 class UsageWriter(Protocol):
-    """
-    Protocol for writing aggregated usage metrics to the database.
+    """Protocol for writing aggregated usage metrics to the database.
 
     Implementations abstract away the DB layer (penguin-dal, PyDAL, etc).
     All writes must be blocking/synchronous; callers wrap in asyncio.to_thread.
     """
 
     def write_aggregated_row(self, agg: AggregatedMetrics) -> None:
-        """
-        Write aggregated metrics to token_usage table.
+        """Write aggregated metrics to token_usage table.
 
         Args:
             agg: Aggregated metrics to write or update
@@ -82,15 +89,13 @@ class UsageWriter(Protocol):
 
 
 class PenguinDALUsageWriter:
-    """
-    Write aggregated metrics using penguin-dal.
+    """Write aggregated metrics using penguin-dal.
 
     Thread-safe: penguin-dal manages its own thread-local connection pool.
     """
 
     def __init__(self, db: Any) -> None:
-        """
-        Initialize writer with penguin-dal DB instance.
+        """Initialize writer with penguin-dal DB instance.
 
         Args:
             db: penguin-dal DB instance (from penguin_dal.flask_ext.init_dal)
@@ -99,8 +104,7 @@ class PenguinDALUsageWriter:
         self.source = "aiproxy"
 
     def write_aggregated_row(self, agg: AggregatedMetrics) -> None:
-        """
-        Write aggregated metrics to token_usage table.
+        """Write aggregated metrics to token_usage table.
 
         Creates new row or updates existing row for the (vkey, date) pair.
         Marks row as estimated=True if usage was missing from provider.
@@ -133,6 +137,7 @@ class PenguinDALUsageWriter:
                 existing_breakdown[model_key]["input"] += agg.total_input_tokens
                 existing_breakdown[model_key]["output"] += agg.total_output_tokens
 
+                new_tokens_saved = (existing_row.tokens_saved or 0) + agg.total_tokens_saved
                 existing_row.update_record(
                     tokens_input_total=new_input,
                     tokens_output_total=new_output,
@@ -141,6 +146,8 @@ class PenguinDALUsageWriter:
                     last_updated=datetime.utcnow(),
                     source=self.source,
                     estimated=existing_row.estimated or estimated_flag,
+                    tokens_saved=new_tokens_saved,
+                    cache_status=agg.cache_status or existing_row.cache_status,
                 )
                 logger.debug(
                     "Updated token_usage row for vkey=%s model=%s requests=%s",
@@ -151,7 +158,9 @@ class PenguinDALUsageWriter:
             else:
                 # Create new row
                 model_key = f"{agg.provider}_{agg.model.replace('-', '_')}"
-                breakdown = {model_key: {"input": agg.total_input_tokens, "output": agg.total_output_tokens}}
+                breakdown = {
+                    model_key: {"input": agg.total_input_tokens, "output": agg.total_output_tokens}
+                }
 
                 self.db.token_usage.insert(
                     virtual_key_id=agg.virtual_key_id,
@@ -166,6 +175,8 @@ class PenguinDALUsageWriter:
                     cost_usd_total=0,  # Calculated separately by cost system
                     source=self.source,
                     estimated=estimated_flag,
+                    tokens_saved=agg.total_tokens_saved,
+                    cache_status=agg.cache_status,
                 )
                 logger.debug(
                     "Inserted token_usage row for vkey=%s model=%s requests=%s",
@@ -185,8 +196,7 @@ class PenguinDALUsageWriter:
 
 
 class MeteringBuffer:
-    """
-    Batches token usage events and flushes aggregated metrics to the database.
+    """Batches token usage events and flushes aggregated metrics to the database.
 
     Aggregation key: (virtual_key_id, model, provider, minute_bucket)
     Flush interval: configurable (default 1.0 second)
@@ -205,8 +215,7 @@ class MeteringBuffer:
     """
 
     def __init__(self, writer: UsageWriter, interval: float = 1.0) -> None:
-        """
-        Initialize the metering buffer.
+        """Initialize the metering buffer.
 
         Args:
             writer: UsageWriter instance for persisting aggregated metrics
@@ -223,12 +232,11 @@ class MeteringBuffer:
         self.max_pending_aggregates = 1000
         self._lock = Lock()
         self._running = False
-        self._flush_task: Optional[asyncio.Task[Any]] = None
+        self._flush_task: asyncio.Task[Any] | None = None
         self._encoder = tiktoken.get_encoding("cl100k_base")  # Default OpenAI encoder
 
     def record(self, event: MeteringEvent) -> None:
-        """
-        Record a single token usage event.
+        """Record a single token usage event.
 
         Thread-safe. Events are buffered in memory and flushed asynchronously.
 
@@ -247,8 +255,7 @@ class MeteringBuffer:
         logger.info("MeteringBuffer background task started (interval=%fs)", self.interval)
 
     async def stop(self) -> None:
-        """
-        Stop the background flush task and flush any remaining buffered events.
+        """Stop the background flush task and flush any remaining buffered events.
 
         Should be called during shutdown to ensure no usage is lost.
         """
@@ -256,7 +263,7 @@ class MeteringBuffer:
         if self._flush_task:
             try:
                 await asyncio.wait_for(self._flush_task, timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("MeteringBuffer flush task did not complete within timeout")
                 if self._flush_task:
                     self._flush_task.cancel()
@@ -274,8 +281,7 @@ class MeteringBuffer:
                 logger.error("Error in metering flush loop: %s", e, exc_info=True)
 
     async def flush(self) -> None:
-        """
-        Flush buffered events to the database.
+        """Flush buffered events to the database.
 
         Aggregates events by (virtual_key_id, model, provider, minute_bucket),
         estimates missing usage, and writes/updates rows in token_usage table.
@@ -330,16 +336,15 @@ class MeteringBuffer:
                         sum(a.total_output_tokens for a in dropped),
                     )
 
-    def _aggregate_events(self, events: list[MeteringEvent]) -> Dict[tuple, AggregatedMetrics]:
-        """
-        Aggregate events by (virtual_key_id, model, provider, minute_bucket).
+    def _aggregate_events(self, events: list[MeteringEvent]) -> dict[tuple, AggregatedMetrics]:
+        """Aggregate events by (virtual_key_id, model, provider, minute_bucket).
 
         Estimates missing usage using tiktoken.
 
         Returns:
             Dict mapping aggregation key to AggregatedMetrics
         """
-        aggregates: Dict[tuple, AggregatedMetrics] = {}
+        aggregates: dict[tuple, AggregatedMetrics] = {}
 
         for event in events:
             key = self._get_aggregation_key(event)
@@ -368,22 +373,23 @@ class MeteringBuffer:
             agg.total_input_tokens += input_tokens
             agg.total_output_tokens += output_tokens
             agg.request_count += 1
+            agg.total_tokens_saved += event.tokens_saved or 0
+            if event.cache_status is not None:
+                agg.cache_status = event.cache_status
             agg.events.append(event)
 
         return aggregates
 
     def _get_aggregation_key(self, event: MeteringEvent) -> tuple:
-        """
-        Get aggregation key: (vkey, model, provider, minute_bucket).
+        """Get aggregation key: (vkey, model, provider, minute_bucket).
 
         Rounds timestamp to minute precision (second/microsecond = 0).
         """
         minute_bucket = event.timestamp.replace(second=0, microsecond=0)
         return (event.virtual_key_id, event.model, event.provider, minute_bucket)
 
-    def _estimate_tokens(self, event: MeteringEvent) -> Dict[str, int]:
-        """
-        Estimate token counts using tiktoken (fallback for missing usage).
+    def _estimate_tokens(self, event: MeteringEvent) -> dict[str, int]:
+        """Estimate token counts using tiktoken (fallback for missing usage).
 
         Returns:
             Dict with 'input_tokens' and 'output_tokens' keys
@@ -399,10 +405,9 @@ class MeteringBuffer:
 
 
 def create_metering_buffer(
-    writer: Optional[UsageWriter] = None, db: Optional[Any] = None, interval: float = 1.0
+    writer: UsageWriter | None = None, db: Any | None = None, interval: float = 1.0
 ) -> MeteringBuffer:
-    """
-    Factory function to create a MeteringBuffer instance.
+    """Factory function to create a MeteringBuffer instance.
 
     Supports two modes:
       - If writer is provided, use it directly (for testing/custom implementations)

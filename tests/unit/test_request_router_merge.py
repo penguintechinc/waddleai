@@ -55,7 +55,7 @@ def mock_llm_manager():
 @pytest.fixture
 def router_with_costs(mock_llm_manager):
     """Create router with cost-based model configurations"""
-    router = LLMRequestRouter(mock_llm_manager, None, None, None)
+    router = LLMRequestRouter(mock_llm_manager, None)
 
     # Wrap connectors to allow mocking
     for name in list(router.llm_manager.connectors.keys()):

@@ -83,6 +83,16 @@ class PromptSecurityScanner:
             r"disregard\s+(?:previous|all|system)\s+(?:instructions?|rules?)",
             r"replace\s+(?:previous|all|system)\s+(?:instructions?|rules?)",
             r"instead\s+of\s+following\s+(?:instructions?|rules?)",
+            # §8.5.4 spoof-as-threat: gaming the guard filter is itself a
+            # threat signal (raise suspicion, never lower it). Covers guard-
+            # verdict-token injection (telling the guard what to answer),
+            # ShieldGemma/Granite-Guardian prompt-format delimiter escapes,
+            # and explicit filter-override phrasing.
+            r"(?:respond|answer|reply|say)\s+(?:with\s+)?(?:exactly\s+)?['\"]?"
+            r"(?:yes|no|safe|allowed?|block|no\s*violation)['\"]?\s*(?:only|exactly)?",
+            r"<start_of_turn>|<end_of_turn>",
+            r"</?content>",
+            r"you\s+are\s+now\s+unfiltered",
         ],
         ThreatType.JAILBREAK: [
             r"pretend\s+(?:you\s+are|to\s+be)\s+(?:a\s+)?(?:different|another|\w+)",

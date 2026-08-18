@@ -16,7 +16,10 @@ metadata:
     app.kubernetes.io/component: llamacpp
     app.kubernetes.io/instance-model: {{ $modelName }}
 spec:
-  type: {{ $.Values.llamacpp.service.type }}
+  # ClusterIP is not configurable (spec §10.3, same rationale as
+  # ollama-service.yaml) — llama.cpp has no native auth either, and is
+  # covered by the same waddleai-allow-fleet-ingress AIProxy-only CNP.
+  type: ClusterIP
   ports:
     - port: {{ $.Values.llamacpp.service.port }}
       targetPort: {{ $.Values.llamacpp.service.targetPort }}

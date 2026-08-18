@@ -1,0 +1,19 @@
+{
+  "body": {
+    "data": {
+      "by_tool_type_source": {},
+      "escalation_rate": 0.0,
+      "pressure_shift_rate": 0.0,
+      "total": 0,
+      "veto_rate": 0.0
+    },
+    "meta": {
+      "from": null,
+      "organization_id": null,
+      "timestamp": "<VOLATILE>",
+      "to": null
+    },
+    "status": "success"
+  },
+  "status": 200
+}

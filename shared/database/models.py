@@ -283,6 +283,98 @@ def define_tables(db):
         Field("updated_at", "datetime", default=datetime.utcnow),
     )
 
+    # Smart Routing engine (spec §7, migration 010) -- proxy-side read access.
+    # Schema is Alembic-authoritative (services/management/app/models_sqlalchemy.py);
+    # these definitions bind PyDAL field metadata onto the already-created tables
+    # (migrate=False in production), matching the existing dual-definition
+    # pattern used above for content_filter_* and other post-baseline tables.
+    db.define_table(
+        "model_assignments",
+        Field("tool_type", "string", notnull=True),
+        Field("complexity", "string"),
+        Field("region", "string"),
+        Field("model_name", "string", notnull=True),
+        Field("model_params", "string"),
+        Field("vram_gb", "integer"),
+        Field("capability_score", "double"),
+        Field("enabled", "boolean", default=True),
+        Field("created_at", "datetime", default=datetime.utcnow),
+        Field("credential_label", "string"),
+        Field("escalation_model", "string"),
+        Field("fallback_models", "json"),
+        Field("scope", "string", default="global"),
+        Field("scope_ref", "integer"),
+    )
+
+    db.define_table(
+        "model_configs",
+        Field("model_name", unique=True, notnull=True),
+        Field("preferred_providers", "json"),
+        Field("cost_per_token", "json"),
+        Field("max_tokens", "integer"),
+        Field("context_length", "integer"),
+        Field("capabilities", "json"),
+        Field("enabled", "boolean", default=True),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+
+    db.define_table(
+        "model_aliases",
+        Field("organization_id", "reference organizations"),
+        Field("source_model", "string", notnull=True),
+        Field("target_model", "string", notnull=True),
+        Field("target_provider", "string"),
+        Field("enabled", "boolean", default=True),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+
+    db.define_table(
+        "routing_rules_v2",
+        Field("name", "string", notnull=True),
+        Field("priority", "integer", default=100),
+        Field("match", "json"),
+        Field("action", "json"),
+        Field("enabled", "boolean", default=True),
+        Field("organization_id", "reference organizations"),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+
+    db.define_table(
+        "routing_policies",
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("mode", "string", default="local_first"),
+        Field("escalation_threshold", "integer", default=3),
+        Field("escalation_target", "string"),
+        Field("classifier_prompt", "text"),
+        Field("de_escalation", "string", default="idle_reset"),
+        Field("idle_reset_minutes", "integer", default=10),
+        Field("sensitivity_routing", "string", default="local_only"),
+        Field("budget_pressure_enabled", "boolean", default=True),
+        Field("provider_failover", "string", default="off"),
+        Field("created_at", "datetime", default=datetime.utcnow),
+        Field("updated_at", "datetime", default=datetime.utcnow),
+    )
+
+    db.define_table(
+        "routing_decision_traces",
+        Field("request_id", "string", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("timestamp", "datetime", default=datetime.utcnow),
+        Field("requirements", "json"),
+        Field("tool_type", "string"),
+        Field("tool_type_source", "string"),
+        Field("rules_fired", "json"),
+        Field("classifier_output", "json"),
+        Field("assignment_model", "string"),
+        Field("capability_veto", "boolean", default=False),
+        Field("veto_reason", "string"),
+        Field("qualified_candidates", "json"),
+        Field("pressure_signals", "json"),
+        Field("final_model", "string"),
+        Field("routed_from", "json"),
+        Field("escalated", "boolean", default=False),
+    )
+
     return db
 
 

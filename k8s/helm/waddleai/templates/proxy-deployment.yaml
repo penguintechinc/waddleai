@@ -30,9 +30,29 @@ spec:
         - name: wait-for-postgres
           image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
           command: ['sh', '-c', 'until nc -z {{ include "waddleai.fullname" . }}-postgres 5432; do echo waiting for postgres; sleep 2; done;']
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
         - name: wait-for-valkey
           image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
           command: ['sh', '-c', 'until nc -z {{ include "waddleai.fullname" . }}-valkey 6379; do echo waiting for valkey; sleep 2; done;']
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
       containers:
         - name: proxy
           securityContext:
@@ -40,6 +60,8 @@ spec:
             runAsUser: 1000
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
               drop:
                 - ALL
@@ -76,6 +98,25 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .key }}
             {{- end }}
+            {{- if .Values.fleet.external.enabled }}
+            # External/bare-metal fleet node auth (spec §10.3, Task 15). This
+            # is the Helm-side contract only — reading these to actually
+            # route external-node calls is a shared/fleet backend concern,
+            # separately scoped from this task's Dockerfile/Helm wiring.
+            - name: FLEET_EXTERNAL_MODE
+              value: {{ .Values.fleet.external.mode | quote }}
+            {{- if and (eq .Values.fleet.external.mode "mtls") (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
+            - name: FLEET_EXTERNAL_TLS_CERT_PATH
+              value: "/etc/waddleai/fleet-external-tls/tls.crt"
+            - name: FLEET_EXTERNAL_TLS_KEY_PATH
+              value: "/etc/waddleai/fleet-external-tls/tls.key"
+            - name: FLEET_EXTERNAL_TLS_CA_PATH
+              value: "/etc/waddleai/fleet-external-tls/ca.crt"
+            {{- else if eq .Values.fleet.external.mode "token" }}
+            - name: FLEET_EXTERNAL_PROXY_URL
+              value: "http://127.0.0.1:{{ .Values.fleet.external.token.sidecarPort }}"
+            {{- end }}
+            {{- end }}
           {{- if .Values.proxy.livenessProbe.enabled }}
           livenessProbe:
             httpGet:
@@ -101,9 +142,75 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.fleet.external.enabled (eq .Values.fleet.external.mode "mtls") (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
+            - name: fleet-external-tls
+              mountPath: /etc/waddleai/fleet-external-tls
+              readOnly: true
+            {{- end }}
+        {{- if and .Values.fleet.external.enabled (eq .Values.fleet.external.mode "token") }}
+        # Shared-token sidecar (alpha/dev — spec §10.3, Q#4): injects
+        # Authorization: Bearer <token> on the way to each configured
+        # external fleet node. The proxy container talks to it over
+        # loopback via FLEET_EXTERNAL_PROXY_URL above; it never sees the
+        # token itself.
+        - name: fleet-external-token-proxy
+          image: {{ if .Values.fleet.external.token.image.digest }}{{ .Values.fleet.external.token.image.repository }}@{{ .Values.fleet.external.token.image.digest }}{{ else }}{{ .Values.fleet.external.token.image.repository }}:{{ .Values.fleet.external.token.image.tag }}{{ end }}
+          imagePullPolicy: {{ .Values.fleet.external.token.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: fleet-token
+              containerPort: {{ .Values.fleet.external.token.sidecarPort }}
+              protocol: TCP
+          env:
+            - name: FLEET_EXTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: waddleai-secrets
+                  key: fleet-external-token
+          volumeMounts:
+            - name: fleet-external-token-template
+              mountPath: /etc/nginx/templates
+              readOnly: true
+            - name: fleet-external-nginx-confd
+              mountPath: /etc/nginx/conf.d
+            - name: fleet-external-nginx-cache
+              mountPath: /var/cache/nginx
+            - name: fleet-external-nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
+        {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if and .Values.fleet.external.enabled (eq .Values.fleet.external.mode "mtls") (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
+        - name: fleet-external-tls
+          secret:
+            secretName: {{ include "waddleai.fullname" . }}-fleet-external-client-tls
+        {{- end }}
+        {{- if and .Values.fleet.external.enabled (eq .Values.fleet.external.mode "token") }}
+        - name: fleet-external-token-template
+          configMap:
+            name: {{ include "waddleai.fullname" . }}-fleet-external-token-proxy
+        # nginx's envsubst entrypoint writes rendered config here, and nginx
+        # itself needs cache/run writable — all three emptyDir so
+        # readOnlyRootFilesystem: true still holds for this sidecar.
+        - name: fleet-external-nginx-confd
+          emptyDir: {}
+        - name: fleet-external-nginx-cache
+          emptyDir: {}
+        - name: fleet-external-nginx-run
+          emptyDir: {}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -6,6 +6,7 @@ Manages Ollama deployments in two modes:
 - Orchestrated: Directly manage containers via Docker API
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,6 +15,18 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 import yaml
+
+from shared.fleet.base import (
+    BackendType,
+    Endpoint,
+    FleetHealth,
+    InferenceFleetBackend,
+    ManagementScope,
+    ModelPlacement,
+    NodeInfo,
+    ProvisionSpec,
+)
+from shared.fleet.registry import register
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +58,7 @@ class HealthStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
-@dataclass
+@dataclass(slots=True)
 class OllamaDeploymentConfig:
     """Configuration for an Ollama deployment"""
 
@@ -69,9 +82,14 @@ class OllamaDeploymentConfig:
     pvc_access_mode: str = "ReadWriteMany"
     storage_class: str = ""
     namespace: str = "waddleai"
+    # Pool mode (Deployment+nodeSelector, see generate_pool_manifest) vs the
+    # default DaemonSet mode — mixed-GPU clusters use pool mode to pin a
+    # fixed replica count to a specific node class instead of one pod/node.
+    pool_mode: bool = False
+    replicas: int = 1
 
 
-@dataclass
+@dataclass(slots=True)
 class OllamaModel:
     """Ollama model information"""
 
@@ -82,7 +100,7 @@ class OllamaModel:
     details: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(slots=True)
 class PullStatus:
     """Model pull operation status"""
 
@@ -93,21 +111,41 @@ class PullStatus:
     error: Optional[str] = None
 
 
-class OllamaDeploymentManager:
+@register(BackendType.OLLAMA)
+class OllamaDeploymentManager(InferenceFleetBackend):
     """
     Manages Ollama deployments in manual or orchestrated mode.
 
     Manual mode: Generates docker-compose.yml and Kubernetes manifests
     Orchestrated mode: Directly manages containers via Docker API
+
+    Implements ``InferenceFleetBackend`` (spec §10.1) by wrapping the
+    existing sync PyDAL/Docker/HTTP methods below in ``asyncio.to_thread`` —
+    a restructure, not a rewrite; every pre-existing method keeps its exact
+    signature and behavior for the legacy ``api/v1/ollama.py`` routes.
     """
 
+    type = BackendType.OLLAMA
+    management_scope = ManagementScope.FULL_LIFECYCLE
+
     def __init__(
-        self, db, mode: DeploymentMode = DeploymentMode.BOTH, docker_host: str = "unix:///var/run/docker.sock"
+        self,
+        db,
+        mode: DeploymentMode = DeploymentMode.BOTH,
+        docker_host: str = "unix:///var/run/docker.sock",
+        *,
+        config: dict[str, Any] | None = None,
+        credentials: str | None = None,
     ):
         self.db = db
         self.mode = mode
         self.docker_host = docker_host
         self._docker_client = None
+        # registry.build_backend construction contract (§10.1 Task 3). Ollama
+        # has no cloud credentials of its own; `credentials` is accepted for
+        # interface uniformity and currently unused.
+        self.config = config or {}
+        self.credentials = credentials
 
     @property
     def docker_client(self):
@@ -143,6 +181,7 @@ class OllamaDeploymentManager:
             status="pending",
             health_status="unknown",
             auto_start=config.auto_start,
+            pool_mode=config.pool_mode,
             created_at=datetime.utcnow(),
         )
         db.commit()
@@ -171,6 +210,7 @@ class OllamaDeploymentManager:
             gpu_config={"gpu_count": config.gpu_count, "gpu_ids": config.gpu_ids},
             resource_limits={"cpu_limit": config.cpu_limit, "memory_limit": config.memory_limit},
             auto_start=config.auto_start,
+            pool_mode=config.pool_mode,
         )
         db.commit()
 
@@ -207,7 +247,7 @@ class OllamaDeploymentManager:
             "image": "ollama/ollama:latest",
             "container_name": f"waddleai-ollama-{config.name}",
             "ports": [f"{config.port}:11434"],
-            "environment": {"OLLAMA_HOST": "0.0.0.0", **config.environment},
+            "environment": {"OLLAMA_HOST": "0.0.0.0", **config.environment},  # nosec B104 -- container listen address inside its own pod network namespace
             "volumes": [f"ollama-{config.name}-data:/root/.ollama", *[f"{k}:{v}" for k, v in config.volumes.items()]],
             "restart": "unless-stopped",
         }
@@ -288,7 +328,7 @@ class OllamaDeploymentManager:
                                 "name": "ollama",
                                 "image": "ollama/ollama:latest",
                                 "ports": [{"containerPort": 11434}],
-                                "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],
+                                "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],  # nosec B104 -- container listen address inside its own pod network namespace
                                 "volumeMounts": [{"name": "ollama-data", "mountPath": "/root/.ollama"}],
                                 "resources": {"limits": {}},
                             }
@@ -467,31 +507,21 @@ class OllamaDeploymentManager:
 
         return "---\n".join(yaml.dump(s, default_flow_style=False) for s in all_services)
 
-    def generate_daemonset_manifest(self, deployment_id: int) -> str:
+    def _ollama_pvc_and_container(self, deployment) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build the shared RWX-PVC + hardened container specs for DaemonSet/pool manifests.
+
+        Factored out so ``generate_daemonset_manifest`` and
+        ``generate_pool_manifest`` render the identical hardened container
+        (non-root, dropped caps, health probes) from one place.
         """
-        Generate Kubernetes DaemonSet manifest for multi-GPU-node Ollama deployment.
-
-        Creates DaemonSet (one pod per GPU node) + shared ReadWriteMany PVC
-        so models are stored once and served from all GPU nodes.
-        """
-        db = self.db
-
-        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
-        if not deployment:
-            return ""
-
         gpu_config = deployment.gpu_config or {}
         resource_limits = deployment.resource_limits or {}
         gpu_count = gpu_config.get("gpu_count", gpu_config.get("count", 1))
-        node_selector = gpu_config.get("node_selector", {"gpu": "true"})
-        tolerations = gpu_config.get("tolerations", [
-            {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
-        ])
         storage_size = resource_limits.get("shared_storage_size", "200Gi")
         storage_class = gpu_config.get("storage_class", "")
         namespace = deployment.namespace if hasattr(deployment, "namespace") else "waddleai"
 
-        pvc = {
+        pvc: dict[str, Any] = {
             "apiVersion": "v1",
             "kind": "PersistentVolumeClaim",
             "metadata": {
@@ -507,18 +537,18 @@ class OllamaDeploymentManager:
         if storage_class:
             pvc["spec"]["storageClassName"] = storage_class
 
-        container = {
+        container: dict[str, Any] = {
             "name": "ollama",
             "image": "ollama/ollama:0.7.1",
             "ports": [{"containerPort": 11434, "name": "http"}],
             "env": [
-                {"name": "OLLAMA_HOST", "value": "0.0.0.0"},
+                {"name": "OLLAMA_HOST", "value": "0.0.0.0"},  # nosec B104 -- container listen address inside its own pod network namespace
                 {"name": "OLLAMA_MODELS", "value": "/models"},
-                {"name": "HOME", "value": "/tmp"},
+                {"name": "HOME", "value": "/tmp"},  # nosec B108 -- HOME env var in a generated pod spec; needed because the hardened image runs readOnlyRootFilesystem
             ],
             "volumeMounts": [
                 {"name": "ollama-models", "mountPath": "/models"},
-                {"name": "tmp", "mountPath": "/tmp"},
+                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 -- pod volumeMount path in a generated manifest, not a host temp file
             ],
             "resources": {
                 "requests": {
@@ -554,6 +584,28 @@ class OllamaDeploymentManager:
                 "failureThreshold": 3,
             },
         }
+        return pvc, container
+
+    def generate_daemonset_manifest(self, deployment_id: int) -> str:
+        """
+        Generate Kubernetes DaemonSet manifest for multi-GPU-node Ollama deployment.
+
+        Creates DaemonSet (one pod per GPU node) + shared ReadWriteMany PVC
+        so models are stored once and served from all GPU nodes.
+        """
+        db = self.db
+
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return ""
+
+        gpu_config = deployment.gpu_config or {}
+        namespace = deployment.namespace if hasattr(deployment, "namespace") else "waddleai"
+        tolerations = gpu_config.get("tolerations", [
+            {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
+        ])
+        node_selector = gpu_config.get("node_selector", {"gpu": "true"})
+        pvc, container = self._ollama_pvc_and_container(deployment)
 
         daemonset = {
             "apiVersion": "apps/v1",
@@ -600,6 +652,77 @@ class OllamaDeploymentManager:
         }
 
         manifests = [pvc, daemonset, service]
+        return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
+
+    def generate_pool_manifest(self, deployment_id: int) -> str:
+        """Generate a pool-mode (Deployment+nodeSelector) manifest, for mixed-GPU clusters.
+
+        Same shared RWX PVC + hardened container as ``generate_daemonset_manifest``,
+        but a fixed ``replicas`` count pinned to a node class via ``nodeSelector``
+        instead of one pod per matching node — set ``pool_mode=True`` on the
+        deployment's config to select this mode (migration 013).
+        """
+        db = self.db
+
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return ""
+
+        gpu_config = deployment.gpu_config or {}
+        namespace = deployment.namespace if hasattr(deployment, "namespace") else "waddleai"
+        node_selector = gpu_config.get("node_selector", {"gpu": "true"})
+        replicas = gpu_config.get("replicas", 1)
+        pvc, container = self._ollama_pvc_and_container(deployment)
+
+        pool_deployment = {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": f"ollama-{deployment.name}",
+                "namespace": namespace,
+                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai"},
+            },
+            "spec": {
+                "replicas": replicas,
+                "selector": {"matchLabels": {"app": f"ollama-{deployment.name}"}},
+                "template": {
+                    "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
+                    "spec": {
+                        "securityContext": {
+                            "fsGroup": 1000, "runAsNonRoot": True, "runAsUser": 1000,
+                        },
+                        "nodeSelector": node_selector,
+                        "containers": [container],
+                        "volumes": [
+                            {
+                                "name": "ollama-models",
+                                "persistentVolumeClaim": {
+                                    "claimName": f"ollama-{deployment.name}-models",
+                                },
+                            },
+                            {"name": "tmp", "emptyDir": {}},
+                        ],
+                    },
+                },
+            },
+        }
+
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": f"ollama-{deployment.name}",
+                "namespace": namespace,
+                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai"},
+            },
+            "spec": {
+                "type": "ClusterIP",
+                "selector": {"app": f"ollama-{deployment.name}"},
+                "ports": [{"name": "http", "port": 11434, "targetPort": 11434, "protocol": "TCP"}],
+            },
+        }
+
+        manifests = [pvc, pool_deployment, service]
         return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
 
     # Container Management (Orchestrated Mode)
@@ -853,3 +976,149 @@ class OllamaDeploymentManager:
         except Exception as e:
             logger.error(f"Failed to remove model: {e}")
             return False
+
+    # InferenceFleetBackend interface (spec §10.1)
+    #
+    # Deployments are the unit this manager already tracks, so a deployment
+    # *is* a fleet node at this layer: `node_id`/`Endpoint.node_id` are the
+    # deployment name, `NodeInfo.node_uid` reads the migration-013 column
+    # (populated by live K8s node introspection — a follow-up, not faked
+    # here), and VRAM fields default to 0/"unknown" rather than invented
+    # numbers when no metrics source is wired up yet.
+
+    def _node_info_from_deployment(self, deployment, loaded_models: list[str]) -> NodeInfo:
+        """Map an ``ollama_deployments`` row to a ``NodeInfo`` value object."""
+        deployment_type = deployment.deployment_type or ""
+        kind = "k8s" if deployment_type.startswith("kubernetes") else "external"
+        return NodeInfo(
+            node_id=deployment.name,
+            node_uid=getattr(deployment, "node_uid", None),
+            kind=kind,
+            loaded_models=loaded_models,
+            vram_total_mb=0,
+            vram_free_mb=0,
+            healthy=deployment.health_status == "healthy",
+        )
+
+    def _models_for_deployment(self, deployment_id: int) -> list[str]:
+        """Return tracked model names for a deployment (DB-backed, not a live pull)."""
+        db = self.db
+        rows = db(db.ollama_models.deployment_id == deployment_id).select()
+        return [row.model_name for row in rows]
+
+    async def provision(self, spec: ProvisionSpec) -> list[NodeInfo]:
+        """Create an Ollama deployment for ``spec`` and return its node.
+
+        ``spec.models`` is not eagerly pulled here — call ``place_model``
+        per model afterward so pulls stay lazy (§10.4).
+        """
+
+        def _provision() -> list[NodeInfo]:
+            gpu_count = int(spec.constraints.get("gpu_count", 0))
+            pool_mode = spec.mode == "pool"
+            config = OllamaDeploymentConfig(
+                name=spec.name,
+                deployment_type="kubernetes-daemonset" if not pool_mode else "kubernetes",
+                gpu_count=gpu_count,
+                namespace=spec.constraints.get("namespace", "waddleai"),
+                pool_mode=pool_mode,
+                replicas=int(spec.constraints.get("replicas", 1)),
+            )
+            result = self.create_deployment(config)
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Ollama provision failed")
+            db = self.db
+            deployment = db(db.ollama_deployments.id == result["deployment_id"]).select().first()
+            return [self._node_info_from_deployment(deployment, [])]
+
+        return await asyncio.to_thread(_provision)
+
+    async def deprovision(self, node_id: str) -> None:
+        """Delete the deployment named ``node_id``. No-op if it no longer exists."""
+
+        def _deprovision() -> None:
+            db = self.db
+            deployment = db(db.ollama_deployments.name == node_id).select().first()
+            if deployment is None:
+                return
+            self.delete_deployment(deployment.id)
+
+        await asyncio.to_thread(_deprovision)
+
+    async def health(self) -> FleetHealth:
+        """Aggregate ``health_check`` across every tracked deployment."""
+
+        def _health() -> FleetHealth:
+            db = self.db
+            deployments = db(db.ollama_deployments.id > 0).select()
+            total = 0
+            healthy_count = 0
+            for deployment in deployments:
+                total += 1
+                if self.health_check(deployment.id).get("healthy"):
+                    healthy_count += 1
+            return FleetHealth(
+                backend_id=self.fleet_backend_id,
+                healthy=(healthy_count == total),
+                node_count=total,
+                detail={"healthy_nodes": healthy_count},
+            )
+
+        return await asyncio.to_thread(_health)
+
+    async def list_nodes(self) -> list[NodeInfo]:
+        """Return every tracked Ollama deployment as a ``NodeInfo``."""
+
+        def _list() -> list[NodeInfo]:
+            db = self.db
+            deployments = db(db.ollama_deployments.id > 0).select()
+            return [
+                self._node_info_from_deployment(d, self._models_for_deployment(d.id))
+                for d in deployments
+            ]
+
+        return await asyncio.to_thread(_list)
+
+    async def place_model(self, model: str, constraints: dict[str, Any]) -> ModelPlacement:
+        """Pull ``model`` onto the target deployment (``node_id`` constraint, or first running)."""
+
+        def _place() -> ModelPlacement:
+            db = self.db
+            node_id = constraints.get("node_id")
+            if node_id:
+                deployment = db(db.ollama_deployments.name == node_id).select().first()
+            else:
+                deployment = db(db.ollama_deployments.status == "running").select().first()
+            if deployment is None:
+                raise RuntimeError(f"No available Ollama deployment to place model {model!r}")
+
+            result = self.pull_model(deployment.id, model)
+            if result.error:
+                raise RuntimeError(f"Failed to place model {model!r}: {result.error}")
+            status = "placed" if result.completed else "pulling"
+            return ModelPlacement(model=model, node_id=deployment.name, status=status)
+
+        return await asyncio.to_thread(_place)
+
+    async def endpoints_for(self, model: str) -> list[Endpoint]:
+        """Return endpoints for deployments that currently have ``model`` loaded."""
+
+        def _endpoints() -> list[Endpoint]:
+            db = self.db
+            deployments = db(db.ollama_deployments.id > 0).select()
+            endpoints = []
+            for deployment in deployments:
+                loaded = self._models_for_deployment(deployment.id)
+                if model not in loaded:
+                    continue
+                endpoints.append(
+                    Endpoint(
+                        url=deployment.endpoint_url,
+                        node_id=deployment.name,
+                        loaded_models=loaded,
+                        healthy=deployment.health_status == "healthy",
+                    )
+                )
+            return endpoints
+
+        return await asyncio.to_thread(_endpoints)

@@ -209,8 +209,6 @@ async def set_key_quota(key_id):
         update_fields["rpm_limit"] = data["rpm_limit"]
 
     if update_fields:
-        # Mark for re-sync
-        update_fields["ailb_sync_status"] = "pending"
 
         def _update():
             db(db.virtual_keys.id == key_id).update(**update_fields)
@@ -218,9 +216,7 @@ async def set_key_quota(key_id):
 
         await asyncio.to_thread(_update)
 
-    return jsonify(
-        {"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully. Re-sync to AILB required."}
-    )
+    return jsonify({"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully."})
 
 
 @api_v1_bp.route("/quotas/status/<int:entity_id>", methods=["GET"])

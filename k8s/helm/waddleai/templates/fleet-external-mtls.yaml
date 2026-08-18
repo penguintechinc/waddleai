@@ -1,0 +1,108 @@
+{{/*
+External / bare-metal fleet node access control (spec §10.3, Q#4, Task 15).
+Ollama/llama.cpp have no native auth, and the in-cluster
+waddleai-allow-fleet-ingress CiliumNetworkPolicy (cilium-network-policy.yaml,
+§12) only governs traffic between Cilium-managed endpoints — it has no
+opinion on a bare-metal box outside the cluster. Two mutually exclusive
+modes, matched to environment risk profile:
+  mtls  (beta/prod default) — cert-manager issues the AIProxy a client cert;
+        the external node's own reverse proxy validates it. Gated by both
+        fleet.external.enabled and a live cert-manager.io/v1 capability
+        check, same capability-guard pattern as the Cilium bootstrap CNP.
+  token (alpha/dev)         — a local nginx sidecar in the AIProxy pod
+        injects a shared bearer token on the way out; no cert-manager
+        dependency, matching alpha's frequent lack of a private CA.
+Disabled entirely (renders nothing) unless fleet.external.enabled is true.
+*/}}
+{{- if .Values.fleet.external.enabled -}}
+
+{{- if eq .Values.fleet.external.mode "mtls" -}}
+{{- if .Capabilities.APIVersions.Has "cert-manager.io/v1" }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "waddleai.fullname" . }}-fleet-external-client
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  # Output secret mounted by proxy-deployment.yaml: tls.crt/tls.key (AIProxy's
+  # client identity) + ca.crt (used to validate each external node's server
+  # cert — single-internal-CA mTLS, the standard pattern when both sides are
+  # operator-provisioned rather than public endpoints).
+  secretName: {{ include "waddleai.fullname" . }}-fleet-external-client-tls
+  duration: {{ .Values.fleet.external.mtls.clientCertDuration | quote }}
+  renewBefore: {{ .Values.fleet.external.mtls.renewBefore | quote }}
+  commonName: {{ include "waddleai.fullname" . }}-aiproxy-fleet-client
+  usages:
+    - client auth
+  issuerRef:
+    name: {{ .Values.fleet.external.mtls.issuerRef.name }}
+    kind: {{ .Values.fleet.external.mtls.issuerRef.kind }}
+    group: cert-manager.io
+{{- end }}
+{{- end }}
+
+{{- if eq .Values.fleet.external.mode "token" }}
+---
+# Rendered by nginx's own docker-entrypoint.d envsubst step at container
+# start (/etc/nginx/templates/*.template -> /etc/nginx/conf.d/*.conf) — the
+# bearer token itself comes from a Secret-sourced env var
+# (FLEET_EXTERNAL_TOKEN, wired in proxy-deployment.yaml), never baked into
+# this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "waddleai.fullname" . }}-fleet-external-token-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+data:
+  default.conf.template: |
+    server {
+        listen {{ .Values.fleet.external.token.sidecarPort }};
+
+        {{- range .Values.fleet.external.nodes }}
+        location /{{ .name }}/ {
+            proxy_pass http://{{ .host }}:{{ .port }}/;
+            proxy_set_header Authorization "Bearer ${FLEET_EXTERNAL_TOKEN}";
+            proxy_set_header Host $host;
+            proxy_read_timeout 300s;
+        }
+        {{- end }}
+    }
+{{- end }}
+
+{{/*
+Egress allowlist for AIProxy -> external node IPs (both modes need this: the
+default-deny egress in cilium-network-policy.yaml only opens AIProxy egress
+to in-cluster fleet/postgres/valkey, nothing external). Separate resource,
+not folded into that file, so this task's changes stay self-contained.
+*/}}
+{{- if and .Values.fleet.external.nodes .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-aiproxy-external-fleet-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml .Values.cilium.topology.selectors.aiproxy | nindent 6 }}
+  egress:
+    - toCIDRSet:
+        {{- range .Values.fleet.external.nodes }}
+        - cidr: {{ printf "%s/32" .host | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            {{- range .Values.fleet.external.nodes }}
+            - port: {{ .port | quote }}
+              protocol: TCP
+            {{- end }}
+{{- end }}
+
+{{- end }}

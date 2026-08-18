@@ -257,14 +257,22 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.llamacpp",
     "services.management.app.api.v1.ollama",
     "services.management.app.api.v1.ollama_models",
-    "services.management.app.api.v1.ailb",
-    "services.management.app.api.v1.ailb_memory",
+    "services.management.app.api.v1.memory_config",
     "services.management.app.api.v1.keys",
     "services.management.app.api.v1.usage",
     "services.management.app.api.v1.quotas",
-    "services.management.app.api.v1.webhooks",
-    "services.management.app.api.v1.routing_matrix",
+    "services.management.app.api.v1.cache_configs",
+    "services.management.app.api.v1.routing_assignments",
     "services.management.app.api.v1.cilium",
+    "services.management.app.api.v1.routing_policies",
+    "services.management.app.api.v1.routing_rules",
+    "services.management.app.api.v1.model_aliases",
+    "services.management.app.api.v1.routing_decisions",
+    "services.management.app.api.v1.routing_dry_run",
+    "services.management.app.api.v1.security_policies",
+    "services.management.app.api.v1.knowledge",
+    "services.management.app.api.v1.memory_scoping",
+    "services.management.app.api.v1.integrations",
 ]
 
 
@@ -299,7 +307,6 @@ def flask_app():
                 "TESTING": True,
                 "JWT_SECRET_KEY": "test-secret-key-32chars-minimum!!",
                 "WTF_CSRF_ENABLED": False,
-                "ENABLE_USAGE_WEBHOOKS": True,
                 "ENABLE_OLLAMA_MANAGEMENT": True,
                 "OLLAMA_MANAGEMENT_MODE": "both",
                 "WEBHOOK_SECRET": "",
@@ -497,8 +504,6 @@ def make_mock_key(
     key.tpm_limit = 10000
     key.rpm_limit = 60
     key.enabled = enabled
-    key.ailb_sync_status = "pending"
-    key.ailb_key_id = None
     key.expires_at = None
     key.last_used = None
     key.created_at = datetime(2025, 1, 1, 12, 0, 0)

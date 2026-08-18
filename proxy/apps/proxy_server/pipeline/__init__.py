@@ -1,15 +1,17 @@
 """ProxyPipeline stage execution framework with OpenTelemetry instrumentation."""
 
 from .stages import (
-    PipelineContext,
-    Stage,
-    ProxyPipeline,
     AuthStage,
-    TokenBudgetStage,
-    SecurityInStage,
+    CacheStage,
     DispatchStage,
-    SecurityOutStage,
     MeterStage,
+    PipelineContext,
+    ProxyPipeline,
+    RoutingStage,
+    SecurityInStage,
+    SecurityOutStage,
+    Stage,
+    TokenBudgetStage,
 )
 
 __all__ = [
@@ -19,6 +21,8 @@ __all__ = [
     "AuthStage",
     "TokenBudgetStage",
     "SecurityInStage",
+    "CacheStage",
+    "RoutingStage",
     "DispatchStage",
     "SecurityOutStage",
     "MeterStage",

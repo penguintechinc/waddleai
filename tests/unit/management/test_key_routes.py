@@ -282,34 +282,17 @@ class TestRotateKey:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/keys/<id>/sync
+# POST /api/v1/keys/<id>/sync -- removed (AILB retired, migration 007)
 # ---------------------------------------------------------------------------
 
 
-class TestSyncKey:
-    """Tests for POST /api/v1/keys/<key_id>/sync"""
+class TestSyncKeyRemoved:
+    """The AILB sync endpoint had no successor and is gone; guard against reintroduction."""
 
-    async def test_sync_key_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
-        """Admin can sync a key to AILB."""
-        key = make_mock_key()
-        app_mock_db.return_value.select.return_value.first.return_value = key
-
+    async def test_sync_key_endpoint_no_longer_exists(self, client, auth_headers: Dict) -> None:
+        """The route is unregistered -- Quart returns 404, not 200/403."""
         resp = await client.post("/api/v1/keys/1/sync", headers=auth_headers)
-        assert resp.status_code == 200
-        data = await resp.get_json()
-        assert data["ailb_sync_status"] == "synced"
-
-    async def test_sync_key_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
-        """Missing key returns 404."""
-        app_mock_db.return_value.select.return_value.first.return_value = None
-
-        resp = await client.post("/api/v1/keys/999/sync", headers=auth_headers)
         assert resp.status_code == 404
-
-    async def test_sync_key_non_admin_forbidden(self, client, user_auth_headers: Dict) -> None:
-        """Regular user cannot sync → 403."""
-        resp = await client.post("/api/v1/keys/1/sync", headers=user_auth_headers)
-        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------

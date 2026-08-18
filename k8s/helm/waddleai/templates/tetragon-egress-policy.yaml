@@ -1,0 +1,52 @@
+{{/*
+Tetragon egress-observe: flags AIProxy outbound connections and unexpected
+file-write activity (spec §12.2). Always logs (Post) rather than kills —
+FQDN allow-listing to provider endpoints is the cilium-reconciler CNP's job
+(§12.1, cilium-network-policy.yaml's waddleai-allow-aiproxy-egress rule);
+this policy observes/flags only and intentionally does not duplicate that
+allow-list. CIDR-scoped hard blocking is a documented follow-up, not
+silently dropped — see tetragon.egress in values.yaml.
+
+Guarded by BOTH the values toggle AND a live capability check, mirroring
+cilium-network-policy.yaml's pattern, so non-Tetragon clusters render every
+other template cleanly and simply skip this object (§12.3).
+*/}}
+{{- if and .Values.tetragon.enabled .Values.tetragon.egress.enabled (or .Values.tetragon.forceRender (.Capabilities.APIVersions.Has "cilium.io/v1alpha1/TracingPolicyNamespaced")) -}}
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: {{ include "waddleai.fullname" . }}-egress-observe
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: ["proxy"]
+  kprobes:
+    - call: "tcp_connect"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+      selectors:
+        - matchActions:
+            - action: Post
+    {{- if .Values.tetragon.egress.flagUnexpectedFileWrites }}
+    - call: "security_file_permission"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+        - index: 1
+          type: "int"
+      selectors:
+        - matchActions:
+            - action: Post
+    {{- end }}
+{{- end }}

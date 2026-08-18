@@ -7,6 +7,7 @@ on:
       - 'proxy/**'
       - 'services/**'
       - 'shared/**'
+      - 'images/**'
       - '.version'
       - '.github/workflows/docker-build.yml'
     tags: [ 'v*' ]
@@ -20,6 +21,7 @@ on:
       - 'proxy/**'
       - 'services/**'
       - 'shared/**'
+      - 'images/**'
       - '.version'
       - '.github/workflows/docker-build.yml'
 
@@ -27,6 +29,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME_PROXY: ${{ github.repository }}/proxy
   IMAGE_NAME_MANAGEMENT: ${{ github.repository }}/management
+  IMAGE_NAME_OLLAMA: ${{ github.repository }}/ollama
 
 jobs:
   test:
@@ -318,6 +321,118 @@ jobs:
         docker buildx imagetools create ${{ steps.tags.outputs.tags }} \
           ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-amd64 \
           ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-arm64
+
+  # Hardened Ollama fleet image (spec §10.2, plan Task 13). Separate from the
+  # build-platform/merge-manifests pair above: only two tags exist (hardened,
+  # debug — no per-arch intermediate tags to merge), so a single multi-arch
+  # `docker/build-push-action` push per target is simpler, and the Trivy gate
+  # here is a hard block (exit-code 1), unlike the SARIF-only, non-blocking
+  # security-scan job below — Task 13 explicitly calls for a blocking gate.
+  build-ollama-image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [hardened, debug]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        fetch-depth: 0
+
+    - name: Generate epoch64 timestamp
+      id: timestamp
+      run: |
+        EPOCH64=$(date +%s)
+        echo "epoch64=$EPOCH64" >> $GITHUB_OUTPUT
+
+    - name: Check version file
+      id: version
+      run: |
+        if [ -f .version ]; then
+          VERSION=$(cat .version | tr -d '[:space:]')
+          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+        else
+          echo "semver=0.0.0" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Fixed floating tag (hardened/debug — matches spec §10.2's two named
+    # tags exactly, consumed as-is by ollama.image.tag in values.yaml) plus
+    # one immutable per-run tag the Trivy step below scans, so the gate
+    # checks the exact digest just built rather than racing a floating tag.
+    - name: Extract metadata for Docker
+      id: meta
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}
+        tags: |
+          type=raw,value=${{ matrix.target }}
+          type=raw,value=${{ matrix.target }}-v${{ steps.version.outputs.semver }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          type=sha,prefix=ci-${{ matrix.target }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
+
+    - name: Build and push ${{ matrix.target }} (multi-arch)
+      id: build
+      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7
+      with:
+        context: ./images/ollama
+        file: ./images/ollama/Dockerfile
+        target: ${{ matrix.target }}
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha,scope=ollama-${{ matrix.target }}
+        cache-to: type=gha,scope=ollama-${{ matrix.target }},mode=max
+
+    # Blocking gate (Task 13: "block on Trivy findings") — scans the exact
+    # digest just pushed, ignoring only the documented, justified entries in
+    # images/ollama/.trivyignore (upstream-embedded Go module CVEs + Debian
+    # baseline CVEs with no published fix). Anything else fails the job.
+    - name: Trivy vulnerability gate
+      if: github.event_name != 'pull_request'
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}@${{ steps.build.outputs.digest }}
+        format: 'table'
+        severity: 'HIGH,CRITICAL'
+        exit-code: '1'
+        trivyignores: 'images/ollama/.trivyignore'
+        version: 'v0.69.3'
+
+    - name: Trivy scan for GitHub Security tab (SARIF, non-blocking)
+      if: always() && github.event_name != 'pull_request'
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}@${{ steps.build.outputs.digest }}
+        format: 'sarif'
+        output: 'trivy-results-ollama-${{ matrix.target }}.sarif'
+        version: 'v0.69.3'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      if: always() && github.event_name != 'pull_request'
+      uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
+      with:
+        sarif_file: 'trivy-results-ollama-${{ matrix.target }}.sarif'
 
   security-scan:
     needs: merge-manifests

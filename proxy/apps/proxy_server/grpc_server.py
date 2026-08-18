@@ -1,7 +1,7 @@
 """
 WaddleAI gRPC Server — receives calls from the Go AILB and delegates
-to the Python agent layer (RoutingAgent, SecurityAgent, UsageTracker)
-and memory subsystem (WaddleAIMemoryManager).
+to the Python agent/engine layer (RoutingEngineRouteEvaluator, SecurityAgent,
+UsageTracker) and memory subsystem (WaddleAIMemoryManager).
 
 Usage:
     # Standalone (blocking)
@@ -22,10 +22,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 import grpc
 import structlog
-from grpc_proto.marchproxy import waddleai_pb2, waddleai_pb2_grpc
+from grpc_proto.waddleai.v1 import proxy_pb2 as waddleai_pb2
+from grpc_proto.waddleai.v1 import proxy_pb2_grpc as waddleai_pb2_grpc
 
-from shared.agents import RoutingAgent, SecurityAgent, UsageTracker
+from shared.agents import SecurityAgent, UsageTracker
 from shared.agents.usage_tracker import UsageReport as AgentUsageReport
+from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
 from shared.utils.memory_integration import WaddleAIMemoryManager
 
 logger = structlog.get_logger(__name__)
@@ -104,7 +106,7 @@ class ServerComponents:
     when a subsystem is unavailable.
     """
 
-    routing_agent: Optional[RoutingAgent] = None
+    routing_agent: Optional[RoutingEngineRouteEvaluator] = None
     security_agent: Optional[SecurityAgent] = None
     usage_tracker: Optional[UsageTracker] = None
     memory_manager: Optional[WaddleAIMemoryManager] = None

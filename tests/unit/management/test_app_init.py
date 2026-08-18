@@ -121,12 +121,13 @@ class TestErrorHandlers:
         assert data["error"] == "Not Found"
         assert "message" in data
 
-    async def test_400_error_handler(self, client):
+    async def test_400_error_handler(self, client, auth_headers):
         """Bad request returns 400 with JSON error."""
-        # POST a bad request to trigger 400
+        # POST a bad request (missing organization_id) to trigger 400
         resp = await client.post(
-            "/api/v1/webhooks/ailb/usage",
+            "/api/v1/memory-config",
             json=None,
+            headers=auth_headers,
         )
         # If body is empty/None, this triggers 400
         # Status may depend on route validation
@@ -146,21 +147,6 @@ class TestErrorHandlers:
             except Exception:
                 pass
         # Structure is verified by handler definition
-
-    async def test_403_error_disabled_webhooks(self, client, flask_app):
-        """Disabled webhooks return 403."""
-        original = flask_app.config.get("ENABLE_USAGE_WEBHOOKS", True)
-        flask_app.config["ENABLE_USAGE_WEBHOOKS"] = False
-        try:
-            resp = await client.post(
-                "/api/v1/webhooks/ailb/usage",
-                json={"event_id": "test"},
-            )
-            assert resp.status_code == 403
-            data = await resp.get_json()
-            assert "error" in data
-        finally:
-            flask_app.config["ENABLE_USAGE_WEBHOOKS"] = original
 
     async def test_500_error_handler(self, client):
         """500 error response includes error and message."""

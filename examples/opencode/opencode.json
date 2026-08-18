@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "waddleai": {
+      "name": "WaddleAI",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://{your-waddleai-host}/v1",
+        "apiKey": "{env:WADDLEAI_API_KEY}"
+      },
+      "models": {
+        "waddleai-router": {
+          "name": "WaddleAI Smart Router",
+          "id": "smart-router"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "waddleai": {
+      "type": "remote",
+      "url": "https://{your-waddleai-host}/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:WADDLEAI_API_KEY}"
+      },
+      "enabled": true
+    }
+  }
+}

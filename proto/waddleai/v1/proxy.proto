@@ -1,0 +1,136 @@
+// WaddleAI proxy gRPC service.
+//
+// Serves the routing, security, memory, and usage-reporting surface consumed
+// by proxy/apps/proxy_server/grpc_server.py (WaddleAIServiceServicer). This
+// definition is authored in-repo — there is no vendored MarchProxy source
+// proto to regenerate from — recovered from the checked-in
+// grpc_proto/marchproxy/waddleai_pb2.py stub and the servicer implementation
+// so message and field shapes stay wire-compatible with existing callers.
+syntax = "proto3";
+
+package waddleai.v1;
+
+option go_package = "github.com/penguintechinc/waddleai/proto/waddleai/v1;waddleaiv1";
+
+// EvaluateRoute: classify prompt complexity and recommend a target model.
+message RouteRequest {
+  string api_version = 1;
+  string prompt = 2;
+  string tool_type = 3;
+  string session_id = 4;
+  string user_id = 5;
+  string region = 6;
+  map<string, string> metadata = 7;
+}
+
+message RouteResponse {
+  string recommended_model = 1;
+  string complexity = 2;
+  string target_type = 3;
+  float confidence = 4;
+  string reasoning = 5;
+}
+
+// EvaluateSecurity: evaluate a raw tool command for security threats.
+message SecurityRequest {
+  string api_version = 1;
+  string raw_command = 2;
+  string tool_type = 3;
+  string user_id = 4;
+  map<string, string> context = 5;
+}
+
+message SecurityResponse {
+  bool safe = 1;
+  float risk_score = 2;
+  string threat_type = 3;
+  string explanation = 4;
+  bool blocked = 5;
+}
+
+// StoreTurn: persist a conversation turn in the memory subsystem.
+message StoreTurnRequest {
+  string api_version = 1;
+  string session_id = 2;
+  string user_id = 3;
+  string user_message = 4;
+  string assistant_response = 5;
+  string model = 6;
+  string provider = 7;
+  map<string, string> metadata = 8;
+}
+
+message StoreTurnResponse {
+  bool success = 1;
+}
+
+// GetContext: retrieve stored conversation context for a session.
+message GetContextRequest {
+  string api_version = 1;
+  string session_id = 2;
+  string user_id = 3;
+  int32 limit = 4;
+}
+
+message GetContextResponse {
+  repeated MemoryEntry memories = 1;
+  string summary = 2;
+}
+
+// SearchMemories: search stored memories by query text.
+message SearchMemoriesRequest {
+  string api_version = 1;
+  string query = 2;
+  string user_id = 3;
+  int32 limit = 4;
+  float threshold = 5;
+}
+
+message SearchMemoriesResponse {
+  repeated MemoryEntry results = 1;
+}
+
+message MemoryEntry {
+  string id = 1;
+  string content = 2;
+  string role = 3;
+  float similarity = 4;
+  string created_at = 5;
+  map<string, string> metadata = 6;
+}
+
+// ReportUsage: record token usage for a completed request. Functions as a
+// request message on the ReportUsage RPC, so it carries api_version like the
+// other *Request messages despite the UsageReport name (kept from the
+// recovered stub — grpc_server.py type-hints on waddleai_pb2.UsageReport).
+message UsageReport {
+  string api_version = 1;
+  string user_id = 2;
+  string api_key_id = 3;
+  string model = 4;
+  string provider = 5;
+  int32 input_tokens = 6;
+  int32 output_tokens = 7;
+  int32 total_tokens = 8;
+  int32 latency_ms = 9;
+  string request_id = 10;
+  string timestamp = 11;
+  map<string, string> metadata = 12;
+}
+
+message UsageAck {
+  bool accepted = 1;
+  bool quota_exceeded = 2;
+  string message = 3;
+}
+
+// Health checking uses the standard grpc.health.v1.Health service
+// (grpcio-health-checking), wired at server startup — not redefined here.
+service WaddleAIService {
+  rpc EvaluateRoute(RouteRequest) returns (RouteResponse);
+  rpc EvaluateSecurity(SecurityRequest) returns (SecurityResponse);
+  rpc StoreTurn(StoreTurnRequest) returns (StoreTurnResponse);
+  rpc GetContext(GetContextRequest) returns (GetContextResponse);
+  rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
+  rpc ReportUsage(UsageReport) returns (UsageAck);
+}
