@@ -178,7 +178,7 @@ class LlamaCppManager(InferenceFleetBackend):
             },
             "volumeMounts": [
                 {"name": "llamacpp-models", "mountPath": "/models"},
-                {"name": "tmp", "mountPath": "/tmp"},
+                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 -- pod volumeMount path in a generated manifest, not a host temp file; required because the container runs readOnlyRootFilesystem
             ],
         }
 
@@ -190,7 +190,7 @@ class LlamaCppManager(InferenceFleetBackend):
                 "--n-gpu-layers", str(deployment.n_gpu_layers),
                 "--ctx-size", str(deployment.n_ctx),
                 "--port", "8080",
-                "--host", "0.0.0.0",
+                "--host", "0.0.0.0",  # nosec B104 -- container listen address inside its own pod network namespace; reachability is governed by Service + CiliumNetworkPolicy
             ],
             "ports": [{"name": "http", "containerPort": 8080, "protocol": "TCP"}],
             "securityContext": {
@@ -228,7 +228,7 @@ class LlamaCppManager(InferenceFleetBackend):
             },
             "volumeMounts": [
                 {"name": "llamacpp-models", "mountPath": "/models"},
-                {"name": "tmp", "mountPath": "/tmp"},
+                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 -- pod volumeMount path in a generated manifest, not a host temp file
             ],
         }
 

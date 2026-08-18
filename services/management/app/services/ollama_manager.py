@@ -247,7 +247,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "image": "ollama/ollama:latest",
             "container_name": f"waddleai-ollama-{config.name}",
             "ports": [f"{config.port}:11434"],
-            "environment": {"OLLAMA_HOST": "0.0.0.0", **config.environment},
+            "environment": {"OLLAMA_HOST": "0.0.0.0", **config.environment},  # nosec B104 -- container listen address inside its own pod network namespace
             "volumes": [f"ollama-{config.name}-data:/root/.ollama", *[f"{k}:{v}" for k, v in config.volumes.items()]],
             "restart": "unless-stopped",
         }
@@ -328,7 +328,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                                 "name": "ollama",
                                 "image": "ollama/ollama:latest",
                                 "ports": [{"containerPort": 11434}],
-                                "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],
+                                "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],  # nosec B104 -- container listen address inside its own pod network namespace
                                 "volumeMounts": [{"name": "ollama-data", "mountPath": "/root/.ollama"}],
                                 "resources": {"limits": {}},
                             }
@@ -542,13 +542,13 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "image": "ollama/ollama:0.7.1",
             "ports": [{"containerPort": 11434, "name": "http"}],
             "env": [
-                {"name": "OLLAMA_HOST", "value": "0.0.0.0"},
+                {"name": "OLLAMA_HOST", "value": "0.0.0.0"},  # nosec B104 -- container listen address inside its own pod network namespace
                 {"name": "OLLAMA_MODELS", "value": "/models"},
-                {"name": "HOME", "value": "/tmp"},
+                {"name": "HOME", "value": "/tmp"},  # nosec B108 -- HOME env var in a generated pod spec; needed because the hardened image runs readOnlyRootFilesystem
             ],
             "volumeMounts": [
                 {"name": "ollama-models", "mountPath": "/models"},
-                {"name": "tmp", "mountPath": "/tmp"},
+                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 -- pod volumeMount path in a generated manifest, not a host temp file
             ],
             "resources": {
                 "requests": {
