@@ -35,15 +35,15 @@ test:
 
 test-unit:
 	@echo "Running unit tests..."
-	@if [ -d tests/unit ]; then python3 -m pytest tests/unit -v; fi
+	python3 -m pytest tests/unit -v
 
 test-integration:
 	@echo "Running integration tests..."
-	@if [ -d tests/integration ]; then python3 -m pytest tests/integration -v; fi
+	python3 -m pytest tests/integration -v --no-cov
 
 test-e2e:
 	@echo "Running e2e tests..."
-	@if [ -d tests/e2e ]; then python3 -m pytest tests/e2e -v; fi
+	python3 -m pytest tests/e2e -v --no-cov
 
 test-functional:
 	@echo "No functional tests defined"
@@ -64,7 +64,7 @@ test-security:
 
 smoke-test:
 	@echo "Running smoke tests..."
-	@if [ -d tests/smoke ]; then python3 -m pytest tests/smoke -v; fi
+	python3 -m pytest tests/smoke -v --no-cov
 
 seed-mock-data:
 	@echo "No mock data seeding defined"
