@@ -156,6 +156,34 @@ class ProviderCredential(Base):
     provider = relationship("AIProvider", back_populates="credentials")
 
 
+class FleetBackend(Base):
+    """One row per registered inference fleet backend (spec §10.1).
+
+    ``type`` selects the concrete ``InferenceFleetBackend`` implementation
+    via the ``shared.fleet.registry`` factory; ``management_scope`` controls
+    whether WaddleAI lifecycles the backend's nodes (``full_lifecycle``) or
+    only routes/health-checks pre-existing ones (``register_and_route``).
+    """
+
+    __tablename__ = "fleet_backends"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    type = Column(String(20), nullable=False)  # ollama|llamacpp|exo|vertex_ai|bedrock
+    mode = Column(String(50), nullable=True)
+    # register_and_route|full_lifecycle
+    management_scope = Column(String(30), nullable=False, default="full_lifecycle")
+    config = Column(JSON, nullable=True)
+    # Fernet-encrypted with enc: prefix via shared.security.credential_encryption
+    credentials_ref = Column(String(512), nullable=True)
+    status = Column(String(50), nullable=False, default="pending")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_fleet_backends_org_name"),)
+
+
 class OllamaDeployment(Base):
     __tablename__ = "ollama_deployments"
 
@@ -171,6 +199,15 @@ class OllamaDeployment(Base):
     last_health_check = Column(DateTime)
     auto_start = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # InferenceFleetBackend interface columns (migration 013)
+    fleet_backend_id = Column(
+        Integer, ForeignKey("fleet_backends.id", ondelete="SET NULL"), nullable=True
+    )
+    # register_and_route|full_lifecycle
+    management_scope = Column(String(30), nullable=False, default="full_lifecycle")
+    node_uid = Column(String(255), nullable=True)  # Kubernetes node UID, when known
+    pool_mode = Column(Boolean, nullable=False, default=False)  # pool vs DaemonSet mode
 
 
 class LlamaCppDeployment(Base):
@@ -214,6 +251,15 @@ class LlamaCppDeployment(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # InferenceFleetBackend interface columns (migration 013)
+    fleet_backend_id = Column(
+        Integer, ForeignKey("fleet_backends.id", ondelete="SET NULL"), nullable=True
+    )
+    # register_and_route|full_lifecycle
+    management_scope = Column(String(30), nullable=False, default="full_lifecycle")
+    node_uid = Column(String(255), nullable=True)  # Kubernetes node UID, when known
+    pool_mode = Column(Boolean, nullable=False, default=False)  # pool vs DaemonSet mode
 
 
 class OllamaModel(Base):

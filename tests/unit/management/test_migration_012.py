@@ -256,4 +256,8 @@ def test_alembic_chain_resolves_single_head():
     cfg.set_main_option("script_location", os.path.abspath(ALEMBIC_DIR))
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["012_knowledge"]
+    # Assert the invariant that matters -- exactly one head, i.e. no divergent
+    # branches -- rather than that 012 IS the head. The latter is false by
+    # construction the moment any later migration lands (013 already has).
+    assert len(heads) == 1
+    assert "012_knowledge" in {sc.revision for sc in script.walk_revisions()}
