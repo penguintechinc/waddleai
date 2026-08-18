@@ -107,6 +107,13 @@ class FilterResult:
     violations: list[FilterViolation]
     filtered_text: str  # Original or redacted version
     auditor_used: bool
+    # Which NER backend produced any ner_entity violations above: "presidio",
+    # "transformers", or "none" (NER tier unavailable/skipped). Presidio and
+    # the transformers fallback score entities differently (see
+    # _MIN_NER_CONFIDENCE) -- a security control silently changing which
+    # engine drove a redact/allow decision must be visible on the result
+    # itself, not inferred from which packages happen to be installed.
+    ner_backend: str = "none"
 
 
 class ContentFilter:
@@ -427,6 +434,7 @@ class ContentFilter:
                 violations=violations,
                 filtered_text=filtered_text,
                 auditor_used=auditor_used,
+                ner_backend=self.ner_filter.mode if self.ner_filter is not None else "none",
             )
 
             # Log filtering event
@@ -1311,18 +1319,23 @@ class ContentFilter:
                 timestamp=time.time(),
             )
 
-            # Log to application logger
+            # Log to application logger. ner_backend is included so a security
+            # control silently changing which NER engine (Presidio vs the
+            # transformers fallback) drove a redact/block decision is visible
+            # in the audit trail, not just inferable from installed packages.
             if result.action == "block":
                 logger.warning(
                     f"Content filter BLOCK (phase={phase}, "
                     f"user={user_id}, org={org_id}, ip={ip}, "
-                    f"violations={len(result.violations)})"
+                    f"violations={len(result.violations)}, "
+                    f"ner_backend={result.ner_backend})"
                 )
             elif result.action == "redact":
                 logger.info(
                     f"Content filter REDACT (phase={phase}, "
                     f"user={user_id}, org={org_id}, "
-                    f"violations={len(result.violations)})"
+                    f"violations={len(result.violations)}, "
+                    f"ner_backend={result.ner_backend})"
                 )
 
         except Exception as e:
