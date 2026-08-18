@@ -273,6 +273,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.knowledge",
     "services.management.app.api.v1.memory_scoping",
     "services.management.app.api.v1.integrations",
+    "services.management.app.api.v1.fleet",
 ]
 
 

@@ -17,6 +17,7 @@ from shared.fleet.base import (
     NodeInfo,
     ProvisionSpec,
 )
+from tests.conformance._fake_dal import FakeDAL
 
 
 @dataclass(slots=True)
@@ -154,6 +155,67 @@ def test_register_decorator_populates_registry() -> None:
         type = BackendType.EXO
 
     assert fleet_registry._REGISTRY[BackendType.EXO] is _ExoStub
+
+
+def _insert_fleet_backend(db: FakeDAL, **overrides: Any) -> int:
+    """Insert a `fleet_backends` row with sensible defaults, returning its id."""
+    fields = {
+        "org_id": 1,
+        "name": "backend",
+        "type": "ollama",
+        "management_scope": "full_lifecycle",
+        "status": "active",
+    }
+    fields.update(overrides)
+    return db.fleet_backends.insert(**fields)
+
+
+async def test_build_backends_for_org_constructs_every_org_row() -> None:
+    """Every non-disabled ``fleet_backends`` row for the org becomes a backend instance."""
+    fleet_registry._REGISTRY[BackendType.OLLAMA] = _DummyBackend
+    db = FakeDAL()
+    _insert_fleet_backend(db, org_id=1, name="a")
+    _insert_fleet_backend(db, org_id=1, name="b")
+    _insert_fleet_backend(db, org_id=2, name="other-org")
+
+    backends = await fleet_registry.build_backends_for_org(db, org_id=1)
+
+    assert len(backends) == 2
+    assert all(isinstance(b, _DummyBackend) for b in backends)
+
+
+async def test_build_backends_for_org_excludes_disabled_rows() -> None:
+    """A `status="disabled"` row is never constructed."""
+    fleet_registry._REGISTRY[BackendType.OLLAMA] = _DummyBackend
+    db = FakeDAL()
+    _insert_fleet_backend(db, name="active", status="active")
+    _insert_fleet_backend(db, name="off", status="disabled")
+
+    backends = await fleet_registry.build_backends_for_org(db, org_id=1)
+
+    assert len(backends) == 1
+
+
+async def test_build_backends_for_org_skips_a_row_that_fails_to_construct(caplog) -> None:
+    """One bad row (e.g. unregistered type) is logged and skipped, not fatal to the rest."""
+    fleet_registry._REGISTRY[BackendType.OLLAMA] = _DummyBackend
+    fleet_registry._REGISTRY.pop(BackendType.EXO, None)
+    db = FakeDAL()
+    _insert_fleet_backend(db, name="good", type="ollama")
+    _insert_fleet_backend(db, name="bad", type="exo", management_scope="register_and_route")
+
+    with patch.object(fleet_registry, "_ensure_imported"), caplog.at_level("WARNING"):
+        backends = await fleet_registry.build_backends_for_org(db, org_id=1)
+
+    assert len(backends) == 1
+    assert isinstance(backends[0], _DummyBackend)
+    assert "skipping org=1" in caplog.text
+
+
+async def test_build_backends_for_org_no_rows_returns_empty_list() -> None:
+    """An org with no registered backends returns an empty list, not an error."""
+    backends = await fleet_registry.build_backends_for_org(FakeDAL(), org_id=999)
+    assert backends == []
 
 
 def test_ensure_imported_swallows_missing_optional_module(caplog) -> None:

@@ -8,6 +8,7 @@ applies the row's ``management_scope``. Callers should never branch on
 ``type`` themselves — always go through ``build_backend``.
 """
 
+import asyncio
 import importlib
 import logging
 from collections.abc import Callable
@@ -112,3 +113,35 @@ def build_backend(db: Any, row: FleetBackendRow) -> InferenceFleetBackend:
     backend.management_scope = ManagementScope(row.management_scope)
     backend.fleet_backend_id = row.id
     return backend
+
+
+async def build_backends_for_org(db: Any, org_id: int) -> list[InferenceFleetBackend]:
+    """Construct every registered, non-disabled fleet backend for one organization.
+
+    The multi-backend counterpart to ``build_backend``, used by
+    ``shared.fleet.placement.PlacementEngine`` callers (e.g. the §7 routing
+    engine's offer loading) that need "all of this org's backends," not one
+    row at a time. A single backend failing to construct (bad/expired
+    credentials, an unregistered type, a missing optional cloud SDK) is
+    logged and skipped rather than failing the whole call -- placement
+    should degrade to fewer backends, never to none because of one bad row.
+    """
+
+    def _rows() -> list[Any]:
+        return db(
+            (db.fleet_backends.org_id == org_id) & (db.fleet_backends.status != "disabled")
+        ).select()
+
+    rows = await asyncio.to_thread(_rows)
+    backends: list[InferenceFleetBackend] = []
+    for row in rows:
+        try:
+            backends.append(build_backend(db, row))
+        except Exception as exc:
+            logger.warning(
+                "build_backends_for_org: skipping org=%s backend id=%s: %s",
+                org_id,
+                getattr(row, "id", "?"),
+                exc,
+            )
+    return backends
