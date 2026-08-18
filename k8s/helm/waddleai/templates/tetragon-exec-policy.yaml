@@ -1,0 +1,58 @@
+{{/*
+Tetragon exec-guard: an ENFORCED allowlist of each targeted component's own
+runtime binaries (spec §12.2; house security mandate — allowlist, not
+observe-only). One TracingPolicyNamespaced per component so the allowlist
+stays scoped to that pod's actual process inventory (a Python service's
+allowed binaries are not ollama's) rather than one policy loose enough to
+cover everyone and therefore covering no one.
+
+Guarded by BOTH the values toggle (tetragon.enabled + tetragon.exec.enabled)
+AND a live capability check (.Capabilities.APIVersions.Has, or
+tetragon.forceRender for offline golden renders), mirroring
+cilium-network-policy.yaml's pattern, so non-Tetragon clusters render every
+other template in the chart cleanly and simply skip these objects (§12.3)
+rather than failing `helm install`.
+*/}}
+{{- if and .Values.tetragon.enabled .Values.tetragon.exec.enabled (or .Values.tetragon.forceRender (.Capabilities.APIVersions.Has "cilium.io/v1alpha1/TracingPolicyNamespaced")) -}}
+{{- range $comp, $cfg := .Values.tetragon.exec.components }}
+{{- if $cfg.enabled }}
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-exec-allowlist-{{ $comp }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $comp }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" $ | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [{{ $comp | quote }}]
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "NotIn"
+              values:
+                {{- range $cfg.allowedExecs }}
+                - {{ . | quote }}
+                {{- end }}
+          matchActions:
+            {{- if eq $cfg.mode "enforce" }}
+            - action: Sigkill
+            {{- else }}
+            - action: Post
+            {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

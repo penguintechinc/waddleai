@@ -30,6 +30,23 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: postgres
+          # readOnlyRootFilesystem: true — PGDATA is already volume-backed
+          # (postgres-data below); the official postgres image also needs
+          # write access to create its unix-socket file at
+          # unix_socket_directories (Debian default /var/run/postgresql,
+          # baked into the image but not writable once RORFS is on) — backed
+          # by the postgres-run emptyDir below. /tmp is mounted for parity
+          # with the rest of this chart's containers.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
           image: {{ include "waddleai.postgres.image" . }}
           imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
           ports:
@@ -75,6 +92,10 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: postgres-data
           {{- if .Values.postgres.persistence.enabled }}
@@ -83,6 +104,10 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        - name: postgres-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
