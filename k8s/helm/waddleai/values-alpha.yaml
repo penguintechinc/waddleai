@@ -132,3 +132,13 @@ cilium:
     enabled: true
   topology:
     gatewayNamespace: gateway
+
+# External fleet node auth mode - Alpha (spec §10.3, Q#4, Task 15).
+# fleet.external.enabled stays false (opt-in, inherited from values.yaml) —
+# this only sets which mode applies *if* an operator turns it on, since
+# alpha/dev environments typically lack a private CA for cert-manager
+# client-auth issuance. Set fleet.external.enabled=true + populate
+# fleet.external.nodes to actually use it.
+fleet:
+  external:
+    mode: token

@@ -1,0 +1,43 @@
+# container-structure-test config for the `debug` tag — inverse of
+# structure-test.yaml's no-shell assertions, since this tag exists
+# specifically to provide one for `kubectl exec` troubleshooting.
+#
+#   container-structure-test test \
+#     --image ghcr.io/penguintechinc/waddleai/ollama:debug \
+#     --config images/ollama/debug-structure-test.yaml
+schemaVersion: "2.0.0"
+
+metadataTest:
+  entrypoint: ["/usr/bin/ollama"]
+  cmd: ["serve"]
+  exposedPorts: ["11434"]
+  user: "ollama"
+
+fileExistenceTests:
+  - name: "ollama binary present"
+    path: "/usr/bin/ollama"
+    shouldExist: true
+
+  - name: "shell present for kubectl exec"
+    path: "/usr/bin/bash"
+    shouldExist: true
+
+  - name: "no apt binary (no runtime package installs even in debug)"
+    path: "/usr/bin/apt-get"
+    shouldExist: false
+
+  - name: "curl deliberately excluded from debug (see Dockerfile comment)"
+    path: "/usr/bin/curl"
+    shouldExist: false
+
+commandTests:
+  - name: "shell runs and reports non-root uid"
+    command: "/usr/bin/bash"
+    args: ["-c", "id -u"]
+    exitCode: 0
+    excludedOutput: ["^0$"]
+
+  - name: "ollama --version runs"
+    command: "/usr/bin/ollama"
+    args: ["--version"]
+    exitCode: 0

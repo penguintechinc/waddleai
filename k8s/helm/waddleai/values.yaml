@@ -436,6 +436,53 @@ cilium:
       postgres: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": postgres }
       valkey: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": valkey }
 
+# External / bare-metal fleet node access control (spec §10.3, Task 15).
+# Ollama/llama.cpp have no native auth, and CiliumNetworkPolicy only governs
+# in-cluster traffic — a bare-metal GPU box outside the cluster needs a
+# different mechanism for the AIProxy to authenticate to it. Q#4: mTLS via
+# cert-manager in beta/prod, a shared-token sidecar in alpha/dev. Disabled by
+# default (opt-in — most deployments have no external nodes); the mode
+# default below is env-appropriate the moment an operator flips enabled:true,
+# without further config. See templates/fleet-external-mtls.yaml.
+fleet:
+  external:
+    enabled: false
+    mode: mtls # mtls (beta/prod default) | token (alpha/dev — overridden in values-alpha.yaml)
+
+    # Informational: the external endpoints this applies to. Used for the
+    # CNP egress allowlist (toCIDR) and, in token mode, the nginx sidecar's
+    # per-node routing config. Each entry needs host+port; name is a
+    # DNS-label-safe identifier used in resource/route naming.
+    # nodes:
+    #   - name: bare-metal-01
+    #     host: 10.20.30.40
+    #     port: 11434
+    nodes: []
+
+    mtls:
+      # Pre-provisioned in-cluster issuer (NOT created by this chart, same
+      # convention as the letsencrypt-* ClusterIssuers referenced elsewhere
+      # in this values file) — must support "client auth" usage, which
+      # public ACME issuers do not, so this has to be an internal/private CA.
+      issuerRef:
+        name: waddleai-fleet-ca
+        kind: ClusterIssuer
+      clientCertDuration: "2160h" # 90d
+      renewBefore: "360h" # 15d
+
+    token:
+      secretName: waddleai-fleet-external-token
+      secretKey: token
+      sidecarPort: 8443
+      image:
+        # No nginx:*-bookworm-slim variant is published — stable-bookworm is
+        # the leanest official bookworm tag available (verified via
+        # `docker buildx imagetools inspect nginx:stable-bookworm`).
+        repository: nginx
+        tag: "stable-bookworm"
+        digest: "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609"
+        pullPolicy: IfNotPresent
+
 # Secret management
 # Set manage: false to skip chart-managed secret (use externally created secret instead)
 secrets:
@@ -444,20 +491,45 @@ secrets:
   jwtSecret: "changeme-jwt-secret-min-32-characters-required"
   flaskSecretKey: "changeme-flask-secret-key"
   webhookSecret: "changeme-webhook-secret"
+  # Only consumed when fleet.external.enabled + mode: token (see
+  # templates/fleet-external-mtls.yaml + proxy-deployment.yaml's token-proxy
+  # sidecar) — present unconditionally here, same convention as the other
+  # secret.yaml keys above.
+  fleetExternalToken: "changeme-fleet-external-shared-token"
 
-# Ollama GPU Inference Engine
-# Deployed as DaemonSet on nodes labeled gpu=true (e.g. svr01, svr02)
-# Models are shared via a ReadWriteMany PVC — pulled once, served from all GPU nodes
+# Ollama GPU Inference Engine (spec §10.2)
+# Deployed as a DaemonSet on nodes labeled gpu=true by default (mode:
+# daemonset), or as a fixed-replica Deployment across the same node label
+# for mixed-GPU clusters (mode: pool — see ollama.pool below and
+# templates/ollama-deployment.yaml). Models are shared via a ReadWriteMany
+# PVC — pulled once, served from all GPU nodes.
 ollama:
   enabled: false
+
+  # daemonset (default) | pool — see templates/ollama-daemonset.yaml vs
+  # templates/ollama-deployment.yaml. Exactly one of the two renders.
+  mode: daemonset
+
+  # Only consumed when mode: pool.
+  pool:
+    replicaCount: 2
+    strategy: RollingUpdate
+
+  # ghcr.io/penguintechinc/waddleai/ollama — hardened image (images/ollama/,
+  # plan Task 13): digest-pinned upstream binary re-hosted on a minimal,
+  # non-root, (on the `hardened` tag) shell-less Debian runtime. Two tags
+  # published: "hardened" (this default — no shell, used everywhere the
+  # chart deploys Ollama) and "debug" (adds a shell for manual `kubectl exec`
+  # troubleshooting only; never referenced by any template).
+  # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta (PenguinTech-owned image)
   image:
-    repository: ollama/ollama
-    tag: "0.7.1"
-    digest: "sha256:de659b95818c5ea17dc287a2e4f147f81e202d84f1dc4ad3f256c53fb81e8dd0"
+    repository: ghcr.io/penguintechinc/waddleai/ollama
+    tag: "hardened"
     pullPolicy: IfNotPresent
 
+  # NOT configurable — see templates/ollama-service.yaml. Field kept for
+  # visibility only; the template hardcodes ClusterIP (spec §10.3).
   service:
-    type: ClusterIP
     port: 11434
     targetPort: 11434
 
@@ -541,8 +613,9 @@ llamacpp:
     digest: "sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
     pullPolicy: IfNotPresent
 
+  # type is NOT configurable — see templates/llamacpp-service.yaml, which
+  # hardcodes ClusterIP (spec §10.3). Field kept for visibility only.
   service:
-    type: ClusterIP
     port: 8080
     targetPort: 8080
 

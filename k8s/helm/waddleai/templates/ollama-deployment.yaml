@@ -1,0 +1,28 @@
+{{/*
+Pool mode (ollama.mode: "pool") — fixed-replica Deployment + nodeSelector,
+for mixed-GPU clusters where you want N Ollama pods scheduled across a
+labeled node pool rather than one-per-node (Task 14). Mutually exclusive
+with ollama-daemonset.yaml; both wrap the same waddleai.ollama.podTemplate
+helper (_helpers.tpl), so the pod spec — hardened image, initContainer
+model pulls, security context — is identical either way.
+*/}}
+{{- if and .Values.ollama.enabled (eq .Values.ollama.mode "pool") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "waddleai.fullname" . }}-ollama
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  replicas: {{ .Values.ollama.pool.replicaCount }}
+  strategy:
+    type: {{ .Values.ollama.pool.strategy | default "RollingUpdate" }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama
+  template:
+    {{- include "waddleai.ollama.podTemplate" . | nindent 4 }}
+{{- end }}

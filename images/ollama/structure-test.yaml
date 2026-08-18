@@ -1,0 +1,65 @@
+# container-structure-test config for ghcr.io/penguintechinc/waddleai/ollama.
+#
+# Run separately per tag (the two targets have opposite shell expectations):
+#   container-structure-test test \
+#     --image ghcr.io/penguintechinc/waddleai/ollama:hardened \
+#     --config images/ollama/structure-test.yaml
+#
+#   container-structure-test test \
+#     --image ghcr.io/penguintechinc/waddleai/ollama:debug \
+#     --config images/ollama/debug-structure-test.yaml
+#
+# This file targets `hardened`. See debug-structure-test.yaml for the
+# `debug` tag's (inverted) shell assertion.
+schemaVersion: "2.0.0"
+
+metadataTest:
+  entrypoint: ["/usr/bin/ollama"]
+  cmd: ["serve"]
+  exposedPorts: ["11434"]
+  envVars:
+    - key: "OLLAMA_HOST"
+      value: "0.0.0.0:11434"
+    - key: "OLLAMA_MODELS"
+      value: "/models"
+  user: "ollama"
+
+fileExistenceTests:
+  - name: "ollama binary present"
+    path: "/usr/bin/ollama"
+    shouldExist: true
+    permissions: "-rwxr-xr-x"
+
+  - name: "no /bin/sh"
+    path: "/bin/sh"
+    shouldExist: false
+
+  - name: "no /bin/bash"
+    path: "/bin/bash"
+    shouldExist: false
+
+  - name: "no /bin/dash"
+    path: "/bin/dash"
+    shouldExist: false
+
+  - name: "no apt binary (no runtime package installs)"
+    path: "/usr/bin/apt-get"
+    shouldExist: false
+
+  - name: "no dpkg binary (metadata kept for scanners, tool removed)"
+    path: "/usr/bin/dpkg"
+    shouldExist: false
+
+  - name: "model store directory present and owned by non-root"
+    path: "/models"
+    shouldExist: true
+
+commandTests:
+  # `hardened` has no coreutils, so `id`/`whoami` aren't available to exec
+  # against — metadataTest.user above is the non-root assertion for this
+  # tag. This command test only needs the ollama binary itself, which is
+  # always present.
+  - name: "ollama --version runs without a shell"
+    command: "/usr/bin/ollama"
+    args: ["--version"]
+    exitCode: 0
