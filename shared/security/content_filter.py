@@ -40,6 +40,19 @@ logger = logging.getLogger(__name__)
 _NER_POOL_WORKERS = int(os.getenv("NER_POOL_WORKERS", "2"))
 _ner_pool: ProcessPoolExecutor | None = None
 
+# Floor for NER-sourced violations' *composite* confidence (raw model score *
+# ENTITY_CONFIG weight, see _run_ner_patterns). Below this, the signal is
+# noise, not evidence, and must not drive a redact/block/log action -- e.g.
+# Presidio's context-free US_DRIVER_LICENSE pattern matches any bare
+# short alphanumeric token ("v1", "k1") at a flat raw score of 0.3
+# regardless of surrounding context, which composites to ~0.27 against that
+# entity's 0.90 weight. 0.3 mirrors _should_invoke_auditor's own documented
+# "uncertain zone" lower bound (0.3-0.6) -- anything below that boundary was
+# already meant to be below the threshold worth acting on, but nothing
+# actually enforced it, so weak pattern-only hits were redacted exactly the
+# same as high-confidence matches.
+_MIN_NER_CONFIDENCE = 0.3
+
 
 def _get_ner_pool() -> ProcessPoolExecutor:
     """Return the shared tier-3 NER process pool, creating it on first use."""
@@ -1162,6 +1175,11 @@ class ContentFilter:
                 config = NER_ENTITY_CONFIG.get(entity_type, ("log", 0.60))
                 action, weight = config
                 confidence = min(float(entity["score"]) * weight, 1.0)
+                if confidence < _MIN_NER_CONFIDENCE:
+                    # Too weak to act on (see _MIN_NER_CONFIDENCE) -- drop
+                    # rather than log, so it can't silently accumulate into
+                    # a composite-confidence auditor trigger either.
+                    continue
 
                 violation = FilterViolation(
                     rule_name=f"ner:{entity_type}",
