@@ -37,7 +37,13 @@ redis>=5.0.0
 # gRPC for MarchProxy AILB communication
 grpcio>=1.60.0
 grpcio-tools>=1.60.0
-protobuf>=4.25.0
+# Floor matches the committed proxy_pb2.py gencode (Protobuf Python Version:
+# 6.31.1) — runtime below that raises VersionError at import time. Upper
+# bound mirrors requirements.in / proxy/requirements.in, which are capped
+# <7.0.0 by mem0ai's own protobuf constraint — without this ceiling here too,
+# this file drifts to a newer major (7.x) than the other two and we're back
+# to a cross-file mismatch, just on the other side.
+protobuf>=6.31.1,<7.0.0
 
 # HTTP client for provider connectivity tests
 httpx>=0.26.0
@@ -46,14 +52,28 @@ aiohttp>=3.9.0
 # AI Provider SDKs
 openai>=1.0.0
 anthropic>=0.18.0
-google-generativeai>=0.3.0
 boto3>=1.34.0
+# NOTE: Gemini connectivity goes through shared/utils/llm_connectors.py via
+# the `google-genai` SDK (see root requirements.in), not the deprecated
+# `google-generativeai` package. `google-generativeai` was declared here
+# unused (no import anywhere in services/management or shared/) and its
+# exact-pinned dependency google-ai-generativelanguage==0.6.15 caps
+# protobuf<6.0.0dev — blocking the >=6.31.1 floor required above. Removed
+# rather than kept as dead weight forcing a protobuf downgrade.
 
 # Token counting
 tiktoken>=0.5.0
 
 # Docker management (for orchestrated Ollama)
 docker>=7.0.0
+
+# CodeRAG worker (app/services/coderag_worker.py): clone/fetch/checkout
+# registered repos server-side. GitPython over subprocess+shlex to avoid
+# shell-injection surface on user-supplied branch/URL values.
+GitPython>=3.1.44
+# Docs research cache (app/services/docs_cache.py): HTML -> Markdown
+# conversion for §9.2 on-demand docs fetch/chunk/embed pipeline.
+markdownify>=0.13.1
 
 # YAML for config generation
 pyyaml>=6.0.1
