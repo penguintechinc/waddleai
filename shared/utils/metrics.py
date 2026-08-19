@@ -12,10 +12,35 @@ logger = logging.getLogger(__name__)
 
 
 class WaddleAIMetrics:
-    """Centralized metrics collection for WaddleAI"""
+    """Centralized metrics collection for WaddleAI.
+
+    Every Counter/Histogram/Gauge below is registered by name in
+    prometheus_client's process-global default registry -- constructing a
+    second `WaddleAIMetrics` instance (e.g. `get_proxy_metrics()` AND
+    `get_management_metrics()` both being exercised in one process, as
+    happens across the combined test suite) would re-register the exact
+    same metric names and raise `ValueError: Duplicated timeseries`.
+    `service`/`organization`/etc. are already carried as *label values* at
+    record time, not baked into the metric identity, so the collectors
+    themselves are safe to share process-wide: built once on the first
+    instantiation and reused (not rebuilt) by every subsequent one,
+    Borg-style. `service_name` itself stays per-instance so
+    `record_request`'s `service=self.service_name` default still reflects
+    whichever service actually constructed this instance.
+    """
+
+    _shared_collectors: dict[str, object] | None = None
 
     def __init__(self, service_name: str):
         self.service_name = service_name
+
+        if WaddleAIMetrics._shared_collectors is not None:
+            for name, collector in WaddleAIMetrics._shared_collectors.items():
+                setattr(self, name, collector)
+            self.info.info(
+                {"service": service_name, "version": "1.0.0", "python_version": "3.13"}
+            )
+            return
 
         # Request metrics
         self.requests_total = Counter(
@@ -111,9 +136,53 @@ class WaddleAIMetrics:
             "waddleai_cache_entries_evicted_total", "Cache entries evicted (LRU/quota)", ["layer"]
         )
 
+        # Agent-hooks metrics (§18) -- hooks sit on the developer's
+        # interactive tool-call path, so the evaluation-latency histogram is
+        # the number that matters (p50/p95/p99), and fail-open vs
+        # fail-closed are counted on SEPARATE counters: a spike in fail-open
+        # is a silent security degradation and must be independently
+        # alertable, not buried inside a generic error counter.
+        self.hook_invocations_total = Counter(
+            "waddleai_hook_invocations_total",
+            "Agent-hook evaluations by ecosystem/event/decision",
+            ["ecosystem", "event", "decision"],
+        )
+        self.hook_evaluation_duration_seconds = Histogram(
+            "waddleai_hook_evaluation_duration_seconds",
+            "Server-side agent-hook evaluation latency (§18 evaluate endpoint)",
+            ["ecosystem", "event"],
+        )
+        self.hook_timeouts_total = Counter(
+            "waddleai_hook_timeouts_total", "Agent-hook Tier-2 evaluation timeouts", ["tier"]
+        )
+        self.hook_fail_mode_total = Counter(
+            "waddleai_hook_fail_mode_total",
+            "Agent-hook Tier-2 fail-open vs fail-closed events",
+            ["mode"],
+        )
+        self.hook_tool_calls_total = Counter(
+            "waddleai_hook_tool_calls_total",
+            "Agent-hook tool-call volume by ecosystem/tool/org (efficiency + cache-hit analysis)",
+            ["ecosystem", "tool_name", "organization"],
+        )
+        self.hook_rule_evaluations_total = Counter(
+            "waddleai_hook_rule_evaluations_total",
+            "Admin hook_rules matched (regardless of whether they won), by rule id and scope",
+            ["rule_id", "scope"],
+        )
+        self.hook_rule_decisions_total = Counter(
+            "waddleai_hook_rule_decisions_total",
+            "Admin hook_rules that actually decided the outcome, by rule id/scope/decision",
+            ["rule_id", "scope", "decision"],
+        )
+
         # System info
         self.info = Info("waddleai_info", "WaddleAI service information")
         self.info.info({"service": service_name, "version": "1.0.0", "python_version": "3.13"})
+
+        WaddleAIMetrics._shared_collectors = {
+            k: v for k, v in vars(self).items() if k != "service_name"
+        }
 
     def record_request(self, endpoint: str, method: str, status_code: int, duration: float):
         """Record HTTP request metrics"""
@@ -203,6 +272,40 @@ class WaddleAIMetrics:
     def record_cache_eviction(self, layer: str) -> None:
         """Record an LRU/quota eviction on the given cache layer."""
         self.cache_entries_evicted_total.labels(layer=layer).inc()
+
+    def record_hook_invocation(self, ecosystem: str, event: str, decision: str) -> None:
+        """Record one agent-hook evaluation outcome (§18)."""
+        self.hook_invocations_total.labels(
+            ecosystem=ecosystem, event=event, decision=decision
+        ).inc()
+
+    def observe_hook_evaluation_duration(self, ecosystem: str, event: str, seconds: float) -> None:
+        """Record server-side agent-hook evaluation latency -- the critical-path number."""
+        self.hook_evaluation_duration_seconds.labels(ecosystem=ecosystem, event=event).observe(
+            seconds
+        )
+
+    def record_hook_timeout(self, tier: str) -> None:
+        """Record an agent-hook evaluation tier timing out (e.g. Tier-2 remote eval)."""
+        self.hook_timeouts_total.labels(tier=tier).inc()
+
+    def record_hook_fail_mode(self, mode: str) -> None:
+        """Record a Tier-2 fail-open/fail-closed event. `mode`: fail_open|fail_closed."""
+        self.hook_fail_mode_total.labels(mode=mode).inc()
+
+    def record_hook_tool_call(self, ecosystem: str, tool_name: str, organization: str) -> None:
+        """Record one hook-covered tool call for volume/cache-hit-potential analysis."""
+        self.hook_tool_calls_total.labels(
+            ecosystem=ecosystem, tool_name=tool_name, organization=organization
+        ).inc()
+
+    def record_hook_rule_evaluation(self, rule_id: str, scope: str) -> None:
+        """Record an admin hook_rule matching an event (whether or not it won)."""
+        self.hook_rule_evaluations_total.labels(rule_id=rule_id, scope=scope).inc()
+
+    def record_hook_rule_decision(self, rule_id: str, scope: str, decision: str) -> None:
+        """Record an admin hook_rule actually deciding an event's outcome."""
+        self.hook_rule_decisions_total.labels(rule_id=rule_id, scope=scope, decision=decision).inc()
 
     def get_metrics(self) -> str:
         """Get Prometheus metrics in text format"""

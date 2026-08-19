@@ -227,7 +227,11 @@ def create_app(config_class=Config):
 
 def register_blueprints(app):
     """Register API blueprints."""
-    from .api.v1 import api_v1_bp
+    from .api.v1 import (
+        api_v1_bp,
+        hook_rules,  # noqa: F401 -- registers admin CRUD routes onto hooks_bp
+    )
+    from .api.v1.hooks import hooks_bp
     from .api.v1.model_aliases import model_aliases_bp
     from .api.v1.routing_assignments import routing_assignments_bp
     from .api.v1.routing_decisions import routing_decisions_bp
@@ -244,6 +248,7 @@ def register_blueprints(app):
     app.register_blueprint(routing_decisions_bp)
     app.register_blueprint(routing_dry_run_bp)
     app.register_blueprint(security_policies_bp)
+    app.register_blueprint(hooks_bp)
 
     app.logger.info("Registered API v1 blueprints")
 
