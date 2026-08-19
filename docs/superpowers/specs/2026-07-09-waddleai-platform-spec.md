@@ -1071,9 +1071,43 @@ Commercial music generation is therefore **passthrough only**, to hosted provide
 
 ---
 
+## 17. Local-Only Profile — On-Device Memory & Caching (Optional)
+
+Flag: `waddleai.local_only_profile`. Off by default. An optional deployment profile for the OSS-developer/homelab persona (§1.2): memory and caching run entirely on the operator's machine, nothing leaves the host. Reference setup: **mem0 + Ollama** (`gemma4:e2b` default chat model, `llama3.1:1b` an accepted alternative — no Gemma 3 anywhere, no PRC-origin models, per §2.2/§2.3) **+ `nomic-embed-text`/`mxbai-embed-large` embeddings + Qdrant in a Docker container the operator runs themselves.**
+
+### 17.1 Vector-store interface
+
+`shared/vectorstore/base.py` — abstract `VectorStoreBackend`: `ensure_collection(spec)`, `upsert(collection, points)`, `search(collection, query_vector, top_k, min_score, filters)`, `delete(collection, ids)`, `delete_collection(collection)`, `health()`. Modeled directly on §10.1's `InferenceFleetBackend` pattern — registry + `@register` decorator (`shared/vectorstore/registry.py`), a cross-backend conformance suite both implementations satisfy (`tests/conformance/test_vectorstore_conformance.py`). `CollectionSpec(name, dimensions, embedder_id, distance)`: a collection reopened with a mismatched `dimensions` **or** a different `embedder_id` is refused (`VectorCollectionMismatchError`), not silently accepted — the concrete guard against WaddleAI's two independent embedding paths (`nomic-embed-text`, 768-dim, Ollama — the embedder behind memory/RAG/semantic-cache, §6.2/§9.4) and `all-MiniLM-L6-v2`, 384-dim, in-process SentenceTransformer, `rag_integration.py`'s alternate backend) ever sharing a collection.
+
+- **`PgvectorVectorStore`** (default): new `local_vector_collections`/`local_vector_points` tables (migration 015), JSON-serialized vectors + Python cosine ranking — the same portability tradeoff `response_cache_entries.prompt_embedding_json` already makes (§6.2), so this backend is byte-identical on SQLite (tests) and PostgreSQL (production) with no dialect branch. Net-new and additive only: it does not touch, wrap, or alter the existing `PgvectorMemoryStore` / `PgvectorRAGStore` / `SemanticCache` runtime paths (§6.2/§9.4) in any way.
+- **`QdrantVectorStore`** (local-only profile): a user-run Qdrant container — WaddleAI never starts, stops, or reconfigures it. Dimensions are checked against Qdrant's own `vectors_config.size` (server-authoritative, survives restarts); `embedder_id` is persisted via a reserved sentinel point, since Qdrant has no native collection-metadata field to hold it.
+
+### 17.2 Profile selection & fail-honest reachability
+
+`shared/vectorstore/factory.py::create_vector_store_backend(db, config, feature_flag_enabled)` is the seam — the profile selects a backend; call sites never branch on backend type. **Flag off (default)**: returns `PgvectorVectorStore(db)`; `shared.vectorstore.qdrant_backend` (and `qdrant-client`) is never imported. **Flag on**: builds `QdrantVectorStore` from `LocalProfileConfig`, then probes Qdrant (`get_collections()`) and Ollama (`GET /api/tags`) before returning it — either being unreachable raises `LocalProfileUnavailableError`, **never a silent fallback to the cluster path**, which would defeat the profile's privacy guarantee without the operator noticing. Docker/Ollama lifecycle stays the operator's responsibility throughout; WaddleAI only detects and reports.
+
+### 17.3 Config
+
+`LocalProfileConfig` (`shared/vectorstore/factory.py`) — every value env-overridable, no literals scattered through call sites:
+
+| Field | Env var | Default |
+|---|---|---|
+| Qdrant URL | `WADDLEAI_LOCAL_QDRANT_URL` | `http://localhost:6333` |
+| Qdrant API key | `WADDLEAI_LOCAL_QDRANT_API_KEY` | unset |
+| Collection prefix | `WADDLEAI_LOCAL_COLLECTION_PREFIX` | `waddleai_local` |
+| Ollama host | `OLLAMA_HOST` | `http://localhost:11434` |
+| Embedding model | `WADDLEAI_LOCAL_EMBEDDING_MODEL` | `nomic-embed-text` (768-dim) |
+| Chat model | `WADDLEAI_LOCAL_CHAT_MODEL` | `gemma4:e2b` |
+
+### 17.4 Acceptance
+
+Cross-backend conformance suite (pgvector + Qdrant, both against fakes — `FakeDAL` from §10.5's suite, `FakeAsyncQdrantClient`) covering idempotent `ensure_collection`, dimensions- and embedder-mismatch refusal, upsert/search/delete/delete_collection round trips, `min_score`/`top_k`; a unit test asserting flag-off uses the pgvector path and constructs no Qdrant client; a live Qdrant+Ollama integration pass (`tests/integration/test_vectorstore_local_profile.py`, auto-skipped when either is unreachable) that embeds real text via `nomic-embed-text` and proves the 768-vs-384 mismatch is refused for real, not only against a fake.
+
+---
+
 ## Status
 
-**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
+**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**; **§17 (local-only profile) complete**. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
 
 ---
 

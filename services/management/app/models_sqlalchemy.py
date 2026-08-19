@@ -1170,6 +1170,50 @@ class McpUserLink(Base):
     )
 
 
+class LocalVectorCollection(Base):
+    """A collection registered with ``PgvectorVectorStore`` (spec §17, local-only profile).
+
+    ``dimensions``/``embedder_id`` are the source of truth
+    ``VectorCollectionMismatchError`` checks against on every
+    ``ensure_collection`` call -- a reopen with either field disagreeing is
+    refused rather than silently accepted. See migration 015 for why vectors
+    are JSON text, not a native pgvector column.
+    """
+
+    __tablename__ = "local_vector_collections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False, unique=True)
+    dimensions = Column(Integer, nullable=False)
+    embedder_id = Column(String(255), nullable=False)
+    distance = Column(String(20), nullable=False, default="cosine")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LocalVectorPoint(Base):
+    """A single vector + payload within a ``LocalVectorCollection`` (spec §17)."""
+
+    __tablename__ = "local_vector_points"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    collection_id = Column(
+        Integer,
+        ForeignKey("local_vector_collections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    external_id = Column(String(255), nullable=False)
+    vector_json = Column(Text, nullable=False)  # JSON-serialized float array
+    payload_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "collection_id", "external_id", name="uq_local_vector_points_collection_external"
+        ),
+    )
+
+
 def init_schema(database_url: str):
     """Initialize database schema using SQLAlchemy.
 
