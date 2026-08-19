@@ -17,9 +17,11 @@ import logging
 
 from quart import jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 @api_v1_bp.route("/memory-config", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def get_memory_config():
     """Get memory injection config for an organization."""
     org_id = request.args.get("organization_id", type=int)
@@ -78,7 +80,7 @@ async def get_memory_config():
 
 @api_v1_bp.route("/memory-config", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def set_memory_config():
     """Create or update memory injection config for an organization."""
     data = (await request.get_json(force=True)) or {}
@@ -122,7 +124,7 @@ async def set_memory_config():
 
 @api_v1_bp.route("/rag-config", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def get_rag_config():
     """Get RAG injection config for an organization."""
     org_id = request.args.get("organization_id", type=int)
@@ -171,7 +173,7 @@ async def get_rag_config():
 
 @api_v1_bp.route("/rag-config", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def set_rag_config():
     """Create or update RAG injection config for an organization."""
     data = (await request.get_json(force=True)) or {}
@@ -217,7 +219,7 @@ async def set_rag_config():
 
 @api_v1_bp.route("/embedding-config", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def get_embedding_config():
     """Get embedding backend config (global or per-org)."""
     org_id = request.args.get("organization_id", type=int)  # optional; None = global
@@ -267,7 +269,7 @@ async def get_embedding_config():
 
 @api_v1_bp.route("/embedding-config", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def set_embedding_config():
     """Create or update embedding backend config."""
     data = (await request.get_json(force=True)) or {}

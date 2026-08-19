@@ -8,9 +8,11 @@ from datetime import datetime
 from passlib.hash import bcrypt
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/users", methods=["GET"])
@@ -90,7 +92,7 @@ async def get_user(user_id):
 
 @api_v1_bp.route("/users", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USER_MANAGE)
 async def create_user():
     """Create a new user"""
     data = await request.get_json()
@@ -165,7 +167,7 @@ async def create_user():
 
 @api_v1_bp.route("/users/<int:user_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USER_MANAGE)
 async def update_user(user_id):
     """Update user"""
     data = await request.get_json()
@@ -234,7 +236,7 @@ async def update_user(user_id):
 
 @api_v1_bp.route("/users/<int:user_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.USER_DELETE)
 async def delete_user(user_id):
     """Delete user (admin only)"""
     user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
@@ -258,7 +260,7 @@ async def delete_user(user_id):
 
 @api_v1_bp.route("/users/<int:user_id>/enable", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USER_MANAGE)
 async def enable_user(user_id):
     """Enable a disabled user"""
     user_role = g.user.get("role")

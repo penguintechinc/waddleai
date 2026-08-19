@@ -10,15 +10,17 @@ from datetime import datetime
 
 from quart import current_app, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from ...services.provider_sync import ProviderSyncService
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/ollama/models", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def list_all_ollama_models():
     """List all Ollama models across all deployments"""
 
@@ -57,7 +59,7 @@ async def list_all_ollama_models():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def list_deployment_models(deployment_id):
     """List models on a specific Ollama deployment"""
 
@@ -101,7 +103,7 @@ async def list_deployment_models(deployment_id):
 
 @api_v1_bp.route("/ollama/models/assign", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def assign_model_to_deployment():
     """
     Assign a model to a specific Ollama deployment.
@@ -199,7 +201,7 @@ async def assign_model_to_deployment():
 
 @api_v1_bp.route("/ollama/models/<int:model_id>/reassign", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def reassign_model(model_id):
     """
     Reassign a model to a different Ollama deployment.
@@ -294,7 +296,7 @@ async def reassign_model(model_id):
 
 @api_v1_bp.route("/ollama/models/<int:model_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def unassign_model(model_id):
     """
     Remove a model assignment from a deployment.
@@ -334,7 +336,7 @@ async def unassign_model(model_id):
 
 @api_v1_bp.route("/ollama/models/<int:model_id>/sync", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def sync_model_route(model_id):
     """
     Manually trigger AILB route sync for a specific model.
@@ -375,7 +377,7 @@ async def sync_model_route(model_id):
 
 @api_v1_bp.route("/ollama/models/<int:model_id>/route-status", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def get_model_route_status(model_id):
     """Get AILB route sync status for a specific model"""
     ailb_client = current_app.extensions.get("ailb_client")
@@ -399,7 +401,7 @@ async def get_model_route_status(model_id):
 
 @api_v1_bp.route("/ollama/models/bulk-assign", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def bulk_assign_models():
     """
     Bulk assign multiple models to deployments.
@@ -517,7 +519,7 @@ async def bulk_assign_models():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/sync-models", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def sync_deployment_models(deployment_id):
     """
     Sync all models on a deployment to AILB.

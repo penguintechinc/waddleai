@@ -7,14 +7,16 @@ from datetime import date
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/quotas", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.QUOTA_LIST)
 async def list_quotas():
     """List all quota configurations"""
     user_role = g.user.get("role")
@@ -91,7 +93,7 @@ async def list_quotas():
 
 @api_v1_bp.route("/quotas/user/<int:user_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.QUOTA_UPDATE)
 async def set_user_quota(user_id):
     """Set user quota"""
     data = await request.get_json()
@@ -135,7 +137,7 @@ async def set_user_quota(user_id):
 
 @api_v1_bp.route("/quotas/org/<int:org_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.QUOTA_ORG_UPDATE)
 async def set_organization_quota(org_id):
     """Set organization quota (admin only)"""
     data = await request.get_json()

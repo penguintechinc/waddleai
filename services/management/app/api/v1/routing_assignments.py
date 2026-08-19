@@ -20,8 +20,10 @@ from typing import Any
 
 from quart import Blueprint, g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db, redis_client
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +182,7 @@ async def get_entry(entry_id: int) -> tuple:
 
 @routing_assignments_bp.route("/", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.ROUTING_ASSIGNMENT_WRITE)
 async def create_or_upsert_entry() -> tuple:
     """Create or upsert a model_assignments entry.
 
@@ -266,7 +268,7 @@ async def create_or_upsert_entry() -> tuple:
 
 @routing_assignments_bp.route("/<int:entry_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.ROUTING_ASSIGNMENT_WRITE)
 async def update_entry(entry_id: int) -> tuple:
     """Update an existing model_assignments entry by ID."""
     data: dict[str, Any] | None = await request.get_json()
@@ -323,7 +325,7 @@ async def update_entry(entry_id: int) -> tuple:
 
 @routing_assignments_bp.route("/<int:entry_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.ROUTING_ASSIGNMENT_WRITE)
 async def delete_entry(entry_id: int) -> tuple:
     """Delete a model_assignments entry by ID."""
     user_role = g.user.get("role")
@@ -366,7 +368,7 @@ async def delete_entry(entry_id: int) -> tuple:
 
 @routing_assignments_bp.route("/seed", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ROUTING_ASSIGNMENT_ADMIN)
 async def seed_assignments() -> tuple:
     """Populate global model_assignments from DEFAULT_ASSIGNMENTS (admin only).
 

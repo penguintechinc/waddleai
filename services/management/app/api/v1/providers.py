@@ -7,9 +7,11 @@ from datetime import datetime
 
 from quart import current_app, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 # Supported provider types
 SUPPORTED_PROVIDERS = {
@@ -99,7 +101,7 @@ async def list_provider_types():
 
 @api_v1_bp.route("/providers", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def list_providers():
     """List all configured AI providers"""
 
@@ -130,7 +132,7 @@ async def list_providers():
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def get_provider(provider_id):
     """Get provider details"""
 
@@ -163,7 +165,7 @@ async def get_provider(provider_id):
 
 @api_v1_bp.route("/providers", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def create_provider():
     """Create a new AI provider"""
     data = await request.get_json()
@@ -229,7 +231,7 @@ async def create_provider():
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def update_provider(provider_id):
     """Update provider configuration"""
     data = await request.get_json()
@@ -301,7 +303,7 @@ async def update_provider(provider_id):
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def delete_provider(provider_id):
     """Delete provider"""
 
@@ -327,7 +329,7 @@ async def delete_provider(provider_id):
 
 @api_v1_bp.route("/providers/<int:provider_id>/test", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def test_provider(provider_id):
     """Test provider connectivity"""
     provider = await asyncio.to_thread(lambda: db(db.ai_providers.id == provider_id).select().first())
@@ -400,7 +402,7 @@ def _credential_to_dict(cred) -> dict:
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def list_provider_credentials(provider_id: int):
     """List all credentials for a provider. API keys are never returned in plaintext."""
 
@@ -430,7 +432,7 @@ async def list_provider_credentials(provider_id: int):
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def create_provider_credential(provider_id: int):
     """Add a credential to a provider's pool."""
     from shared.security.credential_encryption import encrypt_credential
@@ -518,7 +520,7 @@ async def create_provider_credential(provider_id: int):
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials/<int:cred_id>", methods=["PATCH"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def update_provider_credential(provider_id: int, cred_id: int):
     """Update label, weight, enabled, org_id, account_meta, or rotate the api_key."""
     from shared.security.credential_encryption import encrypt_credential
@@ -624,7 +626,7 @@ async def update_provider_credential(provider_id: int, cred_id: int):
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials/<int:cred_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 async def delete_provider_credential(provider_id: int, cred_id: int):
     """Remove a credential from the pool. Requires at least one other credential to remain."""
 

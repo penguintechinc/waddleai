@@ -7,9 +7,11 @@ from datetime import date, datetime, timedelta
 
 from quart import Response, g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/usage/summary", methods=["GET"])
@@ -171,7 +173,7 @@ async def get_usage_by_provider():
 
 @api_v1_bp.route("/usage/by-user", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USAGE_READ_BY_USER)
 async def get_usage_by_user():
     """Get usage breakdown by user"""
     user_role = g.user.get("role")

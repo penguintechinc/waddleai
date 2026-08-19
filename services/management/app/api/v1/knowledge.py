@@ -21,6 +21,7 @@ from typing import Any
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
 from shared.knowledge.embed import embed_cached
 from shared.knowledge.injection_safety import filter_for_store
 from shared.security.content_filter import ContentFilter
@@ -29,7 +30,7 @@ from shared.utils.rag_integration import chunk_text
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ def _serialize(row: Any) -> dict[str, Any]:
 
 @api_v1_bp.route("/knowledge", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.KNOWLEDGE_WRITE)
 async def upload_knowledge():
     """Upload a PDF or Markdown document into the org knowledge base (§9.3)."""
     org_id = g.user.get("organization_id")
@@ -201,7 +202,7 @@ async def get_knowledge(doc_id: int):
 
 @api_v1_bp.route("/knowledge/<int:doc_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.KNOWLEDGE_WRITE)
 async def delete_knowledge(doc_id: int):
     """Delete a knowledge document, org-scoped (IDOR-safe: 404 outside the caller's org)."""
     org_id = g.user.get("organization_id")

@@ -8,14 +8,16 @@ from datetime import datetime
 import yaml
 from quart import Response, current_app, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/ollama/deployments", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def list_ollama_deployments():
     """List all Ollama deployments"""
     if not current_app.config.get("ENABLE_OLLAMA_MANAGEMENT", True):
@@ -49,7 +51,7 @@ async def list_ollama_deployments():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def get_ollama_deployment(deployment_id):
     """Get Ollama deployment details"""
 
@@ -95,7 +97,7 @@ async def get_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def create_ollama_deployment():
     """Create a new Ollama deployment"""
     data = await request.get_json()
@@ -158,7 +160,7 @@ async def create_ollama_deployment():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def update_ollama_deployment(deployment_id):
     """Update Ollama deployment"""
     data = await request.get_json()
@@ -224,7 +226,7 @@ async def update_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def delete_ollama_deployment(deployment_id):
     """Delete Ollama deployment"""
 
@@ -253,7 +255,7 @@ async def delete_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/start", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def start_ollama_deployment(deployment_id):
     """Start Ollama deployment (orchestrated mode only)"""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -288,7 +290,7 @@ async def start_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/stop", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def stop_ollama_deployment(deployment_id):
     """Stop Ollama deployment (orchestrated mode only)"""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -317,7 +319,7 @@ async def stop_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/restart", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def restart_ollama_deployment(deployment_id):
     """Restart Ollama deployment (orchestrated mode only)"""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -348,7 +350,7 @@ async def restart_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/health", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def check_ollama_health(deployment_id):
     """Health check for Ollama deployment"""
     from ...services.ollama_manager import OllamaDeploymentManager
@@ -381,7 +383,7 @@ async def check_ollama_health(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/logs", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def get_ollama_logs(deployment_id):
     """Get Ollama deployment logs (orchestrated mode only)"""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -401,7 +403,7 @@ async def get_ollama_logs(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models/pull", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def pull_ollama_model(deployment_id):
     """Pull a model to Ollama deployment"""
     from ...services.ollama_manager import OllamaDeploymentManager
@@ -443,7 +445,7 @@ async def pull_ollama_model(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models/<model_name>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def remove_ollama_model(deployment_id, model_name):
     """Remove a model from Ollama deployment"""
 
@@ -480,7 +482,7 @@ async def remove_ollama_model(deployment_id, model_name):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/docker-compose", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_docker_compose(deployment_id):
     """Export docker-compose.yml for Ollama deployment"""
     deployment = await asyncio.to_thread(lambda: db(db.ollama_deployments.id == deployment_id).select().first())
@@ -507,7 +509,7 @@ async def export_docker_compose(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/k8s-manifest", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_k8s_manifest(deployment_id):
     """Export Kubernetes manifest for Ollama deployment.
 
@@ -640,7 +642,7 @@ def generate_k8s_manifest(name: str, gpu_config: dict, resource_limits: dict) ->
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/metallb-service", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_metallb_service(deployment_id):
     """
     Export MetalLB-compatible LoadBalancer Service for Ollama deployment.
@@ -675,7 +677,7 @@ async def export_metallb_service(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/metallb-model-services", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_metallb_model_services(deployment_id):
     """
     Export individual MetalLB Services for each model on deployment.
@@ -713,7 +715,7 @@ async def export_metallb_model_services(deployment_id):
 
 @api_v1_bp.route("/ollama/export/metallb-all", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_all_metallb_services():
     """
     Export MetalLB configuration for all Ollama deployments.

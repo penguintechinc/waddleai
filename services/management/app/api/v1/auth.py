@@ -11,7 +11,7 @@ from quart import g, jsonify, request
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
 from shared.auth.penguin_auth import verify_token as _aaa_verify_token
-from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
+from shared.auth.rbac import ROLE_PERMISSIONS, Permission, Role, UserContext
 
 from ...extensions import db
 from . import api_v1_bp
@@ -20,6 +20,21 @@ from . import api_v1_bp
 @lru_cache(maxsize=1)
 def _get_oidc_provider():
     return create_oidc_provider()
+
+
+def _scopes_for_role(role: str) -> list[str]:
+    """Return the OIDC scope bundle (resource:action strings) for a role name.
+
+    Single source of truth for role -> scope expansion outside of token
+    issuance -- used wherever a user/API-key is authenticated without going
+    through `issue_token()` (e.g. the API-key path, which never mints a JWT).
+    Unknown role names fall back to Role.USER's (narrowest) bundle.
+    """
+    try:
+        role_enum = Role(role)
+    except ValueError:
+        role_enum = Role.USER
+    return [p.value for p in ROLE_PERMISSIONS.get(role_enum, set())]
 
 
 def create_token(user_id: int, username: str, role: str, organization_id: int, expires_hours: int = 24) -> str:
@@ -41,7 +56,12 @@ def create_token(user_id: int, username: str, role: str, organization_id: int, e
 
 
 def verify_token(token: str) -> dict | None:
-    """Verify RS256 JWT token and return payload dict."""
+    """Verify RS256 JWT token and return payload dict, including OIDC scopes.
+
+    `scope` here is authoritative for authorization (see `require_scope`);
+    `role` is retained on `g.user` for audit/display only and MUST NOT be
+    branched on for access decisions.
+    """
     try:
         user_context = _aaa_verify_token(token, _get_oidc_provider())
         return {
@@ -49,13 +69,19 @@ def verify_token(token: str) -> dict | None:
             "username": user_context.username,
             "role": user_context.role.value,
             "organization_id": user_context.organization_id,
+            "scope": sorted(user_context.permissions),
         }
     except Exception:
         return None
 
 
 def verify_api_key(api_key: str) -> dict:
-    """Verify API key and return user context"""
+    """Verify API key and return user context, including OIDC scopes.
+
+    API keys never carry a JWT `scope` claim (there is no token to decode),
+    so scopes are derived from the key owner's current role via
+    `_scopes_for_role` -- the same bundle `create_token` would issue them.
+    """
     # Check virtual_keys table
     keys = db(db.virtual_keys.enabled == True).select()
     for key in keys:
@@ -71,6 +97,7 @@ def verify_api_key(api_key: str) -> dict:
                     "role": user.role,
                     "organization_id": user.organization_id,
                     "key_id": key.id,
+                    "scope": _scopes_for_role(user.role),
                 }
     return None
 
@@ -110,8 +137,22 @@ def require_auth(f):
     return decorated_function
 
 
-def require_role(*roles):
-    """Decorator to require specific role(s)"""
+def require_scope(*scopes: Permission | str):
+    """Decorator requiring at least one of the given OIDC scopes.
+
+    Authorization is scope-only per house policy: the `roles` claim (and
+    `g.user["role"]`) is informational/audit display, never branched on here.
+    `scopes` is resolved at decoration time (not per-request) and MUST be
+    non-empty -- a route wired to `require_scope()` with no scopes is a
+    programming error and fails at import time rather than silently
+    allowing every caller through. There is no role-derived fallback: a
+    caller whose token carries an empty or missing `scope` claim is refused
+    exactly like one with the wrong scope.
+    """
+    if not scopes:
+        raise ValueError("require_scope() requires at least one scope")
+
+    normalized = tuple(s.value if isinstance(s, Permission) else s for s in scopes)
 
     def decorator(f):
         @wraps(f)
@@ -119,14 +160,22 @@ def require_role(*roles):
             if not hasattr(g, "user") or not g.user:
                 return jsonify({"error": "Authentication required"}), 401
 
-            user_role = g.user.get("role")
-            if user_role not in roles:
-                return jsonify({"error": "Insufficient permissions", "required_roles": roles}), 403
+            user_scopes = set(g.user.get("scope") or [])
+            if not user_scopes.intersection(normalized):
+                return (
+                    jsonify({"error": "Insufficient permissions", "required_scope": normalized}),
+                    403,
+                )
 
             if asyncio.iscoroutinefunction(f):
                 return await f(*args, **kwargs)
             return f(*args, **kwargs)
 
+        # Attached for programmatic route enumeration (tests walk the
+        # blueprint's url_map and inspect this to verify every migrated
+        # route still declares a required scope -- see
+        # tests/unit/management/test_scope_authz.py).
+        decorated_function._required_scopes = normalized
         return decorated_function
 
     return decorator

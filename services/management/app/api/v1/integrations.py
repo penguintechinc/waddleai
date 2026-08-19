@@ -27,13 +27,14 @@ from typing import Any
 from passlib.hash import bcrypt
 from quart import current_app, g, jsonify, request
 
+from shared.auth.rbac import Permission
 from shared.mcp.gateway.auth import OAuth2AuthCodeConfig, OutboundAuth
 from shared.security.credential_encryption import decrypt_credential, encrypt_credential
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 MCP_V2_FLAG = "waddleai.mcp_v2"
 
@@ -130,7 +131,7 @@ def _validation_error(detail: str) -> tuple[Any, int]:
 
 @api_v1_bp.route("/integrations/mcp-endpoints", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 async def list_mcp_endpoints():
     """List this org's registered external MCP endpoints."""
     org_id = g.user.get("organization_id")
@@ -152,7 +153,7 @@ async def list_mcp_endpoints():
 
 @api_v1_bp.route("/integrations/mcp-endpoints", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 async def create_mcp_endpoint():
     """Register a new external MCP endpoint for this org."""
     org_id = g.user.get("organization_id")
@@ -248,7 +249,7 @@ def _get_org_scoped_endpoint(endpoint_id: int, org_id: int):
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 async def get_mcp_endpoint(endpoint_id: int):
     """Fetch one registered endpoint -- 403 across orgs, 404 if it never existed."""
     org_id = g.user.get("organization_id")
@@ -272,7 +273,7 @@ async def get_mcp_endpoint(endpoint_id: int):
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 async def update_mcp_endpoint(endpoint_id: int):
     """Update a registered endpoint's mutable fields."""
     org_id = g.user.get("organization_id")
@@ -338,7 +339,7 @@ async def update_mcp_endpoint(endpoint_id: int):
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 async def delete_mcp_endpoint(endpoint_id: int):
     """Delete a registered endpoint (cascades to its `mcp_user_links`)."""
     org_id = g.user.get("organization_id")
