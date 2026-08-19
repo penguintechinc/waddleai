@@ -1,0 +1,10 @@
+extends:
+  - spectral:oas
+
+# The management API's error envelope varies deliberately by endpoint
+# family (`{"error": str}` for the pydal-era routes vs the
+# `{"status": "error", "error": str}` provider/integrations envelope) --
+# this predates the OpenAPI effort and is out of scope for this pass, so
+# don't fail CI on it.
+rules:
+  oas3-unused-component: warn

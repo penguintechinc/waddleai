@@ -4,6 +4,11 @@
 # Web framework (Quart — async-native Flask superset, house standard)
 quart>=0.19.0
 quart-cors>=0.7.0
+# Exact-pinned (not >=): openapi.py reaches into quart_schema.extension's
+# private _build_openapi_schema helper (no public equivalent in 0.19.x) to
+# implement the public/full spec split required by backend.md OpenAPI --
+# an unpinned minor bump could silently rename/remove it.
+quart-schema==0.19.0
 hypercorn>=0.16.0
 
 # Database

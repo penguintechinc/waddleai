@@ -111,6 +111,12 @@ def create_app(config_class=Config):
     # Enable CORS
     app = quart_cors.cors(app, allow_origin=app.config.get("CORS_ORIGINS", ["*"]))
 
+    # OpenAPI schema generation (see .api.v1.openapi for the public/full split
+    # and why quart-schema's default unauthenticated mount is disabled).
+    from .api.v1.openapi import init_openapi
+
+    init_openapi(app)
+
     # Register blueprints
     register_blueprints(app)
 
@@ -229,6 +235,7 @@ def register_blueprints(app):
     """Register API blueprints."""
     from .api.v1 import api_v1_bp
     from .api.v1.model_aliases import model_aliases_bp
+    from .api.v1.openapi import openapi_bp
     from .api.v1.routing_assignments import routing_assignments_bp
     from .api.v1.routing_decisions import routing_decisions_bp
     from .api.v1.routing_dry_run import routing_dry_run_bp
@@ -237,6 +244,7 @@ def register_blueprints(app):
     from .api.v1.security_policies import security_policies_bp
 
     app.register_blueprint(api_v1_bp, url_prefix="/api/v1")
+    app.register_blueprint(openapi_bp)
     app.register_blueprint(routing_assignments_bp)
     app.register_blueprint(routing_policies_bp)
     app.register_blueprint(routing_rules_bp)

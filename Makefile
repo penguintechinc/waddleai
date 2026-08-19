@@ -1,6 +1,6 @@
 .PHONY: dev setup install-hooks verify-hooks test test-unit test-integration test-e2e test-functional test-security \
         test-contract smoke-test lint build docker-build docker-push deploy-dev deploy-prod \
-        seed-mock-data clean pre-commit
+        seed-mock-data clean pre-commit generate-openapi openapi-lint
 
 setup: install-hooks
 	@echo "Setup complete"
@@ -29,6 +29,13 @@ lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then echo "-- golangci-lint --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && golangci-lint run || true'; fi
 	@if command -v hadolint >/dev/null 2>&1; then echo "-- hadolint --"; find . -name "Dockerfile*" -not -path "*/.git/*" | xargs hadolint || true; fi
 	@if command -v shellcheck >/dev/null 2>&1; then echo "-- shellcheck --"; find . -name "*.sh" -not -path "*/.git/*" | xargs shellcheck || true; fi
+
+generate-openapi: ## Regenerate openapi/v1.yaml from the quart-schema annotations
+	@python3 scripts/generate_openapi_spec.py
+
+openapi-lint: ## Lint openapi/v1.yaml with spectral -- gates on error, not just warn (no || true)
+	@command -v spectral >/dev/null 2>&1 || npm install -g @stoplight/spectral-cli@6.16.3
+	spectral lint openapi/v1.yaml --fail-severity=error
 
 test:
 	@$(MAKE) test-unit
