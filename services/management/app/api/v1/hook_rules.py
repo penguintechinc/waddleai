@@ -54,7 +54,7 @@ def _actor_forced_scope(user_role: str | None, user_org_id: Any) -> tuple[str, s
     return ("org", str(user_org_id))
 
 
-def _read_scope_allowed(
+def scope_readable(
     user_role: str | None, user_org_id: Any, row_scope_type: str, row_scope_ref: str | None
 ) -> bool:
     """Admin sees everything; resource_manager sees global rows (read-only) + their own org."""
@@ -111,7 +111,7 @@ async def list_hook_rules() -> tuple:
         rows = db(db.hook_rules.id > 0).select(orderby=db.hook_rules.id)
         return [
             r for r in rows
-            if _read_scope_allowed(user_role, user_org_id, r.scope_type, r.scope_ref)
+            if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
         ]
 
     rows = await asyncio.to_thread(_fetch)
@@ -323,7 +323,7 @@ async def list_hook_denylist_entries() -> tuple:
         rows = db(db.hook_denylist_entries.id > 0).select(orderby=db.hook_denylist_entries.id)
         return [
             r for r in rows
-            if _read_scope_allowed(user_role, user_org_id, r.scope_type, r.scope_ref)
+            if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
         ]
 
     rows = await asyncio.to_thread(_fetch)
@@ -463,7 +463,7 @@ async def list_hook_configs() -> tuple:
         rows = db(db.hook_configs.id > 0).select(orderby=db.hook_configs.id)
         return [
             r for r in rows
-            if _read_scope_allowed(user_role, user_org_id, r.scope_type, r.scope_ref)
+            if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
         ]
 
     rows = await asyncio.to_thread(_fetch)

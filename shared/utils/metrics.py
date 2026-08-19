@@ -151,6 +151,15 @@ class WaddleAIMetrics:
             "waddleai_hook_evaluation_duration_seconds",
             "Server-side agent-hook evaluation latency (§18 evaluate endpoint)",
             ["ecosystem", "event"],
+            # Tier-1/hook_rule decisions are pure in-memory checks (sub-ms to
+            # low-ms); the default prometheus_client buckets bottom out at
+            # 5ms, which would collapse the entire useful range into one
+            # bucket and make p50/p95/p99 meaningless for exactly the case
+            # this histogram exists to measure. Only Tier-2 (network round
+            # trip) reaches into the tens/hundreds-of-ms tail.
+            buckets=(
+                0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ),
         )
         self.hook_timeouts_total = Counter(
             "waddleai_hook_timeouts_total", "Agent-hook Tier-2 evaluation timeouts", ["tier"]
