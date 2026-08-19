@@ -23,12 +23,16 @@ TESTS_FAILED=0
 
 pass() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((TESTS_PASSED++))
+    # `((TESTS_PASSED++))` post-increment returns the *pre*-increment value as
+    # the command's exit status -- 0 on the very first call, which `set -e`
+    # treats as failure and kills the script after a single PASS. `: $(( ))`
+    # never returns non-zero, avoiding the false trip.
+    : $((TESTS_PASSED++))
 }
 
 fail() {
     echo -e "${RED}[FAIL]${NC} $1"
-    ((TESTS_FAILED++))
+    : $((TESTS_FAILED++))
 }
 
 warn() {
@@ -56,38 +60,27 @@ check_file "services/management/app/api/v1/webhooks.py"
 check_file "services/management/requirements.txt"
 check_file "services/management/Dockerfile"
 check_file "services/management/wsgi.py"
-check_file "docker-compose.yml"
 
 echo ""
 
 # Test 2: Python syntax check
+# Walks shared/ and services/management/app/ rather than a fixed file list so
+# this stays correct as files are added/removed/renamed (a hardcoded list
+# silently stopped covering renamed/deleted modules in the past).
 echo "Test 2: Python syntax check..."
 
 python_syntax_check() {
-    if python3 -m py_compile "$PROJECT_ROOT/$1" 2>/dev/null; then
-        pass "Syntax OK: $1"
+    local rel="${1#"$PROJECT_ROOT"/}"
+    if python3 -m py_compile "$1" 2>/dev/null; then
+        pass "Syntax OK: $rel"
     else
-        fail "Syntax error: $1"
+        fail "Syntax error: $rel"
     fi
 }
 
-python_syntax_check "services/management/app/__init__.py"
-python_syntax_check "services/management/app/config.py"
-python_syntax_check "services/management/app/extensions.py"
-python_syntax_check "services/management/app/api/v1/__init__.py"
-python_syntax_check "services/management/app/api/v1/auth.py"
-python_syntax_check "services/management/app/api/v1/providers.py"
-python_syntax_check "services/management/app/api/v1/ollama.py"
-python_syntax_check "services/management/app/api/v1/ailb.py"
-python_syntax_check "services/management/app/api/v1/keys.py"
-python_syntax_check "services/management/app/api/v1/usage.py"
-python_syntax_check "services/management/app/api/v1/quotas.py"
-python_syntax_check "services/management/app/api/v1/webhooks.py"
-python_syntax_check "services/management/app/grpc/client.py"
-python_syntax_check "services/management/app/services/provider_sync.py"
-python_syntax_check "services/management/app/services/ollama_manager.py"
-python_syntax_check "services/management/app/services/usage_tracker.py"
-python_syntax_check "services/management/app/services/providers/__init__.py"
+while IFS= read -r -d '' pyfile; do
+    python_syntax_check "$pyfile"
+done < <(find "$PROJECT_ROOT/shared" "$PROJECT_ROOT/services/management/app" -name "*.py" -print0 | sort -z)
 
 echo ""
 
@@ -111,50 +104,42 @@ fi
 
 echo ""
 
-# Test 4: Check docker-compose syntax
-echo "Test 4: Docker Compose syntax check..."
-
-if command -v docker-compose &> /dev/null || docker compose version &> /dev/null 2>&1; then
-    cd "$PROJECT_ROOT"
-    if docker compose config > /dev/null 2>&1; then
-        pass "Docker Compose config is valid"
-    else
-        fail "Docker Compose config has errors"
-    fi
-else
-    warn "Docker Compose not available, skipping config check"
-fi
-
-echo ""
-
-# Test 5: Requirements file check
-echo "Test 5: Requirements file validation..."
+# Test 4: Requirements file check
+# docker-compose is deprecated house-wide (K8s/Helm only) and no
+# docker-compose.yml exists in this repo, so there is nothing left to
+# syntax-check there -- that check has been dropped rather than kept
+# failing against infrastructure that no longer exists. Package checks
+# below reflect the actual Quart + penguin-libs stack (flask-security-too
+# and bare pydal were removed from this service; auth is penguin-aaa/OIDC).
+echo "Test 4: Requirements file validation..."
 
 if [ -f "$PROJECT_ROOT/services/management/requirements.txt" ]; then
-    # Check for essential packages
-    if grep -q "flask" "$PROJECT_ROOT/services/management/requirements.txt"; then
-        pass "Flask package present"
+    # Check for essential packages (services/management/requirements.in)
+    if grep -q "^quart==" "$PROJECT_ROOT/services/management/requirements.txt"; then
+        pass "Quart package present"
     else
-        fail "Flask package missing"
+        fail "Quart package missing"
     fi
 
-    if grep -q "flask-security-too" "$PROJECT_ROOT/services/management/requirements.txt"; then
-        pass "Flask-Security-Too package present"
+    if grep -q "^penguin-aaa==" "$PROJECT_ROOT/services/management/requirements.txt"; then
+        pass "penguin-aaa package present"
     else
-        fail "Flask-Security-Too package missing"
+        fail "penguin-aaa package missing"
     fi
 
-    if grep -q "pydal" "$PROJECT_ROOT/services/management/requirements.txt"; then
-        pass "PyDAL package present"
+    if grep -q "^penguin-dal==" "$PROJECT_ROOT/services/management/requirements.txt"; then
+        pass "penguin-dal package present"
     else
-        fail "PyDAL package missing"
+        fail "penguin-dal package missing"
     fi
 
-    if grep -q "grpcio" "$PROJECT_ROOT/services/management/requirements.txt"; then
+    if grep -q "^grpcio==" "$PROJECT_ROOT/services/management/requirements.txt"; then
         pass "gRPC package present"
     else
         fail "gRPC package missing"
     fi
+else
+    fail "requirements.txt missing, cannot validate packages"
 fi
 
 echo ""

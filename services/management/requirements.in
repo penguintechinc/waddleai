@@ -117,3 +117,9 @@ httpx>=0.26.0
 # happened to be installed in-sandbox; CI has no such package and failed
 # with "fixture 'httpserver' not found".
 pytest-httpserver>=1.0.8
+
+# Fast JSON used by shared/cache and shared/memory, which the management
+# service imports via api/v1/cache_configs.py. Declared in the root and
+# proxy requirements but NOT here, so the management image built fine,
+# passed syntax checks, and then crashed on boot with ModuleNotFoundError.
+orjson>=3.9.10
