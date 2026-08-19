@@ -2,6 +2,8 @@
 
 The WaddleAI VS Code Extension integrates WaddleAI's enterprise AI proxy directly into Visual Studio Code, providing seamless access to multiple LLM providers through VS Code's Chat interface.
 
+> **Known issue**: the extension's **Show Token Usage** and **Clear Conversation Memory** commands call `GET /v1/usage` and `POST /v1/memory/clear`, neither of which exists on the WaddleAI proxy today (the proxy exposes `GET /api/usage` and `DELETE /api/memory/cleanup` instead). Both commands currently fail with an error dialog. Chat (`@waddleai`, including streaming) and model discovery (`/v1/models`) are unaffected and work as documented below.
+
 ## Overview
 
 The extension enables developers to:
@@ -52,10 +54,10 @@ The extension enables developers to:
 4. Click Install
 
 ### Option 2: Manual Installation (Development)
-1. Clone the repository:
+1. Clone the repository (the extension lives inside the main WaddleAI monorepo, not a standalone repo):
    ```bash
-   git clone https://github.com/waddleai/vscode-extension.git
-   cd vscode-extension/waddleai-copilot
+   git clone https://github.com/penguintechinc/waddleai.git
+   cd waddleai/vscode-extension/waddleai-copilot
    ```
 
 2. Install dependencies:
@@ -91,7 +93,7 @@ The extension enables developers to:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `waddleai.apiEndpoint` | `http://localhost:8000` | WaddleAI proxy server URL |
+| `waddleai.apiEndpoint` | `http://localhost:8000` | WaddleAI proxy server URL — the extension's built-in default (`8000`) does not match the proxy's actual default port (`8080`); set this explicitly |
 | `waddleai.apiKey` | `""` | Your WaddleAI API key |
 | `waddleai.defaultModel` | `"gpt-4"` | Default model for chat completions |
 | `waddleai.enableMemory` | `true` | Enable conversation memory |
@@ -155,8 +157,8 @@ Access via Command Palette (`Ctrl+Shift+P`):
 | **WaddleAI: Set API Key** | Configure your WaddleAI API key |
 | **WaddleAI: Select Model** | Choose from available models |
 | **WaddleAI: Test Connection** | Verify connection to WaddleAI proxy |
-| **WaddleAI: Show Token Usage** | View detailed usage statistics |
-| **WaddleAI: Clear Conversation Memory** | Reset conversation history |
+| **WaddleAI: Show Token Usage** | View detailed usage statistics — currently broken, see note above |
+| **WaddleAI: Clear Conversation Memory** | Reset conversation history — currently broken, see note above |
 
 ## Context Integration
 
@@ -193,44 +195,7 @@ Using model: gpt-4
 
 ## Token Usage & Analytics
 
-### Usage Dashboard
-Access via Command Palette → "WaddleAI: Show Token Usage"
-
-The usage dashboard shows:
-- **Total WaddleAI tokens consumed**
-- **Request count and patterns**
-- **Daily/monthly quota utilization**
-- **Model-specific usage breakdown**
-- **Time-based usage trends**
-
-### Usage Monitoring
-- **Real-time updates** - Live usage tracking during conversations
-- **Quota warnings** - Alerts when approaching limits
-- **Usage optimization tips** - Suggestions for efficient token usage
-- **Export capabilities** - CSV export for detailed analysis
-
-### Sample Usage Data
-```json
-{
-  "total_tokens": 15450,
-  "total_requests": 127,
-  "daily_quota": {
-    "used": 1250,
-    "limit": 10000,
-    "percentage": 12.5
-  },
-  "monthly_quota": {
-    "used": 15450,
-    "limit": 200000,
-    "percentage": 7.7
-  },
-  "model_breakdown": {
-    "gpt-4": 8500,
-    "claude-3-sonnet": 4200,
-    "gpt-3.5-turbo": 2750
-  }
-}
-```
+**Currently broken** — see the known-issue note at the top of this page. "WaddleAI: Show Token Usage" calls a proxy route (`/v1/usage`) that doesn't exist, so it errors instead of displaying data. There is no CSV export or in-extension quota-warning feature in the current source. For real usage numbers, query the proxy's `GET /api/usage` and `GET /api/quota` directly, or use the WebUI usage dashboard.
 
 ## Error Handling
 
@@ -308,8 +273,8 @@ type %APPDATA%\Code\logs\*\exthost*\output_logging_*\1-WaddleAI.log
 
 ### Building from Source
 ```bash
-git clone https://github.com/waddleai/vscode-extension.git
-cd vscode-extension/waddleai-copilot
+git clone https://github.com/penguintechinc/waddleai.git
+cd waddleai/vscode-extension/waddleai-copilot
 npm install
 npm run compile
 npm run package  # Requires Node.js 20+
@@ -458,7 +423,7 @@ The extension is open source. Contributions welcome:
 - **Enterprise Support**: Available for enterprise customers
 
 ### Resources
-- **Extension Source**: https://github.com/waddleai/vscode-extension
+- **Extension Source**: https://github.com/penguintechinc/waddleai/tree/main/vscode-extension
 - **WaddleAI Documentation**: https://docs.waddleai.com
 - **VS Code Extension API**: https://code.visualstudio.com/api
 - **OpenAI API Compatibility**: https://docs.openai.com/api

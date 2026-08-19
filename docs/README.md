@@ -48,17 +48,21 @@ Access the management portal at `https://your-waddleai-mgmt.com` or use the Mana
 ```python
 import requests
 
+MGMT = "https://your-waddleai-mgmt.com/api/v1"
+
 # Login
-auth = requests.post("/auth/login", json={
+auth = requests.post(f"{MGMT}/auth/login", json={
     "username": "admin", "password": "password"
 })
 token = auth.json()["access_token"]
 
 # Get usage stats
-usage = requests.get("/analytics/usage", 
+usage = requests.get(f"{MGMT}/usage/summary",
     headers={"Authorization": f"Bearer {token}"}
 ).json()
 ```
+
+All Management API routes are mounted under `/api/v1` (e.g. `/api/v1/auth/login`, `/api/v1/usage/summary`, `/api/v1/quotas`) — there is no separate `/analytics/*` namespace.
 
 ## Documentation Structure
 
@@ -95,8 +99,8 @@ WaddleAI uses a dual token system:
 
 ## Support
 
-- Health checks: `/healthz` and `/api/status`
-- Metrics: `/metrics` (Prometheus format)
+- Health checks: `/healthz` on both proxy and management; `/livez`/`/readyz` also on management; `/api/status` on the proxy only
+- Metrics: `/metrics` (Prometheus format) on both services
 - Logs: Structured JSON logging
 - Documentation: This documentation site
 

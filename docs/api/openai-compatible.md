@@ -107,35 +107,26 @@ It works in the plain `model` field rather than a header, so any OpenAI-compatib
     "completion_tokens": 19,
     "total_tokens": 31,
     "waddleai_tokens": 8
-  },
-  "waddleai": {
-    "provider": "openai",
-    "model_used": "gpt-4",
-    "security_passed": true,
-    "routing_rule": "default",
-    "cost_waddleai": 8,
-    "cost_usd": 0.008
   }
 }
 ```
 
+There is no top-level `waddleai` metadata object. When cache, proxy-memory, or routing features are active for the request, an additive `usage.waddleai` object is merged in (e.g. `tokens_saved`, `routed_from`) — it's omitted entirely, not `{}`, when none of those apply.
+
 #### Error Responses
+
+Every error is the same shape — `type` is always the literal string `"error"`; the specific cause is in `message` (there is no `code` or `details` field):
 
 ```json
 {
   "error": {
-    "type": "quota_exceeded",
-    "message": "Daily token quota exceeded",
-    "code": "quota_exceeded",
-    "details": {
-      "daily_used": 10000,
-      "daily_limit": 10000,
-      "monthly_used": 50000,
-      "monthly_limit": 100000
-    }
+    "message": "token budget exceeded for this key",
+    "type": "error"
   }
 }
 ```
+
+HTTP status carries the actual error category: `401` unauthenticated, `403` missing org/tenant context or insufficient permission, `429` quota/token-budget exceeded, `502`/`504` upstream provider error/timeout, `500` internal error.
 
 ### Streaming Responses
 
@@ -189,8 +180,7 @@ curl https://your-waddleai-proxy.com/v1/models \
       "owned_by": "openai",
       "provider": "openai",
       "capabilities": ["chat", "completion"],
-      "context_length": 8192,
-      "cost_per_waddleai_token": 0.001
+      "context_length": 8192
     },
     {
       "id": "claude-3-opus",
@@ -199,8 +189,7 @@ curl https://your-waddleai-proxy.com/v1/models \
       "owned_by": "anthropic",
       "provider": "anthropic",
       "capabilities": ["chat"],
-      "context_length": 200000,
-      "cost_per_waddleai_token": 0.0015
+      "context_length": 200000
     },
     {
       "id": "llama2",
@@ -209,96 +198,17 @@ curl https://your-waddleai-proxy.com/v1/models \
       "owned_by": "meta",
       "provider": "ollama",
       "capabilities": ["chat", "completion"],
-      "context_length": 4096,
-      "cost_per_waddleai_token": 0.0001
+      "context_length": 4096
     }
   ]
 }
 ```
 
-## Completions (Legacy)
+There is no `cost_per_waddleai_token` field on model list entries — cost is derived per request in `usage`, not published per model.
 
-### POST /v1/completions
+## Not Implemented
 
-Generate text completions (legacy endpoint, chat completions recommended).
-
-#### Request
-
-```bash
-curl https://your-waddleai-proxy.com/v1/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer wa-your-api-key" \
-  -d '{
-    "model": "gpt-3.5-turbo",
-    "prompt": "Once upon a time",
-    "max_tokens": 100,
-    "temperature": 0.7
-  }'
-```
-
-#### Response
-
-```json
-{
-  "id": "cmpl-abc123",
-  "object": "text_completion",
-  "created": 1699896916,
-  "model": "gpt-3.5-turbo",
-  "choices": [
-    {
-      "text": " there was a small village nestled in the mountains...",
-      "index": 0,
-      "logprobs": null,
-      "finish_reason": "length"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 4,
-    "completion_tokens": 100,
-    "total_tokens": 104,
-    "waddleai_tokens": 12
-  }
-}
-```
-
-## Embeddings
-
-### POST /v1/embeddings
-
-Create embeddings for text inputs (if supported by target model).
-
-#### Request
-
-```bash
-curl https://your-waddleai-proxy.com/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer wa-your-api-key" \
-  -d '{
-    "model": "text-embedding-ada-002",
-    "input": "The food was delicious and the waiter was friendly."
-  }'
-```
-
-#### Response
-
-```json
-{
-  "object": "list",
-  "data": [
-    {
-      "object": "embedding",
-      "embedding": [0.0023064255, -0.009327292, ...],
-      "index": 0
-    }
-  ],
-  "model": "text-embedding-ada-002",
-  "usage": {
-    "prompt_tokens": 8,
-    "total_tokens": 8,
-    "waddleai_tokens": 2
-  }
-}
-```
+The legacy `POST /v1/completions` and `POST /v1/embeddings` endpoints are **not implemented** by the proxy — only `/v1/chat/completions`, `/v1/models`, `/v1/messages`, and `/v1/messages/count_tokens` exist (verified against `proxy/apps/proxy_server/main.py` route table). Requests to either return `404`.
 
 ## WaddleAI Extensions
 
@@ -358,72 +268,26 @@ Response:
 }
 ```
 
-### Security Alerts
-
-Get recent security alerts (if you have appropriate permissions):
-
-#### GET /api/security/threats
-
-```bash
-curl https://your-waddleai-proxy.com/api/security/threats \
-  -H "Authorization: Bearer wa-your-api-key"
-```
-
-Response:
-```json
-{
-  "recent_threats": [
-    {
-      "timestamp": "2024-01-15T10:30:00Z",
-      "threat_type": "prompt_injection",
-      "severity": "high",
-      "blocked": true,
-      "description": "Detected instruction override attempt"
-    }
-  ],
-  "stats": {
-    "last_24h": {
-      "total_threats": 3,
-      "blocked": 3,
-      "allowed": 0
-    }
-  }
-}
-```
+There is no `GET /api/security/threats` endpoint — no security-alerts API exists today.
 
 ## Rate Limits
 
-WaddleAI enforces multiple types of limits:
-
-| Limit Type | Default | Description |
-|------------|---------|-------------|
-| Requests per minute | 60 | API calls per minute |
-| Daily tokens | 10,000 | WaddleAI tokens per day |
-| Monthly tokens | 100,000 | WaddleAI tokens per month |
-
-Rate limit information is included in response headers:
-
-```
-X-RateLimit-Limit-RPM: 60
-X-RateLimit-Remaining-RPM: 45
-X-RateLimit-Reset-RPM: 1699896976
-X-RateLimit-Limit-Daily: 10000
-X-RateLimit-Remaining-Daily: 8800
-```
+Per-org request-rate limiting is enforced at the network layer via a Cilium `CiliumEnvoyConfig` local-rate-limit filter (`services/management/app/services/cilium_policy.py`), not inside the application. The proxy does **not** emit `X-RateLimit-*` response headers — do not build client logic around them. Token budgets (daily/monthly, per key/user/org) are enforced in-app via `TokenBudgetStage` and surface as a `429` with `error.message` describing the exceeded limit (see Error Responses above); there is no dedicated requests-per-minute counter independent of Cilium's edge enforcement.
 
 ## Error Codes
 
-| Code | Type | Description |
-|------|------|-------------|
-| 400 | `invalid_request` | Invalid request format |
-| 400 | `security_blocked` | Request blocked by security scanning |
-| 401 | `invalid_api_key` | Invalid or expired API key |
-| 403 | `insufficient_permissions` | Insufficient permissions |
-| 429 | `rate_limit_exceeded` | Rate limit exceeded |
-| 429 | `quota_exceeded` | Token quota exceeded |
-| 500 | `server_error` | Internal server error |
-| 502 | `provider_error` | Upstream LLM provider error |
-| 503 | `service_unavailable` | Service temporarily unavailable |
+| Status | Meaning |
+|--------|---------|
+| 400 | Invalid request (bad routing strategy, malformed body) |
+| 401 | Missing/invalid Authorization header or API key |
+| 403 | Missing organization/tenant context, or admin permission required |
+| 404 | Unknown route (includes `/v1/completions`, `/v1/embeddings` — not implemented) |
+| 429 | Token/quota budget exceeded |
+| 500 | Internal server error |
+| 502 | Upstream LLM provider error |
+| 504 | Upstream LLM provider timeout |
+
+There is no separate machine-readable `error.type`/`error.code` taxonomy (e.g. `quota_exceeded`, `invalid_api_key`) — `error.type` is always the literal string `"error"`; branch on HTTP status instead.
 
 ## Best Practices
 
@@ -464,4 +328,4 @@ except openai.APIError as e:
 
 ---
 
-For more advanced features, see the [Management API documentation](management-api.md).
+For provider/key/quota administration, see the WaddleAI Management API routes under `/api/v1/` (organizations, providers, keys, quotas, usage) — a dedicated reference doc doesn't exist yet.
