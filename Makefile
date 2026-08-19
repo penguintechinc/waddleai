@@ -35,15 +35,31 @@ test:
 
 test-unit:
 	@echo "Running unit tests..."
-	@if [ -d tests/unit ]; then python3 -m pytest tests/unit -v; fi
+	python3 -m pytest tests/unit -v
 
+# --no-cov: a tests/integration-only run only exercises a fraction of
+# shared/+services/management/app, so pytest.ini's default --cov addopts
+# (60% floor, meant for the full tests/unit run above) fail every time
+# regardless of whether the integration tests themselves pass -- mirrors
+# test-contract's existing convention below.
 test-integration:
 	@echo "Running integration tests..."
-	@if [ -d tests/integration ]; then python3 -m pytest tests/integration -v; fi
+	python3 -m pytest tests/integration -v --no-cov
 
+# tests/e2e/ currently has no pytest tests (only the pre-existing Playwright
+# JS suite + scaffolding; the real pytest suite is on feature/e2e-suite, not
+# yet merged) -- `pytest tests/e2e` exits 5 ("no tests collected"), a hard
+# failure by default. Tolerate exit 5 specifically so this target isn't
+# permanently red for a suite that doesn't exist yet; once feature/e2e-suite
+# merges this starts gating for real with no further Makefile change needed.
 test-e2e:
 	@echo "Running e2e tests..."
-	@if [ -d tests/e2e ]; then python3 -m pytest tests/e2e -v; fi
+	@python3 -m pytest tests/e2e -v --no-cov; code=$$?; \
+	if [ $$code -eq 5 ]; then \
+		echo "No pytest tests collected under tests/e2e/ yet (pending merge of feature/e2e-suite) -- not a failure."; \
+		exit 0; \
+	fi; \
+	exit $$code
 
 test-functional:
 	@echo "No functional tests defined"
