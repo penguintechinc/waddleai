@@ -249,6 +249,23 @@ def make_select_result(rows: list) -> MagicMock:
     return result
 
 
+def make_dal_row(**fields: object) -> MagicMock:
+    """A mock shaped like a real penguin_dal Row (spec'd, no update_record()).
+
+    Attribute access is restricted to the given field names via spec. A
+    plain MagicMock() auto-creates any attribute on access, including
+    .update_record(), which is exactly why routes calling that PyDAL-only
+    method on a real penguin_dal Row went undetected by tests using plain
+    MagicMock rows (regression: see shared/auth/rbac.py). Accessing
+    .update_record on this mock raises AttributeError, matching real
+    penguin_dal's Row.
+    """
+    row = MagicMock(spec=list(fields.keys()))
+    for key, value in fields.items():
+        setattr(row, key, value)
+    return row
+
+
 ROUTE_MODULES = [
     "services.management.app.api.v1.auth",
     "services.management.app.api.v1.users",

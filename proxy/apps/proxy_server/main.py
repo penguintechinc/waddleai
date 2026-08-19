@@ -269,11 +269,14 @@ class ProxyServer:
         # get_db() (shared.database.models) is the penguin-dal connection that
         # RBACManager, TokenManager, PromptSecurityScanner, ContentFilter, and
         # LLMConnectionManager are all actually written against (synchronous
-        # `self.db(query).select()`/`.update_record()` calls -- see the module
-        # docstring in shared/database/models.py). penguin-dal exposes DAL/Field
-        # directly, not a `get_dal` factory. `migrate=True` only in contract-test mode, so the
-        # harness's empty per-session sqlite file gets real tables; production
-        # keeps migrate=False (Alembic/management remains schema authority).
+        # `self.db(query).select()` / `self.db(condition).update(**kwargs)`
+        # calls -- see the module docstring in shared/database/models.py.
+        # NOTE: penguin_dal's Row has no `.update_record()` -- that's classic
+        # PyDAL API; writes always go through `db(condition).update(...)`).
+        # penguin-dal exposes DAL/Field directly, not a `get_dal` factory.
+        # `migrate=True` only in contract-test mode, so the harness's empty
+        # per-session sqlite file gets real tables; production keeps
+        # migrate=False (Alembic/management remains schema authority).
         database_url = os.getenv(
             "DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai"
         )
