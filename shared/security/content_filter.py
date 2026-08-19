@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, TypedDict
 
 import aiohttp
+from prometheus_client import Counter
 
 # NER filter — optional; graceful degradation if presidio/transformers unavailable
 try:
@@ -30,6 +31,40 @@ except ImportError:
     NER_ENTITY_CONFIG: dict = {}  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+# Distinguishes _filter()'s two internal-failure outcomes: fail_open (a
+# genuine operational failure -- DB timeout, unreachable LLM auditor, NER
+# process-pool crash -- deliberately lets content through, matching
+# SecurityPolicyEngine's degrade-not-closed default) from fail_closed (a
+# programming defect -- TypeError/AttributeError/etc. -- deliberately
+# blocks content rather than being silently indistinguishable from the
+# operational case). A rising fail_open rate is a silent security
+# degradation and must be alertable on its own.
+#
+# A plain module-level Counter rather than routing through
+# shared.utils.metrics.WaddleAIMetrics: that class's get_proxy_metrics()
+# and get_management_metrics() singletons construct fresh Counter/Histogram
+# objects per instance and collide ("Duplicated timeseries in
+# CollectorRegistry") the first time both are built in one process --
+# ContentFilter is instantiated by both proxy and management, so reusing
+# either singleton would import that latent bug into this module. Fixing
+# WaddleAIMetrics itself is out of scope here.
+_content_filter_fail_total = Counter(
+    "waddleai_content_filter_fail_total",
+    "ContentFilter internal failures, split by outcome",
+    ["phase", "mode"],  # mode: fail_open (operational) | fail_closed (programming defect)
+)
+
+
+def _record_fail_mode(phase: str, mode: str) -> None:
+    """Record a ContentFilter internal-failure outcome for alerting.
+
+    Args:
+        phase: "input" or "output"
+        mode: "fail_open" or "fail_closed"
+    """
+    _content_filter_fail_total.labels(phase=phase, mode=mode).inc()
+
 
 # Shared, module-scoped process pool for tier-3 NER (§3.5): Presidio/spaCy
 # analysis is CPU-bound and must never run on the event loop or even the
@@ -414,11 +449,31 @@ class ContentFilter:
                     auditor_used = True
                     if should_block:
                         action = "block"
+                except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
+                    # Programming defect in the auditor call path (e.g. a bad
+                    # message-building call), not "Ollama is unreachable" --
+                    # NOT the same as the operational timeout/connection-error
+                    # case below. Fail CLOSED: override the rule-based action
+                    # rather than silently falling back to it, so a defect in
+                    # this tier can never quietly downgrade an uncertain case
+                    # to whatever the pattern tiers alone decided.
+                    logger.error(
+                        "LLM auditor call is broken (phase=%s): %s: %s -- "
+                        "this is a code defect, not a transient failure; failing closed.",
+                        phase,
+                        type(e).__name__,
+                        e,
+                        exc_info=True,
+                    )
+                    action = "block"
+                    auditor_used = False
+                    _record_fail_mode(phase, "fail_closed")
                 except Exception as e:
                     logger.warning(
                         f"LLM auditor failed (phase={phase}): {e}. "
                         f"Continuing with rule-based decision."
                     )
+                    _record_fail_mode(phase, "fail_open")
 
             # Create result
             result = FilterResult(
@@ -440,9 +495,42 @@ class ContentFilter:
 
             return result
 
+        except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
+            # A programming defect (wrong call signature, missing attribute,
+            # typo'd name, broken import) reaching here is not an
+            # operational failure -- DB timeouts, unreachable auditors, and
+            # NER process-pool crashes are already caught and degraded at
+            # their own tier (see _run_ner_patterns, _load_custom_rules,
+            # _invoke_llm_auditor) and never reach this branch. Historical
+            # precedent: SecurityOutStage called filter_output(..., ip=None)
+            # against a signature with no `ip` param; every call raised
+            # TypeError, a blanket `except Exception` here swallowed it, and
+            # output PII filtering silently never ran in production. Fail
+            # CLOSED and log loudly so that class of bug can never again be
+            # indistinguishable from an ordinary fail-open path.
+            logger.error(
+                "Content filter internal defect (phase=%s): %s: %s -- "
+                "this is a code defect, not a transient failure; failing closed.",
+                phase,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )
+            _record_fail_mode(phase, "fail_closed")
+            return FilterResult(
+                allowed=False,
+                action="block",
+                violations=[],
+                filtered_text=text,
+                auditor_used=False,
+            )
         except Exception as e:
-            logger.error(f"Content filter error (phase={phase}): {e}")
-            # Fail open: allow the content on unexpected errors
+            # Genuine operational failure (DB unreachable, network blip,
+            # unexpected upstream shape) -- fail open is the deliberate,
+            # documented availability choice for this class of error
+            # (matches SecurityPolicyEngine's degrade-not-closed default).
+            logger.error(f"Content filter error (phase={phase}): {e}", exc_info=True)
+            _record_fail_mode(phase, "fail_open")
             return FilterResult(
                 allowed=True,
                 action="allow",
@@ -512,61 +600,63 @@ class ContentFilter:
         """
         violations: list[FilterViolation] = []
 
-        try:
-            # Load rules with TTL cache
-            rules = await self._load_custom_rules(org_id)
+        # _load_custom_rules() already fails open internally on its own
+        # operational errors (DB unreachable, query failure -- see its
+        # docstring/handler) and always returns a list, never raises. The
+        # loop below is local, in-process rule-application logic; a defect
+        # there (e.g. a malformed cached FilterRule) is a programming error,
+        # not "the DB was unreachable," and must propagate to `_filter()`'s
+        # classification rather than being silently treated the same as a
+        # rule-load outage.
+        rules = await self._load_custom_rules(org_id)
 
-            for rule in rules:
-                # Skip if target doesn't match
-                if rule.target not in (target, "both"):
-                    continue
+        for rule in rules:
+            # Skip if target doesn't match
+            if rule.target not in (target, "both"):
+                continue
 
-                if rule.rule_type == "custom_string":
-                    # Case-insensitive substring matching
-                    if rule.pattern.lower() in text.lower():
-                        start_idx = text.lower().find(rule.pattern.lower())
-                        end_idx = start_idx + len(rule.pattern)
-                        # Extract context for logging (up to 100 chars from start point)
-                        matched_text = text[start_idx : start_idx + 100]
-                        # Full matched text is the exact substring found
-                        full_matched_text = text[start_idx:end_idx]
+            if rule.rule_type == "custom_string":
+                # Case-insensitive substring matching
+                if rule.pattern.lower() in text.lower():
+                    start_idx = text.lower().find(rule.pattern.lower())
+                    end_idx = start_idx + len(rule.pattern)
+                    # Extract context for logging (up to 100 chars from start point)
+                    matched_text = text[start_idx : start_idx + 100]
+                    # Full matched text is the exact substring found
+                    full_matched_text = text[start_idx:end_idx]
+                    violation = FilterViolation(
+                        rule_name=rule.name,
+                        rule_type="custom_string",
+                        matched_text=matched_text,
+                        action=rule.action,
+                        confidence=0.95,
+                        full_matched_text=full_matched_text,
+                    )
+                    violations.append(violation)
+
+            elif rule.rule_type == "custom_regex":
+                try:
+                    pattern = re.compile(
+                        rule.pattern,
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                    matches = pattern.finditer(text)
+                    for match in matches:
+                        full_match = match.group(0)
+                        matched_text = full_match[:100]  # Truncated for audit logging
                         violation = FilterViolation(
                             rule_name=rule.name,
-                            rule_type="custom_string",
+                            rule_type="custom_regex",
                             matched_text=matched_text,
                             action=rule.action,
-                            confidence=0.95,
-                            full_matched_text=full_matched_text,
+                            confidence=0.90,
+                            full_matched_text=full_match,  # Full text for complete redaction
                         )
                         violations.append(violation)
-
-                elif rule.rule_type == "custom_regex":
-                    try:
-                        pattern = re.compile(
-                            rule.pattern,
-                            re.IGNORECASE | re.DOTALL,
-                        )
-                        matches = pattern.finditer(text)
-                        for match in matches:
-                            full_match = match.group(0)
-                            matched_text = full_match[:100]  # Truncated for audit logging
-                            violation = FilterViolation(
-                                rule_name=rule.name,
-                                rule_type="custom_regex",
-                                matched_text=matched_text,
-                                action=rule.action,
-                                confidence=0.90,
-                                full_matched_text=full_match,  # Full text for complete redaction
-                            )
-                            violations.append(violation)
-                    except re.error as e:
-                        logger.warning(
-                            f"Invalid regex in rule {rule.name}: {e}"
-                        )
-
-        except Exception as e:
-            logger.error(f"Failed to load custom rules for org {org_id}: {e}")
-            # Continue with only built-in patterns if rule load fails
+                except re.error as e:
+                    logger.warning(
+                        f"Invalid regex in rule {rule.name}: {e}"
+                    )
 
         return violations
 
@@ -589,56 +679,66 @@ class ContentFilter:
         Returns:
             Tuple of (should_block, explanation)
         """
+        is_shieldgemma = "shieldgemma" in self.auditor_model.lower()
+        # §8.3 Granite Guardian: IBM's Apache-2.0 guard model family
+        # (granite3-guardian:2b, granite4.1-guardian) -- selectable
+        # alternative to ShieldGemma via the resolved policy's tier4_model.
+        is_granite_guardian = "guardian" in self.auditor_model.lower()
+
+        # Message construction is pure local logic (string/list building,
+        # no I/O). A failure here is a programming defect -- a bad
+        # message-builder call, an unexpected violations shape -- not
+        # "Ollama is unreachable," and is deliberately left OUTSIDE the
+        # try/except below so it propagates to `_filter()`'s call site,
+        # which fails closed on this class of error rather than treating it
+        # identically to an auditor timeout.
+        if is_shieldgemma:
+            # ShieldGemma: single user-role message with policy + <start_of_turn> delimiters
+            messages = self._build_shieldgemma_messages(text, violations, org_id)
+        elif is_granite_guardian:
+            messages = self._build_granite_guardian_messages(text, violations, org_id)
+        else:
+            # Standard chat model: system prompt + NER-enriched user message
+            system_prompt = self._load_system_prompt(org_id)
+            ner_violations = [v for v in violations if v.rule_type == "ner_entity"]
+            pattern_violations = [v for v in violations if v.rule_type != "ner_entity"]
+
+            pattern_summary = (
+                "\n".join(
+                    f"- {v.rule_name}: '{v.matched_text}' (confidence: {v.confidence:.2f})"
+                    for v in pattern_violations[:5]
+                )
+                if pattern_violations
+                else "None"
+            )
+
+            ner_summary = (
+                "\n".join(
+                    f"- NER {v.rule_name.replace('ner:', '')}: '{v.matched_text}' "
+                    f"(score: {v.confidence:.2f})"
+                    for v in ner_violations[:8]
+                )
+                if ner_violations
+                else "None"
+            )
+
+            user_message = (
+                f"Regex/pattern violations:\n{pattern_summary}\n\n"
+                f"NER-detected entities:\n{ner_summary}\n\n"
+                "<CONTENT_TO_AUDIT>\n"
+                f"{text[:1000]}\n"
+                "</CONTENT_TO_AUDIT>"
+            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+
+        # Everything past this point is genuine network/IO. Operational
+        # failures here (unreachable host, timeout, malformed upstream
+        # response) are the deliberate, documented fail-open policy for
+        # this method -- distinct from the message-building defects above.
         try:
-            is_shieldgemma = "shieldgemma" in self.auditor_model.lower()
-            # §8.3 Granite Guardian: IBM's Apache-2.0 guard model family
-            # (granite3-guardian:2b, granite4.1-guardian) -- selectable
-            # alternative to ShieldGemma via the resolved policy's tier4_model.
-            is_granite_guardian = "guardian" in self.auditor_model.lower()
-
-            if is_shieldgemma:
-                # ShieldGemma: single user-role message with policy + <start_of_turn> delimiters
-                messages = self._build_shieldgemma_messages(text, violations, org_id)
-            elif is_granite_guardian:
-                messages = self._build_granite_guardian_messages(text, violations, org_id)
-            else:
-                # Standard chat model: system prompt + NER-enriched user message
-                system_prompt = self._load_system_prompt(org_id)
-                ner_violations = [v for v in violations if v.rule_type == "ner_entity"]
-                pattern_violations = [v for v in violations if v.rule_type != "ner_entity"]
-
-                pattern_summary = (
-                    "\n".join(
-                        f"- {v.rule_name}: '{v.matched_text}' (confidence: {v.confidence:.2f})"
-                        for v in pattern_violations[:5]
-                    )
-                    if pattern_violations
-                    else "None"
-                )
-
-                ner_summary = (
-                    "\n".join(
-                        f"- NER {v.rule_name.replace('ner:', '')}: '{v.matched_text}' "
-                        f"(score: {v.confidence:.2f})"
-                        for v in ner_violations[:8]
-                    )
-                    if ner_violations
-                    else "None"
-                )
-
-                user_message = (
-                    f"Regex/pattern violations:\n{pattern_summary}\n\n"
-                    f"NER-detected entities:\n{ner_summary}\n\n"
-                    "<CONTENT_TO_AUDIT>\n"
-                    f"{text[:1000]}\n"
-                    "</CONTENT_TO_AUDIT>"
-                )
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ]
-
-            # Make async request to Ollama /api/chat endpoint
             async with aiohttp.ClientSession() as session:
                 try:
                     async with session.post(
@@ -1159,40 +1259,48 @@ class ContentFilter:
         violations: list[FilterViolation] = []
         disabled = await self._load_disabled_ner_entities(org_id)
 
+        # §3.5: tier-3 NER runs in the shared ProcessPoolExecutor, never the
+        # event loop or the default thread pool -- ner_analyze is a
+        # module-level, picklable function (see ner_filter.py) so it can
+        # cross the process boundary. A failure crossing that boundary
+        # (crashed worker, unpicklable payload, pool exhaustion) is a
+        # genuine operational failure -- fail open at this tier only: skip
+        # NER, the built-in and custom-rule tiers still apply.
         try:
             loop = asyncio.get_event_loop()
-            # §3.5: tier-3 NER runs in the shared ProcessPoolExecutor, never
-            # the event loop or the default thread pool -- ner_analyze is a
-            # module-level, picklable function (see ner_filter.py) so it can
-            # cross the process boundary.
             entity_dicts = await loop.run_in_executor(_get_ner_pool(), ner_analyze, text)
-
-            for entity in entity_dicts:
-                entity_type = entity["entity_type"]
-                if entity_type in disabled:
-                    continue
-
-                config = NER_ENTITY_CONFIG.get(entity_type, ("log", 0.60))
-                action, weight = config
-                confidence = min(float(entity["score"]) * weight, 1.0)
-                if confidence < _MIN_NER_CONFIDENCE:
-                    # Too weak to act on (see _MIN_NER_CONFIDENCE) -- drop
-                    # rather than log, so it can't silently accumulate into
-                    # a composite-confidence auditor trigger either.
-                    continue
-
-                violation = FilterViolation(
-                    rule_name=f"ner:{entity_type}",
-                    rule_type="ner_entity",
-                    matched_text=entity["text"][:100],  # Truncated for audit logging
-                    action=action,
-                    confidence=confidence,
-                    full_matched_text=entity["text"],  # Full text for complete redaction
-                )
-                violations.append(violation)
-
         except Exception as e:
-            logger.warning(f"NER pattern run failed: {e}")
+            logger.warning(f"NER pattern run failed (target={target}): {e}")
+            return violations
+
+        # Processing the returned entities is local, in-process logic -- a
+        # bug here (e.g. a schema-drifted key) is a programming defect, not
+        # "the process pool is unavailable," and must propagate to
+        # `_filter()`'s classification rather than being silently treated
+        # the same as a worker crash.
+        for entity in entity_dicts:
+            entity_type = entity["entity_type"]
+            if entity_type in disabled:
+                continue
+
+            config = NER_ENTITY_CONFIG.get(entity_type, ("log", 0.60))
+            action, weight = config
+            confidence = min(float(entity["score"]) * weight, 1.0)
+            if confidence < _MIN_NER_CONFIDENCE:
+                # Too weak to act on (see _MIN_NER_CONFIDENCE) -- drop
+                # rather than log, so it can't silently accumulate into
+                # a composite-confidence auditor trigger either.
+                continue
+
+            violation = FilterViolation(
+                rule_name=f"ner:{entity_type}",
+                rule_type="ner_entity",
+                matched_text=entity["text"][:100],  # Truncated for audit logging
+                action=action,
+                confidence=confidence,
+                full_matched_text=entity["text"],  # Full text for complete redaction
+            )
+            violations.append(violation)
 
         return violations
 
@@ -1276,6 +1384,17 @@ class ContentFilter:
         """
         Log filter event to database and application logger.
 
+        Called after `result` is already finalized -- this method's own
+        failure must never change or re-raise into the filtering decision
+        itself (unlike `_filter()`'s own split, there is no fail-open/
+        fail-closed choice to make here, only whether the audit trail gets
+        written). Its exceptions are therefore always swallowed locally,
+        but classified and logged distinctly so a broken audit-insert path
+        can't silently rot for the same reason the top-level filter split
+        exists: an unnoticed defect here means the compliance audit trail
+        silently stops being written, not that any request behaves
+        incorrectly.
+
         Args:
             phase: "input" or "output"
             result: FilterResult from filtering operation
@@ -1283,8 +1402,23 @@ class ContentFilter:
             org_id: Organization ID
             ip: IP address
         """
+        # Emitted unconditionally, before the DB write, so a broken/down
+        # audit-log insert never also silences the only local trace of a
+        # BLOCK/REDACT event -- these two signals are independent.
+        if result.action == "block":
+            logger.warning(
+                f"Content filter BLOCK (phase={phase}, "
+                f"user={user_id}, org={org_id}, ip={ip}, "
+                f"violations={len(result.violations)})"
+            )
+        elif result.action == "redact":
+            logger.info(
+                f"Content filter REDACT (phase={phase}, "
+                f"user={user_id}, org={org_id}, "
+                f"violations={len(result.violations)})"
+            )
+
         try:
-            # Log to database
             violations_json = json.dumps(
                 [
                     {
@@ -1310,20 +1444,18 @@ class ContentFilter:
                 auditor_used=result.auditor_used,
                 timestamp=time.time(),
             )
-
-            # Log to application logger
-            if result.action == "block":
-                logger.warning(
-                    f"Content filter BLOCK (phase={phase}, "
-                    f"user={user_id}, org={org_id}, ip={ip}, "
-                    f"violations={len(result.violations)})"
-                )
-            elif result.action == "redact":
-                logger.info(
-                    f"Content filter REDACT (phase={phase}, "
-                    f"user={user_id}, org={org_id}, "
-                    f"violations={len(result.violations)})"
-                )
-
+        except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
+            # A programming defect (schema-drifted column, bad kwarg) --
+            # NOT "the DB is unreachable." Logged loudly and distinctly so
+            # this class of bug can't be mistaken for an ordinary DB outage
+            # in logs/dashboards.
+            logger.error(
+                "Content filter audit-log insert is broken (phase=%s): %s: %s -- "
+                "this is a code defect; the audit trail is silently not being written.",
+                phase,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )
         except Exception as e:
             logger.error(f"Failed to log filter event: {e}")
