@@ -161,7 +161,7 @@ wrangler pages deploy out --project-name waddleai-website
 # Analytics: Full tracking enabled
 ```
 
-#### Preview Environment  
+#### Preview Environment
 ```bash
 # Environment: preview
 # Domain: <commit-hash>.waddleai-website.pages.dev

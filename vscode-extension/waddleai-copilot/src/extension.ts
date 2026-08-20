@@ -11,17 +11,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Initialize authentication provider
     authProvider = new AuthenticationProvider(context);
-    
+
     // Initialize WaddleAI client
     waddleAIClient = new WaddleAIClient(context);
 
     // Register WaddleAI chat participant
     const participant = new WaddleAIChatParticipant(waddleAIClient, context);
     const chatParticipant = vscode.chat.createChatParticipant('waddleai', participant.handleRequest.bind(participant));
-    
+
     chatParticipant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.svg');
     chatParticipant.requestHandler = participant.handleRequest.bind(participant);
-    
+
     context.subscriptions.push(chatParticipant);
 
     // Register commands
@@ -69,12 +69,12 @@ function registerCommands(context: vscode.ExtensionContext) {
         if (apiKey) {
             const config = vscode.workspace.getConfiguration('waddleai');
             await config.update('apiKey', apiKey, vscode.ConfigurationTarget.Global);
-            
+
             // Store securely in secret storage
             await context.secrets.store('waddleai.apiKey', apiKey);
-            
+
             vscode.window.showInformationMessage('WaddleAI API key saved successfully!');
-            
+
             // Test connection
             vscode.commands.executeCommand('waddleai.testConnection');
         }
@@ -86,7 +86,7 @@ function registerCommands(context: vscode.ExtensionContext) {
         try {
             const models = await waddleAIClient.getAvailableModels();
             const modelNames = models.map(m => m.id);
-            
+
             const selected = await vscode.window.showQuickPick(modelNames, {
                 placeHolder: 'Select a model to use with WaddleAI',
                 title: 'WaddleAI Model Selection'
@@ -123,7 +123,7 @@ function registerCommands(context: vscode.ExtensionContext) {
                 return false;
             }
         });
-        
+
         return progress;
     });
 
@@ -131,7 +131,7 @@ function registerCommands(context: vscode.ExtensionContext) {
     const showUsageCommand = vscode.commands.registerCommand('waddleai.showUsage', async () => {
         try {
             const usage = await waddleAIClient.getUsage();
-            
+
             const panel = vscode.window.createWebviewPanel(
                 'waddleaiUsage',
                 'WaddleAI Token Usage',
@@ -174,22 +174,22 @@ function registerCommands(context: vscode.ExtensionContext) {
 
 function showWelcomeMessage(context: vscode.ExtensionContext) {
     const message = `Welcome to WaddleAI for Copilot Chat! 🎉
-    
+
     WaddleAI is now available as a language model provider in VS Code.
     You can use it in Copilot Chat by selecting "WaddleAI" from the model dropdown.
-    
+
     To get started:
     1. Set your API key: Command Palette > "WaddleAI: Set API Key"
     2. Select a model: Command Palette > "WaddleAI: Select Model"
     3. Open Copilot Chat and select WaddleAI as your model provider
     `;
-    
+
     vscode.window.showInformationMessage(message, 'Get Started', 'Later').then(selection => {
         if (selection === 'Get Started') {
             vscode.commands.executeCommand('waddleai.setApiKey');
         }
     });
-    
+
     context.globalState.update('waddleai.welcomeShown', true);
 }
 
@@ -293,7 +293,7 @@ function getUsageWebviewContent(usage: WaddleAIUsageSummary): string {
     </head>
     <body>
         <h1>🚀 WaddleAI Token Usage</h1>
-        
+
         <div class="stat-card">
             <div class="stat-title">Total WaddleAI Tokens Used (last 30 days)</div>
             <div class="stat-value">${usage.total_waddleai_tokens.toLocaleString()}</div>

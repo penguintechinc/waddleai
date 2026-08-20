@@ -338,4 +338,3 @@ See [LICENSE.md](LICENSE.md) for the full terms.
 ---
 
 **Made by [Penguin Tech Inc](https://www.penguintech.io) for developers who value control, privacy, and open-source principles.**
-
