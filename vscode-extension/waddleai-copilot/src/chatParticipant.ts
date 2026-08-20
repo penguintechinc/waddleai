@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { WaddleAIClient } from './waddleaiClient';
+import { ChatMessage, WaddleAIChatCompletionResponse, WaddleAIClient } from './waddleaiClient';
 
 /**
  * WaddleAI Chat Participant for VS Code Chat
@@ -33,29 +33,27 @@ export class WaddleAIChatParticipant {
                 return;
             }
 
-            // Send request to WaddleAI
-            const chatStream = await this.client.streamChatCompletion(
-                messages,
-                modelId,
-                {
-                    temperature: config.get<number>('temperature') || 0.7,
-                    max_tokens: config.get<number>('maxTokens') || 2048,
-                    enable_memory: config.get<boolean>('enableMemory') || true,
-                    enable_security: config.get<boolean>('enableSecurityScanning') || true
-                }
-            );
+            // The proxy always returns one JSON envelope for
+            // `/v1/chat/completions` (no `text/event-stream` response path
+            // today) -- request the whole completion instead of parsing a
+            // stream the server never sends.
+            const response = await this.client.chatCompletion(messages, modelId, {
+                temperature: config.get<number>('temperature') || 0.7,
+                max_tokens: config.get<number>('maxTokens') || 2048,
+                enable_memory: config.get<boolean>('enableMemory') || true,
+                enable_security: config.get<boolean>('enableSecurityScanning') || true
+            });
 
-            // Stream the response
-            for await (const chunk of chatStream) {
-                if (token.isCancellationRequested) {
-                    return;
-                }
-
-                const content = chunk.choices?.[0]?.delta?.content;
-                if (content) {
-                    stream.markdown(content);
-                }
+            if (token.isCancellationRequested) {
+                return;
             }
+
+            const content = response.choices?.[0]?.message?.content;
+            if (content) {
+                stream.markdown(content);
+            }
+
+            this.renderUsageFooter(response, stream);
 
             // Add reference to WaddleAI
             stream.button({
@@ -69,9 +67,9 @@ export class WaddleAIChatParticipant {
             if (error instanceof vscode.CancellationError) {
                 return;
             }
-            
+
             let errorMessage = 'WaddleAI request failed';
-            
+
             if (error.response?.status === 401) {
                 errorMessage = 'Authentication failed. Please check your API key.';
                 stream.button({
@@ -86,16 +84,53 @@ export class WaddleAIChatParticipant {
             } else if (error.message) {
                 errorMessage = `WaddleAI error: ${error.message}`;
             }
-            
+
             stream.markdown(`❌ ${errorMessage}`);
+        }
+    }
+
+    /**
+     * Surface the additive `usage.waddleai` cache/routing metadata (spec
+     * §6.4/§7.6) as a compact footer -- server-computed accounting, not
+     * model output, so it's rendered as plain fenced text rather than
+     * trusted as markdown: JSON.stringify'd values are wrapped in inline
+     * code spans so a routing "cause"/"reason" string can never inject
+     * markdown formatting into the chat response.
+     */
+    private renderUsageFooter(
+        response: WaddleAIChatCompletionResponse,
+        stream: vscode.ChatResponseStream
+    ): void {
+        const meta = response.usage?.waddleai;
+        if (!meta) {
+            return;
+        }
+
+        const parts: string[] = [];
+        if (meta.cache) {
+            const saved = meta.tokens_saved ? ` (saved ${meta.tokens_saved} tokens)` : '';
+            parts.push(`cache: \`${meta.cache}\`${saved}`);
+        }
+        if (meta.routed_from) {
+            parts.push(`routed: \`${JSON.stringify(meta.routed_from)}\``);
+        }
+        if (meta.summarized) {
+            parts.push('conversation summarized');
+        }
+        if (meta.injected_tokens) {
+            parts.push(`knowledge context: ${meta.injected_tokens} tokens`);
+        }
+
+        if (parts.length > 0) {
+            stream.markdown(`\n\n---\n*${parts.join(' · ')}*`);
         }
     }
 
     /**
      * Build messages array from chat request and context
      */
-    private buildMessages(request: vscode.ChatRequest, context: vscode.ChatContext): any[] {
-        const messages: any[] = [];
+    private buildMessages(request: vscode.ChatRequest, context: vscode.ChatContext): ChatMessage[] {
+        const messages: ChatMessage[] = [];
 
         // Add system message with context
         const systemContext = this.buildSystemContext();
@@ -109,7 +144,7 @@ export class WaddleAIChatParticipant {
         // Add conversation history
         if (context.history.length > 0) {
             const recentHistory = context.history.slice(-5); // Last 5 exchanges
-            
+
             for (const turn of recentHistory) {
                 if (turn instanceof vscode.ChatRequestTurn) {
                     messages.push({
