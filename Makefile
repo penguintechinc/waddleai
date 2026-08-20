@@ -1,6 +1,26 @@
-.PHONY: dev setup install-hooks verify-hooks test test-unit test-integration test-e2e test-functional test-security \
+.PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-e2e test-functional test-security \
         test-contract smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
+
+# Every python invocation goes through the repo venv when it exists, and only
+# falls back to the interpreter on PATH when it does not.
+#
+# Bare `python3` resolved to user-global site-packages, where penguin-libs is
+# installed EDITABLE against local checkouts -- one of them a feature worktree.
+# So "penguin-dal 0.4.1" locally and "penguin-dal 0.4.1" in CI were different
+# code, and tests silently exercised unpublished work. The host interpreter is
+# also 3.12 while CI and backend-python.md both require 3.13.
+# Run `make venv` once; every target below then matches CI.
+VENV := .venv
+PY := $(shell [ -x $(VENV)/bin/python ] && echo $(VENV)/bin/python || echo python3)
+
+venv: ## Create .venv (3.13) from the hash-pinned lockfiles -- published deps only
+	@uv venv -p 3.13 $(VENV)
+	@uv pip install --python $(VENV)/bin/python -r requirements.txt
+	@uv pip install --python $(VENV)/bin/python -r services/management/requirements.txt
+	@uv pip install --python $(VENV)/bin/python -r proxy/requirements.txt
+	@uv pip install --python $(VENV)/bin/python pytest pytest-asyncio pytest-cov
+	@echo "venv ready: $(VENV) ($$($(VENV)/bin/python -V))"
 
 setup: install-hooks
 	@echo "Setup complete"
@@ -25,13 +45,13 @@ docker-push:
 lint:
 	@echo "=== Linting ==="
 	@if command -v ruff >/dev/null 2>&1; then echo "-- ruff check --"; ruff check . || true; echo "-- ruff format --"; ruff format --check . || true; fi
-	@if command -v mypy >/dev/null 2>&1; then echo "-- mypy --"; python3 -m mypy . --ignore-missing-imports || true; fi
+	@if command -v mypy >/dev/null 2>&1; then echo "-- mypy --"; $(PY) -m mypy . --ignore-missing-imports || true; fi
 	@if command -v golangci-lint >/dev/null 2>&1; then echo "-- golangci-lint --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && golangci-lint run || true'; fi
 	@if command -v hadolint >/dev/null 2>&1; then echo "-- hadolint --"; find . -name "Dockerfile*" -not -path "*/.git/*" | xargs hadolint || true; fi
 	@if command -v shellcheck >/dev/null 2>&1; then echo "-- shellcheck --"; find . -name "*.sh" -not -path "*/.git/*" | xargs shellcheck || true; fi
 
 generate-openapi: ## Regenerate openapi/v1.yaml from the quart-schema annotations
-	@python3 scripts/generate_openapi_spec.py
+	@$(PY) scripts/generate_openapi_spec.py
 
 openapi-lint: ## Lint openapi/v1.yaml with spectral -- gates on error, not just warn (no || true)
 	@command -v spectral >/dev/null 2>&1 || npm install -g @stoplight/spectral-cli@6.16.3
@@ -42,7 +62,7 @@ test:
 
 test-unit:
 	@echo "Running unit tests..."
-	python3 -m pytest tests/unit -v
+	$(PY) -m pytest tests/unit -v
 
 # --no-cov: a tests/integration-only run only exercises a fraction of
 # shared/+services/management/app, so pytest.ini's default --cov addopts
@@ -51,7 +71,7 @@ test-unit:
 # test-contract's existing convention below.
 test-integration:
 	@echo "Running integration tests..."
-	python3 -m pytest tests/integration -v --no-cov
+	$(PY) -m pytest tests/integration -v --no-cov
 
 # tests/e2e/ currently has no pytest tests (only the pre-existing Playwright
 # JS suite + scaffolding; the real pytest suite is on feature/e2e-suite, not
@@ -61,14 +81,14 @@ test-integration:
 # merges this starts gating for real with no further Makefile change needed.
 test-e2e:
 	@echo "Running e2e tests..."
-	python3 -m pytest tests/e2e -v --no-cov
+	$(PY) -m pytest tests/e2e -v --no-cov
 
 test-functional:
 	@echo "No functional tests defined"
 
 test-contract:
 	@echo "Running contract snapshot tests..."
-	python3 -m pytest tests/contract -v --no-cov
+	$(PY) -m pytest tests/contract -v --no-cov
 
 test-security:
 	@echo "=== Security Scans ==="
