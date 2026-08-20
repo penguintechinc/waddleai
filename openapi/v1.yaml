@@ -3039,8 +3039,8 @@ paths:
       summary: List all credentials for a provider. API keys are never returned in
         plaintext.
       tags:
-      - Providers
       - Credentials
+      - Providers
     post:
       description: ''
       operationId: post_create_provider_credential
@@ -3119,8 +3119,8 @@ paths:
       - bearerAuth: []
       summary: Add a credential to a provider's pool.
       tags:
-      - Providers
       - Credentials
+      - Providers
   /api/v1/providers/{provider_id}/credentials/{cred_id}:
     delete:
       description: ''
@@ -3161,8 +3161,8 @@ paths:
       summary: Remove a credential from the pool. Requires at least one other credential
         to remain.
       tags:
-      - Providers
       - Credentials
+      - Providers
     patch:
       description: ''
       operationId: patch_update_provider_credential
@@ -3247,8 +3247,8 @@ paths:
       summary: Update label, weight, enabled, org_id, account_meta, or rotate the
         api_key.
       tags:
-      - Providers
       - Credentials
+      - Providers
   /api/v1/providers/{provider_id}/models:
     get:
       description: ''

@@ -77,6 +77,29 @@ def _fill_undocumented_responses(schema: dict) -> tuple[dict, int]:
     return schema, filled
 
 
+def _sort_unordered_collections(schema: dict) -> None:
+    """Sort every set-derived list in `schema` so output is byte-reproducible.
+
+    quart-schema accumulates an operation's tags in a set (see the
+    normalization note at the call site). Sets have no order, and Python
+    randomizes their iteration per process via PYTHONHASHSEED, so a route
+    carrying two tags -- e.g. @tag(["Providers"]) plus @tag(["Credentials"])
+    -- serialized as ["Providers", "Credentials"] on one run and the reverse
+    on the next. The committed spec was therefore drifting against itself:
+    CI's regenerate-and-diff gate would fail at random, and no amount of
+    re-committing the file could fix it. Sorting makes the artifact a
+    function of the annotations alone.
+    """
+    for path_item in (schema.get("paths") or {}).values():
+        if not isinstance(path_item, dict):
+            continue
+        for operation in path_item.values():
+            if isinstance(operation, dict) and isinstance(operation.get("tags"), list):
+                operation["tags"].sort()
+    if isinstance(schema.get("tags"), list):
+        schema["tags"].sort(key=lambda t: t.get("name", "") if isinstance(t, dict) else str(t))
+
+
 def main() -> int:
     """Build the app, render its OpenAPI schema, and write it as YAML."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -98,6 +121,7 @@ def main() -> int:
     # plain dict/list so the YAML dumper never hits an unregistered type.
     schema = json.loads(app.json.dumps(schema))
     schema, undocumented_count = _fill_undocumented_responses(schema)
+    _sort_unordered_collections(schema)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as fh:
