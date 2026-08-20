@@ -273,11 +273,14 @@ class ProxyServer:
         # get_db() (shared.database.models) is the penguin-dal connection that
         # RBACManager, TokenManager, PromptSecurityScanner, ContentFilter, and
         # LLMConnectionManager are all actually written against (synchronous
-        # `self.db(query).select()`/`.update_record()` calls -- see the module
-        # docstring in shared/database/models.py). penguin-dal exposes DAL/Field
-        # directly, not a `get_dal` factory. `migrate=True` only in contract-test mode, so the
-        # harness's empty per-session sqlite file gets real tables; production
-        # keeps migrate=False (Alembic/management remains schema authority).
+        # `self.db(query).select()` / `self.db(condition).update(**kwargs)`
+        # calls -- see the module docstring in shared/database/models.py.
+        # NOTE: penguin_dal's Row has no `.update_record()` -- that's classic
+        # PyDAL API; writes always go through `db(condition).update(...)`).
+        # penguin-dal exposes DAL/Field directly, not a `get_dal` factory.
+        # `migrate=True` only in contract-test mode, so the harness's empty
+        # per-session sqlite file gets real tables; production keeps
+        # migrate=False (Alembic/management remains schema authority).
         database_url = os.getenv(
             "DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai"
         )
@@ -650,7 +653,24 @@ class ProxyServer:
             valkey = None
 
         # Token budget stage - requires Redis/Valkey client
-        # In test mode (_TEST_MODE), use a mock limiter
+        # In test mode (_TEST_MODE), use a mock limiter regardless of
+        # whether a real Valkey client is available -- token-budget
+        # accounting isn't what test mode is proving.
+        #
+        # Note: this deliberately does NOT null out the shared `valkey`
+        # variable when test mode is on. CacheStage/RoutingEngine (below)
+        # read the same `valkey` and need the real client constructed above
+        # when a caller has pointed REDIS_URL at a live backend and turned
+        # on waddleai.response_cache/waddleai.smart_routing specifically to
+        # test them (see tests/e2e/test_response_cache_e2e.py) -- previously
+        # this branch reset `valkey = None` unconditionally whenever
+        # _TEST_MODE was true, which made the response-cache flag silently
+        # non-functional (every request 500'd on `self.valkey.get(...)`
+        # against a None client) under WADDLEAI_STUB_UPSTREAM=1 even with a
+        # live redis, exactly backwards from what test mode is for. Contract
+        # tests (tests/contract/conftest.py) are unaffected: they never set
+        # REDIS_URL, so `valkey` construction above already failed and is
+        # None regardless of this branch.
         if _TEST_MODE or valkey is None:
             # Simple mock token limiter for test mode / Valkey unavailable
             class MockTokenLimiter:
@@ -663,10 +683,6 @@ class ProxyServer:
                     pass
 
             token_limiter = MockTokenLimiter()
-            # No Valkey in test mode; RoutingEngine/RoutingStage degrade gracefully
-            # (see shared.routing resolvers) when valkey is None -- reads hit the
-            # DB directly with no caching, which is fine for the contract-test tier.
-            valkey = None
         else:
             # `valkey` was already constructed above (shared by TokenBudgetStage
             # and CacheStage); TokenLimiter never issues a call on a client that

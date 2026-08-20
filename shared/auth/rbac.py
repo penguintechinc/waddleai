@@ -198,8 +198,18 @@ class RBACManager:
 
         for key_record in api_keys:
             if bcrypt.verify(api_key, key_record.key_hash):
-                # Update last used
-                key_record.update_record(last_used=datetime.utcnow())
+                # Update last used.
+                # regression: bug found writing tests/e2e/ -- penguin_dal's
+                # Row (penguin_dal/query.py) has no update_record() method
+                # (that's classic PyDAL API); the uncaught AttributeError
+                # this raised propagated through OIDCAuthMiddleware's api_key
+                # verification (penguin_aaa), which turns *any* exception
+                # into a generic 401 "API key verification failed" -- so
+                # every wa- API-key auth (x-api-key header, raw key, or
+                # Bearer-wrapped key) failed after a *correct* bcrypt match.
+                self.db(self.db.api_keys.id == key_record.id).update(
+                    last_used=datetime.utcnow()
+                )
 
                 # Get user
                 user = self.db(self.db.users.id == key_record.user_id).select().first()

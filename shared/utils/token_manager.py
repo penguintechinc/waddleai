@@ -229,7 +229,15 @@ class TokenManager:
                 else:
                     existing_breakdown[model_key] = tokens
 
-            existing.update_record(
+            # regression: bug found writing tests/e2e/test_response_cache_e2e.py --
+            # penguin_dal's Row (penguin_dal/query.py) has no update_record()
+            # method (that's classic PyDAL API); the correct penguin_dal
+            # update is db(condition).update(**kwargs). This previously
+            # raised AttributeError on the *second* request in the same day
+            # for the same api_key, caught by the route handler's broad
+            # except and reported as a 500 -- token usage silently stopped
+            # accumulating past the first request/key/day in production.
+            self.db(self.db.token_usage.id == existing.id).update(
                 waddleai_tokens=new_waddleai,
                 tokens_input_total=new_input,
                 tokens_output_total=new_output,
@@ -283,7 +291,9 @@ class TokenManager:
                 else:
                     llm_tokens[model_key] = tokens
 
-            daily_cache.update_record(
+            # regression: see the identical fix above -- update_record() is
+            # not a penguin_dal Row method.
+            self.db(self.db.usage_cache.id == daily_cache.id).update(
                 waddleai_tokens_used=new_waddleai,
                 llm_tokens_used=json.dumps(llm_tokens),
                 requests_made=daily_cache.requests_made + 1,
@@ -323,7 +333,9 @@ class TokenManager:
                 else:
                     llm_tokens[model_key] = tokens
 
-            monthly_cache.update_record(
+            # regression: see the identical fix above -- update_record() is
+            # not a penguin_dal Row method.
+            self.db(self.db.usage_cache.id == monthly_cache.id).update(
                 waddleai_tokens_used=new_waddleai,
                 llm_tokens_used=json.dumps(llm_tokens),
                 requests_made=monthly_cache.requests_made + 1,

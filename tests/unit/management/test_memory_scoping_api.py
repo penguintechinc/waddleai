@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.unit.management.conftest import make_select_result
+from tests.unit.management.conftest import make_dal_row, make_select_result
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +73,36 @@ class TestMemoryConfigDefaults:
         app_mock_db.conversation_memory_configs.insert.assert_called_once()
         insert_kwargs = app_mock_db.conversation_memory_configs.insert.call_args.kwargs
         assert insert_kwargs["similarity_threshold"] == 0.8
+
+    async def test_post_updates_existing_config_via_db_update(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """Verify the update path uses db(id==...).update(), not Row.update_record().
+
+        Real penguin_dal Rows have no update_record() (regression: see
+        shared/auth/rbac.py). `existing` is built with make_dal_row (spec'd,
+        no update_record), so a regression back to the old call raises
+        AttributeError here exactly like it would in production, instead of
+        silently succeeding against an auto-attribute MagicMock.
+        """
+        existing = make_dal_row(
+            id=7, organization_id=1, enabled=True, similarity_threshold=0.7
+        )
+        app_mock_db.return_value.select.return_value = make_select_result([existing])
+
+        resp = await client.post(
+            "/api/v1/memory-scoping",
+            headers=auth_headers,
+            json={"organization_id": 1, "relevance_cutoff": 0.85, "enabled": False},
+        )
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["status"] == "updated"
+        app_mock_db.return_value.update.assert_called_once()
+        call_kwargs = app_mock_db.return_value.update.call_args.kwargs
+        assert call_kwargs["similarity_threshold"] == 0.85
+        assert call_kwargs["enabled"] is False
 
 
 class TestMemoryPromote:

@@ -1334,12 +1334,18 @@ class ContentFilter:
             else:
                 conditions.append(self.db.content_filter_rules.organization_id == None)  # noqa: E711 -- penguin-dal query expression, not a bool comparison
 
-            # Build query
-            query = self.db(conditions[0])
+            # Build query. regression: bug found writing tests/e2e/
+            # test_security_pii_e2e.py -- this previously chained conditions
+            # PyDAL-style (``db(q1)(q2)``), but penguin_dal's QuerySet
+            # (penguin_dal/query.py) has no __call__, so this raised
+            # "'QuerySet' object is not callable" on every call, caught by
+            # this function's own except-and-return-[] below -- org-scoped
+            # custom content-filter rules (including block rules) silently
+            # never applied, regardless of what was configured in the DB.
+            combined_condition = conditions[0]
             for condition in conditions[1:]:
-                query = query(condition)
-
-            rows = query.select()
+                combined_condition = combined_condition & condition
+            rows = self.db(combined_condition).select()
 
             # Convert rows to FilterRule dataclasses
             rules = [
@@ -1437,7 +1443,14 @@ class ContentFilter:
                 violations_json=violations_json,
                 text_sample=text_sample,
                 auditor_used=result.auditor_used,
-                timestamp=time.time(),
+                # regression: bug found writing tests/e2e/test_security_pii_e2e.py --
+                # this previously passed timestamp=time.time() (a float epoch), but
+                # the column is Field("timestamp", "datetime", ...) and penguin-dal
+                # (unlike the prior raw-sqlite3 path) rejects a non-datetime value,
+                # so every audit row insert silently failed (caught by this
+                # function's own try/except below) and no PII/injection filtering
+                # decision was ever actually logged. Omit the kwarg and let the
+                # field's own `default=datetime.utcnow` apply.
             )
         except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
             # A programming defect (schema-drifted column, bad kwarg) --

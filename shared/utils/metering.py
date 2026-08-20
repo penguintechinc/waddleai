@@ -108,90 +108,102 @@ class PenguinDALUsageWriter:
 
         Creates new row or updates existing row for the (vkey, date) pair.
         Marks row as estimated=True if usage was missing from provider.
+
+        Raises:
+            Any exception from the database layer -- deliberately not caught
+            here (see the ``UsageWriter`` protocol docstring above).
+            ``MeteringBuffer.flush()`` treats a raised exception as a failed
+            write and re-queues the aggregate for retry; a broad except in
+            this method previously swallowed that signal (see regression
+            note below), so a failed write was neither retried nor visible
+            as anything worse than a log line.
         """
-        try:
-            # Check if row exists (using approximate match on date and key)
-            # For simplicity, we'll upsert based on the day
-            existing_row = (
-                self.db(
-                    (self.db.token_usage.virtual_key_id == agg.virtual_key_id)
-                    & (self.db.token_usage.date == agg.minute_bucket.date())
-                )
-                .select()
-                .first()
+        # Check if row exists (using approximate match on date and key)
+        # For simplicity, we'll upsert based on the day
+        existing_row = (
+            self.db(
+                (self.db.token_usage.virtual_key_id == agg.virtual_key_id)
+                & (self.db.token_usage.date == agg.minute_bucket.date())
             )
+            .select()
+            .first()
+        )
 
-            estimated_flag = 1 if agg.has_estimated_usage else 0
+        estimated_flag = 1 if agg.has_estimated_usage else 0
 
-            if existing_row:
-                # Update existing row
-                new_input = existing_row.tokens_input_total + agg.total_input_tokens
-                new_output = existing_row.tokens_output_total + agg.total_output_tokens
-                new_requests = existing_row.request_count + agg.request_count
+        if existing_row:
+            # Update existing row
+            new_input = existing_row.tokens_input_total + agg.total_input_tokens
+            new_output = existing_row.tokens_output_total + agg.total_output_tokens
+            new_requests = existing_row.request_count + agg.request_count
 
-                # Merge LLM tokens breakdown (JSON)
-                existing_breakdown = json.loads(existing_row.llm_tokens or "{}")
-                model_key = f"{agg.provider}_{agg.model.replace('-', '_')}"
-                if model_key not in existing_breakdown:
-                    existing_breakdown[model_key] = {"input": 0, "output": 0}
-                existing_breakdown[model_key]["input"] += agg.total_input_tokens
-                existing_breakdown[model_key]["output"] += agg.total_output_tokens
+            # Merge LLM tokens breakdown (JSON)
+            existing_breakdown = json.loads(existing_row.llm_tokens or "{}")
+            model_key = f"{agg.provider}_{agg.model.replace('-', '_')}"
+            if model_key not in existing_breakdown:
+                existing_breakdown[model_key] = {"input": 0, "output": 0}
+            existing_breakdown[model_key]["input"] += agg.total_input_tokens
+            existing_breakdown[model_key]["output"] += agg.total_output_tokens
 
-                new_tokens_saved = (existing_row.tokens_saved or 0) + agg.total_tokens_saved
-                existing_row.update_record(
-                    tokens_input_total=new_input,
-                    tokens_output_total=new_output,
-                    llm_tokens=json.dumps(existing_breakdown),
-                    request_count=new_requests,
-                    last_updated=datetime.utcnow(),
-                    source=self.source,
-                    estimated=existing_row.estimated or estimated_flag,
-                    tokens_saved=new_tokens_saved,
-                    cache_status=agg.cache_status or existing_row.cache_status,
-                )
-                logger.debug(
-                    "Updated token_usage row for vkey=%s model=%s requests=%s",
-                    agg.virtual_key_id,
-                    agg.model,
-                    agg.request_count,
-                )
-            else:
-                # Create new row
-                model_key = f"{agg.provider}_{agg.model.replace('-', '_')}"
-                breakdown = {
-                    model_key: {"input": agg.total_input_tokens, "output": agg.total_output_tokens}
-                }
-
-                self.db.token_usage.insert(
-                    virtual_key_id=agg.virtual_key_id,
-                    user_id=None,  # Will be populated by management layer
-                    organization_id=None,  # Will be populated by management layer
-                    date=agg.minute_bucket.date(),
-                    waddleai_tokens=0,  # Calculated separately by cost system
-                    llm_tokens=json.dumps(breakdown),
-                    tokens_input_total=agg.total_input_tokens,
-                    tokens_output_total=agg.total_output_tokens,
-                    request_count=agg.request_count,
-                    cost_usd_total=0,  # Calculated separately by cost system
-                    source=self.source,
-                    estimated=estimated_flag,
-                    tokens_saved=agg.total_tokens_saved,
-                    cache_status=agg.cache_status,
-                )
-                logger.debug(
-                    "Inserted token_usage row for vkey=%s model=%s requests=%s",
-                    agg.virtual_key_id,
-                    agg.model,
-                    agg.request_count,
-                )
-
-        except Exception as e:
-            logger.error(
-                "Failed to write metering row for vkey=%s model=%s: %s",
+            new_tokens_saved = (existing_row.tokens_saved or 0) + agg.total_tokens_saved
+            # regression: penguin_dal's Row (penguin_dal/query.py) has no
+            # update_record() method (that's classic PyDAL API); the correct
+            # penguin_dal update is db(condition).update(**kwargs) -- see the
+            # identical fix in shared/auth/rbac.py and
+            # shared/utils/token_manager.py. This previously raised
+            # AttributeError on every *second* flush of the same
+            # (virtual_key_id, day) pair, which was caught by this method's
+            # own broad `except Exception` below and only logged -- so
+            # flush()'s retry queue never saw the failure either, and the
+            # aggregated tokens for that flush were dropped for good rather
+            # than retried or counted. Real-world effect: only the first
+            # metering flush of any given key/day ever landed; usage and
+            # billing figures were silently undercounted after that.
+            self.db(self.db.token_usage.id == existing_row.id).update(
+                tokens_input_total=new_input,
+                tokens_output_total=new_output,
+                llm_tokens=json.dumps(existing_breakdown),
+                request_count=new_requests,
+                last_updated=datetime.utcnow(),
+                source=self.source,
+                estimated=existing_row.estimated or estimated_flag,
+                tokens_saved=new_tokens_saved,
+                cache_status=agg.cache_status or existing_row.cache_status,
+            )
+            logger.debug(
+                "Updated token_usage row for vkey=%s model=%s requests=%s",
                 agg.virtual_key_id,
                 agg.model,
-                e,
-                exc_info=True,
+                agg.request_count,
+            )
+        else:
+            # Create new row
+            model_key = f"{agg.provider}_{agg.model.replace('-', '_')}"
+            breakdown = {
+                model_key: {"input": agg.total_input_tokens, "output": agg.total_output_tokens}
+            }
+
+            self.db.token_usage.insert(
+                virtual_key_id=agg.virtual_key_id,
+                user_id=None,  # Will be populated by management layer
+                organization_id=None,  # Will be populated by management layer
+                date=agg.minute_bucket.date(),
+                waddleai_tokens=0,  # Calculated separately by cost system
+                llm_tokens=json.dumps(breakdown),
+                tokens_input_total=agg.total_input_tokens,
+                tokens_output_total=agg.total_output_tokens,
+                request_count=agg.request_count,
+                cost_usd_total=0,  # Calculated separately by cost system
+                source=self.source,
+                estimated=estimated_flag,
+                tokens_saved=agg.total_tokens_saved,
+                cache_status=agg.cache_status,
+            )
+            logger.debug(
+                "Inserted token_usage row for vkey=%s model=%s requests=%s",
+                agg.virtual_key_id,
+                agg.model,
+                agg.request_count,
             )
 
 
