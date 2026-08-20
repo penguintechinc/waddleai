@@ -1649,9 +1649,9 @@ passlib==1.7.4 \
     --hash=sha256:aa6bca462b8d8bda89c70b382f0c298a20b5560af6cbfa2dce410c0a2fb669f1 \
     --hash=sha256:defd50f72b65c5402ab2c573830a6978e5f202ad0d984793c8dde2c4152ebe04
     # via -r requirements.in
-penguin-aaa==0.1.0 \
-    --hash=sha256:4d894db11879f8adab6cb30229e5525c7eaa2fca1efd665da337eb07fff74caf \
-    --hash=sha256:d410eb578cf206cf13cbaa20deeda29d1a6cd0412c8406bb65ad473adb46cce4
+penguin-aaa==0.2.1 \
+    --hash=sha256:6023ea056ea8ec6928bce043a0ab79e5c0656eff962a497a9b592fad9eebcdf0 \
+    --hash=sha256:ce7818e4b8a8a8939b3e3082ca5ac2478559c13d5e3b75b3d07f46051e3e1e76
     # via -r requirements.in
 penguin-dal==0.2.1 \
     --hash=sha256:52caa11e9eef65041bf996113e1ca7195ea4a078d780e11b3bb3fed4011f4a6e \

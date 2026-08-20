@@ -591,7 +591,7 @@ paths:
           description: 'Generic `{"message": str}` envelope used by several auth endpoints.'
       security:
       - bearerAuth: []
-      summary: Change user password
+      summary: Change user password.
       tags:
       - Auth
   /api/v1/auth/login:
@@ -645,7 +645,7 @@ paths:
                 title: LoginResponse
                 type: object
           description: Response body for a successful login.
-      summary: User login endpoint
+      summary: User login endpoint.
       tags:
       - Auth
   /api/v1/auth/logout:
@@ -671,7 +671,7 @@ paths:
           description: 'Generic `{"message": str}` envelope used by several auth endpoints.'
       security:
       - bearerAuth: []
-      summary: User logout endpoint
+      summary: User logout endpoint.
       tags:
       - Auth
   /api/v1/auth/me:
@@ -741,7 +741,7 @@ paths:
           description: Response body for GET /api/v1/auth/me.
       security:
       - bearerAuth: []
-      summary: Get current user info
+      summary: Get current user info.
       tags:
       - Auth
   /api/v1/auth/refresh:
@@ -774,7 +774,7 @@ paths:
           description: Response body for a successful token refresh.
       security:
       - bearerAuth: []
-      summary: Refresh JWT token
+      summary: Refresh JWT token.
       tags:
       - Auth
   /api/v1/auth/verify:
@@ -904,6 +904,253 @@ paths:
       responses:
         '200': *id001
       summary: Create or update embedding backend config.
+  /api/v1/fleet/backends:
+    get:
+      description: ''
+      operationId: get_list_fleet_backends
+      parameters: []
+      responses:
+        '200': *id001
+      summary: List this org's registered inference fleet backends.
+    post:
+      description: '
+
+        `vertex_ai`/`bedrock` additionally require the `hybrid_targets`
+
+        license entitlement (two-layer gate, spec §14.6) -- rejected with a
+
+        tier-named 403 even when `waddleai.fleet_v2` is on.'
+      operationId: post_create_fleet_backend
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Register a new inference fleet backend for this org.
+  /api/v1/fleet/backends/{backend_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_fleet_backend
+      parameters:
+      - in: path
+        name: backend_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Delete a registered fleet backend (deployment rows keep their FK, set
+        NULL).
+    get:
+      description: ''
+      operationId: get_get_fleet_backend
+      parameters:
+      - in: path
+        name: backend_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Fetch one registered fleet backend -- 403 across orgs, 404 if it never
+        existed.
+    put:
+      description: '
+
+        ``type`` is immutable after creation (changing it would silently
+
+        reinterpret ``config``/``credentials_ref`` for a different backend
+
+        class) -- delete and recreate to change type.'
+      operationId: put_update_fleet_backend
+      parameters:
+      - in: path
+        name: backend_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Update a registered fleet backend's mutable fields.
+  /api/v1/fleet/backends/{backend_id}/health:
+    get:
+      description: '
+
+        Constructed fresh via ``shared.fleet.registry.build_backend`` (the
+
+        single chokepoint every backend type shares) rather than a bespoke
+
+        per-type health check -- this route works unmodified for any future
+
+        backend type the registry supports.'
+      operationId: get_check_fleet_backend_health
+      parameters:
+      - in: path
+        name: backend_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Health-check a registered backend through the ``InferenceFleetBackend``
+        interface.
+  /api/v1/hooks/configs:
+    get:
+      description: ''
+      operationId: get_list_hook_configs
+      parameters: []
+      responses:
+        '200': *id001
+      summary: List hook_configs rows -- admin sees all; resource_manager sees global
+        + own org.
+    post:
+      description: '
+
+        resource_manager is force-scoped to their own org, always -- they
+
+        cannot set the deployment-wide (`global`) Tier-2/telemetry defaults.'
+      operationId: post_upsert_hook_config
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Create or update the one hook_configs row for a scope (upsert by scope_type/scope_ref).
+  /api/v1/hooks/denylist:
+    get:
+      description: '
+
+        See `shared.security.hooks_denylist.BUILTIN_DENYLIST_PATTERNS` for the
+
+        always-on floor every org gets regardless of what is (or isn''t) in this
+
+        table.'
+      operationId: get_list_hook_denylist_entries
+      parameters: []
+      responses:
+        '200': *id001
+      summary: List admin-added denylist entries -- the builtin seed list is not a
+        DB row.
+    post:
+      description: '
+
+        resource_manager is force-scoped to their own org; only `admin` may add
+
+        a `scope_type=''global''` (deployment-wide) entry.'
+      operationId: post_create_hook_denylist_entry
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Add a Tier-1 denylist entry. Additive only -- there is no update/replace
+        endpoint.
+  /api/v1/hooks/denylist/{entry_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_hook_denylist_entry
+      parameters:
+      - in: path
+        name: entry_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Delete an admin-added denylist entry. Never touches the builtin seed
+        list.
+  /api/v1/hooks/evaluate:
+    post:
+      description: '
+
+        Request/response shapes are fixed by the platform spec §18.2 -- do not
+
+        add/rename/wrap fields without updating the spec and every adapter.'
+      operationId: post_evaluate_hook
+      parameters: []
+      responses:
+        '200': *id001
+      summary: POST /api/v1/hooks/evaluate -- the fixed adapter contract (§18.2).
+  /api/v1/hooks/metrics:
+    get:
+      description: ''
+      operationId: get_get_hook_metrics
+      parameters: []
+      responses:
+        '200': *id001
+      summary: GET /api/v1/hooks/metrics -- rule hit-rates + (admin-only) platform
+        latency/decisions.
+  /api/v1/hooks/policy:
+    get:
+      description: '
+
+        Adapters enforce this list **offline** (§18.1) and fail closed if they
+
+        cannot reach WaddleAI -- this endpoint is what they periodically poll to
+
+        refresh their local copy. Intentionally flat/minimal: an adapter''s
+
+        enforcement loop just needs the pattern list.'
+      operationId: get_get_hook_policy
+      parameters: []
+      responses:
+        '200': *id001
+      summary: GET /api/v1/hooks/policy -- canonical Tier-1 denylist for adapters
+        to sync.
+  /api/v1/hooks/rules:
+    get:
+      description: ''
+      operationId: get_list_hook_rules
+      parameters: []
+      responses:
+        '200': *id001
+      summary: List hook_rules -- admin sees all; resource_manager sees global (read-only)
+        + own org.
+    post:
+      description: ''
+      operationId: post_create_hook_rule
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Create a hook_rule. resource_manager is force-scoped to their own org,
+        always.
+  /api/v1/hooks/rules/{rule_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_hook_rule
+      parameters:
+      - in: path
+        name: rule_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Delete a hook_rule -- scope-checked against the row's current scope.
+    put:
+      description: ''
+      operationId: put_update_hook_rule
+      parameters:
+      - in: path
+        name: rule_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Update a hook_rule -- scope-checked against the row's CURRENT scope,
+        not the request body.
+  /api/v1/hooks/telemetry:
+    post:
+      description: '
+
+        Persistence is scheduled as a background task (`current_app.
+
+        add_background_task`) rather than awaited inline, so the response never
+
+        waits on a DB round trip; persistence failures are logged, never
+
+        surfaced to the caller.'
+      operationId: post_hook_telemetry
+      parameters: []
+      responses:
+        '200': *id001
+      summary: POST /api/v1/hooks/telemetry -- fire-and-forget, must never block the
+        agent.
   /api/v1/integrations/mcp-endpoints:
     get:
       description: ''
@@ -1111,8 +1358,10 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for PUT /api/v1/integrations/mcp-endpoints/<id>.
-                Every field is a partial update.
+              description: 'Request body for PUT /api/v1/integrations/mcp-endpoints/<id>.
+
+
+                Every field is a partial update.'
               properties:
                 auth_config:
                   anyOf:
@@ -1298,7 +1547,7 @@ paths:
           description: Response body for GET /api/v1/keys.
       security:
       - bearerAuth: []
-      summary: List virtual keys based on user role
+      summary: List virtual keys based on user role.
       tags:
       - Keys
     post:
@@ -1428,7 +1677,7 @@ paths:
             it is not recoverable afterwards, only `key_prefix` is persisted for display.'
       security:
       - bearerAuth: []
-      summary: Create a new virtual key
+      summary: Create a new virtual key.
       tags:
       - Keys
   /api/v1/keys/{key_id}:
@@ -1459,7 +1708,7 @@ paths:
           description: 'Generic `{"message": str}` envelope used by several key endpoints.'
       security:
       - bearerAuth: []
-      summary: Revoke/delete virtual key
+      summary: Revoke/delete virtual key.
       tags:
       - Keys
     get:
@@ -1569,7 +1818,7 @@ paths:
           description: Response body for GET /api/v1/keys/<key_id>.
       security:
       - bearerAuth: []
-      summary: Get virtual key details
+      summary: Get virtual key details.
       tags:
       - Keys
     put:
@@ -1666,7 +1915,7 @@ paths:
           description: 'Generic `{"message": str}` envelope used by several key endpoints.'
       security:
       - bearerAuth: []
-      summary: Update virtual key
+      summary: Update virtual key.
       tags:
       - Keys
   /api/v1/keys/{key_id}/rotate:
@@ -1708,7 +1957,7 @@ paths:
           description: Response body for POST /api/v1/keys/<key_id>/rotate.
       security:
       - bearerAuth: []
-      summary: Rotate key secret
+      summary: Rotate key secret.
       tags:
       - Keys
   /api/v1/keys/{key_id}/usage:
@@ -1755,7 +2004,7 @@ paths:
           description: Response body for GET /api/v1/keys/<key_id>/usage.
       security:
       - bearerAuth: []
-      summary: Get usage statistics for a key
+      summary: Get usage statistics for a key.
       tags:
       - Keys
   /api/v1/knowledge:
@@ -1999,14 +2248,14 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: List all Ollama deployments
+      summary: List all Ollama deployments.
     post:
       description: ''
       operationId: post_create_ollama_deployment
       parameters: []
       responses:
         '200': *id001
-      summary: Create a new Ollama deployment
+      summary: Create a new Ollama deployment.
   /api/v1/ollama/deployments/{deployment_id}:
     delete:
       description: ''
@@ -2019,7 +2268,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Delete Ollama deployment
+      summary: Delete Ollama deployment.
     get:
       description: ''
       operationId: get_get_ollama_deployment
@@ -2031,7 +2280,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Get Ollama deployment details
+      summary: Get Ollama deployment details.
     put:
       description: ''
       operationId: put_update_ollama_deployment
@@ -2043,7 +2292,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Update Ollama deployment
+      summary: Update Ollama deployment.
   /api/v1/ollama/deployments/{deployment_id}/docker-compose:
     get:
       description: ''
@@ -2056,7 +2305,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Export docker-compose.yml for Ollama deployment
+      summary: Export docker-compose.yml for Ollama deployment.
   /api/v1/ollama/deployments/{deployment_id}/health:
     get:
       description: ''
@@ -2069,7 +2318,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Health check for Ollama deployment
+      summary: Health check for Ollama deployment.
   /api/v1/ollama/deployments/{deployment_id}/k8s-manifest:
     get:
       description: '
@@ -2099,7 +2348,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Get Ollama deployment logs (orchestrated mode only)
+      summary: Get Ollama deployment logs (orchestrated mode only).
   /api/v1/ollama/deployments/{deployment_id}/metallb-model-services:
     get:
       description: '
@@ -2148,7 +2397,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: List models on a specific Ollama deployment
+      summary: List models on a specific Ollama deployment.
   /api/v1/ollama/deployments/{deployment_id}/models/pull:
     post:
       description: ''
@@ -2161,7 +2410,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Pull a model to Ollama deployment
+      summary: Pull a model to Ollama deployment.
   /api/v1/ollama/deployments/{deployment_id}/models/{model_name}:
     delete:
       description: ''
@@ -2179,7 +2428,7 @@ paths:
           type: string
       responses:
         '200': *id001
-      summary: Remove a model from Ollama deployment
+      summary: Remove a model from Ollama deployment.
   /api/v1/ollama/deployments/{deployment_id}/restart:
     post:
       description: ''
@@ -2192,7 +2441,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Restart Ollama deployment (orchestrated mode only)
+      summary: Restart Ollama deployment (orchestrated mode only).
   /api/v1/ollama/deployments/{deployment_id}/start:
     post:
       description: ''
@@ -2205,7 +2454,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Start Ollama deployment (orchestrated mode only)
+      summary: Start Ollama deployment (orchestrated mode only).
   /api/v1/ollama/deployments/{deployment_id}/stop:
     post:
       description: ''
@@ -2218,7 +2467,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Stop Ollama deployment (orchestrated mode only)
+      summary: Stop Ollama deployment (orchestrated mode only).
   /api/v1/ollama/deployments/{deployment_id}/sync-models:
     post:
       description: '
@@ -2253,7 +2502,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: List all Ollama models across all deployments
+      summary: List all Ollama models across all deployments.
   /api/v1/ollama/models/assign:
     post:
       description: "\nThis creates a model-to-node mapping that will be used for\n\
@@ -2322,7 +2571,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Get AILB route sync status for a specific model
+      summary: Get AILB route sync status for a specific model.
   /api/v1/ollama/models/{model_id}/sync:
     post:
       description: '
@@ -2448,7 +2697,7 @@ paths:
           description: Response body for GET /api/v1/providers.
       security:
       - bearerAuth: []
-      summary: List all configured AI providers
+      summary: List all configured AI providers.
       tags:
       - Providers
     post:
@@ -2563,7 +2812,7 @@ paths:
           description: Response body for a successful POST /api/v1/providers.
       security:
       - bearerAuth: []
-      summary: Create a new AI provider
+      summary: Create a new AI provider.
       tags:
       - Providers
   /api/v1/providers/types:
@@ -2590,7 +2839,7 @@ paths:
           description: Response body for GET /api/v1/providers/types.
       security:
       - bearerAuth: []
-      summary: List supported provider types
+      summary: List supported provider types.
       tags:
       - Providers
   /api/v1/providers/{provider_id}:
@@ -2622,7 +2871,7 @@ paths:
             endpoints.'
       security:
       - bearerAuth: []
-      summary: Delete provider
+      summary: Delete provider.
       tags:
       - Providers
     get:
@@ -2721,7 +2970,7 @@ paths:
             api_key.
       security:
       - bearerAuth: []
-      summary: Get provider details
+      summary: Get provider details.
       tags:
       - Providers
     put:
@@ -2833,7 +3082,7 @@ paths:
             endpoints.'
       security:
       - bearerAuth: []
-      summary: Update provider configuration
+      summary: Update provider configuration.
       tags:
       - Providers
   /api/v1/providers/{provider_id}/credentials:
@@ -2875,8 +3124,8 @@ paths:
       summary: List all credentials for a provider. API keys are never returned in
         plaintext.
       tags:
-      - Providers
       - Credentials
+      - Providers
     post:
       description: ''
       operationId: post_create_provider_credential
@@ -2958,8 +3207,8 @@ paths:
       - bearerAuth: []
       summary: Add a credential to a provider's pool.
       tags:
-      - Providers
       - Credentials
+      - Providers
   /api/v1/providers/{provider_id}/credentials/{cred_id}:
     delete:
       description: ''
@@ -3001,8 +3250,8 @@ paths:
       summary: Remove a credential from the pool. Requires at least one other credential
         to remain.
       tags:
-      - Providers
       - Credentials
+      - Providers
     patch:
       description: ''
       operationId: patch_update_provider_credential
@@ -3090,8 +3339,8 @@ paths:
       summary: Update label, weight, enabled, org_id, account_meta, or rotate the
         api_key.
       tags:
-      - Providers
       - Credentials
+      - Providers
   /api/v1/providers/{provider_id}/models:
     get:
       description: ''
@@ -3129,7 +3378,7 @@ paths:
           description: Response body for GET /api/v1/providers/<id>/models.
       security:
       - bearerAuth: []
-      summary: Get available models for a provider
+      summary: Get available models for a provider.
       tags:
       - Providers
   /api/v1/providers/{provider_id}/test:
@@ -3179,7 +3428,7 @@ paths:
           description: Response body for POST /api/v1/providers/<id>/test.
       security:
       - bearerAuth: []
-      summary: Test provider connectivity
+      summary: Test provider connectivity.
       tags:
       - Providers
   /api/v1/quotas:
@@ -3189,7 +3438,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: List all quota configurations
+      summary: List all quota configurations.
   /api/v1/quotas/key/{key_id}:
     put:
       description: ''
@@ -3202,7 +3451,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Set virtual key quota
+      summary: Set virtual key quota.
   /api/v1/quotas/org/{org_id}:
     put:
       description: ''
@@ -3215,7 +3464,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Set organization quota (admin only)
+      summary: Set organization quota (admin only).
   /api/v1/quotas/status/{entity_id}:
     get:
       description: ''
@@ -3228,7 +3477,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Get current quota status for an entity
+      summary: Get current quota status for an entity.
   /api/v1/quotas/user/{user_id}:
     put:
       description: ''
@@ -3241,7 +3490,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Set user quota
+      summary: Set user quota.
   /api/v1/rag-config:
     get:
       description: ''
@@ -3430,11 +3679,13 @@ paths:
 
         ``routing_assignments.py``: "Admin sees everything")}``. No separate
 
-        org-membership check is needed beyond ``@require_role("admin")`` above --
+        org-membership check is needed beyond
 
-        this route is admin-only, and admins already have unrestricted org
+        ``@require_scope(Permission.ROUTING_DRY_RUN_ADMIN)`` above -- this route
 
-        visibility everywhere else in this API.'
+        is admin-only, and admins already have unrestricted org visibility
+
+        everywhere else in this API.'
       operationId: post_dry_run_decision
       parameters: []
       responses:
@@ -3615,7 +3866,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: Get usage breakdown by API key
+      summary: Get usage breakdown by API key.
   /api/v1/usage/by-model:
     get:
       description: ''
@@ -3623,7 +3874,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: Get usage breakdown by model
+      summary: Get usage breakdown by model.
   /api/v1/usage/by-provider:
     get:
       description: ''
@@ -3631,7 +3882,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: Get usage breakdown by provider
+      summary: Get usage breakdown by provider.
   /api/v1/usage/by-user:
     get:
       description: ''
@@ -3639,7 +3890,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: Get usage breakdown by user
+      summary: Get usage breakdown by user.
   /api/v1/usage/cache-stats:
     get:
       description: '
@@ -3663,7 +3914,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: Get cost analytics
+      summary: Get cost analytics.
   /api/v1/usage/export:
     get:
       description: ''
@@ -3671,7 +3922,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: Export usage data (CSV/JSON)
+      summary: Export usage data (CSV/JSON).
   /api/v1/usage/summary:
     get:
       description: ''
@@ -3679,7 +3930,7 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: Get usage summary (daily/monthly)
+      summary: Get usage summary (daily/monthly).
   /api/v1/users:
     get:
       description: ''
@@ -3687,14 +3938,14 @@ paths:
       parameters: []
       responses:
         '200': *id001
-      summary: List users (filtered by role permissions)
+      summary: List users (filtered by role permissions).
     post:
       description: ''
       operationId: post_create_user
       parameters: []
       responses:
         '200': *id001
-      summary: Create a new user
+      summary: Create a new user.
   /api/v1/users/{user_id}:
     delete:
       description: ''
@@ -3707,7 +3958,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Delete user (admin only)
+      summary: Delete user (admin only).
     get:
       description: ''
       operationId: get_get_user
@@ -3719,7 +3970,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Get user details
+      summary: Get user details.
     put:
       description: ''
       operationId: put_update_user
@@ -3731,7 +3982,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Update user
+      summary: Update user.
   /api/v1/users/{user_id}/enable:
     post:
       description: ''
@@ -3744,7 +3995,7 @@ paths:
           type: number
       responses:
         '200': *id001
-      summary: Enable a disabled user
+      summary: Enable a disabled user.
   /healthz:
     get:
       description: ''
