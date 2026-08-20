@@ -1,5 +1,5 @@
 .PHONY: dev setup install-hooks verify-hooks test test-unit test-integration test-e2e test-functional test-security \
-        test-contract smoke-test lint build docker-build docker-push deploy-dev deploy-prod \
+        test-contract smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
 
 setup: install-hooks
@@ -82,7 +82,11 @@ test-security:
 
 smoke-test:
 	@echo "Running smoke tests..."
-	python3 -m pytest tests/smoke -v --no-cov
+	@bash tests/smoke/test_management_build.sh
+
+smoke-test-production: ## Live prod checks (network + real deployment required) -- not part of pre-commit
+	@echo "Running production smoke tests..."
+	@bash tests/smoke/test-production.sh
 
 seed-mock-data:
 	@echo "No mock data seeding defined"
