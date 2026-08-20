@@ -229,6 +229,7 @@ def register_blueprints(app):
     """Register API blueprints."""
     from .api.v1 import (
         api_v1_bp,
+        hook_metrics,  # noqa: F401 -- registers GET /hooks/metrics onto hooks_bp
         hook_rules,  # noqa: F401 -- registers admin CRUD routes onto hooks_bp
     )
     from .api.v1.hooks import hooks_bp
