@@ -23,7 +23,10 @@ Landed:
     shared.routing.RoutingEngine, setting
     ctx.model/ctx.fallback_chain/ctx.routed_from. DispatchStage still owns
     concrete-endpoint selection (§7.5) and now also consumes
-    ctx.fallback_chain for chaos failover.
+    ctx.fallback_chain for chaos failover. Optional constructor args
+    `placement`/`backends_provider` (spec §10.4, shared.fleet.placement)
+    annotate local offers against live fleet endpoint state before
+    RoutingEngine sees them; omitted (the default), behavior is unchanged.
   - KnowledgeInjectStage (§9.5/§9.6, flag waddleai.knowledge_inject, see
     proxy/apps/proxy_server/pipeline/knowledge_stage.py): between
     SummarizationStage and DedupStage (see memory_stages.py's module
@@ -659,6 +662,8 @@ class RoutingStage(Stage):
         db: Any,
         rules: list[HeuristicRule] | None = None,
         flag: str | None = None,
+        placement: Any = None,
+        backends_provider: Callable[[int], Awaitable[list[Any]]] | None = None,
     ) -> None:
         """Initialize RoutingStage.
 
@@ -668,11 +673,24 @@ class RoutingStage(Stage):
             db: penguin-dal DB instance exposing model_configs (candidate offers)
             rules: Org routing_rules_v2 rows for the stage-1 heuristic cascade
             flag: Optional feature flag to gate this stage
+            placement: Optional ``shared.fleet.placement.PlacementEngine``
+                (spec §10.4). When given together with ``backends_provider``,
+                local offers are annotated against live fleet endpoint state
+                before RoutingEngine sees them (see
+                ``shared.routing.offers`` module docstring). Omitted
+                (the default), behavior is byte-identical to before fleet
+                placement existed.
+            backends_provider: Async ``org_id -> list[InferenceFleetBackend]``
+                resolver (e.g. ``shared.fleet.registry.build_backends_for_org``
+                bound to this service's db), consulted only when
+                ``placement`` is also given.
         """
         super().__init__(name, flag)
         self.engine = engine
         self.db = db
         self.rules = rules or []
+        self.placement = placement
+        self.backends_provider = backends_provider
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
         """Run the RoutingEngine and apply its decision to ctx.
@@ -693,7 +711,7 @@ class RoutingStage(Stage):
         signals = RequestSignals(model=ctx.model or "")
 
         try:
-            offers = await self._load_offers()
+            offers = await self._load_offers(org_id)
         except Exception as exc:  # pragma: no cover - defensive, DB I/O failure
             logger.warning(
                 "RoutingStage: failed to load candidate offers, leaving ctx.model unchanged: %s",
@@ -728,12 +746,20 @@ class RoutingStage(Stage):
         ctx.routed_from = decision.routed_from
         return ctx
 
-    async def _load_offers(self) -> list[ModelOffer]:
+    async def _load_offers(self, org_id: int | None = None) -> list[ModelOffer]:
         """Build the candidate ModelOffer universe from model_configs (penguin-dal).
 
         Interim capability source until migration 008 (model_registry) lands
         -- location is inferred from preferred_providers, cost from the mean
         of the per-provider cost_per_token map.
+
+        ``org_id`` is optional (defaults to ``None``, preserving the
+        zero-arg call signature every pre-fleet caller/test uses) and is
+        only consulted when both ``self.placement`` and
+        ``self.backends_provider`` are set -- see ``__init__``. When wired,
+        local offers are annotated against live fleet endpoint state (spec
+        §10.4) before being returned; a failure to do so is logged and the
+        un-annotated offers are returned rather than breaking routing.
         """
         rows = await asyncio.to_thread(
             lambda: self.db(self.db.model_configs.enabled == True).select()  # noqa: E712
@@ -756,6 +782,16 @@ class RoutingStage(Stage):
                     supports_vision="vision" in capabilities,
                 )
             )
+
+        if self.placement is not None and self.backends_provider is not None and org_id is not None:
+            try:
+                backends = await self.backends_provider(org_id)
+                offers = await self.placement.annotate_offers(offers, backends)
+            except Exception as exc:  # pragma: no cover - defensive, fleet I/O failure
+                logger.warning(
+                    "RoutingStage: fleet placement annotation failed, offers unannotated: %s", exc
+                )
+
         return offers
 
 

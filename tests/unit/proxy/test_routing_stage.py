@@ -10,6 +10,7 @@ from proxy.apps.proxy_server.pipeline import (
     ProxyPipeline,
     RoutingStage,
 )
+from shared.routing.capability import ModelOffer
 from shared.routing.engine import RouteDecision, RoutingEngine
 
 
@@ -145,6 +146,82 @@ class TestRoutingStageFlagGating:
 
         assert result.model == "routed-model"
         assert "ran:routing" in result.stage_log
+
+
+@pytest.mark.asyncio
+class TestRoutingStageFleetPlacementWiring:
+    """Optional placement/backends_provider params (spec §10.4) -- additive, opt-in."""
+
+    async def test_omitted_placement_leaves_offers_unannotated(self):
+        """Default construction (no placement/backends_provider) -- byte-identical to before."""
+        engine = Mock(spec=RoutingEngine)
+        engine.decide = AsyncMock(return_value=RouteDecision(model="gpt-4o"))
+        db = _fake_db_with_model_configs([_config_row("gpt-4o")])
+
+        stage = RoutingStage(name="routing", engine=engine, db=db, flag=None)
+        user = Mock(id=1, tenant_id="1")
+        ctx = PipelineContext(user=user, body={"messages": []}, model="gpt-4o")
+
+        await stage(ctx)
+
+        called_offers = engine.decide.call_args.args[0].offers
+        assert called_offers[0].model_name == "gpt-4o"
+
+    async def test_placement_and_backends_provider_annotate_local_offers(self):
+        """When both are wired, RoutingEngine sees the placement-annotated offers."""
+        engine = Mock(spec=RoutingEngine)
+        engine.decide = AsyncMock(return_value=RouteDecision(model="local-model"))
+        db = _fake_db_with_model_configs([_config_row("local-model", providers=["ollama"])])
+
+        placement = Mock()
+        annotated = [ModelOffer(model_name="local-model", location="local", available=False)]
+        placement.annotate_offers = AsyncMock(return_value=annotated)
+        backends_provider = AsyncMock(return_value=["fake-backend"])
+
+        stage = RoutingStage(
+            name="routing",
+            engine=engine,
+            db=db,
+            flag=None,
+            placement=placement,
+            backends_provider=backends_provider,
+        )
+        user = Mock(id=1, tenant_id="42")
+        ctx = PipelineContext(user=user, body={"messages": []}, model="local-model")
+
+        await stage(ctx)
+
+        backends_provider.assert_awaited_once_with(42)
+        placement.annotate_offers.assert_awaited_once()
+        called_offers = engine.decide.call_args.args[0].offers
+        assert called_offers == annotated
+
+    async def test_placement_failure_falls_back_to_unannotated_offers(self):
+        """A fleet I/O failure during annotation never breaks routing."""
+        engine = Mock(spec=RoutingEngine)
+        engine.decide = AsyncMock(return_value=RouteDecision(model="gpt-4o"))
+        db = _fake_db_with_model_configs([_config_row("gpt-4o")])
+
+        placement = Mock()
+        placement.annotate_offers = AsyncMock(side_effect=RuntimeError("fleet unreachable"))
+        backends_provider = AsyncMock(return_value=[])
+
+        stage = RoutingStage(
+            name="routing",
+            engine=engine,
+            db=db,
+            flag=None,
+            placement=placement,
+            backends_provider=backends_provider,
+        )
+        user = Mock(id=1, tenant_id="1")
+        ctx = PipelineContext(user=user, body={"messages": []}, model="gpt-4o")
+
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        called_offers = engine.decide.call_args.args[0].offers
+        assert called_offers[0].model_name == "gpt-4o"  # unannotated fallback
 
 
 @pytest.mark.asyncio

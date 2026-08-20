@@ -40,6 +40,13 @@ class _FakeField:
     def __eq__(self, other: Any) -> "_FakeQuery":  # type: ignore[override]
         return _FakeQuery(self.table, lambda row: getattr(row, self.name, None) == other)
 
+    def __ne__(self, other: Any) -> "_FakeQuery":  # type: ignore[override]
+        # Defining __eq__ without __ne__ makes Python synthesize `!=` as
+        # `not (a == b)`, which evaluates eagerly to a plain bool here
+        # instead of building a composable _FakeQuery -- an explicit
+        # override is required, exactly like __eq__ above.
+        return _FakeQuery(self.table, lambda row: getattr(row, self.name, None) != other)
+
     def __gt__(self, other: Any) -> "_FakeQuery":
         return _FakeQuery(self.table, lambda row: getattr(row, self.name, 0) > other)
 
