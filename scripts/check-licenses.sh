@@ -6,7 +6,7 @@
 # Check if pip-licenses is available, install if needed
 if ! command -v pip-licenses >/dev/null 2>&1; then
     echo "Installing pip-licenses..."
-    python3 -m pip install pip-licenses --break-system-packages 2>&1 >/dev/null || python3 -m pip install pip-licenses 2>&1 >/dev/null || { echo "Failed to install pip-licenses" >&2; exit 1; }
+    python3 -m pip install pip-licenses --break-system-packages >/dev/null 2>&1 || python3 -m pip install pip-licenses >/dev/null 2>&1 || { echo "Failed to install pip-licenses" >&2; exit 1; }
     if ! command -v pip-licenses >/dev/null 2>&1; then
         echo "Failed to install pip-licenses" >&2
         exit 1
@@ -15,7 +15,7 @@ fi
 
 # Get the licenses JSON into a temp file
 TEMP_JSON=$(mktemp)
-trap "rm -f $TEMP_JSON" EXIT
+trap 'rm -f "$TEMP_JSON"' EXIT
 
 pip-licenses --format=json --with-system 2>/dev/null > "$TEMP_JSON"
 if [ $? -ne 0 ]; then

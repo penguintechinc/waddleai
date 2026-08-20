@@ -1,5 +1,4 @@
-"""
-py_libs - Shared Python libraries for secure application development.
+"""py_libs - Shared Python libraries for secure application development.
 
 This package provides "batteries included" security-focused utilities:
 - validation: PyDAL-style input validators

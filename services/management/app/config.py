@@ -1,13 +1,11 @@
-"""
-WaddleAI Management Server Configuration
-"""
+"""WaddleAI Management Server Configuration."""
 
 import os
 from datetime import timedelta
 
 
 def _build_database_url() -> str:
-    """Build DATABASE_URL from environment variables"""
+    """Build DATABASE_URL from environment variables."""
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return database_url
@@ -49,7 +47,7 @@ def _build_database_url() -> str:
 
 
 class Config:
-    """Base configuration"""
+    """Base configuration."""
 
     # Flask settings
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", ""))
@@ -74,9 +72,9 @@ class Config:
 
     # Flask-Security-Too settings
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "")
-    SECURITY_PASSWORD_HASH = "bcrypt"  # nosec B105 -- password HASHING ALGORITHM name, not a password
-    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"  # nosec B105 -- HTTP header name, not a credential
-    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"  # nosec B105 -- session key NAME, not a token value
+    SECURITY_PASSWORD_HASH = "bcrypt"  # nosec B105 # noqa: S105 -- hashing ALGORITHM name, not a password
+    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"  # nosec B105 # noqa: S105 -- HTTP header name, not a credential
+    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"  # nosec B105 # noqa: S105 -- session key NAME, not a token value
     SECURITY_TRACKABLE = True
     SECURITY_SEND_REGISTER_EMAIL = False
     SECURITY_REGISTERABLE = False
@@ -94,7 +92,9 @@ class Config:
     ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "")
 
     # Ollama Management
-    OLLAMA_MANAGEMENT_MODE = os.getenv("OLLAMA_MANAGEMENT_MODE", "both")  # manual, orchestrated, both
+    OLLAMA_MANAGEMENT_MODE = os.getenv(
+        "OLLAMA_MANAGEMENT_MODE", "both"
+    )  # manual, orchestrated, both
     DOCKER_HOST = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
 
     # Feature flags
@@ -114,7 +114,7 @@ class Config:
 
 
 class DevelopmentConfig(Config):
-    """Development configuration"""
+    """Development configuration."""
 
     import secrets
 
@@ -122,7 +122,9 @@ class DevelopmentConfig(Config):
     LOG_LEVEL = "DEBUG"
 
     # Development: use deterministic defaults if env vars not set
-    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "dev-secret-key-min-32-chars"))
+    SECRET_KEY = os.getenv(
+        "FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "dev-secret-key-min-32-chars")
+    )
     JWT_SECRET_KEY = os.getenv("JWT_SECRET", "dev-jwt-secret-key-32-chars-minimum!")
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "dev-password-salt")
     WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-webhook-secret")
@@ -130,7 +132,7 @@ class DevelopmentConfig(Config):
 
 
 class ProductionConfig(Config):
-    """Production configuration"""
+    """Production configuration."""
 
     DEBUG = False
     LOG_LEVEL = "INFO"
@@ -150,7 +152,7 @@ class ProductionConfig(Config):
 
 
 class TestingConfig(Config):
-    """Testing configuration"""
+    """Testing configuration."""
 
     import secrets
 
@@ -163,7 +165,9 @@ class TestingConfig(Config):
     REDIS_URL = "redis://localhost:6379/1"
 
     # Testing: use deterministic defaults to bootstrap tests
-    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "test-secret-key-min-32-chars-!!!!"))
+    SECRET_KEY = os.getenv(
+        "FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "test-secret-key-min-32-chars-!!!!")
+    )
     JWT_SECRET_KEY = os.getenv("JWT_SECRET", "test-jwt-secret-key-32-chars-minimum!!!")
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "test-password-salt")
     WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "test-webhook-secret")

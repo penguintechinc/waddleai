@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-One-time migration: encrypt existing plaintext provider credentials.
+"""One-time migration: encrypt existing plaintext provider credentials.
 
 Usage:
     CREDENTIAL_ENCRYPTION_KEY=<secret> python3 scripts/migrate_encrypt_credentials.py
@@ -14,7 +13,11 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from shared.database.models import get_db
-from shared.security.credential_encryption import encrypt_credential, get_encryption_config, is_encrypted
+from shared.security.credential_encryption import (
+    encrypt_credential,
+    get_encryption_config,
+    is_encrypted,
+)
 
 
 def migrate() -> None:
@@ -57,7 +60,9 @@ def migrate() -> None:
         migrated += 1
 
     db.commit()
-    print(f"Migration complete: {migrated} encrypted, {skipped} skipped (already encrypted or empty)")
+    print(
+        f"Migration complete: {migrated} encrypted, {skipped} skipped (already encrypted or empty)"
+    )
 
 
 if __name__ == "__main__":

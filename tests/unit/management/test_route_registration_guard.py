@@ -305,8 +305,7 @@ def test_no_two_handlers_claim_the_same_rule_and_method(flask_app) -> None:
                 continue
             if key in seen and seen[key] != rule.endpoint:
                 collisions.append(
-                    f"{method} {rule.rule} claimed by both "
-                    f"{seen[key]!r} and {rule.endpoint!r}"
+                    f"{method} {rule.rule} claimed by both {seen[key]!r} and {rule.endpoint!r}"
                 )
             else:
                 seen[key] = rule.endpoint

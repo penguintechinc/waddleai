@@ -1,5 +1,4 @@
-"""
-Integration tests for mem0/Qdrant memory services.
+"""Integration tests for mem0/Qdrant memory services.
 
 These tests run against a live Qdrant instance at QDRANT_BASE_URL
 (default: http://localhost:6333). All tests are skipped when Qdrant
@@ -10,7 +9,7 @@ up at the end of each test.
 """
 
 import uuid
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 import pytest
@@ -29,7 +28,7 @@ def _delete_collection_if_exists(base_url: str, name: str) -> None:
     """Best-effort cleanup of a test collection."""
     try:
         httpx.delete(f"{base_url}/collections/{name}", timeout=5.0)
-    except Exception:
+    except Exception:  # noqa: S110 -- best-effort test cleanup, failure here must not fail the test
         pass
 
 
@@ -128,7 +127,7 @@ def test_qdrant_insert_point_and_search(
             timeout=10.0,
         )
         assert search_resp.status_code == 200
-        results: List[Dict[str, Any]] = search_resp.json()["result"]
+        results: list[dict[str, Any]] = search_resp.json()["result"]
         assert len(results) == 1
         assert results[0]["id"] == point_id
         assert results[0]["payload"]["text"] == "integration test memory"
@@ -153,7 +152,11 @@ def test_qdrant_retrieve_point_by_id(
         )
         httpx.put(
             f"{qdrant_base_url}/collections/{collection_name}/points",
-            json={"points": [{"id": 42, "vector": [1.0, 0.0, 0.0, 0.0], "payload": {"tag": "retrieve-test"}}]},
+            json={
+                "points": [
+                    {"id": 42, "vector": [1.0, 0.0, 0.0, 0.0], "payload": {"tag": "retrieve-test"}}
+                ]
+            },
             timeout=10.0,
         )
 

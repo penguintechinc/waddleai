@@ -81,6 +81,12 @@ python main.py
 
 ### 6. Verify Installation
 
+Set your virtual key first:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 ```bash
 # Check proxy server health
 curl http://localhost:8000/healthz
@@ -90,7 +96,7 @@ curl http://localhost:8001/healthz
 
 # Test OpenAI-compatible API
 curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer wa-your-api-key-from-step-3"
+  -H "Authorization: Bearer $WADDLEAI_API_KEY"
 ```
 
 ## Production Installation
@@ -104,7 +110,7 @@ version: '3.8'
 
 services:
   waddleai-proxy:
-    build: 
+    build:
       context: .
       dockerfile: proxy/Dockerfile
     ports:
@@ -407,7 +413,7 @@ Visit `http://localhost:8001` and log in with admin credentials.
    ```bash
    # Check database is running
    pg_isready -h localhost -p 5432
-   
+
    # Verify credentials
    psql $DATABASE_URL -c "SELECT 1;"
    ```
@@ -423,7 +429,7 @@ Visit `http://localhost:8001` and log in with admin credentials.
    ```bash
    # Find process using port
    lsof -i :8000
-   
+
    # Kill process or use different port
    export PROXY_PORT=8080
    ```

@@ -33,6 +33,7 @@ class MeteringEvent:
                did not report (triggers estimation at flush time)
         timestamp: When the event occurred
         estimated: True if usage was estimated (missing from provider response)
+
     """
 
     virtual_key_id: int
@@ -84,6 +85,7 @@ class UsageWriter(Protocol):
 
         Raises:
             Any exception from the database layer (caller handles)
+
         """
         ...
 
@@ -99,6 +101,7 @@ class PenguinDALUsageWriter:
 
         Args:
             db: penguin-dal DB instance (from penguin_dal.flask_ext.init_dal)
+
         """
         self.db = db
         self.source = "aiproxy"
@@ -117,6 +120,7 @@ class PenguinDALUsageWriter:
             this method previously swallowed that signal (see regression
             note below), so a failed write was neither retried nor visible
             as anything worse than a log line.
+
         """
         # Check if row exists (using approximate match on date and key)
         # For simplicity, we'll upsert based on the day
@@ -232,6 +236,7 @@ class MeteringBuffer:
         Args:
             writer: UsageWriter instance for persisting aggregated metrics
             interval: Flush interval in seconds (default 1.0)
+
         """
         self.writer = writer
         self.interval = interval
@@ -254,6 +259,7 @@ class MeteringBuffer:
 
         Args:
             event: MeteringEvent with virtual_key_id, model, provider, usage, timestamp
+
         """
         with self._lock:
             self._buffer.append(event)
@@ -355,6 +361,7 @@ class MeteringBuffer:
 
         Returns:
             Dict mapping aggregation key to AggregatedMetrics
+
         """
         aggregates: dict[tuple, AggregatedMetrics] = {}
 
@@ -405,6 +412,7 @@ class MeteringBuffer:
 
         Returns:
             Dict with 'input_tokens' and 'output_tokens' keys
+
         """
         # For events without usage, estimate conservatively
         # In a real scenario, we'd have prompt/response text to count
@@ -435,6 +443,7 @@ def create_metering_buffer(
 
     Raises:
         ValueError: If neither writer nor db is provided
+
     """
     if writer is None:
         if db is None:

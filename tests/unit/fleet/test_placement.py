@@ -394,9 +394,7 @@ class TestPlaceModelRealCapEnforcerIntegration:
             name="m1", origin="Google", is_utility=False, min_vram=None
         )
 
-        result = await engine.place_model(
-            _ORG_ID, "m1", {}, backend, registry_entry=registry_entry
-        )
+        result = await engine.place_model(_ORG_ID, "m1", {}, backend, registry_entry=registry_entry)
         assert result.status == "placed"
 
 

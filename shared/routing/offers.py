@@ -55,6 +55,7 @@ async def load_offers_from_model_configs(
 
     Returns:
         One ``ModelOffer`` per enabled ``model_configs`` row.
+
     """
     rows = await asyncio.to_thread(
         lambda: db(db.model_configs.enabled == True).select()  # noqa: E712

@@ -193,7 +193,7 @@ Management Portal → Analytics:
 
 ```bash
 # Export Cursor IDE usage
-curl -H "Authorization: Bearer wai_admin_token" \
+curl -H "Authorization: Bearer <your-admin-token>" \
   "http://localhost:8001/api/analytics/export?application=cursor" \
   -o cursor_usage.csv
 ```
@@ -216,7 +216,7 @@ curl -H "Authorization: Bearer wai_admin_token" \
 curl http://localhost:8000/healthz
 
 # Test with your key
-curl -H "Authorization: Bearer wai_your_key" \
+curl -H "Authorization: Bearer <your-waddleai-key>" \
   http://localhost:8000/v1/models
 ```
 

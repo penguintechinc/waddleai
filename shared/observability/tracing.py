@@ -1,5 +1,4 @@
-"""
-OpenTelemetry bootstrap and tracer configuration.
+"""OpenTelemetry bootstrap and tracer configuration.
 
 Configures tracing from environment variables. If OTEL_EXPORTER_OTLP_ENDPOINT
 is not set, tracing is a no-op and the app starts without error.
@@ -16,19 +15,17 @@ Semantic conventions (GenAI):
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 logger = logging.getLogger(__name__)
 
 # Global tracer (initialized on first call)
-_tracer: Optional[trace.Tracer] = None
+_tracer: trace.Tracer | None = None
 _initialized = False
 
 
@@ -36,7 +33,7 @@ _initialized = False
 class TracingConfig:
     """OpenTelemetry configuration from environment."""
 
-    otlp_endpoint: Optional[str] = None
+    otlp_endpoint: str | None = None
     service_name: str = "waddleai"
     service_version: str = "unknown"
     deployment_environment: str = "development"
@@ -50,7 +47,7 @@ class TracingConfig:
         version_file = ".version"
         if os.path.exists(version_file):
             try:
-                with open(version_file, "r") as f:
+                with open(version_file) as f:
                     service_version = f.read().strip()
             except Exception as e:
                 logger.warning(f"Failed to read .version file: {e}")
@@ -64,9 +61,8 @@ class TracingConfig:
         )
 
 
-def init_tracing(config: Optional[TracingConfig] = None) -> trace.Tracer:
-    """
-    Initialize OpenTelemetry tracing.
+def init_tracing(config: TracingConfig | None = None) -> trace.Tracer:
+    """Initialize OpenTelemetry tracing.
 
     If no OTLP endpoint is configured, returns a no-op tracer and the app
     continues without error. This is the fail-safe posture per spec §15.3.
@@ -76,6 +72,7 @@ def init_tracing(config: Optional[TracingConfig] = None) -> trace.Tracer:
 
     Returns:
         Tracer instance (may be no-op if not configured)
+
     """
     global _tracer, _initialized
 
@@ -124,8 +121,7 @@ def init_tracing(config: Optional[TracingConfig] = None) -> trace.Tracer:
 
 
 def get_tracer(service_name: str = "waddleai") -> trace.Tracer:
-    """
-    Get the global tracer instance.
+    """Get the global tracer instance.
 
     If not yet initialized, initializes from environment variables.
     If no OTLP endpoint is configured, returns a no-op tracer.
@@ -135,8 +131,8 @@ def get_tracer(service_name: str = "waddleai") -> trace.Tracer:
 
     Returns:
         Tracer instance
-    """
 
+    """
     if _tracer is not None:
         return _tracer
 

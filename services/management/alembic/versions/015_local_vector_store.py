@@ -62,9 +62,7 @@ def upgrade() -> None:
             "collection_id", "external_id", name="uq_local_vector_points_collection_external"
         ),
     )
-    op.create_index(
-        "idx_local_vector_points_collection", "local_vector_points", ["collection_id"]
-    )
+    op.create_index("idx_local_vector_points_collection", "local_vector_points", ["collection_id"])
 
 
 def downgrade() -> None:

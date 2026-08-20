@@ -1,5 +1,5 @@
-"""Unit tests for LlamaCppManager"""
-import json
+"""Unit tests for LlamaCppManager."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,13 +8,16 @@ import yaml
 
 @pytest.fixture
 def mock_db():
+    """Return a bare MagicMock standing in for the PyDAL db object."""
     db = MagicMock()
     return db
 
 
 @pytest.fixture
 def manager(mock_db):
+    """Build a LlamaCppManager wired to the mock db, for tests exercising its methods."""
     from services.management.app.services.llamacpp_manager import LlamaCppManager
+
     return LlamaCppManager(mock_db)
 
 
@@ -48,6 +51,7 @@ def k8s_deployment():
 
 @pytest.fixture
 def remote_deployment():
+    """Minimal deployment record for remote (non-K8s) mode."""
     dep = MagicMock()
     dep.id = 2
     dep.name = "remote-llama"
@@ -59,16 +63,19 @@ def remote_deployment():
 
 
 def test_generate_daemonset_name(manager):
+    """Daemonset name is prefixed `waddleai-llamacpp-` and keeps a plain model name intact."""
     name = manager._daemonset_name("my-model")
     assert name == "waddleai-llamacpp-my-model"
 
 
 def test_generate_daemonset_name_sanitises_special_chars(manager):
+    """Daemonset name lowercases and strips spaces/dots/`!` into K8s-safe dashes."""
     name = manager._daemonset_name("My Model v2.0!")
     assert name == "waddleai-llamacpp-my-model-v2-0"
 
 
 def test_export_k8s_manifest_contains_daemonset(manager, k8s_deployment):
+    """Exported manifest is a multi-doc YAML including both a DaemonSet and a Service."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
     docs = list(yaml.safe_load_all(manifest_yaml))
     kinds = [d["kind"] for d in docs]
@@ -77,6 +84,7 @@ def test_export_k8s_manifest_contains_daemonset(manager, k8s_deployment):
 
 
 def test_export_k8s_manifest_node_selector(manager, k8s_deployment):
+    """DaemonSet pod template carries the deployment's node_selector unchanged."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
     docs = list(yaml.safe_load_all(manifest_yaml))
     ds = next(d for d in docs if d["kind"] == "DaemonSet")
@@ -85,6 +93,7 @@ def test_export_k8s_manifest_node_selector(manager, k8s_deployment):
 
 
 def test_export_k8s_manifest_gpu_resource(manager, k8s_deployment):
+    """Container resource limits request `nvidia.com/gpu` matching the deployment's gpu_count."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
     docs = list(yaml.safe_load_all(manifest_yaml))
     ds = next(d for d in docs if d["kind"] == "DaemonSet")
@@ -103,6 +112,7 @@ def test_export_k8s_manifest_init_container_download_url(manager, k8s_deployment
 
 
 def test_export_k8s_manifest_service_port(manager, k8s_deployment):
+    """Generated Service exposes port 8080, the llama.cpp server's fixed listen port."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
     docs = list(yaml.safe_load_all(manifest_yaml))
     svc = next(d for d in docs if d["kind"] == "Service")
@@ -110,8 +120,11 @@ def test_export_k8s_manifest_service_port(manager, k8s_deployment):
 
 
 def test_deploy_daemonset_calls_k8s_api(manager, k8s_deployment, mock_db):
-    with patch("services.management.app.services.llamacpp_manager.get_k8s_apps_client") as mock_apps, \
-         patch("services.management.app.services.llamacpp_manager.get_k8s_core_client") as mock_core:
+    """deploy_daemonset creates exactly one K8s DaemonSet and one Service via the apps/core APIs."""
+    with (
+        patch("services.management.app.services.llamacpp_manager.get_k8s_apps_client") as mock_apps,
+        patch("services.management.app.services.llamacpp_manager.get_k8s_core_client") as mock_core,
+    ):
         mock_apps.return_value = MagicMock()
         mock_core.return_value = MagicMock()
         manager.deploy_daemonset(k8s_deployment)
@@ -121,22 +134,31 @@ def test_deploy_daemonset_calls_k8s_api(manager, k8s_deployment, mock_db):
 
 
 def test_deploy_daemonset_k8s_error_propagates(manager, k8s_deployment):
-    with patch("services.management.app.services.llamacpp_manager.get_k8s_apps_client") as mock_apps:
-        mock_apps.return_value.create_namespaced_daemon_set.side_effect = Exception("k8s unavailable")
+    """A K8s API failure during DaemonSet creation propagates unchanged, not swallowed."""
+    with patch(
+        "services.management.app.services.llamacpp_manager.get_k8s_apps_client"
+    ) as mock_apps:
+        mock_apps.return_value.create_namespaced_daemon_set.side_effect = Exception(
+            "k8s unavailable"
+        )
         with pytest.raises(Exception, match="k8s unavailable"):
             manager.deploy_daemonset(k8s_deployment)
 
 
 def test_remove_daemonset_running_without_force_raises(manager, k8s_deployment):
+    """Removing a running deployment without force=True is refused with a ValueError."""
     k8s_deployment.status = "running"
     with pytest.raises(ValueError, match="force=True"):
         manager.remove_daemonset(k8s_deployment, force=False)
 
 
 def test_remove_daemonset_running_with_force_deletes(manager, k8s_deployment):
+    """force=True on a running deployment deletes both the DaemonSet and its Service."""
     k8s_deployment.status = "running"
-    with patch("services.management.app.services.llamacpp_manager.get_k8s_apps_client") as mock_apps, \
-         patch("services.management.app.services.llamacpp_manager.get_k8s_core_client") as mock_core:
+    with (
+        patch("services.management.app.services.llamacpp_manager.get_k8s_apps_client") as mock_apps,
+        patch("services.management.app.services.llamacpp_manager.get_k8s_core_client") as mock_core,
+    ):
         mock_apps.return_value = MagicMock()
         mock_core.return_value = MagicMock()
         manager.remove_daemonset(k8s_deployment, force=True)
@@ -146,14 +168,18 @@ def test_remove_daemonset_running_with_force_deletes(manager, k8s_deployment):
 
 
 def test_register_remote_healthy_sets_running(manager, remote_deployment, mock_db):
+    """A healthy remote endpoint (200) transitions the deployment's status to `running`."""
     with patch("services.management.app.services.llamacpp_manager.requests") as mock_req:
         mock_req.get.return_value.status_code = 200
         manager.register_remote(remote_deployment)
 
-    mock_db(mock_db.llamacpp_deployments.id == remote_deployment.id).update.assert_called_once_with(status="running")
+    mock_db(mock_db.llamacpp_deployments.id == remote_deployment.id).update.assert_called_once_with(
+        status="running"
+    )
 
 
 def test_register_remote_unhealthy_raises(manager, remote_deployment):
+    """An unreachable remote endpoint raises a ValueError instead of registering silently."""
     with patch("services.management.app.services.llamacpp_manager.requests") as mock_req:
         mock_req.get.side_effect = Exception("connection refused")
         with pytest.raises(ValueError, match="unreachable"):

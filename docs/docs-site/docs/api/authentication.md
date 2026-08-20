@@ -17,7 +17,7 @@ API keys are the primary authentication method for programmatic access to the pr
 **Usage:**
 ```bash
 curl https://your-waddleai-proxy.com/v1/chat/completions \
-  -H "Authorization: Bearer wa-5-abc123def456" \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4",
@@ -42,7 +42,7 @@ curl -X POST https://your-waddleai-mgmt.com/auth/login \
 **Response:**
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "access_token": "<your-jwt-token>",
   "token_type": "bearer",
   "user": {
     "id": 5,
@@ -56,7 +56,7 @@ curl -X POST https://your-waddleai-mgmt.com/auth/login \
 **Using JWT Token:**
 ```bash
 curl https://your-waddleai-mgmt.com/api/users \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  -H "Authorization: Bearer <your-jwt-token>"
 ```
 
 ### 3. Session Cookies
@@ -109,17 +109,14 @@ WaddleAI implements four user roles with hierarchical permissions:
 # Admin can access all organizations
 orgs = requests.get(
     "https://mgmt.waddleai.com/api/organizations",
-    headers={"Authorization": f"Bearer {admin_token}"}
+    headers={"Authorization": f"Bearer {admin_token}"},
 ).json()
 
 # Admin can configure system-wide settings
 routing = requests.post(
     "https://mgmt.waddleai.com/api/routing/instructions",
     headers={"Authorization": f"Bearer {admin_token}"},
-    json={
-        "instructions": "Route complex queries to GPT-4...",
-        "routing_llm": "llama3.2:1b"
-    }
+    json={"instructions": "Route complex queries to GPT-4...", "routing_llm": "llama3.2:1b"},
 )
 ```
 
@@ -150,8 +147,7 @@ routing = requests.post(
 ```python
 # Resource manager sees only their organization
 users = requests.get(
-    "https://mgmt.waddleai.com/api/users",
-    headers={"Authorization": f"Bearer {resource_mgr_token}"}
+    "https://mgmt.waddleai.com/api/users", headers={"Authorization": f"Bearer {resource_mgr_token}"}
 ).json()
 # Returns only users in resource manager's organization
 
@@ -159,7 +155,7 @@ users = requests.get(
 quota = requests.post(
     "https://mgmt.waddleai.com/analytics/quotas/user123",
     headers={"Authorization": f"Bearer {resource_mgr_token}"},
-    json={"monthly_limit": 200000}
+    json={"monthly_limit": 200000},
 )
 ```
 
@@ -193,20 +189,20 @@ quota = requests.post(
 # Reporter can view organization analytics
 analytics = requests.get(
     "https://mgmt.waddleai.com/api/usage?days=30",
-    headers={"Authorization": f"Bearer {reporter_token}"}
+    headers={"Authorization": f"Bearer {reporter_token}"},
 ).json()
 
 # Can access security reports
 security = requests.get(
     "https://mgmt.waddleai.com/analytics/security",
-    headers={"Authorization": f"Bearer {reporter_token}"}
+    headers={"Authorization": f"Bearer {reporter_token}"},
 ).json()
 
 # Cannot create users (403 Forbidden)
 new_user = requests.post(
     "https://mgmt.waddleai.com/api/users",
     headers={"Authorization": f"Bearer {reporter_token}"},
-    json={"username": "test"}
+    json={"username": "test"},
 )
 # Returns: 403 Insufficient permissions
 ```
@@ -237,24 +233,24 @@ new_user = requests.post(
 
 **API Access Example:**
 ```python
+import os
 # User can use proxy API
 response = openai.ChatCompletion.create(
     model="gpt-4",
     messages=[{"role": "user", "content": "Hello!"}],
-    api_key="wa-5-abc123"  # User's API key
+    api_key="wa-5-abc123",  # User's API key
 )
 
 # User can check own usage
 my_usage = requests.get(
-    "https://proxy.waddleai.com/api/usage",
-    headers={"Authorization": f"Bearer wa-5-abc123"}
+    "https://proxy.waddleai.com/api/usage", headers={"Authorization": f"Bearer {os.environ['WADDLEAI_API_KEY']}"}
 ).json()
 
 # User can manage own API keys
 new_key = requests.post(
     "https://mgmt.waddleai.com/api/api_keys",
     headers={"Authorization": f"Bearer {user_token}"},
-    json={"name": "Production Key"}
+    json={"name": "Production Key"},
 )
 ```
 
@@ -295,11 +291,7 @@ import requests
 new_key = requests.post(
     "https://mgmt.waddleai.com/api/api_keys",
     headers={"Authorization": f"Bearer {jwt_token}"},
-    json={
-        "name": "Production Key",
-        "expires_days": 365,
-        "rate_limit": 1000
-    }
+    json={"name": "Production Key", "expires_days": 365, "rate_limit": 1000},
 ).json()
 
 print(f"New API Key: {new_key['api_key']}")
@@ -316,8 +308,8 @@ new_key = requests.post(
     json={
         "name": "Team Member Key",
         "user_id": 15,  # Another user in the org
-        "expires_days": 90
-    }
+        "expires_days": 90,
+    },
 ).json()
 ```
 
@@ -332,8 +324,8 @@ new_key = requests.post(
         "user_id": 42,
         "organization_id": 5,
         "permissions": ["admin:*"],
-        "expires_days": 30
-    }
+        "expires_days": 30,
+    },
 ).json()
 ```
 
@@ -343,7 +335,7 @@ new_key = requests.post(
 
 1. **Store securely**: Use environment variables or secret management systems
    ```bash
-   export WADDLEAI_API_KEY="wa-5-abc123def456"
+   export WADDLEAI_API_KEY="<your-waddleai-key>"
    ```
 
 2. **Rotate regularly**: Replace API keys periodically
@@ -351,14 +343,14 @@ new_key = requests.post(
    # Disable old key
    requests.delete(
        f"https://mgmt.waddleai.com/api/api_keys/{old_key_id}",
-       headers={"Authorization": f"Bearer {jwt_token}"}
+       headers={"Authorization": f"Bearer {jwt_token}"},
    )
 
    # Create new key
    new_key = requests.post(
        "https://mgmt.waddleai.com/api/api_keys",
        headers={"Authorization": f"Bearer {jwt_token}"},
-       json={"name": "Production Key - Rotated"}
+       json={"name": "Production Key - Rotated"},
    ).json()
    ```
 
@@ -367,19 +359,14 @@ new_key = requests.post(
    # Limited scope key
    key = requests.post(
        "https://mgmt.waddleai.com/api/api_keys",
-       json={
-           "name": "Read-only Analytics Key",
-           "permissions": ["analytics:read"],
-           "rate_limit": 100
-       }
+       json={"name": "Read-only Analytics Key", "permissions": ["analytics:read"], "rate_limit": 100},
    ).json()
    ```
 
 4. **Monitor usage**: Track API key activity
    ```python
    usage = requests.get(
-       "https://mgmt.waddleai.com/api/usage",
-       headers={"Authorization": f"Bearer {api_key}"}
+       "https://mgmt.waddleai.com/api/usage", headers={"Authorization": f"Bearer {api_key}"}
    ).json()
    ```
 
@@ -389,8 +376,8 @@ new_key = requests.post(
        "https://mgmt.waddleai.com/api/api_keys",
        json={
            "name": "Temporary Key",
-           "expires_days": 7  # Expires in 1 week
-       }
+           "expires_days": 7,  # Expires in 1 week
+       },
    ).json()
    ```
 
@@ -405,10 +392,7 @@ import requests
 
 response = requests.post(
     "https://mgmt.waddleai.com/auth/login",
-    json={
-        "username": "john.doe",
-        "password": "secure-password"
-    }
+    json={"username": "john.doe", "password": "secure-password"},
 )
 
 token = response.json()["access_token"]
@@ -443,15 +427,13 @@ Tokens are validated on every request:
 ```python
 # Valid token - request succeeds
 response = requests.get(
-    "https://mgmt.waddleai.com/api/users",
-    headers={"Authorization": f"Bearer {valid_token}"}
+    "https://mgmt.waddleai.com/api/users", headers={"Authorization": f"Bearer {valid_token}"}
 )
 # Status: 200 OK
 
 # Expired token - request fails
 response = requests.get(
-    "https://mgmt.waddleai.com/api/users",
-    headers={"Authorization": f"Bearer {expired_token}"}
+    "https://mgmt.waddleai.com/api/users", headers={"Authorization": f"Bearer {expired_token}"}
 )
 # Status: 401 Unauthorized
 # Error: {"error": {"type": "authentication_required", "message": "Token expired"}}
@@ -464,10 +446,10 @@ WaddleAI uses a re-authentication flow rather than refresh tokens:
 ```python
 def get_fresh_token(username, password):
     response = requests.post(
-        "https://mgmt.waddleai.com/auth/login",
-        json={"username": username, "password": password}
+        "https://mgmt.waddleai.com/auth/login", json={"username": username, "password": password}
     )
     return response.json()["access_token"]
+
 
 # Implement in your application
 try:
@@ -496,8 +478,8 @@ user = requests.post(
     json={
         "username": "new.user",
         "password": "secure-password",  # Automatically hashed
-        "email": "user@example.com"
-    }
+        "email": "user@example.com",
+    },
 )
 ```
 
@@ -511,7 +493,7 @@ user = requests.post(
 API keys are hashed before storage:
 
 ```python
-# Original key shown once: wa-5-abc123def456
+# Original key shown once: <your-waddleai-key>
 # Stored in database as: bcrypt hash
 # Cannot be recovered - only validated
 ```
@@ -533,10 +515,7 @@ Configure IP restrictions for API keys:
 key = requests.post(
     "https://mgmt.waddleai.com/api/api_keys",
     headers={"Authorization": f"Bearer {admin_token}"},
-    json={
-        "name": "Production Key",
-        "allowed_ips": ["203.0.113.0/24", "198.51.100.42"]
-    }
+    json={"name": "Production Key", "allowed_ips": ["203.0.113.0/24", "198.51.100.42"]},
 ).json()
 ```
 
@@ -549,7 +528,7 @@ All authentication events are logged:
 logs = requests.get(
     "https://mgmt.waddleai.com/api/audit/auth",
     headers={"Authorization": f"Bearer {admin_token}"},
-    params={"days": 7}
+    params={"days": 7},
 ).json()
 
 # Log entries include:
@@ -570,15 +549,13 @@ WaddleAI supports multiple isolated organizations:
 # Org 1 users cannot see Org 2 data
 org1_token = authenticate("org1.user", "password")
 org1_usage = requests.get(
-    "https://mgmt.waddleai.com/api/usage",
-    headers={"Authorization": f"Bearer {org1_token}"}
+    "https://mgmt.waddleai.com/api/usage", headers={"Authorization": f"Bearer {org1_token}"}
 ).json()
 # Returns only Org 1 usage
 
 org2_token = authenticate("org2.user", "password")
 org2_usage = requests.get(
-    "https://mgmt.waddleai.com/api/usage",
-    headers={"Authorization": f"Bearer {org2_token}"}
+    "https://mgmt.waddleai.com/api/usage", headers={"Authorization": f"Bearer {org2_token}"}
 ).json()
 # Returns only Org 2 usage
 ```
@@ -594,17 +571,14 @@ admin_token = authenticate("admin", "admin-password")
 # Get all organizations
 all_orgs = requests.get(
     "https://mgmt.waddleai.com/api/organizations",
-    headers={"Authorization": f"Bearer {admin_token}"}
+    headers={"Authorization": f"Bearer {admin_token}"},
 ).json()
 
 # Create new organization
 new_org = requests.post(
     "https://mgmt.waddleai.com/api/organizations",
     headers={"Authorization": f"Bearer {admin_token}"},
-    json={
-        "name": "New Department",
-        "token_quota_monthly": 1000000
-    }
+    json={"name": "New Department", "token_quota_monthly": 1000000},
 ).json()
 ```
 
@@ -616,6 +590,7 @@ new_org = requests.post(
 import requests
 from typing import Optional
 
+
 class WaddleAIClient:
     def __init__(self, base_url: str, api_key: Optional[str] = None):
         self.base_url = base_url
@@ -624,8 +599,7 @@ class WaddleAIClient:
 
     def login(self, username: str, password: str):
         response = requests.post(
-            f"{self.base_url}/auth/login",
-            json={"username": username, "password": password}
+            f"{self.base_url}/auth/login", json={"username": username, "password": password}
         )
         response.raise_for_status()
         self.jwt_token = response.json()["access_token"]
@@ -639,12 +613,10 @@ class WaddleAIClient:
         raise ValueError("No authentication configured")
 
     def get_users(self):
-        response = requests.get(
-            f"{self.base_url}/api/users",
-            headers=self._get_headers()
-        )
+        response = requests.get(f"{self.base_url}/api/users", headers=self._get_headers())
         response.raise_for_status()
         return response.json()
+
 
 # Usage
 client = WaddleAIClient("https://mgmt.waddleai.com")

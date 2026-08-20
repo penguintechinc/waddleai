@@ -81,6 +81,7 @@ class RoutingEngineRouteEvaluator:
             proxy's pipeline uses for RoutingStage, spec §7).
         db: penguin-dal DB instance exposing ``model_configs`` (candidate
             offers -- see ``shared.routing.offers``).
+
     """
 
     def __init__(self, engine: RoutingEngine, db: Any) -> None:
@@ -105,6 +106,7 @@ class RoutingEngineRouteEvaluator:
         Returns:
             A RouteEvaluation with the selected model, complexity label,
             target_type category, confidence, and reasoning.
+
         """
         try:
             offers = await load_offers_from_model_configs(self.db)

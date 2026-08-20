@@ -1,5 +1,4 @@
-"""
-String validators - PyDAL-style validators for string inputs.
+"""String validators - PyDAL-style validators for string inputs.
 
 Provides:
 - IsNotEmpty: Validates non-empty strings
@@ -14,20 +13,21 @@ Provides:
 from __future__ import annotations
 
 import re
-from typing import Pattern, Sequence
+from collections.abc import Sequence
+from re import Pattern
 
 from py_libs.validation.base import ValidationResult, Validator
 
 
 class IsNotEmpty(Validator[str, str]):
-    """
-    Validates that a string is not empty or whitespace-only.
+    """Validates that a string is not empty or whitespace-only.
 
     Example:
         validator = IsNotEmpty()
         result = validator("hello")  # Valid
         result = validator("")       # Invalid
         result = validator("   ")    # Invalid
+
     """
 
     def __init__(self, error_message: str | None = None) -> None:
@@ -45,8 +45,7 @@ class IsNotEmpty(Validator[str, str]):
 
 
 class IsLength(Validator[str, str]):
-    """
-    Validates that a string length is within a range.
+    """Validates that a string length is within a range.
 
     Args:
         min_length: Minimum length (inclusive), default 0
@@ -56,6 +55,7 @@ class IsLength(Validator[str, str]):
         validator = IsLength(3, 50)
         result = validator("hello")  # Valid
         result = validator("hi")     # Invalid (too short)
+
     """
 
     def __init__(
@@ -86,8 +86,7 @@ class IsLength(Validator[str, str]):
 
 
 class IsMatch(Validator[str, str]):
-    """
-    Validates that a string matches a regex pattern.
+    """Validates that a string matches a regex pattern.
 
     Args:
         pattern: Regex pattern (string or compiled Pattern)
@@ -97,6 +96,7 @@ class IsMatch(Validator[str, str]):
         validator = IsMatch(r"^[A-Z]{2}\\d{4}$")
         result = validator("AB1234")  # Valid
         result = validator("abc123")  # Invalid
+
     """
 
     def __init__(
@@ -122,8 +122,7 @@ class IsMatch(Validator[str, str]):
 
 
 class IsAlphanumeric(Validator[str, str]):
-    """
-    Validates that a string contains only alphanumeric characters.
+    """Validates that a string contains only alphanumeric characters.
 
     Args:
         allow_underscore: Whether to allow underscores
@@ -133,6 +132,7 @@ class IsAlphanumeric(Validator[str, str]):
         validator = IsAlphanumeric()
         result = validator("Hello123")  # Valid
         result = validator("Hello!")    # Invalid
+
     """
 
     def __init__(
@@ -168,8 +168,7 @@ class IsAlphanumeric(Validator[str, str]):
 
 
 class IsSlug(Validator[str, str]):
-    """
-    Validates that a string is a valid URL slug.
+    """Validates that a string is a valid URL slug.
 
     A valid slug contains only lowercase letters, numbers, and hyphens,
     starts and ends with alphanumeric, and has no consecutive hyphens.
@@ -179,6 +178,7 @@ class IsSlug(Validator[str, str]):
         result = validator("my-blog-post")    # Valid
         result = validator("My Blog Post")    # Invalid
         result = validator("--invalid--")     # Invalid
+
     """
 
     _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -200,8 +200,7 @@ class IsSlug(Validator[str, str]):
 
 
 class IsIn(Validator[str, str]):
-    """
-    Validates that a value is in an allowed set.
+    """Validates that a value is in an allowed set.
 
     Args:
         options: Allowed values
@@ -214,6 +213,7 @@ class IsIn(Validator[str, str]):
 
         validator = IsIn(["admin", "user"], case_sensitive=False)
         result = validator("ADMIN")   # Valid
+
     """
 
     def __init__(
@@ -244,8 +244,7 @@ class IsIn(Validator[str, str]):
 
 
 class IsTrimmed(Validator[str, str]):
-    """
-    Validates and trims whitespace from a string.
+    """Validates and trims whitespace from a string.
 
     This validator always succeeds (for non-empty values) and returns
     the trimmed string.
@@ -253,6 +252,7 @@ class IsTrimmed(Validator[str, str]):
     Example:
         validator = IsTrimmed()
         result = validator("  hello  ")  # Returns "hello"
+
     """
 
     def __init__(self, allow_empty: bool = False) -> None:

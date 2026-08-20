@@ -1,11 +1,11 @@
-"""
-Tests for content filter redaction completeness.
+"""Tests for content filter redaction completeness.
 
 Regression: security review 2026-07-26 — redaction truncation leak
 Ensures long secrets (>100 chars) are completely redacted, not partially leaking tail.
 """
 
 import pytest
+
 from shared.security.content_filter import ContentFilter, FilterViolation
 
 
@@ -39,7 +39,9 @@ def test_long_api_key_fully_redacted(filter_instance: ContentFilter) -> None:
     # Original secret (full or tail) should NOT survive in redacted text
     # Check that no 8+ char substring from the original token tail appears
     original_tail = long_token[-30:]  # Last 30 chars of the token
-    assert original_tail not in redacted, f"Secret tail leaked: {original_tail} found in redacted text"
+    assert original_tail not in redacted, (
+        f"Secret tail leaked: {original_tail} found in redacted text"
+    )
 
     # Verify filtering was effective: the original full secret should not be present
     assert long_token not in redacted, "Full secret token should not appear in redacted text"
@@ -68,7 +70,7 @@ def test_long_password_fully_redacted(filter_instance: ContentFilter) -> None:
 
 def test_short_match_still_redacted(filter_instance: ContentFilter) -> None:
     """Short matches (< 100 chars) should still be fully redacted."""
-    short_secret = "sk-short123456789"
+    short_secret = "sk-short123456789"  # noqa: S105 -- fixed test credential, not a real secret
     text = f"api_key={short_secret}"
 
     violation = FilterViolation(
@@ -120,9 +122,9 @@ def test_multiple_long_secrets_all_redacted(filter_instance: ContentFilter) -> N
 
 
 def test_logged_matched_text_stays_truncated(filter_instance: ContentFilter) -> None:
-    """
-    Logged matched_text should remain truncated (≤100 chars) for storage efficiency,
-    while full_matched_text is used for redaction only.
+    """Logged matched_text should remain truncated (≤100 chars) for storage efficiency.
+
+    While full_matched_text is used for redaction only.
     """
     long_token = "x" * 180
     full_secret = f"api_key=sk-{long_token}"
@@ -141,9 +143,13 @@ def test_logged_matched_text_stays_truncated(filter_instance: ContentFilter) -> 
     )
 
     # The logged matched_text should be truncated (audit log doesn't store full secrets)
-    assert len(violation.matched_text) == 100, "Logged matched_text should be exactly 100 chars when truncated"
+    assert len(violation.matched_text) == 100, (
+        "Logged matched_text should be exactly 100 chars when truncated"
+    )
     # But full_matched_text should have the complete secret for redaction
-    assert len(violation.full_matched_text) == len(full_secret), "full_matched_text should preserve complete match"
+    assert len(violation.full_matched_text) == len(full_secret), (
+        "full_matched_text should preserve complete match"
+    )
 
     redacted = filter_instance._apply_redactions(text, [violation])
     assert "[REDACTED]" in redacted, "Full secret should be redacted using full_matched_text"

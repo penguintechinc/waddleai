@@ -46,6 +46,7 @@ def apply_sensitivity(
         dispatch commercial -- this is a security invariant, not a
         preference); ``redact_then_any`` keeps the full chain but flags
         redact_before_dispatch; ``ignore`` (or no PII) is a no-op.
+
     """
     mode = assignment_override or org_sensitivity_routing
     if mode not in _VALID_MODES:

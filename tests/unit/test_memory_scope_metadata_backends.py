@@ -11,7 +11,6 @@ in the same org; org memories are visible.
 """
 
 from datetime import datetime
-from typing import List
 from unittest.mock import Mock, patch
 
 import pytest
@@ -35,15 +34,20 @@ def _entry(user_id: int, content: str, scope_type: str = "user", entry_id: str =
 
 
 class FakeEncoder:
-    """Deterministic 'embeddings' — identical vectors so every stored doc
-    is a perfect match and visibility is decided purely by the where filters."""
+    """Deterministic 'embeddings'.
 
-    def encode(self, text: str, convert_to_tensor: bool = False) -> List[float]:
+    Identical vectors so every stored doc is a perfect match and visibility
+    is decided purely by the where filters.
+    """
+
+    def encode(self, text: str, convert_to_tensor: bool = False) -> list[float]:
+        """Return a fixed unit vector regardless of input, so relevance never gates visibility."""
         return [1.0, 0.0, 0.0]
 
 
 @pytest.fixture
 def chroma_store(tmp_path):
+    """Build a real ChromaDBMemoryStore against a temp dir, with a deterministic fake encoder."""
     with patch("shared.utils.memory_integration.SentenceTransformer"):
         store = ChromaDBMemoryStore(
             persist_directory=str(tmp_path / "chroma"),
@@ -57,6 +61,7 @@ def chroma_store(tmp_path):
 
 
 async def test_chroma_store_writes_scope_and_author_metadata(chroma_store):
+    """An org-scope entry persists its scope and author_user_id in Chroma metadata."""
     await chroma_store.initialize()
     assert await chroma_store.store_memory(_entry(5, "org runbook", scope_type="org"))
     got = chroma_store.collection.get(include=["metadatas"])
@@ -66,8 +71,10 @@ async def test_chroma_store_writes_scope_and_author_metadata(chroma_store):
 
 
 async def test_chroma_personal_invisible_to_other_user_org_visible(chroma_store):
-    """User 5 stores one personal + one org memory. User 6 (same org) must
-    see the org memory and must NOT see the personal one."""
+    """User 5 stores one personal + one org memory.
+
+    User 6 (same org) must see the org memory and must NOT see the personal one.
+    """
     await chroma_store.initialize()
     await chroma_store.store_memory(_entry(5, "my private note", scope_type="user"))
     await chroma_store.store_memory(_entry(5, "team deploy runbook", scope_type="org"))
@@ -84,8 +91,10 @@ async def test_chroma_personal_invisible_to_other_user_org_visible(chroma_store)
 
 
 async def test_chroma_owner_merged_view_no_duplicates(chroma_store):
-    """The author matches both the personal and org buckets — the org row
-    must not appear twice in the merged view."""
+    """The author matches both the personal and org buckets.
+
+    The org row must not appear twice in the merged view.
+    """
     await chroma_store.initialize()
     await chroma_store.store_memory(_entry(5, "my private note", scope_type="user"))
     await chroma_store.store_memory(_entry(5, "team deploy runbook", scope_type="org"))
@@ -98,6 +107,7 @@ async def test_chroma_owner_merged_view_no_duplicates(chroma_store):
 
 
 async def test_chroma_scope_user_excludes_org_rows(chroma_store):
+    """scope="user" on search returns only the caller's personal memories, never org rows."""
     await chroma_store.initialize()
     await chroma_store.store_memory(_entry(5, "my private note", scope_type="user"))
     await chroma_store.store_memory(_entry(5, "team deploy runbook", scope_type="org"))
@@ -109,8 +119,10 @@ async def test_chroma_scope_user_excludes_org_rows(chroma_store):
 
 
 async def test_chroma_legacy_entry_without_scope_key_is_personal(chroma_store):
-    """Entries stored before this feature have no metadata['scope'] key —
-    they must behave as personal."""
+    """Entries stored before this feature have no metadata['scope'] key.
+
+    They must behave as personal.
+    """
     await chroma_store.initialize()
     chroma_store.collection.add(
         ids=["legacy-1"],
@@ -125,10 +137,14 @@ async def test_chroma_legacy_entry_without_scope_key_is_personal(chroma_store):
         ],
         embeddings=[[1.0, 0.0, 0.0]],
     )
-    other = await chroma_store.search_memories("anything", user_id=6, organization_id=3, min_relevance=0.0, scope="all")
+    other = await chroma_store.search_memories(
+        "anything", user_id=6, organization_id=3, min_relevance=0.0, scope="all"
+    )
     assert "pre-feature memory" not in [m.content for m in other]
 
-    owner = await chroma_store.search_memories("anything", user_id=5, organization_id=3, min_relevance=0.0, scope="all")
+    owner = await chroma_store.search_memories(
+        "anything", user_id=5, organization_id=3, min_relevance=0.0, scope="all"
+    )
     got = next(m for m in owner if m.content == "pre-feature memory")
     assert got.scope_type == "user"
 
@@ -149,6 +165,7 @@ def _mem0_store():
 
 
 async def test_mem0_org_entry_stored_under_synthetic_org_user():
+    """An org-scope entry is written to mem0 under the synthetic "org-{id}" user, not the author."""
     store = _mem0_store()
     await store.store_memory(_entry(5, "team runbook", scope_type="org"))
     _, kwargs = store.client.add.call_args
@@ -158,6 +175,7 @@ async def test_mem0_org_entry_stored_under_synthetic_org_user():
 
 
 async def test_mem0_personal_entry_stored_under_real_user():
+    """A user-scope entry is written to mem0 under the real numeric user id."""
     store = _mem0_store()
     await store.store_memory(_entry(5, "my note", scope_type="user"))
     _, kwargs = store.client.add.call_args
@@ -166,6 +184,7 @@ async def test_mem0_personal_entry_stored_under_real_user():
 
 
 async def test_mem0_search_all_queries_both_buckets_and_merges():
+    """scope="all" queries both the personal and synthetic org buckets, merged by relevance."""
     store = _mem0_store()
 
     def fake_search(query, user_id, limit):
@@ -204,7 +223,9 @@ async def test_mem0_search_all_queries_both_buckets_and_merges():
         return []
 
     store.client.search.side_effect = fake_search
-    results = await store.search_memories("q", user_id=5, organization_id=3, min_relevance=0.0, scope="all")
+    results = await store.search_memories(
+        "q", user_id=5, organization_id=3, min_relevance=0.0, scope="all"
+    )
     assert [m.content for m in results] == ["team runbook", "my note"]  # relevance-ranked
     assert store.client.search.call_count == 2
     assert results[0].scope_type == "org"
@@ -212,6 +233,7 @@ async def test_mem0_search_all_queries_both_buckets_and_merges():
 
 
 async def test_mem0_search_user_scope_single_query_excludes_org():
+    """scope="user" issues a single search against the real user id, never the org bucket."""
     store = _mem0_store()
     store.client.search.return_value = []
     await store.search_memories("q", user_id=5, organization_id=3, scope="user")

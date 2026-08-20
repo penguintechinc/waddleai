@@ -15,6 +15,7 @@ import signal
 from concurrent import futures
 
 import grpc
+
 from penguincode_cli.config.settings import Settings, load_settings
 from penguincode_cli.proto import (
     add_AuthServiceServicer_to_server,

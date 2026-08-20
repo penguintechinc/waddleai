@@ -1,6 +1,4 @@
-"""
-Unit tests for token management system
-"""
+"""Unit tests for token management system."""
 
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
@@ -8,16 +6,23 @@ from unittest.mock import Mock, patch
 import pytest
 
 try:
-    from shared.utils.token_manager import TokenManager, TokenUsage, WaddleAITokenCalculator, create_token_manager
+    from shared.utils.token_manager import (
+        TokenManager,
+        TokenUsage,
+        WaddleAITokenCalculator,
+        create_token_manager,
+    )
 except ImportError as e:
-    pytest.skip(f"Skipping: shared.utils.token_manager not available ({e})", allow_module_level=True)
+    pytest.skip(
+        f"Skipping: shared.utils.token_manager not available ({e})", allow_module_level=True
+    )
 
 
 class TestWaddleAITokenCalculator:
-    """Test WaddleAI token calculation"""
+    """Test WaddleAI token calculation."""
 
     def test_init(self):
-        """Test calculator initialization"""
+        """Test calculator initialization."""
         calc = WaddleAITokenCalculator()
         assert len(calc.provider_rates) > 0
         assert "openai" in calc.provider_rates
@@ -25,17 +30,19 @@ class TestWaddleAITokenCalculator:
         assert "ollama" in calc.provider_rates
 
     def test_calculate_tokens_openai_gpt4(self):
-        """Test token calculation for OpenAI GPT-4"""
+        """Test token calculation for OpenAI GPT-4."""
         calc = WaddleAITokenCalculator()
 
-        waddleai_tokens = calc.calculate_tokens(provider="openai", model="gpt-4", input_tokens=100, output_tokens=50)
+        waddleai_tokens = calc.calculate_tokens(
+            provider="openai", model="gpt-4", input_tokens=100, output_tokens=50
+        )
 
         # GPT-4 should be expensive (high rate)
         assert waddleai_tokens > 150  # Should be more than raw tokens
         assert isinstance(waddleai_tokens, int)
 
     def test_calculate_tokens_openai_gpt35(self):
-        """Test token calculation for OpenAI GPT-3.5"""
+        """Test token calculation for OpenAI GPT-3.5."""
         calc = WaddleAITokenCalculator()
 
         waddleai_tokens = calc.calculate_tokens(
@@ -47,7 +54,7 @@ class TestWaddleAITokenCalculator:
         assert waddleai_tokens < gpt4_tokens
 
     def test_calculate_tokens_anthropic(self):
-        """Test token calculation for Anthropic"""
+        """Test token calculation for Anthropic."""
         calc = WaddleAITokenCalculator()
 
         waddleai_tokens = calc.calculate_tokens(
@@ -58,17 +65,19 @@ class TestWaddleAITokenCalculator:
         assert isinstance(waddleai_tokens, int)
 
     def test_calculate_tokens_ollama(self):
-        """Test token calculation for Ollama (free local)"""
+        """Test token calculation for Ollama (free local)."""
         calc = WaddleAITokenCalculator()
 
-        waddleai_tokens = calc.calculate_tokens(provider="ollama", model="llama2", input_tokens=100, output_tokens=50)
+        waddleai_tokens = calc.calculate_tokens(
+            provider="ollama", model="llama2", input_tokens=100, output_tokens=50
+        )
 
         # Ollama should be free/very cheap
         assert waddleai_tokens >= 0
         assert waddleai_tokens < 50  # Should be much less than raw tokens
 
     def test_calculate_tokens_unknown_provider(self):
-        """Test token calculation for unknown provider"""
+        """Test token calculation for unknown provider."""
         calc = WaddleAITokenCalculator()
 
         waddleai_tokens = calc.calculate_tokens(
@@ -80,7 +89,7 @@ class TestWaddleAITokenCalculator:
         assert isinstance(waddleai_tokens, int)
 
     def test_get_rate_for_provider_model(self):
-        """Test getting rate for specific provider/model"""
+        """Test getting rate for specific provider/model."""
         calc = WaddleAITokenCalculator()
 
         # Test specific model rates
@@ -94,7 +103,7 @@ class TestWaddleAITokenCalculator:
         assert unknown_rate > 0
 
     def test_edge_cases(self):
-        """Test edge cases"""
+        """Test edge cases."""
         calc = WaddleAITokenCalculator()
 
         # Zero tokens
@@ -107,10 +116,10 @@ class TestWaddleAITokenCalculator:
 
 
 class TestTokenUsage:
-    """Test TokenUsage dataclass"""
+    """Test TokenUsage dataclass."""
 
     def test_token_usage_creation(self):
-        """Test TokenUsage creation"""
+        """Test TokenUsage creation."""
         usage = TokenUsage(
             waddleai_tokens=100,
             llm_tokens_input=80,
@@ -128,26 +137,30 @@ class TestTokenUsage:
         assert usage.cost_usd == 0.002
 
     def test_token_usage_defaults(self):
-        """Test TokenUsage default values"""
+        """Test TokenUsage default values."""
         usage = TokenUsage(
-            waddleai_tokens=100, llm_tokens_input=80, llm_tokens_output=40, provider="openai", model="gpt-4"
+            waddleai_tokens=100,
+            llm_tokens_input=80,
+            llm_tokens_output=40,
+            provider="openai",
+            model="gpt-4",
         )
 
         assert usage.cost_usd == 0.0  # Default value
 
 
 class TestTokenManager:
-    """Test TokenManager class"""
+    """Test TokenManager class."""
 
     def test_init(self, mock_db):
-        """Test TokenManager initialization"""
+        """Test TokenManager initialization."""
         manager = TokenManager(mock_db)
         assert manager.db == mock_db
         assert isinstance(manager.calculator, WaddleAITokenCalculator)
 
     @patch("shared.utils.token_manager.tiktoken.encoding_for_model")
     def test_count_tokens(self, mock_encoding, mock_db):
-        """Test token counting"""
+        """Test token counting."""
         # Mock tiktoken encoder
         mock_encoder = Mock()
         mock_encoder.encode.return_value = [1, 2, 3, 4, 5]  # 5 tokens
@@ -161,7 +174,7 @@ class TestTokenManager:
 
     @patch("shared.utils.token_manager.tiktoken.encoding_for_model")
     def test_count_tokens_fallback(self, mock_encoding, mock_db):
-        """Test token counting fallback"""
+        """Test token counting fallback."""
         # Mock encoding failure
         mock_encoding.side_effect = Exception("Encoding failed")
 
@@ -172,7 +185,7 @@ class TestTokenManager:
         assert token_count == len("Hello world") // 4
 
     def test_process_usage_with_actual_tokens(self, mock_db):
-        """Test processing usage with actual token counts"""
+        """Test processing usage with actual token counts."""
         manager = TokenManager(mock_db)
 
         # Mock database insert
@@ -203,7 +216,7 @@ class TestTokenManager:
 
     @patch("shared.utils.token_manager.tiktoken.encoding_for_model")
     def test_process_usage_estimated_tokens(self, mock_encoding, mock_db):
-        """Test processing usage with estimated tokens"""
+        """Test processing usage with estimated tokens."""
         # Mock tiktoken encoder
         mock_encoder = Mock()
         mock_encoder.encode.side_effect = [[1, 2, 3], [1, 2]]  # 3 input, 2 output tokens
@@ -230,7 +243,7 @@ class TestTokenManager:
         assert usage.waddleai_tokens > 0
 
     def test_check_quota_under_limit(self, mock_db):
-        """Test quota check when under limit"""
+        """Test quota check when under limit."""
         manager = TokenManager(mock_db)
 
         # Mock quota queries
@@ -273,7 +286,7 @@ class TestTokenManager:
         assert "monthly" in quota_info
 
     def test_get_usage_stats(self, mock_db):
-        """Test getting usage statistics"""
+        """Test getting usage statistics."""
         manager = TokenManager(mock_db)
 
         # Mock usage records
@@ -301,7 +314,7 @@ class TestTokenManager:
         assert stats["total_requests"] == 5
 
     def test_get_usage_stats_no_data(self, mock_db):
-        """Test getting usage statistics with no data"""
+        """Test getting usage statistics with no data."""
         manager = TokenManager(mock_db)
 
         # Mock empty result
@@ -319,10 +332,10 @@ class TestTokenManager:
 
 
 class TestTokenManagerFactory:
-    """Test token manager factory function"""
+    """Test token manager factory function."""
 
     def test_create_token_manager(self, mock_db):
-        """Test creating token manager"""
+        """Test creating token manager."""
         manager = create_token_manager(mock_db)
 
         assert isinstance(manager, TokenManager)

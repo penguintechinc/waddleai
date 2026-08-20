@@ -1,5 +1,4 @@
-"""
-NER-based PII entity detection.
+"""NER-based PII entity detection.
 
 Primary backend: Microsoft Presidio + spaCy (install presidio-analyzer + a spaCy model).
 Fallback backend: HuggingFace transformers NER pipeline (uses existing torch/transformers deps).
@@ -52,7 +51,7 @@ ENTITY_CONFIG: dict[str, tuple[str, float]] = {
     "IP_ADDRESS": ("log", 0.80),
     "URL": ("log", 0.55),
     # GDPR special categories — log, auditor decides block vs allow
-    "NRP": ("log", 0.72),      # Nationality / Religion / Political group
+    "NRP": ("log", 0.72),  # Nationality / Religion / Political group
     "DATE_TIME": ("log", 0.55),
     "ORG": ("log", 0.50),
 }
@@ -108,16 +107,15 @@ def ner_analyze(text: str, language: str = "en") -> list[dict]:
 class NEREntity:
     """Single entity detected by NER model."""
 
-    entity_type: str   # Normalized entity type key from ENTITY_CONFIG
-    text: str          # Matched text span
-    start: int         # Character start offset in source text
-    end: int           # Character end offset in source text
-    score: float       # Raw model confidence (0.0–1.0)
+    entity_type: str  # Normalized entity type key from ENTITY_CONFIG
+    text: str  # Matched text span
+    start: int  # Character start offset in source text
+    end: int  # Character end offset in source text
+    score: float  # Raw model confidence (0.0–1.0)
 
 
 class NERFilter:
-    """
-    PII entity detection using NER models.
+    """PII entity detection using NER models.
 
     Initialized once at startup (model load is slow).
     The analyze() method is synchronous and CPU-bound — callers should wrap
@@ -126,6 +124,7 @@ class NERFilter:
     """
 
     def __init__(self, spacy_model: str = "en_core_web_lg") -> None:
+        """Select and lazily init the best available NER backend (Presidio, then transformers)."""
         self._analyzer = None
         self._hf_ner = None
         self._available = False
@@ -172,10 +171,7 @@ class NERFilter:
             # missing en_core_web_lg is the normal state of any environment
             # that has not explicitly run `python -m spacy download` -- which
             # made this an unhandled startup crash, not an edge case.
-            logger.warning(
-                f"Presidio NER init failed ({e}). "
-                "Trying transformers fallback."
-            )
+            logger.warning(f"Presidio NER init failed ({e}). Trying transformers fallback.")
             if _TRANSFORMERS_NER_AVAILABLE:
                 self._init_transformers()
 
@@ -190,13 +186,9 @@ class NERFilter:
             )
             self._available = True
             self._mode = "transformers"
-            logger.info(
-                "NER filter initialized: HuggingFace transformers (dslim/bert-base-NER)"
-            )
+            logger.info("NER filter initialized: HuggingFace transformers (dslim/bert-base-NER)")
         except Exception as e:
-            logger.warning(
-                f"Transformers NER init failed ({e}). NER tier disabled."
-            )
+            logger.warning(f"Transformers NER init failed ({e}). NER tier disabled.")
 
     @property
     def available(self) -> bool:
@@ -209,8 +201,7 @@ class NERFilter:
         return self._mode
 
     def analyze(self, text: str, language: str = "en") -> list[NEREntity]:
-        """
-        Run NER on text and return detected entities.
+        """Run NER on text and return detected entities.
 
         Synchronous and CPU-bound — wrap in run_in_executor when calling
         from async context.
@@ -221,6 +212,7 @@ class NERFilter:
 
         Returns:
             List of NEREntity objects, empty list if NER unavailable or on error
+
         """
         if not self._available:
             return []

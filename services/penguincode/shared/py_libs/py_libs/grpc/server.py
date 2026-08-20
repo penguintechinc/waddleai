@@ -1,5 +1,4 @@
-"""
-gRPC server helpers with health checks and graceful shutdown.
+"""gRPC server helpers with health checks and graceful shutdown.
 """
 
 from __future__ import annotations
@@ -8,7 +7,7 @@ import logging
 import signal
 from concurrent import futures
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
@@ -33,11 +32,10 @@ class ServerOptions:
 
 
 def create_server(
-    interceptors: Optional[list[grpc.ServerInterceptor]] = None,
-    options: Optional[ServerOptions] = None,
+    interceptors: list[grpc.ServerInterceptor] | None = None,
+    options: ServerOptions | None = None,
 ) -> grpc.Server:
-    """
-    Create a gRPC server with standard configuration.
+    """Create a gRPC server with standard configuration.
 
     Args:
         interceptors: List of server interceptors for auth, logging, etc.
@@ -53,6 +51,7 @@ def create_server(
         >>> # Add servicers
         >>> server.add_insecure_port('[::]:50051')
         >>> server.start()
+
     """
     if options is None:
         options = ServerOptions()
@@ -100,8 +99,7 @@ def create_server(
 
 
 def register_health_check(server: grpc.Server) -> health.HealthServicer:
-    """
-    Register health check service on the server.
+    """Register health check service on the server.
 
     Args:
         server: gRPC server instance
@@ -112,6 +110,7 @@ def register_health_check(server: grpc.Server) -> health.HealthServicer:
     Example:
         >>> health_servicer = register_health_check(server)
         >>> health_servicer.set("myservice", health_pb2.HealthCheckResponse.SERVING)
+
     """
     health_servicer = health.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
@@ -138,8 +137,7 @@ def start_server_with_graceful_shutdown(
     port: int = 50051,
     grace_period: float = 30.0,
 ) -> None:
-    """
-    Start server and handle graceful shutdown on SIGTERM/SIGINT.
+    """Start server and handle graceful shutdown on SIGTERM/SIGINT.
 
     Args:
         server: gRPC server instance
@@ -150,6 +148,7 @@ def start_server_with_graceful_shutdown(
         >>> server = create_server()
         >>> # Add your servicers
         >>> start_server_with_graceful_shutdown(server, port=50051)
+
     """
     server.add_insecure_port(f"[::]:{port}")
     server.start()

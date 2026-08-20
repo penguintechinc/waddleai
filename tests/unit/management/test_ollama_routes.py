@@ -1,5 +1,4 @@
-"""
-Pytest test suite for WaddleAI Management API v1 - Ollama Deployment Routes
+"""Pytest test suite for WaddleAI Management API v1 - Ollama Deployment Routes.
 
 Tests all endpoints:
 - GET /api/v1/ollama/deployments - list deployments (admin only)
@@ -146,7 +145,10 @@ async def test_get_ollama_deployment_success(client, app_mock_db, auth_headers):
     model2 = make_mock_model(model_id=2, name="mistral")
 
     # Mock first select() for deployment, second for models
-    app_mock_db.return_value.select.side_effect = [make_select_result([dep]), make_select_result([model1, model2])]
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),
+        make_select_result([model1, model2]),
+    ]
 
     resp = await client.get("/api/v1/ollama/deployments/1", headers=auth_headers)
 
@@ -187,9 +189,15 @@ async def test_create_ollama_deployment_success(client, app_mock_db, auth_header
     # Mock: insert returns ID 5
     app_mock_db.ollama_deployments.insert.return_value = 5
 
-    payload = {"name": "new-deploy", "endpoint_url": "http://ollama:11434", "deployment_type": "external"}
+    payload = {
+        "name": "new-deploy",
+        "endpoint_url": "http://ollama:11434",
+        "deployment_type": "external",
+    }
 
-    resp = await client.post("/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.post(
+        "/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 201
     data = await resp.get_json()
@@ -206,7 +214,9 @@ async def test_create_ollama_deployment_duplicate_name(client, app_mock_db, auth
 
     payload = {"name": "existing", "endpoint_url": "http://ollama:11434"}
 
-    resp = await client.post("/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.post(
+        "/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 409
     assert "exists" in (await resp.get_json())["error"].lower()
@@ -216,7 +226,9 @@ async def test_create_ollama_deployment_missing_name(client, app_mock_db, auth_h
     """Returns 400 if 'name' is missing."""
     payload = {"endpoint_url": "http://ollama:11434"}
 
-    resp = await client.post("/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.post(
+        "/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 400
     assert "name" in (await resp.get_json())["error"].lower()
@@ -226,7 +238,9 @@ async def test_create_ollama_deployment_missing_endpoint(client, app_mock_db, au
     """Returns 400 if 'endpoint_url' is missing."""
     payload = {"name": "test"}
 
-    resp = await client.post("/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.post(
+        "/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 400
     assert "endpoint_url" in (await resp.get_json())["error"].lower()
@@ -243,7 +257,9 @@ async def test_create_ollama_deployment_not_admin(client, app_mock_db, user_auth
     """Non-admin users get 403."""
     payload = {"name": "test", "endpoint_url": "http://localhost:11434"}
 
-    resp = await client.post("/api/v1/ollama/deployments", headers=user_auth_headers, data=json.dumps(payload))
+    resp = await client.post(
+        "/api/v1/ollama/deployments", headers=user_auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 403
 
@@ -267,7 +283,9 @@ async def test_update_ollama_deployment_success(client, app_mock_db, auth_header
 
     payload = {"name": "new-name", "endpoint_url": "http://new-endpoint:11434"}
 
-    resp = await client.put("/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 200
     assert "updated" in (await resp.get_json())["message"].lower()
@@ -279,7 +297,9 @@ async def test_update_ollama_deployment_not_found(client, app_mock_db, auth_head
 
     payload = {"name": "new-name"}
 
-    resp = await client.put("/api/v1/ollama/deployments/999", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.put(
+        "/api/v1/ollama/deployments/999", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 404
 
@@ -296,7 +316,9 @@ async def test_update_ollama_deployment_duplicate_name(client, app_mock_db, auth
 
     payload = {"name": "taken"}
 
-    resp = await client.put("/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 409
 
@@ -312,7 +334,9 @@ async def test_update_ollama_deployment_not_admin(client, app_mock_db, user_auth
     """Non-admin users get 403."""
     payload = {"name": "new-name"}
 
-    resp = await client.put("/api/v1/ollama/deployments/1", headers=user_auth_headers, data=json.dumps(payload))
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=user_auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 403
 
@@ -549,7 +573,9 @@ async def test_export_docker_compose_not_found(client, app_mock_db, auth_headers
 
 async def test_export_docker_compose_not_admin(client, app_mock_db, user_auth_headers):
     """Non-admin users get 403."""
-    resp = await client.get("/api/v1/ollama/deployments/1/docker-compose", headers=user_auth_headers)
+    resp = await client.get(
+        "/api/v1/ollama/deployments/1/docker-compose", headers=user_auth_headers
+    )
 
     assert resp.status_code == 403
 
@@ -617,7 +643,10 @@ async def test_list_ollama_models_empty(client, app_mock_db, auth_headers):
     """Returns empty models list if none exist."""
     dep = make_mock_deployment(dep_id=1)
 
-    app_mock_db.return_value.select.side_effect = [make_select_result([dep]), make_select_result([])]
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),
+        make_select_result([]),
+    ]
 
     resp = await client.get("/api/v1/ollama/deployments/1/models", headers=auth_headers)
 
@@ -675,7 +704,9 @@ async def test_pull_ollama_model_new(client, app_mock_db, auth_headers):
         return_value=mock_http_client,
     ):
         resp = await client.post(
-            "/api/v1/ollama/deployments/1/models/pull", headers=auth_headers, data=json.dumps(payload)
+            "/api/v1/ollama/deployments/1/models/pull",
+            headers=auth_headers,
+            data=json.dumps(payload),
         )
 
     assert resp.status_code == 200
@@ -719,7 +750,9 @@ async def test_pull_ollama_model_existing(client, app_mock_db, auth_headers):
         return_value=mock_http_client,
     ):
         resp = await client.post(
-            "/api/v1/ollama/deployments/1/models/pull", headers=auth_headers, data=json.dumps(payload)
+            "/api/v1/ollama/deployments/1/models/pull",
+            headers=auth_headers,
+            data=json.dumps(payload),
         )
 
     assert resp.status_code == 200
@@ -749,7 +782,9 @@ async def test_pull_ollama_model_missing_model_field(client, app_mock_db, auth_h
 
     payload = {"tag": "latest"}  # Missing 'model'
 
-    resp = await client.post("/api/v1/ollama/deployments/1/models/pull", headers=auth_headers, data=json.dumps(payload))
+    resp = await client.post(
+        "/api/v1/ollama/deployments/1/models/pull", headers=auth_headers, data=json.dumps(payload)
+    )
 
     assert resp.status_code == 400
 
@@ -759,7 +794,9 @@ async def test_pull_ollama_model_not_admin(client, app_mock_db, user_auth_header
     payload = {"model": "llama3.2"}
 
     resp = await client.post(
-        "/api/v1/ollama/deployments/1/models/pull", headers=user_auth_headers, data=json.dumps(payload)
+        "/api/v1/ollama/deployments/1/models/pull",
+        headers=user_auth_headers,
+        data=json.dumps(payload),
     )
 
     assert resp.status_code == 403
@@ -775,7 +812,10 @@ async def test_remove_ollama_model_success(client, app_mock_db, auth_headers):
     dep = make_mock_deployment(dep_id=1)
     model = make_mock_model(model_id=5, name="llama3.2")
 
-    app_mock_db.return_value.select.side_effect = [make_select_result([dep]), make_select_result([model])]
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),
+        make_select_result([model]),
+    ]
 
     resp = await client.delete("/api/v1/ollama/deployments/1/models/llama3.2", headers=auth_headers)
 
@@ -789,7 +829,9 @@ async def test_remove_ollama_model_not_found_deployment(client, app_mock_db, aut
     """Returns 404 if deployment not found."""
     app_mock_db.return_value.select.return_value = make_select_result([])
 
-    resp = await client.delete("/api/v1/ollama/deployments/999/models/llama3.2", headers=auth_headers)
+    resp = await client.delete(
+        "/api/v1/ollama/deployments/999/models/llama3.2", headers=auth_headers
+    )
 
     assert resp.status_code == 404
 
@@ -798,15 +840,22 @@ async def test_remove_ollama_model_not_found_model(client, app_mock_db, auth_hea
     """Returns 404 if model not found in deployment."""
     dep = make_mock_deployment(dep_id=1)
 
-    app_mock_db.return_value.select.side_effect = [make_select_result([dep]), make_select_result([])]  # Model not found
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),
+        make_select_result([]),
+    ]  # Model not found
 
-    resp = await client.delete("/api/v1/ollama/deployments/1/models/nonexistent", headers=auth_headers)
+    resp = await client.delete(
+        "/api/v1/ollama/deployments/1/models/nonexistent", headers=auth_headers
+    )
 
     assert resp.status_code == 404
 
 
 async def test_remove_ollama_model_not_admin(client, app_mock_db, user_auth_headers):
     """Non-admin users get 403."""
-    resp = await client.delete("/api/v1/ollama/deployments/1/models/llama3.2", headers=user_auth_headers)
+    resp = await client.delete(
+        "/api/v1/ollama/deployments/1/models/llama3.2", headers=user_auth_headers
+    )
 
     assert resp.status_code == 403

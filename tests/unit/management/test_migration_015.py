@@ -56,9 +56,7 @@ def test_upgrade_creates_local_vector_tables(scratch_db):
         coll_cols = {
             r[1] for r in conn.execute(sa.text("PRAGMA table_info(local_vector_collections)"))
         }
-        point_cols = {
-            r[1] for r in conn.execute(sa.text("PRAGMA table_info(local_vector_points)"))
-        }
+        point_cols = {r[1] for r in conn.execute(sa.text("PRAGMA table_info(local_vector_points)"))}
 
     assert coll_cols == {"id", "name", "dimensions", "embedder_id", "distance", "created_at"}
     assert point_cols == {

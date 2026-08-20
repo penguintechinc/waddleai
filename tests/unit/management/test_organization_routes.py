@@ -1,8 +1,5 @@
-"""
-Unit tests for organization management routes: /api/v1/organizations/*
-"""
+"""Unit tests for organization management routes: /api/v1/organizations/*."""
 
-from typing import Dict
 from unittest.mock import MagicMock
 
 from tests.unit.management.conftest import make_select_result
@@ -14,9 +11,11 @@ from tests.unit.management.route_conftest import make_mock_org
 
 
 class TestListOrganizations:
-    """Tests for GET /api/v1/organizations"""
+    """Tests for GET /api/v1/organizations."""
 
-    async def test_list_orgs_admin(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_list_orgs_admin(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin gets all orgs."""
         org = make_mock_org()
         app_mock_db.return_value.select.return_value = make_select_result([org])
@@ -27,7 +26,9 @@ class TestListOrganizations:
         data = await resp.get_json()
         assert "organizations" in data
 
-    async def test_list_orgs_regular_user(self, client, app_mock_db: MagicMock, user_auth_headers: Dict) -> None:
+    async def test_list_orgs_regular_user(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
         """Regular user gets own org only."""
         org = make_mock_org()
         app_mock_db.return_value.select.return_value = make_select_result([org])
@@ -48,9 +49,9 @@ class TestListOrganizations:
 
 
 class TestGetOrganization:
-    """Tests for GET /api/v1/organizations/<org_id>"""
+    """Tests for GET /api/v1/organizations/<org_id>."""
 
-    async def test_get_org_admin(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_org_admin(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
         """Admin can get any org."""
         org = make_mock_org()
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -61,14 +62,18 @@ class TestGetOrganization:
         data = await resp.get_json()
         assert data["name"] == "default"
 
-    async def test_get_org_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_org_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin requesting non-existent org returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
         resp = await client.get("/api/v1/organizations/999", headers=auth_headers)
         assert resp.status_code == 404
 
-    async def test_get_org_non_admin_own_org(self, client, app_mock_db: MagicMock, user_auth_headers: Dict) -> None:
+    async def test_get_org_non_admin_own_org(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
         """Regular user can view own org (org_id matches token)."""
         org = make_mock_org(org_id=1)
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -77,7 +82,9 @@ class TestGetOrganization:
         resp = await client.get("/api/v1/organizations/1", headers=user_auth_headers)
         assert resp.status_code == 200
 
-    async def test_get_org_non_admin_other_org(self, client, app_mock_db: MagicMock, user_auth_headers: Dict) -> None:
+    async def test_get_org_non_admin_other_org(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
         """Regular user cannot view another org → 403 (checked before DB lookup)."""
         resp = await client.get("/api/v1/organizations/999", headers=user_auth_headers)
         assert resp.status_code == 403
@@ -89,9 +96,11 @@ class TestGetOrganization:
 
 
 class TestCreateOrganization:
-    """Tests for POST /api/v1/organizations"""
+    """Tests for POST /api/v1/organizations."""
 
-    async def test_create_org_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_create_org_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can create an organization."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
@@ -104,7 +113,7 @@ class TestCreateOrganization:
         data = await resp.get_json()
         assert isinstance(data.get("id"), int)
 
-    async def test_create_org_missing_name(self, client, auth_headers: Dict) -> None:
+    async def test_create_org_missing_name(self, client, auth_headers: dict) -> None:
         """Missing name returns 400."""
         resp = await client.post(
             "/api/v1/organizations",
@@ -113,7 +122,7 @@ class TestCreateOrganization:
         )
         assert resp.status_code == 400
 
-    async def test_create_org_no_body(self, client, auth_headers: Dict) -> None:
+    async def test_create_org_no_body(self, client, auth_headers: dict) -> None:
         """No body returns 400."""
         resp = await client.post(
             "/api/v1/organizations",
@@ -122,7 +131,9 @@ class TestCreateOrganization:
         )
         assert resp.status_code == 400
 
-    async def test_create_org_duplicate_name(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_create_org_duplicate_name(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Duplicate org name returns 409."""
         existing = make_mock_org()
         app_mock_db.return_value.select.return_value.first.return_value = existing
@@ -134,7 +145,7 @@ class TestCreateOrganization:
         )
         assert resp.status_code == 409
 
-    async def test_create_org_non_admin_forbidden(self, client, user_auth_headers: Dict) -> None:
+    async def test_create_org_non_admin_forbidden(self, client, user_auth_headers: dict) -> None:
         """Regular user cannot create orgs → 403."""
         resp = await client.post(
             "/api/v1/organizations",
@@ -150,9 +161,11 @@ class TestCreateOrganization:
 
 
 class TestUpdateOrganization:
-    """Tests for PUT /api/v1/organizations/<org_id>"""
+    """Tests for PUT /api/v1/organizations/<org_id>."""
 
-    async def test_update_org_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_update_org_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can update an org."""
         org = make_mock_org()
         app_mock_db.return_value.select.return_value.first.side_effect = [org, None]
@@ -164,7 +177,9 @@ class TestUpdateOrganization:
         )
         assert resp.status_code == 200
 
-    async def test_update_org_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_update_org_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Missing org returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
@@ -175,7 +190,9 @@ class TestUpdateOrganization:
         )
         assert resp.status_code == 404
 
-    async def test_update_org_name_conflict(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_update_org_name_conflict(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Duplicate name returns 409."""
         org = make_mock_org()
         other_org = make_mock_org(org_id=99, name="other")
@@ -188,7 +205,7 @@ class TestUpdateOrganization:
         )
         assert resp.status_code == 409
 
-    async def test_update_org_no_body(self, client, auth_headers: Dict) -> None:
+    async def test_update_org_no_body(self, client, auth_headers: dict) -> None:
         """No body returns 400."""
         resp = await client.put(
             "/api/v1/organizations/1",
@@ -204,9 +221,11 @@ class TestUpdateOrganization:
 
 
 class TestDeleteOrganization:
-    """Tests for DELETE /api/v1/organizations/<org_id>"""
+    """Tests for DELETE /api/v1/organizations/<org_id>."""
 
-    async def test_delete_org_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_delete_org_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can soft-delete an org with no users."""
         org = make_mock_org(name="removable")
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -215,7 +234,9 @@ class TestDeleteOrganization:
         resp = await client.delete("/api/v1/organizations/2", headers=auth_headers)
         assert resp.status_code == 200
 
-    async def test_delete_default_org(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_delete_default_org(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Cannot delete the 'default' org → 400."""
         org = make_mock_org(name="default")
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -223,7 +244,9 @@ class TestDeleteOrganization:
         resp = await client.delete("/api/v1/organizations/1", headers=auth_headers)
         assert resp.status_code == 400
 
-    async def test_delete_org_has_users(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_delete_org_has_users(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Org with users returns 400."""
         org = make_mock_org(name="orgwithusers")
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -232,14 +255,16 @@ class TestDeleteOrganization:
         resp = await client.delete("/api/v1/organizations/5", headers=auth_headers)
         assert resp.status_code == 400
 
-    async def test_delete_org_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_delete_org_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Missing org returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
         resp = await client.delete("/api/v1/organizations/999", headers=auth_headers)
         assert resp.status_code == 404
 
-    async def test_delete_org_non_admin_forbidden(self, client, user_auth_headers: Dict) -> None:
+    async def test_delete_org_non_admin_forbidden(self, client, user_auth_headers: dict) -> None:
         """Regular user cannot delete → 403."""
         resp = await client.delete("/api/v1/organizations/1", headers=user_auth_headers)
         assert resp.status_code == 403
@@ -251,9 +276,11 @@ class TestDeleteOrganization:
 
 
 class TestGetOrganizationUsage:
-    """Tests for GET /api/v1/organizations/<org_id>/usage"""
+    """Tests for GET /api/v1/organizations/<org_id>/usage."""
 
-    async def test_get_org_usage_admin(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_org_usage_admin(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can get org usage."""
         org = make_mock_org()
         org_sel = make_select_result([org])
@@ -265,7 +292,9 @@ class TestGetOrganizationUsage:
         data = await resp.get_json()
         assert "usage" in data
 
-    async def test_get_org_usage_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_org_usage_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Missing org returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 

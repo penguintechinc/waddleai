@@ -14,6 +14,12 @@ Cursor speaks the OpenAI-compatible API, so it works against WaddleAI's
 
 ## MCP tools (optional, requires `waddleai.mcp_v2`)
 
+The MCP config below reads the key from the environment:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 Cursor's MCP config (`~/.cursor/mcp.json` or the workspace-local
 `.cursor/mcp.json`):
 
@@ -23,7 +29,7 @@ Cursor's MCP config (`~/.cursor/mcp.json` or the workspace-local
     "waddleai": {
       "url": "https://your-waddleai-host/mcp",
       "headers": {
-        "Authorization": "Bearer wa-your-key-here"
+        "Authorization": "Bearer <your-waddleai-key>"
       }
     }
   }

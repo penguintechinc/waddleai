@@ -33,16 +33,16 @@ Create Date: 2026-08-14
 """
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "007_drop_ailb_add_native_limits"
-down_revision: Union[str, None] = "006_add_memory_scope"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "006_add_memory_scope"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 # Mirrors shared.utils.token_manager.TokenManager.DEFAULT_CONVERSION_RATES.
@@ -184,6 +184,7 @@ def _fold_ailb_usage(connection: sa.engine.Connection) -> int:
 
 
 def upgrade() -> None:
+    """Drop AILB tables, fold their usage history into token_usage, and add native rate limits."""
     bind = op.get_bind()
 
     # Guard-add: budget_monthly_tokens/budget_monthly_usd may already exist
@@ -195,9 +196,7 @@ def upgrade() -> None:
             "virtual_keys", sa.Column("budget_monthly_tokens", sa.Integer(), nullable=True)
         )
     if not _has_column(bind, "virtual_keys", "budget_monthly_usd"):
-        op.add_column(
-            "virtual_keys", sa.Column("budget_monthly_usd", sa.Integer(), nullable=True)
-        )
+        op.add_column("virtual_keys", sa.Column("budget_monthly_usd", sa.Integer(), nullable=True))
 
     # Guard-add token_usage.source/estimated (same drift as above). NOT NULL
     # with server_default is safe as a single step (existing rows backfill).
@@ -261,6 +260,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Recreate the dropped AILB tables/columns and revert rate columns to Integer."""
     bind = op.get_bind()
 
     # Remove exactly the rows this migration seeded (matched by

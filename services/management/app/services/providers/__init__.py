@@ -1,5 +1,4 @@
-"""
-WaddleAI Provider Abstraction Layer
+"""WaddleAI Provider Abstraction Layer.
 
 Unified interface for managing AI providers:
 - OpenAI / ChatGPT
@@ -13,11 +12,11 @@ Unified interface for managing AI providers:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
-class ProviderType(str, Enum):
-    """Supported AI provider types"""
+class ProviderType(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
+    """Supported AI provider types."""
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
@@ -58,7 +57,15 @@ MODEL_ALIASES = {
 
 # Default models by provider
 DEFAULT_MODELS = {
-    ProviderType.OPENAI: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1-preview", "o1-mini"],
+    ProviderType.OPENAI: [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-3.5-turbo",
+        "o1-preview",
+        "o1-mini",
+    ],
     ProviderType.ANTHROPIC: [
         "claude-3-5-sonnet-latest",
         "claude-3-opus-20240229",
@@ -115,38 +122,39 @@ DEFAULT_ENDPOINTS = {
 
 @dataclass
 class RateLimits:
-    """Rate limit configuration"""
+    """Rate limit configuration."""
 
     tpm_limit: int = 10000  # Tokens per minute
     rpm_limit: int = 60  # Requests per minute
-    daily_limit: Optional[int] = None
-    monthly_limit: Optional[int] = None
+    daily_limit: int | None = None
+    monthly_limit: int | None = None
 
 
 @dataclass
 class ProviderConfig:
-    """Base configuration for all AI providers"""
+    """Base configuration for all AI providers."""
 
     provider_type: ProviderType
     name: str
     enabled: bool = True
-    api_key: Optional[str] = None
-    endpoint_url: Optional[str] = None
-    model_list: List[str] = field(default_factory=list)
+    api_key: str | None = None
+    endpoint_url: str | None = None
+    model_list: list[str] = field(default_factory=list)
     rate_limits: RateLimits = field(default_factory=RateLimits)
     priority: int = 100
     ailb_sync_enabled: bool = True
-    extra_config: Dict[str, Any] = field(default_factory=dict)
+    extra_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class OpenAIConfig(ProviderConfig):
-    """OpenAI / ChatGPT specific configuration"""
+    """OpenAI / ChatGPT specific configuration."""
 
-    organization_id: Optional[str] = None
-    project_id: Optional[str] = None
+    organization_id: str | None = None
+    project_id: str | None = None
 
     def __post_init__(self):
+        """Fill in OpenAI's provider_type and default endpoint/model list if not overridden."""
         self.provider_type = ProviderType.OPENAI
         if not self.endpoint_url:
             self.endpoint_url = DEFAULT_ENDPOINTS[ProviderType.OPENAI]
@@ -156,11 +164,12 @@ class OpenAIConfig(ProviderConfig):
 
 @dataclass
 class AnthropicConfig(ProviderConfig):
-    """Anthropic / Claude specific configuration"""
+    """Anthropic / Claude specific configuration."""
 
     anthropic_version: str = "2024-01-01"
 
     def __post_init__(self):
+        """Fill in Anthropic's provider_type and default endpoint/model list if not overridden."""
         self.provider_type = ProviderType.ANTHROPIC
         if not self.endpoint_url:
             self.endpoint_url = DEFAULT_ENDPOINTS[ProviderType.ANTHROPIC]
@@ -170,12 +179,13 @@ class AnthropicConfig(ProviderConfig):
 
 @dataclass
 class OllamaConfig(ProviderConfig):
-    """Ollama (local LLMs) specific configuration"""
+    """Ollama (local LLMs) specific configuration."""
 
-    deployment_id: Optional[int] = None  # Link to ollama_deployments table
+    deployment_id: int | None = None  # Link to ollama_deployments table
     gpu_layers: int = -1  # -1 for auto
 
     def __post_init__(self):
+        """Fill in Ollama's provider_type and default endpoint/model list if not overridden."""
         self.provider_type = ProviderType.OLLAMA
         if not self.endpoint_url:
             self.endpoint_url = DEFAULT_ENDPOINTS[ProviderType.OLLAMA]
@@ -185,12 +195,13 @@ class OllamaConfig(ProviderConfig):
 
 @dataclass
 class LlamaCppConfig(ProviderConfig):
-    """llama.cpp (llama-server) specific configuration"""
+    """llama.cpp (llama-server) specific configuration."""
 
-    deployment_id: Optional[int] = None  # links to llamacpp_deployments table
+    deployment_id: int | None = None  # links to llamacpp_deployments table
     model_name: str = ""
 
     def __post_init__(self):
+        """Fill in llama.cpp's provider_type and default endpoint/model list if not overridden."""
         self.provider_type = ProviderType.LLAMACPP
         if not self.endpoint_url:
             self.endpoint_url = "http://localhost:8080"
@@ -200,13 +211,14 @@ class LlamaCppConfig(ProviderConfig):
 
 @dataclass
 class GeminiConfig(ProviderConfig):
-    """Google Gemini / Vertex AI specific configuration"""
+    """Google Gemini / Vertex AI specific configuration."""
 
-    project_id: Optional[str] = None
+    project_id: str | None = None
     location: str = "us-central1"
     use_vertex_ai: bool = False
 
     def __post_init__(self):
+        """Fill in Gemini's provider_type and default endpoint (Vertex AI or public API)."""
         self.provider_type = ProviderType.GEMINI
         if not self.endpoint_url:
             if self.use_vertex_ai and self.project_id:
@@ -219,14 +231,15 @@ class GeminiConfig(ProviderConfig):
 
 @dataclass
 class BedrockConfig(ProviderConfig):
-    """AWS Bedrock specific configuration"""
+    """AWS Bedrock specific configuration."""
 
     aws_region: str = "us-east-1"
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
     # Can also use IAM role
 
     def __post_init__(self):
+        """Fill in Bedrock's provider_type and region-derived default endpoint/model list."""
         self.provider_type = ProviderType.BEDROCK
         if not self.endpoint_url:
             self.endpoint_url = f"https://bedrock-runtime.{self.aws_region}.amazonaws.com"
@@ -236,13 +249,14 @@ class BedrockConfig(ProviderConfig):
 
 @dataclass
 class AzureOpenAIConfig(ProviderConfig):
-    """Azure OpenAI Service specific configuration"""
+    """Azure OpenAI Service specific configuration."""
 
     azure_endpoint: str = ""  # e.g., "https://my-resource.openai.azure.com/"
     api_version: str = "2024-02-01"
     deployment_name: str = ""  # Azure deployment name
 
     def __post_init__(self):
+        """Fill in Azure OpenAI's provider_type and endpoint from azure_endpoint, if set."""
         self.provider_type = ProviderType.AZURE_OPENAI
         if not self.endpoint_url and self.azure_endpoint:
             self.endpoint_url = self.azure_endpoint
@@ -252,9 +266,10 @@ class AzureOpenAIConfig(ProviderConfig):
 
 @dataclass
 class CohereConfig(ProviderConfig):
-    """Cohere specific configuration"""
+    """Cohere specific configuration."""
 
     def __post_init__(self):
+        """Fill in Cohere's provider_type and default endpoint/model list if not overridden."""
         self.provider_type = ProviderType.COHERE
         if not self.endpoint_url:
             self.endpoint_url = DEFAULT_ENDPOINTS[ProviderType.COHERE]
@@ -276,7 +291,7 @@ PROVIDER_CONFIG_CLASSES = {
 
 
 def create_provider_config(provider_type: str, name: str, **kwargs) -> ProviderConfig:
-    """Factory function to create provider configuration"""
+    """Factory function to create provider configuration."""
     ptype = ProviderType(provider_type)
     config_class = PROVIDER_CONFIG_CLASSES.get(ptype)
     if not config_class:
@@ -285,12 +300,12 @@ def create_provider_config(provider_type: str, name: str, **kwargs) -> ProviderC
 
 
 def resolve_model_alias(model: str) -> str:
-    """Resolve model alias to actual model name"""
+    """Resolve model alias to actual model name."""
     return MODEL_ALIASES.get(model.lower(), model)
 
 
-def get_provider_for_model(model: str) -> Optional[ProviderType]:
-    """Determine which provider a model belongs to"""
+def get_provider_for_model(model: str) -> ProviderType | None:
+    """Determine which provider a model belongs to."""
     resolved = resolve_model_alias(model)
 
     # Check each provider's default models

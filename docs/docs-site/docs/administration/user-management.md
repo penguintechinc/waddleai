@@ -65,7 +65,7 @@ WaddleAI supports four roles with increasing levels of access:
 
 ```bash
 curl -X POST http://localhost:8001/api/users \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "john_doe",
@@ -96,7 +96,7 @@ Response:
 
 ```bash
 curl -X POST http://localhost:8001/api/organizations \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Acme Corp",
@@ -111,7 +111,7 @@ curl -X POST http://localhost:8001/api/organizations \
 
 ```bash
 curl -X PATCH http://localhost:8001/api/organizations/1 \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "quota_daily": 150000,
@@ -123,7 +123,7 @@ curl -X PATCH http://localhost:8001/api/organizations/1 \
 
 ```bash
 curl http://localhost:8001/api/organizations/1/users \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 ## User Quotas
@@ -134,7 +134,7 @@ Set quotas per user:
 
 ```bash
 curl -X PATCH http://localhost:8001/api/users/42/quota \
-  -H "Authorization: Bearer your-resource-manager-token" \
+  -H "Authorization: Bearer <your-resource-manager-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "daily_quota": 10000,
@@ -151,7 +151,7 @@ curl -X PATCH http://localhost:8001/api/users/42/quota \
 
 ```bash
 curl http://localhost:8001/api/users/42/quota-usage \
-  -H "Authorization: Bearer your-token"
+  -H "Authorization: Bearer <your-token>"
 ```
 
 Response:
@@ -211,7 +211,7 @@ Response:
 
 ```bash
 curl -X POST http://localhost:8001/auth/change-password \
-  -H "Authorization: Bearer your-token" \
+  -H "Authorization: Bearer <your-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "current_password": "OldPass123!",
@@ -223,7 +223,7 @@ curl -X POST http://localhost:8001/auth/change-password \
 
 ```bash
 curl -X POST http://localhost:8001/api/users/42/reset-password \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "new_password": "ResetPass789!"
@@ -238,7 +238,7 @@ Users can generate API keys for programmatic access.
 
 ```bash
 curl -X POST http://localhost:8001/api/api-keys \
-  -H "Authorization: Bearer your-token" \
+  -H "Authorization: Bearer <your-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Development Key",
@@ -266,14 +266,14 @@ Response:
 
 ```bash
 curl http://localhost:8001/api/api-keys \
-  -H "Authorization: Bearer your-token"
+  -H "Authorization: Bearer <your-token>"
 ```
 
 ### Revoke API Key
 
 ```bash
 curl -X DELETE http://localhost:8001/api/api-keys/123 \
-  -H "Authorization: Bearer your-token"
+  -H "Authorization: Bearer <your-token>"
 ```
 
 ## User Activity Monitoring
@@ -282,7 +282,7 @@ curl -X DELETE http://localhost:8001/api/api-keys/123 \
 
 ```bash
 curl "http://localhost:8001/api/users/42/activity?limit=50" \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 Response:
@@ -312,7 +312,7 @@ Response:
 
 ```bash
 curl http://localhost:8001/api/users/42/export \
-  -H "Authorization: Bearer your-token"
+  -H "Authorization: Bearer <your-token>"
 ```
 
 Returns ZIP file with:
@@ -327,7 +327,7 @@ Returns ZIP file with:
 
 ```bash
 curl -X POST http://localhost:8001/api/users/bulk \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "users": [
@@ -353,7 +353,7 @@ curl -X POST http://localhost:8001/api/users/bulk \
 
 ```bash
 curl -X POST http://localhost:8001/api/users/bulk-deactivate \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "user_ids": [42, 43, 44]

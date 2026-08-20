@@ -166,11 +166,17 @@ class TestConcurrency:
         mock_valkey.evalsha.side_effect = mock_evalsha_at_boundary
 
         # Launch two concurrent reserve calls
-        limit_with_boundary = KeyLimits(tpm_limit=100, monthly_token_limit=None, monthly_usd_limit=None)
+        limit_with_boundary = KeyLimits(
+            tpm_limit=100, monthly_token_limit=None, monthly_usd_limit=None
+        )
 
         results = await asyncio.gather(
-            limiter.reserve(vkey_id=1, estimated_tokens=100, estimated_usd=0.01, limits=limit_with_boundary),
-            limiter.reserve(vkey_id=1, estimated_tokens=100, estimated_usd=0.01, limits=limit_with_boundary),
+            limiter.reserve(
+                vkey_id=1, estimated_tokens=100, estimated_usd=0.01, limits=limit_with_boundary
+            ),
+            limiter.reserve(
+                vkey_id=1, estimated_tokens=100, estimated_usd=0.01, limits=limit_with_boundary
+            ),
         )
 
         # At least one should be rejected or both should not exceed limit

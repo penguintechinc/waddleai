@@ -200,7 +200,10 @@ class TestLogFilterEventNeverOverridesDecision:
     """`_log_filter_event`'s own failures must never change the already-finalized result."""
 
     def test_broken_audit_insert_does_not_raise(
-        self, filter_instance: ContentFilter, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self,
+        filter_instance: ContentFilter,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A TypeError from a broken audit-log insert is swallowed and logged loudly, not raised."""
         from shared.security.content_filter import FilterResult

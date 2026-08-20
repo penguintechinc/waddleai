@@ -1,5 +1,4 @@
-"""
-HTTP module - HTTP utilities.
+"""HTTP module - HTTP utilities.
 
 Provides:
 - correlation: Request ID/correlation middleware

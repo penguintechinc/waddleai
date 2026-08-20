@@ -28,16 +28,16 @@ Revises: 007_drop_ailb_add_native_limits
 Create Date: 2026-08-14
 """
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "008_model_registry"
-down_revision: Union[str, None] = "007_drop_ailb_add_native_limits"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "007_drop_ailb_add_native_limits"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 # §2.3 dual-default set. Kept in sync manually with the spec table -- this
@@ -126,6 +126,7 @@ _DUAL_DEFAULT_SEED = [
 
 
 def upgrade() -> None:
+    """Create model_registry, seed the dual-default model set, and add plan_budget column."""
     op.create_table(
         "model_registry",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -163,6 +164,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drop provider_credentials.plan_budget and the model_registry table."""
     op.drop_column("provider_credentials", "plan_budget")
     op.drop_index("idx_modreg_role", table_name="model_registry")
     op.drop_table("model_registry")

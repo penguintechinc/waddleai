@@ -1,5 +1,4 @@
-"""
-Tests for memory/RAG/embedding configuration routes.
+"""Tests for memory/RAG/embedding configuration routes.
 
 Re-homed from test_ailb_memory.py (deleted alongside the MarchProxy
 AILB api/v1/ailb_memory.py module) -- paths lose the /ailb/ prefix,
@@ -120,7 +119,9 @@ async def test_get_memory_config_not_found_returns_default(client, app_mock_db, 
 
 async def test_get_memory_config_found(client, app_mock_db, auth_headers):
     """GET /memory-config returns existing config."""
-    config = make_mock_memory_config(org_id=1, enabled=True, max_messages=50, similarity_threshold=0.8)
+    config = make_mock_memory_config(
+        org_id=1, enabled=True, max_messages=50, similarity_threshold=0.8
+    )
     app_mock_db.return_value.select.return_value = make_select_result([config])
 
     resp = await client.get("/api/v1/memory-config?organization_id=1", headers=auth_headers)
@@ -220,7 +221,9 @@ async def test_set_memory_config_update_existing(client, app_mock_db, auth_heade
 
 async def test_set_memory_config_partial_update(client, app_mock_db, auth_headers):
     """POST /memory-config updates only provided fields."""
-    config = make_mock_memory_config(org_id=1, enabled=True, max_messages=20, similarity_threshold=0.7)
+    config = make_mock_memory_config(
+        org_id=1, enabled=True, max_messages=20, similarity_threshold=0.7
+    )
     app_mock_db.return_value.select.return_value = make_select_result([config])
 
     resp = await client.post(
@@ -554,7 +557,9 @@ async def test_set_embedding_config_all_valid_backends(client, app_mock_db, auth
         assert data["backend"] == backend
 
 
-async def test_set_embedding_config_preserves_existing_on_partial(client, app_mock_db, auth_headers):
+async def test_set_embedding_config_preserves_existing_on_partial(
+    client, app_mock_db, auth_headers
+):
     """POST /embedding-config preserves fields not provided."""
     config = make_mock_embedding_config(
         org_id=1,
@@ -606,7 +611,9 @@ async def test_set_embedding_config_requires_auth(client):
 
 async def test_set_embedding_config_requires_admin(client, user_auth_headers):
     """POST /embedding-config with non-admin role returns 403."""
-    resp = await client.post("/api/v1/embedding-config", json={"backend": "ollama"}, headers=user_auth_headers)
+    resp = await client.post(
+        "/api/v1/embedding-config", json={"backend": "ollama"}, headers=user_auth_headers
+    )
     assert resp.status_code == 403
 
 

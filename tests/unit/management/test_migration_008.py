@@ -90,6 +90,7 @@ def _table_names(engine: sa.engine.Engine) -> set:
 
 @pytest.fixture
 def scratch_db(tmp_path, monkeypatch):
+    """Build a fresh SQLite DB at the pre-008 schema and point DATABASE_URL at it."""
     db_path = tmp_path / "migration008.db"
     db_url = f"sqlite:///{db_path}"
     monkeypatch.setenv("DATABASE_URL", db_url)
@@ -100,6 +101,7 @@ def scratch_db(tmp_path, monkeypatch):
 
 
 def test_upgrade_creates_and_seeds_model_registry(scratch_db):
+    """Upgrade creates model_registry seeded with the current utility models, no stale/PRC ones."""
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "007_drop_ailb_add_native_limits")
@@ -130,6 +132,7 @@ def test_upgrade_creates_and_seeds_model_registry(scratch_db):
 
 
 def test_upgrade_adds_plan_budget_column(scratch_db):
+    """Upgrade adds the plan_budget column to provider_credentials."""
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "007_drop_ailb_add_native_limits")
@@ -139,6 +142,7 @@ def test_upgrade_adds_plan_budget_column(scratch_db):
 
 
 def test_downgrade_drops_model_registry_and_plan_budget(scratch_db):
+    """Downgrade drops model_registry and removes the plan_budget column."""
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "007_drop_ailb_add_native_limits")

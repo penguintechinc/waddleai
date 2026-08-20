@@ -2,6 +2,14 @@
 # Quart (async-native Flask superset) stack per CLAUDE.md standards
 
 # Web framework (Quart — async-native Flask superset, house standard)
+# Inherit the root pin set, exactly as proxy/requirements.in does.
+# Without this, management was compiled independently and drifted from
+# root/proxy on 14 shared packages (cryptography 46.0.6 vs 48.0.1 among
+# them). CI installs the files sequentially with pip, which tolerates the
+# clash and lets whichever installs last win -- so the effective
+# environment depended on install order.
+-r ../../requirements.txt
+
 quart>=0.19.0
 quart-cors>=0.7.0
 # Exact-pinned (not >=): openapi.py reaches into quart_schema.extension's

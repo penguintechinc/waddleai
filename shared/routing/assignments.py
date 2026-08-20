@@ -66,6 +66,7 @@ class AssignmentResolver:
             db: penguin-dal DB instance exposing a ``model_assignments`` table.
             valkey: Optional redis.asyncio-compatible client for caching.
             cache_ttl: Cache entry TTL in seconds.
+
         """
         self.db = db
         self.valkey = valkey
@@ -81,6 +82,7 @@ class AssignmentResolver:
         Returns:
             The resolved Assignment, or None when no assignment row exists
             (capability matching alone decides in that case, per §7.1).
+
         """
         cache_key = _cache_key(org_id, tool_type)
         cached = await self._cache_get(cache_key)
@@ -112,9 +114,7 @@ class AssignmentResolver:
 
         global_row = (
             self.db(
-                (table.tool_type == tool_type)
-                & (table.scope == "global")
-                & (table.enabled == True)  # noqa: E712
+                (table.tool_type == tool_type) & (table.scope == "global") & (table.enabled == True)  # noqa: E712
             )
             .select()
             .first()
@@ -142,6 +142,7 @@ class AssignmentResolver:
                 otherwise both the org-scoped and global-scoped keys for it
                 are left to natural TTL expiry (a targeted tool_type should
                 normally be supplied by callers that know what changed).
+
         """
         if self.valkey is None:
             return

@@ -249,9 +249,15 @@ When adding mock data for a new feature, follow this same pattern (a standalone,
 
 WaddleAI's dual token system and multi-backend routing, exercised through the proxy's OpenAI-compatible API:
 
+Set your virtual key first:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer wa-test-token" \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4",
@@ -259,7 +265,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 
 curl http://localhost:8080/v1/models \
-  -H "Authorization: Bearer wa-test-token"
+  -H "Authorization: Bearer $WADDLEAI_API_KEY"
 ```
 
 ### 6. Run Pre-Commit Checklist

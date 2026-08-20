@@ -301,6 +301,7 @@ def chunk_code(path: str, source: str, language: str | None = None) -> list[Code
         Deterministic, document-ordered list of chunks. Falls back to
         line-window chunking (``kind="window"``) for binary content, unmapped
         extensions, or any tree-sitter parse failure.
+
     """
     resolved_language = _resolve_language(path, language)
     if resolved_language is None or _looks_binary(source):

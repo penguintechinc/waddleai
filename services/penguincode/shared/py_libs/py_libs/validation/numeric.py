@@ -1,5 +1,4 @@
-"""
-Numeric validators - PyDAL-style validators for numeric inputs.
+"""Numeric validators - PyDAL-style validators for numeric inputs.
 
 Provides:
 - IsInt: Validates integer values
@@ -21,8 +20,7 @@ NumericInput = Union[int, float, str]
 
 
 class IsInt(Validator[NumericInput, int]):
-    """
-    Validates that a value is or can be converted to an integer.
+    """Validates that a value is or can be converted to an integer.
 
     Example:
         validator = IsInt()
@@ -30,6 +28,7 @@ class IsInt(Validator[NumericInput, int]):
         result = validator("42")    # Valid, returns 42
         result = validator(3.14)    # Invalid (float)
         result = validator("abc")   # Invalid
+
     """
 
     def __init__(self, error_message: str | None = None) -> None:
@@ -60,8 +59,7 @@ class IsInt(Validator[NumericInput, int]):
 
 
 class IsFloat(Validator[NumericInput, float]):
-    """
-    Validates that a value is or can be converted to a float.
+    """Validates that a value is or can be converted to a float.
 
     Example:
         validator = IsFloat()
@@ -69,6 +67,7 @@ class IsFloat(Validator[NumericInput, float]):
         result = validator("3.14")  # Valid
         result = validator(42)      # Valid (int to float)
         result = validator("abc")   # Invalid
+
     """
 
     def __init__(self, error_message: str | None = None) -> None:
@@ -91,8 +90,7 @@ class IsFloat(Validator[NumericInput, float]):
 
 
 class IsIntInRange(Validator[NumericInput, int]):
-    """
-    Validates that an integer is within a specified range.
+    """Validates that an integer is within a specified range.
 
     Args:
         min_value: Minimum value (inclusive), or None for no minimum
@@ -103,6 +101,7 @@ class IsIntInRange(Validator[NumericInput, int]):
         result = validator(50)   # Valid
         result = validator(0)    # Invalid
         result = validator(101)  # Invalid
+
     """
 
     def __init__(
@@ -136,8 +135,7 @@ class IsIntInRange(Validator[NumericInput, int]):
 
 
 class IsFloatInRange(Validator[NumericInput, float]):
-    """
-    Validates that a float is within a specified range.
+    """Validates that a float is within a specified range.
 
     Args:
         min_value: Minimum value (inclusive), or None for no minimum
@@ -148,6 +146,7 @@ class IsFloatInRange(Validator[NumericInput, float]):
         result = validator(0.5)   # Valid
         result = validator(-0.1)  # Invalid
         result = validator(1.1)   # Invalid
+
     """
 
     def __init__(
@@ -181,8 +180,7 @@ class IsFloatInRange(Validator[NumericInput, float]):
 
 
 class IsPositive(Validator[NumericInput, float]):
-    """
-    Validates that a number is positive (> 0).
+    """Validates that a number is positive (> 0).
 
     Args:
         allow_zero: Whether to allow zero
@@ -192,6 +190,7 @@ class IsPositive(Validator[NumericInput, float]):
         result = validator(5)    # Valid
         result = validator(-5)   # Invalid
         result = validator(0)    # Invalid (unless allow_zero=True)
+
     """
 
     def __init__(self, allow_zero: bool = False, error_message: str | None = None) -> None:
@@ -219,8 +218,7 @@ class IsPositive(Validator[NumericInput, float]):
 
 
 class IsNegative(Validator[NumericInput, float]):
-    """
-    Validates that a number is negative (< 0).
+    """Validates that a number is negative (< 0).
 
     Args:
         allow_zero: Whether to allow zero
@@ -230,6 +228,7 @@ class IsNegative(Validator[NumericInput, float]):
         result = validator(-5)   # Valid
         result = validator(5)    # Invalid
         result = validator(0)    # Invalid (unless allow_zero=True)
+
     """
 
     def __init__(self, allow_zero: bool = False, error_message: str | None = None) -> None:

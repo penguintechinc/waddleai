@@ -69,9 +69,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["created_by"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "idx_hookrules_scope", "hook_rules", ["scope_type", "scope_ref", "enabled"]
-    )
+    op.create_index("idx_hookrules_scope", "hook_rules", ["scope_type", "scope_ref", "enabled"])
 
     op.create_table(
         "hook_denylist_entries",

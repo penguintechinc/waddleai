@@ -77,7 +77,7 @@ docker-compose -f docker-compose.env.yml exec proxy python -m management.create_
    - Click "Generate Key"
 6. **IMPORTANT**: Copy the API key shown (you won't see it again!)
 
-Example key: `wai_1234567890abcdef1234567890abcdef`
+Example key: `<your-waddleai-key>`
 
 ## Step 5: Test Your First Request (30 seconds)
 

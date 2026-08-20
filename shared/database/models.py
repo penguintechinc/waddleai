@@ -1,6 +1,6 @@
-"""
-WaddleAI Database Models
-Shared database models for both proxy and management servers
+"""WaddleAI Database Models.
+
+Shared database models for both proxy and management servers.
 """
 
 import os
@@ -19,6 +19,7 @@ def get_db(db_uri=None, migrate=False):
             other context (including production) this stays False: Alembic
             (services/management/app/models_sqlalchemy.py) is the sole schema
             authority and this module must not auto-migrate against it.
+
     """
     if db_uri is None:
         db_uri = os.getenv("DATABASE_URL", "sqlite://waddleai.db")
@@ -34,8 +35,7 @@ def get_db(db_uri=None, migrate=False):
 
 
 def define_tables(db):
-    """Define all database tables"""
-
+    """Define all database tables."""
     # Organizations for Multi-tenancy
     db.define_table(
         "organizations",
@@ -178,7 +178,9 @@ def define_tables(db):
         # WaddleAI Tokens (normalized usage units)
         Field("waddleai_tokens", "integer", default=0),
         # Individual LLM Token Counts
-        Field("llm_tokens", "json"),  # {"openai_gpt4": {"input": 100, "output": 50}, "claude": {...}}
+        Field(
+            "llm_tokens", "json"
+        ),  # {"openai_gpt4": {"input": 100, "output": 50}, "claude": {...}}
         Field("tokens_input_total", "integer", default=0),  # Sum across all LLMs
         Field("tokens_output_total", "integer", default=0),  # Sum across all LLMs
         Field("request_count", "integer", default=0),
@@ -244,7 +246,9 @@ def define_tables(db):
         "content_filter_rules",
         Field("name", "string", notnull=True),
         Field("description", "text"),
-        Field("rule_type", "string", notnull=True),  # 'builtin_pii', 'custom_string', 'custom_regex'
+        Field(
+            "rule_type", "string", notnull=True
+        ),  # 'builtin_pii', 'custom_string', 'custom_regex'
         Field("target", "string", default="both"),  # 'input', 'output', 'both'
         Field("pattern", "text", notnull=True),
         Field("action", "string", default="log"),  # 'block', 'redact', 'log'
@@ -379,8 +383,7 @@ def define_tables(db):
 
 
 def init_default_data(db):
-    """Initialize default data for the database"""
-
+    """Initialize default data for the database."""
     # Create default organization
     if not db(db.organizations.name == "default").select():
         org_id = db.organizations.insert(
@@ -436,7 +439,8 @@ def init_default_data(db):
 
     for provider, model, input_rate, output_rate in default_rates:
         if not db(
-            (db.token_conversion_rates.provider == provider) & (db.token_conversion_rates.model == model)
+            (db.token_conversion_rates.provider == provider)
+            & (db.token_conversion_rates.model == model)
         ).select():
             db.token_conversion_rates.insert(
                 provider=provider,

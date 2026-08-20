@@ -151,6 +151,7 @@ class Stage(ABC):
         Args:
             name: Stage name (e.g., 'auth', 'dispatch')
             flag: Optional feature flag to gate this stage (None = always run)
+
         """
         self.name = name
         self.flag = flag
@@ -164,6 +165,7 @@ class Stage(ABC):
 
         Returns:
             Updated context (or blocked context if gated)
+
         """
         raise NotImplementedError
 
@@ -177,6 +179,7 @@ class ProxyPipeline:
         Args:
             stages: List of Stage instances in execution order
             features: Feature flag helper with is_feature_enabled(flag_key, distinct_id=...) method
+
         """
         self.stages = stages
         self.features = features
@@ -195,6 +198,7 @@ class ProxyPipeline:
 
         Returns:
             Final context after all stages (or short-circuit point)
+
         """
         with self.tracer.start_as_current_span("pipeline"):
             for stage in self.stages:
@@ -312,6 +316,7 @@ class TokenBudgetStage(Stage):
             token_limiter: TokenLimiter instance for budget enforcement
             features: Feature flag helper
             flag: Optional feature flag to gate this stage
+
         """
         super().__init__(name, flag)
         self.token_limiter = token_limiter
@@ -398,6 +403,7 @@ class SecurityInStage(Stage):
             features: Feature flag helper; when policy_engine is also set,
                 gates the security_v2 code path internally (this stage
                 always runs -- flag-off falls through to v1 below unchanged)
+
         """
         super().__init__(name, flag)
         self.scanner = scanner
@@ -576,6 +582,7 @@ class CacheStage(Stage):
             name: Stage name
             response_cache: ResponseCache facade (exact/semantic/upstream orchestration)
             flag: Feature flag gating this stage; defaults to RESPONSE_CACHE_FLAG
+
         """
         super().__init__(name, flag)
         self.response_cache = response_cache
@@ -684,6 +691,7 @@ class RoutingStage(Stage):
                 resolver (e.g. ``shared.fleet.registry.build_backends_for_org``
                 bound to this service's db), consulted only when
                 ``placement`` is also given.
+
         """
         super().__init__(name, flag)
         self.engine = engine
@@ -821,6 +829,7 @@ class DispatchStage(Stage):
                 set, gates the security_v2 pre-dispatch redaction/
                 pseudonymize step internally (flag-off = v1 dispatch
                 unchanged, no upstream transform, no Valkey map)
+
         """
         super().__init__(name, flag)
         self.router = router
@@ -1049,6 +1058,7 @@ class SecurityOutStage(Stage):
             features: Feature flag helper; when output_guardrails is also
                 set, gates the security_v2 code path internally (this stage
                 always runs -- flag-off falls through to v1 below unchanged)
+
         """
         super().__init__(name, flag)
         self.content_filter = content_filter
@@ -1209,6 +1219,7 @@ class MeterStage(Stage):
             metering_buffer: MeteringBuffer instance for batching writes
             token_limiter: TokenLimiter for reconciliation
             flag: Optional feature flag to gate this stage
+
         """
         super().__init__(name, flag)
         self.metering_buffer = metering_buffer

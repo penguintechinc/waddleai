@@ -62,6 +62,7 @@ def best_candidate(
         reqs: Requirements the winner must satisfy.
         sort_key: Optional ranking key (higher is better); defaults to
             capability_score.
+
     """
     qualified = [o for o in offers if qualifies(o, reqs)]
     if not qualified:
@@ -87,6 +88,7 @@ def veto_and_reroute(
     Returns:
         (chosen, veto_reason) -- veto_reason is None when the assignment was
         kept unchanged; otherwise a short machine-readable reason string.
+
     """
     if assigned is not None and qualifies(assigned, reqs):
         return assigned, None
@@ -123,6 +125,7 @@ def validate_assignment(
 
     Returns:
         A list of human-readable warnings; empty when no issues are found.
+
     """
     warnings: list[str] = []
     if offer is None:

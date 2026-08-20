@@ -1,6 +1,4 @@
-"""
-Unit tests for memory integration system
-"""
+"""Unit tests for memory integration system."""
 
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
@@ -8,16 +6,22 @@ from unittest.mock import Mock, patch
 import pytest
 
 try:
-    from shared.utils.memory_integration import ConversationMemory, MemoryManager, create_memory_manager
+    from shared.utils.memory_integration import (
+        ConversationMemory,
+        MemoryManager,
+        create_memory_manager,
+    )
 except ImportError as e:
-    pytest.skip(f"Skipping: shared.utils.memory_integration not available ({e})", allow_module_level=True)
+    pytest.skip(
+        f"Skipping: shared.utils.memory_integration not available ({e})", allow_module_level=True
+    )
 
 
 class TestConversationMemory:
-    """Test ConversationMemory dataclass"""
+    """Test ConversationMemory dataclass."""
 
     def test_conversation_memory_creation(self):
-        """Test ConversationMemory creation"""
+        """Test ConversationMemory creation."""
         memory = ConversationMemory(
             id="mem_123",
             user_id=1,
@@ -36,7 +40,7 @@ class TestConversationMemory:
         assert memory.metadata["category"] == "preferences"
 
     def test_conversation_memory_defaults(self):
-        """Test ConversationMemory default values"""
+        """Test ConversationMemory default values."""
         memory = ConversationMemory(user_id=1, organization_id=1, content="Test content")
 
         assert memory.id is not None
@@ -46,7 +50,7 @@ class TestConversationMemory:
         assert isinstance(memory.last_accessed, datetime)
 
     def test_to_dict(self):
-        """Test ConversationMemory to_dict method"""
+        """Test ConversationMemory to_dict method."""
         timestamp = datetime.utcnow()
         memory = ConversationMemory(
             id="mem_123",
@@ -70,17 +74,17 @@ class TestConversationMemory:
 
 
 class TestMemoryManager:
-    """Test MemoryManager class"""
+    """Test MemoryManager class."""
 
     def test_memory_manager_init(self, mock_db):
-        """Test memory manager initialization"""
+        """Test memory manager initialization."""
         manager = MemoryManager(mock_db)
         assert manager.db == mock_db
         assert manager.chroma_client is not None
         assert manager.collection_name == "conversation_memories"
 
     def test_memory_manager_init_with_mem0(self, mock_db):
-        """Test memory manager initialization with mem0"""
+        """Test memory manager initialization with mem0."""
         config = {"mem0_api_key": "test-key"}
 
         with patch("shared.utils.memory_integration.MemoryClient") as mock_mem0:
@@ -89,7 +93,7 @@ class TestMemoryManager:
             mock_mem0.assert_called_once_with(api_key="test-key")
 
     def test_generate_embedding(self, mock_db, mock_sentence_transformer):
-        """Test embedding generation"""
+        """Test embedding generation."""
         manager = MemoryManager(mock_db)
         manager.encoder = mock_sentence_transformer
 
@@ -100,7 +104,7 @@ class TestMemoryManager:
         mock_sentence_transformer.encode.assert_called_once_with(text)
 
     def test_generate_embedding_fallback(self, mock_db):
-        """Test embedding generation fallback"""
+        """Test embedding generation fallback."""
         manager = MemoryManager(mock_db)
         manager.encoder = None  # No encoder available
 
@@ -114,7 +118,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_store_memory_chroma_only(self, mock_db):
-        """Test storing memory with ChromaDB only"""
+        """Test storing memory with ChromaDB only."""
         manager = MemoryManager(mock_db)
         manager.encoder = Mock()
         manager.encoder.encode.return_value = [0.1, 0.2, 0.3, 0.4]
@@ -129,7 +133,10 @@ class TestMemoryManager:
         mock_db.conversation_memories.insert = Mock(return_value="mem_123")
 
         memory = ConversationMemory(
-            user_id=1, organization_id=1, content="Test memory content", metadata={"importance": 0.8}
+            user_id=1,
+            organization_id=1,
+            content="Test memory content",
+            metadata={"importance": 0.8},
         )
 
         result = await manager.store_memory(memory)
@@ -140,7 +147,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_store_memory_with_mem0(self, mock_db):
-        """Test storing memory with mem0 integration"""
+        """Test storing memory with mem0 integration."""
         config = {"mem0_api_key": "test-key"}
 
         with patch("shared.utils.memory_integration.MemoryClient") as mock_mem0_class:
@@ -171,7 +178,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_get_relevant_memories_chroma(self, mock_db):
-        """Test getting relevant memories from ChromaDB"""
+        """Test getting relevant memories from ChromaDB."""
         manager = MemoryManager(mock_db)
         manager.encoder = Mock()
         manager.encoder.encode.return_value = [0.1, 0.2, 0.3, 0.4]
@@ -186,7 +193,9 @@ class TestMemoryManager:
         }
         manager.collection = mock_collection
 
-        memories = await manager.get_relevant_memories("Test query", user_id=1, limit=5, similarity_threshold=0.7)
+        memories = await manager.get_relevant_memories(
+            "Test query", user_id=1, limit=5, similarity_threshold=0.7
+        )
 
         assert len(memories) == 2
         assert memories[0]["content"] == "Memory 1 content"
@@ -198,12 +207,14 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_get_relevant_memories_with_mem0(self, mock_db):
-        """Test getting relevant memories with mem0 integration"""
+        """Test getting relevant memories with mem0 integration."""
         config = {"mem0_api_key": "test-key"}
 
         with patch("shared.utils.memory_integration.MemoryClient") as mock_mem0_class:
             mock_mem0 = Mock()
-            mock_mem0.search.return_value = [{"id": "mem0_1", "memory": "Memory from mem0", "score": 0.9}]
+            mock_mem0.search.return_value = [
+                {"id": "mem0_1", "memory": "Memory from mem0", "score": 0.9}
+            ]
             mock_mem0_class.return_value = mock_mem0
 
             manager = MemoryManager(mock_db, config)
@@ -228,7 +239,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_update_memory(self, mock_db):
-        """Test updating existing memory"""
+        """Test updating existing memory."""
         manager = MemoryManager(mock_db)
         manager.encoder = Mock()
         manager.encoder.encode.return_value = [0.1, 0.2, 0.3, 0.4]
@@ -253,7 +264,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_delete_memory(self, mock_db):
-        """Test deleting memory"""
+        """Test deleting memory."""
         manager = MemoryManager(mock_db)
 
         # Mock ChromaDB collection
@@ -274,7 +285,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_get_user_memories(self, mock_db):
-        """Test getting all memories for a user"""
+        """Test getting all memories for a user."""
         manager = MemoryManager(mock_db)
 
         # Mock database query
@@ -308,7 +319,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_cleanup_old_memories(self, mock_db):
-        """Test cleaning up old memories"""
+        """Test cleaning up old memories."""
         manager = MemoryManager(mock_db)
 
         # Mock old memories query
@@ -333,7 +344,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_enhance_messages(self, mock_db):
-        """Test enhancing messages with memory context"""
+        """Test enhancing messages with memory context."""
         manager = MemoryManager(mock_db)
 
         # Mock relevant memories
@@ -356,7 +367,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_enhance_messages_no_memories(self, mock_db):
-        """Test enhancing messages with no relevant memories"""
+        """Test enhancing messages with no relevant memories."""
         manager = MemoryManager(mock_db)
 
         # Mock no relevant memories
@@ -372,7 +383,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_learn_from_conversation(self, mock_db):
-        """Test learning from conversation history"""
+        """Test learning from conversation history."""
         manager = MemoryManager(mock_db)
         manager.encoder = Mock()
         manager.encoder.encode.return_value = [0.1, 0.2, 0.3, 0.4]
@@ -392,14 +403,16 @@ class TestMemoryManager:
             {"role": "user", "content": "I'm working on a Django project"},
         ]
 
-        memories_created = await manager.learn_from_conversation(messages, user_id=1, organization_id=1)
+        memories_created = await manager.learn_from_conversation(
+            messages, user_id=1, organization_id=1
+        )
 
         # Should extract meaningful information and create memories
         assert memories_created > 0
         assert mock_db.conversation_memories.insert.call_count > 0
 
     def test_extract_memories_from_messages(self, mock_db):
-        """Test extracting memories from conversation messages"""
+        """Test extracting memories from conversation messages."""
         manager = MemoryManager(mock_db)
 
         messages = [
@@ -419,10 +432,10 @@ class TestMemoryManager:
 
 
 class TestMemoryManagerFactory:
-    """Test memory manager factory function"""
+    """Test memory manager factory function."""
 
     def test_create_memory_manager(self, mock_db):
-        """Test creating memory manager"""
+        """Test creating memory manager."""
         config = {"collection_name": "test_memories"}
 
         manager = create_memory_manager(mock_db, config)
@@ -432,7 +445,7 @@ class TestMemoryManagerFactory:
         assert manager.collection_name == "test_memories"
 
     def test_create_memory_manager_with_mem0(self, mock_db):
-        """Test creating memory manager with mem0"""
+        """Test creating memory manager with mem0."""
         config = {"mem0_api_key": "test-key"}
 
         with patch("shared.utils.memory_integration.MemoryClient"):
@@ -442,7 +455,7 @@ class TestMemoryManagerFactory:
             assert manager.mem0_client is not None
 
     def test_create_memory_manager_default(self, mock_db):
-        """Test creating memory manager with defaults"""
+        """Test creating memory manager with defaults."""
         manager = create_memory_manager(mock_db)
 
         assert isinstance(manager, MemoryManager)

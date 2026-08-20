@@ -87,8 +87,12 @@ class _FakeEndpointRepository:
 def _registration(endpoint_id: int, namespace: str) -> tuple[EndpointRegistration, object]:
     app = build_streamable_http_app(FixtureAuthConfig())
     endpoint = GatewayEndpointConfig(
-        id=endpoint_id, org_id=1, name=f"fixture-{endpoint_id}", url="http://fixture.test/mcp",
-        transport="streamable_http", namespace=namespace,
+        id=endpoint_id,
+        org_id=1,
+        name=f"fixture-{endpoint_id}",
+        url="http://fixture.test/mcp",
+        transport="streamable_http",
+        namespace=namespace,
     )
     auth_config = EndpointAuthConfig(auth_type="none")
     registration = EndpointRegistration(
@@ -121,7 +125,10 @@ class TestDiscoveryNamespacingAndCollision:
         registration, app = _registration(1, "elder")
         repo = _FakeEndpointRepository({1: [registration]})
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(),
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
             policy=_AlwaysAuditPolicy(),
             client_factory=lambda endpoint, **kw: _client_for(endpoint, app, **kw),
         )
@@ -136,7 +143,10 @@ class TestDiscoveryNamespacingAndCollision:
         repo = _FakeEndpointRepository({1: [reg_org1], 2: [reg_org2]})
         apps = {1: app1, 2: app2}
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(),
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
             policy=_AlwaysAuditPolicy(),
             client_factory=lambda endpoint, **kw: _client_for(endpoint, apps[endpoint.id], **kw),
         )
@@ -152,7 +162,10 @@ class TestDiscoveryNamespacingAndCollision:
         repo = _FakeEndpointRepository({1: [reg_a, reg_b]})
         apps = {1: app_a, 2: app_b}
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(),
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
             policy=_AlwaysAuditPolicy(),
             client_factory=lambda endpoint, **kw: _client_for(endpoint, apps[endpoint.id], **kw),
         )
@@ -174,7 +187,10 @@ class TestPolicyChokepoint:
         registration, app = _registration(1, "elder")
         repo = _FakeEndpointRepository({1: [registration]})
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(),
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
             policy=_AlwaysBlockPolicy(),
             client_factory=lambda endpoint, **kw: _client_for(endpoint, app, **kw),
         )
@@ -188,7 +204,11 @@ class TestPolicyChokepoint:
         repo = _FakeEndpointRepository({1: [registration]})
         policy = _AlwaysAuditPolicy()
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(), policy=policy,
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
+            policy=policy,
             client_factory=lambda endpoint, **kw: _client_for(endpoint, app, **kw),
         )
         bindings = {b.namespaced_name: b for b in await aggregator.discover_bindings()}
@@ -209,7 +229,11 @@ class TestPolicyChokepoint:
         repo = _FakeEndpointRepository({1: [registration]})
         policy = ContentFilterPolicyResolver(ContentFilter(db=None))
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(), policy=policy,
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
+            policy=policy,
             client_factory=lambda endpoint, **kw: _client_for(endpoint, app, **kw),
         )
         bindings = {b.namespaced_name: b for b in await aggregator.discover_bindings()}
@@ -246,7 +270,10 @@ class TestNativeAndExternalToolsRegisterTogether:
         registration, app = _registration(1, "elder")
         repo = _FakeEndpointRepository({1: [registration]})
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(),
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
             policy=_AlwaysAuditPolicy(),
             client_factory=lambda endpoint, **kw: _client_for(endpoint, app, **kw),
         )
@@ -269,7 +296,10 @@ class TestNativeAndExternalToolsRegisterTogether:
         registration, app = _registration(1, "elder")
         repo = _FakeEndpointRepository({1: [registration]})
         aggregator = GatewayAggregator(
-            org_id=1, user_uuid="u-1", endpoints=repo, identity=_identity_resolver(),
+            org_id=1,
+            user_uuid="u-1",
+            endpoints=repo,
+            identity=_identity_resolver(),
             policy=_AlwaysAuditPolicy(),
             client_factory=lambda endpoint, **kw: _client_for(endpoint, app, **kw),
         )

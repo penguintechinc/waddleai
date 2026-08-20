@@ -1,5 +1,4 @@
-"""
-Guards against reintroduction of the deleted MarchProxy/AILB coupling.
+"""Guards against reintroduction of the deleted MarchProxy/AILB coupling.
 
 Task 13 (Sec 5.6 deletion inventory) removes services/management's
 ``ailb.py``, ``ailb_memory.py``, and ``marchproxy_config.py``, the AILB
@@ -102,8 +101,10 @@ def test_deleted_module_files_absent() -> None:
 
 
 def test_proxy_side_vendored_marchproxy_proto_removed() -> None:
-    """The proxy's vendored marchproxy proto stubs (superseded by
-    proto/waddleai/v1 in Task 12) must be gone."""
+    """The proxy's vendored marchproxy proto stubs must be gone.
+
+    Superseded by proto/waddleai/v1 in Task 12.
+    """
     proxy_marchproxy_dir = (
         REPO_ROOT / "proxy" / "apps" / "proxy_server" / "grpc_proto" / "marchproxy"
     )
@@ -111,8 +112,10 @@ def test_proxy_side_vendored_marchproxy_proto_removed() -> None:
 
 
 def test_api_v1_registry_drops_ailb_imports_and_adds_memory_config() -> None:
-    """api/v1/__init__.py no longer imports ailb/ailb_memory, and registers
-    the re-homed memory_config module instead."""
+    """api/v1/__init__.py no longer imports ailb/ailb_memory.
+
+    It registers the re-homed memory_config module instead.
+    """
     init_path = REPO_ROOT / "services" / "management" / "app" / "api" / "v1" / "__init__.py"
     text = init_path.read_text()
     assert "ailb_memory" not in text
@@ -121,9 +124,10 @@ def test_api_v1_registry_drops_ailb_imports_and_adds_memory_config() -> None:
 
 
 def test_webhooks_module_has_no_ailb_ingest_routes() -> None:
-    """webhooks.py keeps the generic verify_webhook_signature() helper but
-    drops the AILB usage/health/batch ingest routes and their AILB-table
-    writers."""
+    """webhooks.py keeps the generic verify_webhook_signature() helper.
+
+    It drops the AILB usage/health/batch ingest routes and their AILB-table writers.
+    """
     webhooks_path = REPO_ROOT / "services" / "management" / "app" / "api" / "v1" / "webhooks.py"
     text = webhooks_path.read_text()
     assert "/webhooks/ailb/usage" not in text
@@ -141,16 +145,17 @@ def test_config_has_no_marchproxy_ailb_env() -> None:
 
 
 def test_helm_management_deployment_has_no_marchproxy_ailb_env() -> None:
-    """The management Deployment template no longer injects
-    MARCHPROXY_AILB_* env vars."""
+    """The management Deployment template no longer injects MARCHPROXY_AILB_* env vars."""
     helm_path = REPO_ROOT / "k8s" / "helm" / "waddleai" / "templates" / "management-deployment.yaml"
     text = helm_path.read_text()
     assert "MARCHPROXY_AILB" not in text
 
 
 def test_grpc_server_no_longer_imports_vendored_marchproxy_proto() -> None:
-    """grpc_server.py must be rewired to the in-repo proto/waddleai/v1
-    package (Task 12), not the deleted grpc_proto.marchproxy stubs."""
+    """grpc_server.py must be rewired to the in-repo proto/waddleai/v1 package (Task 12).
+
+    Not the deleted grpc_proto.marchproxy stubs.
+    """
     grpc_server_path = REPO_ROOT / "proxy" / "apps" / "proxy_server" / "grpc_server.py"
     text = grpc_server_path.read_text()
     assert "grpc_proto.marchproxy" not in text

@@ -1,5 +1,4 @@
-"""
-Integration tests for the Anthropic Claude API.
+"""Integration tests for the Anthropic Claude API.
 
 These tests use real API calls and require ANTHROPIC_API_KEY to be set.
 All tests are skipped when the key is absent to avoid CI failures.
@@ -8,7 +7,6 @@ Model used: claude-3-haiku-20240307 (fastest / cheapest for integration checks).
 """
 
 import os
-from typing import Dict, List
 
 import pytest
 
@@ -128,7 +126,7 @@ def test_claude_streaming_response_yields_text() -> None:
     import anthropic  # type: ignore[import]
 
     client = anthropic.Anthropic(api_key=_API_KEY)
-    collected: List[str] = []
+    collected: list[str] = []
 
     with client.messages.stream(
         model=_HAIKU,
@@ -154,7 +152,7 @@ def test_claude_multi_turn_conversation() -> None:
     import anthropic  # type: ignore[import]
 
     client = anthropic.Anthropic(api_key=_API_KEY)
-    messages: List[Dict[str, str]] = [
+    messages: list[dict[str, str]] = [
         {"role": "user", "content": "My name is TestUser."},
         {"role": "assistant", "content": "Hello, TestUser! How can I help you today?"},
         {"role": "user", "content": "What is my name?"},
@@ -176,7 +174,9 @@ def test_claude_multi_turn_conversation() -> None:
 
 def test_providers_resolve_model_alias() -> None:
     """resolve_model_alias should map known aliases to canonical model names."""
-    from services.management.app.services.providers import resolve_model_alias  # type: ignore[import]
+    from services.management.app.services.providers import (
+        resolve_model_alias,  # type: ignore[import]
+    )
 
     assert resolve_model_alias("claude-haiku") == "claude-3-haiku-20240307"
     assert resolve_model_alias("claude-opus") == "claude-3-opus-20240229"
@@ -186,7 +186,10 @@ def test_providers_resolve_model_alias() -> None:
 
 def test_providers_get_provider_for_model_anthropic() -> None:
     """get_provider_for_model should return ANTHROPIC for claude models."""
-    from services.management.app.services.providers import ProviderType, get_provider_for_model  # type: ignore[import]
+    from services.management.app.services.providers import (  # type: ignore[import]
+        ProviderType,
+        get_provider_for_model,
+    )
 
     provider = get_provider_for_model("claude-3-haiku-20240307")
     assert provider == ProviderType.ANTHROPIC

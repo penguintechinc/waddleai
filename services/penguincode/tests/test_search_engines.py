@@ -1,6 +1,7 @@
 """Unit tests for search engines."""
 
 import pytest
+
 from penguincode_cli.config.settings import (
     DuckDuckGoEngineConfig,
     EnginesConfig,

@@ -1,8 +1,6 @@
-"""
-Unit tests for LLM connectors system
-"""
+"""Unit tests for LLM connectors system."""
 
-from unittest.mock import AsyncMock, Mock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -14,12 +12,15 @@ class AsyncContextManagerMock:
     """Helper to mock async context managers (aiohttp responses)."""
 
     def __init__(self, mock_response):
+        """Bind the object to be returned when this mock is entered as a context manager."""
         self._mock = mock_response
 
     async def __aenter__(self):
+        """Return the wrapped mock response, mimicking an aiohttp response context."""
         return self._mock
 
     async def __aexit__(self, *args):
+        """No-op exit; nothing to clean up for a mocked response."""
         pass
 
 
@@ -29,14 +30,16 @@ try:
         BedrockConnector,
         GeminiConnector,
         LlamaCppConnector,
+        LLMConnectionManager,
         OllamaConnector,
         OpenAIConnector,
         XAIConnector,
-        LLMConnectionManager,
         create_llm_connection_manager,
     )
 except ImportError as e:
-    pytest.skip(f"Skipping: shared.utils.llm_connectors not available ({e})", allow_module_level=True)
+    pytest.skip(
+        f"Skipping: shared.utils.llm_connectors not available ({e})", allow_module_level=True
+    )
 
 
 # Aliases for compatibility with tests
@@ -45,10 +48,15 @@ create_llm_manager = create_llm_connection_manager
 
 
 class TestConnectorConfig:
-    """Test that connectors correctly read their config dicts"""
+    """Test that connectors correctly read their config dicts."""
 
     def test_openai_connector_reads_config(self):
-        config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+        """OpenAIConnector copies name, endpoint, api_key, and model_list off its config dict."""
+        config = {
+            "endpoint_url": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "model_list": ["gpt-4"],
+        }
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI"):
             connector = OpenAIConnector("my-openai", config)
             assert connector.name == "my-openai"
@@ -57,6 +65,7 @@ class TestConnectorConfig:
             assert connector.model_list == ["gpt-4"]
 
     def test_anthropic_connector_reads_config(self):
+        """AnthropicConnector copies name, api_key, and model_list off its config dict."""
         config = {
             "endpoint_url": "https://api.anthropic.com",
             "api_key": "ant-key",
@@ -69,6 +78,7 @@ class TestConnectorConfig:
             assert connector.model_list == ["claude-3-haiku-20240307"]
 
     def test_ollama_connector_reads_config(self):
+        """OllamaConnector copies name, endpoint, and model_list off its config dict."""
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
         with patch("shared.utils.llm_connectors.aiohttp.ClientSession"):
             connector = OllamaConnector("my-ollama", config)
@@ -77,6 +87,7 @@ class TestConnectorConfig:
             assert connector.model_list == ["llama2"]
 
     def test_connector_default_values(self):
+        """A connector defaults enabled=True and model_list=[] when config omits them."""
         config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "key"}
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI"):
             connector = OpenAIConnector("test", config)
@@ -85,11 +96,11 @@ class TestConnectorConfig:
 
 
 class TestOpenAIConnector:
-    """Test OpenAI connector"""
+    """Test OpenAI connector."""
 
     @pytest.mark.asyncio
     async def test_chat_completion_success(self):
-        """Test successful OpenAI chat completion"""
+        """Test successful OpenAI chat completion."""
         # Mock successful response
         mock_response = Mock()
         mock_response.choices = [Mock(message=Mock(content="Hello there!"))]
@@ -105,7 +116,11 @@ class TestOpenAIConnector:
             mock_openai.return_value = mock_client
             mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             response, metadata = await connector.chat_completion(messages, model)
@@ -117,7 +132,7 @@ class TestOpenAIConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_with_kwargs(self):
-        """Test OpenAI chat completion with additional parameters"""
+        """Test OpenAI chat completion with additional parameters."""
         mock_response = Mock()
         mock_response.choices = [Mock(message=Mock(content="Response"))]
         mock_response.usage = Mock(prompt_tokens=5, completion_tokens=3, total_tokens=8)
@@ -132,10 +147,16 @@ class TestOpenAIConnector:
             mock_openai.return_value = mock_client
             mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
-            response, metadata = await connector.chat_completion(messages, model, temperature=0.7, max_tokens=100)
+            response, metadata = await connector.chat_completion(
+                messages, model, temperature=0.7, max_tokens=100
+            )
 
             mock_client.chat.completions.create.assert_called_once()
             call_kwargs = mock_client.chat.completions.create.call_args.kwargs
@@ -144,7 +165,7 @@ class TestOpenAIConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_error(self):
-        """Test OpenAI chat completion error handling"""
+        """Test OpenAI chat completion error handling."""
         messages = [{"role": "user", "content": "Hello"}]
         model = "gpt-4"
 
@@ -153,7 +174,11 @@ class TestOpenAIConnector:
             mock_openai.return_value = mock_client
             mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API Error"))
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "invalid-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "invalid-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             with pytest.raises(Exception, match="API Error"):
@@ -161,9 +186,13 @@ class TestOpenAIConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens(self):
-        """Test token counting for OpenAI"""
+        """Test token counting for OpenAI."""
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI"):
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             count = await connector.count_tokens("hello world", "gpt-4")
@@ -172,7 +201,7 @@ class TestOpenAIConnector:
 
     @pytest.mark.asyncio
     async def test_list_models(self):
-        """Test listing OpenAI models"""
+        """Test listing OpenAI models."""
         mock_model_1 = Mock(id="gpt-4", created=1234567890, owned_by="openai")
         mock_model_2 = Mock(id="gpt-3.5-turbo", created=1234567890, owned_by="openai")
         mock_models = Mock(data=[mock_model_1, mock_model_2])
@@ -198,7 +227,7 @@ class TestOpenAIConnector:
 
     @pytest.mark.asyncio
     async def test_health_check(self):
-        """Test OpenAI health check"""
+        """Test OpenAI health check."""
         mock_models = Mock(data=[])
 
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
@@ -206,7 +235,11 @@ class TestOpenAIConnector:
             mock_openai.return_value = mock_client
             mock_client.models.list = AsyncMock(return_value=mock_models)
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             result = await connector.health_check()
@@ -216,11 +249,11 @@ class TestOpenAIConnector:
 
 
 class TestXAIConnector:
-    """Test xAI connector (OpenAI-compatible)"""
+    """Test xAI connector (OpenAI-compatible)."""
 
     @pytest.mark.asyncio
     async def test_chat_completion_success(self):
-        """Test successful xAI chat completion"""
+        """Test successful xAI chat completion."""
         mock_response = Mock()
         mock_response.choices = [Mock(message=Mock(content="Hello from xAI!"))]
         mock_response.usage = Mock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
@@ -235,7 +268,11 @@ class TestXAIConnector:
             mock_openai.return_value = mock_client
             mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "xai-key",
+                "model_list": ["grok-1"],
+            }
             connector = XAIConnector("test-xai", config)
 
             response, metadata = await connector.chat_completion(messages, model)
@@ -247,7 +284,7 @@ class TestXAIConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_error(self):
-        """Test xAI chat completion error handling"""
+        """Test xAI chat completion error handling."""
         messages = [{"role": "user", "content": "Hello"}]
         model = "grok-1"
 
@@ -256,7 +293,11 @@ class TestXAIConnector:
             mock_openai.return_value = mock_client
             mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API Error"))
 
-            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "invalid-key", "model_list": ["grok-1"]}
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "invalid-key",
+                "model_list": ["grok-1"],
+            }
             connector = XAIConnector("test-xai", config)
 
             with pytest.raises(Exception, match="API Error"):
@@ -264,9 +305,13 @@ class TestXAIConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens(self):
-        """Test token counting for xAI"""
+        """Test token counting for xAI."""
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI"):
-            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "xai-key",
+                "model_list": ["grok-1"],
+            }
             connector = XAIConnector("test-xai", config)
 
             count = await connector.count_tokens("hello world", "grok-1")
@@ -275,7 +320,7 @@ class TestXAIConnector:
 
     @pytest.mark.asyncio
     async def test_list_models(self):
-        """Test listing xAI models"""
+        """Test listing xAI models."""
         mock_model_1 = Mock(id="grok-1", created=1234567890, owned_by="xai")
         mock_models = Mock(data=[mock_model_1])
 
@@ -284,7 +329,11 @@ class TestXAIConnector:
             mock_openai.return_value = mock_client
             mock_client.models.list = AsyncMock(return_value=mock_models)
 
-            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "xai-key",
+                "model_list": ["grok-1"],
+            }
             connector = XAIConnector("test-xai", config)
 
             models = await connector.list_models()
@@ -295,7 +344,7 @@ class TestXAIConnector:
 
     @pytest.mark.asyncio
     async def test_health_check(self):
-        """Test xAI health check"""
+        """Test xAI health check."""
         mock_models = Mock(data=[])
 
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
@@ -303,7 +352,11 @@ class TestXAIConnector:
             mock_openai.return_value = mock_client
             mock_client.models.list = AsyncMock(return_value=mock_models)
 
-            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "xai-key",
+                "model_list": ["grok-1"],
+            }
             connector = XAIConnector("test-xai", config)
 
             result = await connector.health_check()
@@ -313,11 +366,11 @@ class TestXAIConnector:
 
 
 class TestAnthropicConnector:
-    """Test Anthropic connector"""
+    """Test Anthropic connector."""
 
     @pytest.mark.asyncio
     async def test_chat_completion_success(self):
-        """Test successful Anthropic chat completion"""
+        """Test successful Anthropic chat completion."""
         mock_response = Mock()
         mock_response.content = [Mock(text="Hello from Claude!")]
         mock_response.stop_reason = "end_turn"
@@ -341,14 +394,14 @@ class TestAnthropicConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_with_system_message(self):
-        """Test Anthropic chat completion with system message"""
+        """Test Anthropic chat completion with system message."""
         mock_response = Mock()
         mock_response.content = [Mock(text="Response")]
         mock_response.stop_reason = "end_turn"
 
         messages = [
             {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": "Hello"}
+            {"role": "user", "content": "Hello"},
         ]
         model = "claude-3-haiku-20240307"
 
@@ -369,7 +422,7 @@ class TestAnthropicConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens(self):
-        """Test token counting for Anthropic"""
+        """Test token counting for Anthropic."""
         with patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic"):
             config = {"api_key": "ant-key", "model_list": ["claude-3-haiku-20240307"]}
             connector = AnthropicConnector("test-anthropic", config)
@@ -380,9 +433,12 @@ class TestAnthropicConnector:
 
     @pytest.mark.asyncio
     async def test_list_models(self):
-        """Test listing Anthropic models"""
+        """Test listing Anthropic models."""
         with patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic"):
-            config = {"api_key": "ant-key", "model_list": ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"]}
+            config = {
+                "api_key": "ant-key",
+                "model_list": ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"],
+            }
             connector = AnthropicConnector("test-anthropic", config)
 
             models = await connector.list_models()
@@ -394,7 +450,7 @@ class TestAnthropicConnector:
 
     @pytest.mark.asyncio
     async def test_health_check(self):
-        """Test Anthropic health check"""
+        """Test Anthropic health check."""
         mock_response = Mock()
         mock_response.content = [Mock(text="hi")]
         mock_response.stop_reason = "end_turn"
@@ -414,11 +470,11 @@ class TestAnthropicConnector:
 
 
 class TestGeminiConnector:
-    """Test Gemini connector"""
+    """Test Gemini connector."""
 
     @pytest.mark.asyncio
     async def test_chat_completion_success(self):
-        """Test successful Gemini chat completion"""
+        """Test successful Gemini chat completion."""
         finish_reason = Mock()
         finish_reason.name = "STOP"
         candidate = Mock()
@@ -447,7 +503,7 @@ class TestGeminiConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_with_system_message(self):
-        """Test Gemini chat completion with system message"""
+        """Test Gemini chat completion with system message."""
         finish_reason = Mock()
         finish_reason.name = "STOP"
         candidate = Mock()
@@ -459,7 +515,7 @@ class TestGeminiConnector:
 
         messages = [
             {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": "Hello"}
+            {"role": "user", "content": "Hello"},
         ]
         model = "gemini-1.5-flash"
 
@@ -480,7 +536,7 @@ class TestGeminiConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_error(self):
-        """Test Gemini chat completion error handling"""
+        """Test Gemini chat completion error handling."""
         messages = [{"role": "user", "content": "Hello"}]
         model = "gemini-1.5-flash"
 
@@ -497,7 +553,7 @@ class TestGeminiConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens(self):
-        """Test token counting for Gemini"""
+        """Test token counting for Gemini."""
         with patch("shared.utils.llm_connectors.genai.Client"):
             config = {"api_key": "test-key", "model_list": ["gemini-1.5-flash"]}
             connector = GeminiConnector("test-gemini", config)
@@ -508,7 +564,7 @@ class TestGeminiConnector:
 
     @pytest.mark.asyncio
     async def test_list_models(self):
-        """Test listing Gemini models"""
+        """Test listing Gemini models."""
         with patch("shared.utils.llm_connectors.genai.Client"):
             config = {"api_key": "test-key", "model_list": ["gemini-1.5-flash", "gemini-1.5-pro"]}
             connector = GeminiConnector("test-gemini", config)
@@ -522,7 +578,7 @@ class TestGeminiConnector:
 
     @pytest.mark.asyncio
     async def test_health_check(self):
-        """Test Gemini health check"""
+        """Test Gemini health check."""
         finish_reason = Mock()
         finish_reason.name = "STOP"
         candidate = Mock()
@@ -547,21 +603,20 @@ class TestGeminiConnector:
 
 
 class TestOllamaConnector:
-    """Test Ollama connector"""
+    """Test Ollama connector."""
 
     @pytest.mark.asyncio
     async def test_chat_completion_success(self):
-        """Test successful Ollama chat completion"""
+        """Test successful Ollama chat completion."""
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
         connector = OllamaConnector("test-ollama", config)
 
         # Mock aiohttp response
         mock_response = AsyncMock()
         mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={
-            "message": {"content": "Hello from Ollama!"},
-            "done_reason": "stop"
-        })
+        mock_response.json = AsyncMock(
+            return_value={"message": {"content": "Hello from Ollama!"}, "done_reason": "stop"}
+        )
 
         messages = [{"role": "user", "content": "Hello"}]
         model = "llama2"
@@ -577,7 +632,7 @@ class TestOllamaConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_error(self):
-        """Test Ollama chat completion error handling"""
+        """Test Ollama chat completion error handling."""
         from shared.utils.llm_connectors import ProviderServerError
 
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
@@ -597,7 +652,7 @@ class TestOllamaConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens(self):
-        """Test token counting for Ollama"""
+        """Test token counting for Ollama."""
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
         connector = OllamaConnector("test-ollama", config)
 
@@ -607,18 +662,20 @@ class TestOllamaConnector:
 
     @pytest.mark.asyncio
     async def test_list_models(self):
-        """Test listing Ollama models"""
+        """Test listing Ollama models."""
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
         connector = OllamaConnector("test-ollama", config)
 
         mock_response = AsyncMock()
         mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={
-            "models": [
-                {"name": "llama2", "size": 3900000000},
-                {"name": "codellama:latest", "size": 3800000000}
-            ]
-        })
+        mock_response.json = AsyncMock(
+            return_value={
+                "models": [
+                    {"name": "llama2", "size": 3900000000},
+                    {"name": "codellama:latest", "size": 3800000000},
+                ]
+            }
+        )
 
         with patch.object(connector, "session") as mock_session:
             mock_session.get = MagicMock(return_value=AsyncContextManagerMock(mock_response))
@@ -631,7 +688,7 @@ class TestOllamaConnector:
 
     @pytest.mark.asyncio
     async def test_pull_model(self):
-        """Test pulling Ollama model"""
+        """Test pulling Ollama model."""
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": []}
         connector = OllamaConnector("test-ollama", config)
 
@@ -648,7 +705,7 @@ class TestOllamaConnector:
 
     @pytest.mark.asyncio
     async def test_remove_model(self):
-        """Test removing Ollama model"""
+        """Test removing Ollama model."""
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": []}
         connector = OllamaConnector("test-ollama", config)
 
@@ -665,7 +722,7 @@ class TestOllamaConnector:
 
     @pytest.mark.asyncio
     async def test_health_check(self):
-        """Test Ollama health check"""
+        """Test Ollama health check."""
         config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
         connector = OllamaConnector("test-ollama", config)
 
@@ -682,7 +739,7 @@ class TestOllamaConnector:
 
 
 class TestLLMManager:
-    """Test LLMManager (LLMConnectionManager) class"""
+    """Test LLMManager (LLMConnectionManager) class."""
 
     @pytest.fixture
     def manager_db(self):
@@ -692,26 +749,27 @@ class TestLLMManager:
         return db
 
     def test_llm_manager_init(self, manager_db):
-        """Test LLM manager initialization"""
+        """Test LLM manager initialization."""
         manager = LLMManager(manager_db)
         assert manager.db == manager_db
         assert isinstance(manager.connectors, dict)
 
     def test_get_connector_returns_none_for_unknown(self, manager_db):
-        """Test getting non-existent connector"""
+        """Test getting non-existent connector."""
         manager = LLMManager(manager_db)
         assert manager.get_connector("nonexistent") is None
 
     def test_reload_connectors_clears_and_reloads(self, manager_db):
-        """Test reloading connectors"""
+        """Test reloading connectors."""
         manager = LLMManager(manager_db)
         manager.connectors["fake"] = MagicMock()
         manager.reload_connectors()
         assert "fake" not in manager.connectors
 
     def test_load_connectors_creates_openai_connector(self, manager_db):
-        """Test loading OpenAI connector from DB"""
+        """Test loading OpenAI connector from DB."""
         import builtins
+
         mock_link = MagicMock()
         mock_link.name = "test-openai"
         mock_link.provider = "openai"
@@ -731,16 +789,19 @@ class TestLLMManager:
                 return False
             return original_hasattr(obj, name)
 
-        with patch("shared.utils.llm_connectors.decrypt_credential", return_value="decrypted-key"), \
-             patch("shared.utils.llm_connectors.openai.AsyncOpenAI"), \
-             patch("builtins.hasattr", side_effect=mock_hasattr):
+        with (
+            patch("shared.utils.llm_connectors.decrypt_credential", return_value="decrypted-key"),
+            patch("shared.utils.llm_connectors.openai.AsyncOpenAI"),
+            patch("builtins.hasattr", side_effect=mock_hasattr),
+        ):
             manager = LLMManager(manager_db)
             assert "test-openai" in manager.connectors
             assert isinstance(manager.connectors["test-openai"], OpenAIConnector)
 
     def test_load_connectors_creates_anthropic_connector(self, manager_db):
-        """Test loading Anthropic connector from DB"""
+        """Test loading Anthropic connector from DB."""
         import builtins
+
         mock_link = MagicMock()
         mock_link.name = "test-anthropic"
         mock_link.provider = "anthropic"
@@ -759,16 +820,19 @@ class TestLLMManager:
                 return False
             return original_hasattr(obj, name)
 
-        with patch("shared.utils.llm_connectors.decrypt_credential", return_value="decrypted-key"), \
-             patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic"), \
-             patch("builtins.hasattr", side_effect=mock_hasattr):
+        with (
+            patch("shared.utils.llm_connectors.decrypt_credential", return_value="decrypted-key"),
+            patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic"),
+            patch("builtins.hasattr", side_effect=mock_hasattr),
+        ):
             manager = LLMManager(manager_db)
             assert "test-anthropic" in manager.connectors
             assert isinstance(manager.connectors["test-anthropic"], AnthropicConnector)
 
     def test_load_connectors_creates_gemini_connector(self, manager_db):
-        """Test loading Gemini connector from DB"""
+        """Test loading Gemini connector from DB."""
         import builtins
+
         mock_link = MagicMock()
         mock_link.name = "test-gemini"
         mock_link.provider = "gemini"
@@ -787,16 +851,19 @@ class TestLLMManager:
                 return False
             return original_hasattr(obj, name)
 
-        with patch("shared.utils.llm_connectors.decrypt_credential", return_value="decrypted-key"), \
-             patch("shared.utils.llm_connectors.genai.Client"), \
-             patch("builtins.hasattr", side_effect=mock_hasattr):
+        with (
+            patch("shared.utils.llm_connectors.decrypt_credential", return_value="decrypted-key"),
+            patch("shared.utils.llm_connectors.genai.Client"),
+            patch("builtins.hasattr", side_effect=mock_hasattr),
+        ):
             manager = LLMManager(manager_db)
             assert "test-gemini" in manager.connectors
             assert isinstance(manager.connectors["test-gemini"], GeminiConnector)
 
     def test_load_connectors_creates_ollama_connector(self, manager_db):
-        """Test loading Ollama connector from DB"""
+        """Test loading Ollama connector from DB."""
         import builtins
+
         mock_link = MagicMock()
         mock_link.name = "test-ollama"
         mock_link.provider = "ollama"
@@ -815,16 +882,19 @@ class TestLLMManager:
                 return False
             return original_hasattr(obj, name)
 
-        with patch("shared.utils.llm_connectors.decrypt_credential", return_value=""), \
-             patch("shared.utils.llm_connectors.aiohttp.ClientSession"), \
-             patch("builtins.hasattr", side_effect=mock_hasattr):
+        with (
+            patch("shared.utils.llm_connectors.decrypt_credential", return_value=""),
+            patch("shared.utils.llm_connectors.aiohttp.ClientSession"),
+            patch("builtins.hasattr", side_effect=mock_hasattr),
+        ):
             manager = LLMManager(manager_db)
             assert "test-ollama" in manager.connectors
             assert isinstance(manager.connectors["test-ollama"], OllamaConnector)
 
     def test_load_connectors_skips_unknown_provider(self, manager_db):
-        """Test that unknown providers are skipped"""
+        """Test that unknown providers are skipped."""
         import builtins
+
         mock_link = MagicMock()
         mock_link.name = "unknown"
         mock_link.provider = "unknown_provider"
@@ -843,14 +913,16 @@ class TestLLMManager:
                 return False
             return original_hasattr(obj, name)
 
-        with patch("shared.utils.llm_connectors.decrypt_credential", return_value=""), \
-             patch("builtins.hasattr", side_effect=mock_hasattr):
+        with (
+            patch("shared.utils.llm_connectors.decrypt_credential", return_value=""),
+            patch("builtins.hasattr", side_effect=mock_hasattr),
+        ):
             manager = LLMManager(manager_db)
             assert "unknown" not in manager.connectors
 
     @pytest.mark.asyncio
     async def test_list_all_models(self, manager_db):
-        """Test listing all models from all connectors"""
+        """Test listing all models from all connectors."""
         mock_model = Mock(id="gpt-4", created=1234567890, owned_by="openai")
         mock_models = Mock(data=[mock_model])
 
@@ -859,7 +931,11 @@ class TestLLMManager:
             mock_openai.return_value = mock_client
             mock_client.models.list = AsyncMock(return_value=mock_models)
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             manager = LLMManager(manager_db)
@@ -873,7 +949,7 @@ class TestLLMManager:
 
     @pytest.mark.asyncio
     async def test_health_check_all(self, manager_db):
-        """Test health check of all connectors"""
+        """Test health check of all connectors."""
         mock_models = Mock(data=[])
 
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
@@ -881,7 +957,11 @@ class TestLLMManager:
             mock_openai.return_value = mock_client
             mock_client.models.list = AsyncMock(return_value=mock_models)
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             manager = LLMManager(manager_db)
@@ -893,9 +973,13 @@ class TestLLMManager:
             assert results["test-openai"]["status"] == "healthy"
 
     def test_get_connector_for_model(self, manager_db):
-        """Test getting connector for a specific model"""
+        """Test getting connector for a specific model."""
         with patch("shared.utils.llm_connectors.openai.AsyncOpenAI"):
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             manager = LLMManager(manager_db)
@@ -906,17 +990,17 @@ class TestLLMManager:
             assert found_connector.name == "test-openai"
 
     def test_get_connector_for_unknown_model(self, manager_db):
-        """Test getting connector for unknown model"""
+        """Test getting connector for unknown model."""
         manager = LLMManager(manager_db)
         found_connector = manager.get_connector_for_model("unknown-model")
         assert found_connector is None
 
 
 class TestLLMManagerFactory:
-    """Test LLM manager factory function"""
+    """Test LLM manager factory function."""
 
     def test_create_llm_manager(self, mock_db):
-        """Test creating LLM manager"""
+        """Test creating LLM manager."""
         # Setup mock_db to return empty select
         mock_db.return_value.select.return_value = []
 
@@ -928,11 +1012,13 @@ class TestLLMManagerFactory:
 
 
 class TestLlamaCppConnector:
-    """Tests for LlamaCppConnector"""
+    """Tests for LlamaCppConnector."""
 
     @pytest.fixture
     def connector(self):
+        """Build a LlamaCppConnector pointed at a fake local llama-server for these tests."""
         from shared.utils.llm_connectors import LlamaCppConnector
+
         config = {
             "endpoint_url": "http://localhost:8080",
             "model_name": "llama-3.2-3b-instruct",
@@ -943,6 +1029,7 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_success(self, connector):
+        """chat_completion() returns the message content and passes through usage counts."""
         mock_response_data = {
             "choices": [{"message": {"content": "Hello!"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
@@ -967,6 +1054,7 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_server_error(self, connector):
+        """A 500 from llama-server is raised as ProviderServerError."""
         from shared.utils.llm_connectors import ProviderServerError
 
         mock_resp = AsyncMock()
@@ -984,6 +1072,7 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens_exact_via_tokenize(self, connector):
+        """count_tokens() returns the exact token count reported by /tokenize."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value={"tokens": [1, 2, 3, 4, 5]})
@@ -999,6 +1088,7 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens_fallback_to_tiktoken_on_failure(self, connector):
+        """count_tokens() falls back to a tiktoken estimate when /tokenize is unavailable."""
         mock_resp = AsyncMock()
         mock_resp.status = 503
 
@@ -1013,12 +1103,15 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_list_models_returns_loaded_model(self, connector):
+        """list_models() surfaces the model llama-server reports as currently loaded."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={
-            "object": "list",
-            "data": [{"id": "llama-3.2-3b-instruct", "object": "model"}],
-        })
+        mock_resp.json = AsyncMock(
+            return_value={
+                "object": "list",
+                "data": [{"id": "llama-3.2-3b-instruct", "object": "model"}],
+            }
+        )
 
         mock_session = AsyncMock()
         mock_session.closed = False
@@ -1033,6 +1126,7 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_health_check_healthy(self, connector):
+        """health_check() reports healthy when llama-server's /health returns 200."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value={"status": "ok"})
@@ -1049,6 +1143,7 @@ class TestLlamaCppConnector:
 
     @pytest.mark.asyncio
     async def test_health_check_unhealthy(self, connector):
+        """health_check() reports unhealthy and surfaces the error when the request raises."""
         mock_session = AsyncMock()
         mock_session.closed = False
         mock_session.get = MagicMock(side_effect=Exception("connection refused"))
@@ -1061,11 +1156,11 @@ class TestLlamaCppConnector:
 
 
 class TestBedrockConnector:
-    """Test AWS Bedrock connector"""
+    """Test AWS Bedrock connector."""
 
     @pytest.mark.asyncio
     async def test_chat_completion_success(self):
-        """Test successful Bedrock chat completion"""
+        """Test successful Bedrock chat completion."""
         mock_response = {
             "output": {
                 "message": {
@@ -1084,7 +1179,10 @@ class TestBedrockConnector:
             mock_boto3.client = MagicMock(return_value=mock_client)
             mock_client.converse = MagicMock(return_value=mock_response)
 
-            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            config = {
+                "api_key": "bedrock-key",
+                "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"],
+            }
             connector = BedrockConnector("test-bedrock", config)
 
             response, metadata = await connector.chat_completion(messages, model)
@@ -1096,7 +1194,7 @@ class TestBedrockConnector:
 
     @pytest.mark.asyncio
     async def test_chat_completion_error(self):
-        """Test Bedrock chat completion error handling"""
+        """Test Bedrock chat completion error handling."""
         messages = [{"role": "user", "content": "Hello"}]
         model = "anthropic.claude-3-haiku-20240307-v1:0"
 
@@ -1105,7 +1203,10 @@ class TestBedrockConnector:
             mock_boto3.client = MagicMock(return_value=mock_client)
             mock_client.converse = MagicMock(side_effect=Exception("Bedrock API Error"))
 
-            config = {"api_key": "invalid-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            config = {
+                "api_key": "invalid-key",
+                "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"],
+            }
             connector = BedrockConnector("test-bedrock", config)
 
             with pytest.raises(Exception, match="Bedrock API Error"):
@@ -1113,20 +1214,28 @@ class TestBedrockConnector:
 
     @pytest.mark.asyncio
     async def test_count_tokens(self):
-        """Test token counting for Bedrock (fallback to tiktoken)"""
+        """Test token counting for Bedrock (fallback to tiktoken)."""
         with patch("shared.utils.llm_connectors.boto3"):
-            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            config = {
+                "api_key": "bedrock-key",
+                "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"],
+            }
             connector = BedrockConnector("test-bedrock", config)
 
-            count = await connector.count_tokens("hello world", "anthropic.claude-3-haiku-20240307-v1:0")
+            count = await connector.count_tokens(
+                "hello world", "anthropic.claude-3-haiku-20240307-v1:0"
+            )
             assert isinstance(count, int)
             assert count > 0
 
     @pytest.mark.asyncio
     async def test_list_models(self):
-        """Test listing Bedrock models"""
+        """Test listing Bedrock models."""
         with patch("shared.utils.llm_connectors.boto3"):
-            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            config = {
+                "api_key": "bedrock-key",
+                "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"],
+            }
             connector = BedrockConnector("test-bedrock", config)
 
             models = await connector.list_models()
@@ -1137,13 +1246,16 @@ class TestBedrockConnector:
 
     @pytest.mark.asyncio
     async def test_health_check(self):
-        """Test Bedrock health check"""
+        """Test Bedrock health check."""
         with patch("shared.utils.llm_connectors.boto3") as mock_boto3:
             mock_client = MagicMock()
             mock_boto3.client = MagicMock(return_value=mock_client)
             mock_client.list_foundation_models = MagicMock(return_value={"modelSummaries": []})
 
-            config = {"api_key": "bedrock-key", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
+            config = {
+                "api_key": "bedrock-key",
+                "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"],
+            }
             connector = BedrockConnector("test-bedrock", config)
 
             result = await connector.health_check()
@@ -1153,40 +1265,44 @@ class TestBedrockConnector:
 
 
 class TestProviderErrors:
-    """Test typed provider error hierarchy"""
+    """Test typed provider error hierarchy."""
 
     def test_provider_timeout_error_is_retryable(self):
-        """Timeout errors are retryable"""
+        """Timeout errors are retryable."""
         from shared.utils.llm_connectors import ProviderTimeoutError
+
         err = ProviderTimeoutError(provider="test", model="m1", message="timeout")
         assert err.provider == "test"
         assert err.model == "m1"
 
     def test_provider_rate_limit_error_is_retryable(self):
-        """Rate limit errors are retryable"""
+        """Rate limit errors are retryable."""
         from shared.utils.llm_connectors import ProviderRateLimitError
+
         err = ProviderRateLimitError(provider="test", model="m1", message="429", status_code=429)
         assert err.status_code == 429
 
     def test_provider_server_error_is_retryable(self):
-        """Server errors are retryable"""
+        """Server errors are retryable."""
         from shared.utils.llm_connectors import ProviderServerError
+
         err = ProviderServerError(provider="test", model="m1", message="500", status_code=500)
         assert err.status_code == 500
 
     def test_provider_client_error_not_retryable(self):
-        """Client errors are not retryable"""
+        """Client errors are not retryable."""
         from shared.utils.llm_connectors import ProviderClientError
+
         err = ProviderClientError(provider="test", model="m1", message="401", status_code=401)
         assert err.status_code == 401
 
 
 class TestRetryLogic:
-    """Test retry logic with jittered backoff"""
+    """Test retry logic with jittered backoff."""
 
     @pytest.mark.asyncio
     async def test_retry_success_on_first_attempt(self):
-        """First attempt succeeds"""
+        """First attempt succeeds."""
         from shared.utils.llm_connectors import _with_retries
 
         async def success_call():
@@ -1198,8 +1314,8 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_retry_succeeds_after_transient_error(self):
-        """Succeeds after timeout error on first attempt"""
-        from shared.utils.llm_connectors import _with_retries, ProviderTimeoutError
+        """Succeeds after timeout error on first attempt."""
+        from shared.utils.llm_connectors import ProviderTimeoutError, _with_retries
 
         call_count = 0
 
@@ -1227,8 +1343,8 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_retry_exhaustion_includes_attempt_summary(self):
-        """Failed retries raise with attempt summary"""
-        from shared.utils.llm_connectors import _with_retries, ProviderRateLimitError
+        """Failed retries raise with attempt summary."""
+        from shared.utils.llm_connectors import ProviderRateLimitError, _with_retries
 
         async def always_fail():
             raise ProviderRateLimitError("openai", "gpt-4", "rate limit", status_code=429)
@@ -1250,8 +1366,8 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_client_error_not_retried(self):
-        """Client errors (4xx) are raised immediately without retry"""
-        from shared.utils.llm_connectors import _with_retries, ProviderClientError
+        """Client errors (4xx) are raised immediately without retry."""
+        from shared.utils.llm_connectors import ProviderClientError, _with_retries
 
         call_count = 0
 
@@ -1277,8 +1393,8 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_retry_respects_max_attempts(self):
-        """Retries up to max_attempts"""
-        from shared.utils.llm_connectors import _with_retries, ProviderServerError
+        """Retries up to max_attempts."""
+        from shared.utils.llm_connectors import ProviderServerError, _with_retries
 
         call_count = 0
 
@@ -1303,8 +1419,8 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_retry_jittered_backoff(self):
-        """Backoff increases exponentially with jitter"""
-        from shared.utils.llm_connectors import _with_retries, ProviderServerError
+        """Backoff increases exponentially with jitter."""
+        from shared.utils.llm_connectors import ProviderServerError, _with_retries
 
         call_count = 0
         sleep_calls = []
@@ -1335,11 +1451,11 @@ class TestRetryLogic:
 
 
 class TestStreamingConnectors:
-    """Test streaming chat completion on all connectors"""
+    """Test streaming chat completion on all connectors."""
 
     @pytest.mark.asyncio
     async def test_openai_stream_chat_completion(self):
-        """Test OpenAI streaming chat completion"""
+        """Test OpenAI streaming chat completion."""
         from shared.utils.llm_connectors import StreamChunk
 
         # Mock streaming chunks
@@ -1363,7 +1479,11 @@ class TestStreamingConnectors:
 
             mock_client.chat.completions.create = AsyncMock(return_value=async_stream())
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             chunks = []
@@ -1378,7 +1498,7 @@ class TestStreamingConnectors:
 
     @pytest.mark.asyncio
     async def test_xai_stream_chat_completion(self):
-        """Test xAI streaming chat completion (OpenAI-compatible)"""
+        """Test xAI streaming chat completion (OpenAI-compatible)."""
         from shared.utils.llm_connectors import StreamChunk
 
         mock_chunks = [
@@ -1398,7 +1518,11 @@ class TestStreamingConnectors:
 
             mock_client.chat.completions.create = AsyncMock(return_value=async_stream())
 
-            config = {"endpoint_url": "https://api.x.ai/v1", "api_key": "xai-key", "model_list": ["grok-1"]}
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "xai-key",
+                "model_list": ["grok-1"],
+            }
             connector = XAIConnector("test-xai", config)
 
             chunks = []
@@ -1411,7 +1535,7 @@ class TestStreamingConnectors:
 
     @pytest.mark.asyncio
     async def test_anthropic_stream_chat_completion(self):
-        """Test Anthropic streaming chat completion"""
+        """Test Anthropic streaming chat completion."""
         from shared.utils.llm_connectors import StreamChunk
 
         messages = [{"role": "user", "content": "Hi"}]
@@ -1463,9 +1587,10 @@ class TestStreamingConnectors:
 
     @pytest.mark.asyncio
     async def test_ollama_stream_chat_completion(self):
-        """Test Ollama streaming chat completion (NDJSON)"""
-        from shared.utils.llm_connectors import StreamChunk
+        """Test Ollama streaming chat completion (NDJSON)."""
         import json
+
+        from shared.utils.llm_connectors import StreamChunk
 
         messages = [{"role": "user", "content": "Hi"}]
         model = "llama2"
@@ -1492,7 +1617,11 @@ class TestStreamingConnectors:
 
             mock_session.post = Mock(return_value=mock_response)
 
-            config = {"endpoint_url": "http://localhost:11434", "api_key": "", "model_list": ["llama2"]}
+            config = {
+                "endpoint_url": "http://localhost:11434",
+                "api_key": "",
+                "model_list": ["llama2"],
+            }
             connector = OllamaConnector("test-ollama", config)
 
             chunks = []
@@ -1505,17 +1634,18 @@ class TestStreamingConnectors:
 
     @pytest.mark.asyncio
     async def test_llamacpp_stream_chat_completion(self):
-        """Test llama-server streaming chat completion (SSE)"""
-        from shared.utils.llm_connectors import StreamChunk
+        """Test llama-server streaming chat completion (SSE)."""
         import json
+
+        from shared.utils.llm_connectors import StreamChunk
 
         messages = [{"role": "user", "content": "Hi"}]
         model = "my-model"
 
         sse_lines = [
-            b'data: ' + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}).encode(),
-            b'data: ' + json.dumps({"choices": [{"delta": {"content": " world"}}]}).encode(),
-            b'data: [DONE]',
+            b"data: " + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}).encode(),
+            b"data: " + json.dumps({"choices": [{"delta": {"content": " world"}}]}).encode(),
+            b"data: [DONE]",
         ]
 
         with patch("shared.utils.llm_connectors.aiohttp.ClientSession") as mock_session_class:
@@ -1535,7 +1665,11 @@ class TestStreamingConnectors:
 
             mock_session.post = Mock(return_value=mock_response)
 
-            config = {"endpoint_url": "http://localhost:8000", "api_key": "", "model_name": "my-model"}
+            config = {
+                "endpoint_url": "http://localhost:8000",
+                "api_key": "",
+                "model_name": "my-model",
+            }
             connector = LlamaCppConnector("test-llamacpp", config)
 
             chunks = []
@@ -1548,7 +1682,7 @@ class TestStreamingConnectors:
 
     @pytest.mark.asyncio
     async def test_gemini_stream_chat_completion(self):
-        """Test Gemini streaming chat completion"""
+        """Test Gemini streaming chat completion."""
         from shared.utils.llm_connectors import StreamChunk
 
         messages = [{"role": "user", "content": "Hi"}]
@@ -1586,7 +1720,7 @@ class TestStreamingConnectors:
 
     @pytest.mark.asyncio
     async def test_bedrock_stream_chat_completion(self):
-        """Test Bedrock streaming chat completion with thread bridge"""
+        """Test Bedrock streaming chat completion with thread bridge."""
         from shared.utils.llm_connectors import StreamChunk
 
         messages = [{"role": "user", "content": "Hi"}]
@@ -1606,7 +1740,9 @@ class TestStreamingConnectors:
             def mock_stream_response():
                 return {"body": mock_events}
 
-            mock_client.invoke_model_with_response_stream = Mock(return_value=mock_stream_response())
+            mock_client.invoke_model_with_response_stream = Mock(
+                return_value=mock_stream_response()
+            )
 
             config = {"api_key": "", "model_list": ["anthropic.claude-3-haiku-20240307-v1:0"]}
             connector = BedrockConnector("test-bedrock", config)
@@ -1621,7 +1757,7 @@ class TestStreamingConnectors:
 
     @pytest.mark.asyncio
     async def test_stream_error_mapping_openai(self):
-        """Test that streaming errors map to typed ProviderError"""
+        """Test that streaming errors map to typed ProviderError."""
         from shared.utils.llm_connectors import ProviderServerError
 
         messages = [{"role": "user", "content": "Hi"}]
@@ -1632,7 +1768,11 @@ class TestStreamingConnectors:
             mock_openai.return_value = mock_client
             mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Stream error"))
 
-            config = {"endpoint_url": "https://api.openai.com/v1", "api_key": "test-key", "model_list": ["gpt-4"]}
+            config = {
+                "endpoint_url": "https://api.openai.com/v1",
+                "api_key": "test-key",
+                "model_list": ["gpt-4"],
+            }
             connector = OpenAIConnector("test-openai", config)
 
             with pytest.raises(ProviderServerError):
@@ -1650,6 +1790,7 @@ class TestStreamingUsageAccounting:
 
     @pytest.mark.asyncio
     async def test_openai_stream_requests_usage_and_reports_it(self):
+        """Streaming opts into stream_options include_usage and reports it on the final chunk."""
         usage_chunk = Mock(choices=[], usage=Mock(prompt_tokens=11, completion_tokens=7))
         text_chunk = Mock(choices=[Mock(delta=Mock(content="hi"))], usage=None)
 
@@ -1666,13 +1807,15 @@ class TestStreamingUsageAccounting:
             chunks = [c async for c in connector.stream_chat_completion([], "gpt-4")]
 
         # usage must be requested, or the provider never sends it
-        assert client.chat.completions.create.call_args.kwargs["stream_options"] == {"include_usage": True}
+        assert client.chat.completions.create.call_args.kwargs["stream_options"] == {
+            "include_usage": True
+        }
         assert chunks[-1].done is True
         assert chunks[-1].usage["input_tokens"] == 11
         assert chunks[-1].usage["output_tokens"] == 7
         assert chunks[-1].usage["provider"] == "openai"
 
     def test_xai_inherits_openai_streaming(self):
-        """xAI must not carry its own copy — a duplicate misses OpenAI-path fixes."""
+        """XAI must not carry its own copy — a duplicate misses OpenAI-path fixes."""
         assert XAIConnector.stream_chat_completion is OpenAIConnector.stream_chat_completion
         assert XAIConnector.provider_label == "xai"

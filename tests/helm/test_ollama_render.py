@@ -36,13 +36,17 @@ class TestDaemonSetMode:
     """Default mode (ollama.mode unset / "daemonset")."""
 
     def test_daemonset_renders_not_deployment(self):
+        """Default mode renders a DaemonSet named waddleai-ollama, never a Deployment."""
         docs = render("values-alpha.yaml", RESTRICTED_SET_VALUES)
-        assert any(d["kind"] == "DaemonSet" and d["metadata"]["name"] == "waddleai-ollama" for d in docs)
+        assert any(
+            d["kind"] == "DaemonSet" and d["metadata"]["name"] == "waddleai-ollama" for d in docs
+        )
         assert not any(
             d["kind"] == "Deployment" and d["metadata"]["name"] == "waddleai-ollama" for d in docs
         )
 
     def test_serve_sidecar_and_pull_initcontainers_use_hardened_image(self):
+        """Both the serve sidecar and every model-pull initContainer use the hardened image."""
         docs = render("values-alpha.yaml", RESTRICTED_SET_VALUES)
         ds = find(docs, "DaemonSet", "waddleai-ollama")
         init = {c["name"]: c for c in ds["spec"]["template"]["spec"]["initContainers"]}
@@ -51,6 +55,7 @@ class TestDaemonSetMode:
             assert c["image"] == HARDENED_IMAGE
 
     def test_serve_sidecar_is_native_sidecar_with_readiness_gate(self):
+        """Serve container is a native sidecar (restartPolicy: Always) with exec readiness probe."""
         docs = render("values-alpha.yaml", RESTRICTED_SET_VALUES)
         ds = find(docs, "DaemonSet", "waddleai-ollama")
         serve = next(
@@ -60,6 +65,7 @@ class TestDaemonSetMode:
         assert serve["readinessProbe"]["exec"]["command"] == ["/usr/bin/ollama", "list"]
 
     def test_pull_initcontainer_targets_loopback_not_shell(self):
+        """Pull initContainer targets 127.0.0.1 via args, with no shell command override."""
         docs = render("values-alpha.yaml", RESTRICTED_SET_VALUES)
         ds = find(docs, "DaemonSet", "waddleai-ollama")
         pull = next(
@@ -75,6 +81,7 @@ class TestDaemonSetMode:
         assert "command" not in pull
 
     def test_main_container_uses_hardened_image(self):
+        """The main ollama container uses the hardened image, same as the init containers."""
         docs = render("values-alpha.yaml", RESTRICTED_SET_VALUES)
         ds = find(docs, "DaemonSet", "waddleai-ollama")
         main = next(
@@ -83,6 +90,7 @@ class TestDaemonSetMode:
         assert main["image"] == HARDENED_IMAGE
 
     def test_every_fleet_container_is_restricted_and_scoped(self):
+        """Every init/main container is PSA-restricted and writes only to model-store/tmp."""
         docs = render("values-alpha.yaml", RESTRICTED_SET_VALUES)
         ds = find(docs, "DaemonSet", "waddleai-ollama")
         podspec = ds["spec"]["template"]["spec"]
@@ -106,6 +114,7 @@ class TestPoolMode:
     POOL_VALUES = {**RESTRICTED_SET_VALUES, "ollama.mode": "pool"}
 
     def test_deployment_renders_not_daemonset(self):
+        """Pool mode renders a Deployment named waddleai-ollama, never a DaemonSet."""
         docs = render("values-alpha.yaml", self.POOL_VALUES)
         assert any(
             d["kind"] == "Deployment" and d["metadata"]["name"] == "waddleai-ollama" for d in docs
@@ -115,12 +124,13 @@ class TestPoolMode:
         )
 
     def test_replica_count_from_values(self):
+        """Replica count comes from ollama.pool.replicaCount in values.yaml, not hardcoded."""
         docs = render("values-alpha.yaml", self.POOL_VALUES)
         dep = find(docs, "Deployment", "waddleai-ollama")
         assert dep["spec"]["replicas"] == 2  # values.yaml default ollama.pool.replicaCount
 
     def test_pod_spec_identical_shape_to_daemonset_mode(self):
-        """Same podTemplate helper — pool mode still gets the hardened image + restricted containers."""
+        """Same podTemplate helper — pool mode gets the hardened image + restricted containers."""
         docs = render("values-alpha.yaml", self.POOL_VALUES)
         dep = find(docs, "Deployment", "waddleai-ollama")
         podspec = dep["spec"]["template"]["spec"]
@@ -132,6 +142,9 @@ class TestFeatureOff:
     """ollama.enabled: false (the values.yaml/values-alpha.yaml default) renders nothing."""
 
     def test_no_ollama_objects_when_disabled(self):
+        """No DaemonSet or Deployment named waddleai-ollama renders when ollama is disabled."""
         docs = render("values-alpha.yaml")
-        names = {d["metadata"]["name"] for d in docs if d.get("kind") in ("DaemonSet", "Deployment")}
+        names = {
+            d["metadata"]["name"] for d in docs if d.get("kind") in ("DaemonSet", "Deployment")
+        }
         assert "waddleai-ollama" not in names

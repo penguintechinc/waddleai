@@ -1,11 +1,11 @@
-"""
-Unit tests for Quart app factory and initialization logic.
+"""Unit tests for Quart app factory and initialization logic.
+
 Tests the create_app(), health/readiness endpoints, and error handlers.
 """
 
 
 class TestHealthzEndpoint:
-    """Tests for GET /healthz"""
+    """Tests for GET /healthz."""
 
     async def test_healthz_always_200(self, client):
         """Healthz endpoint always returns 200."""
@@ -21,7 +21,7 @@ class TestHealthzEndpoint:
 
 
 class TestReadyzEndpoint:
-    """Tests for GET /readyz"""
+    """Tests for GET /readyz."""
 
     async def test_readyz_returns_json_structure(self, client):
         """Readyz endpoint returns JSON with ready and checks fields."""
@@ -65,7 +65,7 @@ class TestReadyzEndpoint:
 
 
 class TestLivezEndpoint:
-    """Tests for GET /livez"""
+    """Tests for GET /livez."""
 
     async def test_livez_always_200(self, client):
         """Livez endpoint always returns 200 while process is alive."""
@@ -80,7 +80,7 @@ class TestLivezEndpoint:
 
 
 class TestMetricsEndpoint:
-    """Tests for GET /metrics"""
+    """Tests for GET /metrics."""
 
     async def test_metrics_returns_200(self, client):
         """Metrics endpoint returns 200."""
@@ -110,7 +110,7 @@ class TestMetricsEndpoint:
 
 
 class TestErrorHandlers:
-    """Tests for Quart error handlers"""
+    """Tests for Quart error handlers."""
 
     async def test_404_error_handler(self, client):
         """Non-existent route returns 404 with JSON error."""
@@ -144,7 +144,7 @@ class TestErrorHandlers:
 
             try:
                 abort(401)
-            except Exception:
+            except Exception:  # noqa: S110 -- only exercising the abort() call, not the exception
                 pass
         # Structure is verified by handler definition
 
@@ -158,12 +158,12 @@ class TestErrorHandlers:
 
             try:
                 abort(500)
-            except Exception:
+            except Exception:  # noqa: S110 -- only exercising the abort() call, not the exception
                 pass
 
 
 class TestAppFactory:
-    """Tests for create_app() factory function"""
+    """Tests for create_app() factory function."""
 
     def test_create_app_returns_flask_app(self, flask_app):
         """create_app returns a Quart application instance."""
@@ -191,7 +191,7 @@ class TestAppFactory:
 
 
 class TestAppDebugLogging:
-    """Tests for DEBUG mode logging"""
+    """Tests for DEBUG mode logging."""
 
     def test_app_debug_logging_configured(self, flask_app):
         """DEBUG mode is properly configured."""
@@ -200,7 +200,7 @@ class TestAppDebugLogging:
 
 
 class TestAppInitialization:
-    """Tests for app initialization sequence"""
+    """Tests for app initialization sequence."""
 
     def test_app_initializes_without_errors(self, flask_app):
         """App initializes successfully."""

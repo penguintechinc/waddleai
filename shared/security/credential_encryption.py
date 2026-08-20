@@ -1,5 +1,5 @@
-"""
-Application-level Fernet encryption for provider credentials.
+"""Application-level Fernet encryption for provider credentials.
+
 Encrypts API keys before DB storage, decrypts transparently at read time.
 """
 
@@ -7,7 +7,6 @@ import base64
 import hashlib
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -42,7 +41,7 @@ def get_encryption_config() -> EncryptionConfig:
     return EncryptionConfig(key=_derive_key(secret), enabled=True)
 
 
-def encrypt_credential(plaintext: str, config: Optional[EncryptionConfig] = None) -> str:
+def encrypt_credential(plaintext: str, config: EncryptionConfig | None = None) -> str:
     """Encrypt a credential for storage.
 
     Returns the encrypted string prefixed with 'enc:' to distinguish
@@ -58,7 +57,7 @@ def encrypt_credential(plaintext: str, config: Optional[EncryptionConfig] = None
     return f"enc:{encrypted.decode('utf-8')}"
 
 
-def decrypt_credential(stored: str, config: Optional[EncryptionConfig] = None) -> str:
+def decrypt_credential(stored: str, config: EncryptionConfig | None = None) -> str:
     """Decrypt a stored credential.
 
     If the value starts with 'enc:', it's encrypted and will be decrypted.
@@ -75,8 +74,8 @@ def decrypt_credential(stored: str, config: Optional[EncryptionConfig] = None) -
     f = Fernet(config.key)
     try:
         return f.decrypt(encrypted_bytes).decode("utf-8")
-    except InvalidToken:
-        raise ValueError("Failed to decrypt credential — wrong encryption key?")
+    except InvalidToken as err:
+        raise ValueError("Failed to decrypt credential — wrong encryption key?") from err
 
 
 def is_encrypted(value: str) -> bool:

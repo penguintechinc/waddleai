@@ -304,7 +304,7 @@ Set model preferences in WaddleAI that apply to Open WebUI:
 
 **Solutions**:
 1. Verify WaddleAI is running: `curl http://localhost:8000/healthz`
-2. Check API key is valid: `curl http://localhost:8000/v1/models -H "Authorization: Bearer wa-your-key"`
+2. Check API key is valid: `curl http://localhost:8000/v1/models -H "Authorization: Bearer $WADDLEAI_API_KEY"`
 3. Restart Open WebUI container
 4. Check Open WebUI logs: `docker logs open-webui`
 

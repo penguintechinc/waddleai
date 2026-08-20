@@ -1,5 +1,4 @@
-"""
-Tests for real stage implementations in ProxyPipeline.
+"""Tests for real stage implementations in ProxyPipeline.
 
 Covers:
 - AuthStage: user/tenant validation
@@ -10,9 +9,8 @@ Covers:
 - MeterStage: usage recording + reconciliation
 """
 
-
 import inspect
-from unittest.mock import AsyncMock, Mock, create_autospec, patch
+from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
@@ -29,13 +27,11 @@ from shared.security.content_filter import ContentFilter, FilterResult, FilterVi
 from shared.security.prompt_security import Action, Severity, ThreatDetection, ThreatType
 from shared.utils.llm_connectors import (
     ProviderClientError,
-    ProviderError,
-    ProviderRateLimitError,
     ProviderServerError,
     StreamChunk,
 )
 from shared.utils.metering import MeteringEvent
-from shared.utils.token_limiter import GateDecision, KeyLimits
+from shared.utils.token_limiter import GateDecision
 
 
 @pytest.mark.asyncio
@@ -101,7 +97,9 @@ class TestTokenBudgetStageImplementation:
         )
 
         user = Mock(id=1, tenant_id="org1", vkey_id=42)
-        ctx = PipelineContext(user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}])
+        ctx = PipelineContext(
+            user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+        )
         result = await stage(ctx)
 
         assert result.blocked is False
@@ -137,7 +135,9 @@ class TestTokenBudgetStageImplementation:
         """TokenBudgetStage should block on monthly token limit."""
         token_limiter = Mock()
         token_limiter.reserve = AsyncMock(
-            return_value=GateDecision(allowed=False, reason="monthly_tokens_exceeded", reservation_id=None)
+            return_value=GateDecision(
+                allowed=False, reason="monthly_tokens_exceeded", reservation_id=None
+            )
         )
         features = Mock(is_feature_enabled=Mock(return_value=True))
 
@@ -169,7 +169,9 @@ class TestTokenBudgetStageImplementation:
         )
 
         user = Mock(id=1, tenant_id="org1", vkey_id=42, limits=None)
-        ctx = PipelineContext(user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}])
+        ctx = PipelineContext(
+            user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+        )
         result = await stage(ctx)
 
         # Stage should allow through (no limits configured)
@@ -224,7 +226,9 @@ class TestSecurityInStageImplementation:
     async def test_security_in_stage_sanitizes_input(self):
         """SecurityInStage should sanitize PII after passing security scan."""
         scanner = Mock()
-        scanner.scan_messages = Mock(return_value=([], [{"role": "user", "content": "normal prompt"}]))
+        scanner.scan_messages = Mock(
+            return_value=([], [{"role": "user", "content": "normal prompt"}])
+        )
         scanner.should_block = Mock(return_value=False)
 
         content_filter = Mock()
@@ -268,7 +272,15 @@ class TestSecurityInStageImplementation:
             return_value=FilterResult(
                 allowed=False,
                 action="block",
-                violations=[FilterViolation(rule_name="ssn", rule_type="builtin_pii", matched_text="123-45-6789", action="block", confidence=0.95)],
+                violations=[
+                    FilterViolation(
+                        rule_name="ssn",
+                        rule_type="builtin_pii",
+                        matched_text="123-45-6789",
+                        action="block",
+                        confidence=0.95,
+                    )
+                ],
                 filtered_text="",
                 auditor_used=False,
             )
@@ -484,7 +496,15 @@ class TestSecurityOutStageImplementation:
             return_value=FilterResult(
                 allowed=True,
                 action="redact",
-                violations=[FilterViolation(rule_name="email", rule_type="builtin_pii", matched_text="test@example.com", action="redact", confidence=0.90)],
+                violations=[
+                    FilterViolation(
+                        rule_name="email",
+                        rule_type="builtin_pii",
+                        matched_text="test@example.com",
+                        action="redact",
+                        confidence=0.90,
+                    )
+                ],
                 filtered_text="Contact: [REDACTED]",
                 auditor_used=False,
             )
@@ -515,7 +535,13 @@ class TestSecurityOutStageImplementation:
                 allowed=False,
                 action="block",
                 violations=[
-                    FilterViolation(rule_name="api_key_openai", rule_type="builtin_pii", matched_text="sk-...", action="block", confidence=0.99)
+                    FilterViolation(
+                        rule_name="api_key_openai",
+                        rule_type="builtin_pii",
+                        matched_text="sk-...",
+                        action="block",
+                        confidence=0.99,
+                    )
                 ],
                 filtered_text="",
                 auditor_used=False,
@@ -764,7 +790,7 @@ class TestMeterStageImplementation:
             provider="openai",
             reservation_id="resv-123",
         )
-        result = await stage(ctx)
+        result = await stage(ctx)  # noqa: F841 -- awaited for side effects on ctx/mocks, not its return
 
         # Reconcile should be called with actual usage
         token_limiter.reconcile.assert_called_once()
@@ -799,7 +825,7 @@ class TestMeterStageImplementation:
             block_reason="rate_limit",
             reservation_id="resv-123",
         )
-        result = await stage(ctx)
+        result = await stage(ctx)  # noqa: F841 -- awaited for side effects on ctx/mocks, not its return
 
         # Should still record usage (metering happens even for blocked requests)
         metering_buffer.record.assert_called_once()

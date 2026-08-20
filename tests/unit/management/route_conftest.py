@@ -1,5 +1,4 @@
-"""
-Shared fixtures for Quart route tests in the management service.
+"""Shared fixtures for Quart route tests in the management service.
 
 This module provides the flask_app, client, and auth token fixtures used by
 all route-level test modules. Import via conftest.py using pytest_plugins.
@@ -7,9 +6,9 @@ all route-level test modules. Import via conftest.py using pytest_plugins.
 
 import os
 import sys
+from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import AsyncGenerator, Dict
 from unittest.mock import MagicMock, patch
 
 import jwt as _jwt
@@ -64,7 +63,7 @@ def flask_app():
     # Route modules import `db` via `from ...extensions import db`.
     # After the app is created (routes are imported), we must patch the name
     # 'db' in each route module so they reference mock_db during request handling.
-    ROUTE_MODULES = [
+    ROUTE_MODULES = [  # noqa: N806 -- fixed constant list, uppercase intentional
         "services.management.app.api.v1.auth",
         "services.management.app.api.v1.users",
         "services.management.app.api.v1.organizations",
@@ -93,7 +92,7 @@ def flask_app():
 
         app = create_app(TestingConfig)
         app.config["TESTING"] = True
-        app.config["JWT_SECRET_KEY"] = "test-secret-key-32chars-minimum!!"
+        app.config["JWT_SECRET_KEY"] = "test-secret-key-32chars-minimum!!"  # noqa: S105 -- fixture
         app.config["WTF_CSRF_ENABLED"] = False
         app.config["ENABLE_OLLAMA_MANAGEMENT"] = True
         app.config["OLLAMA_MANAGEMENT_MODE"] = "both"
@@ -145,7 +144,7 @@ def make_token(
     user_id: int = 1,
     org_id: int = 1,
     username: str = "testuser",
-    secret: str = "test-secret-key-32chars-minimum!!",  # unused, kept for call-site compat
+    secret: str = "test-secret-key-32chars-minimum!!",  # noqa: S107 -- unused, kept for compat
     expires_hours: int = 1,
 ) -> str:
     """Encode a JWT via penguin-aaa (RS256)."""
@@ -203,7 +202,7 @@ def resource_manager_token() -> str:
 
 
 @pytest.fixture
-def auth_headers(admin_token: str) -> Dict[str, str]:
+def auth_headers(admin_token: str) -> dict[str, str]:
     """Auth headers for admin requests."""
     return {
         "Authorization": f"Bearer {admin_token}",
@@ -212,7 +211,7 @@ def auth_headers(admin_token: str) -> Dict[str, str]:
 
 
 @pytest.fixture
-def user_auth_headers(user_token: str) -> Dict[str, str]:
+def user_auth_headers(user_token: str) -> dict[str, str]:
     """Auth headers for plain user requests."""
     return {
         "Authorization": f"Bearer {user_token}",
@@ -221,7 +220,7 @@ def user_auth_headers(user_token: str) -> Dict[str, str]:
 
 
 @pytest.fixture
-def rm_auth_headers(resource_manager_token: str) -> Dict[str, str]:
+def rm_auth_headers(resource_manager_token: str) -> dict[str, str]:
     """Auth headers for resource_manager requests."""
     return {
         "Authorization": f"Bearer {resource_manager_token}",
@@ -236,7 +235,7 @@ def make_mock_user(
     role: str = "admin",
     org_id: int = 1,
     enabled: bool = True,
-    password: str = "password123",
+    password: str = "password123",  # noqa: S107 -- fixed test credential, not a real secret
 ) -> MagicMock:
     """Return a MagicMock representing a db user row."""
     from passlib.hash import bcrypt as _bcrypt

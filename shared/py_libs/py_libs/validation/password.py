@@ -1,5 +1,4 @@
-"""
-Password validators - PyDAL-style validators for password strength.
+"""Password validators - PyDAL-style validators for password strength.
 
 Provides:
 - IsStrongPassword: Configurable password strength validation
@@ -17,8 +16,7 @@ from py_libs.validation.base import ValidationResult, Validator
 
 @dataclass(slots=True, frozen=True)
 class PasswordOptions:
-    """
-    Configuration options for password validation.
+    """Configuration options for password validation.
 
     Attributes:
         min_length: Minimum password length (default: 8)
@@ -29,6 +27,7 @@ class PasswordOptions:
         require_special: Require at least one special character
         special_chars: Set of allowed special characters
         disallow_spaces: Whether to disallow spaces in passwords
+
     """
 
     min_length: int = 8
@@ -87,8 +86,7 @@ class PasswordOptions:
 
 
 class IsStrongPassword(Validator[str, str]):
-    """
-    Validates password strength based on configurable requirements.
+    """Validates password strength based on configurable requirements.
 
     Args:
         options: PasswordOptions instance or use defaults
@@ -104,6 +102,7 @@ class IsStrongPassword(Validator[str, str]):
 
         # Custom options
         validator = IsStrongPassword(min_length=12, require_special=True)
+
     """
 
     def __init__(
@@ -112,6 +111,7 @@ class IsStrongPassword(Validator[str, str]):
         error_message: str | None = None,
         **kwargs: bool | int | str,
     ) -> None:
+        """Build ``self.options`` from an explicit *options* instance or from **kwargs overrides."""
         if options is not None:
             self.options = options
         else:
@@ -126,24 +126,17 @@ class IsStrongPassword(Validator[str, str]):
                 "require_lowercase": kwargs.get(
                     "require_lowercase", default_opts.require_lowercase
                 ),
-                "require_digit": kwargs.get(
-                    "require_digit", default_opts.require_digit
-                ),
-                "require_special": kwargs.get(
-                    "require_special", default_opts.require_special
-                ),
-                "special_chars": kwargs.get(
-                    "special_chars", default_opts.special_chars
-                ),
-                "disallow_spaces": kwargs.get(
-                    "disallow_spaces", default_opts.disallow_spaces
-                ),
+                "require_digit": kwargs.get("require_digit", default_opts.require_digit),
+                "require_special": kwargs.get("require_special", default_opts.require_special),
+                "special_chars": kwargs.get("special_chars", default_opts.special_chars),
+                "disallow_spaces": kwargs.get("disallow_spaces", default_opts.disallow_spaces),
             }
             self.options = PasswordOptions(**opt_dict)  # type: ignore[arg-type]
 
         self.error_message = error_message
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check *value* against ``self.options`` (length, spaces, required character types)."""
         if not isinstance(value, str):
             return ValidationResult.failure("Password must be a string")
 
@@ -175,7 +168,8 @@ class IsStrongPassword(Validator[str, str]):
             special_set = set(opts.special_chars)
             if not any(c in special_set for c in value):
                 errors.append(
-                    f"Password must contain at least one special character ({opts.special_chars[:10]}...)"
+                    f"Password must contain at least one special character "
+                    f"({opts.special_chars[:10]}...)"
                 )
 
         if errors:
@@ -186,8 +180,7 @@ class IsStrongPassword(Validator[str, str]):
         return ValidationResult.success(value)
 
     def get_strength_score(self, password: str) -> int:
-        """
-        Calculate a password strength score (0-100).
+        """Calculate a password strength score (0-100).
 
         This is a supplementary method for UI feedback.
         Higher scores indicate stronger passwords.
@@ -197,6 +190,7 @@ class IsStrongPassword(Validator[str, str]):
 
         Returns:
             Integer score from 0 to 100
+
         """
         score = 0
 

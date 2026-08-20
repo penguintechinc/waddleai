@@ -61,16 +61,17 @@ DB_RETRY_DELAY=5         # Retry delay in seconds (default: 5)
 ```python
 from pydal import DAL
 
+
 def get_db():
-    db_type = os.getenv('DB_TYPE', 'postgresql')
+    db_type = os.getenv("DB_TYPE", "postgresql")
     db_uri = f"{db_type}://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
     db = DAL(
         db_uri,
-        pool_size=int(os.getenv('DB_POOL_SIZE', '10')),
+        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
         migrate=True,
-        check_reserved=['all'],
-        lazy_tables=True
+        check_reserved=["all"],
+        lazy_tables=True,
     )
     return db
 ```
@@ -86,8 +87,9 @@ import threading
 
 thread_local = threading.local()
 
+
 def get_thread_db():
-    if not hasattr(thread_local, 'db'):
+    if not hasattr(thread_local, "db"):
         thread_local.db = DAL(db_uri, pool_size=10, migrate=False)
     return thread_local.db
 ```
@@ -97,15 +99,18 @@ def get_thread_db():
 ```python
 from flask import g
 
+
 def get_db():
-    if 'db' not in g:
+    if "db" not in g:
         g.db = DAL(db_uri, pool_size=10)
     return g.db
 
+
 @app.teardown_appcontext
 def close_db(error):
-    db = g.pop('db', None)
-    if db: db.close()
+    db = g.pop("db", None)
+    if db:
+        db.close()
 ```
 
 ---
@@ -124,7 +129,7 @@ def close_db(error):
 db = DAL(
     f"mysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
     pool_size=10,
-    driver_args={'charset': 'utf8mb4'}
+    driver_args={"charset": "utf8mb4"},
 )
 ```
 
@@ -135,6 +140,7 @@ db = DAL(
 ```python
 import time
 
+
 def wait_for_database(max_retries=5, retry_delay=5):
     """Wait for DB with retry logic"""
     for attempt in range(max_retries):
@@ -143,10 +149,11 @@ def wait_for_database(max_retries=5, retry_delay=5):
             db.close()
             return True
         except Exception as e:
-            print(f"Attempt {attempt+1}/{max_retries} failed: {e}")
+            print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
     return False
+
 
 # Application startup
 if not wait_for_database():

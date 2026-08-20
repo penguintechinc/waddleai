@@ -81,9 +81,7 @@ class TestVectorStoreConformance:
         backend = request.getfixturevalue(backend_fixture)
         await backend.ensure_collection(_SPEC)
 
-        mismatched = CollectionSpec(
-            name=_SPEC.name, dimensions=384, embedder_id=_SPEC.embedder_id
-        )
+        mismatched = CollectionSpec(name=_SPEC.name, dimensions=384, embedder_id=_SPEC.embedder_id)
         with pytest.raises(VectorCollectionMismatchError):
             await backend.ensure_collection(mismatched)
 
@@ -120,9 +118,7 @@ class TestVectorStoreConformance:
         with pytest.raises(VectorCollectionMismatchError):
             await backend.search(_SPEC.name, query_vector=[1.0, 0.0])
 
-    async def test_upsert_and_search_returns_nearest_first(
-        self, backend_fixture, request
-    ) -> None:
+    async def test_upsert_and_search_returns_nearest_first(self, backend_fixture, request) -> None:
         """Search ranks by cosine similarity, best match first, respecting top_k."""
         backend = request.getfixturevalue(backend_fixture)
         await backend.ensure_collection(_SPEC)
@@ -199,15 +195,11 @@ class TestVectorStoreConformance:
         await backend.ensure_collection(_SPEC)
         await backend.delete(_SPEC.name, ["never-existed"])  # must not raise
 
-    async def test_delete_collection_allows_clean_recreate(
-        self, backend_fixture, request
-    ) -> None:
+    async def test_delete_collection_allows_clean_recreate(self, backend_fixture, request) -> None:
         """After delete_collection, a fresh ensure_collection with different dims succeeds."""
         backend = request.getfixturevalue(backend_fixture)
         await backend.ensure_collection(_SPEC)
-        await backend.upsert(
-            _SPEC.name, [VectorPoint(id="a", vector=[1.0, 0.0, 0.0], payload={})]
-        )
+        await backend.upsert(_SPEC.name, [VectorPoint(id="a", vector=[1.0, 0.0, 0.0], payload={})])
 
         await backend.delete_collection(_SPEC.name)
 

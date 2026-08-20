@@ -33,9 +33,7 @@ async def test_flag_off_returns_pgvector_and_constructs_no_qdrant_client() -> No
     is not).
     """
     with patch("shared.vectorstore.qdrant_backend.AsyncQdrantClient") as mock_ctor:
-        backend = await create_vector_store_backend(
-            db=FakeDAL(), feature_flag_enabled=False
-        )
+        backend = await create_vector_store_backend(db=FakeDAL(), feature_flag_enabled=False)
 
     assert isinstance(backend, PgvectorVectorStore)
     mock_ctor.assert_not_called()
@@ -52,9 +50,7 @@ async def test_flag_on_qdrant_unreachable_raises_without_fallback() -> None:
     mock_client = AsyncMock()
     mock_client.get_collections.side_effect = ConnectionError("connection refused")
 
-    with patch(
-        "shared.vectorstore.qdrant_backend.AsyncQdrantClient", return_value=mock_client
-    ):
+    with patch("shared.vectorstore.qdrant_backend.AsyncQdrantClient", return_value=mock_client):
         with pytest.raises(LocalProfileUnavailableError, match="Qdrant"):
             await create_vector_store_backend(
                 db=FakeDAL(),
@@ -73,9 +69,10 @@ async def test_flag_on_ollama_unreachable_raises_without_fallback() -> None:
     mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
     mock_http_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch(
-        "shared.vectorstore.qdrant_backend.AsyncQdrantClient", return_value=mock_qdrant
-    ), patch("httpx.AsyncClient", return_value=mock_http_client):
+    with (
+        patch("shared.vectorstore.qdrant_backend.AsyncQdrantClient", return_value=mock_qdrant),
+        patch("httpx.AsyncClient", return_value=mock_http_client),
+    ):
         with pytest.raises(LocalProfileUnavailableError, match="Ollama"):
             await create_vector_store_backend(
                 db=FakeDAL(),
@@ -98,9 +95,10 @@ async def test_flag_on_both_reachable_returns_qdrant_backend() -> None:
     mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
     mock_http_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch(
-        "shared.vectorstore.qdrant_backend.AsyncQdrantClient", return_value=mock_qdrant
-    ), patch("httpx.AsyncClient", return_value=mock_http_client):
+    with (
+        patch("shared.vectorstore.qdrant_backend.AsyncQdrantClient", return_value=mock_qdrant),
+        patch("httpx.AsyncClient", return_value=mock_http_client),
+    ):
         backend = await create_vector_store_backend(
             db=FakeDAL(), feature_flag_enabled=True, config=LocalProfileConfig()
         )

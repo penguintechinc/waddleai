@@ -334,9 +334,7 @@ class TestRoutingRules:
         )
         assert resp.status_code == 400
 
-    async def test_create_success(
-        self, client, app_mock_db: MagicMock, auth_headers: dict
-    ) -> None:
+    async def test_create_success(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
         """A valid rule is created and returns 201."""
         app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
 
@@ -393,9 +391,7 @@ class TestModelAliases:
         )
         assert resp.status_code == 400
 
-    async def test_create_success(
-        self, client, app_mock_db: MagicMock, auth_headers: dict
-    ) -> None:
+    async def test_create_success(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
         """A valid alias is created or upserted."""
         app_mock_db.return_value.select.return_value.first.return_value = _alias_row()
 
@@ -530,9 +526,7 @@ class TestRoutingDryRun:
         )
         assert resp.status_code == 400
 
-    async def test_flag_disabled_returns_403(
-        self, client, auth_headers: dict, monkeypatch
-    ) -> None:
+    async def test_flag_disabled_returns_403(self, client, auth_headers: dict, monkeypatch) -> None:
         """The endpoint is gated behind waddleai.routing-dry-run, default OFF."""
         monkeypatch.delenv(_DRY_RUN_FLAG_ENV, raising=False)
         monkeypatch.delenv("POSTHOG_KEY", raising=False)

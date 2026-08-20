@@ -8,7 +8,7 @@
 #   pre-push   — heavier security scans, blocks the push
 #
 # Stacks in this repo: Python (proxy/, services/management, services/penguincode),
-# Node/React (services/webui), Go (shared/go_libs — legacy AILB/MarchProxy libs).
+# Node/React (services/webui). Go hooks removed with shared/go_libs.
 #
 # Revs are pinned. Update deliberately via `pre-commit autoupdate` or Renovate,
 # never by floating to a branch.
@@ -55,29 +55,21 @@ repos:
         args: [--severity=warning]
 
   # ── Python — ruff ONLY, never alongside flake8/black/isort ─────────────────
+  # Kept in step with the ruff the lint gate uses; a version skew here meant the
+  # hook enforced a different rule set than `make lint` (v0.8.4 flagged UP038,
+  # which later versions do not), so the two could never both be satisfied.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.16.2
     hooks:
       - id: ruff
         args: [--fix]
+        # Excluded here rather than in pyproject.toml: services/penguincode
+        # ships its OWN nested pyproject.toml, and ruff resolves config per
+        # file from the nearest one, so the root exclusions never applied to
+        # that tree. It is vendored upstream and not maintained here.
+        exclude: ^services/penguincode/
       - id: ruff-format
-
-  # ── Go (shared/go_libs — legacy AILB/MarchProxy libs) ───────────────────────
-  # No root go.mod — each copy is its own module, so the pinned golangci-lint
-  # build is invoked from within each module directory.
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v1.62.2
-    hooks:
-      - id: golangci-lint
-        name: golangci-lint (shared/go_libs)
-        entry: bash -c 'cd shared/go_libs && golangci-lint run --new-from-rev HEAD --fix'
-        files: ^shared/go_libs/.*\.go$
-        pass_filenames: false
-      - id: golangci-lint
-        name: golangci-lint (services/penguincode/shared/go_libs)
-        entry: bash -c 'cd services/penguincode/shared/go_libs && golangci-lint run --new-from-rev HEAD --fix'
-        files: ^services/penguincode/shared/go_libs/.*\.go$
-        pass_filenames: false
+        exclude: ^services/penguincode/
 
   # ── Node/React (services/webui) ─────────────────────────────────────────────
   - repo: local
@@ -125,27 +117,11 @@ repos:
         files: (^|/)Dockerfile[^/]*$
         stages: [pre-push]
 
-      - id: gosec
-        name: gosec (shared/go_libs)
-        entry: bash -c 'cd shared/go_libs && gosec ./...'
-        language: system
-        files: ^shared/go_libs/.*\.go$
-        pass_filenames: false
-        stages: [pre-push]
-
       - id: gosec-penguincode
         name: gosec (services/penguincode/shared/go_libs)
         entry: bash -c 'cd services/penguincode/shared/go_libs && gosec ./...'
         language: system
         files: ^services/penguincode/shared/go_libs/.*\.go$
-        pass_filenames: false
-        stages: [pre-push]
-
-      - id: govulncheck
-        name: govulncheck (shared/go_libs)
-        entry: bash -c 'cd shared/go_libs && govulncheck ./...'
-        language: system
-        files: ^shared/go_libs/go\.(mod|sum)$
         pass_filenames: false
         stages: [pre-push]
 

@@ -4,9 +4,21 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
+
 from penguincode_cli.docs_rag.detector import ProjectDetector
-from penguincode_cli.docs_rag.models import DocChunk, DocSearchResult, Language, Library, ProjectContext
-from penguincode_cli.docs_rag.sources import LANGUAGE_DOCS, LIBRARY_DOCS, get_doc_source, get_language_doc_source
+from penguincode_cli.docs_rag.models import (
+    DocChunk,
+    DocSearchResult,
+    Language,
+    Library,
+    ProjectContext,
+)
+from penguincode_cli.docs_rag.sources import (
+    LANGUAGE_DOCS,
+    LIBRARY_DOCS,
+    get_doc_source,
+    get_language_doc_source,
+)
 
 
 class TestLanguageEnum:

@@ -145,9 +145,9 @@ def test_scoped_routes_use_only_migrated_scopes(flask_app) -> None:
     """Every enumerated route's required scope(s) are ones this migration minted or reused."""
     for rule, method, scopes in _iter_scoped_routes(flask_app):
         for scope in scopes:
-            assert (
-                scope in _MIGRATED_SCOPES
-            ), f"{method} {rule.rule} requires unexpected scope {scope!r}"
+            assert scope in _MIGRATED_SCOPES, (
+                f"{method} {rule.rule} requires unexpected scope {scope!r}"
+            )
 
 
 @pytest.fixture

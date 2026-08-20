@@ -168,8 +168,13 @@ class TestTelemetryPrivacy:
 
         async with flask_app.app_context():
             await _persist_telemetry(
-                "claude-code", "pre_tool_use", "Bash", "s1",
-                {"command": "cat ~/.ssh/id_rsa"}, "org-1", "2026-08-19T00:00:00Z",
+                "claude-code",
+                "pre_tool_use",
+                "Bash",
+                "s1",
+                {"command": "cat ~/.ssh/id_rsa"},
+                "org-1",
+                "2026-08-19T00:00:00Z",
             )
 
         insert_kwargs = app_mock_db.hook_telemetry_events.insert.call_args.kwargs
@@ -194,8 +199,13 @@ class TestTelemetryPrivacy:
 
         async with flask_app.app_context():
             await _persist_telemetry(
-                "claude-code", "pre_tool_use", "Bash", "s1",
-                {"command": "ls"}, "org-1", None,
+                "claude-code",
+                "pre_tool_use",
+                "Bash",
+                "s1",
+                {"command": "ls"},
+                "org-1",
+                None,
             )
 
         insert_kwargs = app_mock_db.hook_telemetry_events.insert.call_args.kwargs

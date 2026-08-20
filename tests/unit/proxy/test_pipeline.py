@@ -1,15 +1,14 @@
-"""
-Tests for ProxyPipeline and stage execution.
+"""Tests for ProxyPipeline and stage execution.
 
 Tests stage ordering (cheapest-first), short-circuiting on blocked requests,
 stage-log accuracy, OpenTelemetry instrumentation, and security of span attributes.
 """
 
 import os
-from typing import List
 from unittest.mock import Mock, patch
 
 import pytest
+
 from proxy.apps.proxy_server.pipeline import PipelineContext, ProxyPipeline, Stage
 from shared.observability.tracing import TracingConfig, get_tracer
 
@@ -83,7 +82,7 @@ class TestProxyPipelineBasic:
 
     async def test_pipeline_runs_stages_in_order(self):
         """Pipeline should execute stages in order."""
-        execution_order: List[str] = []
+        execution_order: list[str] = []
 
         class OrderTestStage(Stage):
             async def __call__(self, ctx: PipelineContext) -> PipelineContext:
@@ -153,7 +152,9 @@ class TestProxyPipelineBasic:
         ]
         # token_budget flag is disabled
         features = Mock(
-            is_feature_enabled=Mock(side_effect=lambda flag, **kw: flag != "waddleai.native_rate_limit")
+            is_feature_enabled=Mock(
+                side_effect=lambda flag, **kw: flag != "waddleai.native_rate_limit"
+            )
         )
         pipeline = ProxyPipeline(stages, features)
 
@@ -263,7 +264,7 @@ class TestOpenTelemetryIntegration:
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(exporter))
 
-        secret_prompt = "my password is hunter2 and my ssn is 123-45-6789"
+        secret_prompt = "my password is hunter2 and my ssn is 123-45-6789"  # noqa: S105,E501 -- fixed test value, not a real secret
 
         class DispatchSpanTestStage(Stage):
             async def __call__(self, ctx: PipelineContext) -> PipelineContext:
@@ -278,7 +279,9 @@ class TestOpenTelemetryIntegration:
         pipeline = ProxyPipeline([DispatchSpanTestStage(name="dispatch", flag=None)], features)
         pipeline.tracer = provider.get_tracer("test")
 
-        ctx = PipelineContext(user=Mock(), body={"messages": [{"content": secret_prompt}]}, model="gpt-4o")
+        ctx = PipelineContext(
+            user=Mock(), body={"messages": [{"content": secret_prompt}]}, model="gpt-4o"
+        )
         await pipeline.run(ctx)
 
         spans = {s.name: s for s in exporter.get_finished_spans()}
@@ -455,7 +458,7 @@ class TestPipelineOrderingRequirement:
     """Test that pipeline stages execute in the cheapest-first order."""
 
     async def test_stage_order_auth_first(self):
-        """auth stage should run first (cheapest gate)."""
+        """Auth stage should run first (cheapest gate)."""
 
         class OrderedStage(Stage):
             async def __call__(self, ctx: PipelineContext) -> PipelineContext:

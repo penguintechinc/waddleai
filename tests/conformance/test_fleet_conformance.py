@@ -155,9 +155,7 @@ class TestOllamaConformance:
         assert nodes[0].node_id == "node-a"
         assert nodes[0].loaded_models == ["gemma4:e2b"]
 
-    async def test_endpoints_for_returns_only_nodes_with_model_loaded(
-        self, ollama_backend
-    ) -> None:
+    async def test_endpoints_for_returns_only_nodes_with_model_loaded(self, ollama_backend) -> None:
         """``endpoints_for`` excludes deployments that don't have the model loaded."""
         db = ollama_backend.db
         for name in ("has-model", "no-model"):
@@ -263,9 +261,7 @@ class TestOllamaConformance:
         node_selector = deployment_doc["spec"]["template"]["spec"]["nodeSelector"]
         assert node_selector == {"gpu": "a100"}
 
-    def test_generate_pool_manifest_missing_deployment_returns_empty(
-        self, ollama_backend
-    ) -> None:
+    def test_generate_pool_manifest_missing_deployment_returns_empty(self, ollama_backend) -> None:
         """An unknown deployment id renders an empty manifest, not a crash."""
         assert ollama_backend.generate_pool_manifest(999) == ""
 
@@ -291,11 +287,14 @@ class TestLlamaCppConformance:
             constraints={"model_url": "https://example.com/m.gguf", "model_filename": "m.gguf"},
         )
 
-        with patch(
-            "services.management.app.services.llamacpp_manager.get_k8s_apps_client"
-        ) as mock_apps, patch(
-            "services.management.app.services.llamacpp_manager.get_k8s_core_client"
-        ) as mock_core:
+        with (
+            patch(
+                "services.management.app.services.llamacpp_manager.get_k8s_apps_client"
+            ) as mock_apps,
+            patch(
+                "services.management.app.services.llamacpp_manager.get_k8s_core_client"
+            ) as mock_core,
+        ):
             mock_apps.return_value = MagicMock()
             mock_core.return_value = MagicMock()
             nodes = await llamacpp_backend.provision(spec)

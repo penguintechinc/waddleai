@@ -99,6 +99,7 @@ def evaluate_rules(signals: RequestSignals, rules: list[HeuristicRule]) -> dict 
     Returns:
         The matching rule's ``action`` dict, or None when no rule matches
         (punt to the stage-2 classifier).
+
     """
     for rule in sorted(rules, key=lambda r: r.priority):
         try:

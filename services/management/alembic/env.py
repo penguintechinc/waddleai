@@ -32,6 +32,7 @@ def get_url() -> str:
 
 
 def run_migrations_offline() -> None:
+    """Configure and run migrations against a URL only, without a live DB connection."""
     url = get_url()
     context.configure(
         url=url,
@@ -45,6 +46,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    """Configure and run migrations using a live DB connection from the Alembic config."""
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = get_url()
     connectable = engine_from_config(

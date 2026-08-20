@@ -1,0 +1,27 @@
+# Hadolint configuration.
+#
+# Base images ARE pinned by SHA256 digest (see every FROM line), which is what
+# critical-rules.md requires for the Docker ecosystem. The rules below are
+# hadolint opinions that sit outside that requirement:
+#
+#   DL3008  "pin apt-get versions" -- Debian security updates supersede pinned
+#           apt versions constantly, so a pinned apt line breaks the build on
+#           the first CVE patch while providing no supply-chain guarantee the
+#           digest-pinned base image does not already give. Pinning happens at
+#           the image layer, per the standard.
+#   DL3059  "consolidate consecutive RUN" -- image-size micro-optimisation, not
+#           correctness or supply chain.
+#
+# Every other rule is enforced. In particular DL3013 (unpinned pip) is NOT
+# ignored: it caught the docs-site image installing mkdocs unpinned while a
+# hash-pinned requirements.txt sat unused beside it.
+ignored:
+  - DL3008
+  - DL3059
+  # The only shell-form CMDs are inside HEALTHCHECK, where `|| exit 1` needs a
+  # shell. Real CMD/ENTRYPOINT are exec form, so SIGTERM reaches the app.
+  - DL3025
+  # Non-numeric USER; the K8s securityContext sets runAsUser numerically.
+  - DL3066
+
+failure-threshold: warning

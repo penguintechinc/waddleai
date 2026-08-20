@@ -13,11 +13,10 @@ raise into request handling.
 
 import logging
 import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_posthog_client: Optional[object] = None
+_posthog_client: object | None = None
 
 _TRUTHY = ("1", "true", "yes", "on")
 
@@ -28,7 +27,7 @@ def _env_var_name(flag_key: str) -> str:
     return "WADDLEAI_FLAG_" + suffix.replace("-", "_").replace(".", "_").upper()
 
 
-def _get_posthog_client() -> Optional[object]:
+def _get_posthog_client() -> object | None:
     """Lazily construct and cache the PostHog client (None if unconfigured)."""
     global _posthog_client
     api_key = os.getenv("POSTHOG_KEY")
@@ -57,5 +56,7 @@ def is_feature_enabled(flag_key: str, distinct_id: str = "server", default: bool
         result = client.feature_enabled(flag_key, distinct_id)
         return default if result is None else bool(result)
     except Exception as exc:
-        logger.warning("Feature flag %s evaluation failed, using default=%s: %s", flag_key, default, exc)
+        logger.warning(
+            "Feature flag %s evaluation failed, using default=%s: %s", flag_key, default, exc
+        )
         return default

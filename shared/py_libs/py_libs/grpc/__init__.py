@@ -1,19 +1,18 @@
-"""
-gRPC utilities for Python services.
+"""gRPC utilities for Python services.
 
 Provides server helpers, client utilities, and security interceptors
 for gRPC services following project standards.
 """
 
-from .server import create_server, register_health_check
 from .client import GrpcClient
 from .interceptors import (
-    AuthInterceptor,
-    RateLimitInterceptor,
     AuditInterceptor,
+    AuthInterceptor,
     CorrelationInterceptor,
+    RateLimitInterceptor,
     RecoveryInterceptor,
 )
+from .server import create_server, register_health_check
 
 __all__ = [
     "create_server",

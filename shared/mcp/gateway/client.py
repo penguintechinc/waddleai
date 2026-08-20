@@ -84,9 +84,7 @@ def split_namespaced_name(namespaced_name: str, namespace: str) -> str:
     """Reverse ``namespace_tool_name``; raise if ``namespaced_name`` isn't in ``namespace``."""
     prefix = f"{namespace}."
     if not namespaced_name.startswith(prefix):
-        raise GatewayClientError(
-            f"{namespaced_name!r} does not belong to namespace {namespace!r}"
-        )
+        raise GatewayClientError(f"{namespaced_name!r} does not belong to namespace {namespace!r}")
     return namespaced_name[len(prefix) :]
 
 

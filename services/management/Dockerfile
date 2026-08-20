@@ -18,7 +18,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Python dependencies
 COPY services/management/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip && \
+# pip itself is pinned: `--upgrade pip` pulls whatever is newest at build
+# time, which is an unpinned dependency in the image that installs every other
+# dependency. The application requirements are hash-pinned below.
+RUN pip install --no-cache-dir "pip==26.2.1" && \
     pip install --no-cache-dir -r /tmp/requirements.txt
 
 

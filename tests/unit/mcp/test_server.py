@@ -130,7 +130,10 @@ class TestAdminToolSchemasCarryExplicitSubjectWhereExpected:
             listing = await session.list_tools()
         by_name = {t.name: t for t in listing.tools}
         org_scoped = (
-            "usage_by_org", "cost_attribution", "quota_status", "provider_budget_headroom"
+            "usage_by_org",
+            "cost_attribution",
+            "quota_status",
+            "provider_budget_headroom",
         )
         for name in org_scoped:
             props = set((by_name[name].inputSchema or {}).get("properties", {}).keys())

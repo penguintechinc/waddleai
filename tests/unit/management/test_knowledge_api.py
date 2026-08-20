@@ -32,9 +32,7 @@ def _stub_embed_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_embed_cached(content: str, db: object = None, **kwargs: object) -> list[float]:
         return [0.1] * 768
 
-    monkeypatch.setattr(
-        "services.management.app.api.v1.knowledge.embed_cached", _fake_embed_cached
-    )
+    monkeypatch.setattr("services.management.app.api.v1.knowledge.embed_cached", _fake_embed_cached)
 
 
 def _make_pdf_bytes(text: str = "Hello PDF Text") -> bytes:

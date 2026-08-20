@@ -15,17 +15,17 @@ WaddleAI provides a comprehensive AI proxy solution that acts as a drop-in repla
 
 ### Key Features
 
-✨ **OpenAI-Compatible API** - Drop-in replacement for OpenAI API  
-🔀 **Multi-LLM Support** - Route to OpenAI, Anthropic, Ollama, and more  
-👥 **Role-Based Access Control** - Admin, Resource Manager, Reporter, User roles  
-🪙 **Dual Token System** - WaddleAI tokens for billing, LLM tokens for analytics  
-🛡️ **Security Scanning** - Prompt injection and jailbreak detection  
-📊 **Token Management** - Quota enforcement and usage tracking  
-🏢 **Multi-Tenant** - Organization-based isolation  
-📈 **Monitoring** - Prometheus metrics and health checks  
-🧠 **Memory Integration** - Conversation memory with mem0/ChromaDB  
-🔒 **4-Tier Content Filtering** - PII/PCI regex, NER (Presidio/spaCy), ShieldGemma safety auditor  
-⚡ **Local Inference** - llama.cpp provider for edge/air-gapped deployments  
+✨ **OpenAI-Compatible API** - Drop-in replacement for OpenAI API
+🔀 **Multi-LLM Support** - Route to OpenAI, Anthropic, Ollama, and more
+👥 **Role-Based Access Control** - Admin, Resource Manager, Reporter, User roles
+🪙 **Dual Token System** - WaddleAI tokens for billing, LLM tokens for analytics
+🛡️ **Security Scanning** - Prompt injection and jailbreak detection
+📊 **Token Management** - Quota enforcement and usage tracking
+🏢 **Multi-Tenant** - Organization-based isolation
+📈 **Monitoring** - Prometheus metrics and health checks
+🧠 **Memory Integration** - Conversation memory with mem0/ChromaDB
+🔒 **4-Tier Content Filtering** - PII/PCI regex, NER (Presidio/spaCy), ShieldGemma safety auditor
+⚡ **Local Inference** - llama.cpp provider for edge/air-gapped deployments
 🔑 **Multi-Credential Pools** - Rotate API keys across provider accounts
 
 ## Getting Started
@@ -63,8 +63,12 @@ docker-compose ps
 
 2. **Test the API**:
    ```bash
+   export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+   ```
+
+   ```bash
    curl http://localhost:8000/v1/models \
-     -H "Authorization: Bearer wa-your-api-key-here"
+     -H "Authorization: Bearer $WADDLEAI_API_KEY"
    ```
 
 3. **Access Management Portal**: Visit http://localhost:8001 and login with `admin/admin123`

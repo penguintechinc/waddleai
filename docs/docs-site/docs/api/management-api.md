@@ -13,7 +13,7 @@ https://your-waddleai-mgmt.com
 All API requests require authentication via Bearer token:
 
 ```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
+curl -H "Authorization: Bearer <your-admin-token>" \
   https://your-waddleai-mgmt.com/api/users
 ```
 
@@ -185,7 +185,7 @@ POST /api/api_keys
 ```json
 {
   "id": 10,
-  "api_key": "wa-123-abc456def789",
+  "api_key": "<your-waddleai-key>",
   "status": "created",
   "message": "Store this key securely - it won't be shown again"
 }

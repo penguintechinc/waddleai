@@ -305,7 +305,7 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 = Header
 
 **How to use it in requests:**
 ```bash
-curl -H "Authorization: Bearer YOUR_JWT_TOKEN_HERE" \
+curl -H "Authorization: Bearer <your-jwt-token>" \
      https://api.example.com/api/v1/profile
 ```
 

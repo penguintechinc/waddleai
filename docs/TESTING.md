@@ -50,11 +50,19 @@ Use `penguin-dal` for the insert, not raw PyDAL or SQLAlchemy:
 from penguin_dal import create_dal
 import os
 
+
 def seed_keys() -> None:
-    db = create_dal(db_type=os.getenv("DB_TYPE", "postgresql"), connection_string=os.environ["DATABASE_URL"])
+    db = create_dal(
+        db_type=os.getenv("DB_TYPE", "postgresql"), connection_string=os.environ["DATABASE_URL"]
+    )
 
     keys = [
-        {"name": "unlimited-key", "waddleai_quota": 1_000_000, "llm_quota": 500_000, "status": "active"},
+        {
+            "name": "unlimited-key",
+            "waddleai_quota": 1_000_000,
+            "llm_quota": 500_000,
+            "status": "active",
+        },
         {"name": "limited-key", "waddleai_quota": 100_000, "llm_quota": 50_000, "status": "active"},
         {"name": "demo-key", "waddleai_quota": 10_000, "llm_quota": 5_000, "status": "active"},
         {"name": "revoked-key", "waddleai_quota": 0, "llm_quota": 0, "status": "revoked"},
@@ -64,6 +72,7 @@ def seed_keys() -> None:
         db.api_keys.insert(**key)
 
     print(f"Seeded {len(keys)} API keys")
+
 
 if __name__ == "__main__":
     seed_keys()

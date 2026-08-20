@@ -1,5 +1,4 @@
-"""
-String validators - PyDAL-style validators for string inputs.
+"""String validators - PyDAL-style validators for string inputs.
 
 Provides:
 - IsNotEmpty: Validates non-empty strings
@@ -14,26 +13,29 @@ Provides:
 from __future__ import annotations
 
 import re
-from typing import Pattern, Sequence
+from collections.abc import Sequence
+from re import Pattern
 
 from py_libs.validation.base import ValidationResult, Validator
 
 
 class IsNotEmpty(Validator[str, str]):
-    """
-    Validates that a string is not empty or whitespace-only.
+    """Validates that a string is not empty or whitespace-only.
 
     Example:
         validator = IsNotEmpty()
         result = validator("hello")  # Valid
         result = validator("")       # Invalid
         result = validator("   ")    # Invalid
+
     """
 
     def __init__(self, error_message: str | None = None) -> None:
+        """Store the failure message to use when *value* is empty/whitespace-only."""
         self.error_message = error_message or "Value cannot be empty"
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Strip *value* and fail if nothing (non-whitespace) remains."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
@@ -45,8 +47,7 @@ class IsNotEmpty(Validator[str, str]):
 
 
 class IsLength(Validator[str, str]):
-    """
-    Validates that a string length is within a range.
+    """Validates that a string length is within a range.
 
     Args:
         min_length: Minimum length (inclusive), default 0
@@ -56,6 +57,7 @@ class IsLength(Validator[str, str]):
         validator = IsLength(3, 50)
         result = validator("hello")  # Valid
         result = validator("hi")     # Invalid (too short)
+
     """
 
     def __init__(
@@ -64,45 +66,41 @@ class IsLength(Validator[str, str]):
         max_length: int | None = None,
         error_message: str | None = None,
     ) -> None:
+        """Store the inclusive length bounds and optional custom error message."""
         self.min_length = min_length
         self.max_length = max_length
         self.error_message = error_message
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check ``len(value)`` falls within ``[min_length, max_length]``."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
         length = len(value)
 
         if length < self.min_length:
-            msg = (
-                self.error_message
-                or f"Value must be at least {self.min_length} characters"
-            )
+            msg = self.error_message or f"Value must be at least {self.min_length} characters"
             return ValidationResult.failure(msg)
 
         if self.max_length is not None and length > self.max_length:
-            msg = (
-                self.error_message
-                or f"Value must be at most {self.max_length} characters"
-            )
+            msg = self.error_message or f"Value must be at most {self.max_length} characters"
             return ValidationResult.failure(msg)
 
         return ValidationResult.success(value)
 
 
 class IsMatch(Validator[str, str]):
-    """
-    Validates that a string matches a regex pattern.
+    r"""Validates that a string matches a regex pattern.
 
     Args:
         pattern: Regex pattern (string or compiled Pattern)
         flags: Regex flags (only used if pattern is a string)
 
     Example:
-        validator = IsMatch(r"^[A-Z]{2}\\d{4}$")
+        validator = IsMatch(r"^[A-Z]{2}\d{4}$")
         result = validator("AB1234")  # Valid
         result = validator("abc123")  # Invalid
+
     """
 
     def __init__(
@@ -111,6 +109,7 @@ class IsMatch(Validator[str, str]):
         flags: int = 0,
         error_message: str | None = None,
     ) -> None:
+        """Compile *pattern* (if a string) with *flags*; store the failure message."""
         if isinstance(pattern, str):
             self._pattern = re.compile(pattern, flags)
         else:
@@ -118,6 +117,7 @@ class IsMatch(Validator[str, str]):
         self.error_message = error_message or "Value does not match required pattern"
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check *value* matches the compiled pattern via ``match()`` (anchored at start)."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
@@ -128,8 +128,7 @@ class IsMatch(Validator[str, str]):
 
 
 class IsAlphanumeric(Validator[str, str]):
-    """
-    Validates that a string contains only alphanumeric characters.
+    """Validates that a string contains only alphanumeric characters.
 
     Args:
         allow_underscore: Whether to allow underscores
@@ -139,6 +138,7 @@ class IsAlphanumeric(Validator[str, str]):
         validator = IsAlphanumeric()
         result = validator("Hello123")  # Valid
         result = validator("Hello!")    # Invalid
+
     """
 
     def __init__(
@@ -147,6 +147,7 @@ class IsAlphanumeric(Validator[str, str]):
         allow_dash: bool = False,
         error_message: str | None = None,
     ) -> None:
+        """Build the alphanumeric-plus-extras regex from *allow_underscore*/*allow_dash*."""
         self.allow_underscore = allow_underscore
         self.allow_dash = allow_dash
         self.error_message = error_message
@@ -160,6 +161,7 @@ class IsAlphanumeric(Validator[str, str]):
         self._pattern = re.compile(f"^[{chars}]+$")
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check *value* is non-empty and matches the configured character-class pattern."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
@@ -167,17 +169,14 @@ class IsAlphanumeric(Validator[str, str]):
             return ValidationResult.failure("Value cannot be empty")
 
         if not self._pattern.match(value):
-            msg = (
-                self.error_message or "Value must contain only alphanumeric characters"
-            )
+            msg = self.error_message or "Value must contain only alphanumeric characters"
             return ValidationResult.failure(msg)
 
         return ValidationResult.success(value)
 
 
 class IsSlug(Validator[str, str]):
-    """
-    Validates that a string is a valid URL slug.
+    """Validates that a string is a valid URL slug.
 
     A valid slug contains only lowercase letters, numbers, and hyphens,
     starts and ends with alphanumeric, and has no consecutive hyphens.
@@ -187,14 +186,17 @@ class IsSlug(Validator[str, str]):
         result = validator("my-blog-post")    # Valid
         result = validator("My Blog Post")    # Invalid
         result = validator("--invalid--")     # Invalid
+
     """
 
     _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
     def __init__(self, error_message: str | None = None) -> None:
+        """Store the failure message to use when *value* isn't a valid slug."""
         self.error_message = error_message or "Value must be a valid URL slug"
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check *value* is non-empty and matches the lowercase-hyphenated slug pattern."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
@@ -208,8 +210,7 @@ class IsSlug(Validator[str, str]):
 
 
 class IsIn(Validator[str, str]):
-    """
-    Validates that a value is in an allowed set.
+    """Validates that a value is in an allowed set.
 
     Args:
         options: Allowed values
@@ -222,6 +223,7 @@ class IsIn(Validator[str, str]):
 
         validator = IsIn(["admin", "user"], case_sensitive=False)
         result = validator("ADMIN")   # Valid
+
     """
 
     def __init__(
@@ -230,6 +232,7 @@ class IsIn(Validator[str, str]):
         case_sensitive: bool = True,
         error_message: str | None = None,
     ) -> None:
+        """Build the allowed-value set from *options*, normalizing case if requested."""
         self.case_sensitive = case_sensitive
         if case_sensitive:
             self._options = set(options)
@@ -239,24 +242,21 @@ class IsIn(Validator[str, str]):
         self.error_message = error_message
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check *value* (case-normalized per *case_sensitive*) is in the allowed set."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
         check_value = value if self.case_sensitive else value.lower()
 
         if check_value not in self._options:
-            msg = (
-                self.error_message
-                or f"Value must be one of: {', '.join(self._original_options)}"
-            )
+            msg = self.error_message or f"Value must be one of: {', '.join(self._original_options)}"
             return ValidationResult.failure(msg)
 
         return ValidationResult.success(value)
 
 
 class IsTrimmed(Validator[str, str]):
-    """
-    Validates and trims whitespace from a string.
+    """Validates and trims whitespace from a string.
 
     This validator always succeeds (for non-empty values) and returns
     the trimmed string.
@@ -264,12 +264,15 @@ class IsTrimmed(Validator[str, str]):
     Example:
         validator = IsTrimmed()
         result = validator("  hello  ")  # Returns "hello"
+
     """
 
     def __init__(self, allow_empty: bool = False) -> None:
+        """Store whether an all-whitespace *value* should be treated as valid once trimmed."""
         self.allow_empty = allow_empty
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Strip *value* and fail only if empty and ``allow_empty`` is False."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 

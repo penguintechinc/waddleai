@@ -60,6 +60,7 @@ class LLMConnectorClassifierClient:
                 ``gemma4:e2b`` is Ollama-served by convention (matches the
                 retired ``LLMRequestRouter._call_routing_llm``'s selection
                 rule).
+
         """
         self.llm_manager = llm_manager
         self.fallback_provider = fallback_provider

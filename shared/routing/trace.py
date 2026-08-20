@@ -47,6 +47,7 @@ async def persist_trace(db: Any, trace: RouteTrace) -> None:
     Args:
         db: penguin-dal DB instance exposing a ``routing_decision_traces`` table.
         trace: The completed RouteTrace to persist.
+
     """
     try:
         await asyncio.to_thread(_insert, db, trace)

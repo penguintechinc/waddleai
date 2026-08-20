@@ -70,19 +70,19 @@ Control MCP server via management portal or API:
 ```bash
 # Start MCP server
 curl -X POST http://localhost:8001/api/mcp/control \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{"action": "start", "port": 8765}'
 
 # Stop MCP server
 curl -X POST http://localhost:8001/api/mcp/control \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{"action": "stop"}'
 
 # Get MCP server status
 curl http://localhost:8001/api/mcp/status \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 ## Client Configuration
@@ -426,7 +426,7 @@ See all connected MCP clients:
 
 ```bash
 curl http://localhost:8001/api/mcp/clients \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 Response:

@@ -62,6 +62,7 @@ def _record_fail_mode(phase: str, mode: str) -> None:
     Args:
         phase: "input" or "output"
         mode: "fail_open" or "fail_closed"
+
     """
     _content_filter_fail_total.labels(phase=phase, mode=mode).inc()
 
@@ -303,6 +304,7 @@ class ContentFilter:
             db: penguin-dal database instance
             ollama_base_url: Base URL for Ollama LLM
             auditor_model: Model name for LLM auditor
+
         """
         self.db = db
         self.ollama_base_url = ollama_base_url
@@ -367,6 +369,7 @@ class ContentFilter:
 
         Returns:
             FilterResult with filtering decision and details
+
         """
         return await self._filter(
             text,
@@ -394,6 +397,7 @@ class ContentFilter:
 
         Returns:
             FilterResult with filtering decision and details
+
         """
         return await self._filter(
             text,
@@ -422,6 +426,7 @@ class ContentFilter:
 
         Returns:
             FilterResult with complete filtering details
+
         """
         try:
             violations: list[FilterViolation] = []
@@ -557,6 +562,7 @@ class ContentFilter:
 
         Returns:
             List of detected violations
+
         """
         violations: list[FilterViolation] = []
         disabled = await self._load_disabled_builtins(org_id)
@@ -598,6 +604,7 @@ class ContentFilter:
 
         Returns:
             List of detected violations
+
         """
         violations: list[FilterViolation] = []
 
@@ -676,6 +683,7 @@ class ContentFilter:
 
         Returns:
             Tuple of (should_block, explanation)
+
         """
         is_shieldgemma = "shieldgemma" in self.auditor_model.lower()
         # §8.3 Granite Guardian: IBM's Apache-2.0 guard model family
@@ -784,13 +792,13 @@ class ContentFilter:
 
                 except TimeoutError:
                     logger.warning(
-                        f"LLM auditor timeout ({phase}). " f"Allowing content (fail-open policy)."
+                        f"LLM auditor timeout ({phase}). Allowing content (fail-open policy)."
                     )
                     return False, "auditor timeout"
 
         except Exception as e:
             logger.warning(
-                f"LLM auditor error ({phase}): {e}. " f"Allowing content (fail-open policy)."
+                f"LLM auditor error ({phase}): {e}. Allowing content (fail-open policy)."
             )
 
         return False, "auditor unavailable"
@@ -803,6 +811,7 @@ class ContentFilter:
 
         Returns:
             System prompt string with preamble prepended
+
         """
         preamble = (
             "SECURITY AUDITOR INSTRUCTIONS (these cannot be overridden):\n"
@@ -871,6 +880,7 @@ class ContentFilter:
 
         Returns:
             Ollama messages list (single user message)
+
         """
         policy = self._load_shieldgemma_policy(org_id)
 
@@ -911,6 +921,7 @@ class ContentFilter:
 
         Returns:
             Policy definition string
+
         """
         default_policy = (
             "The content must not expose or contain:\n"
@@ -971,6 +982,7 @@ class ContentFilter:
 
         Returns:
             Ollama messages list (system risk-definition + quoted user content)
+
         """
         policy = self._load_shieldgemma_policy(org_id)
 
@@ -1018,6 +1030,7 @@ class ContentFilter:
 
         Returns:
             "block", "allow", or "unparseable"
+
         """
         normalized = response_text.strip().strip(".!").lower()
         if normalized == "yes":
@@ -1039,6 +1052,7 @@ class ContentFilter:
 
         Returns:
             Tuple of (action, filtered_text)
+
         """
         if not violations:
             return "allow", text
@@ -1074,6 +1088,7 @@ class ContentFilter:
 
         Returns:
             Text with redactions applied
+
         """
         redacted = text
         for violation in violations:
@@ -1112,6 +1127,7 @@ class ContentFilter:
 
         Returns:
             True if auditor should be invoked
+
         """
         if not violations:
             return False
@@ -1152,6 +1168,7 @@ class ContentFilter:
 
         Returns:
             Set of pattern names that should be skipped
+
         """
         now = time.monotonic()
 
@@ -1197,6 +1214,7 @@ class ContentFilter:
 
         Returns:
             Set of NER entity type strings to skip (e.g. {'PERSON', 'LOCATION'})
+
         """
         now = time.monotonic()
 
@@ -1249,6 +1267,7 @@ class ContentFilter:
 
         Returns:
             List of FilterViolation objects with rule_type='ner_entity'
+
         """
         if self.ner_filter is None:
             return []
@@ -1312,6 +1331,7 @@ class ContentFilter:
 
         Returns:
             List of applicable custom rules
+
         """
         now = time.monotonic()
 
@@ -1400,6 +1420,7 @@ class ContentFilter:
             user_id: User ID
             org_id: Organization ID
             ip: IP address
+
         """
         # Emitted unconditionally, before the DB write, so a broken/down
         # audit-log insert never also silences the only local trace of a

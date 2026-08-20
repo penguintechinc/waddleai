@@ -4,6 +4,12 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
+from rich.table import Table
+
 from penguincode_cli.config.settings import (
     Settings,
     get_config_value,
@@ -15,11 +21,6 @@ from penguincode_cli.config.settings import (
 from penguincode_cli.ollama import OllamaClient
 from penguincode_cli.skills import SkillLoader
 from penguincode_cli.ui import console, print_error, print_info, print_success
-from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style
-from rich.table import Table
 
 from .session import SessionManager
 

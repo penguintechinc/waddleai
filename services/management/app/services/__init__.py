@@ -1,5 +1,4 @@
-"""
-WaddleAI Management Services
+"""WaddleAI Management Services.
 
 Business logic and service layer for:
 - AI Provider management and sync

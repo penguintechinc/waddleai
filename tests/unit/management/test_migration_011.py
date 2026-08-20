@@ -163,7 +163,11 @@ def test_upgrade_extends_audit_log_and_creates_bypass_grants(scratch_engine):
     _run_upgrade(scratch_engine)
 
     expected_cols = {
-        "policy_id", "intent_categories", "degraded", "bypass_grant_id", "redaction_counts",
+        "policy_id",
+        "intent_categories",
+        "degraded",
+        "bypass_grant_id",
+        "redaction_counts",
     }
     with scratch_engine.connect() as conn:
         assert expected_cols <= _audit_log_cols(conn)

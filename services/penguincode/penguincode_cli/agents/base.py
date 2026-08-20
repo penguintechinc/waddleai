@@ -8,7 +8,15 @@ from enum import Enum
 from typing import Any
 
 from penguincode_cli.ollama import Message, OllamaClient
-from penguincode_cli.tools import BashTool, EditFileTool, GlobTool, GrepTool, ReadFileTool, ToolResult, WriteFileTool
+from penguincode_cli.tools import (
+    BashTool,
+    EditFileTool,
+    GlobTool,
+    GrepTool,
+    ReadFileTool,
+    ToolResult,
+    WriteFileTool,
+)
 from penguincode_cli.ui import console
 
 

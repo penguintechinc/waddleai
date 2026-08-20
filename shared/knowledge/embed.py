@@ -115,6 +115,7 @@ async def embed_cached(
 
     Returns:
         The embedding vector (768-dim for the default nomic-embed-text path).
+
     """
     resolved_model = model or resolve_embedding_model(db)
     content_hash = _content_hash(content)

@@ -1,5 +1,4 @@
-"""
-Integration tests for Ollama local LLM service.
+"""Integration tests for Ollama local LLM service.
 
 These tests run against a live Ollama instance at OLLAMA_BASE_URL
 (default: http://localhost:11434). All tests are skipped when Ollama
@@ -7,7 +6,7 @@ is not running.
 """
 
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 import pytest
@@ -59,7 +58,7 @@ def test_ollama_tags_contain_model_metadata(
 
     response = httpx.get(f"{ollama_base_url}/api/tags", timeout=10.0)
     data = response.json()
-    models: List[Dict[str, Any]] = data.get("models", [])
+    models: list[dict[str, Any]] = data.get("models", [])
 
     if not models:
         pytest.skip("No models pulled into Ollama yet")
@@ -134,7 +133,7 @@ def test_ollama_generate_streaming_completion(
         "stream": True,
         "options": {"num_predict": 8, "temperature": 0},
     }
-    chunks: List[Dict[str, Any]] = []
+    chunks: list[dict[str, Any]] = []
     with httpx.stream(
         "POST",
         f"{ollama_base_url}/api/generate",
@@ -206,7 +205,7 @@ def test_ollama_embeddings_endpoint(
     assert response.status_code == 200
     data = response.json()
     assert "embedding" in data
-    embedding: List[float] = data["embedding"]
+    embedding: list[float] = data["embedding"]
     assert isinstance(embedding, list)
     assert len(embedding) > 0
     assert all(isinstance(v, (int, float)) for v in embedding[:5])
@@ -224,7 +223,7 @@ def test_ollama_llm_connector_can_list_models(
 
     from shared.utils.llm_connectors import OllamaConnector  # type: ignore[import]
 
-    config: Dict[str, Any] = {
+    config: dict[str, Any] = {
         "enabled": True,
         "endpoint_url": ollama_base_url,
         "api_key": None,
@@ -247,7 +246,7 @@ def test_ollama_llm_connector_health_check(
 
     from shared.utils.llm_connectors import OllamaConnector  # type: ignore[import]
 
-    config: Dict[str, Any] = {
+    config: dict[str, Any] = {
         "enabled": True,
         "endpoint_url": ollama_base_url,
         "api_key": None,

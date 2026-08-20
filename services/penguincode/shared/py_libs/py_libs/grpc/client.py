@@ -1,13 +1,13 @@
-"""
-gRPC client with connection management, retries, and TLS support.
+"""gRPC client with connection management, retries, and TLS support.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 
 import grpc
 
@@ -26,16 +26,15 @@ class ClientOptions:
     backoff_multiplier: float = 2.0
     timeout_seconds: float = 30.0
     enable_tls: bool = False
-    ca_cert_path: Optional[str] = None
-    client_cert_path: Optional[str] = None
-    client_key_path: Optional[str] = None
+    ca_cert_path: str | None = None
+    client_cert_path: str | None = None
+    client_key_path: str | None = None
     keepalive_time_ms: int = 60000  # 1 minute
     keepalive_timeout_ms: int = 20000  # 20 seconds
 
 
 class GrpcClient:
-    """
-    gRPC client wrapper with connection management and retry logic.
+    """gRPC client wrapper with connection management and retry logic.
 
     Example:
         >>> from py_libs.grpc import GrpcClient, ClientOptions
@@ -46,32 +45,33 @@ class GrpcClient:
         >>> with client.channel() as channel:
         >>>     stub = MyServiceStub(channel)
         >>>     response = stub.MyMethod(request)
+
     """
 
     def __init__(
         self,
         target: str,
-        options: Optional[ClientOptions] = None,
+        options: ClientOptions | None = None,
     ):
-        """
-        Initialize gRPC client.
+        """Initialize gRPC client.
 
         Args:
             target: Server address (e.g., 'localhost:50051')
             options: Client configuration options
+
         """
         self.target = target
         self.options = options or ClientOptions()
-        self._channel: Optional[grpc.Channel] = None
+        self._channel: grpc.Channel | None = None
 
         logger.info(f"gRPC client initialized for {target}")
 
     def channel(self) -> grpc.Channel:
-        """
-        Get or create gRPC channel.
+        """Get or create gRPC channel.
 
         Returns:
             gRPC channel instance
+
         """
         if self._channel is None:
             self._channel = self._create_channel()
@@ -130,8 +130,7 @@ class GrpcClient:
         *args: Any,
         **kwargs: Any,
     ) -> T:
-        """
-        Call gRPC method with exponential backoff retry.
+        """Call gRPC method with exponential backoff retry.
 
         Args:
             func: gRPC stub method to call
@@ -153,6 +152,7 @@ class GrpcClient:
             >>>         request,
             >>>         timeout=10.0
             >>>     )
+
         """
         backoff_ms = self.options.initial_backoff_ms
         last_exception = None

@@ -1,5 +1,6 @@
-"""Memory Integration for WaddleAI
-Provides conversation memory using mem0 or ChromaDB (user choice)
+"""Memory Integration for WaddleAI.
+
+Provides conversation memory using mem0 or ChromaDB (user choice).
 """
 
 import asyncio
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MemoryEntry:
-    """Memory entry structure"""
+    """Memory entry structure."""
 
     id: str
     user_id: int
@@ -48,7 +49,7 @@ class MemoryEntry:
 
 @dataclass
 class ConversationContext:
-    """Conversation context with memory"""
+    """Conversation context with memory."""
 
     user_id: int
     organization_id: int
@@ -59,16 +60,16 @@ class ConversationContext:
 
 
 class MemoryStore(ABC):
-    """Abstract base class for memory storage backends"""
+    """Abstract base class for memory storage backends."""
 
     @abstractmethod
     async def initialize(self):
-        """Initialize the memory store connection"""
+        """Initialize the memory store connection."""
         pass
 
     @abstractmethod
     async def store_memory(self, entry: MemoryEntry) -> bool:
-        """Store a memory entry"""
+        """Store a memory entry."""
         pass
 
     @abstractmethod
@@ -98,26 +99,27 @@ class MemoryStore(ABC):
         hours: int = 24,
         limit: int = 20,
     ) -> list[MemoryEntry]:
-        """Get recent memories within time window"""
+        """Get recent memories within time window."""
         pass
 
     @abstractmethod
     async def delete_memory(self, memory_id: str) -> bool:
-        """Delete a specific memory"""
+        """Delete a specific memory."""
         pass
 
     @abstractmethod
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup memories older than specified days"""
+        """Cleanup memories older than specified days."""
         pass
 
 
 class Mem0MemoryStore(MemoryStore):
-    """mem0-based memory storage"""
+    """mem0-based memory storage."""
 
     def __init__(
         self, api_key: str | None = None, org_id: str | None = None, config: dict | None = None
     ):
+        """Store mem0 credentials/config; raises if the optional mem0ai package isn't installed."""
         if not HAS_MEM0:
             raise ImportError("mem0ai package not installed. Install with: pip install mem0ai")
 
@@ -127,7 +129,7 @@ class Mem0MemoryStore(MemoryStore):
         self.client = None
 
     async def initialize(self):
-        """Initialize mem0 client"""
+        """Initialize mem0 client."""
         try:
             # Initialize mem0 client
             client_config = {}
@@ -144,7 +146,7 @@ class Mem0MemoryStore(MemoryStore):
             raise
 
     async def store_memory(self, entry: MemoryEntry) -> bool:
-        """Store memory in mem0"""
+        """Store memory in mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -264,7 +266,7 @@ class Mem0MemoryStore(MemoryStore):
         hours: int = 24,
         limit: int = 20,
     ) -> list[MemoryEntry]:
-        """Get recent memories from mem0"""
+        """Get recent memories from mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -327,7 +329,7 @@ class Mem0MemoryStore(MemoryStore):
             return []
 
     async def delete_memory(self, memory_id: str) -> bool:
-        """Delete memory from mem0"""
+        """Delete memory from mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -341,7 +343,7 @@ class Mem0MemoryStore(MemoryStore):
             return False
 
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup old memories from mem0"""
+        """Cleanup old memories from mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -357,11 +359,12 @@ class Mem0MemoryStore(MemoryStore):
 
 
 class ChromaDBMemoryStore(MemoryStore):
-    """ChromaDB-based memory storage"""
+    """ChromaDB-based memory storage."""
 
     def __init__(
         self, persist_directory: str = "./chroma_data", collection_name: str = "waddleai_memory"
     ):
+        """Store the ChromaDB persist path/collection name; client is lazy-built in initialize()."""
         self.persist_directory = persist_directory
         self.collection_name = collection_name
         self.client = None
@@ -372,7 +375,7 @@ class ChromaDBMemoryStore(MemoryStore):
         self._init_encoder()
 
     def _init_encoder(self):
-        """Initialize sentence transformer for embeddings"""
+        """Initialize sentence transformer for embeddings."""
         try:
             self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
@@ -381,7 +384,7 @@ class ChromaDBMemoryStore(MemoryStore):
             self.encoder = None
 
     async def initialize(self):
-        """Initialize ChromaDB client and collection"""
+        """Initialize ChromaDB client and collection."""
         try:
             # Initialize ChromaDB client
             self.client = chromadb.PersistentClient(
@@ -407,7 +410,7 @@ class ChromaDBMemoryStore(MemoryStore):
             raise
 
     def _generate_embedding(self, text: str) -> list[float] | None:
-        """Generate embedding for text"""
+        """Generate embedding for text."""
         if not self.encoder:
             return None
 
@@ -419,7 +422,7 @@ class ChromaDBMemoryStore(MemoryStore):
             return None
 
     async def store_memory(self, entry: MemoryEntry) -> bool:
-        """Store memory entry"""
+        """Store memory entry."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -562,7 +565,7 @@ class ChromaDBMemoryStore(MemoryStore):
         hours: int = 24,
         limit: int = 20,
     ) -> list[MemoryEntry]:
-        """Get recent memories"""
+        """Get recent memories."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -615,7 +618,7 @@ class ChromaDBMemoryStore(MemoryStore):
             return []
 
     async def delete_memory(self, memory_id: str) -> bool:
-        """Delete a specific memory"""
+        """Delete a specific memory."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -629,7 +632,7 @@ class ChromaDBMemoryStore(MemoryStore):
             return False
 
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup memories older than specified days"""
+        """Cleanup memories older than specified days."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -659,14 +662,15 @@ class ChromaDBMemoryStore(MemoryStore):
 
 
 class WaddleAIMemoryManager:
-    """Main memory management system for WaddleAI"""
+    """Main memory management system for WaddleAI."""
 
     def __init__(self, db, memory_store: MemoryStore):
+        """Bind the DAL handle and backing memory store (mem0 or ChromaDB) used by this manager."""
         self.db = db
         self.memory_store = memory_store
 
     async def initialize(self):
-        """Initialize memory manager"""
+        """Initialize memory manager."""
         await self.memory_store.initialize()
         logger.info("Memory manager initialized")
 
@@ -679,7 +683,7 @@ class WaddleAIMemoryManager:
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> bool:
-        """Add a conversation turn to memory with complete context including routing information"""
+        """Add a conversation turn to memory with complete context including routing information."""
         try:
             # Combine user message and assistant response
             user_messages = [msg for msg in messages if msg.get("role") == "user"]
@@ -727,7 +731,8 @@ class WaddleAIMemoryManager:
             if success:
                 logger.debug(
                     f"Added conversation turn to memory for user {user_id} "
-                    f"(model={memory_metadata['model_used']}, provider={memory_metadata['provider']}, "
+                    f"(model={memory_metadata['model_used']}, "
+                    f"provider={memory_metadata['provider']}, "
                     f"routing={memory_metadata['routing_decision']})"
                 )
 
@@ -745,7 +750,7 @@ class WaddleAIMemoryManager:
         session_id: str | None = None,
         context_limit: int = 5,
     ) -> ConversationContext:
-        """Get conversation context with relevant memories"""
+        """Get conversation context with relevant memories."""
         try:
             # Extract query from current messages
             user_messages = [
@@ -806,7 +811,7 @@ class WaddleAIMemoryManager:
             )
 
     async def _generate_conversation_summary(self, memories: list[MemoryEntry]) -> str:
-        """Generate a summary of relevant conversation memories"""
+        """Generate a summary of relevant conversation memories."""
         if not memories:
             return ""
 
@@ -824,7 +829,7 @@ class WaddleAIMemoryManager:
     async def enhance_messages_with_context(
         self, messages: list[dict[str, str]], context: ConversationContext
     ) -> list[dict[str, str]]:
-        """Enhance messages with memory context"""
+        """Enhance messages with memory context."""
         try:
             if not context.relevant_memories and not context.conversation_summary:
                 return messages
@@ -883,11 +888,11 @@ class WaddleAIMemoryManager:
             return messages
 
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup old memories"""
+        """Cleanup old memories."""
         return await self.memory_store.cleanup_old_memories(days)
 
     async def get_memory_stats(self, user_id: int, organization_id: int) -> dict[str, Any]:
-        """Get memory statistics for user/organization"""
+        """Get memory statistics for user/organization."""
         try:
             # Get recent memories to calculate stats
             recent_memories = await self.memory_store.get_recent_memories(
@@ -941,7 +946,7 @@ class WaddleAIMemoryManager:
         limit: int = 10,
         min_relevance: float = 0.5,
     ) -> list[dict[str, Any]]:
-        """Semantic search across conversations with routing context
+        """Semantic search across conversations with routing context.
 
         Returns list of conversation dictionaries with full metadata
         """
@@ -976,7 +981,8 @@ class WaddleAIMemoryManager:
                 conversations.append(conversation)
 
             logger.info(
-                f"Semantic search returned {len(conversations)} conversations for query: {query[:50]}"
+                f"Semantic search returned {len(conversations)} conversations "
+                f"for query: {query[:50]}"
             )
             return conversations
 
@@ -995,7 +1001,7 @@ class WaddleAIMemoryManager:
         routing_reasoning: str,
         metadata: dict[str, Any],
     ) -> bool:
-        """Store complete conversation with full routing context for analytics
+        """Store complete conversation with full routing context for analytics.
 
         This is an enhanced version that stores all details for analysis
         """
@@ -1094,6 +1100,7 @@ def create_memory_manager(
 
     Returns:
         WaddleAIMemoryManager instance
+
     """
     if backend == "pgvector":
         _write_db = write_db or db
@@ -1106,12 +1113,12 @@ def create_memory_manager(
                 from shared.utils.embedding_manager import create_embedding_manager
 
                 _embedding_manager = create_embedding_manager()
-            except ImportError:
+            except ImportError as err:
                 raise ImportError(
                     "embedding_manager is required for the pgvector backend. "
                     "Either pass embedding_manager= explicitly or ensure "
                     "shared.utils.embedding_manager is importable."
-                )
+                ) from err
 
         memory_store = PgvectorMemoryStore(
             write_db=_write_db,
@@ -1158,6 +1165,7 @@ class ReadReplicaPool:
     """
 
     def __init__(self, replica_dbs: list):
+        """Wrap a fixed list of replica DB connections behind a thread-safe round-robin index."""
         self._replicas = replica_dbs
         self._lock = threading.Lock()
         self._index = 0
@@ -1172,6 +1180,7 @@ class ReadReplicaPool:
         return db
 
     def __len__(self) -> int:
+        """Return the number of configured replica connections."""
         return len(self._replicas)
 
     @classmethod
@@ -1223,7 +1232,9 @@ class PgvectorMemoryStore(MemoryStore):
         embed_cache: Any | None = None,
         retrieval_cache: Any | None = None,
     ):
-        """Args:
+        """Bind write/read connections and optional caches for pgvector-backed memory ops.
+
+        Args:
         write_db: Primary DAL connection (write operations).
         embedding_manager: EmbeddingManager instance for generating vectors.
         replica_pool: ReadReplicaPool for distributing similarity searches.
@@ -1601,8 +1612,11 @@ class PgvectorMemoryStore(MemoryStore):
                 where += " AND session_id = %s"
                 params.append(session_id)
 
+            # `where` is built only from fixed literal fragments chosen by the branches
+            # above (never user input); every actual value is bound via `params` below.
             self.write_db.executesql(
-                "DELETE FROM memory_embeddings WHERE " + where,  # nosec B608 -- filter fragments are fixed literals; every value is bound via executesql params
+                "DELETE FROM memory_embeddings WHERE "  # nosec B608 # noqa: S608 -- fixed literal fragments only
+                + where,
                 params,
             )
             if self.retrieval_cache is not None:

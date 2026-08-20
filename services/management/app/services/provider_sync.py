@@ -1,5 +1,4 @@
-"""
-WaddleAI Provider Sync Service
+"""WaddleAI Provider Sync Service.
 
 Synchronizes Ollama deployments' model-specific routes to the AILB gRPC
 module (fleet-side load balancing for locally-hosted models -- unrelated to
@@ -15,15 +14,15 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ..grpc.client import AILBModuleClient, RouteConfig
 
 logger = logging.getLogger(__name__)
 
 
-class SyncStatus(str, Enum):
-    """Sync status states"""
+class SyncStatus(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
+    """Sync status states."""
 
     PENDING = "pending"
     SYNCED = "synced"
@@ -33,24 +32,24 @@ class SyncStatus(str, Enum):
 
 @dataclass
 class SyncResult:
-    """Result of a sync operation"""
+    """Result of a sync operation."""
 
     success: bool
     provider_id: int
-    route_id: Optional[str] = None
+    route_id: str | None = None
     status: SyncStatus = SyncStatus.PENDING
     message: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     timestamp: datetime = None
 
     def __post_init__(self):
+        """Default timestamp to now if the caller did not supply one."""
         if self.timestamp is None:
             self.timestamp = datetime.utcnow()
 
 
 class ProviderSyncService:
-    """
-    Synchronizes Ollama deployments' model-specific routes to AILB.
+    """Synchronizes Ollama deployments' model-specific routes to AILB.
 
     Handles:
     - Model-specific routing for Ollama deployments
@@ -58,24 +57,24 @@ class ProviderSyncService:
     - Handling sync failures and retries
     """
 
-    def __init__(self, db, ailb_client: Optional[AILBModuleClient] = None):
+    def __init__(self, db, ailb_client: AILBModuleClient | None = None):
+        """Bind the DAL handle and optional AILB gRPC client used for route sync calls."""
         self.db = db
         self.ailb_client = ailb_client
         self._instance_id = ""
 
     def set_ailb_client(self, client: AILBModuleClient):
-        """Set the AILB client"""
+        """Set the AILB client."""
         self.ailb_client = client
 
     def set_instance_id(self, instance_id: str):
-        """Set the AILB instance ID to sync to"""
+        """Set the AILB instance ID to sync to."""
         self._instance_id = instance_id
 
     # Ollama Model-Specific Routing
 
     def sync_ollama_deployment(self, deployment_id: int) -> SyncResult:
-        """
-        Sync an Ollama deployment with model-specific routes to AILB.
+        """Sync an Ollama deployment with model-specific routes to AILB.
 
         Creates individual routes for each model on the deployment,
         enabling model-aware load balancing.
@@ -85,6 +84,7 @@ class ProviderSyncService:
 
         Returns:
             SyncResult with success status and details
+
         """
         db = self.db
 
@@ -92,7 +92,10 @@ class ProviderSyncService:
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
         if not deployment:
             return SyncResult(
-                success=False, provider_id=deployment_id, status=SyncStatus.FAILED, error="Deployment not found"
+                success=False,
+                provider_id=deployment_id,
+                status=SyncStatus.FAILED,
+                error="Deployment not found",
             )
 
         # Get all models on this deployment
@@ -116,7 +119,9 @@ class ProviderSyncService:
 
             # Sync all model routes to AILB
             if self.ailb_client and self.ailb_client.is_connected():
-                result = self.ailb_client.update_routes(routes=routes, instance_id=self._instance_id)
+                result = self.ailb_client.update_routes(
+                    routes=routes, instance_id=self._instance_id
+                )
                 if not result.get("success"):
                     raise Exception(result.get("message", "Unknown error"))
 
@@ -130,7 +135,10 @@ class ProviderSyncService:
 
                 if sync_record:
                     db(db.ollama_model_routes.id == sync_record.id).update(
-                        ailb_route_id=route_id, sync_status="synced", last_synced=now, sync_error=None
+                        ailb_route_id=route_id,
+                        sync_status="synced",
+                        last_synced=now,
+                        sync_error=None,
                     )
                 else:
                     db.ollama_model_routes.insert(
@@ -144,7 +152,9 @@ class ProviderSyncService:
 
             db.commit()
 
-            logger.info(f"Successfully synced {len(models)} model routes for deployment {deployment_id}")
+            logger.info(
+                f"Successfully synced {len(models)} model routes for deployment {deployment_id}"
+            )
             return SyncResult(
                 success=True,
                 provider_id=deployment_id,
@@ -154,11 +164,12 @@ class ProviderSyncService:
 
         except Exception as e:
             logger.error(f"Failed to sync Ollama deployment {deployment_id}: {e}")
-            return SyncResult(success=False, provider_id=deployment_id, status=SyncStatus.FAILED, error=str(e))
+            return SyncResult(
+                success=False, provider_id=deployment_id, status=SyncStatus.FAILED, error=str(e)
+            )
 
     def _ollama_model_to_route(self, deployment, model) -> RouteConfig:
-        """
-        Convert Ollama deployment + model to AILB route configuration.
+        """Convert Ollama deployment + model to AILB route configuration.
 
         Creates a route that matches requests for this specific model
         and routes them to the deployment endpoint.
@@ -193,19 +204,20 @@ class ProviderSyncService:
 
         return route
 
-    def sync_all_ollama_deployments(self) -> Dict[int, SyncResult]:
-        """
-        Sync all active Ollama deployments with model-specific routes.
+    def sync_all_ollama_deployments(self) -> dict[int, SyncResult]:
+        """Sync all active Ollama deployments with model-specific routes.
 
         Returns:
             Dict mapping deployment_id to SyncResult
+
         """
         db = self.db
         results = {}
 
         # Get all deployments with models
         deployments = db(
-            (db.ollama_deployments.status.belongs(["running", "pending"])) & (db.ollama_deployments.id > 0)
+            (db.ollama_deployments.status.belongs(["running", "pending"]))
+            & (db.ollama_deployments.id > 0)
         ).select()
 
         for deployment in deployments:
@@ -217,14 +229,14 @@ class ProviderSyncService:
         return results
 
     def remove_ollama_model_route(self, model_id: int) -> bool:
-        """
-        Remove a specific Ollama model route from AILB.
+        """Remove a specific Ollama model route from AILB.
 
         Args:
             model_id: ID of the Ollama model
 
         Returns:
             True if successful
+
         """
         db = self.db
 
@@ -237,7 +249,9 @@ class ProviderSyncService:
             # Delete route from AILB
             if self.ailb_client and self.ailb_client.is_connected():
                 if sync_record.ailb_route_id:
-                    self.ailb_client.delete_route(route_id=sync_record.ailb_route_id, instance_id=self._instance_id)
+                    self.ailb_client.delete_route(
+                        route_id=sync_record.ailb_route_id, instance_id=self._instance_id
+                    )
 
             # Delete sync record
             db(db.ollama_model_routes.id == sync_record.id).delete()
@@ -250,15 +264,15 @@ class ProviderSyncService:
             logger.error(f"Failed to remove model {model_id} route: {e}")
             return False
 
-    def get_model_route_status(self, model_id: int) -> Dict[str, Any]:
-        """
-        Get sync status for a specific Ollama model route.
+    def get_model_route_status(self, model_id: int) -> dict[str, Any]:
+        """Get sync status for a specific Ollama model route.
 
         Args:
             model_id: ID of the Ollama model
 
         Returns:
             Dict with sync status details
+
         """
         db = self.db
 

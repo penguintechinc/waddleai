@@ -246,9 +246,7 @@ class TestVertexBedrockProGating:
         app_mock_db.return_value.select.side_effect = [empty_sel, created_sel]
         app_mock_db.fleet_backends.insert.return_value = 1
 
-        resp = await client.post(
-            ENDPOINT_PATH, headers=auth_headers, json=self._payload("bedrock")
-        )
+        resp = await client.post(ENDPOINT_PATH, headers=auth_headers, json=self._payload("bedrock"))
         assert resp.status_code == 201
 
     async def test_flag_off_blocks_before_entitlement_is_even_checked(
@@ -389,9 +387,7 @@ class TestFleetBackendHealth:
         fake_backend.health = AsyncMock(
             return_value=FleetHealth(backend_id=1, healthy=True, node_count=3, detail={"ok": True})
         )
-        with patch(
-            "services.management.app.api.v1.fleet.build_backend", return_value=fake_backend
-        ):
+        with patch("services.management.app.api.v1.fleet.build_backend", return_value=fake_backend):
             resp = await client.get(f"{ENDPOINT_PATH}/1/health", headers=auth_headers)
 
         assert resp.status_code == 200

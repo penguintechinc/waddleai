@@ -1,0 +1,40 @@
+# Gitleaks configuration -- SCOPE ONLY.
+#
+# Per .pre-commit-config.yaml this repo does not allowlist findings by
+# fingerprint: every finding in first-party source is treated as real. What is
+# excluded here are paths that are not this repo's source, plus the fixtures
+# for the secret-detection feature itself.
+#
+#   .venv/, node_modules/     third-party dependencies
+#   .worktrees/               a second checkout of THIS repo (double-counted 78)
+#   services/penguincode/     vendored upstream
+#   __pycache__/, *.pyc       compiled bytecode, not source
+#
+# The three test files below must contain credential-shaped strings -- that is
+# precisely what they assert the content filter and prompt-security scanner
+# detect. Stripping them would delete the subject of the test.
+#
+# Removing a path from this list is fine. Adding a fingerprint allowlist is not.
+#
+# Verify after ANY edit here that detection still works:
+#   printf 'k="AKIAIOSFODNN7EXAMPLE"\n' > shared/_canary.py
+#   gitleaks detect --source . --no-git --config .gitleaks.toml   # must FAIL
+#   rm shared/_canary.py
+# A config that reports zero findings may be broken rather than clean.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-source trees, bytecode, and secret-detection fixtures"
+paths = [
+  '''^\.venv/''',
+  '''^\.worktrees/''',
+  '''(^|/)node_modules/''',
+  '''^services/penguincode/''',
+  '''(^|/)__pycache__/''',
+  '''\.pyc$''',
+  '''^tests/unit/security/test_content_filter_redaction\.py$''',
+  '''^tests/unit/test_prompt_security_merge\.py$''',
+  '''^services/webui/src/test/VirtualKeys\.test\.jsx$''',
+]

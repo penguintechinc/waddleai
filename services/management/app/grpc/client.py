@@ -1,5 +1,4 @@
-"""
-WaddleAI gRPC Client for MarchProxy AILB ModuleService
+"""WaddleAI gRPC Client for MarchProxy AILB ModuleService.
 
 This client communicates with the MarchProxy AILB module via gRPC
 to manage AI provider routes, rate limits, and configuration.
@@ -9,7 +8,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import grpc
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RouteConfig:
-    """AI provider route configuration"""
+    """AI provider route configuration."""
 
     route_id: str
     protocol: str = "PROTOCOL_HTTPS"
@@ -27,13 +26,13 @@ class RouteConfig:
     destination_port: int = 443
     path_pattern: str = ""
     priority: int = 100
-    headers: Dict[str, str] = field(default_factory=dict)
-    metadata: Dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class RateLimitConfig:
-    """Rate limit configuration for virtual keys"""
+    """Rate limit configuration for virtual keys."""
 
     limit_id: str
     target: str
@@ -42,12 +41,12 @@ class RateLimitConfig:
     requests_per_hour: int = 0
     burst_size: int = 10
     enabled: bool = True
-    metadata: Dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class ModuleStatus:
-    """AILB module status response"""
+    """AILB module status response."""
 
     instance_id: str
     health_status: str
@@ -56,12 +55,12 @@ class ModuleStatus:
     current_connections: int = 0
     max_connections: int = 0
     traffic_weight: int = 100
-    details: Dict[str, str] = field(default_factory=dict)
+    details: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class ModuleMetrics:
-    """AILB module metrics"""
+    """AILB module metrics."""
 
     instance_id: str
     total_requests: int = 0
@@ -76,12 +75,11 @@ class ModuleMetrics:
     bytes_sent: int = 0
     cpu_usage_percent: float = 0.0
     memory_usage_mb: float = 0.0
-    custom_stats: Dict[str, str] = field(default_factory=dict)
+    custom_stats: dict[str, str] = field(default_factory=dict)
 
 
 class AILBModuleClient:
-    """
-    gRPC client for MarchProxy AILB ModuleService.
+    """gRPC client for MarchProxy AILB ModuleService.
 
     Provides methods to manage AI provider routes, rate limits,
     and module configuration via the gRPC interface.
@@ -92,9 +90,10 @@ class AILBModuleClient:
         host: str = "localhost",
         port: int = 50051,
         use_tls: bool = False,
-        tls_cert_path: Optional[str] = None,
+        tls_cert_path: str | None = None,
         timeout: int = 30,
     ):
+        """Store connection parameters; the gRPC channel itself is opened lazily by connect()."""
         self.host = host
         self.port = port
         self.use_tls = use_tls
@@ -106,10 +105,11 @@ class AILBModuleClient:
 
     @property
     def address(self) -> str:
+        """Return the "host:port" target string used to dial the AILB module."""
         return f"{self.host}:{self.port}"
 
     def connect(self) -> bool:
-        """Establish connection to AILB module"""
+        """Establish connection to AILB module."""
         try:
             if self.use_tls and self.tls_cert_path:
                 with open(self.tls_cert_path, "rb") as f:
@@ -142,7 +142,7 @@ class AILBModuleClient:
             return False
 
     def disconnect(self):
-        """Close connection to AILB module"""
+        """Close connection to AILB module."""
         if self._channel:
             self._channel.close()
             self._channel = None
@@ -151,13 +151,13 @@ class AILBModuleClient:
             logger.info("Disconnected from AILB")
 
     def is_connected(self) -> bool:
-        """Check if connected to AILB"""
+        """Check if connected to AILB."""
         return self._connected
 
     # Lifecycle Management
 
-    def get_status(self, instance_id: str = "") -> Optional[ModuleStatus]:
-        """Get current status of AILB module instance"""
+    def get_status(self, instance_id: str = "") -> ModuleStatus | None:
+        """Get current status of AILB module instance."""
         if not self._connected:
             logger.warning("Not connected to AILB")
             return None
@@ -181,8 +181,10 @@ class AILBModuleClient:
             logger.error(f"gRPC error getting status: {e}")
             return None
 
-    def reload(self, instance_id: str = "", graceful: bool = True, timeout_seconds: int = 30) -> bool:
-        """Reload AILB configuration"""
+    def reload(
+        self, instance_id: str = "", graceful: bool = True, timeout_seconds: int = 30
+    ) -> bool:
+        """Reload AILB configuration."""
         if not self._connected:
             logger.warning("Not connected to AILB")
             return False
@@ -203,8 +205,8 @@ class AILBModuleClient:
             logger.error(f"gRPC error reloading: {e}")
             return False
 
-    def health_check(self, instance_id: str = "", deep_check: bool = False) -> Dict[str, Any]:
-        """Perform health check on AILB module"""
+    def health_check(self, instance_id: str = "", deep_check: bool = False) -> dict[str, Any]:
+        """Perform health check on AILB module."""
         if not self._connected:
             return {"status": "disconnected", "healthy": False}
 
@@ -223,8 +225,8 @@ class AILBModuleClient:
 
     # Route Management
 
-    def get_routes(self, instance_id: str = "") -> List[RouteConfig]:
-        """Get all routes configured in AILB"""
+    def get_routes(self, instance_id: str = "") -> list[RouteConfig]:
+        """Get all routes configured in AILB."""
         if not self._connected:
             return []
 
@@ -240,9 +242,9 @@ class AILBModuleClient:
             return []
 
     def update_routes(
-        self, routes: List[RouteConfig], instance_id: str = "", replace_all: bool = False
-    ) -> Dict[str, Any]:
-        """Update routes in AILB"""
+        self, routes: list[RouteConfig], instance_id: str = "", replace_all: bool = False
+    ) -> dict[str, Any]:
+        """Update routes in AILB."""
         if not self._connected:
             return {"success": False, "message": "Not connected"}
 
@@ -257,13 +259,17 @@ class AILBModuleClient:
             # response = self._stub.UpdateRoutes(request, timeout=self.timeout)
 
             logger.info(f"Updated {len(routes)} routes in AILB")
-            return {"success": True, "message": f"Updated {len(routes)} routes", "routes_updated": len(routes)}
+            return {
+                "success": True,
+                "message": f"Updated {len(routes)} routes",
+                "routes_updated": len(routes),
+            }
         except grpc.RpcError as e:
             logger.error(f"gRPC error updating routes: {e}")
             return {"success": False, "message": str(e)}
 
     def delete_route(self, route_id: str, instance_id: str = "") -> bool:
-        """Delete a route from AILB"""
+        """Delete a route from AILB."""
         if not self._connected:
             return False
 
@@ -281,8 +287,8 @@ class AILBModuleClient:
 
     # Rate Limiting
 
-    def get_rate_limits(self, instance_id: str = "", target: str = "") -> List[RateLimitConfig]:
-        """Get rate limit configurations"""
+    def get_rate_limits(self, instance_id: str = "", target: str = "") -> list[RateLimitConfig]:
+        """Get rate limit configurations."""
         if not self._connected:
             return []
 
@@ -294,7 +300,7 @@ class AILBModuleClient:
             return []
 
     def set_rate_limit(self, limit: RateLimitConfig, instance_id: str = "") -> bool:
-        """Set a rate limit configuration"""
+        """Set a rate limit configuration."""
         if not self._connected:
             return False
 
@@ -307,7 +313,7 @@ class AILBModuleClient:
             return False
 
     def remove_rate_limit(self, limit_id: str, instance_id: str = "") -> bool:
-        """Remove a rate limit configuration"""
+        """Remove a rate limit configuration."""
         if not self._connected:
             return False
 
@@ -321,8 +327,8 @@ class AILBModuleClient:
 
     # Metrics and Monitoring
 
-    def get_metrics(self, instance_id: str = "") -> Optional[ModuleMetrics]:
-        """Get AILB module metrics"""
+    def get_metrics(self, instance_id: str = "") -> ModuleMetrics | None:
+        """Get AILB module metrics."""
         if not self._connected:
             return None
 
@@ -340,8 +346,8 @@ class AILBModuleClient:
             logger.error(f"gRPC error getting metrics: {e}")
             return None
 
-    def get_stats(self, instance_id: str = "") -> Dict[str, Any]:
-        """Get detailed statistics"""
+    def get_stats(self, instance_id: str = "") -> dict[str, Any]:
+        """Get detailed statistics."""
         if not self._connected:
             return {}
 
@@ -361,22 +367,28 @@ class AILBModuleClient:
 
     # Configuration Management
 
-    def get_config(self, instance_id: str = "", config_type: str = "") -> Dict[str, Any]:
-        """Get current AILB configuration"""
+    def get_config(self, instance_id: str = "", config_type: str = "") -> dict[str, Any]:
+        """Get current AILB configuration."""
         if not self._connected:
             return {}
 
         try:
             # TODO: Implement actual gRPC call
-            return {"version": "1.0", "module_type": "AILB", "providers": [], "routes": [], "rate_limits": []}
+            return {
+                "version": "1.0",
+                "module_type": "AILB",
+                "providers": [],
+                "routes": [],
+                "rate_limits": [],
+            }
         except grpc.RpcError as e:
             logger.error(f"gRPC error getting config: {e}")
             return {}
 
     def update_config(
-        self, config: Dict[str, Any], instance_id: str = "", validate_only: bool = False
-    ) -> Dict[str, Any]:
-        """Update AILB configuration"""
+        self, config: dict[str, Any], instance_id: str = "", validate_only: bool = False
+    ) -> dict[str, Any]:
+        """Update AILB configuration."""
         if not self._connected:
             return {"success": False, "message": "Not connected"}
 
@@ -405,10 +417,10 @@ class AILBModuleClient:
         provider_type: str,
         endpoint_url: str,
         api_key: str = "",
-        models: List[str] = None,
+        models: list[str] = None,
         priority: int = 100,
     ) -> RouteConfig:
-        """Create a route configuration for an AI provider"""
+        """Create a route configuration for an AI provider."""
         route_id = f"waddleai-provider-{provider_id}"
 
         # Parse endpoint URL
@@ -446,7 +458,7 @@ class AILBModuleClient:
     def create_key_rate_limit(
         self, key_id: int, key_prefix: str, rpm_limit: int = 60, tpm_limit: int = 10000
     ) -> RateLimitConfig:
-        """Create a rate limit configuration for a virtual key"""
+        """Create a rate limit configuration for a virtual key."""
         return RateLimitConfig(
             limit_id=f"waddleai-key-{key_id}",
             target=key_prefix,
@@ -459,16 +471,18 @@ class AILBModuleClient:
     # Context manager support
 
     def __enter__(self):
+        """Connect to the AILB module on entering the context."""
         self.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Disconnect from the AILB module on exiting the context."""
         self.disconnect()
 
 
 # Factory function for creating client from Flask app config
-def create_ailb_client(app_config: Dict[str, Any]) -> AILBModuleClient:
-    """Create AILB client from Flask application config"""
+def create_ailb_client(app_config: dict[str, Any]) -> AILBModuleClient:
+    """Create AILB client from Flask application config."""
     return AILBModuleClient(
         host=app_config.get("MARCHPROXY_AILB_HOST", "localhost"),
         port=app_config.get("MARCHPROXY_AILB_GRPC_PORT", 50051),

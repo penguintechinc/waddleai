@@ -1,11 +1,8 @@
-"""
-Tests for verify_webhook_signature() -- the surviving piece of the former
-AILB webhook module (services/management/app/api/v1/webhooks.py).
+"""Tests for verify_webhook_signature(), the surviving piece of the former AILB webhook module.
 
-The AILB usage/health/batch ingest routes and process_usage_event() this
-file used to also cover were deleted alongside the rest of the MarchProxy
-AILB coupling; verify_webhook_signature() has no AILB dependency of its own
-and is tested directly here.
+services/management/app/api/v1/webhooks.py's AILB usage/health/batch ingest routes and
+process_usage_event() were deleted alongside the rest of the MarchProxy AILB coupling;
+verify_webhook_signature() has no AILB dependency of its own and is tested directly here.
 """
 
 import hashlib
@@ -13,7 +10,7 @@ import hmac
 
 
 class TestSignatureVerification:
-    """Tests for verify_webhook_signature() function"""
+    """Tests for verify_webhook_signature() function."""
 
     async def test_verify_signature_no_secret_configured(self, flask_app):
         """When WEBHOOK_SECRET is empty, verification REJECTS (fail closed), never skips."""
@@ -23,14 +20,16 @@ class TestSignatureVerification:
 
             payload = b'{"test": "data"}'
             signature = "any-signature-accepted"
-            result = verify_webhook_signature(payload, signature, flask_app.config["WEBHOOK_SECRET"])
+            result = verify_webhook_signature(
+                payload, signature, flask_app.config["WEBHOOK_SECRET"]
+            )
             # regression: security review 2026-07-26 — empty secret must reject, not skip
             assert result is False
 
     async def test_verify_signature_valid(self, flask_app):
         """Valid HMAC signature returns True."""
         async with flask_app.app_context():
-            secret = "test-webhook-secret-key"
+            secret = "test-webhook-secret-key"  # noqa: S105 -- fixed test credential, not a real secret
             flask_app.config["WEBHOOK_SECRET"] = secret
             from services.management.app.api.v1.webhooks import verify_webhook_signature
 
@@ -38,26 +37,30 @@ class TestSignatureVerification:
             expected_sig = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
             signature = f"sha256={expected_sig}"
 
-            result = verify_webhook_signature(payload, signature, flask_app.config["WEBHOOK_SECRET"])
+            result = verify_webhook_signature(
+                payload, signature, flask_app.config["WEBHOOK_SECRET"]
+            )
             assert result is True
 
     async def test_verify_signature_invalid(self, flask_app):
         """Invalid HMAC signature returns False."""
         async with flask_app.app_context():
-            secret = "test-webhook-secret-key"
+            secret = "test-webhook-secret-key"  # noqa: S105 -- fixed test credential, not a real secret
             flask_app.config["WEBHOOK_SECRET"] = secret
             from services.management.app.api.v1.webhooks import verify_webhook_signature
 
             payload = b'{"event_id": "evt_001"}'
             signature = "sha256=invalid_signature_value"
 
-            result = verify_webhook_signature(payload, signature, flask_app.config["WEBHOOK_SECRET"])
+            result = verify_webhook_signature(
+                payload, signature, flask_app.config["WEBHOOK_SECRET"]
+            )
             assert result is False
 
     async def test_verify_signature_wrong_payload(self, flask_app):
         """HMAC signature for different payload fails verification."""
         async with flask_app.app_context():
-            secret = "test-webhook-secret-key"
+            secret = "test-webhook-secret-key"  # noqa: S105 -- fixed test credential, not a real secret
             flask_app.config["WEBHOOK_SECRET"] = secret
             from services.management.app.api.v1.webhooks import verify_webhook_signature
 
@@ -68,5 +71,7 @@ class TestSignatureVerification:
             signature = f"sha256={sig_for_payload_1}"
 
             # Try to verify signature made for payload_1 against payload_2
-            result = verify_webhook_signature(payload_2, signature, flask_app.config["WEBHOOK_SECRET"])
+            result = verify_webhook_signature(
+                payload_2, signature, flask_app.config["WEBHOOK_SECRET"]
+            )
             assert result is False

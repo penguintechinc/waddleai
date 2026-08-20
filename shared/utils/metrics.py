@@ -32,14 +32,13 @@ class WaddleAIMetrics:
     _shared_collectors: dict[str, object] | None = None
 
     def __init__(self, service_name: str):
+        """Bind this instance to `service_name`, reusing shared collectors after the first build."""
         self.service_name = service_name
 
         if WaddleAIMetrics._shared_collectors is not None:
             for name, collector in WaddleAIMetrics._shared_collectors.items():
                 setattr(self, name, collector)
-            self.info.info(
-                {"service": service_name, "version": "1.0.0", "python_version": "3.13"}
-            )
+            self.info.info({"service": service_name, "version": "1.0.0", "python_version": "3.13"})
             return
 
         # Request metrics
@@ -158,7 +157,19 @@ class WaddleAIMetrics:
             # this histogram exists to measure. Only Tier-2 (network round
             # trip) reaches into the tens/hundreds-of-ms tail.
             buckets=(
-                0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+                0.0005,
+                0.001,
+                0.0025,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1.0,
+                2.5,
+                5.0,
             ),
         )
         self.hook_timeouts_total = Counter(
@@ -194,7 +205,7 @@ class WaddleAIMetrics:
         }
 
     def record_request(self, endpoint: str, method: str, status_code: int, duration: float):
-        """Record HTTP request metrics"""
+        """Record HTTP request metrics."""
         self.requests_total.labels(
             service=self.service_name, endpoint=endpoint, method=method, status_code=status_code
         ).inc()
@@ -206,18 +217,22 @@ class WaddleAIMetrics:
     def record_llm_request(
         self, provider: str, model: str, status: str, token_usage: dict[str, int]
     ):
-        """Record LLM request metrics"""
+        """Record LLM request metrics."""
         self.llm_requests_total.labels(provider=provider, model=model, status=status).inc()
 
         # Record token usage
         if "input_tokens" in token_usage:
             self.llm_tokens_total.labels(
-                provider=provider, model=model, token_type="input"  # nosec B106 -- Prometheus metric label value, not a credential
+                provider=provider,
+                model=model,
+                token_type="input",  # nosec B106 # noqa: S106 -- label value, not a credential
             ).inc(token_usage["input_tokens"])
 
         if "output_tokens" in token_usage:
             self.llm_tokens_total.labels(
-                provider=provider, model=model, token_type="output"  # nosec B106 -- Prometheus metric label value, not a credential
+                provider=provider,
+                model=model,
+                token_type="output",  # nosec B106 # noqa: S106 -- label value, not a credential
             ).inc(token_usage["output_tokens"])
 
         if "waddleai_tokens" in token_usage:
@@ -228,7 +243,7 @@ class WaddleAIMetrics:
             ).inc(token_usage["waddleai_tokens"])
 
     def record_security_event(self, event_type: str, severity: str, action: str):
-        """Record security event"""
+        """Record security event."""
         self.security_events_total.labels(
             event_type=event_type, severity=severity, action=action
         ).inc()
@@ -236,7 +251,7 @@ class WaddleAIMetrics:
     def record_database_operation(
         self, operation: str, table: str, duration: float | None = None, success: bool = True
     ):
-        """Record database operation"""
+        """Record database operation."""
         status = "success" if success else "error"
 
         self.database_operations_total.labels(operation=operation, table=table, status=status).inc()
@@ -247,30 +262,33 @@ class WaddleAIMetrics:
             )
 
     def set_active_connections(self, connection_type: str, count: int):
-        """Set active connection count"""
+        """Set active connection count."""
         self.active_connections.labels(
             service=self.service_name, connection_type=connection_type
         ).set(count)
 
     def record_auth_attempt(self, auth_type: str, success: bool):
-        """Record authentication attempt"""
+        """Record authentication attempt."""
         status = "success" if success else "failure"
         self.auth_attempts_total.labels(auth_type=auth_type, status=status).inc()
 
     def set_provider_health(self, provider: str, endpoint: str, healthy: bool):
-        """Set provider health status"""
+        """Set provider health status."""
         self.provider_health.labels(provider=provider, endpoint=endpoint).set(1 if healthy else 0)
 
     def set_token_quota_usage(self, organization: str, user: str, usage_percentage: float):
-        """Set token quota usage percentage"""
+        """Set token quota usage percentage."""
         self.token_quota_usage.labels(organization=organization, user=user).set(usage_percentage)
 
     def record_rate_limit_exceeded(self, endpoint: str, limit_type: str):
-        """Record rate limit exceeded event"""
+        """Record rate limit exceeded event."""
         self.rate_limit_exceeded.labels(endpoint=endpoint, limit_type=limit_type).inc()
 
     def record_cache_lookup(self, layer: str, result: str) -> None:
-        """Record a response-cache lookup outcome (spec §6.4). layer: exact|semantic; result: hit|miss."""
+        """Record a response-cache lookup outcome (spec §6.4).
+
+        layer: exact|semantic; result: hit|miss.
+        """
         self.cache_lookups_total.labels(layer=layer, result=result).inc()
 
     def record_cache_tokens_saved(self, layer: str, tokens: int) -> None:
@@ -317,18 +335,19 @@ class WaddleAIMetrics:
         self.hook_rule_decisions_total.labels(rule_id=rule_id, scope=scope, decision=decision).inc()
 
     def get_metrics(self) -> str:
-        """Get Prometheus metrics in text format"""
+        """Get Prometheus metrics in text format."""
         return generate_latest().decode("utf-8")
 
 
 class MetricsMiddleware:
-    """Middleware for automatic metrics collection"""
+    """Middleware for automatic metrics collection."""
 
     def __init__(self, metrics: WaddleAIMetrics):
+        """Bind the WaddleAIMetrics collector this middleware records into."""
         self.metrics = metrics
 
     def __call__(self, request, response, start_time: float):
-        """Record request metrics"""
+        """Record request metrics."""
         duration = time.time() - start_time
         endpoint = getattr(request, "url", {}).path if hasattr(request, "url") else "unknown"
         method = getattr(request, "method", "unknown")
@@ -343,7 +362,7 @@ management_metrics: WaddleAIMetrics | None = None
 
 
 def get_proxy_metrics() -> WaddleAIMetrics:
-    """Get or create proxy metrics instance"""
+    """Get or create proxy metrics instance."""
     global proxy_metrics
     if proxy_metrics is None:
         proxy_metrics = WaddleAIMetrics("proxy")
@@ -351,7 +370,7 @@ def get_proxy_metrics() -> WaddleAIMetrics:
 
 
 def get_management_metrics() -> WaddleAIMetrics:
-    """Get or create management metrics instance"""
+    """Get or create management metrics instance."""
     global management_metrics
     if management_metrics is None:
         management_metrics = WaddleAIMetrics("management")
@@ -359,7 +378,7 @@ def get_management_metrics() -> WaddleAIMetrics:
 
 
 def get_metrics_for_service(service_name: str) -> WaddleAIMetrics:
-    """Get metrics instance for a service"""
+    """Get metrics instance for a service."""
     if service_name == "proxy":
         return get_proxy_metrics()
     elif service_name == "management":

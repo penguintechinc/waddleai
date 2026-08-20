@@ -3,6 +3,7 @@
 from typing import Any
 
 from mem0 import Memory
+
 from penguincode_cli.config.settings import MemoryConfig
 
 

@@ -151,8 +151,7 @@ class PgvectorVectorStore(VectorStoreBackend):
         for point in points:
             existing = (
                 self.db(
-                    (points_table.collection_id == coll.id)
-                    & (points_table.external_id == point.id)
+                    (points_table.collection_id == coll.id) & (points_table.external_id == point.id)
                 )
                 .select()
                 .first()

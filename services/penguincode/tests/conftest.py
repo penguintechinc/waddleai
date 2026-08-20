@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import jwt as pyjwt
 import pytest
+
 from penguincode_cli.server.models.config_store import ConfigStore
 from penguincode_cli.server.rest_app import create_rest_app
 

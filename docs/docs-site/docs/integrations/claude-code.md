@@ -32,6 +32,12 @@ expects.
 
 ## MCP tools (optional, requires `waddleai.mcp_v2`)
 
+The MCP configs below read the key from the environment:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 Claude Code can also connect to WaddleAI's MCP server directly for
 `search_code`/`memory_search`/`list_models`/etc., independent of the
 `/v1/messages` traffic above. Add to your Claude Code MCP config:
@@ -43,7 +49,7 @@ Claude Code can also connect to WaddleAI's MCP server directly for
       "type": "http",
       "url": "https://your-waddleai-host/mcp",
       "headers": {
-        "Authorization": "Bearer wa-your-key-here"
+        "Authorization": "Bearer <your-waddleai-key>"
       }
     }
   }

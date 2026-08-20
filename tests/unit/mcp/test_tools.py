@@ -56,6 +56,7 @@ def user_tools(collaborators, monkeypatch):
 @pytest.mark.asyncio
 class TestWaddleAIToolsHappyPath:
     """Happy-path delegation for every WaddleAITools method."""
+
     async def test_search_code_scopes_to_caller_org_and_tags_provenance(
         self, user_tools, collaborators
     ):

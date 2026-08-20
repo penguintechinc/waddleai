@@ -46,15 +46,24 @@ def _asgi_httpx_factory(app):
 
 def _http_endpoint(namespace: str = "elder") -> GatewayEndpointConfig:
     return GatewayEndpointConfig(
-        id=1, org_id=1, name="fixture", url="http://fixture.test/mcp",
-        transport="streamable_http", namespace=namespace,
+        id=1,
+        org_id=1,
+        name="fixture",
+        url="http://fixture.test/mcp",
+        transport="streamable_http",
+        namespace=namespace,
     )
 
 
 def _stdio_endpoint(namespace: str = "elder") -> GatewayEndpointConfig:
     command = f"{sys.executable} -m tests.fixtures.mcp_fixture_server --transport stdio"
     return GatewayEndpointConfig(
-        id=2, org_id=1, name="fixture-stdio", url=command, transport="stdio", namespace=namespace,
+        id=2,
+        org_id=1,
+        name="fixture-stdio",
+        url=command,
+        transport="stdio",
+        namespace=namespace,
     )
 
 
@@ -81,9 +90,7 @@ class TestStreamableHttpTransport:
         """Connect, discover the fixture's two tools, and invoke one over streamable-HTTP."""
         app = build_streamable_http_app(FixtureAuthConfig())
         endpoint = _http_endpoint()
-        async with GatewayClient(
-            endpoint, httpx_client_factory=_asgi_httpx_factory(app)
-        ) as client:
+        async with GatewayClient(endpoint, httpx_client_factory=_asgi_httpx_factory(app)) as client:
             tools = await client.discover()
             names = {t.namespaced_name for t in tools}
             assert names == {"elder.ping", "elder.whoami"}
@@ -96,9 +103,7 @@ class TestStreamableHttpTransport:
         """Invoking a tool name outside this endpoint's namespace raises."""
         app = build_streamable_http_app(FixtureAuthConfig())
         endpoint = _http_endpoint()
-        async with GatewayClient(
-            endpoint, httpx_client_factory=_asgi_httpx_factory(app)
-        ) as client:
+        async with GatewayClient(endpoint, httpx_client_factory=_asgi_httpx_factory(app)) as client:
             with pytest.raises(GatewayClientError):
                 await client.invoke("other.ping", {})
 

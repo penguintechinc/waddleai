@@ -161,7 +161,9 @@ class TestClientCredentials:
         server.seed_client(TEST_CLIENT_ID, TEST_CLIENT_SECRET)
         auth = OutboundAuth(oauth2_client_factory=_oauth2_factory(server))
         config = OAuth2ClientCredentialsConfig(
-            token_url=MOCK_OAUTH_ISSUE_URL, client_id=TEST_CLIENT_ID, client_secret="wrong"  # noqa: S106 -- test fixture value
+            token_url=MOCK_OAUTH_ISSUE_URL,
+            client_id=TEST_CLIENT_ID,
+            client_secret="wrong",  # noqa: S106 -- test fixture value
         )
         with pytest.raises(OutboundAuthError):
             await auth.client_credentials_token(endpoint_id=3, config=config)

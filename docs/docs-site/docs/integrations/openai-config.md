@@ -58,7 +58,7 @@ tts-1
 
 ```bash
 curl -X POST https://your-waddleai-mgmt.com/api/connection_links \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "OpenAI Production",

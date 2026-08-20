@@ -1,8 +1,9 @@
-"""Hardening tests for LlamaCppManager.export_k8s_manifest()
+"""Hardening tests for LlamaCppManager.export_k8s_manifest().
 
 Tests ensure the runtime-generated manifests match the Helm template's security,
 resource, and caching controls.
 """
+
 import logging
 from unittest.mock import MagicMock
 
@@ -14,13 +15,16 @@ logger = logging.getLogger(__name__)
 
 @pytest.fixture
 def mock_db():
+    """Return a bare MagicMock standing in for the PyDAL db object."""
     db = MagicMock()
     return db
 
 
 @pytest.fixture
 def manager(mock_db):
+    """Build a LlamaCppManager wired to the mock db, for tests exercising its methods."""
     from services.management.app.services.llamacpp_manager import LlamaCppManager
+
     return LlamaCppManager(mock_db)
 
 
@@ -92,7 +96,9 @@ def test_export_k8s_manifest_pvc_backed_model_volume(manager, k8s_deployment):
     assert model_vol["persistentVolumeClaim"]["claimName"] == "waddleai-llamacpp-models"
 
 
-def test_export_k8s_manifest_emptydir_fallback_without_cache_claim(manager, k8s_deployment_no_cache):
+def test_export_k8s_manifest_emptydir_fallback_without_cache_claim(
+    manager, k8s_deployment_no_cache
+):
     """Model volume should fall back to emptyDir when model_cache_claim is None."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment_no_cache)
     docs = list(yaml.safe_load_all(manifest_yaml))
@@ -102,7 +108,9 @@ def test_export_k8s_manifest_emptydir_fallback_without_cache_claim(manager, k8s_
     assert "emptyDir" in model_vol
 
 
-def test_export_k8s_manifest_emptydir_fallback_logs_warning(manager, k8s_deployment_no_cache, caplog):
+def test_export_k8s_manifest_emptydir_fallback_logs_warning(
+    manager, k8s_deployment_no_cache, caplog
+):
     """Fallback to emptyDir should log a warning."""
     with caplog.at_level(logging.WARNING):
         _ = manager.export_k8s_manifest(k8s_deployment_no_cache)
@@ -152,7 +160,7 @@ def test_export_k8s_manifest_pod_security_context(manager, k8s_deployment):
 
 
 def test_export_k8s_manifest_container_security_context(manager, k8s_deployment):
-    """Container-level securityContext must enforce allowPrivilegeEscalation, capabilities, readOnlyRootFilesystem."""
+    """Container securityContext must enforce allowPrivilegeEscalation, capabilities, RO rootfs."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
     docs = list(yaml.safe_load_all(manifest_yaml))
     ds = next(d for d in docs if d["kind"] == "DaemonSet")
@@ -178,7 +186,7 @@ def test_export_k8s_manifest_init_container_security_context(manager, k8s_deploy
 
 
 def test_export_k8s_manifest_tmp_emptydir_volume(manager, k8s_deployment):
-    """tmp volume should be emptyDir for scratch space."""
+    """Tmp volume should be emptyDir for scratch space."""
     manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
     docs = list(yaml.safe_load_all(manifest_yaml))
     ds = next(d for d in docs if d["kind"] == "DaemonSet")
@@ -197,7 +205,7 @@ def test_export_k8s_manifest_container_tmp_mount(manager, k8s_deployment):
     mounts = container["volumeMounts"]
     tmp_mount = next((m for m in mounts if m["name"] == "tmp"), None)
     assert tmp_mount is not None
-    assert tmp_mount["mountPath"] == "/tmp"
+    assert tmp_mount["mountPath"] == "/tmp"  # noqa: S108 -- asserting a K8s manifest field, not touching a temp dir
 
 
 def test_export_k8s_manifest_cpu_memory_resources(manager, k8s_deployment):

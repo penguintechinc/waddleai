@@ -1,5 +1,4 @@
-"""
-Security tests for bootstrap secrets initialization.
+"""Security tests for bootstrap secrets initialization.
 
 Regression tests for security review 2026-07-26:
 - A: default admin credentials must not be hardcoded
@@ -48,7 +47,7 @@ class TestAdminBootstrapSecurityA:
             from services.management.app.config import TestingConfig
 
             # TestingConfig must not carry the old hardcoded "admin123" literal.
-            assert TestingConfig.ADMIN_INITIAL_PASSWORD != "admin123"
+            assert TestingConfig.ADMIN_INITIAL_PASSWORD != "admin123"  # noqa: S105 -- old literal
         finally:
             if original_value is not None:
                 os.environ["ADMIN_INITIAL_PASSWORD"] = original_value
@@ -56,7 +55,7 @@ class TestAdminBootstrapSecurityA:
     def test_init_default_data_uses_env_password(self):
         """init_default_data sources admin password from ADMIN_INITIAL_PASSWORD env."""
         # regression: security review 2026-07-26 — admin password must not be hardcoded
-        os.environ["ADMIN_INITIAL_PASSWORD"] = "test_password_123"
+        os.environ["ADMIN_INITIAL_PASSWORD"] = "test_password_123"  # noqa: S105 -- test fixture
 
         try:
             from passlib.hash import bcrypt
@@ -70,7 +69,9 @@ class TestAdminBootstrapSecurityA:
             mock_db.return_value.select.return_value = []
             mock_db.commit = MagicMock()
             mock_db.organizations.insert = MagicMock(return_value=1)
-            mock_db.users.insert = MagicMock(side_effect=lambda **kw: inserted_users.append(kw) or 1)
+            mock_db.users.insert = MagicMock(
+                side_effect=lambda **kw: inserted_users.append(kw) or 1
+            )
             mock_db.virtual_keys.insert = MagicMock(return_value=1)
 
             with patch.dict(os.environ, {"ADMIN_INITIAL_PASSWORD": "env_password"}):
@@ -91,11 +92,12 @@ class TestMasterKeyLoggingSecurityB:
     def test_init_default_data_does_not_log_plaintext_key(self, caplog):
         """Master key is never logged or printed in plaintext."""
         # regression: security review 2026-07-26 — master key plaintext must not appear in logs
-        os.environ["ADMIN_INITIAL_PASSWORD"] = "test123"
+        os.environ["ADMIN_INITIAL_PASSWORD"] = "test123"  # noqa: S105 -- fixed test credential
 
         try:
-            from services.management.app.extensions import init_default_data
             import logging
+
+            from services.management.app.extensions import init_default_data
 
             # Create a mock DB that records all insert calls
             mock_db = MagicMock()
@@ -110,7 +112,9 @@ class TestMasterKeyLoggingSecurityB:
 
             # Mock organizations query
             mock_db.return_value = MagicMock()
-            mock_db.return_value.select = MagicMock(return_value=MagicMock(first=MagicMock(return_value=None)))
+            mock_db.return_value.select = MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=None))
+            )
             mock_db.organizations = MagicMock()
             mock_db.organizations.insert = MagicMock(return_value=1)
 
@@ -127,7 +131,7 @@ class TestMasterKeyLoggingSecurityB:
                 # This should not raise since DB is mocked
                 try:
                     init_default_data(mock_db)
-                except Exception:
+                except Exception:  # noqa: S110 -- DB mocking may fail, only log content matters
                     # DB mocking might fail, but we only care about log content
                     pass
 
@@ -149,7 +153,7 @@ class TestMasterKeyLoggingSecurityB:
     def test_init_default_data_does_not_print_plaintext_key(self, capsys):
         """Master key is never printed to stdout."""
         # regression: security review 2026-07-26 — master key must not be printed
-        os.environ["ADMIN_INITIAL_PASSWORD"] = "test123"
+        os.environ["ADMIN_INITIAL_PASSWORD"] = "test123"  # noqa: S105 -- fixed test credential
 
         try:
             from services.management.app.extensions import init_default_data
@@ -160,7 +164,9 @@ class TestMasterKeyLoggingSecurityB:
 
             # Mock the query chain
             mock_db.return_value = MagicMock()
-            mock_db.return_value.select = MagicMock(return_value=MagicMock(first=MagicMock(return_value=None)))
+            mock_db.return_value.select = MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=None))
+            )
             mock_db.organizations = MagicMock()
             mock_db.organizations.insert = MagicMock(return_value=1)
             mock_db.users = MagicMock()
@@ -170,7 +176,7 @@ class TestMasterKeyLoggingSecurityB:
 
             try:
                 init_default_data(mock_db)
-            except Exception:
+            except Exception:  # noqa: S110 -- DB mocking may fail, only stdout content matters
                 pass
 
             # Check stdout
@@ -197,14 +203,16 @@ class TestDefaultSecretsSecurityC:
             secret = cfg.WEBHOOK_SECRET
 
             # Must not be the insecure literal
-            assert secret != "change-in-production", "ProductionConfig WEBHOOK_SECRET is hardcoded insecure literal"
+            assert secret != "change-in-production", (  # noqa: S105 -- insecure default
+                "ProductionConfig WEBHOOK_SECRET is hardcoded insecure literal"
+            )
 
             # In production, if env var unset, should be empty or raise
             # (validation happens in the webhook handler)
             if not os.environ.get("WEBHOOK_SECRET"):
                 # If not set in env, it should be empty or a warning should be raised
                 # For now, we just verify it's not the hardcoded literal
-                assert secret != "change-in-production"
+                assert secret != "change-in-production"  # noqa: S105 -- insecure default
         finally:
             pass
 
@@ -220,9 +228,9 @@ class TestDefaultSecretsSecurityC:
             secret = cfg.JWT_SECRET_KEY
 
             # Must not be the insecure literal
-            assert (
-                secret != "change-in-production-min-32-chars"
-            ), "ProductionConfig JWT_SECRET_KEY is hardcoded insecure literal"
+            assert secret != "change-in-production-min-32-chars", (  # noqa: S105 -- insecure
+                "ProductionConfig JWT_SECRET_KEY is hardcoded insecure literal"
+            )
         finally:
             pass
 
@@ -234,8 +242,8 @@ class TestDefaultSecretsSecurityC:
         cfg = TestingConfig()
 
         # Testing can have deterministic defaults, but not the "change-in-production" literal
-        assert cfg.WEBHOOK_SECRET != "change-in-production"
-        assert cfg.JWT_SECRET_KEY != "change-in-production-min-32-chars"
+        assert cfg.WEBHOOK_SECRET != "change-in-production"  # noqa: S105 -- insecure default
+        assert cfg.JWT_SECRET_KEY != "change-in-production-min-32-chars"  # noqa: S105 -- insecure
 
     def test_webhook_secret_empty_rejects_in_handler(self):
         """Webhook signature verification rejects when WEBHOOK_SECRET is empty."""
@@ -252,8 +260,9 @@ class TestDefaultSecretsSecurityC:
     def test_seeded_admin_key_org_id_matches_user_org_id(self):
         """Seeded admin virtual key organization_id matches seeded admin user organization_id."""
         # regression: security review 2026-07-26 — cross-file invariant
-        # The seeded admin key's organization_id should equal the seeded admin user's organization_id
-        os.environ["ADMIN_INITIAL_PASSWORD"] = "test123"
+        # The seeded admin key's organization_id should equal the seeded admin
+        # user's organization_id
+        os.environ["ADMIN_INITIAL_PASSWORD"] = "test123"  # noqa: S105 -- fixed test credential
 
         try:
             from services.management.app.extensions import init_default_data
@@ -274,7 +283,9 @@ class TestDefaultSecretsSecurityC:
             # Set up mocks
             mock_db.commit = MagicMock()
             mock_db.return_value = MagicMock()
-            mock_db.return_value.select = MagicMock(return_value=MagicMock(first=MagicMock(return_value=None)))
+            mock_db.return_value.select = MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=None))
+            )
 
             mock_db.organizations = MagicMock()
             org_id = 1
@@ -290,13 +301,15 @@ class TestDefaultSecretsSecurityC:
             # In the actual code, admin user org_id and admin key org_id must match
             try:
                 init_default_data(mock_db)
-            except Exception:
+            except Exception:  # noqa: S110 -- DB mocking may fail, only insert structure matters
                 pass
 
             # Verify both user and key were created
             if inserted_users and inserted_keys:
                 user_org = inserted_users[0].get("organization_id")
                 key_org = inserted_keys[0].get("organization_id")
-                assert user_org == key_org, f"Admin key org_id {key_org} does not match admin user org_id {user_org}"
+                assert user_org == key_org, (
+                    f"Admin key org_id {key_org} does not match admin user org_id {user_org}"
+                )
         finally:
             os.environ.pop("ADMIN_INITIAL_PASSWORD", None)

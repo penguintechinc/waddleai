@@ -63,16 +63,19 @@ def _mock_usage_row(input_tokens: int, output_tokens: int) -> MagicMock:
 
 @pytest.fixture
 def mock_db() -> MagicMock:
+    """Stand in for the DAL so UsageTracker tests never touch a real database."""
     return _mock_db()
 
 
 @pytest.fixture
 def tracker(mock_db: MagicMock) -> UsageTracker:
+    """Build a UsageTracker wired to the mock DB fixture."""
     return UsageTracker(mock_db)
 
 
 @pytest.fixture
 def sample_report() -> UsageReport:
+    """A representative UsageReport for exercising tracker methods without building one per test."""
     return UsageReport(
         user_id="1",
         model="llama3.1:8b",

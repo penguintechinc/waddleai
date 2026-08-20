@@ -1,5 +1,4 @@
-"""
-DateTime validators - PyDAL-style validators for date/time inputs.
+"""DateTime validators - PyDAL-style validators for date/time inputs.
 
 Provides:
 - IsDate: Validates date strings
@@ -16,14 +15,13 @@ from typing import Union
 from py_libs.validation.base import ValidationResult, Validator
 
 # Type for date/time inputs
-DateInput = Union[str, date, datetime]
-TimeInput = Union[str, time, datetime]
-DateTimeInput = Union[str, datetime]
+DateInput = Union[str, date, datetime]  # noqa: UP007 -- runtime Union object, switching to `|` changes the produced type, out of scope for this pass
+TimeInput = Union[str, time, datetime]  # noqa: UP007 -- runtime Union object, switching to `|` changes the produced type, out of scope for this pass
+DateTimeInput = Union[str, datetime]  # noqa: UP007 -- runtime Union object, switching to `|` changes the produced type, out of scope for this pass
 
 
 class IsDate(Validator[DateInput, date]):
-    """
-    Validates that a value is or can be parsed as a date.
+    """Validates that a value is or can be parsed as a date.
 
     Args:
         format: Expected date format (strptime format string)
@@ -36,15 +34,20 @@ class IsDate(Validator[DateInput, date]):
 
         validator = IsDate(format="%d/%m/%Y")
         result = validator("15/01/2024")  # Valid
+
     """
 
     def __init__(
-        self, format: str = "%Y-%m-%d", error_message: str | None = None
+        self,
+        format: str = "%Y-%m-%d",  # noqa: A002 -- renaming shadows the class's public `format` attribute/kwarg, a signature change out of scope for this pass
+        error_message: str | None = None,
     ) -> None:
+        """Store the strptime *format* to parse against and optional custom *error_message*."""
         self.format = format
         self.error_message = error_message
 
     def validate(self, value: DateInput) -> ValidationResult[date]:
+        """Coerce *value* to a :class:`date`, parsing strings with ``self.format``."""
         if isinstance(value, datetime):
             return ValidationResult.success(value.date())
 
@@ -69,8 +72,7 @@ class IsDate(Validator[DateInput, date]):
 
 
 class IsDateTime(Validator[DateTimeInput, datetime]):
-    """
-    Validates that a value is or can be parsed as a datetime.
+    """Validates that a value is or can be parsed as a datetime.
 
     Args:
         format: Expected datetime format (strptime format string)
@@ -83,17 +85,20 @@ class IsDateTime(Validator[DateTimeInput, datetime]):
 
         validator = IsDateTime(format="%Y-%m-%d %H:%M")
         result = validator("2024-01-15 14:30")     # Valid
+
     """
 
     def __init__(
         self,
-        format: str = "%Y-%m-%dT%H:%M:%S",
+        format: str = "%Y-%m-%dT%H:%M:%S",  # noqa: A002 -- renaming shadows the class's public `format` attribute/kwarg, a signature change out of scope for this pass
         error_message: str | None = None,
     ) -> None:
+        """Store the strptime *format* to parse against and optional custom *error_message*."""
         self.format = format
         self.error_message = error_message
 
     def validate(self, value: DateTimeInput) -> ValidationResult[datetime]:
+        """Coerce *value* to a :class:`datetime`, parsing strings with ``self.format``."""
         if isinstance(value, datetime):
             return ValidationResult.success(value)
 
@@ -115,8 +120,7 @@ class IsDateTime(Validator[DateTimeInput, datetime]):
 
 
 class IsTime(Validator[TimeInput, time]):
-    """
-    Validates that a value is or can be parsed as a time.
+    """Validates that a value is or can be parsed as a time.
 
     Args:
         format: Expected time format (strptime format string)
@@ -129,15 +133,20 @@ class IsTime(Validator[TimeInput, time]):
 
         validator = IsTime(format="%H:%M")
         result = validator("14:30")     # Valid
+
     """
 
     def __init__(
-        self, format: str = "%H:%M:%S", error_message: str | None = None
+        self,
+        format: str = "%H:%M:%S",  # noqa: A002 -- renaming shadows the class's public `format` attribute/kwarg, a signature change out of scope for this pass
+        error_message: str | None = None,
     ) -> None:
+        """Store the strptime *format* to parse against and optional custom *error_message*."""
         self.format = format
         self.error_message = error_message
 
     def validate(self, value: TimeInput) -> ValidationResult[time]:
+        """Coerce *value* to a :class:`time`, parsing strings with ``self.format``."""
         if isinstance(value, datetime):
             return ValidationResult.success(value.time())
 
@@ -162,8 +171,7 @@ class IsTime(Validator[TimeInput, time]):
 
 
 class IsDateInRange(Validator[DateInput, date]):
-    """
-    Validates that a date is within a specified range.
+    """Validates that a date is within a specified range.
 
     Args:
         min_date: Minimum date (inclusive), or None for no minimum
@@ -179,21 +187,24 @@ class IsDateInRange(Validator[DateInput, date]):
         )
         result = validator("2024-06-15")  # Valid
         result = validator("2023-12-31")  # Invalid (before min)
+
     """
 
     def __init__(
         self,
         min_date: date | None = None,
         max_date: date | None = None,
-        format: str = "%Y-%m-%d",
+        format: str = "%Y-%m-%d",  # noqa: A002 -- renaming shadows the class's public `format` attribute/kwarg, a signature change out of scope for this pass
         error_message: str | None = None,
     ) -> None:
+        """Store the inclusive *min_date*/*max_date* bounds and parse *format*."""
         self.min_date = min_date
         self.max_date = max_date
         self.format = format
         self.error_message = error_message
 
     def validate(self, value: DateInput) -> ValidationResult[date]:
+        """Parse *value* to a date via :class:`IsDate` and check it falls within range."""
         # First parse the date
         date_validator = IsDate(format=self.format)
         result = date_validator.validate(value)
@@ -201,7 +212,7 @@ class IsDateInRange(Validator[DateInput, date]):
             return ValidationResult.failure(result.error or "Invalid date")
 
         date_value = result.value
-        assert date_value is not None  # Type narrowing
+        assert date_value is not None  # noqa: S101 -- type-narrowing only; IsDate.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
 
         # Check range
         if self.min_date is not None and date_value < self.min_date:

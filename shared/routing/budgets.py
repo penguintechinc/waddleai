@@ -57,6 +57,7 @@ def compute_pressure(
 
     Returns:
         BudgetPressure reflecting the binding (tightest) budget type.
+
     """
     if not enabled:
         return BudgetPressure()

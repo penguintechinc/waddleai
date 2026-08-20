@@ -60,6 +60,7 @@ class KnowledgeRetriever:
                 sources via their individual §9 feature flags before
                 reaching here).
             top_k: Maximum blocks to return.
+
         """
         active_names = [name for name in (sources or self.sources) if name in self.sources]
         per_source = await asyncio.gather(
