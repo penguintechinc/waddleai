@@ -54,8 +54,8 @@ The extension enables developers to:
 ### Option 2: Manual Installation (Development)
 1. Clone the repository:
    ```bash
-   git clone https://github.com/waddleai/vscode-extension.git
-   cd vscode-extension/waddleai-copilot
+   git clone https://github.com/penguintechinc/waddleai.git
+   cd waddleai/vscode-extension/waddleai-copilot
    ```
 
 2. Install dependencies:
@@ -91,7 +91,7 @@ The extension enables developers to:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `waddleai.apiEndpoint` | `http://localhost:8000` | WaddleAI proxy server URL |
+| `waddleai.apiEndpoint` | `http://localhost:8000` | WaddleAI proxy server URL — the extension's built-in default (`8000`) does not match the proxy's actual default port (`8080`); set this explicitly |
 | `waddleai.apiKey` | `""` | Your WaddleAI API key |
 | `waddleai.defaultModel` | `"gpt-4"` | Default model for chat completions |
 | `waddleai.enableMemory` | `true` | Enable conversation memory |
@@ -167,7 +167,7 @@ The extension automatically provides rich context to improve responses:
 - **Project structure** - File organization and patterns
 - **Currently open files** - Files you're working with
 
-### File Context  
+### File Context
 - **Active file path** - Current file being edited
 - **Programming language** - Enables language-specific suggestions
 - **Selected code** - Specific code segments you're asking about
@@ -236,7 +236,7 @@ The extension provides comprehensive error handling with actionable solutions:
 - **Solution**: Button to open "WaddleAI: Set API Key" command
 - **Cause**: Invalid or expired API key
 
-### Connection Errors  
+### Connection Errors
 **Error**: "WaddleAI service unavailable. Please try again later."
 - **Solution**: Check WaddleAI proxy server status
 - **Cause**: Network issues or server downtime
@@ -280,7 +280,7 @@ The extension provides comprehensive error handling with actionable solutions:
 
 #### Enable Debug Logging
 1. Open VS Code Settings
-2. Search for "Log Level"  
+2. Search for "Log Level"
 3. Set to "Debug" for detailed logging
 4. Check Output panel → "WaddleAI" channel
 
@@ -303,8 +303,8 @@ type %APPDATA%\Code\logs\*\exthost*\output_logging_*\1-WaddleAI.log
 
 ### Building from Source
 ```bash
-git clone https://github.com/waddleai/vscode-extension.git
-cd vscode-extension/waddleai-copilot
+git clone https://github.com/penguintechinc/waddleai.git
+cd waddleai/vscode-extension/waddleai-copilot
 npm install
 npm run compile
 npm run package  # Requires Node.js 20+
@@ -322,7 +322,7 @@ npm run typecheck
 waddleai-copilot/
 ├── src/
 │   ├── extension.ts          # Main extension entry point
-│   ├── chatParticipant.ts   # Chat participant implementation  
+│   ├── chatParticipant.ts   # Chat participant implementation
 │   ├── waddleaiClient.ts    # WaddleAI API client
 │   ├── authProvider.ts      # Authentication provider
 │   └── types/               # TypeScript type definitions
@@ -339,15 +339,15 @@ graph TD
     B --> C[WaddleAI Client]
     C --> D[WaddleAI Proxy Server]
     D --> E[Multiple LLM Providers]
-    
+
     B --> F[Context Builder]
     F --> G[Workspace Info]
-    F --> H[Active File]  
+    F --> H[Active File]
     F --> I[Selected Code]
-    
+
     B --> J[Authentication Provider]
     J --> K[VS Code Secret Storage]
-    
+
     C --> L[Usage Tracker]
     L --> M[Token Analytics]
 ```
@@ -397,7 +397,7 @@ const context = [
 
 ### Data Privacy
 - **Local Processing**: Context building happens locally in VS Code
-- **Secure Storage**: API keys stored in VS Code's encrypted credential store  
+- **Secure Storage**: API keys stored in VS Code's encrypted credential store
 - **No Data Logging**: Extension doesn't log sensitive code or conversations
 - **Configurable Security**: Security scanning can be enabled/disabled
 
@@ -455,7 +455,7 @@ The extension is open source. Contributions welcome:
 - **Enterprise Support**: Available for enterprise customers
 
 ### Resources
-- **Extension Source**: https://github.com/waddleai/vscode-extension
+- **Extension Source**: https://github.com/penguintechinc/waddleai
 - **WaddleAI Documentation**: https://docs.waddleai.com
 - **VS Code Extension API**: https://code.visualstudio.com/api
 - **OpenAI API Compatibility**: https://docs.openai.com/api
