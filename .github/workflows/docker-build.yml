@@ -8,6 +8,9 @@ on:
       - 'services/**'
       - 'shared/**'
       - 'images/**'
+      - 'openapi/**'
+      - '.spectral.yaml'
+      - 'scripts/generate_openapi_spec.py'
       - '.version'
       - '.github/workflows/docker-build.yml'
     tags: [ 'v*' ]
@@ -22,6 +25,9 @@ on:
       - 'services/**'
       - 'shared/**'
       - 'images/**'
+      - 'openapi/**'
+      - '.spectral.yaml'
+      - 'scripts/generate_openapi_spec.py'
       - '.version'
       - '.github/workflows/docker-build.yml'
 
@@ -143,8 +149,50 @@ jobs:
     - name: Build
       run: npm run build
 
+  # Regenerates openapi/v1.yaml from the quart-schema annotations and fails
+  # if the committed file has drifted, then lints it with spectral. No
+  # `|| true` anywhere in this job -- both the drift check and the lint step
+  # are real gates (see backend.md OpenAPI: "spec update mandatory in every
+  # API PR", and the repo's documented history of || true-masked checks in
+  # the `test` job's bandit step, which this job does not repeat).
+  openapi-lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      with:
+        python-version: '3.13'
+
+    - name: Install management service dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r services/management/requirements.txt
+
+    - name: Regenerate spec and fail on drift
+      run: |
+        python scripts/generate_openapi_spec.py --output /tmp/v1.yaml
+        diff -u openapi/v1.yaml /tmp/v1.yaml || {
+          echo "::error::openapi/v1.yaml is out of date -- run 'make generate-openapi' and commit the result.";
+          exit 1;
+        }
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+      with:
+        node-version: '24'
+
+    - name: Install spectral (exact-pinned)
+      run: npm install -g @stoplight/spectral-cli@6.16.3
+
+    - name: Lint OpenAPI spec
+      run: spectral lint openapi/v1.yaml --fail-severity=error
+
   build-platform:
-    needs: test
+    needs: [test, openapi-lint]
     runs-on: ubuntu-latest
     permissions:
       contents: read

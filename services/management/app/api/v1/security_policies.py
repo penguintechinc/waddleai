@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Any
 
 from quart import Blueprint, g, jsonify, request
+from quart_schema import operation_id
 
 from ... import extensions as _ext
 from ...extensions import db
@@ -274,6 +275,7 @@ async def update_policy(policy_id: int) -> tuple:
 
 
 @security_policies_bp.route("/<int:policy_id>", methods=["DELETE"])
+@operation_id("security_policy")
 @require_auth
 @require_role("admin")
 async def delete_policy(policy_id: int) -> tuple:

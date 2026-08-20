@@ -3,11 +3,13 @@ WaddleAI Management API v1 - Authentication Endpoints
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache, wraps
 
 from passlib.hash import bcrypt
 from quart import g, jsonify, request
+from quart_schema import security_scheme, tag, validate_request, validate_response
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
 from shared.auth.penguin_auth import verify_token as _aaa_verify_token
@@ -15,6 +17,114 @@ from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
 
 from ...extensions import db
 from . import api_v1_bp
+
+_BEARER_AUTH = [{"bearerAuth": []}]
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models.
+#
+# Request models deliberately make every field Optional (matching the dict
+# .get() semantics the handlers already used) rather than schema-required --
+# the handlers keep their own presence/message checks below, so switching to
+# quart-schema's automatic 400 here would silently change the error message
+# tests assert on. See openapi.py module docstring for the auth/full split
+# these feed into.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class LoginRequest:
+    """Credentials for POST /api/v1/auth/login."""
+
+    username: str | None = None
+    password: str | None = None
+
+
+@dataclass(slots=True)
+class LoginUser:
+    """User summary embedded in a successful login response."""
+
+    id: int
+    username: str
+    email: str
+    role: str
+    organization_id: int
+
+
+@dataclass(slots=True)
+class LoginResponse:
+    """Response body for a successful login."""
+
+    access_token: str
+    token_type: str
+    expires_in: int
+    user: LoginUser
+
+
+@dataclass(slots=True)
+class MessageResponse:
+    """Generic `{"message": str}` envelope used by several auth endpoints."""
+
+    message: str
+
+
+@dataclass(slots=True)
+class RefreshTokenResponse:
+    """Response body for a successful token refresh."""
+
+    access_token: str
+    token_type: str
+    expires_in: int
+
+
+@dataclass(slots=True)
+class VerifyUser:
+    """User summary embedded in the auth-verify response."""
+
+    id: int
+    username: str
+    role: str
+    organization_id: int
+
+
+@dataclass(slots=True)
+class VerifyResponse:
+    """Response body for GET /api/v1/auth/verify."""
+
+    user: VerifyUser
+
+
+@dataclass(slots=True)
+class CurrentUserOrganization:
+    """Organization summary embedded in the current-user response."""
+
+    id: int
+    name: str
+
+
+@dataclass(slots=True)
+class CurrentUserResponse:
+    """Response body for GET /api/v1/auth/me."""
+
+    id: int
+    username: str
+    email: str
+    role: str
+    organization: CurrentUserOrganization | None
+    token_quota_daily: int | None
+    token_quota_monthly: int | None
+    enabled: bool
+    created_at: str | None
+    last_login_at: str | None
+
+
+@dataclass(slots=True)
+class ChangePasswordRequest:
+    """Request body for POST /api/v1/auth/change-password."""
+
+    current_password: str | None = None
+    new_password: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -133,15 +243,13 @@ def require_role(*roles):
 
 
 @api_v1_bp.route("/auth/login", methods=["POST"])
-async def login():
+@tag(["Auth"])
+@validate_response(LoginResponse, 200)
+@validate_request(LoginRequest)
+async def login(data: LoginRequest):
     """User login endpoint"""
-    data = await request.get_json()
-
-    if not data:
-        return jsonify({"error": "Request body required"}), 400
-
-    username = data.get("username")
-    password = data.get("password")
+    username = data.username
+    password = data.password
 
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
@@ -177,33 +285,37 @@ async def login():
     # Create token
     token = create_token(user_id=user.id, username=user.username, role=user.role, organization_id=user.organization_id)
 
-    return jsonify(
-        {
-            "access_token": token,
-            "token_type": "bearer",
-            "expires_in": 86400,
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "role": user.role,
-                "organization_id": user.organization_id,
-            },
-        }
-    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": 86400,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "organization_id": user.organization_id,
+        },
+    }
 
 
 @api_v1_bp.route("/auth/logout", methods=["POST"])
+@tag(["Auth"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
+@validate_response(MessageResponse, 200)
 async def logout():
     """User logout endpoint"""
     # In a stateless JWT system, logout is handled client-side
     # Server can optionally blacklist the token in Redis
-    return jsonify({"message": "Logged out successfully"})
+    return {"message": "Logged out successfully"}
 
 
 @api_v1_bp.route("/auth/refresh", methods=["POST"])
+@tag(["Auth"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
+@validate_response(RefreshTokenResponse, 200)
 async def refresh_token():
     """Refresh JWT token"""
     user = g.user
@@ -213,26 +325,31 @@ async def refresh_token():
         user_id=user["user_id"], username=user["username"], role=user["role"], organization_id=user["organization_id"]
     )
 
-    return jsonify({"access_token": token, "token_type": "bearer", "expires_in": 86400})
+    return {"access_token": token, "token_type": "bearer", "expires_in": 86400}
 
 
 @api_v1_bp.route("/auth/verify", methods=["GET"])
+@tag(["Auth"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
+@validate_response(VerifyResponse, 200)
 async def verify_auth():
-    return jsonify(
-        {
-            "user": {
-                "id": g.user["user_id"],
-                "username": g.user["username"],
-                "role": g.user["role"],
-                "organization_id": g.user["organization_id"],
-            }
+    """Verify the caller's bearer token and echo back its identity claims."""
+    return {
+        "user": {
+            "id": g.user["user_id"],
+            "username": g.user["username"],
+            "role": g.user["role"],
+            "organization_id": g.user["organization_id"],
         }
-    )
+    }
 
 
 @api_v1_bp.route("/auth/me", methods=["GET"])
+@tag(["Auth"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
+@validate_response(CurrentUserResponse, 200)
 async def get_current_user():
     """Get current user info"""
     user_id = g.user["user_id"]
@@ -243,33 +360,30 @@ async def get_current_user():
 
     org = await asyncio.to_thread(lambda: db(db.organizations.id == user.organization_id).select().first())
 
-    return jsonify(
-        {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "role": user.role,
-            "organization": {"id": org.id, "name": org.name} if org else None,
-            "token_quota_daily": user.token_quota_daily,
-            "token_quota_monthly": user.token_quota_monthly,
-            "enabled": user.enabled,
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
-        }
-    )
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "organization": {"id": org.id, "name": org.name} if org else None,
+        "token_quota_daily": user.token_quota_daily,
+        "token_quota_monthly": user.token_quota_monthly,
+        "enabled": user.enabled,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+    }
 
 
 @api_v1_bp.route("/auth/change-password", methods=["POST"])
+@tag(["Auth"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-async def change_password():
+@validate_response(MessageResponse, 200)
+@validate_request(ChangePasswordRequest)
+async def change_password(data: ChangePasswordRequest):
     """Change user password"""
-    data = await request.get_json()
-
-    if not data:
-        return jsonify({"error": "Request body required"}), 400
-
-    current_password = data.get("current_password")
-    new_password = data.get("new_password")
+    current_password = data.current_password
+    new_password = data.new_password
 
     if not current_password or not new_password:
         return jsonify({"error": "Current password and new password required"}), 400
@@ -294,4 +408,4 @@ async def change_password():
 
     await asyncio.to_thread(_update_password)
 
-    return jsonify({"message": "Password changed successfully"})
+    return {"message": "Password changed successfully"}
