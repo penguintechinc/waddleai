@@ -1,19 +1,18 @@
-"""
-Role-Based Access Control (RBAC) System
-Handles authentication and authorization for WaddleAI
+"""Role-Based Access Control (RBAC) system.
+
+Handles authentication and authorization for WaddleAI.
 """
 
 import functools
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Set
 
 from passlib.hash import bcrypt
 
 
 class Role(Enum):
-    """User roles with hierarchical permissions"""
+    """User roles with hierarchical permissions."""
 
     ADMIN = "admin"
     RESOURCE_MANAGER = "resource_manager"
@@ -22,7 +21,7 @@ class Role(Enum):
 
 
 class Permission(Enum):
-    """System permissions"""
+    """System permissions."""
 
     # System administration
     SYSTEM_CONFIG = "system:config"
@@ -68,18 +67,63 @@ class Permission(Enum):
     # Memory (org-scoped shared memory moderation)
     MEMORY_MODERATE = "memory:moderate"
 
+    # ------------------------------------------------------------------
+    # Route-scoped permissions (OIDC scope migration, feature/oidc-scope-authz)
+    #
+    # Each of these corresponds 1:1 to a former `require_role(...)` call site
+    # in services/management/app/api/v1/*.py. They were minted as new,
+    # dedicated scopes -- rather than reusing a pre-existing Permission whose
+    # role membership didn't exactly match the route's former role list --
+    # so the migration cannot silently widen access. The authoritative,
+    # enforced route -> scope mapping (and the "admin+resource_manager" vs
+    # "admin only" tier split) lives in
+    # tests/unit/management/test_scope_authz.py, enumerated live from the
+    # blueprint rather than hand-documented so it can't drift from reality.
+    # ------------------------------------------------------------------
+
+    # "Admin + resource_manager" tier (former require_role("admin", "resource_manager"))
+    CACHE_CONFIG_WRITE = "cache_config:write"
+    HOOK_RULE_ADMIN = "hook_rule:admin"
+    HOOK_METRICS_READ = "hook_metrics:read"
+    KNOWLEDGE_WRITE = "knowledge:write"
+    MODEL_ALIAS_WRITE = "model_alias:write"
+    QUOTA_LIST = "quota:list"
+    ROUTING_ASSIGNMENT_WRITE = "routing_assignment:write"
+    ROUTING_POLICY_WRITE = "routing_policy:write"
+    ROUTING_RULE_WRITE = "routing_rule:write"
+    SECURITY_BYPASS_GRANT_WRITE = "security_bypass_grant:write"
+    USAGE_READ_BY_USER = "usage:read_by_user"
+    USER_MANAGE = "user:manage"
+
+    # "Admin only" tier (former require_role("admin"))
+    CILIUM_ADMIN = "cilium:admin"
+    FLEET_ADMIN = "fleet:admin"
+    INTEGRATION_ADMIN = "integration:admin"
+    LLAMACPP_ADMIN = "llamacpp:admin"
+    MEMORY_CONFIG_ADMIN = "memory_config:admin"
+    MEMORY_SCOPING_ADMIN = "memory_scoping:admin"
+    OLLAMA_ADMIN = "ollama:admin"
+    OLLAMA_MODEL_ADMIN = "ollama_model:admin"
+    ORG_ADMIN_UPDATE = "org:admin_update"
+    PROVIDER_ADMIN = "provider:admin"
+    QUOTA_ORG_UPDATE = "quota:org_update"
+    ROUTING_ASSIGNMENT_ADMIN = "routing_assignment:admin"
+    ROUTING_DRY_RUN_ADMIN = "routing_dry_run:admin"
+    ROUTING_POLICY_DELETE = "routing_policy:delete"
+    SECURITY_POLICY_ADMIN = "security_policy:admin"
+
 
 @dataclass
 class UserContext:
-    """User context for authorization"""
+    """User context for authorization."""
 
     user_id: int
     username: str
     role: Role
     organization_id: int
-    managed_orgs: List[int]
-    permissions: Set[Permission]
-    api_key_id: Optional[int] = None
+    managed_orgs: list[int]
+    permissions: set[Permission]
+    api_key_id: int | None = None
 
 
 # Role-based permission mapping
@@ -112,6 +156,35 @@ ROLE_PERMISSIONS = {
         Permission.PROXY_USE,
         Permission.PROXY_ROUTE,
         Permission.MEMORY_MODERATE,
+        # Route-scoped permissions (former require_role("admin") / ("admin", "resource_manager"))
+        # -- admin holds every one of these, both tiers.
+        Permission.CACHE_CONFIG_WRITE,
+        Permission.HOOK_RULE_ADMIN,
+        Permission.HOOK_METRICS_READ,
+        Permission.KNOWLEDGE_WRITE,
+        Permission.MODEL_ALIAS_WRITE,
+        Permission.QUOTA_LIST,
+        Permission.ROUTING_ASSIGNMENT_WRITE,
+        Permission.ROUTING_POLICY_WRITE,
+        Permission.ROUTING_RULE_WRITE,
+        Permission.SECURITY_BYPASS_GRANT_WRITE,
+        Permission.USAGE_READ_BY_USER,
+        Permission.USER_MANAGE,
+        Permission.CILIUM_ADMIN,
+        Permission.FLEET_ADMIN,
+        Permission.INTEGRATION_ADMIN,
+        Permission.LLAMACPP_ADMIN,
+        Permission.MEMORY_CONFIG_ADMIN,
+        Permission.MEMORY_SCOPING_ADMIN,
+        Permission.OLLAMA_ADMIN,
+        Permission.OLLAMA_MODEL_ADMIN,
+        Permission.ORG_ADMIN_UPDATE,
+        Permission.PROVIDER_ADMIN,
+        Permission.QUOTA_ORG_UPDATE,
+        Permission.ROUTING_ASSIGNMENT_ADMIN,
+        Permission.ROUTING_DRY_RUN_ADMIN,
+        Permission.ROUTING_POLICY_DELETE,
+        Permission.SECURITY_POLICY_ADMIN,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,
@@ -128,6 +201,20 @@ ROLE_PERMISSIONS = {
         Permission.ANALYTICS_READ,
         Permission.PROXY_USE,
         Permission.MEMORY_MODERATE,
+        # Route-scoped permissions -- resource_manager tier only (former
+        # require_role("admin", "resource_manager") call sites).
+        Permission.CACHE_CONFIG_WRITE,
+        Permission.HOOK_RULE_ADMIN,
+        Permission.HOOK_METRICS_READ,
+        Permission.KNOWLEDGE_WRITE,
+        Permission.MODEL_ALIAS_WRITE,
+        Permission.QUOTA_LIST,
+        Permission.ROUTING_ASSIGNMENT_WRITE,
+        Permission.ROUTING_POLICY_WRITE,
+        Permission.ROUTING_RULE_WRITE,
+        Permission.SECURITY_BYPASS_GRANT_WRITE,
+        Permission.USAGE_READ_BY_USER,
+        Permission.USER_MANAGE,
     },
     Role.REPORTER: {
         Permission.SYSTEM_HEALTH,
@@ -150,25 +237,26 @@ ROLE_PERMISSIONS = {
 
 
 class AuthenticationError(Exception):
-    """Authentication failed"""
+    """Authentication failed."""
 
     pass
 
 
 class AuthorizationError(Exception):
-    """Authorization failed"""
+    """Authorization failed."""
 
     pass
 
 
 class RBACManager:
-    """Role-Based Access Control Manager"""
+    """Role-Based Access Control Manager."""
 
     def __init__(self, db):
+        """Bind the manager to a database handle used for all lookups."""
         self.db = db
 
     def authenticate_user(self, username: str, password: str) -> UserContext:
-        """Authenticate user with username/password"""
+        """Authenticate user with username/password."""
         user = (
             self.db((self.db.users.username == username) & (self.db.users.enabled == True))  # noqa: E712
             .select()
@@ -184,17 +272,17 @@ class RBACManager:
         return self._build_user_context(user)
 
     def authenticate_api_key(self, api_key: str) -> UserContext:
-        """Authenticate user with API key"""
+        """Authenticate user with API key."""
         # Extract key ID from API key (format: wa-{key_id}-{secret})
         try:
             parts = api_key.split("-")
             if len(parts) < 3 or parts[0] != "wa":
                 raise AuthenticationError("Invalid API key format")
         except Exception:
-            raise AuthenticationError("Invalid API key format")
+            raise AuthenticationError("Invalid API key format") from None
 
         # Find API key by checking hash
-        api_keys = self.db((self.db.api_keys.enabled == True)).select()  # noqa: E712
+        api_keys = self.db(self.db.api_keys.enabled == True).select()  # noqa: E712
 
         for key_record in api_keys:
             if bcrypt.verify(api_key, key_record.key_hash):
@@ -207,9 +295,7 @@ class RBACManager:
                 # into a generic 401 "API key verification failed" -- so
                 # every wa- API-key auth (x-api-key header, raw key, or
                 # Bearer-wrapped key) failed after a *correct* bcrypt match.
-                self.db(self.db.api_keys.id == key_record.id).update(
-                    last_used=datetime.utcnow()
-                )
+                self.db(self.db.api_keys.id == key_record.id).update(last_used=datetime.utcnow())
 
                 # Get user
                 user = self.db(self.db.users.id == key_record.user_id).select().first()
@@ -223,7 +309,7 @@ class RBACManager:
         raise AuthenticationError("Invalid API key")
 
     def _build_user_context(self, user) -> UserContext:
-        """Build user context from database record"""
+        """Build user context from database record."""
         role = Role(user.role)
         permissions = ROLE_PERMISSIONS.get(role, set())
 
@@ -247,14 +333,16 @@ class RBACManager:
         self,
         user_context: UserContext,
         permission: Permission,
-        resource_org_id: Optional[int] = None,
-        resource_user_id: Optional[int] = None,
+        resource_org_id: int | None = None,
+        resource_user_id: int | None = None,
     ) -> bool:
-        """Check if user has permission for specific resource"""
-
+        """Check if user has permission for specific resource."""
         # Check base permission — permissions may be stored as strings (e.g. from JWT)
         perm_value = permission.value if isinstance(permission, Permission) else permission
-        if perm_value not in user_context.permissions and permission not in user_context.permissions:
+        if (
+            perm_value not in user_context.permissions
+            and permission not in user_context.permissions
+        ):
             return False
 
         # Admin has access to everything
@@ -287,8 +375,8 @@ class RBACManager:
 
         return True
 
-    def require_permission(self, permission: Permission, resource_org_id: Optional[int] = None):
-        """Decorator to require specific permission"""
+    def require_permission(self, permission: Permission, resource_org_id: int | None = None):
+        """Decorator to require specific permission."""
 
         def decorator(func):
             @functools.wraps(func)
@@ -311,10 +399,10 @@ class RBACManager:
         self,
         user_context: UserContext,
         name: str,
-        permissions: Dict[str, bool] = None,
-        expires_days: Optional[int] = None,
+        permissions: dict[str, bool] = None,
+        expires_days: int | None = None,
     ) -> tuple[str, str]:
-        """Create new API key for user"""
+        """Create new API key for user."""
         import secrets
 
         # Generate API key
@@ -352,10 +440,10 @@ class RBACManager:
 
 
 def hash_password(password: str) -> str:
-    """Hash password using bcrypt"""
+    """Hash password using bcrypt."""
     return bcrypt.hash(password)
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify password against hash"""
+    """Verify password against hash."""
     return bcrypt.verify(password, hashed)

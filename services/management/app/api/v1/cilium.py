@@ -13,6 +13,8 @@ import logging
 
 from quart import jsonify
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from ...services.cilium_policy import (
     CiliumPolicyReconciler,
@@ -21,14 +23,14 @@ from ...services.cilium_policy import (
     is_native_rate_limit_enabled,
 )
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
 
 @api_v1_bp.route("/cilium/status", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.CILIUM_ADMIN)
 async def cilium_status():
     """Report Cilium CRD capabilities + the most recent reconcile outcome (admin only).
 
@@ -64,7 +66,7 @@ async def cilium_status():
 
 @api_v1_bp.route("/cilium/reconcile", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.CILIUM_ADMIN)
 async def cilium_reconcile():
     """Trigger an on-demand reconcile and return the resulting status (admin only)."""
     reconciler = CiliumPolicyReconciler(db)

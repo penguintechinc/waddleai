@@ -1,6 +1,4 @@
-"""
-WaddleAI Management API v1 - AI Provider Management Endpoints
-"""
+"""WaddleAI Management API v1 - AI Provider Management Endpoints."""
 
 import asyncio
 from dataclasses import dataclass
@@ -9,9 +7,11 @@ from datetime import datetime
 from quart import current_app, jsonify
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 _BEARER_AUTH = [{"bearerAuth": []}]
 
@@ -258,11 +258,20 @@ class DeleteProviderCredentialResponse:
     data: DeletedCredentialData
     meta: CredentialActionMeta
 
+
 # Supported provider types
 SUPPORTED_PROVIDERS = {
     "openai": {
         "name": "OpenAI / ChatGPT",
-        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1-preview", "o1-mini"],
+        "models": [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-4",
+            "gpt-3.5-turbo",
+            "o1-preview",
+            "o1-mini",
+        ],
         "requires_api_key": True,
         "default_endpoint": "https://api.openai.com/v1",
     },
@@ -321,7 +330,7 @@ SUPPORTED_PROVIDERS = {
 @require_auth
 @validate_response(ProviderTypesResponse, 200)
 async def list_provider_types():
-    """List supported provider types"""
+    """List supported provider types."""
     result = []
     for provider_type, info in SUPPORTED_PROVIDERS.items():
         # Check if enterprise provider is enabled
@@ -329,7 +338,9 @@ async def list_provider_types():
             continue
         if provider_type == "bedrock" and not current_app.config.get("ENABLE_BEDROCK", True):
             continue
-        if provider_type == "azure_openai" and not current_app.config.get("ENABLE_AZURE_OPENAI", True):
+        if provider_type == "azure_openai" and not current_app.config.get(
+            "ENABLE_AZURE_OPENAI", True
+        ):
             continue
         if provider_type == "cohere" and not current_app.config.get("ENABLE_COHERE", True):
             continue
@@ -351,10 +362,10 @@ async def list_provider_types():
 @tag(["Providers"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(ProviderListResponse, 200)
 async def list_providers():
-    """List all configured AI providers"""
+    """List all configured AI providers."""
 
     def _fetch():
         return db(db.ai_providers.id > 0).select()
@@ -385,10 +396,10 @@ async def list_providers():
 @tag(["Providers"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(ProviderDetailResponse, 200)
 async def get_provider(provider_id):
-    """Get provider details"""
+    """Get provider details."""
 
     def _fetch():
         return db(db.ai_providers.id == provider_id).select().first()
@@ -419,11 +430,11 @@ async def get_provider(provider_id):
 @tag(["Providers"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(CreateProviderResponse, 201)
 @validate_request(CreateProviderRequest)
 async def create_provider(data: CreateProviderRequest):
-    """Create a new AI provider"""
+    """Create a new AI provider."""
     for field_name, value in (
         ("name", data.name),
         ("provider_type", data.provider_type),
@@ -461,7 +472,9 @@ async def create_provider(data: CreateProviderRequest):
             priority=data.priority if data.priority is not None else 100,
             extra_config=data.extra_config if data.extra_config is not None else {},
             tls_config=data.tls_config if data.tls_config is not None else {},
-            ailb_sync_enabled=data.ailb_sync_enabled if data.ailb_sync_enabled is not None else True,
+            ailb_sync_enabled=data.ailb_sync_enabled
+            if data.ailb_sync_enabled is not None
+            else True,
             created_at=datetime.utcnow(),
         )
         db.commit()
@@ -482,11 +495,11 @@ async def create_provider(data: CreateProviderRequest):
 @tag(["Providers"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(MessageResponse, 200)
 @validate_request(UpdateProviderRequest)
 async def update_provider(provider_id, data: UpdateProviderRequest):
-    """Update provider configuration"""
+    """Update provider configuration."""
 
     def _update():
         provider = db(db.ai_providers.id == provider_id).select().first()
@@ -497,7 +510,11 @@ async def update_provider(provider_id, data: UpdateProviderRequest):
         update_fields = {}
 
         if data.name is not None:
-            existing = db((db.ai_providers.name == data.name) & (db.ai_providers.id != provider_id)).select().first()
+            existing = (
+                db((db.ai_providers.name == data.name) & (db.ai_providers.id != provider_id))
+                .select()
+                .first()
+            )
             if existing:
                 return "name_conflict"
             update_fields["name"] = data.name
@@ -552,10 +569,10 @@ async def update_provider(provider_id, data: UpdateProviderRequest):
 @tag(["Providers"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(MessageResponse, 200)
 async def delete_provider(provider_id):
-    """Delete provider"""
+    """Delete provider."""
 
     def _delete():
         provider = db(db.ai_providers.id == provider_id).select().first()
@@ -581,11 +598,13 @@ async def delete_provider(provider_id):
 @tag(["Providers"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(TestProviderResponse, 200)
 async def test_provider(provider_id):
-    """Test provider connectivity"""
-    provider = await asyncio.to_thread(lambda: db(db.ai_providers.id == provider_id).select().first())
+    """Test provider connectivity."""
+    provider = await asyncio.to_thread(
+        lambda: db(db.ai_providers.id == provider_id).select().first()
+    )
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
@@ -608,14 +627,18 @@ async def test_provider(provider_id):
 @require_auth
 @validate_response(ProviderModelsResponse, 200)
 async def get_provider_models(provider_id):
-    """Get available models for a provider"""
-    provider = await asyncio.to_thread(lambda: db(db.ai_providers.id == provider_id).select().first())
+    """Get available models for a provider."""
+    provider = await asyncio.to_thread(
+        lambda: db(db.ai_providers.id == provider_id).select().first()
+    )
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
 
     # Return configured models or default models for the provider type
-    models = provider.model_list or SUPPORTED_PROVIDERS.get(provider.provider_type, {}).get("models", [])
+    models = provider.model_list or SUPPORTED_PROVIDERS.get(provider.provider_type, {}).get(
+        "models", []
+    )
 
     return {"provider_id": provider_id, "provider_type": provider.provider_type, "models": models}
 
@@ -658,7 +681,7 @@ def _credential_to_dict(cred) -> dict:
 @tag(["Providers", "Credentials"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(ListProviderCredentialsResponse, 200)
 async def list_provider_credentials(provider_id: int):
     """List all credentials for a provider. API keys are never returned in plaintext."""
@@ -667,7 +690,9 @@ async def list_provider_credentials(provider_id: int):
         provider = db(db.ai_providers.id == provider_id).select().first()
         if not provider:
             return None
-        return db(db.provider_credentials.provider_id == provider_id).select(orderby=db.provider_credentials.id)
+        return db(db.provider_credentials.provider_id == provider_id).select(
+            orderby=db.provider_credentials.id
+        )
 
     creds = await asyncio.to_thread(_fetch)
 
@@ -689,7 +714,7 @@ async def list_provider_credentials(provider_id: int):
 @tag(["Providers", "Credentials"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(ProviderCredentialResponse, 201)
 @validate_request(CreateProviderCredentialRequest)
 async def create_provider_credential(provider_id: int, data: CreateProviderCredentialRequest):
@@ -713,14 +738,19 @@ async def create_provider_credential(provider_id: int, data: CreateProviderCrede
     if not api_key_plain:
         provider_info = SUPPORTED_PROVIDERS.get(provider.provider_type, {})
         if provider_info.get("requires_api_key", True):
-            return jsonify({"status": "error", "error": "api_key is required for this provider type"}), 400
+            return jsonify(
+                {"status": "error", "error": "api_key is required for this provider type"}
+            ), 400
 
     encrypted_key = encrypt_credential(api_key_plain) if api_key_plain else None
 
     def _create():
         # Check label uniqueness within this provider
         existing = (
-            db((db.provider_credentials.provider_id == provider_id) & (db.provider_credentials.label == label))
+            db(
+                (db.provider_credentials.provider_id == provider_id)
+                & (db.provider_credentials.label == label)
+            )
             .select()
             .first()
         )
@@ -751,11 +781,18 @@ async def create_provider_credential(provider_id: int, data: CreateProviderCrede
 
     if status == "label_conflict":
         return (
-            jsonify({"status": "error", "error": f"Credential with label '{label}' already exists for this provider"}),
+            jsonify(
+                {
+                    "status": "error",
+                    "error": f"Credential with label '{label}' already exists for this provider",
+                }
+            ),
             409,
         )
     if status == "invalid_weight":
-        return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
+        return jsonify(
+            {"status": "error", "error": "weight must be an integer between 1 and 10000"}
+        ), 400
 
     new_cred = payload
     return {
@@ -772,10 +809,12 @@ async def create_provider_credential(provider_id: int, data: CreateProviderCrede
 @tag(["Providers", "Credentials"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(ProviderCredentialResponse, 200)
 @validate_request(UpdateProviderCredentialRequest)
-async def update_provider_credential(provider_id: int, cred_id: int, data: UpdateProviderCredentialRequest):
+async def update_provider_credential(
+    provider_id: int, cred_id: int, data: UpdateProviderCredentialRequest
+):
     """Update label, weight, enabled, org_id, account_meta, or rotate the api_key."""
     from shared.security.credential_encryption import encrypt_credential
 
@@ -785,7 +824,10 @@ async def update_provider_credential(provider_id: int, cred_id: int, data: Updat
             return "provider_not_found"
 
         cred = (
-            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
+            db(
+                (db.provider_credentials.id == cred_id)
+                & (db.provider_credentials.provider_id == provider_id)
+            )
             .select()
             .first()
         )
@@ -808,12 +850,16 @@ async def update_provider_credential(provider_id: int, cred_id: int, data: Updat
     if data.weight is not None:
         weight = data.weight
         if not isinstance(weight, int) or weight < 1 or weight > 10000:
-            return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
+            return jsonify(
+                {"status": "error", "error": "weight must be an integer between 1 and 10000"}
+            ), 400
 
     if data.api_key is not None:
         new_key = data.api_key.strip()
         if not new_key:
-            return jsonify({"status": "error", "error": "api_key cannot be empty when provided"}), 400
+            return jsonify(
+                {"status": "error", "error": "api_key cannot be empty when provided"}
+            ), 400
         encrypted_new_key = encrypt_credential(new_key)
 
     def _update():
@@ -876,7 +922,7 @@ async def update_provider_credential(provider_id: int, cred_id: int, data: Updat
 @tag(["Providers", "Credentials"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
 @validate_response(DeleteProviderCredentialResponse, 200)
 async def delete_provider_credential(provider_id: int, cred_id: int):
     """Remove a credential from the pool. Requires at least one other credential to remain."""
@@ -887,7 +933,10 @@ async def delete_provider_credential(provider_id: int, cred_id: int):
             return "provider_not_found"
 
         cred = (
-            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
+            db(
+                (db.provider_credentials.id == cred_id)
+                & (db.provider_credentials.provider_id == provider_id)
+            )
             .select()
             .first()
         )

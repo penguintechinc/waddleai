@@ -1,6 +1,4 @@
-"""
-WaddleAI Management API v1 - Virtual Key Management Endpoints
-"""
+"""WaddleAI Management API v1 - Virtual Key Management Endpoints."""
 
 import asyncio
 import secrets
@@ -191,7 +189,7 @@ class KeyUsageResponse:
 @require_auth
 @validate_response(KeyListResponse, 200)
 async def list_keys():
-    """List virtual keys based on user role"""
+    """List virtual keys based on user role."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -237,7 +235,7 @@ async def list_keys():
 @require_auth
 @validate_response(KeyDetailResponse, 200)
 async def get_key(key_id):
-    """Get virtual key details"""
+    """Get virtual key details."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -261,8 +259,14 @@ async def get_key(key_id):
     month_start = today.replace(day=1)
 
     def _fetch_usage():
-        daily = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == today)).select().first()
-        monthly = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date >= month_start)).select()
+        daily = (
+            db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == today))
+            .select()
+            .first()
+        )
+        monthly = db(
+            (db.token_usage.virtual_key_id == key_id) & (db.token_usage.date >= month_start)
+        ).select()
         return daily, monthly
 
     daily_usage, monthly_usage = await asyncio.to_thread(_fetch_usage)
@@ -298,7 +302,7 @@ async def get_key(key_id):
 @validate_response(CreateKeyResponse, 201)
 @validate_request(CreateKeyRequest)
 async def create_key(data: CreateKeyRequest):
-    """Create a new virtual key"""
+    """Create a new virtual key."""
     if data.name is None:
         return jsonify({"error": "name is required"}), 400
 
@@ -322,6 +326,7 @@ async def create_key(data: CreateKeyRequest):
     # caller's. Creating a key for oneself needs no such lookup (the caller is
     # authenticated and clearly exists).
     if target_user_id != user_id:
+
         def _validate_target_user() -> tuple[object, int]:
             """Fetch target user and validate org membership + role hierarchy."""
             target = db(db.users.id == target_user_id).select().first()
@@ -388,7 +393,7 @@ async def create_key(data: CreateKeyRequest):
 @validate_response(MessageResponse, 200)
 @validate_request(UpdateKeyRequest)
 async def update_key(key_id, data: UpdateKeyRequest):
-    """Update virtual key"""
+    """Update virtual key."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -433,7 +438,9 @@ async def update_key(key_id, data: UpdateKeyRequest):
 
     if data.expires_at is not None:
         if data.expires_at:
-            update_fields["expires_at"] = datetime.fromisoformat(data.expires_at.replace("Z", "+00:00"))
+            update_fields["expires_at"] = datetime.fromisoformat(
+                data.expires_at.replace("Z", "+00:00")
+            )
         else:
             update_fields["expires_at"] = None
 
@@ -454,7 +461,7 @@ async def update_key(key_id, data: UpdateKeyRequest):
 @require_auth
 @validate_response(MessageResponse, 200)
 async def delete_key(key_id):
-    """Revoke/delete virtual key"""
+    """Revoke/delete virtual key."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -487,7 +494,7 @@ async def delete_key(key_id):
 @require_auth
 @validate_response(RotateKeyResponse, 200)
 async def rotate_key(key_id):
-    """Rotate key secret"""
+    """Rotate key secret."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -510,7 +517,9 @@ async def rotate_key(key_id):
     key_prefix = f"wa-{key_secret[:8]}..."
 
     def _rotate():
-        db(db.virtual_keys.id == key_id).update(key_hash=bcrypt.hash(new_api_key), key_prefix=key_prefix)
+        db(db.virtual_keys.id == key_id).update(
+            key_hash=bcrypt.hash(new_api_key), key_prefix=key_prefix
+        )
         db.commit()
 
     await asyncio.to_thread(_rotate)
@@ -529,7 +538,7 @@ async def rotate_key(key_id):
 @require_auth
 @validate_response(KeyUsageResponse, 200)
 async def get_key_usage(key_id):
-    """Get usage statistics for a key"""
+    """Get usage statistics for a key."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -556,9 +565,9 @@ async def get_key_usage(key_id):
     start_date = date.today() - timedelta(days=days)
 
     usage_records = await asyncio.to_thread(
-        lambda: db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date >= start_date)).select(
-            orderby=db.token_usage.date
-        )
+        lambda: db(
+            (db.token_usage.virtual_key_id == key_id) & (db.token_usage.date >= start_date)
+        ).select(orderby=db.token_usage.date)
     )
 
     daily_usage = []
@@ -583,6 +592,10 @@ async def get_key_usage(key_id):
         "key_id": key_id,
         "key_name": key.name,
         "period_days": days,
-        "totals": {"waddleai_tokens": total_tokens, "requests": total_requests, "cost_usd": total_cost},
+        "totals": {
+            "waddleai_tokens": total_tokens,
+            "requests": total_requests,
+            "cost_usd": total_cost,
+        },
         "daily_usage": daily_usage,
     }

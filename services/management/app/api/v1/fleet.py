@@ -28,6 +28,7 @@ from typing import Any
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
 from shared.fleet.base import BackendType, ManagementScope
 from shared.fleet.registry import build_backend
 from shared.security.credential_encryption import encrypt_credential
@@ -35,7 +36,7 @@ from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ def _get_org_scoped_backend(backend_id: int, org_id: int) -> tuple[Any, str]:
 
 @api_v1_bp.route("/fleet/backends", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.FLEET_ADMIN)
 async def list_fleet_backends():
     """List this org's registered inference fleet backends."""
     org_id = g.user.get("organization_id")
@@ -160,7 +161,7 @@ async def list_fleet_backends():
 
 @api_v1_bp.route("/fleet/backends", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.FLEET_ADMIN)
 async def create_fleet_backend():
     """Register a new inference fleet backend for this org.
 
@@ -258,7 +259,7 @@ async def create_fleet_backend():
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.FLEET_ADMIN)
 async def get_fleet_backend(backend_id: int):
     """Fetch one registered fleet backend -- 403 across orgs, 404 if it never existed."""
     org_id = g.user.get("organization_id")
@@ -282,7 +283,7 @@ async def get_fleet_backend(backend_id: int):
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.FLEET_ADMIN)
 async def update_fleet_backend(backend_id: int):
     """Update a registered fleet backend's mutable fields.
 
@@ -350,7 +351,7 @@ async def update_fleet_backend(backend_id: int):
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.FLEET_ADMIN)
 async def delete_fleet_backend(backend_id: int):
     """Delete a registered fleet backend (deployment rows keep their FK, set NULL)."""
     org_id = g.user.get("organization_id")
@@ -379,7 +380,7 @@ async def delete_fleet_backend(backend_id: int):
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>/health", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.FLEET_ADMIN)
 async def check_fleet_backend_health(backend_id: int):
     """Health-check a registered backend through the ``InferenceFleetBackend`` interface.
 

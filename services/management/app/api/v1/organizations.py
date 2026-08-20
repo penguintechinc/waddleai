@@ -5,10 +5,12 @@ from datetime import datetime
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from ...services.cilium_policy import CiliumPolicyReconciler
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 def _trigger_cilium_reconcile() -> None:
@@ -111,7 +113,7 @@ async def get_organization(org_id):
 
 @api_v1_bp.route("/organizations", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ORG_CREATE)
 async def create_organization():
     """Create a new organization (admin only)."""
     data = await request.get_json()
@@ -152,7 +154,7 @@ async def create_organization():
 
 @api_v1_bp.route("/organizations/<int:org_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ORG_ADMIN_UPDATE)
 async def update_organization(org_id):
     """Update organization (admin only)."""
     data = await request.get_json()
@@ -170,9 +172,11 @@ async def update_organization(org_id):
     if "name" in data:
         # Check name uniqueness
         existing = await asyncio.to_thread(
-            lambda: db((db.organizations.name == data["name"]) & (db.organizations.id != org_id))
-            .select()
-            .first()
+            lambda: (
+                db((db.organizations.name == data["name"]) & (db.organizations.id != org_id))
+                .select()
+                .first()
+            )
         )
         if existing:
             return jsonify({"error": "Organization name already exists"}), 409
@@ -207,7 +211,7 @@ async def update_organization(org_id):
 
 @api_v1_bp.route("/organizations/<int:org_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ORG_DELETE)
 async def delete_organization(org_id):
     """Delete organization (admin only)."""
     org = await asyncio.to_thread(lambda: db(db.organizations.id == org_id).select().first())

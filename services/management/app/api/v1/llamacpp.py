@@ -1,6 +1,4 @@
-"""
-WaddleAI Management API v1 - llama.cpp Deployment Management Endpoints
-"""
+"""WaddleAI Management API v1 - llama.cpp Deployment Management Endpoints."""
 
 import asyncio
 import logging
@@ -9,10 +7,12 @@ import re
 import requests
 from quart import jsonify, request
 
-from . import api_v1_bp
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from ...services.llamacpp_manager import LlamaCppManager
-from .auth import require_auth, require_role
+from . import api_v1_bp
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ def _deployment_to_dict(dep) -> dict:
 
 @api_v1_bp.route("/llamacpp/deployments", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def list_llamacpp_deployments():
     """List all llama.cpp deployments."""
     deployments = await asyncio.to_thread(lambda: db(db.llamacpp_deployments.id > 0).select())
@@ -85,7 +85,7 @@ async def list_llamacpp_deployments():
 
 @api_v1_bp.route("/llamacpp/deployments", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def create_llamacpp_deployment():
     """Create a new llama.cpp deployment."""
     data = (await request.get_json()) or {}
@@ -102,10 +102,14 @@ async def create_llamacpp_deployment():
     model_filename = data.get("model_filename", "").strip()
 
     if model_url and not _validate_model_url(model_url):
-        return jsonify({"error": "Invalid model_url: must be http/https URL without shell metacharacters"}), 400
+        return jsonify(
+            {"error": "Invalid model_url: must be http/https URL without shell metacharacters"}
+        ), 400
 
     if model_filename and not _validate_model_filename(model_filename):
-        return jsonify({"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}), 400
+        return jsonify(
+            {"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}
+        ), 400
 
     deployment_type = data.get("deployment_type", "kubernetes")
 
@@ -136,10 +140,12 @@ async def create_llamacpp_deployment():
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def get_llamacpp_deployment(deployment_id):
     """Get a specific llama.cpp deployment."""
-    dep = await asyncio.to_thread(lambda: db(db.llamacpp_deployments.id == deployment_id).select().first())
+    dep = await asyncio.to_thread(
+        lambda: db(db.llamacpp_deployments.id == deployment_id).select().first()
+    )
     if not dep:
         return jsonify({"error": "Deployment not found"}), 404
     return jsonify(_deployment_to_dict(dep)), 200
@@ -147,7 +153,7 @@ async def get_llamacpp_deployment(deployment_id):
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["PATCH"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def update_llamacpp_deployment(deployment_id):
     """Update a llama.cpp deployment (can only update stopped deployments)."""
 
@@ -167,20 +173,33 @@ async def update_llamacpp_deployment(deployment_id):
         return jsonify({"error": "Stop the deployment before modifying it"}), 409
 
     data = (await request.get_json(silent=True)) or {}
-    allowed = {"model_name", "model_url", "model_filename", "n_ctx", "n_gpu_layers",
-               "gpu_count", "k8s_namespace", "node_selector", "node_affinity"}
+    allowed = {
+        "model_name",
+        "model_url",
+        "model_filename",
+        "n_ctx",
+        "n_gpu_layers",
+        "gpu_count",
+        "k8s_namespace",
+        "node_selector",
+        "node_affinity",
+    }
     updates = {k: v for k, v in data.items() if k in allowed}
 
     # Vuln D fix: validate model_url and model_filename in PATCH too
     if "model_url" in updates:
         model_url = str(updates["model_url"]).strip()
         if model_url and not _validate_model_url(model_url):
-            return jsonify({"error": "Invalid model_url: must be http/https URL without shell metacharacters"}), 400
+            return jsonify(
+                {"error": "Invalid model_url: must be http/https URL without shell metacharacters"}
+            ), 400
 
     if "model_filename" in updates:
         model_filename = str(updates["model_filename"]).strip()
         if model_filename and not _validate_model_filename(model_filename):
-            return jsonify({"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}), 400
+            return jsonify(
+                {"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}
+            ), 400
 
     def _update():
         if updates:
@@ -195,7 +214,7 @@ async def update_llamacpp_deployment(deployment_id):
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def delete_llamacpp_deployment(deployment_id):
     """Delete a llama.cpp deployment."""
     force = request.args.get("force", "").lower() == "true"
@@ -231,7 +250,7 @@ async def delete_llamacpp_deployment(deployment_id):
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/deploy", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def deploy_llamacpp(deployment_id):
     """Deploy a llama.cpp deployment (create DaemonSet or register remote endpoint)."""
 
@@ -263,7 +282,7 @@ async def deploy_llamacpp(deployment_id):
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/remove", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def remove_llamacpp(deployment_id):
     """Remove a running llama.cpp deployment."""
 
@@ -296,7 +315,7 @@ async def remove_llamacpp(deployment_id):
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/health", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def check_llamacpp_health(deployment_id):
     """Check the health status of a llama.cpp deployment."""
 
@@ -331,7 +350,7 @@ async def check_llamacpp_health(deployment_id):
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/export/k8s", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.LLAMACPP_ADMIN)
 async def export_llamacpp_k8s(deployment_id):
     """Export Kubernetes manifest for a llama.cpp deployment."""
 

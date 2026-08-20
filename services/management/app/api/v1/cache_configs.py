@@ -13,11 +13,12 @@ from typing import Any
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
 from shared.cache.config import scope_cache_key
 
 from ...extensions import db, redis_client
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ async def get_cache_config(config_id: int) -> tuple:
 
 @api_v1_bp.route("/cache-configs", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.CACHE_CONFIG_WRITE)
 async def create_cache_config() -> tuple:
     """Create a new cache config row for a scope. 409 if the scope already has one."""
     data: dict[str, Any] | None = await request.get_json()
@@ -181,7 +182,7 @@ async def create_cache_config() -> tuple:
 
 @api_v1_bp.route("/cache-configs/<int:config_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.CACHE_CONFIG_WRITE)
 async def update_cache_config(config_id: int) -> tuple:
     """Update an existing cache config row."""
     data: dict[str, Any] | None = await request.get_json()
@@ -227,7 +228,7 @@ async def update_cache_config(config_id: int) -> tuple:
 
 @api_v1_bp.route("/cache-configs/<int:config_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.CACHE_CONFIG_WRITE)
 async def delete_cache_config(config_id: int) -> tuple:
     """Delete a cache config row (falls back to the next-broader scope)."""
     existing = await asyncio.to_thread(

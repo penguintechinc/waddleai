@@ -1,4 +1,4 @@
-"""WaddleAI Management API v1 - Webhook Signature Verification
+"""WaddleAI Management API v1 - Webhook Signature Verification.
 
 The AILB usage/health/batch ingest routes formerly hosted here were
 deleted alongside the rest of the MarchProxy AILB coupling (nothing writes

@@ -1,5 +1,4 @@
-"""
-WaddleAI Management API v1 - Ollama Model Assignment Endpoints
+"""WaddleAI Management API v1 - Ollama Model Assignment Endpoints.
 
 Endpoints for assigning models to specific Ollama nodes and managing
 model-specific routing.
@@ -10,17 +9,19 @@ from datetime import datetime
 
 from quart import current_app, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from ...services.provider_sync import ProviderSyncService
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/ollama/models", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def list_all_ollama_models():
-    """List all Ollama models across all deployments"""
+    """List all Ollama models across all deployments."""
 
     def _fetch():
         models = db(db.ollama_models.id > 0).select()
@@ -57,9 +58,9 @@ async def list_all_ollama_models():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def list_deployment_models(deployment_id):
-    """List models on a specific Ollama deployment"""
+    """List models on a specific Ollama deployment."""
 
     def _fetch():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -95,16 +96,20 @@ async def list_deployment_models(deployment_id):
         )
 
     return jsonify(
-        {"deployment_id": deployment_id, "deployment_name": deployment.name, "models": result, "total": len(result)}
+        {
+            "deployment_id": deployment_id,
+            "deployment_name": deployment.name,
+            "models": result,
+            "total": len(result),
+        }
     )
 
 
 @api_v1_bp.route("/ollama/models/assign", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def assign_model_to_deployment():
-    """
-    Assign a model to a specific Ollama deployment.
+    """Assign a model to a specific Ollama deployment.
 
     This creates a model-to-node mapping that will be used for
     intelligent routing via MarchProxy AILB.
@@ -199,10 +204,9 @@ async def assign_model_to_deployment():
 
 @api_v1_bp.route("/ollama/models/<int:model_id>/reassign", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def reassign_model(model_id):
-    """
-    Reassign a model to a different Ollama deployment.
+    """Reassign a model to a different Ollama deployment.
 
     This is useful for load balancing or moving models between nodes.
 
@@ -294,10 +298,9 @@ async def reassign_model(model_id):
 
 @api_v1_bp.route("/ollama/models/<int:model_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def unassign_model(model_id):
-    """
-    Remove a model assignment from a deployment.
+    """Remove a model assignment from a deployment.
 
     Query params:
     - remove_route: If true, also remove the AILB route (default: true)
@@ -329,15 +332,20 @@ async def unassign_model(model_id):
     if status == "not_found":
         return jsonify({"error": "Model not found"}), 404
 
-    return jsonify({"success": True, "message": "Model unassigned successfully", "deployment_id": deployment_id})
+    return jsonify(
+        {
+            "success": True,
+            "message": "Model unassigned successfully",
+            "deployment_id": deployment_id,
+        }
+    )
 
 
 @api_v1_bp.route("/ollama/models/<int:model_id>/sync", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def sync_model_route(model_id):
-    """
-    Manually trigger AILB route sync for a specific model.
+    """Manually trigger AILB route sync for a specific model.
 
     This creates or updates the model-specific route in MarchProxy AILB.
     """
@@ -367,17 +375,21 @@ async def sync_model_route(model_id):
         return jsonify({"error": "Model not found"}), 404
 
     if status == "ok":
-        return jsonify({"success": True, "message": "Model route synced successfully", "route_status": payload})
+        return jsonify(
+            {"success": True, "message": "Model route synced successfully", "route_status": payload}
+        )
 
     sync_result = payload
-    return jsonify({"success": False, "error": sync_result.error, "message": sync_result.message}), 500
+    return jsonify(
+        {"success": False, "error": sync_result.error, "message": sync_result.message}
+    ), 500
 
 
 @api_v1_bp.route("/ollama/models/<int:model_id>/route-status", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def get_model_route_status(model_id):
-    """Get AILB route sync status for a specific model"""
+    """Get AILB route sync status for a specific model."""
     ailb_client = current_app.extensions.get("ailb_client")
 
     def _fetch():
@@ -399,10 +411,9 @@ async def get_model_route_status(model_id):
 
 @api_v1_bp.route("/ollama/models/bulk-assign", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def bulk_assign_models():
-    """
-    Bulk assign multiple models to deployments.
+    """Bulk assign multiple models to deployments.
 
     Useful for initial setup or rebalancing.
 
@@ -437,14 +448,20 @@ async def bulk_assign_models():
 
             if not deployment_id or not model_name:
                 results.append(
-                    {"success": False, "model_name": model_name, "error": "deployment_id and model_name required"}
+                    {
+                        "success": False,
+                        "model_name": model_name,
+                        "error": "deployment_id and model_name required",
+                    }
                 )
                 continue
 
             # Check if deployment exists
             deployment = db(db.ollama_deployments.id == deployment_id).select().first()
             if not deployment:
-                results.append({"success": False, "model_name": model_name, "error": "Deployment not found"})
+                results.append(
+                    {"success": False, "model_name": model_name, "error": "Deployment not found"}
+                )
                 continue
 
             # Check for existing assignment
@@ -482,7 +499,12 @@ async def bulk_assign_models():
             affected_deployments.add(deployment_id)
 
             results.append(
-                {"success": True, "model_id": model_id, "model_name": model_name, "deployment_id": deployment_id}
+                {
+                    "success": True,
+                    "model_id": model_id,
+                    "model_name": model_name,
+                    "deployment_id": deployment_id,
+                }
             )
 
         db.commit()
@@ -517,10 +539,9 @@ async def bulk_assign_models():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/sync-models", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_MODEL_ADMIN)
 async def sync_deployment_models(deployment_id):
-    """
-    Sync all models on a deployment to AILB.
+    """Sync all models on a deployment to AILB.
 
     Creates/updates model-specific routes for all models on this deployment.
     """
@@ -574,4 +595,6 @@ async def sync_deployment_models(deployment_id):
         )
 
     sync_result = payload
-    return jsonify({"success": False, "error": sync_result.error, "message": sync_result.message}), 500
+    return jsonify(
+        {"success": False, "error": sync_result.error, "message": sync_result.message}
+    ), 500

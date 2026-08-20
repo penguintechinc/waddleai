@@ -29,13 +29,14 @@ from typing import Any
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
 from shared.security.hooks_config import HookConfigResolver, PenguinDALHookConfigStore
 from shared.security.hooks_denylist import HookDenylistResolver, PenguinDALHookDenylistStore
 from shared.security.hooks_rules import HookRulesResolver, PenguinDALHookRulesStore
 
 from ... import extensions as _ext
 from ...extensions import db
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 from .hooks import HOOK_ECOSYSTEMS, HOOK_EVENTS, hooks_bp
 
 _SCOPE_TYPES = ("global", "org")
@@ -101,7 +102,7 @@ def _rule_to_dict(row: Any) -> dict[str, Any]:
 
 @hooks_bp.route("/rules", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def list_hook_rules() -> tuple:
     """List hook_rules -- admin sees all; resource_manager sees global (read-only) + own org."""
     user_role = g.user.get("role")
@@ -110,16 +111,18 @@ async def list_hook_rules() -> tuple:
     def _fetch():
         rows = db(db.hook_rules.id > 0).select(orderby=db.hook_rules.id)
         return [
-            r for r in rows
-            if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
+            r for r in rows if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
         ]
 
     rows = await asyncio.to_thread(_fetch)
     rules = [_rule_to_dict(r) for r in rows]
     return (
         jsonify(
-            {"status": "success", "data": rules,
-             "meta": {"total": len(rules), "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": rules,
+                "meta": {"total": len(rules), "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         200,
     )
@@ -127,7 +130,7 @@ async def list_hook_rules() -> tuple:
 
 @hooks_bp.route("/rules", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def create_hook_rule() -> tuple:
     """Create a hook_rule. resource_manager is force-scoped to their own org, always."""
     data: dict[str, Any] | None = await request.get_json()
@@ -192,8 +195,11 @@ async def create_hook_rule() -> tuple:
 
     return (
         jsonify(
-            {"status": "success", "data": _rule_to_dict(row),
-             "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": _rule_to_dict(row),
+                "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         201,
     )
@@ -201,7 +207,7 @@ async def create_hook_rule() -> tuple:
 
 @hooks_bp.route("/rules/<int:rule_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def update_hook_rule(rule_id: int) -> tuple:
     """Update a hook_rule -- scope-checked against the row's CURRENT scope, not the request body."""
     data: dict[str, Any] | None = await request.get_json()
@@ -217,8 +223,14 @@ async def update_hook_rule(rule_id: int) -> tuple:
     update_fields = {
         k: data[k]
         for k in (
-            "ecosystem", "event", "tool_name_pattern", "match_pattern", "decision", "reason",
-            "enabled", "priority",
+            "ecosystem",
+            "event",
+            "tool_name_pattern",
+            "match_pattern",
+            "decision",
+            "reason",
+            "enabled",
+            "priority",
         )
         if k in data
     }
@@ -246,8 +258,11 @@ async def update_hook_rule(rule_id: int) -> tuple:
 
     return (
         jsonify(
-            {"status": "success", "data": _rule_to_dict(row),
-             "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": _rule_to_dict(row),
+                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         200,
     )
@@ -255,7 +270,7 @@ async def update_hook_rule(rule_id: int) -> tuple:
 
 @hooks_bp.route("/rules/<int:rule_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def delete_hook_rule(rule_id: int) -> tuple:
     """Delete a hook_rule -- scope-checked against the row's current scope."""
     user_role = g.user.get("role")
@@ -281,8 +296,11 @@ async def delete_hook_rule(rule_id: int) -> tuple:
 
     return (
         jsonify(
-            {"status": "success", "data": {"id": rule_id},
-             "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": {"id": rule_id},
+                "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         200,
     )
@@ -308,7 +326,7 @@ def _denylist_entry_to_dict(row: Any) -> dict[str, Any]:
 
 @hooks_bp.route("/denylist", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def list_hook_denylist_entries() -> tuple:
     """List admin-added denylist entries -- the builtin seed list is not a DB row.
 
@@ -322,16 +340,18 @@ async def list_hook_denylist_entries() -> tuple:
     def _fetch():
         rows = db(db.hook_denylist_entries.id > 0).select(orderby=db.hook_denylist_entries.id)
         return [
-            r for r in rows
-            if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
+            r for r in rows if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
         ]
 
     rows = await asyncio.to_thread(_fetch)
     entries = [_denylist_entry_to_dict(r) for r in rows]
     return (
         jsonify(
-            {"status": "success", "data": entries,
-             "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": entries,
+                "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         200,
     )
@@ -339,7 +359,7 @@ async def list_hook_denylist_entries() -> tuple:
 
 @hooks_bp.route("/denylist", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def create_hook_denylist_entry() -> tuple:
     """Add a Tier-1 denylist entry. Additive only -- there is no update/replace endpoint.
 
@@ -391,8 +411,11 @@ async def create_hook_denylist_entry() -> tuple:
 
     return (
         jsonify(
-            {"status": "success", "data": _denylist_entry_to_dict(row),
-             "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": _denylist_entry_to_dict(row),
+                "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         201,
     )
@@ -400,7 +423,7 @@ async def create_hook_denylist_entry() -> tuple:
 
 @hooks_bp.route("/denylist/<int:entry_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def delete_hook_denylist_entry(entry_id: int) -> tuple:
     """Delete an admin-added denylist entry. Never touches the builtin seed list."""
     user_role = g.user.get("role")
@@ -426,8 +449,11 @@ async def delete_hook_denylist_entry(entry_id: int) -> tuple:
 
     return (
         jsonify(
-            {"status": "success", "data": {"id": entry_id},
-             "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": {"id": entry_id},
+                "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         200,
     )
@@ -453,7 +479,7 @@ def _config_to_dict(row: Any) -> dict[str, Any]:
 
 @hooks_bp.route("/configs", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def list_hook_configs() -> tuple:
     """List hook_configs rows -- admin sees all; resource_manager sees global + own org."""
     user_role = g.user.get("role")
@@ -462,16 +488,18 @@ async def list_hook_configs() -> tuple:
     def _fetch():
         rows = db(db.hook_configs.id > 0).select(orderby=db.hook_configs.id)
         return [
-            r for r in rows
-            if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
+            r for r in rows if scope_readable(user_role, user_org_id, r.scope_type, r.scope_ref)
         ]
 
     rows = await asyncio.to_thread(_fetch)
     configs = [_config_to_dict(r) for r in rows]
     return (
         jsonify(
-            {"status": "success", "data": configs,
-             "meta": {"total": len(configs), "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": configs,
+                "meta": {"total": len(configs), "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         200,
     )
@@ -479,7 +507,7 @@ async def list_hook_configs() -> tuple:
 
 @hooks_bp.route("/configs", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_RULE_ADMIN)
 async def upsert_hook_config() -> tuple:
     """Create or update the one hook_configs row for a scope (upsert by scope_type/scope_ref).
 
@@ -514,7 +542,9 @@ async def upsert_hook_config() -> tuple:
     update_fields = {
         k: data[k]
         for k in (
-            "remote_eval_enabled", "remote_eval_timeout_ms", "remote_eval_fail_mode",
+            "remote_eval_enabled",
+            "remote_eval_timeout_ms",
+            "remote_eval_fail_mode",
             "capture_raw_payloads",
         )
         if k in data
@@ -551,8 +581,11 @@ async def upsert_hook_config() -> tuple:
 
     return (
         jsonify(
-            {"status": "success", "data": _config_to_dict(row),
-             "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"}}
+            {
+                "status": "success",
+                "data": _config_to_dict(row),
+                "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"},
+            }
         ),
         200 if action == "updated" else 201,
     )

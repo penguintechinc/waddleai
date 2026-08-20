@@ -29,13 +29,14 @@ from passlib.hash import bcrypt
 from quart import current_app, g, jsonify, request
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
+from shared.auth.rbac import Permission
 from shared.mcp.gateway.auth import OAuth2AuthCodeConfig, OutboundAuth
 from shared.security.credential_encryption import decrypt_credential, encrypt_credential
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 _BEARER_AUTH = [{"bearerAuth": []}]
 
@@ -145,7 +146,10 @@ class CreateMcpEndpointRequest:
 
 @dataclass(slots=True)
 class UpdateMcpEndpointRequest:
-    """Request body for PUT /api/v1/integrations/mcp-endpoints/<id>. Every field is a partial update."""
+    """Request body for PUT /api/v1/integrations/mcp-endpoints/<id>.
+
+    Every field is a partial update.
+    """
 
     name: str | None = None
     url: str | None = None
@@ -254,7 +258,7 @@ def _validation_error(detail: str) -> tuple[Any, int]:
 @tag(["Integrations"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 @validate_response(ListMcpEndpointsResponse, 200)
 async def list_mcp_endpoints():
     """List this org's registered external MCP endpoints."""
@@ -277,7 +281,7 @@ async def list_mcp_endpoints():
 @tag(["Integrations"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 @validate_response(McpEndpointResponse, 201)
 @validate_request(CreateMcpEndpointRequest)
 async def create_mcp_endpoint(data: CreateMcpEndpointRequest):
@@ -368,7 +372,7 @@ def _get_org_scoped_endpoint(endpoint_id: int, org_id: int):
 @tag(["Integrations"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 @validate_response(McpEndpointResponse, 200)
 async def get_mcp_endpoint(endpoint_id: int):
     """Fetch one registered endpoint -- 403 across orgs, 404 if it never existed."""
@@ -393,7 +397,7 @@ async def get_mcp_endpoint(endpoint_id: int):
 @tag(["Integrations"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 @validate_response(McpEndpointResponse, 200)
 @validate_request(UpdateMcpEndpointRequest)
 async def update_mcp_endpoint(endpoint_id: int, data: UpdateMcpEndpointRequest):
@@ -457,7 +461,7 @@ async def update_mcp_endpoint(endpoint_id: int, data: UpdateMcpEndpointRequest):
 @tag(["Integrations"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
 @validate_response(DeleteMcpEndpointResponse, 200)
 async def delete_mcp_endpoint(endpoint_id: int):
     """Delete a registered endpoint (cascades to its `mcp_user_links`)."""
@@ -539,9 +543,7 @@ async def opencode_config():
     key_row = await asyncio.to_thread(_verify_caller_owns_key, virtual_key, org_id, user_id)
     if key_row is None:
         return (
-            jsonify(
-                {"status": "error", "error": "virtual_key not recognized for this account"}
-            ),
+            jsonify({"status": "error", "error": "virtual_key not recognized for this account"}),
             403,
         )
 

@@ -35,10 +35,11 @@ from typing import Any
 
 from quart import g, jsonify
 
+from shared.auth.rbac import Permission
 from shared.utils.metrics import get_management_metrics
 
 from ...extensions import db
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 from .hook_rules import scope_readable
 from .hooks import hooks_bp
 
@@ -115,7 +116,7 @@ def _histogram_percentiles(
 
 @hooks_bp.route("/metrics", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.HOOK_METRICS_READ)
 async def get_hook_metrics() -> tuple:
     """GET /api/v1/hooks/metrics -- rule hit-rates + (admin-only) platform latency/decisions."""
     user_role = g.user.get("role")

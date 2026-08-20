@@ -17,8 +17,10 @@ from typing import Any
 
 from quart import Blueprint, g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db, redis_client
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +149,7 @@ async def get_policy(organization_id: int) -> tuple:
 
 @routing_policies_bp.route("/<int:organization_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.ROUTING_POLICY_WRITE)
 async def upsert_policy(organization_id: int) -> tuple:
     """Create or update an org's routing policy (upsert on organization_id)."""
     user_role = g.user.get("role")
@@ -202,7 +204,7 @@ async def upsert_policy(organization_id: int) -> tuple:
 
 @routing_policies_bp.route("/<int:organization_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ROUTING_POLICY_DELETE)
 async def delete_policy(organization_id: int) -> tuple:
     """Delete an org's routing policy row (admin only) -- resets it to engine defaults."""
 

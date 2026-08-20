@@ -1,6 +1,4 @@
-"""
-WaddleAI Management API v1 - User Management Endpoints
-"""
+"""WaddleAI Management API v1 - User Management Endpoints."""
 
 import asyncio
 from datetime import datetime
@@ -8,15 +6,17 @@ from datetime import datetime
 from passlib.hash import bcrypt
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/users", methods=["GET"])
 @require_auth
 async def list_users():
-    """List users (filtered by role permissions)"""
+    """List users (filtered by role permissions)."""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
     current_user_id = g.user["user_id"]
@@ -52,7 +52,7 @@ async def list_users():
 @api_v1_bp.route("/users/<int:user_id>", methods=["GET"])
 @require_auth
 async def get_user(user_id):
-    """Get user details"""
+    """Get user details."""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
@@ -68,7 +68,9 @@ async def get_user(user_id):
         elif user_role not in ["resource_manager"] and user.id != g.user["user_id"]:
             return jsonify({"error": "Access denied"}), 403
 
-    org = await asyncio.to_thread(lambda: db(db.organizations.id == user.organization_id).select().first())
+    org = await asyncio.to_thread(
+        lambda: db(db.organizations.id == user.organization_id).select().first()
+    )
 
     return jsonify(
         {
@@ -90,9 +92,9 @@ async def get_user(user_id):
 
 @api_v1_bp.route("/users", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USER_MANAGE)
 async def create_user():
-    """Create a new user"""
+    """Create a new user."""
     data = await request.get_json()
 
     if not data:
@@ -118,7 +120,11 @@ async def create_user():
 
     # Check for existing user
     existing = await asyncio.to_thread(
-        lambda: db((db.users.username == data["username"]) | (db.users.email == data["email"])).select().first()
+        lambda: (
+            db((db.users.username == data["username"]) | (db.users.email == data["email"]))
+            .select()
+            .first()
+        )
     )
 
     if existing:
@@ -165,9 +171,9 @@ async def create_user():
 
 @api_v1_bp.route("/users/<int:user_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USER_MANAGE)
 async def update_user(user_id):
-    """Update user"""
+    """Update user."""
     data = await request.get_json()
 
     if not data:
@@ -194,7 +200,9 @@ async def update_user(user_id):
     if "email" in data:
         # Check email uniqueness
         existing = await asyncio.to_thread(
-            lambda: db((db.users.email == data["email"]) & (db.users.id != user_id)).select().first()
+            lambda: (
+                db((db.users.email == data["email"]) & (db.users.id != user_id)).select().first()
+            )
         )
         if existing:
             return jsonify({"error": "Email already exists"}), 409
@@ -234,9 +242,9 @@ async def update_user(user_id):
 
 @api_v1_bp.route("/users/<int:user_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.USER_DELETE)
 async def delete_user(user_id):
-    """Delete user (admin only)"""
+    """Delete user (admin only)."""
     user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
 
     if not user:
@@ -258,9 +266,9 @@ async def delete_user(user_id):
 
 @api_v1_bp.route("/users/<int:user_id>/enable", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USER_MANAGE)
 async def enable_user(user_id):
-    """Enable a disabled user"""
+    """Enable a disabled user."""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 

@@ -112,8 +112,12 @@ async def evaluate_hook() -> tuple:
     if not is_feature_enabled(HOOKS_FEATURE_FLAG, distinct_id=str(org_id or "server")):
         return (
             jsonify(
-                {"decision": "allow", "reason": "agent hooks disabled", "rule_id": None,
-                 "evaluated_in_ms": 0}
+                {
+                    "decision": "allow",
+                    "reason": "agent hooks disabled",
+                    "rule_id": None,
+                    "evaluated_in_ms": 0,
+                }
             ),
             200,
         )

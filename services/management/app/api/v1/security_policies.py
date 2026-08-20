@@ -23,9 +23,11 @@ from typing import Any
 from quart import Blueprint, g, jsonify, request
 from quart_schema import operation_id
 
+from shared.auth.rbac import Permission
+
 from ... import extensions as _ext
 from ...extensions import db
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +162,7 @@ async def resolve_policy() -> tuple:
 
 @security_policies_bp.route("/", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.SECURITY_POLICY_ADMIN)
 async def create_or_upsert_policy() -> tuple:
     """Create or upsert a security policy by (scope_type, scope_ref, direction)."""
     data: dict[str, Any] | None = await request.get_json()
@@ -233,7 +235,7 @@ async def create_or_upsert_policy() -> tuple:
 
 @security_policies_bp.route("/<int:policy_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.SECURITY_POLICY_ADMIN)
 async def update_policy(policy_id: int) -> tuple:
     """Update selected fields of an existing security policy."""
     data: dict[str, Any] | None = await request.get_json()
@@ -277,7 +279,7 @@ async def update_policy(policy_id: int) -> tuple:
 @security_policies_bp.route("/<int:policy_id>", methods=["DELETE"])
 @operation_id("security_policy")
 @require_auth
-@require_role("admin")
+@require_scope(Permission.SECURITY_POLICY_ADMIN)
 async def delete_policy(policy_id: int) -> tuple:
     """Delete a security policy by ID."""
 
@@ -355,7 +357,7 @@ def _org_scope_allowed(user_role: str | None, user_org_id: Any, subject_org_id: 
 
 @security_policies_bp.route("/bypass-grants", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.SECURITY_BYPASS_GRANT_WRITE)
 async def list_bypass_grants() -> tuple:
     """List bypass grants, org-scoped for non-admin roles."""
     user_role = g.user.get("role")
@@ -394,7 +396,7 @@ async def list_bypass_grants() -> tuple:
 
 @security_policies_bp.route("/bypass-grants", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.SECURITY_BYPASS_GRANT_WRITE)
 async def create_bypass_grant() -> tuple:
     """Create a bypass grant. Requires an explicit expires_at -- no indefinite bypass."""
     data: dict[str, Any] | None = await request.get_json()
@@ -474,7 +476,7 @@ async def create_bypass_grant() -> tuple:
 
 @security_policies_bp.route("/bypass-grants/<int:grant_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.SECURITY_BYPASS_GRANT_WRITE)
 async def revoke_bypass_grant(grant_id: int) -> tuple:
     """Revoke (delete) a bypass grant, org-scoped for non-admin roles."""
     user_role = g.user.get("role")
