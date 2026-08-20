@@ -13,6 +13,11 @@ psycopg2-binary>=2.9.9
 pgvector>=0.3.0
 pymysql>=1.1.0
 
+# Local-only profile (shared/vectorstore/qdrant_backend.py, spec §17): the
+# Qdrant vector-store backend, lazily imported only when
+# waddleai.local_only_profile is enabled -- see shared/vectorstore/factory.py.
+qdrant-client>=1.7.0
+
 # PenguinTech Libraries
 penguin-aaa>=0.1.0
 penguin-dal>=0.2.1
