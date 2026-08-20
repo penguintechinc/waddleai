@@ -1,6 +1,12 @@
 """ExactCache unit tests (Valkey exact response-cache layer, spec §6.1)."""
 
 from shared.cache.exact import CachedResponse, ExactCache
+from shared.utils.metrics import get_proxy_metrics
+
+
+def _counter_value(counter, **labels) -> float:
+    """Read a Prometheus counter's current value for a given label set."""
+    return counter.labels(**labels)._value.get()
 
 
 def _cached(text: str = "hello") -> CachedResponse:
@@ -181,3 +187,41 @@ class TestExactCachePutGet:
 
         score_after = await fake_valkey.zscore(idx_key, "refresh-me")
         assert score_after > score_before
+
+    async def test_quota_eviction_increments_evicted_metric(self, fake_valkey):
+        """A real LRU/quota eviction increments cache_entries_evicted_total{layer=exact}."""
+        cache = ExactCache(fake_valkey)
+        metrics = get_proxy_metrics()
+        before = _counter_value(metrics.cache_entries_evicted_total, layer="exact")
+        payload = "x" * 900
+        quota_kb = 2  # fits ~2 entries; the 3rd write forces an eviction
+
+        await cache.put(
+            org_id=1,
+            key="m1",
+            value=_cached(payload),
+            ttl_seconds=86400,
+            max_entry_kb=256,
+            org_quota_kb=quota_kb,
+        )
+        await cache.put(
+            org_id=1,
+            key="m2",
+            value=_cached(payload),
+            ttl_seconds=86400,
+            max_entry_kb=256,
+            org_quota_kb=quota_kb,
+        )
+        # No eviction yet -- counter unchanged.
+        assert _counter_value(metrics.cache_entries_evicted_total, layer="exact") == before
+
+        await cache.put(
+            org_id=1,
+            key="m3",
+            value=_cached(payload),
+            ttl_seconds=86400,
+            max_entry_kb=256,
+            org_quota_kb=quota_kb,
+        )
+
+        assert _counter_value(metrics.cache_entries_evicted_total, layer="exact") == before + 1

@@ -8,6 +8,15 @@ merge time: memory assembly runs first, so cache keys hash what would
 actually be dispatched (see the coordination note at the pipeline-build
 insertion point in main.py, wired in Task 13).
 
+``KnowledgeInjectStage`` (proxy.apps.proxy_server.pipeline.knowledge_stage,
+§9.5/§9.6) lands between SummarizationStage and DedupStage for the same
+cache-key reason plus two more specific to it: it must run after
+ScratchpadStage so its retrieval query is resolved text, not a literal
+``waddleai://scratchpad/...`` marker, and after SummarizationStage so
+ephemeral retrieved context is never folded into the persisted session
+summary. Landing before DedupStage lets intra-request dedup/§6.3
+stable-block observation also cover the injected block.
+
 All three stages are flag-gated on ``waddleai.proxy_memory`` at the
 ProxyPipeline level (coarse, whole-feature on/off -- see Stage.flag);
 ProxyPipeline itself records "skipped:{name}" in ``ctx.stage_log`` when

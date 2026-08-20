@@ -30,6 +30,8 @@ from typing import Any
 
 import orjson
 
+from shared.utils.metrics import get_proxy_metrics
+
 logger = logging.getLogger(__name__)
 
 _NAMESPACE = "waddleai:cache"
@@ -154,6 +156,7 @@ class ExactCache:
             await self.valkey.zrem(_idx_key(org_id), member)
             current = max(0, current - evicted_size)
             await self.valkey.set(_bytes_key(org_id), current)
+            get_proxy_metrics().record_cache_eviction(layer="exact")
             logger.debug(
                 "ExactCache: evicted LRU entry org=%s key=%s (%d bytes)",
                 org_id,
