@@ -13,7 +13,7 @@ https://your-waddleai-proxy.com/v1
 Use your WaddleAI API key in the Authorization header:
 
 ```
-Authorization: Bearer wa-your-api-key-here
+Authorization: Bearer $WADDLEAI_API_KEY-here
 ```
 
 ## Chat Completions
@@ -27,7 +27,7 @@ Create a chat completion response. Identical to OpenAI's API with additional Wad
 ```bash
 curl https://your-waddleai-proxy.com/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer wa-your-api-key" \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -135,7 +135,7 @@ Set `"stream": true` to receive server-sent events:
 ```bash
 curl https://your-waddleai-proxy.com/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer wa-your-api-key" \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -d '{
     "model": "gpt-4",
     "messages": [{"role": "user", "content": "Count to 5"}],
@@ -164,7 +164,7 @@ List available models across all configured providers.
 
 ```bash
 curl https://your-waddleai-proxy.com/v1/models \
-  -H "Authorization: Bearer wa-your-api-key"
+  -H "Authorization: Bearer $WADDLEAI_API_KEY"
 ```
 
 #### Response
@@ -184,7 +184,7 @@ curl https://your-waddleai-proxy.com/v1/models \
     },
     {
       "id": "claude-3-opus",
-      "object": "model", 
+      "object": "model",
       "created": 1699896916,
       "owned_by": "anthropic",
       "provider": "anthropic",
@@ -220,7 +220,7 @@ Get current usage and quota information:
 
 ```bash
 curl https://your-waddleai-proxy.com/api/usage \
-  -H "Authorization: Bearer wa-your-api-key"
+  -H "Authorization: Bearer $WADDLEAI_API_KEY"
 ```
 
 Response:
@@ -246,7 +246,7 @@ Response:
 
 ```bash
 curl https://your-waddleai-proxy.com/api/quota \
-  -H "Authorization: Bearer wa-your-api-key"
+  -H "Authorization: Bearer $WADDLEAI_API_KEY"
 ```
 
 Response:

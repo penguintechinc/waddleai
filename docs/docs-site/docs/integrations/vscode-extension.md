@@ -1,554 +1,465 @@
-# VS Code Extension Integration
+# WaddleAI VS Code Extension
 
-WaddleAI provides seamless integration with VS Code and AI coding assistants like GitHub Copilot, Continue, and Cursor through its OpenAI-compatible proxy API.
+The WaddleAI VS Code Extension integrates WaddleAI's enterprise AI proxy directly into Visual Studio Code, providing seamless access to multiple LLM providers through VS Code's Chat interface.
 
 ## Overview
 
-By configuring VS Code extensions to use WaddleAI as a proxy, you gain:
+The extension enables developers to:
+- **Use WaddleAI models directly in VS Code Chat** - Access GPT-4, Claude, LLaMA, and other models
+- **Maintain conversation context** - Workspace and selected code automatically included
+- **Stream real-time responses** - See responses appear as they're generated
+- **Manage usage and quotas** - Built-in token usage tracking and controls
+- **Secure authentication** - API keys stored securely in VS Code's credential store
 
-- **Centralized Token Management**: Track and control AI assistant usage across your organization
-- **Cost Visibility**: Monitor token consumption and costs per developer
-- **Smart Routing**: Automatically route requests to optimal LLM providers
-- **Enhanced Security**: Prompt injection detection and security scanning
-- **Quota Management**: Set usage limits per developer or team
-- **Memory Integration**: Persistent conversation context across sessions
+## Features
 
-## Supported Extensions
+### 🚀 Core Functionality
+- **Chat Participant Integration** - Use `@waddleai` in VS Code Chat panel
+- **Multi-Model Support** - Switch between GPT-4, Claude, LLaMA, and other WaddleAI-supported models
+- **Streaming Responses** - Real-time response generation with markdown support
+- **Context Awareness** - Automatically includes workspace info and selected code
+- **Command Palette Integration** - Full control via VS Code commands
 
-### Continue (Recommended)
+### 🔐 Security & Authentication
+- **Secure API Key Storage** - Uses VS Code's built-in credential manager
+- **Token Validation** - Real-time validation with WaddleAI server
+- **Session Management** - Automatic session creation and management
+- **Error Handling** - Comprehensive error handling with actionable messages
 
-Continue is a powerful open-source AI coding assistant with excellent WaddleAI integration.
+### 📊 Usage Management
+- **Token Usage Tracking** - Real-time monitoring of WaddleAI token consumption
+- **Quota Monitoring** - Visual quota utilization with progress bars
+- **Usage Analytics** - Detailed breakdowns by model and time period
+- **Export Capabilities** - Usage data export for reporting
 
-**Installation:**
-1. Install Continue from VS Code Marketplace
-2. Open Continue settings (`.continue/config.json`)
-3. Configure WaddleAI proxy
+### ⚙️ Configuration
+- **Flexible Endpoint Configuration** - Point to your WaddleAI proxy instance
+- **Model Selection** - Choose default models or switch on-demand
+- **Performance Tuning** - Configure temperature, max tokens, and other parameters
+- **Memory Management** - Enable/disable conversation memory features
 
-**Configuration:**
+## Installation
 
+### Prerequisites
+- **VS Code Version**: 1.85.0 or later
+- **WaddleAI Instance**: Running WaddleAI proxy server
+- **API Key**: Valid WaddleAI API key (format: `wa-xxxxxxxxx`)
+
+### Option 1: VS Code Marketplace (Coming Soon)
+1. Open VS Code
+2. Go to Extensions (`Ctrl+Shift+X`)
+3. Search for "WaddleAI Chat Participant"
+4. Click Install
+
+### Option 2: Manual Installation (Development)
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/penguintechinc/waddleai.git
+   cd waddleai/vscode-extension/waddleai-copilot
+   ```
+
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Compile TypeScript:
+   ```bash
+   npm run compile
+   ```
+
+4. Open in VS Code and press F5 to launch Extension Development Host
+
+## Configuration
+
+### Initial Setup
+1. **Set API Key**:
+   - Open Command Palette (`Ctrl+Shift+P`)
+   - Run "WaddleAI: Set API Key"
+   - Enter your WaddleAI API key
+
+2. **Configure Endpoint** (if not using default):
+   - Go to Settings (`Ctrl+,`)
+   - Search for "WaddleAI"
+   - Update "Api Endpoint" to your WaddleAI proxy URL
+
+3. **Test Connection**:
+   - Command Palette → "WaddleAI: Test Connection"
+   - Verify successful connection
+
+### Available Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `waddleai.apiEndpoint` | `http://localhost:8000` | WaddleAI proxy server URL — the extension's built-in default (`8000`) does not match the proxy's actual default port (`8080`); set this explicitly |
+| `waddleai.apiKey` | `""` | Your WaddleAI API key |
+| `waddleai.defaultModel` | `"gpt-4"` | Default model for chat completions |
+| `waddleai.enableMemory` | `true` | Enable conversation memory |
+| `waddleai.enableSecurityScanning` | `true` | Enable prompt security scanning |
+| `waddleai.maxTokens` | `2048` | Maximum tokens for responses |
+| `waddleai.temperature` | `0.7` | Temperature for response generation |
+
+## Usage
+
+### Basic Chat Usage
+
+1. **Open Chat Panel**:
+   - View → Chat (`Ctrl+Alt+I`)
+   - Or use Command Palette → "Chat: Open Chat"
+
+2. **Start WaddleAI Conversation**:
+   ```
+   @waddleai Hello! Can you help me write a Python function?
+   ```
+
+3. **Get Context-Aware Help**:
+   - Select code in your editor
+   - Chat with `@waddleai` - selected code is automatically included
+   - Ask questions about your workspace and files
+
+### Advanced Usage
+
+#### Model Selection
+```
+@waddleai I need creative writing help
+# Then use Command Palette → "WaddleAI: Select Model" → Choose Claude for creative tasks
+```
+
+#### Code Analysis with Context
+1. Open a code file
+2. Select problematic code
+3. Chat: `@waddleai Can you explain this code and suggest improvements?`
+4. The extension automatically includes:
+   - Selected code
+   - File path and language
+   - Workspace context
+
+#### Multi-turn Conversations
+The extension maintains conversation history:
+```
+@waddleai Create a REST API endpoint for user registration
+
+# Follow-up (maintains context):
+@waddleai Now add input validation and error handling
+
+# Continue the conversation:
+@waddleai How would I test this endpoint?
+```
+
+### Available Commands
+
+Access via Command Palette (`Ctrl+Shift+P`):
+
+| Command | Description |
+|---------|-------------|
+| **WaddleAI: Set API Key** | Configure your WaddleAI API key |
+| **WaddleAI: Select Model** | Choose from available models |
+| **WaddleAI: Test Connection** | Verify connection to WaddleAI proxy |
+| **WaddleAI: Show Token Usage** | View detailed usage statistics |
+| **WaddleAI: Start New Conversation** | Reset the extension's session id so the next turn starts a fresh memory scope |
+
+## Context Integration
+
+The extension automatically provides rich context to improve responses:
+
+### Workspace Context
+- **Active workspace names** - Helps understand project scope
+- **Project structure** - File organization and patterns
+- **Currently open files** - Files you're working with
+
+### File Context
+- **Active file path** - Current file being edited
+- **Programming language** - Enables language-specific suggestions
+- **Selected code** - Specific code segments you're asking about
+
+### Conversation Context
+- **Recent chat history** - Maintains conversation flow
+- **Previous code examples** - References to earlier discussions
+- **Model preferences** - Consistent model usage patterns
+
+### Example Context Message
+```
+Current workspace: my-python-project
+Active file: /src/api/users.py (python)
+Selected code:
+```python
+def create_user(user_data):
+    # TODO: Add validation
+    return user_data
+```
+
+Using model: gpt-4
+```
+
+## Token Usage & Analytics
+
+### Usage Dashboard
+Access via Command Palette → "WaddleAI: Show Token Usage"
+
+The usage dashboard shows:
+- **Total WaddleAI tokens consumed**
+- **Request count and patterns**
+- **Daily/monthly quota utilization**
+- **Model-specific usage breakdown**
+- **Time-based usage trends**
+
+### Usage Monitoring
+- **Point-in-time snapshot** - "WaddleAI: Show Token Usage" fetches `/api/usage` (rolling 30-day
+  totals) and `/api/quota` (current daily/monthly limits) and renders them in a webview; it does
+  not poll or update live during a conversation
+- **Model breakdown** - Per-model input/output token totals for the last 30 days
+
+### Sample Usage Data
+The webview's data comes from combining `/api/usage` and `/api/quota`:
 ```json
 {
-  "models": [
-    {
-      "title": "GPT-4 via WaddleAI",
-      "provider": "openai",
-      "model": "gpt-4",
-      "apiKey": "wa-your-api-key-here",
-      "apiBase": "https://your-waddleai-proxy.com/v1"
-    },
-    {
-      "title": "Claude 3 Sonnet via WaddleAI",
-      "provider": "openai",
-      "model": "claude-3-sonnet",
-      "apiKey": "wa-your-api-key-here",
-      "apiBase": "https://your-waddleai-proxy.com/v1"
-    },
-    {
-      "title": "Smart Router",
-      "provider": "openai",
-      "model": "smart-router",
-      "apiKey": "wa-your-api-key-here",
-      "apiBase": "https://your-waddleai-proxy.com/v1"
-    }
-  ],
-  "tabAutocompleteModel": {
-    "title": "Codestral via WaddleAI",
-    "provider": "openai",
-    "model": "codestral",
-    "apiKey": "wa-your-api-key-here",
-    "apiBase": "https://your-waddleai-proxy.com/v1"
+  "total_waddleai_tokens": 15450,
+  "total_llm_input_tokens": 9200,
+  "total_llm_output_tokens": 6250,
+  "total_requests": 127,
+  "average_daily": 515,
+  "llm_breakdown": {
+    "gpt-4": { "input": 6000, "output": 2500 },
+    "claude-3-sonnet": { "input": 3200, "output": 3750 }
   },
-  "embeddingsProvider": {
-    "provider": "openai",
-    "model": "text-embedding-ada-002",
-    "apiKey": "wa-your-api-key-here",
-    "apiBase": "https://your-waddleai-proxy.com/v1"
-  }
+  "daily": { "used": 1250, "limit": 10000, "remaining": 8750, "ok": true },
+  "monthly": { "used": 15450, "limit": 200000, "remaining": 184550, "ok": true }
 }
 ```
 
-### Cursor
-
-Cursor is an AI-first code editor based on VS Code.
-
-**Configuration:**
-
-1. Open Cursor Settings: `Settings > Cursor Settings > Models`
-2. Add custom API endpoint
-3. Configure WaddleAI proxy
-
-**Settings JSON:**
-
-```json
-{
-  "cursor.overrideModels": {
-    "gpt-4": {
-      "apiKey": "wa-your-api-key-here",
-      "apiURL": "https://your-waddleai-proxy.com/v1"
-    },
-    "claude-3-sonnet": {
-      "apiKey": "wa-your-api-key-here",
-      "apiURL": "https://your-waddleai-proxy.com/v1"
-    }
-  }
-}
-```
-
-### GitHub Copilot (Enterprise)
-
-GitHub Copilot can use WaddleAI as a proxy for enterprise deployments.
-
-!!! note
-    GitHub Copilot proxy configuration requires GitHub Enterprise and may have limitations.
-
-**Configuration via HTTP Proxy:**
-
-```bash
-# Set environment variables before launching VS Code
-export HTTPS_PROXY=https://your-waddleai-proxy.com
-export COPILOT_PROXY=https://your-waddleai-proxy.com
-code .
-```
-
-**Settings JSON:**
-
-```json
-{
-  "http.proxy": "https://your-waddleai-proxy.com",
-  "http.proxyStrictSSL": true,
-  "github.copilot.advanced": {
-    "debug.overrideProxyUrl": "https://your-waddleai-proxy.com"
-  }
-}
-```
-
-### Cody by Sourcegraph
-
-Cody supports custom LLM endpoints.
-
-**Configuration:**
-
-```json
-{
-  "cody.serverEndpoint": "https://your-waddleai-proxy.com/v1",
-  "cody.customHeaders": {
-    "Authorization": "Bearer wa-your-api-key-here"
-  }
-}
-```
-
-## Team Configuration
-
-### Centralized Config Distribution
-
-For teams, distribute a standardized configuration:
-
-**`.continue/config.json` (template):**
-
-```json
-{
-  "models": [
-    {
-      "title": "GPT-4 (Primary)",
-      "provider": "openai",
-      "model": "gpt-4",
-      "apiKey": "${WADDLEAI_API_KEY}",
-      "apiBase": "https://company-waddleai.com/v1"
-    }
-  ],
-  "systemMessage": "You are an expert developer at ACME Corp. Follow our coding standards..."
-}
-```
-
-**Team Setup Script:**
-
-```bash
-#!/bin/bash
-# setup-waddleai.sh
-
-echo "Setting up WaddleAI integration..."
-
-# Get API key from user
-read -sp "Enter your WaddleAI API key: " API_KEY
-echo
-
-# Add to shell profile
-echo "export WADDLEAI_API_KEY=$API_KEY" >> ~/.bashrc
-echo "export WADDLEAI_API_KEY=$API_KEY" >> ~/.zshrc
-
-# Create Continue config directory
-mkdir -p ~/.continue
-
-# Copy team config
-cat > ~/.continue/config.json << 'EOF'
-{
-  "models": [
-    {
-      "title": "GPT-4",
-      "provider": "openai",
-      "model": "gpt-4",
-      "apiKey": "${WADDLEAI_API_KEY}",
-      "apiBase": "https://company-waddleai.com/v1"
-    }
-  ]
-}
-EOF
-
-echo "WaddleAI integration configured!"
-echo "Restart VS Code to apply changes."
-```
-
-### Per-Developer API Keys
-
-Each developer should have their own API key:
-
-```bash
-# Each developer runs:
-export WADDLEAI_API_KEY="wa-their-user-id-xyz"
-```
-
-This enables:
-- Individual usage tracking
-- Personal quota enforcement
-- Audit trail per developer
-- Granular access control
-
-## Advanced Features
-
-### Memory Integration
-
-Enable conversation memory for persistent context:
-
-**Continue Config:**
-
-```json
-{
-  "models": [
-    {
-      "title": "GPT-4 with Memory",
-      "provider": "openai",
-      "model": "gpt-4",
-      "apiKey": "wa-your-api-key-here",
-      "apiBase": "https://your-waddleai-proxy.com/v1",
-      "requestOptions": {
-        "headers": {
-          "X-WaddleAI-Memory": "developer-session-${USER}",
-          "X-WaddleAI-Memory-Type": "conversation"
-        }
-      }
-    }
-  ]
-}
-```
-
-### Smart Routing
-
-Use the smart router to automatically select the best model:
-
-```json
-{
-  "models": [
-    {
-      "title": "Smart Router",
-      "provider": "openai",
-      "model": "smart-router",
-      "apiKey": "wa-your-api-key-here",
-      "apiBase": "https://your-waddleai-proxy.com/v1"
-    }
-  ]
-}
-```
-
-The router will analyze each request and route to:
-- GPT-4 for complex reasoning
-- Claude for creative writing
-- Codestral for code completion
-- Llama for simple queries
-
-### Custom Context
-
-Add custom context for your codebase:
-
-```json
-{
-  "models": [...],
-  "contextProviders": [
-    {
-      "name": "code",
-      "params": {
-        "includeGitDiff": true
-      }
-    },
-    {
-      "name": "terminal",
-      "params": {}
-    },
-    {
-      "name": "web",
-      "params": {
-        "allowedDomains": ["docs.company.com", "github.com/company"]
-      }
-    }
-  ],
-  "systemMessage": "You are helping develop internal tools at ACME Corp. Coding standards: https://docs.company.com/standards"
-}
-```
-
-## Monitoring Usage
-
-### Check Personal Usage
-
-```bash
-# Using curl
-curl -H "Authorization: Bearer wa-your-api-key" \
-  https://your-waddleai-proxy.com/api/usage
-
-# Using Python
-import requests
-
-response = requests.get(
-    "https://your-waddleai-proxy.com/api/usage",
-    headers={"Authorization": "Bearer wa-your-api-key"}
-)
-
-usage = response.json()
-print(f"Tokens used today: {usage['daily_usage']}")
-print(f"Remaining quota: {usage['daily_remaining']}")
-```
-
-### Team Dashboard
-
-Managers can view team usage via management portal:
-
-```
-https://your-waddleai-mgmt.com/analytics
-```
-
-View:
-- Usage per developer
-- Token consumption trends
-- Cost breakdown by model
-- Most active developers
-- Quota utilization
-
-## Security Best Practices
-
-### API Key Storage
-
-**DO:**
-- Store API keys in environment variables
-- Use secret management tools (1Password, HashiCorp Vault)
-- Rotate keys regularly
-- Use different keys per environment (dev/staging/prod)
-
-**DON'T:**
-- Commit API keys to Git
-- Share keys between developers
-- Store keys in plain text files
-- Use the same key for multiple purposes
-
-### Key Rotation Script
-
-```bash
-#!/bin/bash
-# rotate-api-key.sh
-
-OLD_KEY=$WADDLEAI_API_KEY
-NEW_KEY=$(curl -X POST https://waddleai-mgmt.com/api/api_keys \
-  -H "Authorization: Bearer $OLD_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "VS Code - Rotated", "expires_days": 90}' \
-  | jq -r '.api_key')
-
-echo "New API key: $NEW_KEY"
-echo "Update your environment variable:"
-echo "export WADDLEAI_API_KEY=$NEW_KEY"
-
-# Disable old key after confirmation
-read -p "Disable old key? (y/n) " -n 1 -r
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-  curl -X DELETE https://waddleai-mgmt.com/api/api_keys/$OLD_KEY_ID \
-    -H "Authorization: Bearer $NEW_KEY"
-  echo "Old key disabled"
-fi
-```
+## Error Handling
+
+The extension provides comprehensive error handling with actionable solutions:
+
+### Authentication Errors
+**Error**: "Authentication failed. Please check your API key."
+- **Solution**: Button to open "WaddleAI: Set API Key" command
+- **Cause**: Invalid or expired API key
+
+### Connection Errors
+**Error**: "WaddleAI service unavailable. Please try again later."
+- **Solution**: Check WaddleAI proxy server status
+- **Cause**: Network issues or server downtime
+
+### Quota Errors
+**Error**: "Rate limit exceeded. Please try again later."
+- **Solution**: Wait for quota reset or upgrade plan
+- **Cause**: Daily/monthly quota exceeded
+
+### Configuration Errors
+**Error**: "Failed to fetch models: Connection refused"
+- **Solution**: Verify `waddleai.apiEndpoint` setting
+- **Cause**: Incorrect proxy server URL
 
 ## Troubleshooting
 
-### Connection Issues
+### Common Issues
 
-**Problem:** Cannot connect to WaddleAI proxy
+#### Extension Not Activating
+1. Check VS Code version (requires 1.85.0+)
+2. Verify extension is enabled in Extensions panel
+3. Check console for error messages (Help → Toggle Developer Tools)
 
-**Solution:**
-1. Check proxy URL is correct
-2. Verify network connectivity
-3. Check firewall rules
-4. Test with curl:
-   ```bash
-   curl https://your-waddleai-proxy.com/healthz
-   ```
+#### Chat Participant Not Found
+1. Restart VS Code after installation
+2. Verify extension compiled successfully (`npm run compile`)
+3. Check that `@waddleai` appears in chat autocomplete
 
-### Authentication Errors
+#### API Connection Issues
+1. Test connection: Command Palette → "WaddleAI: Test Connection"
+2. Verify WaddleAI proxy is running and accessible
+3. Check firewall/network restrictions
+4. Validate API key format (`wa-` prefix required)
 
-**Problem:** 401 Authentication Required
+#### No Models Available
+1. Ensure WaddleAI proxy is properly configured with LLM providers
+2. Check API key permissions for model access
+3. Verify WaddleAI proxy `/v1/models` endpoint returns data
 
-**Solution:**
-1. Verify API key is correct
-2. Check API key hasn't expired
-3. Ensure API key starts with "wa-"
-4. Test authentication:
-   ```bash
-   curl -H "Authorization: Bearer wa-your-key" \
-     https://your-waddleai-proxy.com/api/usage
-   ```
+### Debug Information
 
-### Quota Exceeded
+#### Enable Debug Logging
+1. Open VS Code Settings
+2. Search for "Log Level"
+3. Set to "Debug" for detailed logging
+4. Check Output panel → "WaddleAI" channel
 
-**Problem:** 429 Rate Limit or Quota Exceeded
+#### Network Debugging
+1. Open Developer Tools (Help → Toggle Developer Tools)
+2. Go to Network tab
+3. Look for requests to WaddleAI endpoints
+4. Check request/response details
 
-**Solution:**
-1. Check current usage:
-   ```bash
-   curl -H "Authorization: Bearer wa-your-key" \
-     https://your-waddleai-proxy.com/api/quota
-   ```
-2. Contact admin to increase quota
-3. Wait for quota reset (daily/monthly)
+#### Extension Logs
+```bash
+# View extension logs (Linux/macOS)
+tail -f ~/.vscode/logs/*/exthost*/output_logging_*/1-WaddleAI.log
 
-### SSL Certificate Errors
-
-**Problem:** SSL verification failed
-
-**Solution:**
-1. Ensure proxy uses valid SSL certificate
-2. Update CA certificates:
-   ```bash
-   sudo update-ca-certificates
-   ```
-3. For self-signed certs (dev only):
-   ```json
-   {
-     "models": [{
-       "requestOptions": {
-         "verifySsl": false
-       }
-     }]
-   }
-   ```
-
-### Model Not Available
-
-**Problem:** Model not found or unavailable
-
-**Solution:**
-1. Check available models:
-   ```bash
-   curl -H "Authorization: Bearer wa-your-key" \
-     https://your-waddleai-proxy.com/v1/models
-   ```
-2. Verify model name spelling
-3. Check LLM provider is configured and enabled
-4. Contact admin to add model
-
-## Example Workflows
-
-### Code Review Workflow
-
-```json
-{
-  "models": [
-    {
-      "title": "Code Review",
-      "provider": "openai",
-      "model": "gpt-4",
-      "apiKey": "${WADDLEAI_API_KEY}",
-      "apiBase": "https://waddleai.com/v1",
-      "systemMessage": "You are a senior code reviewer. Focus on: security vulnerabilities, performance issues, code clarity, test coverage. Reference our standards: https://docs.company.com/code-review-checklist"
-    }
-  ],
-  "slashCommands": [
-    {
-      "name": "review",
-      "description": "Comprehensive code review",
-      "prompt": "Please review the selected code for: 1) Security issues 2) Performance concerns 3) Best practices 4) Test coverage. Provide specific, actionable feedback."
-    }
-  ]
-}
+# Windows
+type %APPDATA%\Code\logs\*\exthost*\output_logging_*\1-WaddleAI.log
 ```
 
-### Documentation Generation
+## Development
 
-```json
-{
-  "slashCommands": [
-    {
-      "name": "docs",
-      "description": "Generate documentation",
-      "prompt": "Generate comprehensive documentation for the selected code including: 1) Purpose and functionality 2) Parameters and return values 3) Usage examples 4) Edge cases. Follow Google docstring format."
-    }
-  ]
-}
+### Building from Source
+```bash
+git clone https://github.com/penguintechinc/waddleai.git
+cd waddleai/vscode-extension/waddleai-copilot
+npm install
+npm run compile
+npm run package  # Requires Node.js 20+
 ```
 
-### Bug Investigation
-
-```json
-{
-  "slashCommands": [
-    {
-      "name": "debug",
-      "description": "Investigate bug",
-      "prompt": "Analyze the selected code and help debug the issue. Consider: 1) Logic errors 2) Edge cases 3) Race conditions 4) Type mismatches. Suggest fixes with explanations."
-    }
-  ]
-}
+### Running Tests
+```bash
+npm test
+npm run lint
+npm run typecheck
 ```
 
-## Performance Tips
+### Project Structure
+```
+waddleai-copilot/
+├── src/
+│   ├── extension.ts          # Main extension entry point
+│   ├── chatParticipant.ts   # Chat participant implementation
+│   ├── waddleaiClient.ts    # WaddleAI API client
+│   ├── authProvider.ts      # Authentication provider
+│   └── types/               # TypeScript type definitions
+├── package.json             # Extension manifest
+├── tsconfig.json           # TypeScript configuration
+└── README.md               # Extension documentation
+```
 
-1. **Use appropriate models**: Don't use GPT-4 for simple completions
-2. **Enable caching**: Cache responses for repeated queries
-3. **Optimize context**: Only include relevant code context
-4. **Batch requests**: Group related queries when possible
-5. **Monitor usage**: Track token consumption to optimize costs
+### Architecture
 
-## Team Best Practices
+```mermaid
+graph TD
+    A[VS Code Chat Panel] --> B[WaddleAI Chat Participant]
+    B --> C[WaddleAI Client]
+    C --> D[WaddleAI Proxy Server]
+    D --> E[Multiple LLM Providers]
 
-1. **Standardize configs**: Use shared team configuration
-2. **Document conventions**: Create coding standards document
-3. **Regular training**: Teach team effective prompt engineering
-4. **Monitor patterns**: Track common queries to optimize routing
-5. **Share learnings**: Create internal wiki of useful prompts
+    B --> F[Context Builder]
+    F --> G[Workspace Info]
+    F --> H[Active File]
+    F --> I[Selected Code]
 
-## Integration Checklist
+    B --> J[Authentication Provider]
+    J --> K[VS Code Secret Storage]
 
-- [ ] WaddleAI proxy deployed and accessible
-- [ ] API keys generated for all developers
-- [ ] VS Code extension installed (Continue/Cursor/Cody)
-- [ ] Configuration file created and tested
-- [ ] API keys stored securely (environment variables)
-- [ ] Team documentation created
-- [ ] Usage monitoring configured
-- [ ] Quota limits set appropriately
-- [ ] Support contact established
-- [ ] Backup authentication method configured
+    C --> L[Usage Tracker]
+    L --> M[Token Analytics]
+```
 
-## Additional Resources
+## API Integration
 
-- [Continue Documentation](https://continue.dev/docs)
-- [Cursor Documentation](https://cursor.sh/docs)
-- [WaddleAI Management API](../api/management-api.md)
-- [Authentication Guide](../api/authentication.md)
-- [Troubleshooting](../troubleshooting/common-issues.md)
+### WaddleAI Client API
+The extension uses WaddleAI's OpenAI-compatible API:
+
+```typescript
+// Chat completion -- the proxy always returns one JSON envelope for
+// /v1/chat/completions today, so the extension requests stream: false
+// rather than parsing a text/event-stream response the server never sends.
+const response = await client.chatCompletion(
+  messages,
+  model,
+  {
+    temperature: 0.7,
+    max_tokens: 2048,
+    enable_memory: true,
+    enable_security: true
+  }
+);
+
+const content = response.choices?.[0]?.message?.content;
+if (content) {
+  // Display in VS Code chat
+  chatStream.markdown(content);
+}
+
+// Additive cache/routing metadata (usage.waddleai), when present, is
+// rendered as a short footer -- see WaddleAIChatParticipant.renderUsageFooter.
+```
+
+### Context Building
+```typescript
+// Build context message
+const context = [
+  `Current workspace: ${workspaceName}`,
+  `Active file: ${filePath} (${language})`,
+  selectedCode ? `Selected code:\n\`\`\`${language}\n${selectedCode}\n\`\`\`` : '',
+  `Using model: ${modelId}`
+].filter(Boolean).join('\n\n');
+```
+
+## Security Considerations
+
+### Data Privacy
+- **Local Processing**: Context building happens locally in VS Code
+- **Secure Storage**: API keys stored in VS Code's encrypted credential store
+- **No Data Logging**: Extension doesn't log sensitive code or conversations
+- **Configurable Security**: Security scanning can be enabled/disabled
+
+### Network Security
+- **HTTPS Support**: Works with HTTPS WaddleAI endpoints
+- **Certificate Validation**: Standard certificate validation
+- **Timeout Handling**: Request timeouts prevent hanging connections
+- **Error Boundaries**: Comprehensive error handling prevents crashes
+
+### Permission Model
+The extension requests minimal permissions:
+- **File System Access**: Read workspace files for context (when explicitly selected)
+- **Network Access**: Connect to configured WaddleAI endpoint
+- **Secret Storage**: Store API keys securely
+- **UI Integration**: Add chat participant and commands
+
+## Performance
+
+### Optimization Features
+- **Streaming Responses**: Real-time response display
+- **Context Limiting**: Automatically limits context size to prevent large requests
+- **Connection Pooling**: Reuses HTTP connections for efficiency
+- **Caching**: Caches model lists and configuration data
+- **Error Recovery**: Automatic retry on transient failures
+
+### Resource Usage
+- **Memory**: ~5-10MB additional memory usage
+- **CPU**: Minimal CPU usage during idle time
+- **Network**: Bandwidth depends on conversation frequency and model responses
+- **Storage**: <1MB for extension files, minimal for cached data
+
+## Roadmap
+
+### Planned Features
+- **Inline Code Suggestions**: Direct code completion integration
+- **File Upload Support**: Upload documents for analysis
+- **Custom Prompts**: Save and reuse common prompts
+- **Team Collaboration**: Share conversations with team members
+- **Advanced Analytics**: More detailed usage analytics and insights
+- **Plugin Architecture**: Support for custom extensions
+
+### Contributing
+The extension is open source. Contributions welcome:
+1. Fork the repository
+2. Create feature branch
+3. Make changes with tests
+4. Submit pull request
 
 ## Support
 
-For VS Code integration support:
-- Check extension logs in VS Code Output panel
-- Review WaddleAI proxy logs
-- Test with curl to isolate issues
-- Contact support@waddleai.com with:
-  - Extension name and version
-  - Configuration (redact API keys)
-  - Error messages
-  - Steps to reproduce
+### Getting Help
+- **Documentation**: This guide and API documentation
+- **GitHub Issues**: Report bugs and request features
+- **Community**: Join WaddleAI community discussions
+- **Enterprise Support**: Available for enterprise customers
+
+### Resources
+- **Extension Source**: https://github.com/penguintechinc/waddleai
+- **WaddleAI Documentation**: https://docs.waddleai.com
+- **VS Code Extension API**: https://code.visualstudio.com/api
+- **OpenAI API Compatibility**: https://docs.openai.com/api
+
+---
+
+**Ready to start coding with AI?** Install the WaddleAI VS Code Extension and bring the power of multiple LLMs directly into your development workflow.

@@ -137,7 +137,7 @@ WaddleAI uses a sophisticated dual token system for accurate billing and analyti
 - Used for quota enforcement and cost calculation
 - Consistent pricing regardless of underlying LLM
 
-### LLM Tokens  
+### LLM Tokens
 - **Raw provider token counts** (input/output)
 - Used for detailed analytics and optimization
 - Provider-specific insights and debugging
@@ -188,7 +188,7 @@ response = client.chat.completions.create(
 WaddleAI automatically scans all prompts for security threats:
 
 - **Prompt injection detection**
-- **Jailbreak attempt prevention**  
+- **Jailbreak attempt prevention**
 - **Data extraction blocking**
 - **Credential harvesting protection**
 
@@ -231,7 +231,7 @@ alerts = requests.get(
 
 ### API Key Security
 - Use environment variables for API keys
-- Rotate keys regularly  
+- Rotate keys regularly
 - Use minimal required permissions
 - Monitor usage patterns
 
@@ -250,7 +250,7 @@ alerts = requests.get(
 ## Support
 
 For additional help:
-- Check the full documentation at [docs.waddlebot.ai](https://docs.waddlebot.ai)
+- Check the full documentation at [docs.waddleai.com](https://docs.waddleai.com)
 - Review troubleshooting guides
 - Monitor health endpoints
 - Check security logs for issues
