@@ -2561,9 +2561,9 @@ penguin-aaa==0.2.1 \
     # via
     #   -r proxy/../requirements.txt
     #   -r proxy/requirements.in
-penguin-dal==0.2.1 \
-    --hash=sha256:52caa11e9eef65041bf996113e1ca7195ea4a078d780e11b3bb3fed4011f4a6e \
-    --hash=sha256:d750532f956c663e195fd1d1512b2b523b249e3ba11243282e58630e78690bf7
+penguin-dal==0.4.1 \
+    --hash=sha256:ef72e513c47d74868e2f99fa69009d529eeea8172d4d4459b0b6b14b0c3a6188 \
+    --hash=sha256:0777d5c3af484ccdfa4bbc7f8ba1fef1b14d57af86d2ef88f67d73ec139920d4
     # via
     #   -r proxy/../requirements.txt
     #   -r proxy/requirements.in

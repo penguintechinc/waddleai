@@ -6,13 +6,6 @@ and response bodies.
 """
 
 import httpx
-import pytest
-
-_READYZ_XFAIL_REASON = (
-    "gh-130: shared/utils/health_checks.py:100 calls db.executesql('SELECT 1'), "
-    "a PyDAL API penguin_dal does not implement -- the DB check always reports "
-    "unhealthy, so /readyz always 503s. Pre-existing, confirmed via git stash."
-)
 
 
 def test_livez_alive(proxy_url):
@@ -29,7 +22,6 @@ def test_livez_no_auth_required(proxy_url):
     assert r.status_code == 200
 
 
-@pytest.mark.xfail(reason=_READYZ_XFAIL_REASON, strict=False)
 def test_readyz_ready(proxy_url):
     """GET /readyz returns 200 with JSON body containing 'status' key.
 
@@ -43,7 +35,6 @@ def test_readyz_ready(proxy_url):
     assert body["status"] in ("healthy", "degraded")
 
 
-@pytest.mark.xfail(reason=_READYZ_XFAIL_REASON, strict=False)
 def test_readyz_no_auth_required(proxy_url):
     """GET /readyz works without Authorization header (proves it's public).
 

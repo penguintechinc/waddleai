@@ -152,8 +152,10 @@ WaddleAI ships three workflows under `.github/workflows/`: `docker-build.yml`,
 - Generates release notes (semver, full version string, commit SHA, branch) and creates
   the pre-release via `gh release create ... --prerelease`
 
-**Version File Format**: plain text, `Major.Minor.Patch.epoch64build` (e.g. current
-`.version` is `v0.1.0.1775747698`); whitespace trimmed automatically.
+**Version File Format**: plain text, `vMajor.Minor.Patch.epoch64build` (e.g.
+`v0.2.1.1787256238`); whitespace trimmed automatically. The build field is the
+epoch at build time, so the live value changes constantly -- read `.version`
+rather than relying on any figure quoted here.
 
 ---
 
@@ -185,7 +187,7 @@ rather than a shipped service.
 
 **Location**: Repository root (`.version`)
 
-**Format**: `Major.Minor.Patch.epoch64build` — e.g. `v0.1.0.1775747698`
+**Format**: `vMajor.Minor.Patch.epoch64build` — e.g. `v0.2.1.1787256238`
 
 **Usage**:
 - Edit `.version` to trigger the `version-release.yml` pre-release workflow

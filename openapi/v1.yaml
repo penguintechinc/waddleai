@@ -3,12 +3,6 @@
 components:
   schemas:
     CredentialActionMeta:
-      description: '`meta` block for a single-credential mutation response.
-
-
-        `action` is only ever set on create/delete -- update''s meta carries just
-
-        a timestamp, so it stays Optional rather than forcing a fabricated value.'
       properties:
         action:
           anyOf:
@@ -24,7 +18,6 @@ components:
       title: CredentialActionMeta
       type: object
     CurrentUserOrganization:
-      description: Organization summary embedded in the current-user response.
       properties:
         id:
           title: Id
@@ -38,7 +31,6 @@ components:
       title: CurrentUserOrganization
       type: object
     DeletedCredentialData:
-      description: '`data` block for a successful credential deletion.'
       properties:
         id:
           title: Id
@@ -48,7 +40,6 @@ components:
       title: DeletedCredentialData
       type: object
     DeletedMcpEndpointData:
-      description: '`data` block for a successful endpoint deletion.'
       properties:
         id:
           title: Id
@@ -58,7 +49,6 @@ components:
       title: DeletedMcpEndpointData
       type: object
     KeyDetailUsage:
-      description: Aggregate usage embedded in the single-key detail response.
       properties:
         daily_tokens:
           title: Daily Tokens
@@ -76,8 +66,6 @@ components:
       title: KeyDetailUsage
       type: object
     KeySummary:
-      description: Virtual key summary -- never includes the raw secret, only its
-        prefix.
       properties:
         allowed_models:
           anyOf:
@@ -165,7 +153,6 @@ components:
       title: KeySummary
       type: object
     KeyUsageDailyEntry:
-      description: A single day's usage row within the key-usage response.
       properties:
         cost_usd:
           anyOf:
@@ -205,7 +192,6 @@ components:
       title: KeyUsageDailyEntry
       type: object
     KeyUsageTotals:
-      description: Aggregate totals across the requested usage window.
       properties:
         cost_usd:
           title: Cost Usd
@@ -223,7 +209,6 @@ components:
       title: KeyUsageTotals
       type: object
     ListCredentialsMeta:
-      description: '`meta` block for the list-credentials response.'
       properties:
         provider_id:
           title: Provider Id
@@ -241,7 +226,6 @@ components:
       title: ListCredentialsMeta
       type: object
     ListMcpEndpointsMeta:
-      description: '`meta` block for the list-endpoints response.'
       properties:
         timestamp:
           title: Timestamp
@@ -255,7 +239,6 @@ components:
       title: ListMcpEndpointsMeta
       type: object
     LoginUser:
-      description: User summary embedded in a successful login response.
       properties:
         email:
           title: Email
@@ -281,8 +264,6 @@ components:
       title: LoginUser
       type: object
     McpEndpoint:
-      description: A registered external MCP endpoint. `auth_config` secrets are always
-        masked.
       properties:
         auth_config:
           additionalProperties: true
@@ -341,12 +322,6 @@ components:
       title: McpEndpoint
       type: object
     McpEndpointActionMeta:
-      description: '`meta` block for a single-endpoint mutation response.
-
-
-        `action` is only set on create/update -- a plain GET carries just a
-
-        timestamp, so it stays Optional rather than forcing a fabricated value.'
       properties:
         action:
           anyOf:
@@ -362,8 +337,6 @@ components:
       title: McpEndpointActionMeta
       type: object
     ProviderCredential:
-      description: A single provider credential -- api_key is NEVER returned, only
-        its mask.
       properties:
         account_meta:
           anyOf:
@@ -430,7 +403,6 @@ components:
       title: ProviderCredential
       type: object
     ProviderSummary:
-      description: Provider summary row -- never includes api_key or extra_config.
       properties:
         ailb_sync_enabled:
           title: Ailb Sync Enabled
@@ -487,7 +459,6 @@ components:
       title: ProviderSummary
       type: object
     ProviderTypeSummary:
-      description: One supported provider type, as returned by GET /providers/types.
       properties:
         default_endpoint:
           anyOf:
@@ -517,7 +488,6 @@ components:
       title: ProviderTypeSummary
       type: object
     VerifyUser:
-      description: User summary embedded in the auth-verify response.
       properties:
         id:
           title: Id
@@ -557,7 +527,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for POST /api/v1/auth/change-password.
               properties:
                 current_password:
                   anyOf:
@@ -578,8 +547,6 @@ paths:
           content:
             application/json:
               schema:
-                description: 'Generic `{"message": str}` envelope used by several
-                  auth endpoints.'
                 properties:
                   message:
                     title: Message
@@ -603,7 +570,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Credentials for POST /api/v1/auth/login.
               properties:
                 password:
                   anyOf:
@@ -624,7 +590,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for a successful login.
                 properties:
                   access_token:
                     title: Access Token
@@ -658,8 +623,6 @@ paths:
           content:
             application/json:
               schema:
-                description: 'Generic `{"message": str}` envelope used by several
-                  auth endpoints.'
                 properties:
                   message:
                     title: Message
@@ -684,7 +647,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/auth/me.
                 properties:
                   created_at:
                     anyOf:
@@ -754,7 +716,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for a successful token refresh.
                 properties:
                   access_token:
                     title: Access Token
@@ -787,7 +748,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/auth/verify.
                 properties:
                   user:
                     $ref: '#/components/schemas/VerifyUser'
@@ -1161,7 +1121,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/integrations/mcp-endpoints.
                 properties:
                   data:
                     items:
@@ -1193,7 +1152,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for POST /api/v1/integrations/mcp-endpoints.
               properties:
                 auth_config:
                   anyOf:
@@ -1251,8 +1209,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body shared by get/create/update of a single
-                  mcp-endpoint.
                 properties:
                   data:
                     $ref: '#/components/schemas/McpEndpoint'
@@ -1288,7 +1244,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for DELETE /api/v1/integrations/mcp-endpoints/<id>.
                 properties:
                   data:
                     $ref: '#/components/schemas/DeletedMcpEndpointData'
@@ -1323,8 +1278,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body shared by get/create/update of a single
-                  mcp-endpoint.
                 properties:
                   data:
                     $ref: '#/components/schemas/McpEndpoint'
@@ -1358,10 +1311,6 @@ paths:
         content:
           application/json:
             schema:
-              description: 'Request body for PUT /api/v1/integrations/mcp-endpoints/<id>.
-
-
-                Every field is a partial update.'
               properties:
                 auth_config:
                   anyOf:
@@ -1419,8 +1368,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body shared by get/create/update of a single
-                  mcp-endpoint.
                 properties:
                   data:
                     $ref: '#/components/schemas/McpEndpoint'
@@ -1529,7 +1476,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/keys.
                 properties:
                   keys:
                     items:
@@ -1558,7 +1504,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for POST /api/v1/keys.
               properties:
                 allowed_models:
                   anyOf:
@@ -1631,14 +1576,6 @@ paths:
           content:
             application/json:
               schema:
-                description: 'Response body for a successful POST /api/v1/keys.
-
-
-                  The plaintext `api_key` is only ever returned here and on rotate
-                  --
-
-                  it is not recoverable afterwards, only `key_prefix` is persisted
-                  for display.'
                 properties:
                   api_key:
                     title: Api Key
@@ -1695,8 +1632,6 @@ paths:
           content:
             application/json:
               schema:
-                description: 'Generic `{"message": str}` envelope used by several
-                  key endpoints.'
                 properties:
                   message:
                     title: Message
@@ -1725,7 +1660,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/keys/<key_id>.
                 properties:
                   allowed_models:
                     anyOf:
@@ -1834,8 +1768,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for PUT /api/v1/keys/<key_id>. Every field
-                is a partial update.
               properties:
                 allowed_models:
                   anyOf:
@@ -1902,8 +1834,6 @@ paths:
           content:
             application/json:
               schema:
-                description: 'Generic `{"message": str}` envelope used by several
-                  key endpoints.'
                 properties:
                   message:
                     title: Message
@@ -1933,7 +1863,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for POST /api/v1/keys/<key_id>/rotate.
                 properties:
                   api_key:
                     title: Api Key
@@ -1975,7 +1904,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/keys/<key_id>/usage.
                 properties:
                   daily_usage:
                     items:
@@ -2679,7 +2607,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/providers.
                 properties:
                   providers:
                     items:
@@ -2708,7 +2635,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for POST /api/v1/providers.
               properties:
                 ailb_sync_enabled:
                   anyOf:
@@ -2788,7 +2714,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for a successful POST /api/v1/providers.
                 properties:
                   id:
                     title: Id
@@ -2825,7 +2750,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/providers/types.
                 properties:
                   provider_types:
                     items:
@@ -2857,8 +2781,6 @@ paths:
           content:
             application/json:
               schema:
-                description: 'Generic `{"message": str}` envelope used by several
-                  provider endpoints.'
                 properties:
                   message:
                     title: Message
@@ -2888,8 +2810,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/providers/<id>. Never includes
-                  api_key.
                 properties:
                   ailb_route_config:
                     anyOf:
@@ -2986,8 +2906,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for PUT /api/v1/providers/<id>. Every field
-                is a partial update.
               properties:
                 ailb_route_config:
                   anyOf:
@@ -3068,8 +2986,6 @@ paths:
           content:
             application/json:
               schema:
-                description: 'Generic `{"message": str}` envelope used by several
-                  provider endpoints.'
                 properties:
                   message:
                     title: Message
@@ -3100,7 +3016,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/providers/<id>/credentials.
                 properties:
                   data:
                     items:
@@ -3124,8 +3039,8 @@ paths:
       summary: List all credentials for a provider. API keys are never returned in
         plaintext.
       tags:
-      - Credentials
       - Providers
+      - Credentials
     post:
       description: ''
       operationId: post_create_provider_credential
@@ -3139,7 +3054,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for POST /api/v1/providers/<id>/credentials.
               properties:
                 account_meta:
                   anyOf:
@@ -3185,8 +3099,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body shared by create/update of a single provider
-                  credential.
                 properties:
                   data:
                     $ref: '#/components/schemas/ProviderCredential'
@@ -3207,8 +3119,8 @@ paths:
       - bearerAuth: []
       summary: Add a credential to a provider's pool.
       tags:
-      - Credentials
       - Providers
+      - Credentials
   /api/v1/providers/{provider_id}/credentials/{cred_id}:
     delete:
       description: ''
@@ -3229,7 +3141,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for DELETE /api/v1/providers/<id>/credentials/<cred_id>.
                 properties:
                   data:
                     $ref: '#/components/schemas/DeletedCredentialData'
@@ -3250,8 +3161,8 @@ paths:
       summary: Remove a credential from the pool. Requires at least one other credential
         to remain.
       tags:
-      - Credentials
       - Providers
+      - Credentials
     patch:
       description: ''
       operationId: patch_update_provider_credential
@@ -3270,7 +3181,6 @@ paths:
         content:
           application/json:
             schema:
-              description: Request body for PATCH /api/v1/providers/<id>/credentials/<cred_id>.
               properties:
                 account_meta:
                   anyOf:
@@ -3316,8 +3226,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body shared by create/update of a single provider
-                  credential.
                 properties:
                   data:
                     $ref: '#/components/schemas/ProviderCredential'
@@ -3339,8 +3247,8 @@ paths:
       summary: Update label, weight, enabled, org_id, account_meta, or rotate the
         api_key.
       tags:
-      - Credentials
       - Providers
+      - Credentials
   /api/v1/providers/{provider_id}/models:
     get:
       description: ''
@@ -3356,7 +3264,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for GET /api/v1/providers/<id>/models.
                 properties:
                   models:
                     items:
@@ -3396,7 +3303,6 @@ paths:
           content:
             application/json:
               schema:
-                description: Response body for POST /api/v1/providers/<id>/test.
                 properties:
                   endpoint_url:
                     title: Endpoint Url

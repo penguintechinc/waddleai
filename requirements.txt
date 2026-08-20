@@ -2256,9 +2256,9 @@ penguin-aaa==0.2.1 \
     --hash=sha256:6023ea056ea8ec6928bce043a0ab79e5c0656eff962a497a9b592fad9eebcdf0 \
     --hash=sha256:ce7818e4b8a8a8939b3e3082ca5ac2478559c13d5e3b75b3d07f46051e3e1e76
     # via -r requirements.in
-penguin-dal==0.2.1 \
-    --hash=sha256:52caa11e9eef65041bf996113e1ca7195ea4a078d780e11b3bb3fed4011f4a6e \
-    --hash=sha256:d750532f956c663e195fd1d1512b2b523b249e3ba11243282e58630e78690bf7
+penguin-dal==0.4.1 \
+    --hash=sha256:ef72e513c47d74868e2f99fa69009d529eeea8172d4d4459b0b6b14b0c3a6188 \
+    --hash=sha256:0777d5c3af484ccdfa4bbc7f8ba1fef1b14d57af86d2ef88f67d73ec139920d4
     # via -r requirements.in
 penguin-sal==0.2.0 \
     --hash=sha256:03c1a88399b4822be68dd618d4854b806fa1ba0920b78bee13e34487b34455b8 \
