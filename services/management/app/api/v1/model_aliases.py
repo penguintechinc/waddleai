@@ -13,8 +13,10 @@ from typing import Any
 
 from quart import Blueprint, g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +94,11 @@ async def get_alias(alias_id: int) -> tuple:
     user_org_id = g.user.get("organization_id")
 
     row = await asyncio.to_thread(
-        lambda: db(_visible_query(user_role, user_org_id) & (db.model_aliases.id == alias_id))
-        .select()
-        .first()
+        lambda: (
+            db(_visible_query(user_role, user_org_id) & (db.model_aliases.id == alias_id))
+            .select()
+            .first()
+        )
     )
     if not row:
         return jsonify({"status": "error", "error": "Alias not found"}), 404
@@ -113,7 +117,7 @@ async def get_alias(alias_id: int) -> tuple:
 
 @model_aliases_bp.route("/", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.MODEL_ALIAS_WRITE)
 async def create_alias() -> tuple:
     """Create a model_aliases row.
 
@@ -183,7 +187,7 @@ async def create_alias() -> tuple:
 
 @model_aliases_bp.route("/<int:alias_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.MODEL_ALIAS_WRITE)
 async def update_alias(alias_id: int) -> tuple:
     """Update an existing model_aliases row by ID."""
     data: dict[str, Any] | None = await request.get_json()
@@ -230,7 +234,7 @@ async def update_alias(alias_id: int) -> tuple:
 
 @model_aliases_bp.route("/<int:alias_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.MODEL_ALIAS_WRITE)
 async def delete_alias(alias_id: int) -> tuple:
     """Delete a model_aliases row by ID."""
     user_role = g.user.get("role")

@@ -39,13 +39,14 @@ from typing import Any
 
 from quart import Blueprint, g, jsonify, request
 
+from shared.auth.rbac import Permission
 from shared.routing.engine import RoutingEngine, RoutingInput
 from shared.routing.heuristics import RequestSignals
 from shared.routing.offers import load_offers_from_model_configs
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db, redis_client
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class RoutingDryRunResult:
 
 @routing_dry_run_bp.route("/", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ROUTING_DRY_RUN_ADMIN)
 async def dry_run_decision() -> tuple:
     """Run RoutingEngine.decide() over a supplied prompt with zero side effects.
 
@@ -85,9 +86,10 @@ async def dry_run_decision() -> tuple:
     org; admin may target any org's policy/assignments, same as every other
     admin-only routing-admin route -- see ``_visible_query`` in
     ``routing_assignments.py``: "Admin sees everything")}``. No separate
-    org-membership check is needed beyond ``@require_role("admin")`` above --
-    this route is admin-only, and admins already have unrestricted org
-    visibility everywhere else in this API.
+    org-membership check is needed beyond
+    ``@require_scope(Permission.ROUTING_DRY_RUN_ADMIN)`` above -- this route
+    is admin-only, and admins already have unrestricted org visibility
+    everywhere else in this API.
     """
     user_org_id = g.user.get("organization_id")
 

@@ -1,17 +1,38 @@
+"""Golden-snapshot comparison helper for contract tests.
+
+Normalizes volatile fields (ids, timestamps, tokens, UUIDs) out of a
+response before comparing it against (or recording) a stored JSON snapshot.
+"""
+
 import json
 import os
 import re
 from pathlib import Path
 
 SNAP_DIR = Path(__file__).parent / "snapshots"
-_VOLATILE_KEYS = {"id", "created_at", "modified_at", "expires_at", "iat", "exp",
-                   "access_token", "token", "key", "api_key", "key_hash", "timestamp"}
+_VOLATILE_KEYS = {
+    "id",
+    "created_at",
+    "modified_at",
+    "expires_at",
+    "iat",
+    "exp",
+    "access_token",
+    "token",
+    "key",
+    "api_key",
+    "key_hash",
+    "timestamp",
+}
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def _normalize(obj):
     if isinstance(obj, dict):
-        return {k: ("<VOLATILE>" if k in _VOLATILE_KEYS else _normalize(v)) for k, v in sorted(obj.items())}
+        return {
+            k: ("<VOLATILE>" if k in _VOLATILE_KEYS else _normalize(v))
+            for k, v in sorted(obj.items())
+        }
     if isinstance(obj, list):
         return [_normalize(v) for v in obj]
     if isinstance(obj, str):
@@ -20,6 +41,11 @@ def _normalize(obj):
 
 
 def assert_snapshot(name: str, *, status: int, body):
+    """Compare (status, body) against the stored golden snapshot for `name`.
+
+    Volatile fields are normalized away first. Records a new snapshot instead
+    of asserting when CONTRACT_RECORD=1 is set or no snapshot file exists yet.
+    """
     SNAP_DIR.mkdir(exist_ok=True)
     path = SNAP_DIR / f"{name}.json"
     actual = {"status": status, "body": _normalize(body)}

@@ -4,12 +4,12 @@ Integrate WaddleAI's enterprise AI proxy with VS Code Copilot Chat for enhanced 
 
 ## Features
 
-🚀 **Multi-LLM Support**: Access OpenAI GPT, Anthropic Claude, and Ollama models through a single interface  
-🧠 **Conversation Memory**: Context-aware responses that remember your development patterns  
-🔒 **Enterprise Security**: Built-in prompt injection protection and security scanning  
-📊 **Token Management**: Track usage across different models with normalized billing  
-⚡ **Intelligent Routing**: Automatic model selection based on cost, latency, and availability  
-🔧 **Custom Configuration**: Flexible endpoint configuration for on-premises deployments  
+🚀 **Multi-LLM Support**: Access OpenAI GPT, Anthropic Claude, and Ollama models through a single interface
+🧠 **Conversation Memory**: Context-aware responses that remember your development patterns
+🔒 **Enterprise Security**: Built-in prompt injection protection and security scanning
+📊 **Token Management**: Track usage across different models with normalized billing
+⚡ **Intelligent Routing**: Automatic model selection based on cost, latency, and availability
+🔧 **Custom Configuration**: Flexible endpoint configuration for on-premises deployments
 
 ## Installation
 
@@ -55,7 +55,7 @@ Configure WaddleAI through VS Code settings (`File → Preferences → Settings`
 
 ### Available Models
 - **GPT Models**: `gpt-4`, `gpt-3.5-turbo`
-- **Claude Models**: `claude-3-opus-20240229`, `claude-3-sonnet-20240229`  
+- **Claude Models**: `claude-3-opus-20240229`, `claude-3-sonnet-20240229`
 - **Ollama Models**: `llama2`, `codellama` (requires Ollama server)
 
 ### Memory Enhancement
@@ -111,7 +111,7 @@ Track your AI usage with built-in analytics:
 - Check that your WaddleAI account is active
 - Ensure proper permissions are granted
 
-**❌ "Connection failed"**  
+**❌ "Connection failed"**
 - Verify the WaddleAI server is running
 - Check your endpoint configuration
 - Ensure firewall/proxy settings allow access
@@ -147,7 +147,7 @@ View logs in: `View → Output → WaddleAI`
 ## Support
 
 - **Documentation**: [WaddleAI Docs](https://docs.waddleai.com)
-- **Issues**: [GitHub Issues](https://github.com/waddleai/vscode-extension/issues)
+- **Issues**: [GitHub Issues](https://github.com/penguintechinc/waddleai/issues)
 - **Community**: [Discord Server](https://discord.gg/waddleai)
 
 ## License

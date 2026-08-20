@@ -7,15 +7,17 @@ from datetime import date, datetime, timedelta
 
 from quart import Response, g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/usage/summary", methods=["GET"])
 @require_auth
 async def get_usage_summary():
-    """Get usage summary (daily/monthly)"""
+    """Get usage summary (daily/monthly)."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -72,7 +74,7 @@ async def get_usage_summary():
 @api_v1_bp.route("/usage/by-model", methods=["GET"])
 @require_auth
 async def get_usage_by_model():
-    """Get usage breakdown by model"""
+    """Get usage breakdown by model."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -115,7 +117,7 @@ async def get_usage_by_model():
 @api_v1_bp.route("/usage/by-provider", methods=["GET"])
 @require_auth
 async def get_usage_by_provider():
-    """Get usage breakdown by provider"""
+    """Get usage breakdown by provider."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -162,7 +164,7 @@ async def get_usage_by_provider():
         provider_usage[provider]["cost_usd"] += record.cost_estimate_usd or 0
 
     # Calculate averages
-    for provider, data in provider_usage.items():
+    for _provider, data in provider_usage.items():
         if data["requests"] > 0:
             data["avg_latency_ms"] = data.get("total_latency", 0) / data["requests"]
 
@@ -171,9 +173,9 @@ async def get_usage_by_provider():
 
 @api_v1_bp.route("/usage/by-user", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.USAGE_READ_BY_USER)
 async def get_usage_by_user():
-    """Get usage breakdown by user"""
+    """Get usage breakdown by user."""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
@@ -218,7 +220,7 @@ async def get_usage_by_user():
 @api_v1_bp.route("/usage/by-key", methods=["GET"])
 @require_auth
 async def get_usage_by_key():
-    """Get usage breakdown by API key"""
+    """Get usage breakdown by API key."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -268,7 +270,7 @@ async def get_usage_by_key():
 @api_v1_bp.route("/usage/cost", methods=["GET"])
 @require_auth
 async def get_cost_analytics():
-    """Get cost analytics"""
+    """Get cost analytics."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -318,7 +320,7 @@ async def get_cost_analytics():
 @api_v1_bp.route("/usage/export", methods=["GET"])
 @require_auth
 async def export_usage():
-    """Export usage data (CSV/JSON)"""
+    """Export usage data (CSV/JSON)."""
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
@@ -367,12 +369,11 @@ async def export_usage():
         writer.writeheader()
         writer.writerows(data)
 
+        filename = f"usage-export-{date.today().isoformat()}.csv"
         return Response(
             output.getvalue(),
             mimetype="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=usage-export-{date.today().isoformat()}.csv"
-            },
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
 
     return jsonify({"data": data, "count": len(data)})

@@ -17,7 +17,7 @@ Tests all endpoints:
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from tests.unit.management.conftest import make_select_result
+from tests.unit.management.conftest import make_dal_row, make_select_result
 
 # ============================================================================
 # Mock Builders
@@ -25,61 +25,69 @@ from tests.unit.management.conftest import make_select_result
 
 
 def make_mock_memory_config(
+    id: int = 1,
     org_id: int = 1,
     enabled: bool = True,
     max_messages: int = 20,
     similarity_threshold: float = 0.7,
 ) -> MagicMock:
-    """Create a mock conversation memory config."""
-    config = MagicMock()
-    config.organization_id = org_id
-    config.enabled = enabled
-    config.max_messages = max_messages
-    config.similarity_threshold = similarity_threshold
-    config.created_at = datetime(2025, 1, 1, 12, 0, 0)
-    config.updated_at = datetime(2025, 1, 15, 8, 0, 0)
-    config.update_record = MagicMock()
-    return config
+    """Create a mock conversation memory config.
+
+    Shaped like a real penguin_dal Row (see make_dal_row) -- no
+    update_record(), so a route regressing back to that PyDAL-only call
+    raises AttributeError here just like it would against a real DB.
+    """
+    return make_dal_row(
+        id=id,
+        organization_id=org_id,
+        enabled=enabled,
+        max_messages=max_messages,
+        similarity_threshold=similarity_threshold,
+        created_at=datetime(2025, 1, 1, 12, 0, 0),
+        updated_at=datetime(2025, 1, 15, 8, 0, 0),
+    )
 
 
 def make_mock_rag_config(
+    id: int = 1,
     org_id: int = 1,
     enabled: bool = True,
     collection: str = "default",
     top_k: int = 5,
     similarity_threshold: float = 0.7,
 ) -> MagicMock:
-    """Create a mock RAG config."""
-    config = MagicMock()
-    config.organization_id = org_id
-    config.enabled = enabled
-    config.collection = collection
-    config.top_k = top_k
-    config.similarity_threshold = similarity_threshold
-    config.created_at = datetime(2025, 1, 1, 12, 0, 0)
-    config.updated_at = datetime(2025, 1, 15, 8, 0, 0)
-    config.update_record = MagicMock()
-    return config
+    """Create a mock RAG config (see make_mock_memory_config)."""
+    return make_dal_row(
+        id=id,
+        organization_id=org_id,
+        enabled=enabled,
+        collection=collection,
+        top_k=top_k,
+        similarity_threshold=similarity_threshold,
+        created_at=datetime(2025, 1, 1, 12, 0, 0),
+        updated_at=datetime(2025, 1, 15, 8, 0, 0),
+    )
 
 
 def make_mock_embedding_config(
+    id: int = 1,
     org_id=None,
     backend: str = "ollama",
     model: str = "nomic-embed-text",
     ollama_host: str = "http://localhost:11434",
     dimensions: int = 768,
 ) -> MagicMock:
-    """Create a mock embedding config."""
-    config = MagicMock()
-    config.organization_id = org_id
-    config.backend = backend
-    config.model = model
-    config.ollama_host = ollama_host
-    config.dimensions = dimensions
-    config.created_at = datetime(2025, 1, 1, 12, 0, 0)
-    config.updated_at = datetime(2025, 1, 15, 8, 0, 0)
-    config.update_record = MagicMock()
-    return config
+    """Create a mock embedding config (see make_mock_memory_config)."""
+    return make_dal_row(
+        id=id,
+        organization_id=org_id,
+        backend=backend,
+        model=model,
+        ollama_host=ollama_host,
+        dimensions=dimensions,
+        created_at=datetime(2025, 1, 1, 12, 0, 0),
+        updated_at=datetime(2025, 1, 15, 8, 0, 0),
+    )
 
 
 # ============================================================================
@@ -183,7 +191,11 @@ async def test_set_memory_config_create_new(client, app_mock_db, auth_headers):
 
 
 async def test_set_memory_config_update_existing(client, app_mock_db, auth_headers):
-    """POST /memory-config updates existing config."""
+    """Verify the update path uses db(id==...).update(), not Row.update_record().
+
+    Real penguin_dal Rows have no update_record() (regression: see
+    shared/auth/rbac.py).
+    """
     config = make_mock_memory_config(org_id=1, enabled=True, max_messages=20)
     app_mock_db.return_value.select.return_value = make_select_result([config])
 
@@ -200,7 +212,10 @@ async def test_set_memory_config_update_existing(client, app_mock_db, auth_heade
     data = await resp.get_json()
     assert data["status"] == "updated"
     assert data["organization_id"] == 1
-    config.update_record.assert_called_once()
+    app_mock_db.return_value.update.assert_called_once()
+    call_kwargs = app_mock_db.return_value.update.call_args.kwargs
+    assert call_kwargs["enabled"] is False
+    assert call_kwargs["max_messages"] == 15
 
 
 async def test_set_memory_config_partial_update(client, app_mock_db, auth_headers):
@@ -217,10 +232,11 @@ async def test_set_memory_config_partial_update(client, app_mock_db, auth_header
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    config.update_record.assert_called_once()
+    app_mock_db.return_value.update.assert_called_once()
     # Verify it was called with correct args (enabled should be preserved)
-    call_kwargs = config.update_record.call_args[1]
+    call_kwargs = app_mock_db.return_value.update.call_args.kwargs
     assert call_kwargs["max_messages"] == 50
+    assert call_kwargs["enabled"] is True  # preserved
 
 
 async def test_set_memory_config_requires_auth(client):
@@ -331,7 +347,7 @@ async def test_set_rag_config_create_new(client, app_mock_db, auth_headers):
 
 
 async def test_set_rag_config_update_existing(client, app_mock_db, auth_headers):
-    """POST /rag-config updates existing config."""
+    """POST /rag-config updates existing config via db(id==...).update()."""
     config = make_mock_rag_config(org_id=1, enabled=True, collection="default")
     app_mock_db.return_value.select.return_value = make_select_result([config])
 
@@ -347,7 +363,10 @@ async def test_set_rag_config_update_existing(client, app_mock_db, auth_headers)
     assert resp.status_code == 200
     data = await resp.get_json()
     assert data["status"] == "updated"
-    config.update_record.assert_called_once()
+    app_mock_db.return_value.update.assert_called_once()
+    call_kwargs = app_mock_db.return_value.update.call_args.kwargs
+    assert call_kwargs["enabled"] is False
+    assert call_kwargs["collection"] == "documents"
 
 
 async def test_set_rag_config_preserves_existing_values(client, app_mock_db, auth_headers):
@@ -364,8 +383,8 @@ async def test_set_rag_config_preserves_existing_values(client, app_mock_db, aut
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    config.update_record.assert_called_once()
-    call_kwargs = config.update_record.call_args[1]
+    app_mock_db.return_value.update.assert_called_once()
+    call_kwargs = app_mock_db.return_value.update.call_args.kwargs
     assert call_kwargs["enabled"] is False
     assert call_kwargs["collection"] == "default"  # preserved
 
@@ -488,7 +507,7 @@ async def test_set_embedding_config_create_org_specific(client, app_mock_db, aut
 
 
 async def test_set_embedding_config_update_existing(client, app_mock_db, auth_headers):
-    """POST /embedding-config updates existing config."""
+    """POST /embedding-config updates existing config via db(id==...).update()."""
     config = make_mock_embedding_config(org_id=1, backend="ollama", model="nomic-embed-text")
     app_mock_db.return_value.select.return_value = make_select_result([config])
 
@@ -505,7 +524,10 @@ async def test_set_embedding_config_update_existing(client, app_mock_db, auth_he
     data = await resp.get_json()
     assert data["status"] == "updated"
     assert data["backend"] == "openai"
-    config.update_record.assert_called_once()
+    app_mock_db.return_value.update.assert_called_once()
+    call_kwargs = app_mock_db.return_value.update.call_args.kwargs
+    assert call_kwargs["backend"] == "openai"
+    assert call_kwargs["model"] == "text-embedding-3-small"
 
 
 async def test_set_embedding_config_all_valid_backends(client, app_mock_db, auth_headers):
@@ -552,8 +574,8 @@ async def test_set_embedding_config_preserves_existing_on_partial(client, app_mo
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    config.update_record.assert_called_once()
-    call_kwargs = config.update_record.call_args[1]
+    app_mock_db.return_value.update.assert_called_once()
+    call_kwargs = app_mock_db.return_value.update.call_args.kwargs
     assert call_kwargs["backend"] == "openai"
     assert call_kwargs["model"] == "nomic-embed-text"  # preserved
 

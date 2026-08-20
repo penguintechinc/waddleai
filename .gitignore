@@ -225,3 +225,6 @@ k8s/helm/waddleai/values-secrets-*.yaml
 # Rust build artifacts (Cargo.lock IS committed -- binary crate, per house
 # rule -- only the compiled output is ignored)
 target/
+
+# mypy incremental cache -- build artifact, never committed
+.mypy_cache/

@@ -2,7 +2,7 @@ name: waddleai-cli (Rust) Build and Test
 
 on:
   push:
-    branches: [ main, 'v*' ]
+    branches: [ main, 'release/**', 'v*' ]
     paths:
       - 'clients/waddleai-cli/**'
       - '.github/workflows/rust-build.yml'

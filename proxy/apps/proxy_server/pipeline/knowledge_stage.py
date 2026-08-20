@@ -27,6 +27,13 @@ from shared.knowledge.scoping import ScopeKey
 
 logger = logging.getLogger(__name__)
 
+# Whole-stage gate (Stage.flag, checked by ProxyPipeline before __call__ ever
+# runs) -- coarse on/off for the entire auto-injection feature, independent
+# of and in addition to the four per-source flags below (which still apply
+# once the stage runs). Mirrors RESPONSE_CACHE_FLAG/PROXY_MEMORY_FLAG's role
+# for CacheStage/the §6A memory stages.
+KNOWLEDGE_INJECT_FLAG = "waddleai.knowledge_inject"
+
 # Each retrievable source is gated on its own §9/§6A flag, independent of
 # whichever flag (if any) is passed to this Stage's own `flag` attribute.
 _SOURCE_FLAGS = {
@@ -158,4 +165,4 @@ class KnowledgeInjectStage(Stage):
         return ctx
 
 
-__all__ = ["KnowledgeInjectStage"]
+__all__ = ["KNOWLEDGE_INJECT_FLAG", "KnowledgeInjectStage"]

@@ -20,20 +20,146 @@ import asyncio
 import hmac
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
 
 from passlib.hash import bcrypt
 from quart import current_app, g, jsonify, request
+from quart_schema import security_scheme, tag, validate_request, validate_response
 
+from shared.auth.rbac import Permission
 from shared.mcp.gateway.auth import OAuth2AuthCodeConfig, OutboundAuth
 from shared.security.credential_encryption import decrypt_credential, encrypt_credential
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
+
+_BEARER_AUTH = [{"bearerAuth": []}]
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models for the mcp-endpoints CRUD sub-resource.
+#
+# `auth_config` is modeled as a loose `dict` rather than a fixed shape --
+# its fields genuinely vary by `auth_type` (header vs oauth2 client
+# credentials vs oauth2 auth code, see VALID_AUTH_TYPES) and secret
+# sub-fields are always masked before this ever reaches a response (see
+# `_masked_auth_config`), so a fixed dataclass would either be wrong for
+# some auth_types or have to enumerate every provider's fields.
+#
+# The self-service opencode-config/link/link-callback routes below are
+# intentionally left unannotated: their response bodies are dynamically
+# shaped (a whole OpenCode client config, an IdP authorization URL) rather
+# than a stable resource schema -- documented here rather than guessed.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class McpEndpoint:
+    """A registered external MCP endpoint. `auth_config` secrets are always masked."""
+
+    id: int
+    org_id: int
+    name: str
+    url: str
+    transport: str
+    auth_type: str
+    auth_config: dict
+    identity_mode: str
+    namespace: str
+    credentials_ref: str | None
+    status: str
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class ListMcpEndpointsMeta:
+    """`meta` block for the list-endpoints response."""
+
+    total: int
+    timestamp: str
+
+
+@dataclass(slots=True)
+class ListMcpEndpointsResponse:
+    """Response body for GET /api/v1/integrations/mcp-endpoints."""
+
+    status: str
+    data: list[McpEndpoint]
+    meta: ListMcpEndpointsMeta
+
+
+@dataclass(slots=True)
+class McpEndpointActionMeta:
+    """`meta` block for a single-endpoint mutation response.
+
+    `action` is only set on create/update -- a plain GET carries just a
+    timestamp, so it stays Optional rather than forcing a fabricated value.
+    """
+
+    timestamp: str
+    action: str | None = None
+
+
+@dataclass(slots=True)
+class McpEndpointResponse:
+    """Response body shared by get/create/update of a single mcp-endpoint."""
+
+    status: str
+    data: McpEndpoint
+    meta: McpEndpointActionMeta
+
+
+@dataclass(slots=True)
+class DeletedMcpEndpointData:
+    """`data` block for a successful endpoint deletion."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class DeleteMcpEndpointResponse:
+    """Response body for DELETE /api/v1/integrations/mcp-endpoints/<id>."""
+
+    status: str
+    data: DeletedMcpEndpointData
+    meta: McpEndpointActionMeta
+
+
+@dataclass(slots=True)
+class CreateMcpEndpointRequest:
+    """Request body for POST /api/v1/integrations/mcp-endpoints."""
+
+    name: str | None = None
+    url: str | None = None
+    transport: str | None = None
+    auth_type: str | None = "none"
+    identity_mode: str | None = "shared"
+    namespace: str | None = None
+    auth_config: dict | None = None
+    credentials_ref: str | None = None
+
+
+@dataclass(slots=True)
+class UpdateMcpEndpointRequest:
+    """Request body for PUT /api/v1/integrations/mcp-endpoints/<id>.
+
+    Every field is a partial update.
+    """
+
+    name: str | None = None
+    url: str | None = None
+    transport: str | None = None
+    auth_type: str | None = None
+    auth_config: dict | None = None
+    identity_mode: str | None = None
+    status: str | None = None
+    credentials_ref: str | None = None
+
 
 MCP_V2_FLAG = "waddleai.mcp_v2"
 
@@ -129,8 +255,11 @@ def _validation_error(detail: str) -> tuple[Any, int]:
 
 
 @api_v1_bp.route("/integrations/mcp-endpoints", methods=["GET"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
+@validate_response(ListMcpEndpointsResponse, 200)
 async def list_mcp_endpoints():
     """List this org's registered external MCP endpoints."""
     org_id = g.user.get("organization_id")
@@ -141,34 +270,32 @@ async def list_mcp_endpoints():
         return db(db.mcp_endpoints.org_id == org_id).select(orderby=db.mcp_endpoints.id)
 
     rows = await asyncio.to_thread(_fetch)
-    return jsonify(
-        {
-            "status": "success",
-            "data": [_endpoint_to_dict(r) for r in rows],
-            "meta": {"total": len(rows), "timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": [_endpoint_to_dict(r) for r in rows],
+        "meta": {"total": len(rows), "timestamp": datetime.utcnow().isoformat() + "Z"},
+    }
 
 
 @api_v1_bp.route("/integrations/mcp-endpoints", methods=["POST"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
-async def create_mcp_endpoint():
+@require_scope(Permission.INTEGRATION_ADMIN)
+@validate_response(McpEndpointResponse, 201)
+@validate_request(CreateMcpEndpointRequest)
+async def create_mcp_endpoint(data: CreateMcpEndpointRequest):
     """Register a new external MCP endpoint for this org."""
     org_id = g.user.get("organization_id")
     if not _feature_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
 
-    data = await request.get_json()
-    if not data:
-        return _validation_error("Request body required")
-
-    name = (data.get("name") or "").strip()
-    url = (data.get("url") or "").strip()
-    transport = data.get("transport")
-    auth_type = data.get("auth_type", "none")
-    identity_mode = data.get("identity_mode", "shared")
-    namespace = (data.get("namespace") or "").strip()
+    name = (data.name or "").strip()
+    url = (data.url or "").strip()
+    transport = data.transport
+    auth_type = data.auth_type
+    identity_mode = data.identity_mode
+    namespace = (data.namespace or "").strip()
 
     if not name or len(name) > 255:
         return _validation_error("name is required and must be <= 255 characters")
@@ -183,7 +310,7 @@ async def create_mcp_endpoint():
     if not namespace or not namespace.replace("_", "").replace("-", "").isalnum():
         return _validation_error("namespace is required and must be alphanumeric (- and _ allowed)")
 
-    encrypted_auth_config = _encrypt_auth_config(data.get("auth_config"))
+    encrypted_auth_config = _encrypt_auth_config(data.auth_config)
 
     def _create():
         existing = (
@@ -203,7 +330,7 @@ async def create_mcp_endpoint():
             auth_config=encrypted_auth_config,
             identity_mode=identity_mode,
             namespace=namespace,
-            credentials_ref=data.get("credentials_ref"),
+            credentials_ref=data.credentials_ref,
             status="active",
             created_at=datetime.utcnow(),
         )
@@ -224,16 +351,11 @@ async def create_mcp_endpoint():
             409,
         )
 
-    return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _endpoint_to_dict(row),
-                "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
-        201,
-    )
+    return {
+        "status": "success",
+        "data": _endpoint_to_dict(row),
+        "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
+    }, 201
 
 
 def _get_org_scoped_endpoint(endpoint_id: int, org_id: int):
@@ -247,8 +369,11 @@ def _get_org_scoped_endpoint(endpoint_id: int, org_id: int):
 
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>", methods=["GET"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
+@validate_response(McpEndpointResponse, 200)
 async def get_mcp_endpoint(endpoint_id: int):
     """Fetch one registered endpoint -- 403 across orgs, 404 if it never existed."""
     org_id = g.user.get("organization_id")
@@ -261,19 +386,21 @@ async def get_mcp_endpoint(endpoint_id: int):
     if outcome == "forbidden":
         return jsonify({"status": "error", "error": "forbidden"}), 403
 
-    return jsonify(
-        {
-            "status": "success",
-            "data": _endpoint_to_dict(row),
-            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": _endpoint_to_dict(row),
+        "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+    }
 
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>", methods=["PUT"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
-async def update_mcp_endpoint(endpoint_id: int):
+@require_scope(Permission.INTEGRATION_ADMIN)
+@validate_response(McpEndpointResponse, 200)
+@validate_request(UpdateMcpEndpointRequest)
+async def update_mcp_endpoint(endpoint_id: int, data: UpdateMcpEndpointRequest):
     """Update a registered endpoint's mutable fields."""
     org_id = g.user.get("organization_id")
     if not _feature_enabled(org_id):
@@ -285,41 +412,37 @@ async def update_mcp_endpoint(endpoint_id: int):
     if outcome == "forbidden":
         return jsonify({"status": "error", "error": "forbidden"}), 403
 
-    data = await request.get_json()
-    if not data:
-        return _validation_error("Request body required")
-
     update_fields: dict[str, Any] = {}
-    if "name" in data:
-        name = (data["name"] or "").strip()
+    if data.name is not None:
+        name = (data.name or "").strip()
         if not name or len(name) > 255:
             return _validation_error("name must be 1-255 characters")
         update_fields["name"] = name
-    if "url" in data:
-        url = (data["url"] or "").strip()
+    if data.url is not None:
+        url = (data.url or "").strip()
         if not url or len(url) > 1024:
             return _validation_error("url must be 1-1024 characters")
         update_fields["url"] = url
-    if "transport" in data:
-        if data["transport"] not in VALID_TRANSPORTS:
+    if data.transport is not None:
+        if data.transport not in VALID_TRANSPORTS:
             return _validation_error(f"transport must be one of {sorted(VALID_TRANSPORTS)}")
-        update_fields["transport"] = data["transport"]
-    if "auth_type" in data:
-        if data["auth_type"] not in VALID_AUTH_TYPES:
+        update_fields["transport"] = data.transport
+    if data.auth_type is not None:
+        if data.auth_type not in VALID_AUTH_TYPES:
             return _validation_error(f"auth_type must be one of {sorted(VALID_AUTH_TYPES)}")
-        update_fields["auth_type"] = data["auth_type"]
-    if "auth_config" in data:
-        update_fields["auth_config"] = _encrypt_auth_config(data["auth_config"])
-    if "identity_mode" in data:
-        if data["identity_mode"] not in VALID_IDENTITY_MODES:
+        update_fields["auth_type"] = data.auth_type
+    if data.auth_config is not None:
+        update_fields["auth_config"] = _encrypt_auth_config(data.auth_config)
+    if data.identity_mode is not None:
+        if data.identity_mode not in VALID_IDENTITY_MODES:
             return _validation_error(f"identity_mode must be one of {sorted(VALID_IDENTITY_MODES)}")
-        update_fields["identity_mode"] = data["identity_mode"]
-    if "status" in data:
-        if data["status"] not in {"active", "disabled", "error"}:
+        update_fields["identity_mode"] = data.identity_mode
+    if data.status is not None:
+        if data.status not in {"active", "disabled", "error"}:
             return _validation_error("status must be one of ['active', 'disabled', 'error']")
-        update_fields["status"] = data["status"]
-    if "credentials_ref" in data:
-        update_fields["credentials_ref"] = data["credentials_ref"]
+        update_fields["status"] = data.status
+    if data.credentials_ref is not None:
+        update_fields["credentials_ref"] = data.credentials_ref
 
     def _update():
         db(db.mcp_endpoints.id == endpoint_id).update(**update_fields)
@@ -327,18 +450,19 @@ async def update_mcp_endpoint(endpoint_id: int):
         return db(db.mcp_endpoints.id == endpoint_id).select().first()
 
     updated = await asyncio.to_thread(_update)
-    return jsonify(
-        {
-            "status": "success",
-            "data": _endpoint_to_dict(updated),
-            "meta": {"action": "updated", "timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": _endpoint_to_dict(updated),
+        "meta": {"action": "updated", "timestamp": datetime.utcnow().isoformat() + "Z"},
+    }
 
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>", methods=["DELETE"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.INTEGRATION_ADMIN)
+@validate_response(DeleteMcpEndpointResponse, 200)
 async def delete_mcp_endpoint(endpoint_id: int):
     """Delete a registered endpoint (cascades to its `mcp_user_links`)."""
     org_id = g.user.get("organization_id")
@@ -357,13 +481,11 @@ async def delete_mcp_endpoint(endpoint_id: int):
         db.commit()
 
     await asyncio.to_thread(_delete)
-    return jsonify(
-        {
-            "status": "success",
-            "data": {"id": endpoint_id},
-            "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": {"id": endpoint_id},
+        "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +510,8 @@ def _verify_caller_owns_key(virtual_key: str, org_id: int, user_id: int):
 
 
 @api_v1_bp.route("/integrations/opencode-config", methods=["POST"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
 async def opencode_config():
     """Render a per-virtual-key OpenCode config (custom provider + `/mcp` entry).
@@ -419,9 +543,7 @@ async def opencode_config():
     key_row = await asyncio.to_thread(_verify_caller_owns_key, virtual_key, org_id, user_id)
     if key_row is None:
         return (
-            jsonify(
-                {"status": "error", "error": "virtual_key not recognized for this account"}
-            ),
+            jsonify({"status": "error", "error": "virtual_key not recognized for this account"}),
             403,
         )
 
@@ -503,6 +625,8 @@ def _auth_code_config(row) -> OAuth2AuthCodeConfig:
 
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>/link", methods=["GET"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
 async def initiate_mcp_link(endpoint_id: int):
     """Start the caller's own per-user OAuth2 link to a `per_user` endpoint.
@@ -568,6 +692,8 @@ async def initiate_mcp_link(endpoint_id: int):
 
 
 @api_v1_bp.route("/integrations/mcp-endpoints/<int:endpoint_id>/link/callback", methods=["GET"])
+@tag(["Integrations"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
 async def mcp_link_callback(endpoint_id: int):
     """Exchange the authorization code and store the caller's encrypted `McpUserLink`."""

@@ -14,10 +14,7 @@
     "type": "message",
     "usage": {
       "input_tokens": 12,
-      "output_tokens": 11,
-      "waddleai": {
-        "routed_from": null
-      }
+      "output_tokens": 11
     }
   },
   "status": 200

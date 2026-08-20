@@ -16,8 +16,10 @@ from typing import Any
 
 from quart import Blueprint, g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +99,11 @@ async def get_rule(rule_id: int) -> tuple:
     user_org_id = g.user.get("organization_id")
 
     row = await asyncio.to_thread(
-        lambda: db(_visible_query(user_role, user_org_id) & (db.routing_rules_v2.id == rule_id))
-        .select()
-        .first()
+        lambda: (
+            db(_visible_query(user_role, user_org_id) & (db.routing_rules_v2.id == rule_id))
+            .select()
+            .first()
+        )
     )
     if not row:
         return jsonify({"status": "error", "error": "Rule not found"}), 404
@@ -118,7 +122,7 @@ async def get_rule(rule_id: int) -> tuple:
 
 @routing_rules_bp.route("/", methods=["POST"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.ROUTING_RULE_WRITE)
 async def create_rule() -> tuple:
     """Create a routing_rules_v2 row."""
     data: dict[str, Any] | None = await request.get_json()
@@ -166,7 +170,7 @@ async def create_rule() -> tuple:
 
 @routing_rules_bp.route("/<int:rule_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.ROUTING_RULE_WRITE)
 async def update_rule(rule_id: int) -> tuple:
     """Update an existing routing_rules_v2 row by ID."""
     data: dict[str, Any] | None = await request.get_json()
@@ -213,7 +217,7 @@ async def update_rule(rule_id: int) -> tuple:
 
 @routing_rules_bp.route("/<int:rule_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.ROUTING_RULE_WRITE)
 async def delete_rule(rule_id: int) -> tuple:
     """Delete a routing_rules_v2 row by ID."""
     user_role = g.user.get("role")

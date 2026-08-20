@@ -105,7 +105,6 @@ class TestAuthenticateApiKey:
         mock_key_record.user_id = 5
         mock_key_record.key_hash = hashed_key
         mock_key_record.enabled = True
-        mock_key_record.update_record = MagicMock()
 
         # Setup db mocks
         mock_select_keys = MagicMock()
@@ -115,13 +114,17 @@ class TestAuthenticateApiKey:
         mock_first_call = MagicMock()
         mock_first_call.select.return_value = mock_select_keys
 
-        # Second db call returns wrapper with .select().first() chain
-        mock_second_call = MagicMock()
+        # Second db call is the last_used update: db(condition).update(...)
+        # (penguin_dal QuerySet.update -- see shared/auth/rbac.py)
+        mock_update_call = MagicMock()
+
+        # Third db call returns wrapper with .select().first() chain
+        mock_third_call = MagicMock()
         mock_select_user = MagicMock()
         mock_select_user.first.return_value = mock_user
-        mock_second_call.select.return_value = mock_select_user
+        mock_third_call.select.return_value = mock_select_user
 
-        mock_db.side_effect = [mock_first_call, mock_second_call]
+        mock_db.side_effect = [mock_first_call, mock_update_call, mock_third_call]
 
         with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             context = rbac_manager.authenticate_api_key(api_key)
@@ -180,7 +183,6 @@ class TestAuthenticateApiKey:
         mock_key_record = MagicMock()
         mock_key_record.user_id = 5
         mock_key_record.key_hash = hashed_key
-        mock_key_record.update_record = MagicMock()
 
         mock_user = MagicMock(enabled=False, role="user")  # User disabled
 
@@ -191,13 +193,16 @@ class TestAuthenticateApiKey:
         mock_first_call = MagicMock()
         mock_first_call.select.return_value = mock_select_keys
 
-        # Second db call returns wrapper with .select().first() chain
-        mock_second_call = MagicMock()
+        # Second db call is the last_used update: db(condition).update(...)
+        mock_update_call = MagicMock()
+
+        # Third db call returns wrapper with .select().first() chain
+        mock_third_call = MagicMock()
         mock_select_user = MagicMock()
         mock_select_user.first.return_value = mock_user
-        mock_second_call.select.return_value = mock_select_user
+        mock_third_call.select.return_value = mock_select_user
 
-        mock_db.side_effect = [mock_first_call, mock_second_call]
+        mock_db.side_effect = [mock_first_call, mock_update_call, mock_third_call]
 
         with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             with pytest.raises(AuthenticationError) as exc_info:
@@ -210,7 +215,7 @@ class TestAuthenticateApiKey:
         api_key = "wa-key-secret"
         hashed_key = hash_password(api_key)
 
-        mock_key_record = MagicMock(user_id=999, key_hash=hashed_key, update_record=MagicMock())
+        mock_key_record = MagicMock(user_id=999, key_hash=hashed_key)
 
         mock_select_keys = MagicMock()
         mock_select_keys.__iter__.return_value = iter([mock_key_record])
@@ -219,13 +224,16 @@ class TestAuthenticateApiKey:
         mock_first_call = MagicMock()
         mock_first_call.select.return_value = mock_select_keys
 
-        # Second db call returns wrapper with .select().first() chain
-        mock_second_call = MagicMock()
+        # Second db call is the last_used update: db(condition).update(...)
+        mock_update_call = MagicMock()
+
+        # Third db call returns wrapper with .select().first() chain
+        mock_third_call = MagicMock()
         mock_select_user = MagicMock()
         mock_select_user.first.return_value = None  # User not found
-        mock_second_call.select.return_value = mock_select_user
+        mock_third_call.select.return_value = mock_select_user
 
-        mock_db.side_effect = [mock_first_call, mock_second_call]
+        mock_db.side_effect = [mock_first_call, mock_update_call, mock_third_call]
 
         with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             with pytest.raises(AuthenticationError) as exc_info:

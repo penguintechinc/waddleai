@@ -249,6 +249,23 @@ def make_select_result(rows: list) -> MagicMock:
     return result
 
 
+def make_dal_row(**fields: object) -> MagicMock:
+    """A mock shaped like a real penguin_dal Row (spec'd, no update_record()).
+
+    Attribute access is restricted to the given field names via spec. A
+    plain MagicMock() auto-creates any attribute on access, including
+    .update_record(), which is exactly why routes calling that PyDAL-only
+    method on a real penguin_dal Row went undetected by tests using plain
+    MagicMock rows (regression: see shared/auth/rbac.py). Accessing
+    .update_record on this mock raises AttributeError, matching real
+    penguin_dal's Row.
+    """
+    row = MagicMock(spec=list(fields.keys()))
+    for key, value in fields.items():
+        setattr(row, key, value)
+    return row
+
+
 ROUTE_MODULES = [
     "services.management.app.api.v1.auth",
     "services.management.app.api.v1.users",
@@ -273,6 +290,10 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.knowledge",
     "services.management.app.api.v1.memory_scoping",
     "services.management.app.api.v1.integrations",
+    "services.management.app.api.v1.hooks",
+    "services.management.app.api.v1.hook_rules",
+    "services.management.app.api.v1.hook_metrics",
+    "services.management.app.api.v1.fleet",
 ]
 
 
@@ -435,6 +456,26 @@ def user_auth_headers(user_token: str) -> dict[str, str]:
 def rm_auth_headers(resource_manager_token: str) -> dict[str, str]:
     """Authorization + Content-Type headers carrying a resource_manager bearer token."""
     return {"Authorization": f"Bearer {resource_manager_token}", "Content-Type": "application/json"}
+
+
+@pytest.fixture
+def rm_org2_auth_headers() -> dict[str, str]:
+    """Authorization + Content-Type headers for a resource_manager in a SECOND org (id=2).
+
+    A distinct fixture (not a parameterized `make_token` call from a test
+    module) deliberately -- `make_token`/`_test_oidc_provider` must be
+    invoked from *this* module's own namespace so the token is signed with
+    the same OIDC keypair `flask_app` patches `_get_oidc_provider` to
+    return. Constructing the token via an explicit
+    `from tests.unit.management.conftest import make_token` in a test file
+    risks resolving a second, independently-`lru_cache`d copy of this
+    module (namespace-package edge case: `tests/unit/` has no
+    `__init__.py`), which signs with a different keypair and makes the
+    token fail verification. Use this fixture for any tenant-isolation
+    test that needs a second org's identity.
+    """
+    token = make_token(role="resource_manager", user_id=20, org_id=2)
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
 def make_mock_user(

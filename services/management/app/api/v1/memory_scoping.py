@@ -26,6 +26,7 @@ from typing import Any
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
 from shared.knowledge.injection_safety import filter_for_store
 from shared.knowledge.scoping import ScopedRecord, ScopeType, TrustTier, resolve_conflict
 from shared.security.content_filter import ContentFilter
@@ -33,7 +34,7 @@ from shared.security.prompt_security import PromptSecurityScanner
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ async def get_memory_config_v2():
 
 @api_v1_bp.route("/memory-scoping", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_SCOPING_ADMIN)
 async def set_memory_config_v2():
     """Create/update the §9.4 conversation-memory config for an org."""
     data = (await request.get_json(force=True)) or {}
@@ -109,7 +110,15 @@ async def set_memory_config_v2():
     def _upsert() -> str:
         existing = db(db.conversation_memory_configs.organization_id == org_id).select().first()
         if existing:
-            existing.update_record(
+            # regression: penguin_dal's Row has no update_record() (classic
+            # PyDAL API); the correct penguin_dal update is
+            # db(condition).update(**kwargs) -- see shared/auth/rbac.py for
+            # the identical fix. Unlike the /memory-config sibling routes in
+            # memory_config.py, this route has no surrounding try/except, so
+            # the old call's AttributeError propagated uncaught out of the
+            # route entirely on every update -- only the very first §9.4
+            # config write for an org ever succeeded.
+            db(db.conversation_memory_configs.id == existing.id).update(
                 enabled=data.get("enabled", existing.enabled), similarity_threshold=cutoff
             )
             return "updated"

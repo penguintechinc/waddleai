@@ -42,6 +42,10 @@ from proxy.apps.proxy_server.pipeline import (
     SecurityOutStage,
     TokenBudgetStage,
 )
+from proxy.apps.proxy_server.pipeline.knowledge_stage import (
+    KNOWLEDGE_INJECT_FLAG,
+    KnowledgeInjectStage,
+)
 from proxy.apps.proxy_server.pipeline.memory_stages import (
     DedupStage,
     ScratchpadStage,
@@ -269,11 +273,14 @@ class ProxyServer:
         # get_db() (shared.database.models) is the penguin-dal connection that
         # RBACManager, TokenManager, PromptSecurityScanner, ContentFilter, and
         # LLMConnectionManager are all actually written against (synchronous
-        # `self.db(query).select()`/`.update_record()` calls -- see the module
-        # docstring in shared/database/models.py). penguin-dal exposes DAL/Field
-        # directly, not a `get_dal` factory. `migrate=True` only in contract-test mode, so the
-        # harness's empty per-session sqlite file gets real tables; production
-        # keeps migrate=False (Alembic/management remains schema authority).
+        # `self.db(query).select()` / `self.db(condition).update(**kwargs)`
+        # calls -- see the module docstring in shared/database/models.py.
+        # NOTE: penguin_dal's Row has no `.update_record()` -- that's classic
+        # PyDAL API; writes always go through `db(condition).update(...)`).
+        # penguin-dal exposes DAL/Field directly, not a `get_dal` factory.
+        # `migrate=True` only in contract-test mode, so the harness's empty
+        # per-session sqlite file gets real tables; production keeps
+        # migrate=False (Alembic/management remains schema authority).
         database_url = os.getenv(
             "DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai"
         )
@@ -465,7 +472,8 @@ class ProxyServer:
 
         # Build the ProxyPipeline once (reused for all requests).
         # Stages execute in order: auth → token_budget → security_in →
-        # scratchpad → summarize → dedup → dispatch → security_out → meter
+        # scratchpad → summarize → knowledge → dedup → cache → routing →
+        # dispatch → security_out → meter
         self.pipeline = self._build_pipeline()
         logger.info("ProxyPipeline built with %d stages", len(self.pipeline.stages))
 
@@ -606,9 +614,13 @@ class ProxyServer:
           1. AuthStage: validate user/tenant
           2. TokenBudgetStage: check token quotas (skipped in test mode)
           3. SecurityInStage: scan for prompt injection + content filter input
-          4. DispatchStage: route to provider + call connector
-          5. SecurityOutStage: content filter output
-          6. MeterStage: record usage + reconcile reservations (skipped in test mode)
+          4. ScratchpadStage / SummarizationStage / KnowledgeInjectStage /
+             DedupStage: §6A/§9 context assembly (post-security-filter content)
+          5. CacheStage: exact/semantic response cache lookup
+          6. RoutingStage: model/provider routing decision
+          7. DispatchStage: route to provider + call connector
+          8. SecurityOutStage: content filter output
+          9. MeterStage: record usage + reconcile reservations (skipped in test mode)
 
         Returns:
             Initialized ProxyPipeline instance.
@@ -641,7 +653,24 @@ class ProxyServer:
             valkey = None
 
         # Token budget stage - requires Redis/Valkey client
-        # In test mode (_TEST_MODE), use a mock limiter
+        # In test mode (_TEST_MODE), use a mock limiter regardless of
+        # whether a real Valkey client is available -- token-budget
+        # accounting isn't what test mode is proving.
+        #
+        # Note: this deliberately does NOT null out the shared `valkey`
+        # variable when test mode is on. CacheStage/RoutingEngine (below)
+        # read the same `valkey` and need the real client constructed above
+        # when a caller has pointed REDIS_URL at a live backend and turned
+        # on waddleai.response_cache/waddleai.smart_routing specifically to
+        # test them (see tests/e2e/test_response_cache_e2e.py) -- previously
+        # this branch reset `valkey = None` unconditionally whenever
+        # _TEST_MODE was true, which made the response-cache flag silently
+        # non-functional (every request 500'd on `self.valkey.get(...)`
+        # against a None client) under WADDLEAI_STUB_UPSTREAM=1 even with a
+        # live redis, exactly backwards from what test mode is for. Contract
+        # tests (tests/contract/conftest.py) are unaffected: they never set
+        # REDIS_URL, so `valkey` construction above already failed and is
+        # None regardless of this branch.
         if _TEST_MODE or valkey is None:
             # Simple mock token limiter for test mode / Valkey unavailable
             class MockTokenLimiter:
@@ -654,10 +683,6 @@ class ProxyServer:
                     pass
 
             token_limiter = MockTokenLimiter()
-            # No Valkey in test mode; RoutingEngine/RoutingStage degrade gracefully
-            # (see shared.routing resolvers) when valkey is None -- reads hit the
-            # DB directly with no caching, which is fine for the contract-test tier.
-            valkey = None
         else:
             # `valkey` was already constructed above (shared by TokenBudgetStage
             # and CacheStage); TokenLimiter never issues a call on a client that
@@ -713,9 +738,28 @@ class ProxyServer:
         # §6A proxy memory layers -- inserted after SecurityInStage, before
         # CacheStage/DispatchStage: context assembly runs on post-security-filter
         # content (poisoning defense §3.6). Order: scratchpad -> summarize ->
-        # dedup -> cache. Memory assembly runs before CacheStage (settled per
-        # memory_stages.py's module docstring) so cache keys hash the
-        # fully-assembled dispatch context rather than the raw request.
+        # knowledge (§9.5/§9.6) -> dedup -> cache. Memory/knowledge assembly runs
+        # before CacheStage (settled per memory_stages.py's module docstring) so
+        # cache keys hash the fully-assembled dispatch context rather than the
+        # raw request -- KnowledgeInjectStage mutates ctx.messages exactly like
+        # the memory stages do, so the same argument places it before cache too.
+        #
+        # KnowledgeInjectStage specifically lands between summarize and dedup,
+        # not merely "somewhere before cache":
+        #   - after scratchpad: its query is `_last_user_message_content`, so it
+        #     must run after any `waddleai://scratchpad/...` marker in the last
+        #     user turn has already been resolved to real text -- otherwise the
+        #     retrieval query is the literal marker string, not the user's intent.
+        #   - after summarize: retrieved context is ephemeral, per-request,
+        #     "unverified" reference material (§9.6), not conversation history --
+        #     it must never be folded into the persisted session summary
+        #     ConversationSummarizer writes, and running before summarize risks
+        #     exactly that (or the injected block being discarded immediately by
+        #     summarization before ever reaching the model).
+        #   - before dedup: so DedupStage's intra-request elision and §6.3
+        #     stable-block observation also apply to the injected block, letting
+        #     recurring retrieved chunks (e.g. the same doc pulled repeatedly in
+        #     a session) get deduped/observed like any other large content.
         from shared.memory.config import PROXY_MEMORY_FLAG, build_config_resolver
         from shared.memory.dedup_store import DedupStore
         from shared.memory.scratchpad import ScratchpadStore
@@ -733,12 +777,27 @@ class ProxyServer:
         dedup_store = DedupStore(self.memory_valkey)
         self.proxy_memory_config_resolver = config_resolver
 
+        # KnowledgeRetriever (§9.5): no concrete KnowledgeSourceBackend
+        # implementations (code/docs/uploaded/memory) exist in this repo yet --
+        # only the CodeSearchBackend protocol and the mcp-v2-facing pull-path
+        # functions in shared.knowledge.retriever. `sources={}` wires the stage
+        # in as a real, flag-gated pipeline member (ready to activate the moment
+        # a backend lands) while remaining a documented no-op today: __call__
+        # still resolves per-key/per-source flags, but retrieve() has nothing
+        # to query and returns no blocks.
+        from shared.knowledge.retriever import KnowledgeRetriever
+
+        self.knowledge_retriever = KnowledgeRetriever(
+            sources={}, scanner=self.security_scanner, content_filter=self.content_filter
+        )
+
         # RoutingStage (§7) is stage 5 per its own docstring, landing after any
         # CacheStage slot and before DispatchStage: security_in -> scratchpad ->
-        # summarize -> dedup -> cache -> routing -> dispatch. A cache hit still
-        # short-circuits DispatchStage before any routing-engine work runs, and
-        # routing sees the fully-assembled dispatch context (post memory-layer
-        # substitutions) rather than the raw request.
+        # summarize -> knowledge -> dedup -> cache -> routing -> dispatch. A
+        # cache hit still short-circuits DispatchStage before any routing-engine
+        # work runs, and routing sees the fully-assembled dispatch context (post
+        # memory-layer substitutions and knowledge injection) rather than the
+        # raw request.
         stages.extend(
             [
                 ScratchpadStage(
@@ -756,6 +815,12 @@ class ProxyServer:
                     scanner=self.security_scanner,
                     content_filter=self.content_filter,
                     flag=PROXY_MEMORY_FLAG,
+                ),
+                KnowledgeInjectStage(
+                    name="knowledge",
+                    retriever=self.knowledge_retriever,
+                    features=self.features,
+                    flag=KNOWLEDGE_INJECT_FLAG,
                 ),
                 DedupStage(
                     name="dedup",

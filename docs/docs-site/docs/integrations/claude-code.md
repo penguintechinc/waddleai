@@ -1,240 +1,89 @@
-# Connect Claude Code to WaddleAI
+# Claude Code + WaddleAI
 
-Use WaddleAI as the backend for Claude Code CLI to get intelligent routing, cost tracking, and multi-provider support.
+Claude Code speaks Anthropic's native `/v1/messages` API directly (not the
+OpenAI-compatible shape), so pointing it at WaddleAI relies on the proxy's
+`/v1/messages` fidelity work: streaming, `tool_use` blocks, system-prompt
+arrays, `thinking` blocks, prompt-cache passthrough, and `/v1/messages/count_tokens`
+all need to behave exactly like the real Anthropic API. That parity landed in
+Phase 1 (`feature/aiproxy-migration`), so this integration works as soon as
+your WaddleAI deployment is on that release — no MCP-v2 dependency.
 
-## Prerequisites
+## Setup
 
-- WaddleAI running (see [Quick Start](../getting-started/quick-start.md))
-- Claude Code CLI installed
-- WaddleAI API key
+```bash
+export ANTHROPIC_BASE_URL=https://your-waddleai-host
+export ANTHROPIC_API_KEY=wa-your-key-here
+```
 
-## Configuration
+Claude Code reads both at startup. No other config changes are needed —
+WaddleAI's `/v1/messages` and `/v1/messages/count_tokens` routes are wired
+to accept the same request/response shape Claude Code already sends and
+expects.
 
-### Step 1: Get Your API Key
+## What routes through WaddleAI
 
-1. Open WaddleAI Management Portal: http://localhost:8001
-2. Navigate to "API Keys"
-3. Click "Generate New API Key"
-4. Name it "Claude Code"
-5. Copy the generated key (starts with `wai_`)
+| Claude Code capability | WaddleAI route |
+|---|---|
+| Chat turns (streaming and non-streaming) | `POST /v1/messages` |
+| Token counting before a turn | `POST /v1/messages/count_tokens` |
+| Tool use (`tool_use`/`tool_result` blocks) | Passed through `/v1/messages` unchanged |
+| Extended thinking blocks | Passed through `/v1/messages` unchanged |
+| Prompt caching (`cache_control`) | Passed through to the upstream provider; cache hits/savings are reflected in the WaddleAI usage ledger |
 
-### Step 2: Configure Claude Code
+## MCP tools (optional, requires `waddleai.mcp_v2`)
 
-Create or edit `~/.config/claude/config.json`:
+Claude Code can also connect to WaddleAI's MCP server directly for
+`search_code`/`memory_search`/`list_models`/etc., independent of the
+`/v1/messages` traffic above. Add to your Claude Code MCP config:
 
 ```json
 {
-  "api": {
-    "type": "openai",
-    "base_url": "http://localhost:8000/v1",
-    "api_key": "wai_your_api_key_here"
-  },
-  "model": "claude-3-sonnet-20240229",
-  "features": {
-    "mcp": {
-      "enabled": true,
-      "servers": {
-        "waddleai": {
-          "type": "websocket",
-          "url": "ws://localhost:8765"
-        }
+  "mcpServers": {
+    "waddleai": {
+      "type": "http",
+      "url": "https://your-waddleai-host/mcp",
+      "headers": {
+        "Authorization": "Bearer wa-your-key-here"
       }
     }
   }
 }
 ```
 
-### Step 3: Test Connection
-
-```bash
-# Test with a simple command
-claude "Hello, are you using WaddleAI?"
-
-# Check routing in Management Portal
-# Navigate to Analytics → Routing Decisions
-```
-
-## Advanced Configuration
-
-### Use WaddleAI Routing
-
-Let WaddleAI choose the best model:
+Or, for a dev machine without a persistent HTTP connection, use the
+`waddleai-mcp` Rust stdio shim (see the [CLI docs](../../clients/waddleai-cli/README.md)):
 
 ```json
 {
-  "api": {
-    "type": "openai",
-    "base_url": "http://localhost:8000/v1",
-    "api_key": "wai_your_key_here"
-  },
-  "model": "auto",
-  "routing": {
-    "enabled": true,
-    "prefer_local": true,
-    "cost_optimization": true
+  "mcpServers": {
+    "waddleai": {
+      "command": "waddleai",
+      "args": ["mcp"],
+      "env": {
+        "WADDLEAI_API_URL": "https://your-waddleai-host",
+        "WADDLEAI_API_KEY": "wa-your-key-here"
+      }
+    }
   }
 }
 ```
 
-### Model Preferences
-
-Set model preferences per task:
-
-```json
-{
-  "models": {
-    "code": "codellama",
-    "chat": "claude-3-sonnet",
-    "analysis": "gpt-4"
-  }
-}
-```
-
-### MCP Integration
-
-Use WaddleAI's MCP endpoint for tool use:
-
-```json
-{
-  "mcp": {
-    "enabled": true,
-    "endpoint": "ws://localhost:8765",
-    "auth": {
-      "type": "bearer",
-      "token": "wai_your_key_here"
-    },
-    "tools": [
-      "file_operations",
-      "web_search",
-      "code_execution"
-    ]
-  }
-}
-```
-
-## Usage Examples
-
-### Basic Usage
-
-```bash
-# Simple query (routes to fast local model)
-claude "What is 2+2?"
-
-# Code generation (routes to CodeLlama)
-claude "Write a Python function to sort a list"
-
-# Analysis (routes to GPT-4)
-claude "Analyze this business plan: ..."
-```
-
-### With MCP Tools
-
-```bash
-# File operations via MCP
-claude "Read the contents of README.md and summarize"
-
-# Web search via MCP
-claude "Search for the latest Python best practices"
-
-# Code execution via MCP
-claude "Run this Python code and show results"
-```
-
-### Streaming Responses
-
-```bash
-# Enable streaming for real-time output
-claude --stream "Write a long story about AI"
-```
-
-## Monitoring Usage
-
-### View Usage in Management Portal
-
-1. Navigate to Analytics
-2. Filter by your API key
-3. View:
-   - Token usage per request
-   - Models used
-   - Routing decisions
-   - Cost breakdown
-
-### CLI Usage Stats
-
-```bash
-# View token usage
-claude --usage
-
-# View last 10 requests
-claude --history
-```
-
-## Cost Optimization
-
-### Local-First Strategy
-
-Configure to prefer local Ollama models:
-
-```json
-{
-  "routing": {
-    "strategy": "local_first",
-    "fallback": "cloud",
-    "max_cost_per_request": 0.01
-  }
-}
-```
-
-### Set Budget Limits
-
-In Management Portal:
-1. Edit your API key
-2. Set daily/monthly limits
-3. Claude Code will respect these limits
+Both forward to the same `/mcp` streamable-HTTP endpoint; the shim exists
+for environments where Claude Code's stdio-only transport is easier to wire
+than an HTTP MCP connection.
 
 ## Troubleshooting
 
-### "Connection refused"
+| Symptom | Cause | Fix |
+|---|---|---|
+| Claude Code reports an unrecognized response shape | Deployment predates the §5 `/v1/messages` fidelity work | Upgrade WaddleAI |
+| `401 Unauthorized` | `ANTHROPIC_API_KEY` isn't a valid `wa-` key, or `ANTHROPIC_BASE_URL` has a trailing path segment | Use the bare host, e.g. `https://waddleai.example.com` (no `/v1`) |
+| Tool calls silently drop context | Model behind the key doesn't support `tool_use` | Pin a model known to support tools via `set_preference` or the routing policy |
+| MCP tools missing | `waddleai.mcp_v2` flag off, or connecting to `/mcp/admin` with a non-admin key | Confirm the flag and that you're pointed at `/mcp`, not `/mcp/admin` |
 
-```bash
-# Check WaddleAI is running
-curl http://localhost:8000/healthz
+## See also
 
-# Verify API key
-curl -H "Authorization: Bearer wai_your_key" \
-  http://localhost:8000/v1/models
-```
-
-### "Model not found"
-
-Check available models:
-```bash
-curl -H "Authorization: Bearer wai_your_key" \
-  http://localhost:8000/v1/models
-```
-
-Add providers in Management Portal.
-
-### Slow Responses
-
-1. Check routing LLM is running (Ollama with llama3.2:1b)
-2. Verify Redis is connected
-3. Check provider response times in Analytics
-
-## Environment Variables
-
-Alternative to config file:
-
-```bash
-export CLAUDE_API_BASE_URL="http://localhost:8000/v1"
-export CLAUDE_API_KEY="wai_your_key_here"
-export CLAUDE_MODEL="auto"
-
-claude "Hello!"
-```
-
-## Next Steps
-
-- [Connect Cursor IDE](cursor-ide.md)
-- [VS Code Extension](vscode-extension.md)
-- [API Documentation](../api/openai-compatible.md)
+- [OpenCode](opencode.md) (default apparatus)
+- [Cursor](cursor.md)
+- [Antigravity](antigravity.md)
+- [Generic OpenAI-compatible clients](generic-openai.md)

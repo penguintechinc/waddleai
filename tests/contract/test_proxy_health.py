@@ -1,5 +1,4 @@
-"""
-Health check endpoint tests for the proxy service's K8s probe endpoints.
+"""Health check endpoint tests for the proxy service's K8s probe endpoints.
 
 These tests verify that /livez (liveness) and /readyz (readiness) endpoints
 are properly exposed, public (no auth required), and return correct status codes

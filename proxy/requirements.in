@@ -22,8 +22,10 @@ google-genai==2.14.0
 boto3>=1.28.0
 
 # PenguinTech Libraries
-penguin-aaa>=0.1.0
-penguin-dal>=0.2.1
+# 0.2.0 added OIDCAuthMiddleware(api_key_verifier=...), which proxy
+# main.py depends on -- 0.1.x raises TypeError at startup.
+penguin-aaa>=0.2.1
+penguin-dal>=0.4.1
 penguin-utils>=0.1.0
 penguin-sal>=0.2.0
 penguin-licensing>=0.1.0

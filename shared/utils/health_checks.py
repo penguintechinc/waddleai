@@ -1,6 +1,6 @@
-"""
-Health check system for WaddleAI components
-Provides comprehensive health monitoring for all services and dependencies
+"""Health check system for WaddleAI components.
+
+Provides comprehensive health monitoring for all services and dependencies.
 """
 
 import asyncio
@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 import psutil
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class HealthStatus(Enum):
-    """Health check status values"""
+    """Health check status values."""
 
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
@@ -29,29 +29,31 @@ class HealthStatus(Enum):
 
 @dataclass
 class HealthCheckResult:
-    """Result of a health check"""
+    """Result of a health check."""
 
     name: str
     status: HealthStatus
     message: str
-    details: Dict[str, Any]
+    details: dict[str, Any]
     timestamp: str
     duration_ms: float
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-safe dict, flattening the status enum to its value."""
         result = asdict(self)
         result["status"] = self.status.value
         return result
 
 
 class HealthChecker:
-    """Base health checker class"""
+    """Base health checker class."""
 
     def __init__(self, name: str):
+        """Name this checker; the name is the key it reports under."""
         self.name = name
 
     async def check(self) -> HealthCheckResult:
-        """Perform health check"""
+        """Perform health check."""
         start_time = time.time()
 
         try:
@@ -80,20 +82,21 @@ class HealthChecker:
                 duration_ms=duration_ms,
             )
 
-    async def _perform_check(self) -> tuple[HealthStatus, str, Dict[str, Any]]:
-        """Override this method in subclasses"""
+    async def _perform_check(self) -> tuple[HealthStatus, str, dict[str, Any]]:
+        """Override this method in subclasses."""
         raise NotImplementedError
 
 
 class DatabaseHealthChecker(HealthChecker):
-    """Database health checker"""
+    """Database health checker."""
 
     def __init__(self, name: str, db):
+        """Bind to the DAL handle whose connectivity this checker probes."""
         super().__init__(name)
         self.db = db
 
-    async def _perform_check(self) -> tuple[HealthStatus, str, Dict[str, Any]]:
-        """Check database connectivity and basic operations"""
+    async def _perform_check(self) -> tuple[HealthStatus, str, dict[str, Any]]:
+        """Check database connectivity and basic operations."""
         try:
             # Test basic connectivity with a simple query
             start_time = time.time()
@@ -106,27 +109,44 @@ class DatabaseHealthChecker(HealthChecker):
             # Check connection pool status if available
             details = {
                 "query_time_ms": query_time,
-                "connection_pool_size": getattr(self.db._adapter, "pool_size", "unknown"),
+                # getattr's default covers a missing pool_size, NOT a missing
+                # _adapter: `self.db._adapter` is evaluated first, and penguin-dal
+                # does not expose that PyDAL internal at all. The AttributeError
+                # was caught by the except below and reported as UNHEALTHY, so
+                # /readyz returned 503 unconditionally -- a readiness probe could
+                # never pass. Nest the lookup so an absent adapter is "unknown".
+                "connection_pool_size": getattr(
+                    getattr(self.db, "_adapter", None), "pool_size", "unknown"
+                ),
             }
 
             if query_time > 1000:  # More than 1 second
-                return HealthStatus.DEGRADED, f"Database slow (query took {query_time:.1f}ms)", details
+                return (
+                    HealthStatus.DEGRADED,
+                    f"Database slow (query took {query_time:.1f}ms)",
+                    details,
+                )
 
             return HealthStatus.HEALTHY, "Database connection healthy", details
 
         except Exception as e:
-            return HealthStatus.UNHEALTHY, f"Database connection failed: {str(e)}", {"error": str(e)}
+            return (
+                HealthStatus.UNHEALTHY,
+                f"Database connection failed: {str(e)}",
+                {"error": str(e)},
+            )
 
 
 class RedisHealthChecker(HealthChecker):
-    """Redis health checker"""
+    """Redis health checker."""
 
     def __init__(self, name: str, redis_url: str):
+        """Store the Redis URL; a client is opened per check, not held open."""
         super().__init__(name)
         self.redis_url = redis_url
 
-    async def _perform_check(self) -> tuple[HealthStatus, str, Dict[str, Any]]:
-        """Check Redis connectivity"""
+    async def _perform_check(self) -> tuple[HealthStatus, str, dict[str, Any]]:
+        """Check Redis connectivity."""
         client = None
         try:
             client = redis.from_url(self.redis_url)
@@ -163,15 +183,16 @@ class RedisHealthChecker(HealthChecker):
 
 
 class SystemResourcesHealthChecker(HealthChecker):
-    """System resources health checker"""
+    """System resources health checker."""
 
     def __init__(self, name: str, cpu_threshold: float = 90.0, memory_threshold: float = 90.0):
+        """Set the CPU/memory percentages above which the host reports degraded."""
         super().__init__(name)
         self.cpu_threshold = cpu_threshold
         self.memory_threshold = memory_threshold
 
-    async def _perform_check(self) -> tuple[HealthStatus, str, Dict[str, Any]]:
-        """Check system CPU and memory usage"""
+    async def _perform_check(self) -> tuple[HealthStatus, str, dict[str, Any]]:
+        """Check system CPU and memory usage."""
         try:
             # Get system stats
             cpu_percent = psutil.cpu_percent(interval=1)
@@ -212,14 +233,15 @@ class SystemResourcesHealthChecker(HealthChecker):
 
 
 class LLMProviderHealthChecker(HealthChecker):
-    """LLM provider health checker"""
+    """LLM provider health checker."""
 
     def __init__(self, name: str, llm_manager):
+        """Bind to the LLM manager whose configured providers get probed."""
         super().__init__(name)
         self.llm_manager = llm_manager
 
-    async def _perform_check(self) -> tuple[HealthStatus, str, Dict[str, Any]]:
-        """Check all LLM provider connections"""
+    async def _perform_check(self) -> tuple[HealthStatus, str, dict[str, Any]]:
+        """Check all LLM provider connections."""
         try:
             health_results = await self.llm_manager.health_check_all()
 
@@ -253,22 +275,29 @@ class LLMProviderHealthChecker(HealthChecker):
 
 
 class HTTPServiceHealthChecker(HealthChecker):
-    """HTTP service health checker"""
+    """HTTP service health checker."""
 
     def __init__(self, name: str, url: str, timeout: int = 10):
+        """Target an HTTP endpoint, giving up after `timeout` seconds."""
         super().__init__(name)
         self.url = url
         self.timeout = timeout
 
-    async def _perform_check(self) -> tuple[HealthStatus, str, Dict[str, Any]]:
-        """Check HTTP service availability"""
+    async def _perform_check(self) -> tuple[HealthStatus, str, dict[str, Any]]:
+        """Check HTTP service availability."""
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout)
+            ) as session:
                 start_time = time.time()
                 async with session.get(self.url) as response:
                     response_time = (time.time() - start_time) * 1000
 
-                    details = {"status_code": response.status, "response_time_ms": response_time, "url": self.url}
+                    details = {
+                        "status_code": response.status,
+                        "response_time_ms": response_time,
+                        "url": self.url,
+                    }
 
                     if response.status == 200:
                         if response_time > 5000:  # More than 5 seconds
@@ -283,46 +312,55 @@ class HTTPServiceHealthChecker(HealthChecker):
 
                     return status, message, details
 
-        except asyncio.TimeoutError:
-            return HealthStatus.UNHEALTHY, f"Service timeout after {self.timeout}s", {"url": self.url}
+        except TimeoutError:
+            return (
+                HealthStatus.UNHEALTHY,
+                f"Service timeout after {self.timeout}s",
+                {"url": self.url},
+            )
         except Exception as e:
-            return HealthStatus.UNHEALTHY, f"Service check failed: {str(e)}", {"error": str(e), "url": self.url}
+            return (
+                HealthStatus.UNHEALTHY,
+                f"Service check failed: {str(e)}",
+                {"error": str(e), "url": self.url},
+            )
 
 
 class WaddleAIHealthMonitor:
-    """Main health monitoring system"""
+    """Main health monitoring system."""
 
     def __init__(self, service_name: str):
+        """Create an empty monitor labelled for `service_name`; add checkers after."""
         self.service_name = service_name
-        self.checkers: List[HealthChecker] = []
-        self.last_results: Dict[str, HealthCheckResult] = {}
+        self.checkers: list[HealthChecker] = []
+        self.last_results: dict[str, HealthCheckResult] = {}
 
     def add_checker(self, checker: HealthChecker):
-        """Add a health checker"""
+        """Add a health checker."""
         self.checkers.append(checker)
 
     def add_database_check(self, name: str, db):
-        """Add database health check"""
+        """Add database health check."""
         self.add_checker(DatabaseHealthChecker(name, db))
 
     def add_redis_check(self, name: str, redis_url: str):
-        """Add Redis health check"""
+        """Add Redis health check."""
         self.add_checker(RedisHealthChecker(name, redis_url))
 
     def add_system_resources_check(self, name: str = "system_resources"):
-        """Add system resources health check"""
+        """Add system resources health check."""
         self.add_checker(SystemResourcesHealthChecker(name))
 
     def add_llm_providers_check(self, name: str, llm_manager):
-        """Add LLM providers health check"""
+        """Add LLM providers health check."""
         self.add_checker(LLMProviderHealthChecker(name, llm_manager))
 
     def add_http_service_check(self, name: str, url: str, timeout: int = 10):
-        """Add HTTP service health check"""
+        """Add HTTP service health check."""
         self.add_checker(HTTPServiceHealthChecker(name, url, timeout))
 
-    async def check_all(self) -> Dict[str, Any]:
-        """Run all health checks"""
+    async def check_all(self) -> dict[str, Any]:
+        """Run all health checks."""
         results = {}
         overall_status = HealthStatus.HEALTHY
 
@@ -382,8 +420,8 @@ class WaddleAIHealthMonitor:
 
         return summary
 
-    async def check_single(self, checker_name: str) -> Optional[Dict[str, Any]]:
-        """Run a single health check by name"""
+    async def check_single(self, checker_name: str) -> dict[str, Any] | None:
+        """Run a single health check by name."""
         checker = next((c for c in self.checkers if c.name == checker_name), None)
         if not checker:
             return None
@@ -392,8 +430,8 @@ class WaddleAIHealthMonitor:
         self.last_results[result.name] = result
         return result.to_dict()
 
-    def get_last_results(self) -> Dict[str, Any]:
-        """Get last health check results"""
+    def get_last_results(self) -> dict[str, Any]:
+        """Get last health check results."""
         if not self.last_results:
             return {
                 "service": self.service_name,

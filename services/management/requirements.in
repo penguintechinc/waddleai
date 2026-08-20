@@ -4,6 +4,11 @@
 # Web framework (Quart — async-native Flask superset, house standard)
 quart>=0.19.0
 quart-cors>=0.7.0
+# Exact-pinned (not >=): openapi.py reaches into quart_schema.extension's
+# private _build_openapi_schema helper (no public equivalent in 0.19.x) to
+# implement the public/full spec split required by backend.md OpenAPI --
+# an unpinned minor bump could silently rename/remove it.
+quart-schema==0.19.0
 hypercorn>=0.16.0
 
 # Database
@@ -13,9 +18,16 @@ psycopg2-binary>=2.9.9
 pgvector>=0.3.0
 pymysql>=1.1.0
 
+# Local-only profile (shared/vectorstore/qdrant_backend.py, spec §17): the
+# Qdrant vector-store backend, lazily imported only when
+# waddleai.local_only_profile is enabled -- see shared/vectorstore/factory.py.
+qdrant-client>=1.7.0
+
 # PenguinTech Libraries
-penguin-aaa>=0.1.0
-penguin-dal>=0.2.1
+# 0.2.0 added OIDCAuthMiddleware(api_key_verifier=...), which proxy
+# main.py depends on -- 0.1.x raises TypeError at startup.
+penguin-aaa>=0.2.1
+penguin-dal>=0.4.1
 penguin-utils>=0.1.0
 penguin-sal>=0.2.0
 penguin-licensing>=0.1.0
@@ -117,3 +129,9 @@ httpx>=0.26.0
 # happened to be installed in-sandbox; CI has no such package and failed
 # with "fixture 'httpserver' not found".
 pytest-httpserver>=1.0.8
+
+# Fast JSON used by shared/cache and shared/memory, which the management
+# service imports via api/v1/cache_configs.py. Declared in the root and
+# proxy requirements but NOT here, so the management image built fine,
+# passed syntax checks, and then crashed on boot with ModuleNotFoundError.
+orjson>=3.9.10

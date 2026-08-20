@@ -1,7 +1,7 @@
-"""
-Golden-snapshot contract tests for the proxy service's `/v1/*` and `/mem0/*`
-HTTP surface, captured against the current implementation. These snapshots
-are the behavior baseline that upcoming k8s/dependency changes must preserve.
+"""Golden-snapshot contract tests for the proxy service's `/v1/*` and `/mem0/*` HTTP surface.
+
+Captured against the current implementation. These snapshots are the
+behavior baseline that upcoming k8s/dependency changes must preserve.
 
 Do not modify `conftest.py` or `snapshot.py` -- see tests/contract/ for the
 shared harness (`proxy_url` fixture, `assert_snapshot`).
@@ -61,11 +61,13 @@ def _drop_keys(obj, *keys):
 
 
 def test_models_list(proxy_url):
+    """GET /v1/models with a valid Bearer JWT returns the seeded model list."""
     r = httpx.get(f"{proxy_url}/v1/models", headers=_bearer_headers(proxy_url))
     assert_snapshot("proxy_models_list", status=r.status_code, body=r.json())
 
 
 def test_models_unauth(proxy_url):
+    """GET /v1/models with no Authorization header is rejected."""
     r = httpx.get(f"{proxy_url}/v1/models")
     assert_snapshot("proxy_models_unauth", status=r.status_code, body=r.json())
 
@@ -76,15 +78,19 @@ def test_models_unauth(proxy_url):
 
 
 def test_chat_completions(proxy_url):
+    """POST /v1/chat/completions with valid auth and body returns 200 + completion."""
     r = httpx.post(
         f"{proxy_url}/v1/chat/completions",
         headers=_bearer_headers(proxy_url),
         json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hello world"}]},
     )
-    assert_snapshot("proxy_chat_completions", status=r.status_code, body=_drop_keys(r.json(), "created"))
+    assert_snapshot(
+        "proxy_chat_completions", status=r.status_code, body=_drop_keys(r.json(), "created")
+    )
 
 
 def test_chat_completions_unauth(proxy_url):
+    """POST /v1/chat/completions with no Authorization header is rejected."""
     r = httpx.post(
         f"{proxy_url}/v1/chat/completions",
         json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hello"}]},
@@ -93,9 +99,12 @@ def test_chat_completions_unauth(proxy_url):
 
 
 def test_chat_completions_malformed_body(proxy_url):
-    # Real current behavior: request.get_json() raises Quart's BadRequest,
-    # which the handler's broad `except Exception` catches and reports as a
-    # 500 "Internal server error" rather than letting the 400 propagate.
+    """POST /v1/chat/completions with a non-JSON body currently 500s, not 400s.
+
+    Real current behavior: request.get_json() raises Quart's BadRequest,
+    which the handler's broad `except Exception` catches and reports as a
+    500 "Internal server error" rather than letting the 400 propagate.
+    """
     r = httpx.post(
         f"{proxy_url}/v1/chat/completions",
         headers={**_bearer_headers(proxy_url), "Content-Type": "application/json"},
@@ -120,6 +129,7 @@ def _messages_auth_headers(base):
 
 
 def test_messages(proxy_url):
+    """POST /v1/messages with a valid Bearer JWT + x-api-key returns 200."""
     r = httpx.post(
         f"{proxy_url}/v1/messages",
         headers=_messages_auth_headers(proxy_url),
@@ -133,19 +143,29 @@ def test_messages(proxy_url):
 
 
 def test_messages_unauth(proxy_url):
-    # No Authorization header at all -- rejected by OIDCAuthMiddleware before
-    # claude_messages()'s own x-api-key check ever runs.
+    """POST /v1/messages with no Authorization header at all is rejected.
+
+    Rejected by OIDCAuthMiddleware before claude_messages()'s own
+    x-api-key check ever runs.
+    """
     r = httpx.post(
         f"{proxy_url}/v1/messages",
-        json={"model": "claude-3-sonnet-20240229", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+        json={
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
     )
     assert_snapshot("proxy_messages_unauth", status=r.status_code, body=r.json())
 
 
 def test_messages_malformed_body(proxy_url):
-    # Real current behavior: same as chat_completions -- the BadRequest from
-    # request.get_json() is caught by claude_messages()'s outer
-    # `except Exception` and reported as a 500, not a 400.
+    """POST /v1/messages with a non-JSON body currently 500s, not 400s.
+
+    Real current behavior: same as chat_completions -- the BadRequest from
+    request.get_json() is caught by claude_messages()'s outer
+    `except Exception` and reported as a 500, not a 400.
+    """
     r = httpx.post(
         f"{proxy_url}/v1/messages",
         headers={**_messages_auth_headers(proxy_url), "Content-Type": "application/json"},
@@ -160,6 +180,7 @@ def test_messages_malformed_body(proxy_url):
 
 
 def test_mem0_memories_post(proxy_url):
+    """POST /mem0/memories with valid auth + body stores a memory."""
     r = httpx.post(
         f"{proxy_url}/mem0/memories",
         headers=_bearer_headers(proxy_url),
@@ -169,28 +190,40 @@ def test_mem0_memories_post(proxy_url):
 
 
 def test_mem0_memories_get(proxy_url):
-    r = httpx.get(f"{proxy_url}/mem0/memories", params={"user_id": "1"}, headers=_bearer_headers(proxy_url))
+    """GET /mem0/memories with valid auth lists memories for user_id."""
+    r = httpx.get(
+        f"{proxy_url}/mem0/memories", params={"user_id": "1"}, headers=_bearer_headers(proxy_url)
+    )
     assert_snapshot("proxy_mem0_get", status=r.status_code, body=r.json())
 
 
 def test_mem0_memories_delete(proxy_url):
-    # Real current behavior: PgvectorMemoryStore.write_db.executesql() is
-    # called with Postgres-style `%s` placeholders directly against sqlite
-    # (no pgvector, no memory_embeddings table in the contract-test schema),
-    # which raises -- caught by mem0_api.delete_memory()'s own try/except and
-    # reported as a 500 with an HTML (not JSON) body.
-    r = httpx.delete(f"{proxy_url}/mem0/memories/1", params={"user_id": "1"}, headers=_bearer_headers(proxy_url))
+    """DELETE /mem0/memories/1 currently 500s with an HTML body, not JSON.
+
+    Real current behavior: PgvectorMemoryStore.write_db.executesql() is
+    called with Postgres-style `%s` placeholders directly against sqlite
+    (no pgvector, no memory_embeddings table in the contract-test schema),
+    which raises -- caught by mem0_api.delete_memory()'s own try/except and
+    reported as a 500 with an HTML (not JSON) body.
+    """
+    r = httpx.delete(
+        f"{proxy_url}/mem0/memories/1", params={"user_id": "1"}, headers=_bearer_headers(proxy_url)
+    )
     assert_snapshot("proxy_mem0_delete", status=r.status_code, body=r.text)
 
 
 def test_mem0_memories_unauth(proxy_url):
+    """GET /mem0/memories with no Authorization header is rejected."""
     r = httpx.get(f"{proxy_url}/mem0/memories")
     assert_snapshot("proxy_mem0_unauth", status=r.status_code, body=r.json())
 
 
 def test_mem0_memories_post_malformed_body(proxy_url):
-    # Real current behavior: add_memories() does not catch the BadRequest
-    # from request.get_json(), so it propagates as a genuine 400.
+    """POST /mem0/memories with a non-JSON body genuinely 400s (unlike chat/messages).
+
+    Real current behavior: add_memories() does not catch the BadRequest
+    from request.get_json(), so it propagates as a genuine 400.
+    """
     r = httpx.post(
         f"{proxy_url}/mem0/memories",
         headers={**_bearer_headers(proxy_url), "Content-Type": "application/json"},
@@ -200,8 +233,11 @@ def test_mem0_memories_post_malformed_body(proxy_url):
 
 
 def test_mem0_memories_search(proxy_url):
-    # Search memories by semantic similarity. Against sqlite (no embedding
-    # backend / ollama server), the search returns empty results.
+    """POST /mem0/memories/search returns empty results against sqlite.
+
+    Search memories by semantic similarity. Against sqlite (no embedding
+    backend / ollama server), the search returns empty results.
+    """
     r = httpx.post(
         f"{proxy_url}/mem0/memories/search",
         headers=_bearer_headers(proxy_url),
@@ -211,9 +247,12 @@ def test_mem0_memories_search(proxy_url):
 
 
 def test_mem0_memories_clear(proxy_url):
-    # Bulk-clear all memories for a user. Real current behavior: sqlite has
-    # no memory_embeddings table, so the PgvectorMemoryStore.clear_memories()
-    # call fails closed (caught and 500 returned, HTML body).
+    """DELETE /mem0/memories bulk-clears all memories for a user.
+
+    Real current behavior: sqlite has no memory_embeddings table, so the
+    PgvectorMemoryStore.clear_memories() call fails closed (caught and 500
+    returned, HTML body).
+    """
     r = httpx.delete(
         f"{proxy_url}/mem0/memories",
         params={"user_id": "1"},
@@ -272,7 +311,11 @@ def test_mem0_memories_post_cross_org_denied(proxy_url):
     r = httpx.post(
         f"{proxy_url}/mem0/memories",
         headers=_bearer_headers(proxy_url),
-        json={"messages": [{"role": "user", "content": "test"}], "user_id": "1", "organization_id": 9999},
+        json={
+            "messages": [{"role": "user", "content": "test"}],
+            "user_id": "1",
+            "organization_id": 9999,
+        },
     )
     assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
     assert "organization mismatch" in r.json().get("error", "").lower()
@@ -440,9 +483,11 @@ def test_mem0_post_invalid_scope(proxy_url):
 
 
 def test_mem0_post_org_scope_flag_off(proxy_url):
-    """Org-scoped writes are feature-flag gated (waddleai.memory-org-scope,
-    default OFF) — with the flag unset, behavior is personal-only lockdown.
-    # regression: org scope must be opt-in via flag, default OFF"""
+    """Org-scoped writes are feature-flag gated (waddleai.memory-org-scope, default OFF).
+
+    With the flag unset, behavior is personal-only lockdown.
+    # regression: org scope must be opt-in via flag, default OFF
+    """
     r = httpx.post(
         f"{proxy_url}/mem0/memories",
         headers=_bearer_headers(proxy_url),
@@ -462,6 +507,7 @@ def test_mem0_post_metadata_scope_fallback_flag_off(proxy_url):
 
 
 def test_mem0_search_invalid_scope_filter(proxy_url):
+    """POST /mem0/memories/search with an unknown scope value is a hard 400."""
     r = httpx.post(
         f"{proxy_url}/mem0/memories/search",
         headers=_bearer_headers(proxy_url),
@@ -481,6 +527,7 @@ def test_mem0_search_scope_filter_org(proxy_url):
 
 
 def test_mem0_list_scope_filter_user(proxy_url):
+    """GET /mem0/memories with scope=user filters to the caller's own memories."""
     r = httpx.get(
         f"{proxy_url}/mem0/memories",
         params={"scope": "user"},
@@ -490,6 +537,7 @@ def test_mem0_list_scope_filter_user(proxy_url):
 
 
 def test_mem0_list_invalid_scope_filter(proxy_url):
+    """GET /mem0/memories with scope=all (an internal sentinel) is rejected on the wire."""
     r = httpx.get(
         f"{proxy_url}/mem0/memories",
         params={"scope": "all"},  # internal sentinel — not accepted on the wire
@@ -499,9 +547,12 @@ def test_mem0_list_invalid_scope_filter(proxy_url):
 
 
 def test_mem0_clear_org_all_requires_moderation(proxy_url):
-    """Full org wipe is moderator-gated; the member token (role 'user') has
-    no memory:moderate and must get 403 BEFORE any store call.
-    # regression: org-wide memory wipe requires memory:moderate"""
+    """Full org wipe is moderator-gated.
+
+    The member token (role 'user') has no memory:moderate and must get
+    403 BEFORE any store call.
+    # regression: org-wide memory wipe requires memory:moderate
+    """
     r = httpx.delete(
         f"{proxy_url}/mem0/memories",
         params={"scope": "org", "all": "true"},

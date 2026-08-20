@@ -57,8 +57,10 @@ python-dateutil>=2.8.2
 pyyaml>=6.0.1
 toml>=0.10.2
 # PenguinTech Libraries
-penguin-aaa>=0.1.0
-penguin-dal>=0.2.1
+# 0.2.0 added OIDCAuthMiddleware(api_key_verifier=...), which proxy
+# main.py depends on -- 0.1.x raises TypeError at startup.
+penguin-aaa>=0.2.1
+penguin-dal>=0.4.1
 penguin-utils>=0.1.0
 penguin-sal>=0.2.0
 # Development and Testing

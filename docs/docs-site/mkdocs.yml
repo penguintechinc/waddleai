@@ -1,5 +1,5 @@
 site_name: WaddleAI Documentation
-site_url: https://docs.waddlebot.ai
+site_url: https://docs.waddleai.com
 site_description: AI proxy and management system with OpenAI-compatible APIs
 
 theme:

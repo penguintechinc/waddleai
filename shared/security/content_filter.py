@@ -1,5 +1,4 @@
-"""
-Dual-phase content filtering engine for prompt inputs and LLM outputs.
+"""Dual-phase content filtering engine for prompt inputs and LLM outputs.
 
 Implements comprehensive PII/PCI detection with custom organizational rules,
 LLM-based auditing for uncertain cases, and detailed audit logging.
@@ -16,11 +15,13 @@ from dataclasses import dataclass
 from typing import Any, TypedDict
 
 import aiohttp
+from prometheus_client import Counter
 
 # NER filter — optional; graceful degradation if presidio/transformers unavailable
 try:
     from shared.security.ner_filter import ENTITY_CONFIG as NER_ENTITY_CONFIG
     from shared.security.ner_filter import NEREntity, NERFilter, ner_analyze
+
     _NER_AVAILABLE = True
 except ImportError:
     _NER_AVAILABLE = False
@@ -30,6 +31,40 @@ except ImportError:
     NER_ENTITY_CONFIG: dict = {}  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+# Distinguishes _filter()'s two internal-failure outcomes: fail_open (a
+# genuine operational failure -- DB timeout, unreachable LLM auditor, NER
+# process-pool crash -- deliberately lets content through, matching
+# SecurityPolicyEngine's degrade-not-closed default) from fail_closed (a
+# programming defect -- TypeError/AttributeError/etc. -- deliberately
+# blocks content rather than being silently indistinguishable from the
+# operational case). A rising fail_open rate is a silent security
+# degradation and must be alertable on its own.
+#
+# A plain module-level Counter rather than routing through
+# shared.utils.metrics.WaddleAIMetrics: that class's get_proxy_metrics()
+# and get_management_metrics() singletons construct fresh Counter/Histogram
+# objects per instance and collide ("Duplicated timeseries in
+# CollectorRegistry") the first time both are built in one process --
+# ContentFilter is instantiated by both proxy and management, so reusing
+# either singleton would import that latent bug into this module. Fixing
+# WaddleAIMetrics itself is out of scope here.
+_content_filter_fail_total = Counter(
+    "waddleai_content_filter_fail_total",
+    "ContentFilter internal failures, split by outcome",
+    ["phase", "mode"],  # mode: fail_open (operational) | fail_closed (programming defect)
+)
+
+
+def _record_fail_mode(phase: str, mode: str) -> None:
+    """Record a ContentFilter internal-failure outcome for alerting.
+
+    Args:
+        phase: "input" or "output"
+        mode: "fail_open" or "fail_closed"
+    """
+    _content_filter_fail_total.labels(phase=phase, mode=mode).inc()
+
 
 # Shared, module-scoped process pool for tier-3 NER (§3.5): Presidio/spaCy
 # analysis is CPU-bound and must never run on the event loop or even the
@@ -95,7 +130,9 @@ class FilterViolation:
     matched_text: str  # First 100 chars of match (for audit logging/display)
     action: str
     confidence: float
-    full_matched_text: str = ""  # Full matched text for redaction (default: empty, used only if set)
+    full_matched_text: str = (
+        ""  # Full matched text for redaction (default: empty, used only if set)
+    )
 
 
 @dataclass(slots=True)
@@ -107,11 +144,17 @@ class FilterResult:
     violations: list[FilterViolation]
     filtered_text: str  # Original or redacted version
     auditor_used: bool
+    # Which NER backend produced any ner_entity violations above: "presidio",
+    # "transformers", or "none" (NER tier unavailable/skipped). Presidio and
+    # the transformers fallback score entities differently (see
+    # _MIN_NER_CONFIDENCE) -- a security control silently changing which
+    # engine drove a redact/allow decision must be visible on the result
+    # itself, not inferred from which packages happen to be installed.
+    ner_backend: str = "none"
 
 
 class ContentFilter:
-    """
-    Dual-phase content filter for prompt inputs and LLM response outputs.
+    """Dual-phase content filter for prompt inputs and LLM response outputs.
 
     Combines built-in PII/PCI patterns with custom organizational rules
     and optional LLM-based auditing for uncertain cases.
@@ -132,7 +175,7 @@ class ContentFilter:
         },
         "routing_number": {
             "pattern": r"\b[0-3]\d{8}\b",
-            "description": "US bank routing numbers (ABA/RTN — context required to reduce false positives)",
+            "description": "US bank routing numbers (ABA/RTN — context required to reduce false positives)",  # noqa: E501 -- regex literal, do not wrap
             "confidence": 0.65,
         },
         "iban": {
@@ -148,7 +191,7 @@ class ContentFilter:
         },
         "ssn_unformatted": {
             "pattern": r"\b(?!000|666|9\d{2})\d{3}(?!00)\d{2}(?!0000)\d{4}\b",
-            "description": "US SSN without dashes (higher false-positive risk — enable with caution)",
+            "description": "US SSN without dashes (higher false-positive risk — enable with caution)",  # noqa: E501 -- regex literal, do not wrap
             "confidence": 0.60,
         },
         "passport_us": {
@@ -162,7 +205,7 @@ class ContentFilter:
             "confidence": 0.80,
         },
         "drivers_license_us": {
-            "pattern": r"\b(?:d(?:river)?(?:\'?s)?\s*lic(?:ense)?|d\.?l\.?)\s*[#:\s]*([A-Z0-9]{6,12})\b",
+            "pattern": r"\b(?:d(?:river)?(?:\'?s)?\s*lic(?:ense)?|d\.?l\.?)\s*[#:\s]*([A-Z0-9]{6,12})\b",  # noqa: E501 -- regex literal, do not wrap
             "description": "US driver's license numbers (context-anchored)",
             "confidence": 0.75,
         },
@@ -194,18 +237,18 @@ class ContentFilter:
             "confidence": 0.80,
         },
         "date_of_birth": {
-            "pattern": r"\b(?:dob|date\s+of\s+birth|birth\s*(?:date|day))\s*[:\-]?\s*(?:\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2})\b",
+            "pattern": r"\b(?:dob|date\s+of\s+birth|birth\s*(?:date|day))\s*[:\-]?\s*(?:\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2})\b",  # noqa: E501 -- regex literal, do not wrap
             "description": "Date of birth with context keyword (dob/date of birth/birthdate)",
             "confidence": 0.85,
         },
         # ── Network / Infrastructure ──────────────────────────────────────
         "ip_address_private": {
-            "pattern": r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b",
+            "pattern": r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b",  # noqa: E501 -- regex literal, do not wrap
             "description": "Private/RFC-1918 IP addresses",
             "confidence": 0.90,
         },
         "ip_address_public": {
-            "pattern": r"\b(?!(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)(?!172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b)(?!192\.168\.\d{1,3}\.\d{1,3}\b)(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",
+            "pattern": r"\b(?!(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)(?!172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b)(?!192\.168\.\d{1,3}\.\d{1,3}\b)(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",  # noqa: E501 -- regex literal, do not wrap
             "description": "Public IPv4 addresses (GDPR treats all IPs as personal data)",
             "confidence": 0.75,
         },
@@ -254,8 +297,7 @@ class ContentFilter:
         # their own classifiers rather than this one.
         auditor_model: str = "shieldgemma:2b",
     ) -> None:
-        """
-        Initialize content filter.
+        """Initialize content filter.
 
         Args:
             db: penguin-dal database instance
@@ -300,7 +342,9 @@ class ContentFilter:
                 spacy_model = os.getenv("NER_SPACY_MODEL", "en_core_web_lg")
                 self.ner_filter = NERFilter(spacy_model=spacy_model)
                 if not self.ner_filter.available:
-                    logger.warning("NER filter initialized but no backend available. NER tier disabled.")
+                    logger.warning(
+                        "NER filter initialized but no backend available. NER tier disabled."
+                    )
                     self.ner_filter = None
             except Exception as e:
                 logger.warning(f"NER filter init failed: {e}. NER tier disabled.")
@@ -313,8 +357,7 @@ class ContentFilter:
         org_id: int | None = None,
         ip: str | None = None,
     ) -> FilterResult:
-        """
-        Filter prompt input before sending to LLM.
+        """Filter prompt input before sending to LLM.
 
         Args:
             text: Input text to filter
@@ -340,8 +383,7 @@ class ContentFilter:
         org_id: int | None = None,
         ip: str | None = None,
     ) -> FilterResult:
-        """
-        Filter LLM response output before returning to user.
+        """Filter LLM response output before returning to user.
 
         Args:
             text: Output text to filter
@@ -369,8 +411,7 @@ class ContentFilter:
         org_id: int | None = None,
         ip: str | None = None,
     ) -> FilterResult:
-        """
-        Execute dual-phase filtering pipeline.
+        """Execute dual-phase filtering pipeline.
 
         Args:
             text: Text to filter
@@ -389,14 +430,10 @@ class ContentFilter:
             violations.extend(await self._run_builtin_patterns(text, phase, org_id))
 
             # Phase 2: Run custom organizational rules
-            violations.extend(
-                await self._run_custom_rules(text, phase, org_id)
-            )
+            violations.extend(await self._run_custom_rules(text, phase, org_id))
 
             # Phase 3: NER-based entity detection (names, locations, medical, etc.)
-            violations.extend(
-                await self._run_ner_patterns(text, phase, org_id)
-            )
+            violations.extend(await self._run_ner_patterns(text, phase, org_id))
 
             # Determine action based on violations
             action, filtered_text = self._determine_action(text, violations)
@@ -414,11 +451,31 @@ class ContentFilter:
                     auditor_used = True
                     if should_block:
                         action = "block"
+                except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
+                    # Programming defect in the auditor call path (e.g. a bad
+                    # message-building call), not "Ollama is unreachable" --
+                    # NOT the same as the operational timeout/connection-error
+                    # case below. Fail CLOSED: override the rule-based action
+                    # rather than silently falling back to it, so a defect in
+                    # this tier can never quietly downgrade an uncertain case
+                    # to whatever the pattern tiers alone decided.
+                    logger.error(
+                        "LLM auditor call is broken (phase=%s): %s: %s -- "
+                        "this is a code defect, not a transient failure; failing closed.",
+                        phase,
+                        type(e).__name__,
+                        e,
+                        exc_info=True,
+                    )
+                    action = "block"
+                    auditor_used = False
+                    _record_fail_mode(phase, "fail_closed")
                 except Exception as e:
                     logger.warning(
                         f"LLM auditor failed (phase={phase}): {e}. "
                         f"Continuing with rule-based decision."
                     )
+                    _record_fail_mode(phase, "fail_open")
 
             # Create result
             result = FilterResult(
@@ -427,6 +484,7 @@ class ContentFilter:
                 violations=violations,
                 filtered_text=filtered_text,
                 auditor_used=auditor_used,
+                ner_backend=self.ner_filter.mode if self.ner_filter is not None else "none",
             )
 
             # Log filtering event
@@ -440,9 +498,42 @@ class ContentFilter:
 
             return result
 
+        except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
+            # A programming defect (wrong call signature, missing attribute,
+            # typo'd name, broken import) reaching here is not an
+            # operational failure -- DB timeouts, unreachable auditors, and
+            # NER process-pool crashes are already caught and degraded at
+            # their own tier (see _run_ner_patterns, _load_custom_rules,
+            # _invoke_llm_auditor) and never reach this branch. Historical
+            # precedent: SecurityOutStage called filter_output(..., ip=None)
+            # against a signature with no `ip` param; every call raised
+            # TypeError, a blanket `except Exception` here swallowed it, and
+            # output PII filtering silently never ran in production. Fail
+            # CLOSED and log loudly so that class of bug can never again be
+            # indistinguishable from an ordinary fail-open path.
+            logger.error(
+                "Content filter internal defect (phase=%s): %s: %s -- "
+                "this is a code defect, not a transient failure; failing closed.",
+                phase,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )
+            _record_fail_mode(phase, "fail_closed")
+            return FilterResult(
+                allowed=False,
+                action="block",
+                violations=[],
+                filtered_text=text,
+                auditor_used=False,
+            )
         except Exception as e:
-            logger.error(f"Content filter error (phase={phase}): {e}")
-            # Fail open: allow the content on unexpected errors
+            # Genuine operational failure (DB unreachable, network blip,
+            # unexpected upstream shape) -- fail open is the deliberate,
+            # documented availability choice for this class of error
+            # (matches SecurityPolicyEngine's degrade-not-closed default).
+            logger.error(f"Content filter error (phase={phase}): {e}", exc_info=True)
+            _record_fail_mode(phase, "fail_open")
             return FilterResult(
                 allowed=True,
                 action="allow",
@@ -457,8 +548,7 @@ class ContentFilter:
         target: str,
         org_id: int | None = None,
     ) -> list[FilterViolation]:
-        """
-        Run built-in PII/PCI regex patterns, skipping any disabled by org config.
+        """Run built-in PII/PCI regex patterns, skipping any disabled by org config.
 
         Args:
             text: Text to scan
@@ -499,8 +589,7 @@ class ContentFilter:
         target: str,
         org_id: int | None,
     ) -> list[FilterViolation]:
-        """
-        Load and apply org-scoped and global custom rules from database.
+        """Load and apply org-scoped and global custom rules from database.
 
         Args:
             text: Text to scan
@@ -512,61 +601,61 @@ class ContentFilter:
         """
         violations: list[FilterViolation] = []
 
-        try:
-            # Load rules with TTL cache
-            rules = await self._load_custom_rules(org_id)
+        # _load_custom_rules() already fails open internally on its own
+        # operational errors (DB unreachable, query failure -- see its
+        # docstring/handler) and always returns a list, never raises. The
+        # loop below is local, in-process rule-application logic; a defect
+        # there (e.g. a malformed cached FilterRule) is a programming error,
+        # not "the DB was unreachable," and must propagate to `_filter()`'s
+        # classification rather than being silently treated the same as a
+        # rule-load outage.
+        rules = await self._load_custom_rules(org_id)
 
-            for rule in rules:
-                # Skip if target doesn't match
-                if rule.target not in (target, "both"):
-                    continue
+        for rule in rules:
+            # Skip if target doesn't match
+            if rule.target not in (target, "both"):
+                continue
 
-                if rule.rule_type == "custom_string":
-                    # Case-insensitive substring matching
-                    if rule.pattern.lower() in text.lower():
-                        start_idx = text.lower().find(rule.pattern.lower())
-                        end_idx = start_idx + len(rule.pattern)
-                        # Extract context for logging (up to 100 chars from start point)
-                        matched_text = text[start_idx : start_idx + 100]
-                        # Full matched text is the exact substring found
-                        full_matched_text = text[start_idx:end_idx]
+            if rule.rule_type == "custom_string":
+                # Case-insensitive substring matching
+                if rule.pattern.lower() in text.lower():
+                    start_idx = text.lower().find(rule.pattern.lower())
+                    end_idx = start_idx + len(rule.pattern)
+                    # Extract context for logging (up to 100 chars from start point)
+                    matched_text = text[start_idx : start_idx + 100]
+                    # Full matched text is the exact substring found
+                    full_matched_text = text[start_idx:end_idx]
+                    violation = FilterViolation(
+                        rule_name=rule.name,
+                        rule_type="custom_string",
+                        matched_text=matched_text,
+                        action=rule.action,
+                        confidence=0.95,
+                        full_matched_text=full_matched_text,
+                    )
+                    violations.append(violation)
+
+            elif rule.rule_type == "custom_regex":
+                try:
+                    pattern = re.compile(
+                        rule.pattern,
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                    matches = pattern.finditer(text)
+                    for match in matches:
+                        full_match = match.group(0)
+                        matched_text = full_match[:100]  # Truncated for audit logging
                         violation = FilterViolation(
                             rule_name=rule.name,
-                            rule_type="custom_string",
+                            rule_type="custom_regex",
                             matched_text=matched_text,
                             action=rule.action,
-                            confidence=0.95,
-                            full_matched_text=full_matched_text,
+                            confidence=0.90,
+                            full_matched_text=full_match,  # Full text for complete redaction
                         )
                         violations.append(violation)
-
-                elif rule.rule_type == "custom_regex":
-                    try:
-                        pattern = re.compile(
-                            rule.pattern,
-                            re.IGNORECASE | re.DOTALL,
-                        )
-                        matches = pattern.finditer(text)
-                        for match in matches:
-                            full_match = match.group(0)
-                            matched_text = full_match[:100]  # Truncated for audit logging
-                            violation = FilterViolation(
-                                rule_name=rule.name,
-                                rule_type="custom_regex",
-                                matched_text=matched_text,
-                                action=rule.action,
-                                confidence=0.90,
-                                full_matched_text=full_match,  # Full text for complete redaction
-                            )
-                            violations.append(violation)
-                    except re.error as e:
-                        logger.warning(
-                            f"Invalid regex in rule {rule.name}: {e}"
-                        )
-
-        except Exception as e:
-            logger.error(f"Failed to load custom rules for org {org_id}: {e}")
-            # Continue with only built-in patterns if rule load fails
+                except re.error as e:
+                    logger.warning(f"Invalid regex in rule {rule.name}: {e}")
 
         return violations
 
@@ -577,8 +666,7 @@ class ContentFilter:
         violations: list[FilterViolation],
         org_id: int | None = None,
     ) -> tuple[bool, str]:
-        """
-        Invoke local Ollama LLM auditor for uncertain cases.
+        """Invoke local Ollama LLM auditor for uncertain cases.
 
         Args:
             text: Text to audit
@@ -589,56 +677,66 @@ class ContentFilter:
         Returns:
             Tuple of (should_block, explanation)
         """
+        is_shieldgemma = "shieldgemma" in self.auditor_model.lower()
+        # §8.3 Granite Guardian: IBM's Apache-2.0 guard model family
+        # (granite3-guardian:2b, granite4.1-guardian) -- selectable
+        # alternative to ShieldGemma via the resolved policy's tier4_model.
+        is_granite_guardian = "guardian" in self.auditor_model.lower()
+
+        # Message construction is pure local logic (string/list building,
+        # no I/O). A failure here is a programming defect -- a bad
+        # message-builder call, an unexpected violations shape -- not
+        # "Ollama is unreachable," and is deliberately left OUTSIDE the
+        # try/except below so it propagates to `_filter()`'s call site,
+        # which fails closed on this class of error rather than treating it
+        # identically to an auditor timeout.
+        if is_shieldgemma:
+            # ShieldGemma: single user-role message with policy + <start_of_turn> delimiters
+            messages = self._build_shieldgemma_messages(text, violations, org_id)
+        elif is_granite_guardian:
+            messages = self._build_granite_guardian_messages(text, violations, org_id)
+        else:
+            # Standard chat model: system prompt + NER-enriched user message
+            system_prompt = self._load_system_prompt(org_id)
+            ner_violations = [v for v in violations if v.rule_type == "ner_entity"]
+            pattern_violations = [v for v in violations if v.rule_type != "ner_entity"]
+
+            pattern_summary = (
+                "\n".join(
+                    f"- {v.rule_name}: '{v.matched_text}' (confidence: {v.confidence:.2f})"
+                    for v in pattern_violations[:5]
+                )
+                if pattern_violations
+                else "None"
+            )
+
+            ner_summary = (
+                "\n".join(
+                    f"- NER {v.rule_name.replace('ner:', '')}: '{v.matched_text}' "
+                    f"(score: {v.confidence:.2f})"
+                    for v in ner_violations[:8]
+                )
+                if ner_violations
+                else "None"
+            )
+
+            user_message = (
+                f"Regex/pattern violations:\n{pattern_summary}\n\n"
+                f"NER-detected entities:\n{ner_summary}\n\n"
+                "<CONTENT_TO_AUDIT>\n"
+                f"{text[:1000]}\n"
+                "</CONTENT_TO_AUDIT>"
+            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+
+        # Everything past this point is genuine network/IO. Operational
+        # failures here (unreachable host, timeout, malformed upstream
+        # response) are the deliberate, documented fail-open policy for
+        # this method -- distinct from the message-building defects above.
         try:
-            is_shieldgemma = "shieldgemma" in self.auditor_model.lower()
-            # §8.3 Granite Guardian: IBM's Apache-2.0 guard model family
-            # (granite3-guardian:2b, granite4.1-guardian) -- selectable
-            # alternative to ShieldGemma via the resolved policy's tier4_model.
-            is_granite_guardian = "guardian" in self.auditor_model.lower()
-
-            if is_shieldgemma:
-                # ShieldGemma: single user-role message with policy + <start_of_turn> delimiters
-                messages = self._build_shieldgemma_messages(text, violations, org_id)
-            elif is_granite_guardian:
-                messages = self._build_granite_guardian_messages(text, violations, org_id)
-            else:
-                # Standard chat model: system prompt + NER-enriched user message
-                system_prompt = self._load_system_prompt(org_id)
-                ner_violations = [v for v in violations if v.rule_type == "ner_entity"]
-                pattern_violations = [v for v in violations if v.rule_type != "ner_entity"]
-
-                pattern_summary = (
-                    "\n".join(
-                        f"- {v.rule_name}: '{v.matched_text}' (confidence: {v.confidence:.2f})"
-                        for v in pattern_violations[:5]
-                    )
-                    if pattern_violations
-                    else "None"
-                )
-
-                ner_summary = (
-                    "\n".join(
-                        f"- NER {v.rule_name.replace('ner:', '')}: '{v.matched_text}' "
-                        f"(score: {v.confidence:.2f})"
-                        for v in ner_violations[:8]
-                    )
-                    if ner_violations
-                    else "None"
-                )
-
-                user_message = (
-                    f"Regex/pattern violations:\n{pattern_summary}\n\n"
-                    f"NER-detected entities:\n{ner_summary}\n\n"
-                    "<CONTENT_TO_AUDIT>\n"
-                    f"{text[:1000]}\n"
-                    "</CONTENT_TO_AUDIT>"
-                )
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ]
-
-            # Make async request to Ollama /api/chat endpoint
             async with aiohttp.ClientSession() as session:
                 try:
                     async with session.post(
@@ -684,24 +782,21 @@ class ContentFilter:
                             )
                             return should_block, response_text
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
-                        f"LLM auditor timeout ({phase}). "
-                        f"Allowing content (fail-open policy)."
+                        f"LLM auditor timeout ({phase}). " f"Allowing content (fail-open policy)."
                     )
                     return False, "auditor timeout"
 
         except Exception as e:
             logger.warning(
-                f"LLM auditor error ({phase}): {e}. "
-                f"Allowing content (fail-open policy)."
+                f"LLM auditor error ({phase}): {e}. " f"Allowing content (fail-open policy)."
             )
 
         return False, "auditor unavailable"
 
     def _load_system_prompt(self, org_id: int | None) -> str:
-        """
-        Load custom system prompt from DB, or fall back to default.
+        """Load custom system prompt from DB, or fall back to default.
 
         Args:
             org_id: Organization ID for custom prompt lookup
@@ -738,12 +833,10 @@ class ContentFilter:
                 if org_id:
                     conditions.append(
                         (self.db.content_filter_config.organization_id == org_id)
-                        | (self.db.content_filter_config.organization_id == None)
+                        | (self.db.content_filter_config.organization_id == None)  # noqa: E711 -- penguin-dal query expression, not a bool comparison
                     )
                 else:
-                    conditions.append(
-                        self.db.content_filter_config.organization_id == None
-                    )
+                    conditions.append(self.db.content_filter_config.organization_id == None)  # noqa: E711 -- penguin-dal query expression, not a bool comparison
 
                 query = self.db(conditions[0])
                 for condition in conditions[1:]:
@@ -765,8 +858,7 @@ class ContentFilter:
         violations: list[FilterViolation],
         org_id: int | None,
     ) -> list[dict[str, str]]:
-        """
-        Build ShieldGemma-format messages for content safety classification.
+        """Build ShieldGemma-format messages for content safety classification.
 
         ShieldGemma expects a single user-role message containing the policy
         definition and content wrapped in <start_of_turn>/<end_of_turn> tags.
@@ -793,9 +885,7 @@ class ContentFilter:
                 f"- NER detection: {v.rule_name.replace('ner:', '')} entity '{v.matched_text}'"
             )
         context = (
-            "Pre-scan findings:\n" + "\n".join(context_lines) + "\n\n"
-            if context_lines
-            else ""
+            "Pre-scan findings:\n" + "\n".join(context_lines) + "\n\n" if context_lines else ""
         )
 
         user_content = (
@@ -811,8 +901,7 @@ class ContentFilter:
         return [{"role": "user", "content": user_content}]
 
     def _load_shieldgemma_policy(self, org_id: int | None) -> str:
-        """
-        Load PII/security policy definition for ShieldGemma classification.
+        """Load PII/security policy definition for ShieldGemma classification.
 
         Reuses the 'auditor_system_prompt' DB key so admins configure a single
         prompt that works for both ShieldGemma and standard chat models.
@@ -844,10 +933,14 @@ class ContentFilter:
             if self.db is not None:
                 scopes: list[int | None] = [None] if not org_id else [org_id, None]
                 for scope in scopes:
-                    row = self.db(
-                        (self.db.content_filter_config.key == "auditor_system_prompt")
-                        & (self.db.content_filter_config.organization_id == scope)
-                    ).select().first()
+                    row = (
+                        self.db(
+                            (self.db.content_filter_config.key == "auditor_system_prompt")
+                            & (self.db.content_filter_config.organization_id == scope)
+                        )
+                        .select()
+                        .first()
+                    )
                     if row and row.value:
                         custom_policy = row.value
                         break
@@ -938,8 +1031,7 @@ class ContentFilter:
         text: str,
         violations: list[FilterViolation],
     ) -> tuple[str, str]:
-        """
-        Determine filtering action and apply transformations.
+        """Determine filtering action and apply transformations.
 
         Args:
             text: Original text
@@ -970,8 +1062,7 @@ class ContentFilter:
         text: str,
         violations: list[FilterViolation],
     ) -> str:
-        """
-        Apply redactions to text based on violations.
+        """Apply redactions to text based on violations.
 
         Uses full_matched_text for redaction to ensure complete removal of secrets,
         even those longer than 100 chars. Falls back to matched_text if full_matched_text
@@ -987,7 +1078,11 @@ class ContentFilter:
         redacted = text
         for violation in violations:
             # Use full_matched_text for redaction (complete secret), or fall back to matched_text
-            redact_text = violation.full_matched_text if violation.full_matched_text else violation.matched_text
+            redact_text = (
+                violation.full_matched_text
+                if violation.full_matched_text
+                else violation.matched_text
+            )
             # Escape special regex characters and replace
             pattern = re.escape(redact_text)
             redacted = re.sub(
@@ -1003,8 +1098,7 @@ class ContentFilter:
         violations: list[FilterViolation],
         action: str,
     ) -> bool:
-        """
-        Determine if LLM auditor should be invoked.
+        """Determine if LLM auditor should be invoked.
 
         Invoked when:
         (a) violations detected but all log-only (uncertain)
@@ -1032,9 +1126,7 @@ class ContentFilter:
 
         # Invoke if composite confidence in uncertain zone
         avg_confidence = (
-            sum(v.confidence for v in violations) / len(violations)
-            if violations
-            else 0
+            sum(v.confidence for v in violations) / len(violations) if violations else 0
         )
         if 0.3 <= avg_confidence <= 0.6:
             return True
@@ -1050,8 +1142,7 @@ class ContentFilter:
         return False
 
     async def _load_disabled_builtins(self, org_id: int | None) -> set[str]:
-        """
-        Load set of disabled built-in pattern names from content_filter_config.
+        """Load set of disabled built-in pattern names from content_filter_config.
 
         Unions global disabled set with org-specific disabled set so that
         global admin disables propagate to all orgs, and orgs can add more.
@@ -1074,10 +1165,14 @@ class ContentFilter:
             if self.db is not None:
                 scopes = [None] if not org_id else [org_id, None]
                 for scope in scopes:
-                    row = self.db(
-                        (self.db.content_filter_config.key == "disabled_builtins")
-                        & (self.db.content_filter_config.organization_id == scope)
-                    ).select().first()
+                    row = (
+                        self.db(
+                            (self.db.content_filter_config.key == "disabled_builtins")
+                            & (self.db.content_filter_config.organization_id == scope)
+                        )
+                        .select()
+                        .first()
+                    )
                     if row and row.value:
                         try:
                             names = json.loads(row.value)
@@ -1092,8 +1187,7 @@ class ContentFilter:
         return disabled
 
     async def _load_disabled_ner_entities(self, org_id: int | None) -> set[str]:
-        """
-        Load set of disabled NER entity types from content_filter_config.
+        """Load set of disabled NER entity types from content_filter_config.
 
         Key: 'disabled_ner_entities', value: JSON array of entity type strings.
         Global (org_id=None) and org-specific sets are unioned.
@@ -1116,10 +1210,14 @@ class ContentFilter:
             if self.db is not None:
                 scopes = [None] if not org_id else [org_id, None]
                 for scope in scopes:
-                    row = self.db(
-                        (self.db.content_filter_config.key == "disabled_ner_entities")
-                        & (self.db.content_filter_config.organization_id == scope)
-                    ).select().first()
+                    row = (
+                        self.db(
+                            (self.db.content_filter_config.key == "disabled_ner_entities")
+                            & (self.db.content_filter_config.organization_id == scope)
+                        )
+                        .select()
+                        .first()
+                    )
                     if row and row.value:
                         try:
                             names = json.loads(row.value)
@@ -1139,8 +1237,7 @@ class ContentFilter:
         target: str,
         org_id: int | None = None,
     ) -> list[FilterViolation]:
-        """
-        Run NER-based PII detection (tier 3 of the filter pipeline).
+        """Run NER-based PII detection (tier 3 of the filter pipeline).
 
         Uses Presidio (preferred) or transformers NER pipeline (fallback).
         Wraps the synchronous model call in run_in_executor to avoid blocking.
@@ -1159,40 +1256,48 @@ class ContentFilter:
         violations: list[FilterViolation] = []
         disabled = await self._load_disabled_ner_entities(org_id)
 
+        # §3.5: tier-3 NER runs in the shared ProcessPoolExecutor, never the
+        # event loop or the default thread pool -- ner_analyze is a
+        # module-level, picklable function (see ner_filter.py) so it can
+        # cross the process boundary. A failure crossing that boundary
+        # (crashed worker, unpicklable payload, pool exhaustion) is a
+        # genuine operational failure -- fail open at this tier only: skip
+        # NER, the built-in and custom-rule tiers still apply.
         try:
             loop = asyncio.get_event_loop()
-            # §3.5: tier-3 NER runs in the shared ProcessPoolExecutor, never
-            # the event loop or the default thread pool -- ner_analyze is a
-            # module-level, picklable function (see ner_filter.py) so it can
-            # cross the process boundary.
             entity_dicts = await loop.run_in_executor(_get_ner_pool(), ner_analyze, text)
-
-            for entity in entity_dicts:
-                entity_type = entity["entity_type"]
-                if entity_type in disabled:
-                    continue
-
-                config = NER_ENTITY_CONFIG.get(entity_type, ("log", 0.60))
-                action, weight = config
-                confidence = min(float(entity["score"]) * weight, 1.0)
-                if confidence < _MIN_NER_CONFIDENCE:
-                    # Too weak to act on (see _MIN_NER_CONFIDENCE) -- drop
-                    # rather than log, so it can't silently accumulate into
-                    # a composite-confidence auditor trigger either.
-                    continue
-
-                violation = FilterViolation(
-                    rule_name=f"ner:{entity_type}",
-                    rule_type="ner_entity",
-                    matched_text=entity["text"][:100],  # Truncated for audit logging
-                    action=action,
-                    confidence=confidence,
-                    full_matched_text=entity["text"],  # Full text for complete redaction
-                )
-                violations.append(violation)
-
         except Exception as e:
-            logger.warning(f"NER pattern run failed: {e}")
+            logger.warning(f"NER pattern run failed (target={target}): {e}")
+            return violations
+
+        # Processing the returned entities is local, in-process logic -- a
+        # bug here (e.g. a schema-drifted key) is a programming defect, not
+        # "the process pool is unavailable," and must propagate to
+        # `_filter()`'s classification rather than being silently treated
+        # the same as a worker crash.
+        for entity in entity_dicts:
+            entity_type = entity["entity_type"]
+            if entity_type in disabled:
+                continue
+
+            config = NER_ENTITY_CONFIG.get(entity_type, ("log", 0.60))
+            action, weight = config
+            confidence = min(float(entity["score"]) * weight, 1.0)
+            if confidence < _MIN_NER_CONFIDENCE:
+                # Too weak to act on (see _MIN_NER_CONFIDENCE) -- drop
+                # rather than log, so it can't silently accumulate into
+                # a composite-confidence auditor trigger either.
+                continue
+
+            violation = FilterViolation(
+                rule_name=f"ner:{entity_type}",
+                rule_type="ner_entity",
+                matched_text=entity["text"][:100],  # Truncated for audit logging
+                action=action,
+                confidence=confidence,
+                full_matched_text=entity["text"],  # Full text for complete redaction
+            )
+            violations.append(violation)
 
         return violations
 
@@ -1200,8 +1305,7 @@ class ContentFilter:
         self,
         org_id: int | None,
     ) -> list[FilterRule]:
-        """
-        Load custom rules from database with TTL cache.
+        """Load custom rules from database with TTL cache.
 
         Args:
             org_id: Organization ID
@@ -1219,25 +1323,29 @@ class ContentFilter:
 
         try:
             # Query database for enabled rules
-            conditions = [self.db.content_filter_rules.enabled == True]
+            conditions = [self.db.content_filter_rules.enabled == True]  # noqa: E712 -- penguin-dal query expression, not a bool comparison
 
             # Add org scope: org-specific or global (None)
             if org_id:
                 conditions.append(
                     (self.db.content_filter_rules.organization_id == org_id)
-                    | (self.db.content_filter_rules.organization_id == None)
+                    | (self.db.content_filter_rules.organization_id == None)  # noqa: E711 -- penguin-dal query expression, not a bool comparison
                 )
             else:
-                conditions.append(
-                    self.db.content_filter_rules.organization_id == None
-                )
+                conditions.append(self.db.content_filter_rules.organization_id == None)  # noqa: E711 -- penguin-dal query expression, not a bool comparison
 
-            # Build query
-            query = self.db(conditions[0])
+            # Build query. regression: bug found writing tests/e2e/
+            # test_security_pii_e2e.py -- this previously chained conditions
+            # PyDAL-style (``db(q1)(q2)``), but penguin_dal's QuerySet
+            # (penguin_dal/query.py) has no __call__, so this raised
+            # "'QuerySet' object is not callable" on every call, caught by
+            # this function's own except-and-return-[] below -- org-scoped
+            # custom content-filter rules (including block rules) silently
+            # never applied, regardless of what was configured in the DB.
+            combined_condition = conditions[0]
             for condition in conditions[1:]:
-                query = query(condition)
-
-            rows = query.select()
+                combined_condition = combined_condition & condition
+            rows = self.db(combined_condition).select()
 
             # Convert rows to FilterRule dataclasses
             rules = [
@@ -1273,8 +1381,18 @@ class ContentFilter:
         org_id: int | None = None,
         ip: str | None = None,
     ) -> None:
-        """
-        Log filter event to database and application logger.
+        """Log filter event to database and application logger.
+
+        Called after `result` is already finalized -- this method's own
+        failure must never change or re-raise into the filtering decision
+        itself (unlike `_filter()`'s own split, there is no fail-open/
+        fail-closed choice to make here, only whether the audit trail gets
+        written). Its exceptions are therefore always swallowed locally,
+        but classified and logged distinctly so a broken audit-insert path
+        can't silently rot for the same reason the top-level filter split
+        exists: an unnoticed defect here means the compliance audit trail
+        silently stops being written, not that any request behaves
+        incorrectly.
 
         Args:
             phase: "input" or "output"
@@ -1283,8 +1401,25 @@ class ContentFilter:
             org_id: Organization ID
             ip: IP address
         """
+        # Emitted unconditionally, before the DB write, so a broken/down
+        # audit-log insert never also silences the only local trace of a
+        # BLOCK/REDACT event -- these two signals are independent.
+        if result.action == "block":
+            logger.warning(
+                f"Content filter BLOCK (phase={phase}, "
+                f"user={user_id}, org={org_id}, ip={ip}, "
+                f"violations={len(result.violations)}, "
+                f"ner_backend={result.ner_backend})"
+            )
+        elif result.action == "redact":
+            logger.info(
+                f"Content filter REDACT (phase={phase}, "
+                f"user={user_id}, org={org_id}, "
+                f"violations={len(result.violations)}, "
+                f"ner_backend={result.ner_backend})"
+            )
+
         try:
-            # Log to database
             violations_json = json.dumps(
                 [
                     {
@@ -1308,22 +1443,27 @@ class ContentFilter:
                 violations_json=violations_json,
                 text_sample=text_sample,
                 auditor_used=result.auditor_used,
-                timestamp=time.time(),
+                # regression: bug found writing tests/e2e/test_security_pii_e2e.py --
+                # this previously passed timestamp=time.time() (a float epoch), but
+                # the column is Field("timestamp", "datetime", ...) and penguin-dal
+                # (unlike the prior raw-sqlite3 path) rejects a non-datetime value,
+                # so every audit row insert silently failed (caught by this
+                # function's own try/except below) and no PII/injection filtering
+                # decision was ever actually logged. Omit the kwarg and let the
+                # field's own `default=datetime.utcnow` apply.
             )
-
-            # Log to application logger
-            if result.action == "block":
-                logger.warning(
-                    f"Content filter BLOCK (phase={phase}, "
-                    f"user={user_id}, org={org_id}, ip={ip}, "
-                    f"violations={len(result.violations)})"
-                )
-            elif result.action == "redact":
-                logger.info(
-                    f"Content filter REDACT (phase={phase}, "
-                    f"user={user_id}, org={org_id}, "
-                    f"violations={len(result.violations)})"
-                )
-
+        except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
+            # A programming defect (schema-drifted column, bad kwarg) --
+            # NOT "the DB is unreachable." Logged loudly and distinctly so
+            # this class of bug can't be mistaken for an ordinary DB outage
+            # in logs/dashboards.
+            logger.error(
+                "Content filter audit-log insert is broken (phase=%s): %s: %s -- "
+                "this is a code defect; the audit trail is silently not being written.",
+                phase,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )
         except Exception as e:
             logger.error(f"Failed to log filter event: {e}")

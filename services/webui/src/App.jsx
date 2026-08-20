@@ -10,6 +10,8 @@ import VirtualKeys from './pages/VirtualKeys';
 import UsageAnalytics from './pages/UsageAnalytics';
 import Routing from './pages/Routing';
 import Memory from './pages/Memory';
+import Hooks from './pages/Hooks';
+import Integrations from './pages/Integrations';
 import './App.css';
 
 function App() {
@@ -33,6 +35,8 @@ function App() {
                       <Route path="/analytics" element={<UsageAnalytics />} />
                       <Route path="/routing" element={<Routing />} />
                       <Route path="/memory" element={<Memory />} />
+                      <Route path="/hooks" element={<Hooks />} />
+                      <Route path="/integrations" element={<Integrations />} />
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                   </main>

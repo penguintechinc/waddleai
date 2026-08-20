@@ -115,16 +115,16 @@ Kubernetes via Helm is the only supported deployment path — Docker Compose is 
 git clone https://github.com/penguintechinc/waddleai.git
 cd waddleai
 
-# Create the secrets referenced by k8s/helm/waddleai/values.yaml
+# The chart manages its own waddleai-secrets Secret by default
+# (secrets.manage: true) — do NOT pre-create one with the same name,
+# `helm install` will fail with "already exists". Override the two
+# secret values instead:
 kubectl create namespace waddleai
-kubectl create secret generic waddleai-secrets -n waddleai \
-  --from-literal=postgres-password="$(openssl rand -hex 16)" \
-  --from-literal=jwt-secret="$(openssl rand -hex 32)"
-
-# Install the chart
 helm install waddleai k8s/helm/waddleai \
   --namespace waddleai \
-  --values k8s/helm/waddleai/values-beta.yaml
+  --values k8s/helm/waddleai/values-beta.yaml \
+  --set secrets.postgresPassword="$(openssl rand -hex 16)" \
+  --set secrets.jwtSecret="$(openssl rand -hex 32)"
 
 # Check health
 kubectl port-forward -n waddleai svc/waddleai-management 8001:8001 &
@@ -134,6 +134,13 @@ curl http://localhost:8001/healthz
 cd services/penguincode
 ./penguincode chat
 ```
+
+> **Known chart gap**: `management.secretEnv` requires a `proxy-grpc-auth-token` key on `waddleai-secrets`, but the chart's own `templates/secret.yaml` doesn't generate one — the management pod fails to start (`CreateContainerConfigError`) on a fresh install. Work around it until fixed:
+> ```bash
+> kubectl patch secret waddleai-secrets -n waddleai --type merge \
+>   -p "{\"stringData\":{\"proxy-grpc-auth-token\":\"$(openssl rand -hex 32)\"}}"
+> kubectl rollout restart deployment/waddleai-management -n waddleai
+> ```
 
 The Assistant automatically detects the Platform and enables:
 - Multi-user management
@@ -331,4 +338,3 @@ See [LICENSE.md](LICENSE.md) for the full terms.
 ---
 
 **Made by [Penguin Tech Inc](https://www.penguintech.io) for developers who value control, privacy, and open-source principles.**
-

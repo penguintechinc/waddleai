@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { WaddleAIChatParticipant } from './chatParticipant';
-import { WaddleAIClient } from './waddleaiClient';
+import { WaddleAIClient, WaddleAIUsageSummary } from './waddleaiClient';
 import { AuthenticationProvider } from './authProvider';
 
 let waddleAIClient: WaddleAIClient;
@@ -11,17 +11,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Initialize authentication provider
     authProvider = new AuthenticationProvider(context);
-    
+
     // Initialize WaddleAI client
     waddleAIClient = new WaddleAIClient(context);
 
     // Register WaddleAI chat participant
     const participant = new WaddleAIChatParticipant(waddleAIClient, context);
     const chatParticipant = vscode.chat.createChatParticipant('waddleai', participant.handleRequest.bind(participant));
-    
+
     chatParticipant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.svg');
     chatParticipant.requestHandler = participant.handleRequest.bind(participant);
-    
+
     context.subscriptions.push(chatParticipant);
 
     // Register commands
@@ -69,12 +69,12 @@ function registerCommands(context: vscode.ExtensionContext) {
         if (apiKey) {
             const config = vscode.workspace.getConfiguration('waddleai');
             await config.update('apiKey', apiKey, vscode.ConfigurationTarget.Global);
-            
+
             // Store securely in secret storage
             await context.secrets.store('waddleai.apiKey', apiKey);
-            
+
             vscode.window.showInformationMessage('WaddleAI API key saved successfully!');
-            
+
             // Test connection
             vscode.commands.executeCommand('waddleai.testConnection');
         }
@@ -86,7 +86,7 @@ function registerCommands(context: vscode.ExtensionContext) {
         try {
             const models = await waddleAIClient.getAvailableModels();
             const modelNames = models.map(m => m.id);
-            
+
             const selected = await vscode.window.showQuickPick(modelNames, {
                 placeHolder: 'Select a model to use with WaddleAI',
                 title: 'WaddleAI Model Selection'
@@ -111,11 +111,11 @@ function registerCommands(context: vscode.ExtensionContext) {
         }, async () => {
             try {
                 const health = await waddleAIClient.testConnection();
-                if (health.status === 'healthy') {
+                if (health.ready) {
                     vscode.window.showInformationMessage('✅ WaddleAI connection successful!');
                     return true;
                 } else {
-                    vscode.window.showWarningMessage(`⚠️ WaddleAI is ${health.status}`);
+                    vscode.window.showWarningMessage('⚠️ WaddleAI is not ready (database dependency unhealthy)');
                     return false;
                 }
             } catch (error: any) {
@@ -123,7 +123,7 @@ function registerCommands(context: vscode.ExtensionContext) {
                 return false;
             }
         });
-        
+
         return progress;
     });
 
@@ -131,7 +131,7 @@ function registerCommands(context: vscode.ExtensionContext) {
     const showUsageCommand = vscode.commands.registerCommand('waddleai.showUsage', async () => {
         try {
             const usage = await waddleAIClient.getUsage();
-            
+
             const panel = vscode.window.createWebviewPanel(
                 'waddleaiUsage',
                 'WaddleAI Token Usage',
@@ -147,20 +147,19 @@ function registerCommands(context: vscode.ExtensionContext) {
         }
     });
 
-    // Clear Memory command
+    // Start New Conversation command. WaddleAI's proxy-memory layers key off
+    // the X-WaddleAI-Session header (spec §6A); there is no server-side
+    // "delete this session's memory" route today, so this resets the
+    // client's own session id rather than calling a route that doesn't exist.
     const clearMemoryCommand = vscode.commands.registerCommand('waddleai.clearMemory', async () => {
         const confirm = await vscode.window.showWarningMessage(
-            'Are you sure you want to clear conversation memory?',
+            'Start a new conversation? Previous turns will no longer be included as context.',
             'Yes', 'No'
         );
-        
+
         if (confirm === 'Yes') {
-            try {
-                await waddleAIClient.clearMemory();
-                vscode.window.showInformationMessage('Conversation memory cleared successfully');
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Failed to clear memory: ${error.message}`);
-            }
+            waddleAIClient.resetSession();
+            vscode.window.showInformationMessage('Started a new WaddleAI conversation');
         }
     });
 
@@ -175,26 +174,64 @@ function registerCommands(context: vscode.ExtensionContext) {
 
 function showWelcomeMessage(context: vscode.ExtensionContext) {
     const message = `Welcome to WaddleAI for Copilot Chat! 🎉
-    
+
     WaddleAI is now available as a language model provider in VS Code.
     You can use it in Copilot Chat by selecting "WaddleAI" from the model dropdown.
-    
+
     To get started:
     1. Set your API key: Command Palette > "WaddleAI: Set API Key"
     2. Select a model: Command Palette > "WaddleAI: Select Model"
     3. Open Copilot Chat and select WaddleAI as your model provider
     `;
-    
+
     vscode.window.showInformationMessage(message, 'Get Started', 'Later').then(selection => {
         if (selection === 'Get Started') {
             vscode.commands.executeCommand('waddleai.setApiKey');
         }
     });
-    
+
     context.globalState.update('waddleai.welcomeShown', true);
 }
 
-function getUsageWebviewContent(usage: any): string {
+function quotaPercent(used: number, limit: number): number {
+    if (!limit) {
+        return 0;
+    }
+    return Math.min(100, Math.max(0, (used / limit) * 100));
+}
+
+/**
+ * `llm_breakdown` keys are model names that ultimately trace back to the
+ * `model` field of a chat request (server-passed-through, not sanitized
+ * for HTML) -- this webview interpolates them into an HTML string, so
+ * they're escaped the same as any other untrusted string reaching the UI
+ * rather than trusted just because they came from our own API.
+ */
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderModelBreakdown(breakdown: Record<string, { input: number; output: number }>): string {
+    const models = Object.keys(breakdown);
+    if (models.length === 0) {
+        return '<div class="stat-title">No per-model breakdown for this window yet.</div>';
+    }
+    return models
+        .map((model) => {
+            const { input, output } = breakdown[model];
+            return `<div class="model-row"><span class="model-name">${escapeHtml(model)}</span><span>${input.toLocaleString()} in / ${output.toLocaleString()} out</span></div>`;
+        })
+        .join('');
+}
+
+function getUsageWebviewContent(usage: WaddleAIUsageSummary): string {
+    const dailyPct = quotaPercent(usage.daily.used, usage.daily.limit);
+    const monthlyPct = quotaPercent(usage.monthly.used, usage.monthly.limit);
     return `
     <!DOCTYPE html>
     <html lang="en">
@@ -243,40 +280,54 @@ function getUsageWebviewContent(usage: any): string {
                 border-bottom: 1px solid var(--vscode-panel-border);
                 padding-bottom: 10px;
             }
+            .model-row {
+                display: flex;
+                justify-content: space-between;
+                padding: 4px 0;
+                font-size: 13px;
+            }
+            .model-name {
+                font-family: var(--vscode-editor-font-family);
+            }
         </style>
     </head>
     <body>
         <h1>🚀 WaddleAI Token Usage</h1>
-        
+
         <div class="stat-card">
-            <div class="stat-title">Total WaddleAI Tokens Used</div>
-            <div class="stat-value">${usage.total_tokens.toLocaleString()}</div>
+            <div class="stat-title">Total WaddleAI Tokens Used (last 30 days)</div>
+            <div class="stat-value">${usage.total_waddleai_tokens.toLocaleString()}</div>
         </div>
-        
+
         <div class="stat-card">
-            <div class="stat-title">Total Requests</div>
+            <div class="stat-title">Total Requests (last 30 days)</div>
             <div class="stat-value">${usage.total_requests.toLocaleString()}</div>
         </div>
-        
+
         <div class="stat-card">
             <div class="stat-title">Daily Quota</div>
-            <div class="stat-value">${usage.used_today.toLocaleString()} / ${usage.daily_limit.toLocaleString()}</div>
+            <div class="stat-value">${usage.daily.used.toLocaleString()} / ${usage.daily.limit.toLocaleString()}</div>
             <div class="progress-bar">
-                <div class="progress-fill" style="width: ${(usage.used_today / usage.daily_limit * 100)}%"></div>
+                <div class="progress-fill" style="width: ${dailyPct}%"></div>
             </div>
         </div>
-        
+
         <div class="stat-card">
             <div class="stat-title">Monthly Quota</div>
-            <div class="stat-value">${usage.used_month.toLocaleString()} / ${usage.monthly_limit.toLocaleString()}</div>
+            <div class="stat-value">${usage.monthly.used.toLocaleString()} / ${usage.monthly.limit.toLocaleString()}</div>
             <div class="progress-bar">
-                <div class="progress-fill" style="width: ${(usage.used_month / usage.monthly_limit * 100)}%"></div>
+                <div class="progress-fill" style="width: ${monthlyPct}%"></div>
             </div>
         </div>
-        
+
         <div class="stat-card">
-            <div class="stat-title">Period</div>
-            <div class="stat-value">${usage.period_days} days</div>
+            <div class="stat-title">Average Daily Usage</div>
+            <div class="stat-value">${usage.average_daily.toLocaleString()}</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-title">Model Breakdown (last 30 days)</div>
+            ${renderModelBreakdown(usage.llm_breakdown)}
         </div>
     </body>
     </html>

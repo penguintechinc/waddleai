@@ -1,4 +1,4 @@
-"""Memory Injection Configuration Routes
+"""Memory Injection Configuration Routes.
 
 Manages per-organization configuration for:
 - Conversation memory injection (mem0 via pgvector)
@@ -17,9 +17,11 @@ import logging
 
 from quart import jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 @api_v1_bp.route("/memory-config", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def get_memory_config():
     """Get memory injection config for an organization."""
     org_id = request.args.get("organization_id", type=int)
@@ -78,7 +80,7 @@ async def get_memory_config():
 
 @api_v1_bp.route("/memory-config", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def set_memory_config():
     """Create or update memory injection config for an organization."""
     data = (await request.get_json(force=True)) or {}
@@ -91,10 +93,19 @@ async def set_memory_config():
         def _upsert():
             existing = db(db.conversation_memory_configs.organization_id == org_id).select().first()
             if existing:
-                existing.update_record(
+                # regression: penguin_dal's Row has no update_record() (that's
+                # classic PyDAL API); the correct penguin_dal update is
+                # db(condition).update(**kwargs) -- see shared/auth/rbac.py for
+                # the identical fix. The old call raised AttributeError, caught
+                # by this route's own `except Exception` below and turned into
+                # a generic 500 -- so an org could create its memory-injection
+                # config once but every subsequent update permanently 500'd.
+                db(db.conversation_memory_configs.id == existing.id).update(
                     enabled=data.get("enabled", existing.enabled),
                     max_messages=data.get("max_messages", existing.max_messages),
-                    similarity_threshold=data.get("similarity_threshold", existing.similarity_threshold),
+                    similarity_threshold=data.get(
+                        "similarity_threshold", existing.similarity_threshold
+                    ),
                 )
                 return "updated"
             else:
@@ -122,7 +133,7 @@ async def set_memory_config():
 
 @api_v1_bp.route("/rag-config", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def get_rag_config():
     """Get RAG injection config for an organization."""
     org_id = request.args.get("organization_id", type=int)
@@ -171,7 +182,7 @@ async def get_rag_config():
 
 @api_v1_bp.route("/rag-config", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def set_rag_config():
     """Create or update RAG injection config for an organization."""
     data = (await request.get_json(force=True)) or {}
@@ -184,11 +195,17 @@ async def set_rag_config():
         def _upsert():
             existing = db(db.rag_configs.organization_id == org_id).select().first()
             if existing:
-                existing.update_record(
+                # regression: see get_memory_config's set_memory_config sibling
+                # above -- penguin_dal Row has no update_record(); the old call
+                # here 500'd every update to an org's RAG config after the
+                # first creation.
+                db(db.rag_configs.id == existing.id).update(
                     enabled=data.get("enabled", existing.enabled),
                     collection=data.get("collection", existing.collection),
                     top_k=data.get("top_k", existing.top_k),
-                    similarity_threshold=data.get("similarity_threshold", existing.similarity_threshold),
+                    similarity_threshold=data.get(
+                        "similarity_threshold", existing.similarity_threshold
+                    ),
                 )
                 return "updated"
             else:
@@ -217,7 +234,7 @@ async def set_rag_config():
 
 @api_v1_bp.route("/embedding-config", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def get_embedding_config():
     """Get embedding backend config (global or per-org)."""
     org_id = request.args.get("organization_id", type=int)  # optional; None = global
@@ -267,7 +284,7 @@ async def get_embedding_config():
 
 @api_v1_bp.route("/embedding-config", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.MEMORY_CONFIG_ADMIN)
 async def set_embedding_config():
     """Create or update embedding backend config."""
     data = (await request.get_json(force=True)) or {}
@@ -287,7 +304,11 @@ async def set_embedding_config():
                 existing = db(db.embedding_settings.organization_id == None).select().first()  # noqa: E711
 
             if existing:
-                existing.update_record(
+                # regression: see set_memory_config above -- penguin_dal Row
+                # has no update_record(); the old call here 500'd every
+                # update to the embedding backend config after the first
+                # creation (global default or per-org).
+                db(db.embedding_settings.id == existing.id).update(
                     backend=backend,
                     model=data.get("model", existing.model),
                     ollama_host=data.get("ollama_host", existing.ollama_host),
