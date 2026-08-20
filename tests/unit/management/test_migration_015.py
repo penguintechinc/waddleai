@@ -142,5 +142,8 @@ def test_alembic_heads_single(scratch_db):
 
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
+    # Assert the invariant that matters -- exactly one head, i.e. no divergent
+    # branches -- not that 015 IS the head. The latter is false by construction
+    # the moment any later migration lands (016_hooks already has).
     assert len(heads) == 1
-    assert heads[0] == "015_local_vector_store"
+    assert "015_local_vector_store" in {sc.revision for sc in script.walk_revisions()}

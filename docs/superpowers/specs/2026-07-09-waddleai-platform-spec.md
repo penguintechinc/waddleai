@@ -845,6 +845,7 @@ Baseline: Alembic migrations `001`–`006` exist (baseline, provider_credentials
 | 012 | §9 | `knowledge` | `code_repos`, `code_chunks`, `docs_cache_pages`, `docs_sources` (per-source license table, §2.5) (all pgvector); extend `rag_documents`/`memory_embeddings` with the remaining §9.7 scope/trust/version/status/provenance columns (`memory_embeddings.scope_type`/`author_user_id` already shipped in 006 — extend, don't re-add) |
 | 013 | §10 | `fleet` | `fleet_backends`; extend `ollama_deployments`/`llamacpp_deployments` for the backend interface + `management_scope` |
 | 014 | §11 | `integrations` | `mcp_endpoints`, `mcp_user_links` (per-user external-MCP tokens, encrypted) |
+| 015 | §18 | `hooks` | `hook_rules`, `hook_denylist_entries`, `hook_configs`, `hook_telemetry_events` (agent-hooks evaluation, §18.7) |
 
 All migrations land within the `release/v0.2.X` line (one per feature branch, §14.1). **Numbers here express intended dependency order, not fixed Alembic revisions**: parallel feature branches (notably 009a/009b, and 010+ which branch off 008/009) get their final `down_revision` set to the actual head **at merge time** — each plan rebases onto the then-current head. This is the normal Alembic-DAG-resolved-at-merge model; do not treat the integers as pre-committed. Applied sequentially at release.
 
@@ -884,6 +885,7 @@ All migrations land within the `release/v0.2.X` line (one per feature branch, §
 | `feature/knowledge-layer` | §9 CodeRAG, docs cache, PDF/MD ingest, hybrid delivery, migration 012 | pipeline, embedding cache |
 | `feature/inference-fleet-v2` | §10 fleet interface, hardened Ollama, cloud targets, migration 013 | routing |
 | `feature/mcp-v2-integrations` | §11 MCP server/gateway, CLI, apparatus docs, migration 014 | knowledge, routing |
+| `feature/agent-hooks` | §18 agent-hooks evaluation engine (tier1 denylist, admin `hook_rules`, opt-in Tier-2 §8 reuse), migration 015 | security-v2 |
 | `chore/tetragon-admission-policies` | §12 optional Tetragon + admission policy values | cilium-reconciler |
 
 Deferred to a later release (explicitly out of v0.2.x): `task_detect` de-escalation (§7.3), PenguinCode convergence, VS Code extension refresh (§11.3, cuttable). Every feature ships behind its PostHog flag defaulted OFF (§14.5), flipped on after beta validation, flag removed once stable. Licensed sub-features additionally gate on the license client (§14.6).
@@ -925,7 +927,7 @@ if features.enabled("smart_routing", distinct_id=org_id):   # waddleai.smart_rou
 
 - **`features.enabled(key, distinct_id)`** (thin `shared/licensing/features.py` helper) = PostHog `feature_enabled("waddleai.{key}", distinct_id)` **AND**, for licensed features, `LicenseClient.check_feature(key)` (§14.6). Fail-safe **OFF** on any error (graceful degradation). Centralizes the client, the `waddleai.` prefix, and the default-OFF behavior so no caller hand-rolls it.
 - **Env**: `POSTHOG_KEY`, `POSTHOG_HOST=https://license.penguintech.io` (same host as the license server). Key convention `waddleai.{feature}` (server builds `flag_key = f"{product}.{name}"`).
-- Flag keys (one per feature branch, §14.1): `waddleai.native_rate_limit`, `waddleai.response_cache`, `waddleai.proxy_memory`, `waddleai.smart_routing`, `waddleai.security_v2`, `waddleai.coderag`, `waddleai.docs_cache`, `waddleai.knowledge_ingest`, `waddleai.fleet_v2`, `waddleai.mcp_v2` — plus the finer admin toggles inside features (per-tier security scopes, cache modes) that also resolve through Penguin Licensing.
+- Flag keys (one per feature branch, §14.1): `waddleai.native_rate_limit`, `waddleai.response_cache`, `waddleai.proxy_memory`, `waddleai.smart_routing`, `waddleai.security_v2`, `waddleai.coderag`, `waddleai.docs_cache`, `waddleai.knowledge_ingest`, `waddleai.fleet_v2`, `waddleai.mcp_v2`, `waddleai.agent_hooks` — plus the finer admin toggles inside features (per-tier security scopes, cache modes, §18's per-org `remote_eval_enabled`/`capture_raw_payloads`) that also resolve through Penguin Licensing.
 - All default **OFF** at launch; flipped on in Penguin Licensing after beta validation; the flag is removed once the feature is stable (flags are not permanent config — tier entitlement in §14.6 remains the durable gate).
 
 ### 14.6 License entitlement & metering (penguin-licensing)
@@ -1103,11 +1105,102 @@ Flag: `waddleai.local_only_profile`. Off by default. An optional deployment prof
 
 Cross-backend conformance suite (pgvector + Qdrant, both against fakes — `FakeDAL` from §10.5's suite, `FakeAsyncQdrantClient`) covering idempotent `ensure_collection`, dimensions- and embedder-mismatch refusal, upsert/search/delete/delete_collection round trips, `min_score`/`top_k`; a unit test asserting flag-off uses the pgvector path and constructs no Qdrant client; a live Qdrant+Ollama integration pass (`tests/integration/test_vectorstore_local_profile.py`, auto-skipped when either is unreachable) that embeds real text via `nomic-embed-text` and proves the 768-vs-384 mismatch is refused for real, not only against a fake.
 
+## 18. Agent Hooks — Developer-Ecosystem Lifecycle Integration
+
+Server-side evaluation for hooks fired by developer-agent tooling (Claude Code/Cortex, Google Antigravity/AGY CLI, VS Code) -- `PreToolUse`/`PostToolUse`/session/notification events. **Hooks fire synchronously inside the agent's loop**, so latency is a correctness concern, not a nicety: a naive round trip per tool call is unacceptable as a default, and the design below is shaped around that constraint at every layer. Per-ecosystem client adapters are out of scope here (built against this section as a fixed contract); this section is the server side only.
+
+**Desktop-companion split (load-bearing architectural boundary).** A Rust module in the `penguin` desktop client (per `client.md`'s desktop-consolidation rule -- one modular desktop app, not one per product) is the component that actually installs and manages the per-ecosystem hook shims, caches the Tier-1 denylist for the offline fail-closed path (§18.2), and stores any credentials in platform secure storage (Keychain/Keystore/Credential Manager). It deliberately holds **no policy logic** of its own -- every `allow`/`deny`/`ask` decision comes from `POST /api/v1/hooks/evaluate` on this server, never from logic embedded in the desktop companion. This is why hook and proxy decisions cannot drift in either direction: there is exactly one place policy is evaluated, and the desktop companion is a thin installer/cache/transport layer in front of it, not a second decision-maker.
+
+### 18.1 Contract
+
+`POST /api/v1/hooks/evaluate` -- request:
+
+```json
+{"hook_version":"1","ecosystem":"claude-code|cortex|antigravity|vscode",
+ "event":"pre_tool_use|post_tool_use|session_start|notification",
+ "session_id":"str","tool_name":"str","tool_input":{},
+ "workspace_path":"str|null","occurred_at":"RFC3339"}
+```
+
+Response:
+
+```json
+{"decision":"allow|deny|ask","reason":"str","rule_id":"str|null","evaluated_in_ms":int}
+```
+
+`POST /api/v1/hooks/telemetry` -- `post_tool_use`/`session_start`/`notification` events that need no decision; fire-and-forget, must never block the agent. `GET /api/v1/hooks/policy` -- the canonical Tier-1 denylist for adapters to sync and cache locally. All three are authenticated the same as every other endpoint (JWT/API-key -> `g.user["organization_id"]`, never a client-supplied org) and deliberately return the **flat** shapes above, not the house `{"status","data","meta"}` envelope -- adapters are coded against this exact contract, and wrapping it would break interop. Admin CRUD for the tables below (§18.3/§18.4) uses the house envelope as normal.
+
+**Upstream delivery is stdin, not argv.** Both Claude Code and Antigravity deliver the hook payload to the invoked shim on **stdin** (JSON on a single call, not command-line arguments) -- this is the upstream contract, not an implementation choice, and the adapter/desktop-companion side must read it that way. A payload passed as an argv element would leak absolute file paths and full command lines into shell history and `ps` output, on top of simply not matching what the ecosystems actually do. This is upstream-of-WaddleAI (the shim's own stdin read, before it ever constructs the `POST /api/v1/hooks/evaluate` body above) but is recorded here since it is the reason the request/response shapes above are deliberately flat, self-contained JSON rather than anything resembling CLI-flag-shaped data.
+
+### 18.2 Evaluation chain
+
+Four tiers, evaluated in order, short-circuiting as soon as one produces a decision (`shared/security/hooks_engine.py`):
+
+| Tier | What | Fail mode |
+|---|---|---|
+| 1. Canonical denylist | Builtin seed (`.env*`, `.git/**`, `*.pem`, `*.key`, `id_rsa*`/`id_ed25519*`, `credentials.json`, `~/.ssh/**`, `~/.aws/**`, lockfiles) ∪ admin-added entries, matched against the flattened `tool_input` text | **Fails closed**, both sides: adapters enforce this list **offline** (zero network cost) and keep enforcing their last-synced copy if WaddleAI is unreachable; the server also checks it unconditionally, before Tier 2/3 even load, as defense in depth |
+| 2. Admin `hook_rules` | Declarative matcher (ecosystem/event/tool_name/pattern) -> `allow`\|`deny`\|`ask`, authored by an admin (§18.3) | A match is authoritative -- skips Tier 3 entirely |
+| 3. Remote policy evaluation | Opt-in (`hook_configs.remote_eval_enabled`, default OFF), org-scoped, calls the **existing** §8 `SecurityPolicyEngine`/`ContentFilter` against the flattened `tool_input` text -- never a bespoke reimplementation, so hook and proxy security decisions cannot drift | Explicit per-org config choice, defaulted **open** -- see below |
+| 4. Default | Nothing matched, Tier 3 off/allowed | `allow` |
+
+**Tier 3 fail-mode default: `open` (fail available), and why.** `remote_eval_fail_mode` governs what happens when Tier 3 cannot produce a verdict (timeout, bounded independently at `remote_eval_timeout_ms` -- default 200ms, deliberately tighter than the resolved security policy's own `auditor_timeout_ms`, which is tuned for the proxy's chat-completion budget, not this interactive path -- or exception). It defaults to **open**: Tier 3 is opt-in and layered on top of a Tier-1 floor that already fails closed independently of any network round trip, and hooks fire on *every* tool call in an interactive dev loop -- a management-service blip failing closed here means an entire org's tool calls grind to a halt simultaneously. This mirrors the §8.2 `SecurityPolicyEngine`'s own `degrade` default for an unreachable tier-4 auditor, for the identical reason, with even more force given the call volume. It is a *default*, not a mandate -- `remote_eval_fail_mode` is a per-org field precisely so a regulated-environment org can flip it to `closed` and accept the availability cost. Fail-open and fail-closed events are counted on **separate** metrics and always logged at WARNING (§18.6), so a shift in the ratio is directly observable and alertable, not a silent degradation.
+
+Tier-3 §8 content-filter actions map onto hook decisions: `allow`->`allow`, `flag`/`redact`->`ask` (a tool call can't be partially redacted the way a chat message can), `block`->`deny`.
+
+### 18.3 Admin-authored declarative hooks
+
+**A custom hook is a `hook_rules` row the server evaluates, never shippable/executable code.** An admin-authored hook that executes arbitrary commands on every developer's machine is remote code execution as a feature, and a compromised or careless tenant admin becomes an RCE vector against every engineer in that org -- that path is not implemented. Instead:
+
+- **Matcher**: `ecosystem`, `event`, `tool_name_pattern` (glob), `match_pattern` (glob against the flattened `tool_input` text) -- any unset field matches anything.
+- **Decision**: `allow`\|`deny`\|`ask`, plus a human-readable `reason` surfaced to the developer.
+- **Enabled flag, `priority`** (tie-break only, never changes which decision wins -- see §18.4), and `created_by` for audit.
+
+All authored logic lives server-side -- versioned, auditable, instantly revocable. A bad rule is a row update, not a script already resident on fifty laptops.
+
+**Escape hatch for genuinely executable hooks: not built, tracked as future work only.** If a real need for admin-pushed executable automation emerges, it requires (at minimum) global-admin-only authorship, signed payloads, per-workspace developer opt-in, and never auto-execution without visible confirmation -- plus a full audit trail. None of that exists today; shipping the declarative version now and this list later, rather than a half-guarded exec path, is the deliberate choice.
+
+### 18.4 Scoping -- a hard boundary
+
+`hook_rules`/`hook_denylist_entries`/`hook_configs` all use the same two-level `scope_type` (`global`\|`org`)/`scope_ref` shape `security_policies` uses for its chain (§8.1), collapsed to two levels since the matcher fields themselves carry the granularity a model/tool scope would otherwise add. Roles map onto the existing `admin` (platform-wide) / `resource_manager` (org-scoped) split already established by `security_policies.py`'s bypass-grants precedent (§8.9) -- no new role vocabulary:
+
+- **`admin`** (global admin) is platform-wide and may author `scope_type='global'` rows.
+- **`resource_manager`** (tenant admin) is **force-scoped to their own org on every write**, regardless of what the request body asks for -- an explicit `scope_type='global'` or a different org's `scope_ref` in the body is silently overridden, never honored. Reads: global rows visible read-only (transparency into why something is denied), any other org's rows never visible. This mirrors the §2.2a precedent already in the spec: a tenant admin must not be able to take on risk for the whole deployment.
+
+**Precedence between global and tenant `hook_rules`: max severity wins across every matched rule, global or tenant alike** (`hooks_rules.combine_hook_rule_matches`, severity `deny(2) > ask(1) > allow(0)`). This is deliberately symmetric with `policy_engine.combine()`'s monotonic composition (§8.5: an LLM verdict can only raise severity, never lower it) generalized from two inputs to N matched rules: a global `deny` unconditionally outranks a tenant `allow` (2 > 0 regardless of scope), while a tenant `deny` still tightens a global `allow` the other direction (2 > 0 again) -- a tenant can restrict further than the deployment-wide floor but never loosen below it. Ties at equal severity are broken by lowest `priority`, then lowest `id`, purely to pick which single rule's `reason`/`rule_id` is surfaced -- never changing which decision wins.
+
+**An admin rule cannot weaken the Tier-1 denylist**, structurally rather than by runtime special case: Tier 1 (§18.2) is evaluated first and alone, returning `deny` before `hook_rules` are even loaded on a match. A `hook_rules` row explicitly `allow`-ing `.env` is simply never reached. The builtin seed list is a hardcoded constant (`hooks_denylist.BUILTIN_DENYLIST_PATTERNS`), not a DB row at all -- `hook_denylist_entries` can only ever *add* restrictions (additive-only API, no update/replace endpoint), since there is no row representing a builtin pattern to delete or weaken.
+
+### 18.5 Telemetry privacy
+
+`tool_input` is command lines and absolute file paths -- sensitive, often PII-adjacent. `POST /api/v1/hooks/telemetry` persists via a background task (never awaited by the request handler, so the response never waits on the write) into `hook_telemetry_events`: `tool_input_hash` (sha256) is **always** populated; `tool_input_raw` is populated **only** when the resolved `hook_configs.capture_raw_payloads` is `True` for that org -- default OFF, resolved through the same global->org chain as everything else in this section. Never in a Prometheus metric label, regardless of the opt-in state (unbounded cardinality *and* a leak).
+
+### 18.6 Metrics
+
+Emitted via the existing `shared/utils/metrics.py::WaddleAIMetrics` pattern (`get_management_metrics()`):
+
+| Metric | Labels | Purpose |
+|---|---|---|
+| `waddleai_hook_invocations_total` | ecosystem, event, decision | Volume + decision mix |
+| `waddleai_hook_evaluation_duration_seconds` | ecosystem, event | Histogram -- hooks sit on the critical path, so p50/p95/p99 of server-side evaluation is the number that matters |
+| `waddleai_hook_timeouts_total` | tier | Tier-3 (and future-tier) timeout count |
+| `waddleai_hook_fail_mode_total` | mode (`fail_open`\|`fail_closed`) | Counted **separately** -- a spike in fail-open is a silent security degradation and must be independently alertable |
+| `waddleai_hook_tool_calls_total` | ecosystem, tool_name, organization | Per-org tool-call volume for efficiency/cache-hit-potential analysis |
+| `waddleai_hook_rule_evaluations_total` | rule_id, scope | Every `hook_rules` match, whether or not it won -- an admin can see whether a rule they authored is actually firing |
+| `waddleai_hook_rule_decisions_total` | rule_id, scope, decision | Only the rule that actually decided the outcome -- distinguishes "firing but never winning" from "blocking everyone" |
+
+### 18.7 Data model
+
+`015_hooks` (chains off `014_integrations`): `hook_rules`, `hook_denylist_entries` (admin *additions* only, builtin list is code, not rows), `hook_configs` (global->org nullable-means-inherit, same convention as `security_policies`), `hook_telemetry_events` (`tool_input_hash` always, `tool_input_raw` opt-in only). Feature-flagged `waddleai.agent_hooks`, default OFF -- flag-off means `/evaluate` always returns `allow` before any body parsing, zero behavior change for an adapter regardless of what it sends (Tier 1 stays enforced client-side by the adapter's own offline copy either way).
+
+### 18.8 Acceptance
+
+A denylisted path is refused end-to-end (adapter-side offline AND server-side defense-in-depth); a `hook_rules` `allow` targeting a denylisted pattern does not weaken the denial; Tier-3 fail-mode behaves as configured in both directions (`open` allows on timeout/error, `closed` denies) with the correct fail-mode metric incremented; a tenant admin cannot read, write, or affect another tenant's `hook_rules`/`hook_denylist_entries`/`hook_configs` (list-scoping, and write-scoping even under an explicit cross-org request body); `tool_input` is never persisted raw when the org's `capture_raw_payloads` opt-in is off; flag-off proof (`/evaluate` allows unconditionally, no behavior change).
+
 ---
 
 ## Status
 
-**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**; **§17 (local-only profile) complete**. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
+**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**; **§17 (local-only profile) complete**, migration 015; **§18 (Agent Hooks) complete**, migration 016. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
 
 ---
 
