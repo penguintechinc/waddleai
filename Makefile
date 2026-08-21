@@ -162,7 +162,13 @@ test-security: ## Security scans over FIRST-PARTY code. Fails on findings.
 	echo "-- pip-audit --"; \
 	if [ -x $(VENV)/bin/pip-audit ]; then \
 	  for r in requirements.txt proxy/requirements.txt services/management/requirements.txt; do \
-	    $(VENV)/bin/pip-audit -r $$r --strict $(PIP_AUDIT_IGNORES) || fail=1; \
+	    tmp=$$(mktemp); \
+	    counts=$$(awk -v target="en-core-web-lg" -v outfile="$$tmp" '{is_start=(length($$0)>0 && substr($$0,1,1) !~ /[ \t#]/); if (is_start) {name=$$0; sub(/[ \t@=\[].*/,"",name); gsub(/_/,"-",name); name=tolower(name); skip=(name==target); if (skip) excluded++; else count++} if (!skip) print > outfile} END{print count+0, excluded+0}' $$r); \
+	    set -- $$counts; audited=$$1; excluded=$$2; \
+	    echo "pip-audit: $$audited requirements audited, $$excluded excluded ($$r) -- en_core_web_lg is a spaCy model wheel from github.com/explosion release, hash-pinned in $$r, no PyPI entry"; \
+	    if [ "$$audited" -eq 0 ]; then echo "!! pip-audit: 0 requirements audited in $$r -- filter produced an empty file, counting as FAILURE"; fail=1; fi; \
+	    $(VENV)/bin/pip-audit -r $$tmp --strict $(PIP_AUDIT_IGNORES) || fail=1; \
+	    rm -f "$$tmp"; \
 	  done; \
 	else echo "!! pip-audit not in $(VENV) -- run 'make venv'; counting as FAILURE"; fail=1; fi; \
 	if [ -n "$$(find . -name go.mod -not -path './.venv/*' -not -path '*/vendor/*' -not -path './.worktrees/*' -not -path './services/penguincode/*')" ]; then \
