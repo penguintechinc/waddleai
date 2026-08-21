@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import axios, { AxiosInstance } from 'axios';
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 
 /** A single OpenAI-compatible chat message. */
 export interface ChatMessage {
@@ -150,8 +151,18 @@ export class WaddleAIClient extends EventEmitter {
         }
     }
 
+    /**
+     * Mint a session id for the `X-WaddleAI-Session` header.
+     *
+     * Uses crypto.randomUUID(), not Math.random(). This id is not cosmetic:
+     * the server scopes conversation memory by it (spec 6A), so a guessable
+     * id would let one client read or pollute another's memory scope.
+     * Math.random() is a non-cryptographic PRNG whose future output is
+     * recoverable from a handful of prior values -- and the previous format
+     * leaked a second predictor by prefixing Date.now().
+     */
     private generateSessionId(): string {
-        return `vscode-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        return `vscode-${randomUUID()}`;
     }
 
     private getExtensionVersion(): string {
