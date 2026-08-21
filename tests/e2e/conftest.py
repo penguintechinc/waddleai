@@ -36,6 +36,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -120,7 +121,12 @@ def _launch_proxy(port: int, db_dir: Path, extra_env: dict[str, str]) -> subproc
         "PYTHONPATH": str(REPO),
     }
     env.update(extra_env)
+    # sys.executable, not a bare "hypercorn" resolved via $PATH: an unactivated
+    # venv can resolve to a different interpreter with different site-packages
+    # (this silently ran the proxy under a stale editable penguin-dal once).
     argv = [
+        sys.executable,
+        "-m",
         "hypercorn",
         "apps.proxy_server.main:app",
         "--bind",
