@@ -127,7 +127,7 @@ class IsIntInRange(Validator[NumericInput, int]):
             return ValidationResult.failure(int_result.error or "Value must be an integer")
 
         int_value = int_result.value
-        assert int_value is not None  # noqa: S101 -- type-narrowing only; IsInt.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
+        assert int_value is not None  # noqa: S101 # nosec B101 -- type-narrowing only; IsInt.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
 
         if self.min_value is not None and int_value < self.min_value:
             msg = self.error_message or f"Value must be at least {self.min_value}"
@@ -174,7 +174,7 @@ class IsFloatInRange(Validator[NumericInput, float]):
             return ValidationResult.failure(float_result.error or "Value must be a number")
 
         float_value = float_result.value
-        assert float_value is not None  # noqa: S101 -- type-narrowing only; IsFloat.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
+        assert float_value is not None  # noqa: S101 # nosec B101 -- type-narrowing only; IsFloat.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
 
         if self.min_value is not None and float_value < self.min_value:
             msg = self.error_message or f"Value must be at least {self.min_value}"
@@ -213,7 +213,7 @@ class IsPositive(Validator[NumericInput, float]):
             return ValidationResult.failure(float_result.error or "Value must be a number")
 
         float_value = float_result.value
-        assert float_value is not None  # noqa: S101 -- type-narrowing only; IsFloat.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
+        assert float_value is not None  # noqa: S101 # nosec B101 -- type-narrowing only; IsFloat.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
 
         if self.allow_zero:
             if float_value < 0:
@@ -253,7 +253,7 @@ class IsNegative(Validator[NumericInput, float]):
             return ValidationResult.failure(float_result.error or "Value must be a number")
 
         float_value = float_result.value
-        assert float_value is not None  # noqa: S101 -- type-narrowing only; IsFloat.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
+        assert float_value is not None  # noqa: S101 # nosec B101 -- type-narrowing only; IsFloat.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
 
         if self.allow_zero:
             if float_value > 0:

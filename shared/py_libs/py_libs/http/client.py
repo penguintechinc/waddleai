@@ -135,7 +135,7 @@ class HTTPClient:
         if self.config.retry.jitter:
             import random
 
-            delay *= 0.5 + random.random()  # noqa: S311 -- backoff jitter, not cryptographic use
+            delay *= 0.5 + random.random()  # noqa: S311 # nosec B311 -- backoff jitter, not cryptographic use
 
         return delay
 

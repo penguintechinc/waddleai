@@ -212,7 +212,7 @@ class IsDateInRange(Validator[DateInput, date]):
             return ValidationResult.failure(result.error or "Invalid date")
 
         date_value = result.value
-        assert date_value is not None  # noqa: S101 -- type-narrowing only; IsDate.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
+        assert date_value is not None  # noqa: S101 # nosec B101 -- type-narrowing only; IsDate.validate() never returns success with value=None, downstream comparisons would raise anyway if stripped
 
         # Check range
         if self.min_date is not None and date_value < self.min_date:
