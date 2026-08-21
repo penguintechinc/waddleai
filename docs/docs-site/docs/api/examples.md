@@ -10,7 +10,7 @@ Complete examples for using WaddleAI with various programming languages and tool
 from openai import OpenAI
 
 # Point to your WaddleAI instance
-client = OpenAI(api_key="wa-your-api-key-here", base_url="http://localhost:8000/v1")
+client = OpenAI(api_key="<your-waddleai-key>", base_url="http://localhost:8000/v1")
 
 # Use any supported model
 response = client.chat.completions.create(
@@ -30,7 +30,7 @@ print(response.choices[0].message.content)
 import anthropic
 
 # Point to your WaddleAI instance
-client = anthropic.Anthropic(api_key="wa-your-api-key-here", base_url="http://localhost:8000")
+client = anthropic.Anthropic(api_key="<your-waddleai-key>", base_url="http://localhost:8000")
 
 message = client.messages.create(
     model="claude-3-5-sonnet-20241022",
@@ -47,7 +47,7 @@ print(message.content[0].text)
 import OpenAI from 'openai';
 
 const client = new OpenAI({
-  apiKey: 'wa-your-api-key-here',
+  apiKey: '<your-waddleai-key>',
   baseURL: 'http://localhost:8000/v1',
 });
 
@@ -172,7 +172,7 @@ response = client.chat.completions.create(
 ```python
 from openai import OpenAI
 
-client = OpenAI(api_key="wa-your-api-key-here", base_url="http://localhost:8000/v1")
+client = OpenAI(api_key="<your-waddleai-key>", base_url="http://localhost:8000/v1")
 
 stream = client.chat.completions.create(
     model="gpt-4",
@@ -260,7 +260,7 @@ print(f"Embedding dimension: {len(embedding)}")
 ```python
 from openai import OpenAI, APIError, RateLimitError, AuthenticationError
 
-client = OpenAI(api_key="wa-your-api-key-here", base_url="http://localhost:8000/v1")
+client = OpenAI(api_key="<your-waddleai-key>", base_url="http://localhost:8000/v1")
 
 try:
     response = client.chat.completions.create(
@@ -303,7 +303,7 @@ from flask import Flask, request, jsonify
 from openai import OpenAI
 
 app = Flask(__name__)
-client = OpenAI(api_key="wa-your-api-key-here", base_url="http://localhost:8000/v1")
+client = OpenAI(api_key="<your-waddleai-key>", base_url="http://localhost:8000/v1")
 
 
 @app.route("/chat", methods=["POST"])
@@ -334,7 +334,7 @@ from fastapi.responses import StreamingResponse
 from openai import OpenAI
 
 app = FastAPI()
-client = OpenAI(api_key="wa-your-api-key-here", base_url="http://localhost:8000/v1")
+client = OpenAI(api_key="<your-waddleai-key>", base_url="http://localhost:8000/v1")
 
 
 @app.post("/chat/stream")
@@ -440,7 +440,7 @@ from openai import OpenAI
 import threading
 
 # Reuse client across threads
-client = OpenAI(api_key="wa-your-api-key-here", base_url="http://localhost:8000/v1")
+client = OpenAI(api_key="<your-waddleai-key>", base_url="http://localhost:8000/v1")
 
 
 def worker(prompt):

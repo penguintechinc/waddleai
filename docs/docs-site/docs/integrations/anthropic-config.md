@@ -36,7 +36,7 @@ This guide covers configuring WaddleAI to connect to Anthropic's Claude API, inc
 | Name | Anthropic Production |
 | Provider | anthropic |
 | Endpoint URL | https://api.anthropic.com/v1 |
-| API Key | sk-ant-your-api-key-here |
+| API Key | <your-anthropic-key> |
 | Enabled | ✓ |
 
 **Model List:**
@@ -60,7 +60,7 @@ curl -X POST https://your-waddleai-mgmt.com/api/connection_links \
     "name": "Anthropic Production",
     "provider": "anthropic",
     "endpoint_url": "https://api.anthropic.com/v1",
-    "api_key": "sk-ant-your-api-key-here",
+    "api_key": "<your-anthropic-key>",
     "model_list": [
       "claude-3-opus-20240229",
       "claude-3-sonnet-20240229",
@@ -199,7 +199,7 @@ Claude is accessible through WaddleAI's OpenAI-compatible endpoint:
 ```python
 import openai
 
-client = openai.OpenAI(api_key="wa-your-api-key", base_url="https://your-waddleai-proxy.com/v1")
+client = openai.OpenAI(api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1")
 
 response = client.chat.completions.create(
     model="claude-3-sonnet-20240229",
@@ -604,7 +604,7 @@ def call_claude(messages):
 # rotate-anthropic-key.sh
 
 # Generate new key in Anthropic console first
-NEW_KEY="sk-ant-new-key-here"
+NEW_KEY="<your-new-anthropic-key>"
 
 # Update in WaddleAI
 curl -X PATCH https://mgmt.waddleai.com/api/connection_links/anthropic \

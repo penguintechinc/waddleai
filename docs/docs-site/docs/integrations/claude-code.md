@@ -12,7 +12,7 @@ your WaddleAI deployment is on that release — no MCP-v2 dependency.
 
 ```bash
 export ANTHROPIC_BASE_URL=https://your-waddleai-host
-export ANTHROPIC_API_KEY=wa-your-key-here
+export ANTHROPIC_API_KEY=$WADDLEAI_API_KEY
 ```
 
 Claude Code reads both at startup. No other config changes are needed —
@@ -67,7 +67,7 @@ Or, for a dev machine without a persistent HTTP connection, use the
       "args": ["mcp"],
       "env": {
         "WADDLEAI_API_URL": "https://your-waddleai-host",
-        "WADDLEAI_API_KEY": "wa-your-key-here"
+        "WADDLEAI_API_KEY": "<your-waddleai-key>"
       }
     }
   }

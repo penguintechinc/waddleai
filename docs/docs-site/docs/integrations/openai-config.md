@@ -209,7 +209,7 @@ OpenAI imposes rate limits based on your usage tier:
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key",
+    api_key="<your-waddleai-key>",
     base_url="https://your-waddleai-proxy.com/v1"
 )
 

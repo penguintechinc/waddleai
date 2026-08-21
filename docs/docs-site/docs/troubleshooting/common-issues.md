@@ -107,10 +107,10 @@ REDIS_PASSWORD=your_password
 3. **Verify Authorization header**:
 ```bash
 # Correct format
-Authorization: Bearer wai_1234567890abcdef
+Authorization: Bearer $WADDLEAI_API_KEY
 
 # NOT
-Authorization: wai_1234567890abcdef
+Authorization: $WADDLEAI_API_KEY
 ```
 
 ### "Quota exceeded"
@@ -131,7 +131,7 @@ Authorization: wai_1234567890abcdef
 3. **View usage details**:
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://localhost:8001/api/analytics/usage?api_key=wai_123
+  http://localhost:8001/api/analytics/usage?api_key=$WADDLEAI_API_KEY
 ```
 
 ### "Rate limit exceeded"
@@ -169,7 +169,7 @@ def request_with_retry(func, max_retries=3):
 
 1. **Check available models**:
 ```bash
-curl -H "Authorization: Bearer wai_key" \
+curl -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   http://localhost:8000/v1/models
 ```
 

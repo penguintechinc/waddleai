@@ -252,7 +252,7 @@ Response:
 ```json
 {
   "id": 123,
-  "key": "wa-dev-abc123def456...",
+  "key": "<your-waddleai-key>",
   "name": "Development Key",
   "default_model": "gpt-4",
   "created_at": "2024-01-15T10:30:00Z",

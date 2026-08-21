@@ -16,10 +16,30 @@
 #
 # Removing a path from this list is fine. Adding a fingerprint allowlist is not.
 #
-# Verify after ANY edit here that detection still works:
-#   printf 'k="AKIAIOSFODNN7EXAMPLE"\n' > shared/_canary.py
-#   gitleaks detect --source . --no-git --config .gitleaks.toml   # must FAIL
-#   rm shared/_canary.py
+# Verify after ANY edit here that detection still works. The canary below is
+# NOT "AKIAIOSFODNN7EXAMPLE" -- that value is silently swallowed by gitleaks'
+# own built-in global allowlist regex `.+EXAMPLE$` (confirmed on gitleaks
+# 8.30.1), so a gate built on it can never fail and is not a gate. Use two
+# canaries instead, one per rule that must stay live:
+#
+#   printf 'AWS_ACCESS_KEY_ID = "AKIAVUU7QZDWASV3TUYA"\napi_key = "wa-nw2w40-sp7sker6heq7y7h0hy92s2f2ejd6jedx"\n' > docs/_canary_tmp.md
+#   gitleaks detect --source . --no-git --redact --config .gitleaks.toml --exit-code 1 --log-level error   # must exit non-zero
+#   rm docs/_canary_tmp.md
+#
+# Expected: exit code 1, with findings naming BOTH `aws-access-token` (the
+# built-in default rule -- proves `[extend] useDefault = true` is still
+# wired up) and `generic-api-key` (the custom rule below -- proves the
+# WaddleAI-specific `wa-` shape is still caught). If either rule id is
+# missing from the output, or the command exits 0, the config is broken.
+#
+# AWS canary format note: the built-in `aws-access-token` regex requires
+# `AKIA` + 16 chars from `[A-Z2-7]` (base32 charset -- digits 0/1/8/9 are NOT
+# valid there) and must NOT end in the literal "EXAMPLE". A key containing
+# `0`/`1`/`8`/`9` in that span silently fails to match -- that is not the
+# same failure mode as the EXAMPLE-suffix allowlist, and produces the same
+# false-confidence "clean" result. Regenerate with:
+#   .venv/bin/python -c "import secrets,string; chars=string.ascii_uppercase+'234567'; print('AKIA'+''.join(secrets.choice(chars) for _ in range(16)))"
+#
 # A config that reports zero findings may be broken rather than clean.
 
 [extend]

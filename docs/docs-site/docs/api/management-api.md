@@ -1,745 +1,367 @@
 # Management API Reference
 
-WaddleAI's Management API provides comprehensive administrative functionality for managing organizations, users, API keys, LLM providers, and monitoring system health. All endpoints require authentication via JWT tokens or API keys.
+WaddleAI's Management API provides administrative functionality for organizations, users, virtual
+keys, providers, routing, quotas, and integrations. It is a separate service from the AIProxy data
+plane (`/v1/*` chat completions) — this page covers the Management API only.
 
 ## Base URL
 
 ```
-https://your-waddleai-mgmt.com
+https://your-waddleai-mgmt-host:8001
 ```
+
+The management service listens on `:8001` (`services/management/Dockerfile`); there is no
+`MGMT_HOST`/`MGMT_PORT` environment variable — the bind address is fixed in the container's
+`hypercorn` command.
+
+## Versioning
+
+Every route is under `/api/v1/...`. There is no unversioned `/api/...` surface — all endpoints
+below include the `v1` segment.
 
 ## Authentication
 
-All API requests require authentication via Bearer token:
+All routes except `POST /api/v1/auth/login` require a Bearer JWT:
 
 ```bash
-curl -H "Authorization: Bearer <your-admin-token>" \
-  https://your-waddleai-mgmt.com/api/users
+curl -H "Authorization: Bearer <your-jwt>" \
+  https://your-waddleai-mgmt-host:8001/api/v1/organizations
 ```
 
-See [Authentication Guide](authentication.md) for details on obtaining tokens.
-
-## Organizations Management
-
-### List Organizations
-
-```http
-GET /api/organizations
+```bash
+curl -X POST https://your-waddleai-mgmt-host:8001/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "<password>"}'
 ```
 
-**Required Permission:** `admin`
+A successful login returns `{"access_token", "token_type", "expires_in", "user"}`. Refresh with
+`POST /api/v1/auth/refresh` before `expires_in` elapses; `GET /api/v1/auth/verify` echoes back the
+caller's identity claims for a quick liveness check on a held token.
 
-**Response:**
+### Authorization scopes and roles
+
+Permission checks are scope-based (`resource:action`, e.g. `org:create`, `apikey:delete`), never
+role-name checks — see `shared/auth/rbac.py::Permission`. Four roles bundle these scopes:
+
+| Role | Scope |
+|---|---|
+| `admin` | Every scope — full system access |
+| `resource_manager` | Organization-scoped management: users, keys, quotas within their own org |
+| `reporter` | Read-only analytics and reporting |
+| `user` | Basic API access — own keys and usage only |
+
+Each endpoint below notes its required scope(s) where it goes beyond "any authenticated user."
+
+## Response shapes
+
+The API is mid-migration to one response envelope, and the two shapes coexist today — check the
+live spec (below) for a specific endpoint before assuming either:
+
+- **House envelope** (`{"status": "success", "data": {...}, "meta": {...}}`) — used by newer
+  routes: the Provider Credentials sub-resource, Cache Configs, and the MCP Gateway (Integrations)
+  routes below.
+- **Ad hoc resource shape** — most other routes (Organizations, Users, Keys, Quotas, the main
+  Providers CRUD) return the resource or a list directly, e.g. `{"organizations": [...], "total":
+  N}` or `{"keys": [...], "total": N}`, and a bare `{"error": "..."}` on failure rather than the
+  house envelope.
+
+Secrets are never echoed back: API keys, provider `api_key` values, and MCP `auth_config` secret
+fields (`header_value`, `client_secret`) are always masked or omitted in responses.
+
+## Error responses
+
+The app-level error handler returns:
+
 ```json
-{
-  "organizations": [
-    {
-      "id": 1,
-      "name": "Acme Corp",
-      "description": "Corporate AI usage",
-      "token_quota_daily": 100000,
-      "token_quota_monthly": 3000000,
-      "enabled": true,
-      "created_at": "2025-09-01T00:00:00Z",
-      "updated_at": "2025-09-29T12:00:00Z"
-    }
-  ]
-}
+{"error": "Not Found", "message": "Resource not found"}
 ```
 
-### Create Organization
+for framework-level failures (400/401/403/404/500). Most route-level validation failures return a
+narrower `{"error": "<detail>"}` instead — e.g. `{"error": "Organization name already exists"}`
+with `409`, or `{"error": "name is required"}` with `400`. There is no `error.type`/`error.details`
+structured envelope; match on HTTP status and the `error` string.
 
-```http
-POST /api/organizations
+| Status | Typical cause |
+|---|---|
+| 400 | Missing/invalid request body or field |
+| 401 | Missing, invalid, or expired token |
+| 403 | Authenticated but lacking the required scope, or cross-org access |
+| 404 | Resource not found |
+| 409 | Uniqueness conflict (name, scope) |
+| 500 | Unexpected server error |
+
+List endpoints in this API do not currently accept `page`/`per_page` query parameters — they
+return the full result set for the caller's visibility scope. There are no `X-RateLimit-*`
+response headers on the Management API; per-key rate limits (`rpm_limit`/`tpm_limit`) are enforced
+on the AIProxy data plane instead and are configured, not reported, through this API (see Virtual
+Keys below).
+
+## Live OpenAPI spec
+
+Per house policy, the full spec is never served unauthenticated. Two documents exist:
+
+| Route | Auth | Contents |
+|---|---|---|
+| `GET /api/v1/openapi/public.json` | None | The login endpoint only |
+| `GET /api/v1/openapi/full.json` | Bearer JWT | Every registered route, generated from the live code (`quart-schema`) |
+| `GET /api/v1/docs` | Bearer JWT | Swagger UI rendered against the full spec |
+
+Endpoints not yet annotated with a `@validate_response` schema are marked as such in the full
+spec — the route is real and reachable, only its exact response shape isn't pinned yet. Treat the
+full spec, not this page, as authoritative for any field you haven't verified here.
+
+## Endpoint reference
+
+### Auth
+
+| Method | Path | Summary |
+|---|---|---|
+| POST | `/api/v1/auth/login` | User login |
+| POST | `/api/v1/auth/logout` | User logout |
+| POST | `/api/v1/auth/refresh` | Refresh JWT token |
+| POST | `/api/v1/auth/change-password` | Change the caller's password |
+| GET | `/api/v1/auth/me` | Current user info |
+| GET | `/api/v1/auth/verify` | Verify the bearer token and echo identity claims |
+
+### Organizations
+
+Scope: `org:create`/`org:admin_update`/`org:delete` for writes; reads are visibility-scoped.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/organizations` | List organizations |
+| POST | `/api/v1/organizations` | Create an organization |
+| GET | `/api/v1/organizations/{org_id}` | Get organization details |
+| PUT | `/api/v1/organizations/{org_id}` | Update an organization |
+| DELETE | `/api/v1/organizations/{org_id}` | Delete an organization |
+| GET | `/api/v1/organizations/{org_id}/usage` | Organization usage statistics |
+
+```bash
+curl -X POST https://your-waddleai-mgmt-host:8001/api/v1/organizations \
+  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{"name": "Acme Corp", "description": "Corporate AI usage",
+       "token_quota_daily": 100000, "token_quota_monthly": 3000000}'
 ```
 
-**Required Permission:** `admin`
+### Users
 
-**Request Body:**
-```json
-{
-  "name": "New Organization",
-  "description": "Organization description",
-  "token_quota_daily": 10000,
-  "token_quota_monthly": 300000
-}
+Scope: `user:create`/`user:update`/`user:delete`, or `resource_manager` for org-scoped users.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/users` | List users (filtered by role) |
+| POST | `/api/v1/users` | Create a user |
+| GET | `/api/v1/users/{user_id}` | Get user details |
+| PUT | `/api/v1/users/{user_id}` | Update a user |
+| DELETE | `/api/v1/users/{user_id}` | Delete a user |
+| POST | `/api/v1/users/{user_id}/enable` | Re-enable a disabled user |
+
+### Virtual Keys
+
+Scope: `apikey:create`/`apikey:update`/`apikey:delete`; a user always manages their own keys.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/keys` | List keys visible to the caller |
+| POST | `/api/v1/keys` | Create a key — the raw secret is returned once, on creation only |
+| GET | `/api/v1/keys/{key_id}` | Get key details (never the raw secret) |
+| PUT | `/api/v1/keys/{key_id}` | Update a key |
+| DELETE | `/api/v1/keys/{key_id}` | Revoke a key |
+| POST | `/api/v1/keys/{key_id}/rotate` | Rotate a key's secret |
+| GET | `/api/v1/keys/{key_id}/usage` | Usage statistics for one key |
+
+```bash
+curl -X POST https://your-waddleai-mgmt-host:8001/api/v1/keys \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"name": "Production Key", "allowed_providers": ["anthropic"],
+       "budget_limit_daily": 10.0, "expires_days": 365}'
 ```
 
-**Response:**
-```json
-{
-  "id": 2,
-  "status": "created"
-}
+`POST /api/v1/keys` responds with `{"keys": [...], "total": N}` on list, or the created
+`KeySummary` (id, `key_prefix`, `allowed_models`, `allowed_providers`, `budget_limit_daily`,
+`budget_limit_monthly`, `tpm_limit`, `rpm_limit`, `enabled`, `expires_at`) plus the one-time raw
+key on create — store it immediately, it is never returned again.
+
+### Providers and credentials
+
+Scope: `provider:admin`/`llm:config`.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/providers` | List configured providers |
+| POST | `/api/v1/providers` | Create a provider |
+| GET | `/api/v1/providers/types` | List supported provider types |
+| GET | `/api/v1/providers/{provider_id}` | Get provider details |
+| PUT | `/api/v1/providers/{provider_id}` | Update a provider |
+| DELETE | `/api/v1/providers/{provider_id}` | Delete a provider |
+| GET | `/api/v1/providers/{provider_id}/models` | Available models for a provider |
+| POST | `/api/v1/providers/{provider_id}/test` | Test provider connectivity |
+| GET | `/api/v1/providers/{provider_id}/credentials` | List a provider's credential pool — `api_key` never returned in plaintext |
+| POST | `/api/v1/providers/{provider_id}/credentials` | Add a credential to the pool |
+| PATCH | `/api/v1/providers/{provider_id}/credentials/{cred_id}` | Update label/weight/enabled/account_meta, or rotate `api_key` |
+| DELETE | `/api/v1/providers/{provider_id}/credentials/{cred_id}` | Remove a credential — at least one must remain |
+
+### Quotas
+
+Scope: `quota:update`/`quota:org_update`; reads use `quota:read`/`quota:list`.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/quotas` | List all quota configurations |
+| GET | `/api/v1/quotas/status/{entity_id}` | Current quota status for an entity |
+| PUT | `/api/v1/quotas/org/{org_id}` | Set an organization's quota |
+| PUT | `/api/v1/quotas/user/{user_id}` | Set a user's quota |
+| PUT | `/api/v1/quotas/key/{key_id}` | Set a virtual key's quota |
+
+### Usage and cost
+
+Scope: `analytics:read`; cross-user breakdowns need `usage:read_by_user`.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/usage/summary` | Usage summary (daily/monthly) |
+| GET | `/api/v1/usage/by-key` | Usage breakdown by API key |
+| GET | `/api/v1/usage/by-model` | Usage breakdown by model |
+| GET | `/api/v1/usage/by-provider` | Usage breakdown by provider |
+| GET | `/api/v1/usage/by-user` | Usage breakdown by user |
+| GET | `/api/v1/usage/cost` | Cost analytics |
+| GET | `/api/v1/usage/cache-stats` | Response-cache hit rate and estimated $ saved |
+| GET | `/api/v1/usage/export` | Export usage data (CSV/JSON) |
+
+### Routing
+
+Smart-routing configuration: model aliases, org/model assignments, decision rules, decision
+history, and a no-side-effects dry-run. Replaces the pre-v0.2 "routing instructions" model this
+page previously described — that free-text/LLM-routing-instructions shape no longer exists.
+
+| Method | Path |
+|---|---|
+| GET, POST | `/api/v1/routing/aliases/` |
+| GET, PUT, DELETE | `/api/v1/routing/aliases/{alias_id}` |
+| GET, POST | `/api/v1/routing/assignments/` |
+| POST | `/api/v1/routing/assignments/seed` (admin only — seeds defaults) |
+| GET, PUT, DELETE | `/api/v1/routing/assignments/{entry_id}` |
+| GET | `/api/v1/routing/decisions/` (aggregate summary) |
+| GET | `/api/v1/routing/decisions/{request_id}` (full trace for one request) |
+| POST | `/api/v1/routing/dry-run/` |
+| GET, PUT, DELETE | `/api/v1/routing/policies/{organization_id}` |
+| GET, POST | `/api/v1/routing/rules/` |
+| GET, PUT, DELETE | `/api/v1/routing/rules/{rule_id}` |
+
+```bash
+curl -X POST https://your-waddleai-mgmt-host:8001/api/v1/routing/dry-run/ \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"prompt": "Write a Python function to calculate fibonacci numbers"}'
 ```
 
-## User Management
+Runs `RoutingEngine.decide()` against the org's real rules/assignments/policy with zero side
+effects — no request is logged and no model is called — so a policy change can be validated
+before it's live.
 
-### List Users
+### Security policies
 
-```http
-GET /api/users
+Per-tool/per-model block/flag/audit policy, resolved global → org → model → tool.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET, POST | `/api/v1/security-policies/` | List / create-or-upsert a policy by scope + direction |
+| PUT, DELETE | `/api/v1/security-policies/{policy_id}` | Update / delete a policy |
+| GET | `/api/v1/security-policies/resolve` | Preview: which policy applies to org X + model Y + tool Z |
+| GET, POST | `/api/v1/security-policies/bypass-grants` | List / create a bypass grant — `expires_at` is required, no indefinite bypass |
+| DELETE | `/api/v1/security-policies/bypass-grants/{grant_id}` | Revoke a bypass grant |
+
+## MCP Gateway
+
+Admin control surface for the [MCP integration](../integrations/mcp-protocol.md#mcp-gateway---waddleai-as-an-mcp-client)
+— registering external MCP servers WaddleAI aggregates into its own `/mcp` tool listing. Every
+route requires the `integration:admin` scope and is org-scoped from the caller's token, never a
+client-supplied `org_id`. All routes here use the house `{"status", "data", "meta"}` envelope.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/integrations/mcp-endpoints` | List this org's registered external MCP endpoints |
+| POST | `/api/v1/integrations/mcp-endpoints` | Register a new endpoint |
+| GET | `/api/v1/integrations/mcp-endpoints/{endpoint_id}` | Fetch one endpoint — 403 across orgs, 404 if it never existed |
+| PUT | `/api/v1/integrations/mcp-endpoints/{endpoint_id}` | Update an endpoint's mutable fields |
+| DELETE | `/api/v1/integrations/mcp-endpoints/{endpoint_id}` | Delete an endpoint (cascades to its per-user links) |
+| GET | `/api/v1/integrations/mcp-endpoints/{endpoint_id}/link` | Start the caller's own per-user OAuth2 link to a `per_user` endpoint |
+| GET | `/api/v1/integrations/mcp-endpoints/{endpoint_id}/link/callback` | Exchange the authorization code, store the encrypted link |
+| POST | `/api/v1/integrations/opencode-config` | Render a per-virtual-key OpenCode config (custom provider + `/mcp` entry) |
+
+```bash
+curl -X POST https://your-waddleai-mgmt-host:8001/api/v1/integrations/mcp-endpoints \
+  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{
+        "name": "Elder MCP",
+        "url": "https://elder.internal.example.com/mcp",
+        "transport": "streamable_http",
+        "auth_type": "header",
+        "auth_config": {"header_name": "Authorization", "header_value": "Bearer <elder-token>"},
+        "identity_mode": "shared",
+        "namespace": "elder"
+      }'
 ```
 
-**Required Permission:** `admin` (all users) or `resource_manager` (organization users only)
-
-**Response:**
-```json
-{
-  "users": [
-    {
-      "id": 1,
-      "username": "john.doe",
-      "email": "john@example.com",
-      "role": "user",
-      "organization_id": 1,
-      "enabled": true,
-      "created_at": "2025-09-15T10:00:00Z"
-    }
-  ]
-}
-```
-
-### Create User
-
-```http
-POST /api/users
-```
-
-**Required Permission:** `admin` or `resource_manager`
-
-**Request Body:**
-```json
-{
-  "username": "jane.smith",
-  "email": "jane@example.com",
-  "password": "secure-password",
-  "role": "user",
-  "organization_id": 1
-}
-```
-
-**Response:**
-```json
-{
-  "id": 5,
-  "status": "created"
-}
-```
-
-**Roles:**
-- `admin` - Full system access
-- `resource_manager` - Organization-level management
-- `reporter` - Read-only analytics and reporting
-- `user` - Basic API access
-
-## API Key Management
-
-### List API Keys
-
-```http
-GET /api/api_keys
-```
-
-**Required Permission:** Any authenticated user (scope depends on role)
-
-**Response:**
-```json
-{
-  "api_keys": [
-    {
-      "id": 1,
-      "name": "Production Key",
-      "key_hash": "***REDACTED***",
-      "user_id": 1,
-      "organization_id": 1,
-      "permissions": ["chat:completions"],
-      "enabled": true,
-      "rate_limit": 1000,
-      "created_at": "2025-09-20T08:00:00Z",
-      "expires_at": "2026-09-20T08:00:00Z"
-    }
-  ]
-}
-```
-
-### Create API Key
-
-```http
-POST /api/api_keys
-```
-
-**Required Permission:** Any authenticated user
-
-**Request Body:**
-```json
-{
-  "name": "New API Key",
-  "permissions": ["chat:completions"],
-  "rate_limit": 1000,
-  "expires_days": 365
-}
-```
-
-**Response:**
-```json
-{
-  "id": 10,
-  "api_key": "<your-waddleai-key>",
-  "status": "created",
-  "message": "Store this key securely - it won't be shown again"
-}
-```
-
-!!! warning "Security"
-    API keys are only shown once upon creation. Store them securely!
-
-### Delete API Key
-
-```http
-DELETE /api/api_keys/{key_id}
-```
-
-**Required Permission:** Key owner, `resource_manager` (for org keys), or `admin`
-
-**Response:**
-```json
-{
-  "status": "deleted"
-}
-```
-
-!!! note
-    Keys are disabled rather than deleted to preserve audit trails.
-
-## LLM Provider Management
-
-### List Connection Links
-
-```http
-GET /api/connection_links
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "connection_links": [
-    {
-      "id": 1,
-      "name": "OpenAI Production",
-      "provider": "openai",
-      "endpoint_url": "https://api.openai.com/v1",
-      "model_list": ["gpt-4", "gpt-3.5-turbo"],
-      "enabled": true,
-      "rate_limits": {
-        "requests_per_minute": 500,
-        "tokens_per_minute": 150000
-      },
-      "created_at": "2025-09-01T00:00:00Z"
-    }
-  ]
-}
-```
-
-### Create Connection Link
-
-```http
-POST /api/connection_links
-```
-
-**Required Permission:** `admin`
-
-**Request Body:**
-```json
-{
-  "name": "Anthropic Production",
-  "provider": "anthropic",
-  "endpoint_url": "https://api.anthropic.com/v1",
-  "api_key": "sk-ant-...",
-  "model_list": ["claude-3-opus", "claude-3-sonnet"],
-  "enabled": true,
-  "rate_limits": {
-    "requests_per_minute": 100
-  },
-  "tls_config": {
-    "verify": true
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "id": 3,
-  "status": "created"
-}
-```
-
-## Usage Statistics
-
-### Get Usage Stats
-
-```http
-GET /api/usage?days=30
-```
-
-**Required Permission:** Any authenticated user (scope depends on role)
-
-**Query Parameters:**
-- `days` (optional): Number of days to retrieve (default: 30)
-
-**Response:**
-```json
-{
-  "period_days": 30,
-  "total_tokens": 1500000,
-  "total_requests": 5420,
-  "daily_usage": {
-    "2025-09-29": {
-      "tokens": 50000,
-      "requests": 180
-    }
-  },
-  "provider_usage": {
-    "openai": {
-      "tokens": 800000,
-      "requests": 2800
-    },
-    "anthropic": {
-      "tokens": 500000,
-      "requests": 1750
-    },
-    "ollama": {
-      "tokens": 200000,
-      "requests": 870
-    }
-  },
-  "recent_usage": [
-    {
-      "id": 1001,
-      "user_id": 5,
-      "organization_id": 1,
-      "provider": "openai",
-      "model": "gpt-4",
-      "waddleai_tokens": 150,
-      "llm_tokens_input": 50,
-      "llm_tokens_output": 200,
-      "created_at": "2025-09-29T14:30:00Z"
-    }
-  ]
-}
-```
-
-## System Health
-
-### Get System Health
-
-```http
-GET /api/system/health
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "checks": {
-    "database": {
-      "status": "healthy",
-      "response_time_ms": 5
-    },
-    "redis": {
-      "status": "healthy",
-      "response_time_ms": 2
-    },
-    "llm_providers": {
-      "status": "healthy",
-      "active_providers": 3,
-      "total_providers": 3
-    },
-    "system_resources": {
-      "status": "healthy",
-      "cpu_usage_percent": 45.2,
-      "memory_usage_percent": 62.8
-    }
-  },
-  "timestamp": "2025-09-29T14:45:00Z"
-}
-```
-
-## Routing Configuration
-
-### Get Routing Instructions
-
-```http
-GET /api/routing/instructions
-```
-
-**Required Permission:** Any authenticated user
-
-**Response:**
-```json
-{
-  "instructions": "Route to OpenAI for general queries, Anthropic for creative writing...",
-  "routing_llm": "llama3.2:1b",
-  "source": "redis"
-}
-```
-
-### Set Routing Instructions
-
-```http
-POST /api/routing/instructions
-```
-
-**Required Permission:** `admin`
-
-**Request Body:**
-```json
-{
-  "instructions": "Your routing instructions here...",
-  "routing_llm": "llama3.2:1b"
-}
-```
-
-**Response:**
 ```json
 {
   "status": "success",
-  "instructions_length": 250,
-  "routing_llm": "llama3.2:1b"
-}
-```
-
-### Test Routing Decision
-
-```http
-POST /api/routing/test
-```
-
-**Required Permission:** `admin`
-
-**Request Body:**
-```json
-{
-  "prompt": "Write a Python function to calculate fibonacci numbers"
-}
-```
-
-**Response:**
-```json
-{
-  "prompt": "Write a Python function...",
-  "routing_decision": "claude-3-sonnet",
-  "routing_reasoning": "Programming task detected - routing to Claude Sonnet for code generation",
-  "request_type": "programming",
-  "confidence": 0.85,
-  "alternative_models": ["gpt-4", "llama-70b"]
-}
-```
-
-## Memory/Conversation Management
-
-### Search Conversations
-
-```http
-GET /api/memory/conversations?query=python&limit=20
-```
-
-**Required Permission:** `admin` (all conversations) or authenticated user (own conversations)
-
-**Query Parameters:**
-- `query` (optional): Search term
-- `limit` (optional): Max results (default: 20)
-- `user_id` (optional, admin only): Filter by user
-- `org_id` (optional, admin only): Filter by organization
-
-**Response:**
-```json
-{
-  "query": "python",
-  "count": 5,
-  "conversations": [
-    {
-      "id": "conv_123",
-      "user_id": 5,
-      "organization_id": 1,
-      "created_at": "2025-09-29T10:30:00Z",
-      "model_used": "claude-3-sonnet",
-      "content_preview": "User: Help me write a Python function...",
-      "waddleai_tokens": 150
-    }
-  ]
-}
-```
-
-### Get Memory Stats
-
-```http
-GET /api/memory/stats
-```
-
-**Required Permission:** Any authenticated user (scope depends on role)
-
-**Response:**
-```json
-{
-  "scope": "system",
-  "total_conversations": 1247,
-  "total_users": 42,
-  "storage_size_mb": 156.3,
-  "oldest_conversation": "2025-01-15T08:00:00Z",
-  "newest_conversation": "2025-09-29T12:00:00Z",
-  "models_used": {
-    "claude-3-sonnet": 450,
-    "gpt-4": 320,
-    "llama-70b": 477
-  }
-}
-```
-
-## MCP Server Management
-
-### Get MCP Status
-
-```http
-GET /api/mcp/status
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "running": true,
-  "host": "localhost",
-  "port": 8765,
-  "active_clients": 3,
-  "auto_start": true
-}
-```
-
-### Start MCP Server
-
-```http
-POST /api/mcp/start
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "status": "started",
-  "message": "MCP server started on ws://localhost:8765"
-}
-```
-
-### Stop MCP Server
-
-```http
-POST /api/mcp/stop
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "status": "stopped",
-  "message": "MCP server stopped"
-}
-```
-
-### List MCP Clients
-
-```http
-GET /api/mcp/clients
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "clients": [
-    {
-      "remote_address": "127.0.0.1:54321",
-      "user_id": 5,
-      "username": "john.doe",
-      "role": "user",
-      "organization_id": 1
-    }
-  ]
-}
-```
-
-## Ollama Management
-
-### Pull Model
-
-```http
-POST /api/ollama/pull
-```
-
-**Required Permission:** `admin`
-
-**Request Body:**
-```json
-{
-  "model": "llama3.2:3b"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "model": "llama3.2:3b",
-  "size": "1.8GB"
-}
-```
-
-### Remove Model
-
-```http
-DELETE /api/ollama/models/{model_name}
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "status": "removed",
-  "model": "llama3.2:3b"
-}
-```
-
-## Performance Monitoring
-
-### Get XDP Status
-
-```http
-GET /api/performance/xdp
-```
-
-**Required Permission:** `admin`
-
-**Response:**
-```json
-{
-  "enabled": false,
-  "interface": "eth0",
-  "program_loaded": false,
-  "af_xdp_sockets": 0,
-  "rate_limits_active": 0,
-  "stats": {
-    "packets_total": 0,
-    "packets_passed": 0,
-    "packets_dropped": 0,
-    "packets_rate_limited": 0,
-    "bytes_processed": 0
+  "data": {
+    "id": 7,
+    "org_id": 1,
+    "name": "Elder MCP",
+    "url": "https://elder.internal.example.com/mcp",
+    "transport": "streamable_http",
+    "auth_type": "header",
+    "auth_config": {"header_name": "Authorization", "header_value": "Bear****oken"},
+    "identity_mode": "shared",
+    "namespace": "elder",
+    "credentials_ref": null,
+    "status": "active",
+    "created_at": "2026-08-21T00:00:00Z"
   },
-  "performance": {
-    "drop_rate": 0.0,
-    "throughput_mbps": 0.0
-  },
-  "message": "XDP not enabled. Set ENABLE_XDP=true and run as root to enable."
+  "meta": {"action": "created", "timestamp": "2026-08-21T00:00:00Z"}
 }
 ```
 
-### Toggle XDP
+`auth_config` secret sub-fields (`header_value`, `client_secret`) are encrypted at rest and only
+ever returned masked, as above — never in plaintext, not even to the org that created them.
 
-```http
-POST /api/performance/xdp/enable
-```
+**Field values:**
 
-**Required Permission:** `admin`
+| Field | Valid values |
+|---|---|
+| `transport` | `streamable_http`, `stdio` |
+| `auth_type` | `none`, `header`, `oauth2_client_credentials`, `oauth2_auth_code` |
+| `identity_mode` | `shared` (one org-wide credential), `per_user` (each user links their own via the `/link` flow) |
 
-**Request Body:**
-```json
-{
-  "enable": true
-}
-```
+### Fleet, model deployment, and other admin resources
 
-**Response:**
-```json
-{
-  "status": "success",
-  "message": "XDP acceleration enabled. Restart proxy server to apply changes."
-}
-```
+| Group | Routes | Summary |
+|---|---|---|
+| Inference fleet | `GET/POST /api/v1/fleet/backends`, `GET/PUT/DELETE /api/v1/fleet/backends/{id}`, `GET .../health` | Register/manage inference fleet backends (`fleet:admin`) |
+| Ollama deployments | `GET/POST /api/v1/ollama/deployments`, `GET/PUT/DELETE .../{id}`, plus `/start`, `/stop`, `/restart`, `/logs`, `/health`, `/models`, `/models/pull`, `/sync-models`, `/docker-compose`, `/k8s-manifest`, `/metallb-service` | Full Ollama deployment lifecycle (`ollama:admin`) — see [llama.cpp / Ollama setup](../integrations/llamacpp-setup.md) |
+| Ollama model routing | `GET /api/v1/ollama/models`, `POST .../assign`, `.../bulk-assign`, `.../reassign`, `.../sync`, `GET .../route-status`, `DELETE /api/v1/ollama/models/{id}` | Assign models to deployments and sync AILB routes (`ollama_model:admin`) |
+| llama.cpp deployments | `GET/POST /api/v1/llamacpp/deployments`, `GET/PATCH/DELETE .../{id}`, `.../deploy`, `.../remove`, `.../health`, `.../export/k8s` | llama.cpp deployment lifecycle (`llamacpp:admin`) |
+| Knowledge base | `GET/POST /api/v1/knowledge`, `GET/DELETE /api/v1/knowledge/{doc_id}` | Upload/manage org knowledge documents (CodeRAG/docs corpus) |
+| Memory | `GET/POST /api/v1/memory-config`, `GET/POST /api/v1/memory-scoping`, `POST /api/v1/memory/{item_id}/correct\|dispute\|promote` | Conversation-memory injection config and per-item moderation |
+| Cache configs | `GET/POST /api/v1/cache-configs`, `GET/PUT/DELETE /api/v1/cache-configs/{id}` | Per-scope response-cache configuration |
+| RAG / embedding config | `GET/POST /api/v1/rag-config`, `GET/POST /api/v1/embedding-config` | RAG injection and embedding backend configuration |
+| Hooks (PenguinCode adapter policy) | `GET/POST /api/v1/hooks/configs`, `/rules`, `/denylist`, `GET /policy`, `/metrics`, `POST /evaluate`, `/telemetry` | Tier-1 denylist and rule policy served to PenguinCode adapters |
+| Cilium | `GET /api/v1/cilium/status`, `POST /api/v1/cilium/reconcile` | Cilium CRD capability report and on-demand reconcile (admin only) |
 
-## Error Responses
+Every route in this table exists in the live spec (`/api/v1/openapi/full.json`) with the exact
+request/response schema — several are not yet annotated with `@validate_response`, so consult the
+live spec rather than assuming a shape not shown on this page.
 
-All error responses follow this format:
+## What used to be here
 
-```json
-{
-  "error": {
-    "type": "error_type",
-    "message": "Human-readable error message",
-    "details": {}
-  }
-}
-```
-
-### Common Error Codes
-
-| Status Code | Error Type | Description |
-|------------|------------|-------------|
-| 400 | `invalid_request` | Missing or invalid parameters |
-| 401 | `authentication_required` | Missing or invalid authentication |
-| 403 | `insufficient_permissions` | User lacks required permissions |
-| 404 | `not_found` | Resource not found |
-| 429 | `rate_limit_exceeded` | Rate limit or quota exceeded |
-| 500 | `internal_error` | Server error |
-| 503 | `service_unavailable` | Service temporarily unavailable |
-
-## Rate Limiting
-
-API endpoints are rate-limited based on user role and API key configuration. Rate limit headers are included in all responses:
-
-```http
-X-RateLimit-Limit: 1000
-X-RateLimit-Remaining: 998
-X-RateLimit-Reset: 1696014000
-```
-
-## Pagination
-
-Endpoints that return lists support pagination:
-
-```http
-GET /api/users?page=1&per_page=50
-```
-
-**Parameters:**
-- `page`: Page number (default: 1)
-- `per_page`: Items per page (default: 50, max: 200)
-
-## Best Practices
-
-1. **Use appropriate authentication**: API keys for programmatic access, JWT tokens for web applications
-2. **Handle rate limits**: Implement exponential backoff when rate limited
-3. **Monitor quotas**: Check usage regularly to avoid quota exhaustion
-4. **Secure API keys**: Never commit API keys to version control
-5. **Use HTTPS**: Always use encrypted connections in production
-6. **Cache responses**: Cache non-sensitive data to reduce API calls
-7. **Implement retries**: Retry failed requests with exponential backoff
-
-## SDK Examples
-
-See the [Examples](examples.md) page for code examples in Python, Node.js, and other languages.
-
-## Support
-
-For API support and questions:
-- Check the [Troubleshooting Guide](../troubleshooting/common-issues.md)
-- Review [API Examples](examples.md)
-- Contact support at support@waddleai.com
+Earlier revisions of this page documented endpoints that do not exist in this codebase and never
+did against this API version — an `/api/system/health` system-health endpoint, `/api/mcp/status`
+and `/api/mcp/start`/`/stop` for a WebSocket MCP server, and `/api/performance/xdp` XDP
+enable/status toggles. There is no XDP control surface in the Management API at all (XDP, where
+used, is a proxy-level networking optimization, not something toggled through this API), and the
+MCP server has no start/stop lifecycle to control — it's a stateless mount on the AIProxy, gated
+by the `waddleai.mcp_v2` feature flag rather than a running/stopped service (see
+[MCP Protocol Integration](../integrations/mcp-protocol.md)). Health checks for the management
+service itself are the standard Kubernetes-style `/healthz`, `/livez`, `/readyz`, and `/metrics`
+(Prometheus format) — unversioned, at the service root, not under `/api/v1`.

@@ -27,7 +27,7 @@ docker run -d \
   --name open-webui \
   -p 3000:8080 \
   -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 \
-  -e OPENAI_API_KEY=wa-your-api-key-here \
+  -e OPENAI_API_KEY=$WADDLEAI_API_KEY \
   -v open-webui:/app/backend/data \
   ghcr.io/open-webui/open-webui:main
 ```
@@ -57,7 +57,7 @@ Configure Open WebUI to work with WaddleAI:
 OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1
 
 # Required: Your WaddleAI API key
-OPENAI_API_KEY=wa-your-api-key-here
+OPENAI_API_KEY=<your-waddleai-key>
 
 # Optional: Enable experimental features
 WEBUI_SECRET_KEY=your-secret-key-change-this

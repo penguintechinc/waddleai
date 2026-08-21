@@ -31,7 +31,7 @@ WaddleAI consists of two main components:
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here", base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 response = client.chat.completions.create(

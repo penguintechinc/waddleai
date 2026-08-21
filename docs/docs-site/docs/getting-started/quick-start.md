@@ -83,7 +83,7 @@ Example key: `<your-waddleai-key>`
 
 ```bash
 # Set your API key
-export WADDLEAI_API_KEY="wai_YOUR_KEY_HERE"
+export WADDLEAI_API_KEY="<your-waddleai-key>"
 
 # Test OpenAI-compatible endpoint
 curl -X POST http://localhost:8000/v1/chat/completions \
@@ -169,7 +169,7 @@ In Management Portal:
    - Name: "Anthropic"
    - Type: anthropic
    - Base URL: https://api.anthropic.com
-   - API Key: sk-ant-your_anthropic_key_here
+   - API Key: <your-anthropic-key>
    - Enable: ✓
 4. Click "Test"
 5. Click "Save"

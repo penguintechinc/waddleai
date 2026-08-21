@@ -23,7 +23,7 @@ Configure Cursor IDE to use WaddleAI for intelligent routing and cost optimizati
 3. Set:
    - **API Provider**: OpenAI Compatible
    - **Base URL**: `http://localhost:8000/v1`
-   - **API Key**: `wai_your_key_here`
+   - **API Key**: `<your-waddleai-key>`
    - **Model**: Leave empty for auto-routing
 
 ### Step 3: Test
@@ -46,7 +46,7 @@ Edit `~/.cursor/settings.json`:
   "cursor.ai": {
     "apiProvider": "openai-compatible",
     "apiBaseUrl": "http://localhost:8000/v1",
-    "apiKey": "wai_your_key_here",
+    "apiKey": "<your-waddleai-key>",
     "model": "auto",
     "streamResponses": true,
     "maxTokens": 2000

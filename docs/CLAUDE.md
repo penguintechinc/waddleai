@@ -201,7 +201,7 @@ WaddleAI provides a fully compatible OpenAI API that can be used as a drop-in re
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here", base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 response = client.chat.completions.create(
@@ -216,7 +216,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-    apiKey: 'wa-your-api-key-here',
+    apiKey: '<your-waddleai-key>',
     baseURL: 'https://your-waddleai-proxy.com/v1'
 });
 
@@ -338,17 +338,15 @@ response = client.chat.completions.create(
 
 ### Environment Variables
 ```bash
-# Proxy Server
-export PROXY_HOST=0.0.0.0
-export PROXY_PORT=8000
+# Proxy Server -- binds 0.0.0.0 always; only the port is configurable
+export HTTP_PORT=8080  # default; proxy/apps/proxy_server/main.py
 export DATABASE_URL=postgresql://user:pass@localhost/waddleai
 export JWT_SECRET=your-jwt-secret
 export SECURITY_POLICY=balanced
 
-# Management Server
-export MGMT_HOST=0.0.0.0
-export MGMT_PORT=8001
-export ADMIN_PASSWORD=secure-admin-password
+# Management Server -- no host/port env var; bound via hypercorn CLI/Dockerfile
+# (0.0.0.0:8001, see services/management/Dockerfile)
+export ADMIN_INITIAL_PASSWORD=secure-admin-password
 ```
 
 ### Docker Compose

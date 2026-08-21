@@ -17,7 +17,7 @@ import openai
 
 # Configure client to use WaddleAI proxy
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here", base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 # Use exactly like OpenAI API
@@ -36,7 +36,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-    apiKey: 'wa-your-api-key-here',
+    apiKey: '<your-waddleai-key>',
     baseURL: 'https://your-waddleai-proxy.com/v1'
 });
 

@@ -11,7 +11,7 @@ and any other client with a "custom OpenAI-compatible endpoint" option.
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-key-here",
+    api_key="<your-waddleai-key>",
     base_url="https://your-waddleai-host/v1",
 )
 
@@ -25,7 +25,7 @@ response = client.chat.completions.create(
 import OpenAI from 'openai';
 
 const client = new OpenAI({
-  apiKey: 'wa-your-key-here',
+  apiKey: '<your-waddleai-key>',
   baseURL: 'https://your-waddleai-host/v1',
 });
 

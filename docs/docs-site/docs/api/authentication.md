@@ -12,7 +12,7 @@ API keys are the primary authentication method for programmatic access to the pr
 
 **Format:** `wa-{user_id}-{random_hex}`
 
-**Example:** `wa-5-abc123def456`
+**Example:** `wa-{user_id}-{random_hex}`
 
 **Usage:**
 ```bash
@@ -238,7 +238,7 @@ import os
 response = openai.ChatCompletion.create(
     model="gpt-4",
     messages=[{"role": "user", "content": "Hello!"}],
-    api_key="wa-5-abc123",  # User's API key
+    api_key="<your-waddleai-key>",  # User's API key
 )
 
 # User can check own usage
@@ -295,7 +295,7 @@ new_key = requests.post(
 ).json()
 
 print(f"New API Key: {new_key['api_key']}")
-# Output: wa-5-abc123def456
+# Output: wa-{user_id}-{random_hex}
 # SAVE THIS - it won't be shown again!
 ```
 
