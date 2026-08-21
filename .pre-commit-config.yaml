@@ -106,7 +106,13 @@ repos:
         # concern; in tests the assert IS the contract. Same reasoning and
         # same scope as the S101 per-file-ignore in pyproject.toml: tests are
         # excluded, production code keeps the full ruleset at every severity.
-        exclude: ^tests/
+        #
+        # services/penguincode is vendored upstream and is excluded from every
+        # other scanner here (ruff, gitleaks, shellcheck, hadolint, and the
+        # Makefile's own bandit). This hook was the last one still walking it,
+        # so a push failed on 4 HIGH / 14 MEDIUM / 1068 LOW findings in code
+        # this repo does not maintain, while first-party code was clean.
+        exclude: ^(tests|services/penguincode)/
 
   - repo: local
     hooks:
