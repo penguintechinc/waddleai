@@ -30,6 +30,7 @@ installed:
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from concurrent.futures import Future
@@ -40,6 +41,10 @@ import pytest
 
 from shared.security import content_filter as content_filter_module
 from shared.security.content_filter import ContentFilter
+
+# Captured before any fixture monkeypatches it, so the passthrough branch
+# below calls the real implementation rather than recursing.
+_real_find_spec = importlib.util.find_spec
 
 # ── Layer 1: NERFilter backend-selection seam ───────────────────────────────
 # Fake presidio/transformers modules matching the real libraries' call
@@ -54,6 +59,17 @@ def _install_fake_presidio(monkeypatch: pytest.MonkeyPatch, entities: list[dict]
     Each entity dict needs entity_type/start/end/score; mirrors the
     attributes `_analyze_presidio` reads off Presidio's `RecognizerResult`.
     """
+    # _init_presidio() now checks the spaCy model is importable before it
+    # builds an engine, because NlpEngineProvider.create_engine() FETCHES a
+    # missing model (~600MB) instead of failing fast. The engine below is a
+    # stub that never touches spaCy, so the precondition is satisfied here
+    # rather than requiring the real model to be installed -- CI installs no
+    # spaCy model at all.
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name.startswith("en_core_web") else _real_find_spec(name),
+    )
 
     class _Result:
         def __init__(self, entity_type: str, start: int, end: int, score: float) -> None:
