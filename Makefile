@@ -22,6 +22,24 @@ LINT_PATHS := proxy services shared scripts tests
 SCAN_EXCLUDE := ./.venv,./.git,./.worktrees,./services/penguincode,./node_modules
 PY := $(shell [ -x $(VENV)/bin/python ] && echo $(VENV)/bin/python || echo python3)
 
+# pip-audit: advisories accepted with a written reason. This list is NOT a
+# convenience hatch -- every entry needs a reason that survives review, and it
+# gets re-checked whenever a fixed release appears.
+#
+#   PYSEC-2026-311 (chromadb, all versions >=1.0.0, NO fixed release exists)
+#     Pre-authentication code injection in chromadb's SERVER component. This
+#     repo never runs that server: there is no chroma k8s manifest and no chroma
+#     image. create_rag_manager() defaults to the pgvector backend, and
+#     shared/vectorstore/ ships only pgvector and qdrant. The one live consumer,
+#     shared/utils/memory_integration.py, uses chromadb.PersistentClient -- an
+#     embedded local-file store with no listening socket and therefore no
+#     pre-auth surface. ChromaDBRAGStore can construct an HttpClient, but only
+#     when host/port are explicitly configured, and then the vulnerable
+#     component belongs to whoever operates that server.
+#     Revisit when chromadb publishes a fix; the right long-term move is to drop
+#     the chromadb backend entirely, since pgvector and qdrant already cover it.
+PIP_AUDIT_IGNORES := --ignore-vuln PYSEC-2026-311
+
 venv: ## Create .venv (3.13) from the hash-pinned lockfiles -- published deps only
 	@uv venv -p 3.13 $(VENV)
 	@uv pip install --python $(VENV)/bin/python -r requirements.txt
@@ -138,13 +156,13 @@ test-security: ## Security scans over FIRST-PARTY code. Fails on findings.
 	fi; \
 	if command -v gitleaks >/dev/null 2>&1; then \
 	  echo "-- gitleaks --"; \
-	  gitleaks detect --source . --no-git --redact \
+	  gitleaks detect --source . --no-git --redact --config .gitleaks.toml \
 	    --exit-code 1 --log-level error || fail=1; \
 	fi; \
 	echo "-- pip-audit --"; \
 	if [ -x $(VENV)/bin/pip-audit ]; then \
 	  for r in requirements.txt proxy/requirements.txt services/management/requirements.txt; do \
-	    $(VENV)/bin/pip-audit -r $$r --strict || fail=1; \
+	    $(VENV)/bin/pip-audit -r $$r --strict $(PIP_AUDIT_IGNORES) || fail=1; \
 	  done; \
 	else echo "!! pip-audit not in $(VENV) -- run 'make venv'; counting as FAILURE"; fail=1; fi; \
 	if [ -n "$$(find . -name go.mod -not -path './.venv/*' -not -path '*/vendor/*' -not -path './.worktrees/*' -not -path './services/penguincode/*')" ]; then \

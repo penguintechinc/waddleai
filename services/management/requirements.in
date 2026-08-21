@@ -46,10 +46,10 @@ penguin-licensing>=0.1.0
 # string, which bcrypt 5 rejects with "password cannot be longer than 72
 # bytes" instead of truncating. That failed every auth/key/quota test in CI.
 bcrypt>=4.1.0,<5.0
-PyJWT>=2.8.0
+PyJWT>=2.13.0
 passlib>=1.7.4
 argon2-cffi>=23.1.0
-cryptography>=41.0.0
+cryptography>=50.0.0
 
 # Cache & Session
 redis>=5.0.0
@@ -67,11 +67,11 @@ protobuf>=6.31.1,<7.0.0
 
 # HTTP client for provider connectivity tests
 httpx>=0.26.0
-aiohttp>=3.9.0
+aiohttp>=3.14.3
 
 # AI Provider SDKs
 openai>=1.0.0
-anthropic>=0.18.0
+anthropic>=0.87.0
 boto3>=1.34.0
 # NOTE: Gemini connectivity goes through shared/utils/llm_connectors.py via
 # the `google-genai` SDK (see root requirements.in), not the deprecated
@@ -116,8 +116,13 @@ marshmallow>=3.20.0
 python-dotenv>=1.0.0
 structlog>=24.1.0
 
-# Kubernetes control-plane (Cilium reconciler) — pin matches proxy/requirements.in
-kubernetes==35.0.0
+# Kubernetes control-plane (Cilium reconciler). Declared as a floor, not an
+# exact pin: proxy/requirements.in does not declare kubernetes at all -- it
+# arrives transitively via chromadb -- so an exact pin here fought the shared
+# resolution once this file began inheriting the root lockfile. The resolver
+# unifies all three on one version; the floor only guards against going below
+# the API surface the reconciler needs.
+kubernetes>=35.0.0
 
 # Schema migrations — Alembic is the sole schema authority for this service.
 # Every file under alembic/versions imports it, as do the migration round-trip
@@ -127,7 +132,7 @@ kubernetes==35.0.0
 alembic>=1.13.1
 
 # Development & Testing
-pytest>=7.4.0
+pytest>=9.0.3
 pytest-cov>=4.1.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
