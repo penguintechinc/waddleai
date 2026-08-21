@@ -90,4 +90,38 @@ describe('Hooks page', () => {
     await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/v1/hooks/denylist'));
     expect(screen.getByRole('tab', { name: 'Denylist', selected: true })).toBeInTheDocument();
   });
+
+  it('switches to the Config tab and renders HookConfigTab', async () => {
+    useAuth.mockReturnValue({ user: { role: 'admin', organization_id: 1 } });
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/hooks/configs') return Promise.resolve({ data: { status: 'success', data: [] } });
+      return Promise.resolve({ data: { status: 'success', data: [] } });
+    });
+    render(<Hooks />);
+    await waitFor(() => screen.getByRole('tab', { name: 'Rules', selected: true }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Config' }));
+
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/v1/hooks/configs'));
+    expect(screen.getByRole('tab', { name: 'Config', selected: true })).toBeInTheDocument();
+  });
+
+  it('switches to the Visibility tab and renders HookVisibilityTab', async () => {
+    useAuth.mockReturnValue({ user: { role: 'admin', organization_id: 1 } });
+    const metricsResponse = {
+      status: 'success',
+      data: { rule_hits: [], platform: null },
+    };
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/hooks/metrics') return Promise.resolve({ data: metricsResponse });
+      return Promise.resolve({ data: { status: 'success', data: [] } });
+    });
+    render(<Hooks />);
+    await waitFor(() => screen.getByRole('tab', { name: 'Rules', selected: true }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Visibility' }));
+
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/v1/hooks/metrics'));
+    expect(screen.getByRole('tab', { name: 'Visibility', selected: true })).toBeInTheDocument();
+  });
 });

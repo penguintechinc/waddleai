@@ -352,6 +352,102 @@ describe('Integrations page - admin', () => {
     });
   });
 
+  it('shows the server error when updating an endpoint fails', async () => {
+    axios.put.mockRejectedValue({ response: { data: { error: 'endpoint is currently linked' } } });
+    render(<Integrations />);
+    await waitFor(() => {
+      expect(screen.getByText('Elder Docs MCP')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Update Endpoint' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('endpoint is currently linked')).toBeInTheDocument();
+    });
+  });
+
+  it('shows a generic error when updating an endpoint fails without a response error field', async () => {
+    axios.put.mockRejectedValue(new Error('Network error'));
+    render(<Integrations />);
+    await waitFor(() => {
+      expect(screen.getByText('Elder Docs MCP')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Update Endpoint' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to update MCP endpoint')).toBeInTheDocument();
+    });
+  });
+
+  it('shows the server error when deleting an endpoint fails', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    axios.delete.mockRejectedValue({ response: { data: { error: 'endpoint has active links' } } });
+    render(<Integrations />);
+    await waitFor(() => {
+      expect(screen.getByText('Elder Docs MCP')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('endpoint has active links')).toBeInTheDocument();
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it('shows a generic error when deleting an endpoint fails without a response error field', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    axios.delete.mockRejectedValue(new Error('Network error'));
+    render(<Integrations />);
+    await waitFor(() => {
+      expect(screen.getByText('Elder Docs MCP')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to delete MCP endpoint')).toBeInTheDocument();
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it('dismisses the error alert when its close button is clicked', async () => {
+    axios.get.mockRejectedValue({ response: { data: { error: 'not_found' } } });
+    render(<Integrations />);
+    await waitFor(() => {
+      expect(screen.getByText('not_found')).toBeInTheDocument();
+    });
+    const errorAlert = screen.getByText('not_found').closest('.alert');
+    fireEvent.click(errorAlert.querySelector('button'));
+    expect(screen.queryByText('not_found')).not.toBeInTheDocument();
+  });
+
+  it('dismisses the success alert when its close button is clicked', async () => {
+    axios.post.mockResolvedValue({ data: { status: 'success', data: mockSharedEndpoint } });
+    render(<Integrations />);
+    await waitFor(() => {
+      expect(screen.getByText('Elder Docs MCP')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Register MCP Endpoint' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New MCP' } });
+    fireEvent.change(screen.getByLabelText('Namespace'), { target: { value: 'newmcp' } });
+    fireEvent.change(screen.getByLabelText('URL'), {
+      target: { value: 'https://new.example.com/mcp' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Register Endpoint' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('MCP endpoint registered successfully')).toBeInTheDocument();
+    });
+    const successAlert = screen.getByText('MCP endpoint registered successfully').closest('.alert');
+    fireEvent.click(successAlert.querySelector('button'));
+    expect(screen.queryByText('MCP endpoint registered successfully')).not.toBeInTheDocument();
+  });
+
   it('deletes an endpoint after confirmation', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     axios.delete.mockResolvedValue({ data: { status: 'success', data: { id: 1 } } });

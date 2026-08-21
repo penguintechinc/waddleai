@@ -508,4 +508,24 @@ describe('Routing page - admin: Test Routing Decision', () => {
       expect(screen.getByText('Feature not enabled')).toBeInTheDocument();
     });
   });
+
+  it('dismisses the test-run error alert when its close button is clicked', async () => {
+    axios.post.mockRejectedValue({ response: { data: { error: 'Feature not enabled' } } });
+
+    render(<Routing />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Sample Prompt')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('Sample Prompt'), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run Test' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Feature not enabled')).toBeInTheDocument();
+    });
+
+    const errorAlert = screen.getByText('Feature not enabled').closest('.alert');
+    fireEvent.click(errorAlert.querySelector('button'));
+    expect(screen.queryByText('Feature not enabled')).not.toBeInTheDocument();
+  });
 });
