@@ -51,6 +51,9 @@ on:
       - '.version'
       - '.github/workflows/docker-build.yml'
 
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME_PROXY: ${{ github.repository }}/proxy
@@ -554,6 +557,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -684,6 +688,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
 
     steps:
     - name: Checkout code
@@ -781,6 +788,8 @@ jobs:
     needs: [test, security-scan, integration-test]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout code
