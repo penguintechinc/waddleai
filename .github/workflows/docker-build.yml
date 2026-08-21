@@ -242,10 +242,19 @@ jobs:
 
     - name: Run unit tests
       run: |
-        # No --cov-report=html: Codecov consumes coverage.xml, nothing in CI
-        # reads the HTML render, and generating both held a second copy of the
-        # coverage data in memory while torch/transformers were resident.
-        python -m pytest tests/unit/ -q --cov=shared --cov-report=xml
+        # --cov sources come from pytest.ini's addopts (shared,
+        # services/management/app, proxy) so CI measures the identical
+        # surface as `make test-unit` locally -- previously this step's
+        # explicit --cov=shared silently narrowed the *reported* subset
+        # Codecov saw, even though pytest.ini's addopts always contributed
+        # extra --cov/--cov-report values on top of it (pytest-cov
+        # accumulates repeated options, it doesn't let a later flag replace
+        # an earlier one). No --cov-report=html here: Codecov consumes
+        # coverage.xml, nothing in CI reads the HTML render, and pytest.ini
+        # no longer defaults to html (moved to `make test-unit` for local
+        # dev only) so generating both never holds a second copy of the
+        # coverage data in memory while torch/transformers are resident.
+        python -m pytest tests/unit/ -q --cov-report=xml
       env:
         PYTHONPATH: ${{ github.workspace }}
 
