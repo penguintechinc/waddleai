@@ -226,11 +226,15 @@ class UsageTracker:
     # ------------------------------------------------------------------
 
     def _has_premium(self) -> bool:
-        """Return True when the premium_usage_tracking feature is licensed."""
+        """Return True when the premium_usage_tracking feature is licensed.
+
+        ``penguin_licensing.LicenseClient`` exposes ``check_feature`` /
+        ``check_tier`` only -- there is no ``has_feature`` method.
+        """
         if self._license_client is None:
             return False
         try:
-            return bool(self._license_client.has_feature("premium_usage_tracking"))
+            return bool(self._license_client.check_feature("premium_usage_tracking"))
         except Exception as exc:
             logger.warning("License check failed: %s", exc)
             return False

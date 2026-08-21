@@ -87,6 +87,16 @@ _ner_pool: ProcessPoolExecutor | None = None
 # already meant to be below the threshold worth acting on, but nothing
 # actually enforced it, so weak pattern-only hits were redacted exactly the
 # same as high-confidence matches.
+# PostHog flag and licence entitlement gating the NER tier (tier 3). Tiers 1
+# and 2 are ungated -- see ContentFilter._ner_tier_enabled.
+NER_TIER_FLAG = "waddleai.pii_ner"
+NER_TIER_LICENSE_FEATURE = "pii_ner_detection"
+
+# Flag+licence check does a synchronous HTTP round trip (PostHog and/or the
+# licence server) -- cached per org so a busy org doesn't pay that cost on
+# every prompt. Short enough that a licence change takes effect quickly.
+_NER_TIER_CACHE_TTL = 60.0
+
 _MIN_NER_CONFIDENCE = 0.3
 
 
@@ -152,6 +162,19 @@ class FilterResult:
     # engine drove a redact/allow decision must be visible on the result
     # itself, not inferred from which packages happen to be installed.
     ner_backend: str = "none"
+
+
+@dataclass(slots=True)
+class _NerTierGateState:
+    """Cached result of the NER-tier flag+licence gate for one org.
+
+    ``checked_at`` is a ``time.monotonic()`` timestamp; used to expire the
+    entry after ``_NER_TIER_CACHE_TTL`` seconds so ContentFilter._ner_tier_enabled
+    doesn't hit PostHog/the licence server on every prompt.
+    """
+
+    enabled: bool
+    checked_at: float
 
 
 class ContentFilter:
@@ -297,13 +320,24 @@ class ContentFilter:
         # the proxy. ShieldGemma is text-only by design; image and audio need
         # their own classifiers rather than this one.
         auditor_model: str = "shieldgemma:2b",
+        license_client: Any = None,
+        features: Any = None,
     ) -> None:
         """Initialize content filter.
+
+        license_client / features gate the NER tier only (see
+        _ner_tier_enabled). Both default to None, which means "unlicensed":
+        tiers 1 and 2 still run, so a caller that passes neither gets baseline
+        PII protection rather than none.
 
         Args:
             db: penguin-dal database instance
             ollama_base_url: Base URL for Ollama LLM
             auditor_model: Model name for LLM auditor
+            license_client: ``penguin_licensing`` client. None means the NER
+                tier stays off; the ungated pattern tiers still run.
+            features: Feature-flag helper exposing ``is_feature_enabled``.
+                None skips the flag check, leaving the licence check to decide.
 
         """
         self.db = db
@@ -338,6 +372,10 @@ class ContentFilter:
         # (no internet egress). This tier is about PII detection accuracy,
         # not the response envelope shape being snapshotted, so it is safe to
         # skip; the built-in regex + custom-rule tiers still run.
+        self._license_client = license_client
+        self._features = features
+        # Per-org cache of the NER-tier flag+licence gate (see _ner_tier_enabled)
+        self._ner_tier_cache: dict[int | None, _NerTierGateState] = {}
         self.ner_filter: Any = None
         if _NER_AVAILABLE and NERFilter is not None and os.getenv("WADDLEAI_STUB_UPSTREAM") != "1":
             try:
@@ -437,8 +475,12 @@ class ContentFilter:
             # Phase 2: Run custom organizational rules
             violations.extend(await self._run_custom_rules(text, phase, org_id))
 
-            # Phase 3: NER-based entity detection (names, locations, medical, etc.)
-            violations.extend(await self._run_ner_patterns(text, phase, org_id))
+            # Phase 3: NER-based entity detection (names, locations, medical,
+            # etc.) -- licensed. Tiers 1 and 2 above are deliberately NOT
+            # gated: see _ner_tier_enabled for why a licence problem must
+            # never leave a request with zero PII protection.
+            if await self._ner_tier_enabled(org_id):
+                violations.extend(await self._run_ner_patterns(text, phase, org_id))
 
             # Determine action based on violations
             action, filtered_text = self._determine_action(text, violations)
@@ -1248,6 +1290,70 @@ class ContentFilter:
 
         self._ner_disable_cache[org_id] = (now, disabled)
         return disabled
+
+    async def _ner_tier_enabled(self, org_id: int | None) -> bool:
+        """Whether the licensed NER tier may run for this request.
+
+        Two gates, per critical-rules.md: a PostHog flag, AND a licence
+        entitlement. Both must say yes.
+
+        The fail direction is deliberate and is the opposite of the usual
+        fail-safe-OFF rule. Tiers 1 and 2 -- the 23 built-in patterns and the
+        org's own rules -- are never gated, so when the flag service or the
+        licence server is unreachable this degrades from "semantic + pattern
+        detection" to "pattern detection", never to "nothing". Gating the
+        whole content filter on a licence check would turn a licence-server
+        outage into a PII leak: prompts would reach commercial providers
+        unredacted precisely when the platform could not verify itself.
+
+        What the licence actually buys is the tier that regexes cannot
+        replace -- person names, locations and organisations, matched by
+        meaning rather than shape.
+
+        The actual check is a blocking HTTP round trip (PostHog and/or the
+        licence server), so it runs in a thread (asyncio.to_thread) and is
+        cached per org for _NER_TIER_CACHE_TTL seconds -- otherwise every
+        single prompt would pay for two outbound HTTP calls. On failure this
+        falls back to the last cached value for the org, or to disabled if
+        the gate has never been successfully checked; it never raises into
+        the filter pipeline (same fail-open-to-pattern-tiers contract as
+        above, just extended to "checker itself is broken").
+        """
+        now = time.monotonic()
+        cached = self._ner_tier_cache.get(org_id)
+        if cached is not None and now - cached.checked_at < _NER_TIER_CACHE_TTL:
+            return cached.enabled
+
+        try:
+            enabled = await asyncio.to_thread(self._check_ner_tier_entitlement, org_id)
+        except Exception as exc:
+            fallback = cached.enabled if cached is not None else False
+            logger.warning(
+                "NER tier gate check failed for org %s; falling back to %s: %s",
+                org_id,
+                f"cached value ({fallback})" if cached is not None else "disabled (never checked)",
+                exc,
+            )
+            return fallback
+
+        self._ner_tier_cache[org_id] = _NerTierGateState(enabled=enabled, checked_at=now)
+        return enabled
+
+    def _check_ner_tier_entitlement(self, org_id: int | None) -> bool:
+        """Synchronous PostHog flag + licence entitlement check for the NER tier.
+
+        Blocking (does a ``requests``-based HTTP call under the hood) --
+        call only via ``asyncio.to_thread`` from ``_ner_tier_enabled``, never
+        directly from an async context.
+        """
+        if self._features is not None and not self._features.is_feature_enabled(
+            NER_TIER_FLAG, distinct_id=str(org_id) if org_id else "server"
+        ):
+            return False
+
+        if self._license_client is None:
+            return False
+        return bool(self._license_client.check_feature(NER_TIER_LICENSE_FEATURE))
 
     async def _run_ner_patterns(
         self,

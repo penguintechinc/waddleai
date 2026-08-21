@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(__file__))
 import asyncio
 import time
 from datetime import datetime
+from typing import Any
 
 import aiohttp
 import structlog
@@ -95,6 +96,29 @@ logger = structlog.get_logger(__name__)
 
 # Initialize metrics
 proxy_metrics = get_proxy_metrics()
+
+_license_client: Any = None
+
+
+def _get_license_client() -> Any:
+    """Lazily construct + cache the shared ``penguin_licensing.LicenseClient`` (product="waddleai").
+
+    Same pattern as ``services/management/app/api/v1/fleet.py``'s
+    ``_get_license_client`` -- one client per process, reused by every
+    licence-gated feature (currently ``ContentFilter``'s NER tier) rather
+    than a new client per call site.
+    """
+    global _license_client
+    if _license_client is None:
+        from penguin_licensing import LicenseClient
+
+        _license_client = LicenseClient(
+            license_key=os.environ.get("LICENSE_KEY", ""),
+            product="waddleai",
+            base_url=os.environ.get("LICENSE_SERVER_URL", "https://license.penguintech.io"),
+        )
+    return _license_client
+
 
 # ---------------------------------------------------------------------------
 # Contract-test mode (WADDLEAI_STUB_UPSTREAM=1)
@@ -321,6 +345,8 @@ class ProxyServer:
             db=self.db,
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             auditor_model=os.getenv("SECURITY_AUDITOR_MODEL", "shieldgemma:2b"),
+            license_client=_get_license_client(),
+            features=self.features,
         )
         self.token_manager = create_token_manager(self.db)
         self.llm_manager = create_llm_connection_manager(self.db)

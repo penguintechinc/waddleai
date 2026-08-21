@@ -46,6 +46,10 @@ from shared.utils.metrics import get_management_metrics
 
 from ... import extensions as _ext
 from ...extensions import db
+from ...services.content_filter_deps import (
+    get_content_filter_features,
+    get_content_filter_license_client,
+)
 from .auth import require_auth
 
 logger = logging.getLogger(__name__)
@@ -74,6 +78,8 @@ def _get_content_filter() -> ContentFilter:
         db=db,
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         auditor_model=os.getenv("SECURITY_AUDITOR_MODEL", "shieldgemma:2b"),
+        license_client=get_content_filter_license_client(),
+        features=get_content_filter_features(),
     )
 
 

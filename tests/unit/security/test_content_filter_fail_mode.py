@@ -28,10 +28,23 @@ def _counter_value(phase: str, mode: str) -> float:
     return _content_filter_fail_total.labels(phase=phase, mode=mode)._value.get()
 
 
+class _LicensedForNER:
+    """Licence stub entitling the NER tier.
+
+    Needed because the tier is licence-gated: without an entitlement the
+    filter skips _run_ner_patterns entirely, and a test that patches that
+    method to raise would assert fail-closed behaviour against code that
+    never runs.
+    """
+
+    def check_feature(self, _feature: str) -> bool:
+        return True
+
+
 @pytest.fixture
 def filter_instance() -> ContentFilter:
-    """Create a content filter with no database backend for testing."""
-    return ContentFilter(db=None)
+    """Create a content filter with no database backend, NER tier entitled."""
+    return ContentFilter(db=None, license_client=_LicensedForNER())
 
 
 class TestProgrammingErrorsFailClosed:

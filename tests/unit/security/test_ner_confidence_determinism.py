@@ -53,6 +53,19 @@ _real_find_spec = importlib.util.find_spec
 # without installing either dependency or loading a real model.
 
 
+class _LicensedForNER:
+    """Licence stub entitling the NER tier.
+
+    The NER tier is licence-gated (ContentFilter._ner_tier_enabled); the
+    ungated pattern tiers are unaffected. Tests that assert on ner:* rules
+    must therefore supply an entitlement, otherwise they are asserting a
+    feature the filter has correctly switched off.
+    """
+
+    def check_feature(self, _feature: str) -> bool:
+        return True
+
+
 def _install_fake_presidio(monkeypatch: pytest.MonkeyPatch, entities: list[dict]) -> Any:
     """Install a fake `presidio_analyzer` whose `AnalyzerEngine.analyze()` returns `entities`.
 
@@ -286,7 +299,7 @@ def _make_filter(
     of round-tripping through a real forked worker (see `_InlineExecutor`).
     """
     monkeypatch.setenv("WADDLEAI_STUB_UPSTREAM", "1")
-    cf = ContentFilter(db=None)
+    cf = ContentFilter(db=None, license_client=_LicensedForNER())
     cf.ner_filter = _FakeNERFilter(mode=backend)  # type: ignore[assignment]
 
     def _fake_ner_analyze(_text: str) -> list[dict]:
@@ -474,7 +487,7 @@ class TestNERBackendObservability:
     ) -> None:
         """With NER unavailable, ner_backend is 'none', not silently omitted."""
         monkeypatch.setenv("WADDLEAI_STUB_UPSTREAM", "1")
-        cf = ContentFilter(db=None)
+        cf = ContentFilter(db=None, license_client=_LicensedForNER())
         assert cf.ner_filter is None
 
         result = await cf.filter_input("hello world")
