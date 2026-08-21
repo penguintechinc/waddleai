@@ -308,7 +308,7 @@ git commit -m "feat(credentials): in-memory CredentialResolver backend for tests
 
 ### Task 3: Vault backend (`shared/credentials/backends/vault.py`)
 
-Wraps `penguin_sal.adapters.vault.VaultAdapter` (already published, KV v2 + token/AppRole auth). Per Recommendation §10, authenticates via AppRole as the SPIFFE interim — never a bare static token.
+Wraps `penguin_sal.adapters.vault.VaultAdapter` (already published, KV v2 + token/AppRole auth). Per Recommendation §10, authenticates via AppRole as the SPIFFE interim — never a bare static token. Per the SPIFFE readiness spec's Decision 3 (2026-08-21), this auth path is a hard interface seam, not a plan restructure: the resolver's auth mechanism is designed for later injection of either a machine-JWT provider (this task, AppRole-backed) or an SVID provider (the SPIFFE PR), swapped behind `VaultCredentialResolver`'s auth call site with no caller-visible change.
 
 **Files:**
 - Create: `shared/credentials/backends/vault.py`

@@ -1,6 +1,6 @@
 # SPIFFE Readiness — Design
 
-**Status**: draft for review
+**Status**: decisions recorded 2026-08-21 — ready for planning
 **Date**: 2026-08-21
 
 ## Problem
@@ -27,41 +27,43 @@ calls meet that bar:
 
 In-app TLS/cert handling is essentially absent: the only `verify=` knob found
 is an outbound httpx flag (`shared/py_libs/py_libs/http/client.py:105`); zero
-hits for `SSLContext`/`load_cert_chain`/`CERT_REQUIRED` anywhere in
-`shared/`, `proxy/`, `services/`. All TLS termination today happens at
-ingress (cert-manager + Let's Encrypt, `k8s/helm/waddleai/values-beta.yaml:108-126`)
-or in the fleet-external mTLS chart above. No service accepts a client
-certificate as identity anywhere in the codebase.
+hits for `SSLContext`/`load_cert_chain`/`CERT_REQUIRED` in `shared/`,
+`proxy/`, `services/`. TLS termination happens only at ingress or the
+fleet-external mTLS chart above; no service accepts a client cert as
+identity anywhere in the codebase.
 
 This blocks the sibling **credential-reference-injection** design
 (`docs/superpowers/specs/2026-08-21-credential-reference-injection-design.md`,
 "Relationship to SPIFFE/SPIRE" section): the proxy's call to
 skauswatch/Vault for secret resolution is exactly the kind of inter-service
 call that must not be protected by a new static shared secret. That spec
-explicitly defers to this one and expects SPIFFE-readiness to land before or
-alongside it.
+explicitly defers to this one for its outbound auth path; Decision 3 below
+resolves the sequencing — the two ship as parallel PRs via a hard interface
+seam (see Migration sequence), not a hard block in either direction.
 
 ## Goals
 
-- Every WaddleAI service (proxy, management, webui) accepts an X.509-SVID
-  over mTLS as first-class identity, with short-lived JWT-SVID / OIDC
-  machine JWT as fallback — never a static token.
+- Every WaddleAI service (proxy, management, webui) accepts **both**
+  X.509-SVID over mTLS and JWT-SVID as first-class identity mechanisms —
+  not one preferred and the other a fallback (Decision 4) — with a
+  short-lived OIDC machine JWT as the true fallback only where no SPIRE
+  identity is available at all, and never a static token.
 - Retire `PROXY_GRPC_AUTH_TOKEN` and `FLEET_EXTERNAL_TOKEN` (alpha/dev mode)
   as the *only* protection on a call; a static token may remain as a
   break-glass fallback but never as the sole credential once the identity
   middleware ships.
 - Close the proxy→management authentication gap (currently nothing).
 - The service-side contract must be identical regardless of which identity
-  issuer stands behind it, so the org can move from "no SPIRE here yet" to
-  "skauswatch's shared SPIRE" without touching service code twice.
+  issuer stands behind it or which `spire.mode` deploys it (Decision 1: own
+  vs shared), so the org can move between them without touching service code.
 - Reuse `penguin-aaa`'s existing SPIFFE support; do not reimplement identity
   validation in `shared/`.
 
 ## Non-goals
 
-- Deploying a new, separate SPIRE control plane for WaddleAI — skauswatch
-  already operates one for the `penguintech.io` trust domain on the shared
-  dal2 clusters WaddleAI runs on.
+- A SPIRE control plane outside the `penguintech.io` trust domain — both
+  supported modes (Decision 1) join or reuse that root; never a
+  standalone/unfederated CA.
 - Re-architecting the credential-reference-injection feature itself (covered
   by its own spec).
 - Client-facing user auth (OIDC/JWT for end users) — unaffected, this is
@@ -78,120 +80,126 @@ proxy/management/webui, using cert-manager (already deployed,
 like SPIFFE IDs (`spiffe://penguintech.io/<env>/waddleai-<service>`) even
 though no real SPIRE server issues them.
 
-- **What it issues**: X.509 certs with a SPIFFE-shaped URI SAN, via
-  cert-manager `Certificate` resources — the same primitive already used for
-  `waddleai-fleet-external-client-tls` (`fleet-external-mtls.yaml:19-42`).
-- **Rotation**: cert-manager's own renewal (`renewBefore`), same pattern as
-  the existing fleet client cert.
-- **CA key**: lives in the cluster's cert-manager `ClusterIssuer`/`Issuer`
-  secret — WaddleAI's own, not shared with any other product.
-- **Blast radius**: a compromised CA key only affects WaddleAI's own trust
-  boundary; but this is also the weakness — it does **not** interoperate
-  with any other PenguinTech service's identity, and it duplicates
-  infrastructure the org already built (skauswatch's SPIRE) rather than
-  federating with it. Cross-product calls (e.g. WaddleAI → skauswatch for
-  credential resolution) would need a second, separate trust relationship
-  bolted on top, defeating the point of a single `penguintech.io` trust
-  domain.
+- **What it issues**: X.509 certs with a SPIFFE-shaped URI SAN via
+  cert-manager `Certificate` resources — same primitive as
+  `waddleai-fleet-external-client-tls` (`fleet-external-mtls.yaml:19-42`),
+  rotated via cert-manager `renewBefore`, CA key in WaddleAI's own
+  `ClusterIssuer`/`Issuer` secret.
+- **Blast radius**: contained to WaddleAI's boundary, but doesn't
+  interoperate with any other PenguinTech service's identity and duplicates
+  infra the org already runs (skauswatch's SPIRE). **Superseded by
+  Decision 1**: the approved "own" mode is a real child SPIRE server joined
+  to the `penguintech.io` root, not this cert-manager substitute — Option A
+  stays rejected.
 
-## Option B: Full SPIRE, managed by skauswatch
+## Option B: Full SPIRE — own child server or skauswatch-shared child servers
 
 skauswatch already runs a real SPIRE deployment for the `penguintech.io`
-trust domain: one org-wide root SPIRE server (deployed outside skauswatch's
-own namespace, `root.example.yml` — "copy it into wherever k8s-ops
-designates as the shared root cluster/namespace") plus one child SPIRE
-server per cluster, including **dal2-beta and dal2-gamma** — the same shared
-cluster contexts WaddleAI deploys into
+trust domain: one org-wide root server (`root.example.yml`, location TBD by
+k8s-ops) plus one child SPIRE server per cluster, including **dal2-beta and
+dal2-gamma**
 (`/home/penguin/code/skauswatch/k8s/helm/spire/README.md`, topology diagram;
 `values.yaml:10` trust domain `penguintech.io`). Node attestation is
-`k8s_psat` (bare-metal dal2, no IRSA/IMDS chain) — the same attestor
-WaddleAI's own nodes would use.
+`k8s_psat` (bare-metal dal2) — the same attestor WaddleAI's own nodes would
+use either way.
 
-- **What's missing today**: the child servers' registration entries
-  (`values.yaml:374-419`) only cover `namespace: skauswatch`. WaddleAI
-  workloads are not registered. This is a **configuration change on an
-  already-running shared control plane**, not a new deployment — exactly the
-  "config/infra change, not a rewrite" framing in `security.md`.
-- **Agent sockets / Workload API**: `spire-agent` runs as a DaemonSet per
-  node on dal2-beta/gamma already; WaddleAI pods would mount the same
-  `agent.sock` (hostPath or CSI driver, per skauswatch's chart) and fetch
-  their SVID via the standard Workload API — no new agent to run.
+**Decision 1 (2026-08-21)** requires both child-server topologies be
+supported, selected by a Helm values toggle:
+
+| Mode | What's deployed | Trust relationship |
+|---|---|---|
+| `own` (**default**) | WaddleAI's own child SPIRE server + `spire-agent` DaemonSet, deployed by this repo's own chart | Child server does an upstream-authority join to the shared `penguintech.io` root — same root as skauswatch's children, own registration entries |
+| `shared` (**docs-recommended** where skauswatch is already deployed in that cluster) | No new server — WaddleAI pods mount skauswatch's existing `agent.sock` (hostPath/CSI, per skauswatch's chart) | Registration entries (`waddleai-proxy`/`waddleai-management`/`waddleai-webui`) handed to skauswatch's team to add to their existing child servers on dal2-beta/dal2-gamma — cross-repo ask, not self-serve |
+
+Either mode fetches the SVID via the same standard Workload API — **the
+service-side contract below is identical regardless of mode**, which is the
+entire point of the toggle.
+
 - **Client library**: `py-spiffe>=0.8.0`, already declared as `penguin-aaa`'s
   optional `spiffe` extra (`python-aaa/pyproject.toml:44-45`) but not yet
-  wired to any transport in `penguin_aaa.authn.spiffe`
-  (`python-aaa/src/penguin_aaa/authn/spiffe.py` docstring: "In production
-  this is paired with a SPIFFE Workload API client... This class handles the
-  identity-comparison logic independently of the transport layer" — i.e. the
-  Workload-API-fetch-and-mTLS-wire-up doesn't exist yet anywhere in
-  `penguin-aaa`, WaddleAI would be the first consumer to need it built).
-- **Who deploys**: skauswatch's own team/agent owns the SPIRE Helm chart and
-  registration entries; WaddleAI only requests entries be added for its
-  `waddleai-proxy`/`waddleai-management`/`waddleai-webui` service accounts —
-  cross-repo coordination, not something this repo can self-serve.
-- **Blast radius**: shared trust domain — a compromised WaddleAI SVID is
-  scoped by SPIRE's registration entry (selector-bound to a specific
-  namespace + service account), same isolation any other tenant on that
-  SPIRE deployment gets. A compromised *root* CA is catastrophic org-wide,
-  but that risk already exists independent of WaddleAI's decision here.
+  wired to any transport (see Dependencies below — **Decision 2**: this is
+  built upstream in penguin-aaa first, not locally).
+- **Blast radius**: shared trust domain either way — a compromised WaddleAI
+  SVID is scoped by its registration entry (namespace + service account);
+  a compromised *root* CA is catastrophic org-wide regardless of mode.
 
 ## Option C: Cilium mutual authentication as substrate
 
 Cilium's mutual-authentication feature enforces mTLS at the network layer
-using SPIFFE identities under the hood, and this repo already has Cilium as
-the assumed CNI with a working `CiliumNetworkPolicy` set
+using SPIFFE identities, and this repo already assumes Cilium as CNI with a
+working `CiliumNetworkPolicy` set
 (`k8s/helm/waddleai/templates/cilium-network-policy.yaml`,
-`cilium-configmap.yaml`, `cilium-rbac.yaml`). However, grep for
-`mutual|mTLS|spire|spiffe` in the existing `cilium-network-policy.yaml`
-returns nothing — it is not configured, and more importantly Cilium's
-mutual-auth mode itself *requires* a SPIFFE-compatible identity provider
-(SPIRE) behind it — it is not a substitute for Option B, it is a
-network-layer enforcement point that sits *on top of* whichever SPIRE
-deployment answers Option B. It also only proves connection-level identity
-to Cilium's own proxy/socket layer; it does not hand the application process
-an SVID it can use to mint a JWT-SVID with WaddleAI-specific claims (scope,
-tenant) or verify a peer's identity at the app layer for authorization
-decisions (the service-side contract below needs the SVID *in the app*, not
-just at the network hop). Treat Option C as a defense-in-depth layer to add
-once Option B is live, not as an alternative to it.
+`cilium-configmap.yaml`, `cilium-rbac.yaml`) — but grep for
+`mutual|mTLS|spire|spiffe` there returns nothing (unconfigured), and
+Cilium's mutual-auth mode itself *requires* a SPIFFE identity provider
+(SPIRE) behind it; it sits *on top of* whichever SPIRE mode answers
+Option B, not a substitute. It also only proves connection-level identity
+at Cilium's proxy/socket layer — it doesn't hand the app process an SVID to
+mint a JWT-SVID with WaddleAI claims or authorize at the app layer, which
+the service-side contract needs. Treat Option C as defense-in-depth once a
+SPIRE mode is live, not an alternative.
 
 ## Recommendation
 
-**Option B** (skauswatch's shared SPIRE, WaddleAI workloads registered
-against the existing dal2-beta/dal2-gamma child servers), with the
-service-side contract below built so it degrades to OIDC machine JWTs
-wherever a given environment's SPIRE registration isn't live yet (e.g. local
-alpha dev without a workload API socket mounted). This avoids standing up
-parallel CA infrastructure (Option A), matches the org's one-trust-domain
-principle, and reuses real, already-hardened infra (skauswatch's chart shows
-production rollout history: rootless agent images, PostgreSQL-backed
-datastore with verified TLS, hardened alpha deployment). Cilium mutual auth
-(Option C) is a good follow-on once B is live, not a precondition.
+**Option B, both modes, behind a values toggle** — not one fixed topology.
+Per Decision 1, `spire.mode` defaults to `own` (WaddleAI runs its own child
+SPIRE server under the `penguintech.io` root, no cross-repo coordination
+required to ship), while the chart's values comments and this doc recommend
+`shared` (skauswatch's existing dal2-beta/dal2-gamma child servers) wherever
+skauswatch is already deployed in that cluster, avoiding duplicate SPIRE
+infrastructure. Both modes hand the contract below the same Workload API
+socket shape, so the org flips the toggle per-environment without touching
+application code.
+
+The contract degrades to a short-lived OIDC machine JWT only where *no*
+SPIRE identity is available yet (e.g. local alpha without a workload socket
+mounted) — never a preference over SVIDs once either mode is live (Decision
+4: X.509-SVID and JWT-SVID are both first-class, not preferred/fallback).
+This avoids standing up parallel, unfederated CA infrastructure (Option A,
+rejected), matches the org's one-trust-domain principle, and reuses
+skauswatch's already-hardened SPIRE chart. Cilium mutual auth (Option C) is
+a good follow-on once a SPIRE mode is live, not a precondition.
 
 ## Service-side contract (identical across options)
 
-This is the part that ships in WaddleAI's own code and does not change based
-on which issuer answers Option A/B.
+This is the part that ships in WaddleAI's own code and does not change
+based on `spire.mode` or the credential-reference-injection interim (see
+Migration sequence).
 
-**Identity middleware, checked in order**:
+**Both identity mechanisms are first-class (Decision 4)** — never "mTLS
+preferred, JWT fallback." Which one a given call presents depends on
+transport and environment, not app-level preference:
+
 1. **X.509-SVID over mTLS** — the server's TLS listener requests (and, once
-   SPIRE is registered, requires) a client cert; the middleware extracts the
-   URI SAN, validates it's a well-formed `spiffe://penguintech.io/...` ID
-   (reuse `penguin_aaa.authn.validators.validate_spiffe_id`, already
-   published — do not reimplement string/format validation in `shared/`),
-   and checks it against a per-endpoint allowlist via
+   a SPIRE mode is live, requires) a client cert; the middleware extracts
+   the URI SAN, validates it's a well-formed `spiffe://penguintech.io/...`
+   ID (reuse `penguin_aaa.authn.validators.validate_spiffe_id` — do not
+   reimplement string/format validation in `shared/`), and checks it
+   against a per-endpoint allowlist via
    `penguin_aaa.authn.spiffe.SPIFFEAuthenticator` (already published —
-   `python-aaa/src/penguin_aaa/authn/spiffe.py:26-99`). WaddleAI's
-   contribution is the Workload-API fetch + mTLS wiring this class's
-   docstring says doesn't exist yet (see Dependencies below).
-2. **Fallback: short-lived JWT-SVID / OIDC machine JWT** — 1h max, JWS
-   always, nested JWE (sign-then-encrypt, RFC 8725 §3.4) when claims carry
-   sensitive data, per the `building-apis` skill's canonical pattern
-   (`~/.claude/skills/building-apis/SKILL.md:14,38-61`). Used wherever mTLS
-   isn't available (e.g. a REST hop through a load balancer that terminates
-   TLS before it reaches the pod).
-3. **Never**: a static pre-shared token as the sole credential. A static
-   token may exist transiently as a documented break-glass fallback during
-   migration (see below) but is never the only check once this ships.
+   `python-aaa/src/penguin_aaa/authn/spiffe.py:26-99`).
+2. **JWT-SVID** — signature verified against the trust bundle's JWKS
+   (`kid` rotation tolerated), plus `aud`/`exp`; authorized on `sub`. Alpha
+   issues JWT-SVID by default (Decision 4: a genuine exercise of that path,
+   not a degraded mode), and it's used anywhere mTLS isn't available (e.g.
+   a REST hop through a TLS-terminating load balancer).
+3. **True fallback: short-lived OIDC machine JWT** — 1h max, JWS always,
+   nested JWE (sign-then-encrypt, RFC 8725 §3.4) for sensitive claims, per
+   the `building-apis` skill's canonical pattern. Only where *no* SPIRE
+   identity exists yet.
+4. **Never**: a static pre-shared token as the sole credential. May exist
+   transiently as a documented break-glass fallback during migration, never
+   the only check once this ships.
+
+**Validation depth — trust root / intermediate CA level, never leaf pinning
+(Decision 4).** X.509-SVIDs validate the full chain to the SPIRE trust
+bundle (rotating intermediates tolerated), then authorize on the SPIFFE ID
+in the URI SAN. JWT-SVIDs validate the signature against the bundle's JWKS
+(`kid` rotation tolerated) plus `aud`/`exp`, then authorize on `sub`.
+**Forbidden**: pinning a leaf certificate fingerprint, pinning a single
+`kid`, or allowlisting by certificate serial number — any of these breaks
+the moment SPIRE rotates a leaf/intermediate/key, which it does routinely
+and by design.
 
 **SPIFFE ID ↔ scope mapping**: the SVID's path segment after
 `waddleai-<service>` maps 1:1 to an OIDC scope bundle already defined by
@@ -202,7 +210,8 @@ bundle taxonomy; this reuses the existing scope table, just keyed by SPIFFE
 ID instead of a JWT `sub`.
 
 **Reserved SPIFFE IDs** (`spiffe://penguintech.io/<env>/<id>`, env ∈
-`alpha|beta|gamma|prod`):
+`alpha|beta|gamma|prod`; per Decision 4, alpha issues JWT-SVID by default,
+beta/gamma exercise both mechanisms):
 
 | ID | Deployed as | Replaces |
 |---|---|---|
@@ -218,122 +227,178 @@ then.
 
 **gRPC server (port 50051)**: `grpc.aio.server` currently binds
 `add_insecure_port` unconditionally (`grpc_server.py:440`). Add
-`add_secure_port` using `grpc.ssl_server_credentials` with
-`require_client_auth=True`, sourced from the SVID cert/key pair delivered by
-the Workload API (mounted via the SPIRE CSI driver/agent socket, same as
-skauswatch's own services). The existing `GrpcAuthInterceptor`
-(`grpc_server.py:43-75`) becomes the *fallback* path — checked only when the
-call arrives without a peer cert, and then requires the JWT-SVID/OIDC
-machine JWT instead of the static Bearer token.
+`add_secure_port` via `grpc.ssl_server_credentials(require_client_auth=True)`,
+sourced from the Workload-API-delivered SVID (same mount point in either
+`spire.mode`). `GrpcAuthInterceptor` (`grpc_server.py:43-75`) becomes the
+path used when a call arrives without a peer cert — all of alpha by
+default, or wherever TLS terminates upstream — requiring a JWT-SVID
+(preferred) or OIDC machine JWT instead of the static Bearer token.
 
 **REST/Quart/hypercorn (management, webui)**: hypercorn's `Config` gains
-`ca_certs` + `verify_mode = ssl.CERT_REQUIRED` for the mTLS listener (today:
-zero SSLContext usage anywhere — this is new). A Quart `before_request`
-middleware mirrors the gRPC interceptor: peer cert SAN first, JWT
-`Authorization` header fallback. Since hypercorn terminates TLS itself here
-(unlike the ingress-terminated public listener), this is a second, internal
-listener/port dedicated to service-to-service calls — public traffic keeps
-going through the existing ingress + cert-manager path unchanged.
+`ca_certs` + `verify_mode = ssl.CERT_REQUIRED` for a new internal mTLS
+listener (today: no SSLContext usage anywhere). A Quart `before_request`
+middleware mirrors the gRPC interceptor: peer cert SAN when mTLS is in use,
+JWT-SVID/OIDC machine JWT via `Authorization` header otherwise — both
+first-class (Decision 4). Public traffic keeps using the existing ingress +
+cert-manager path unchanged; this is a second, internal service-to-service
+listener/port.
 
-**Outbound clients**: proxy's httpx/aiohttp clients (already gated by
-`verify_ssl`, `shared/py_libs/py_libs/http/client.py:105`) add a client-cert
-tuple sourced from the same Workload-API-delivered SVID; the gRPC client
-side (currently unauthenticated — no channel credentials found in
-`shared/routing/grpc_adapter.py`) adds `grpc.ssl_channel_credentials` with
-the SVID as client cert.
+**Outbound clients**: proxy's httpx/aiohttp clients (`verify_ssl`,
+`shared/py_libs/py_libs/http/client.py:105`) add a client-cert tuple from
+the SVID, or a JWT-SVID/OIDC bearer header where mTLS isn't the transport;
+the gRPC client (currently unauthenticated, `shared/routing/grpc_adapter.py`)
+adds `grpc.ssl_channel_credentials` with the SVID as client cert.
 
 **Config surface**:
 - Env vars: `SPIFFE_WORKLOAD_SOCKET` (default `/run/spire/agent.sock`),
-  `SPIFFE_TRUST_DOMAIN` (default `penguintech.io`), `SPIFFE_ENABLED`
-  (bool, default `false` until an environment has a live registration —
-  fail open to the JWT fallback, never fail open to no auth at all),
-  `PROXY_GRPC_AUTH_TOKEN` / `FLEET_EXTERNAL_TOKEN` retained as
-  deprecated-but-honored fallback names during migration.
-- Helm values: `spiffe.enabled`, `spiffe.workloadSocketHostPath` (CSI driver
-  or hostPath mount, matching whichever mechanism skauswatch's chart uses),
-  `spiffe.trustDomain`, per-service `spiffe.allowedPeers` list (feeds
-  `SPIFFEConfig.allowed_ids`).
+  `SPIFFE_TRUST_DOMAIN` (default `penguintech.io`), `SPIFFE_ENABLED` (bool,
+  default `false` until a mode is live — fail open to the JWT fallback,
+  never to no auth at all), `PROXY_GRPC_AUTH_TOKEN` / `FLEET_EXTERNAL_TOKEN`
+  retained as deprecated-but-honored fallback names during migration. No
+  env var encodes `spire.mode` — the app-level contract (socket in, SVID
+  out) is identical in both modes (Decision 1); mode only changes what the
+  Helm chart deploys.
+- **Helm values** (`spire.*`, new):
+  - `spire.mode`: `own` (**default**) | `shared` — selects which block
+    below applies.
+  - `spire.own.*` (when `mode: own`): deploys this chart's own
+    `spire-server` + `spire-agent` DaemonSet manifests, plus
+    `spire.own.upstreamAuthority` (join config for the shared
+    `penguintech.io` root).
+  - `spire.shared.*` (when `mode: shared`, **values comments recommend
+    this where skauswatch is already deployed** in the target cluster): no
+    server/agent manifests — only `spire.shared.workloadSocketHostPath`
+    (mounts skauswatch's existing agent socket) and
+    `spire.shared.registrationRequestedFrom: skauswatch` (documents that
+    entries are a cross-repo ask, not self-serve).
+  - `spire.trustDomain` (default `penguintech.io`), per-service
+    `spire.allowedPeers` (feeds `SPIFFEConfig.allowed_ids`) — shared by
+    both modes.
 
 ## Migration sequence
 
-1. **Coordinate with skauswatch**: request `waddleai-proxy`,
-   `waddleai-management`, `waddleai-webui` registration entries on the
-   dal2-beta/dal2-gamma child SPIRE servers (cross-repo ask, not a WaddleAI
-   PR). Interim: none needed yet — no code changes ship before this exists
-   to test against.
-2. **penguin-aaa**: contribute the Workload-API-fetch + mTLS wiring that
-   `SPIFFEAuthenticator`'s docstring describes but doesn't implement (see
-   Dependencies). Interim: WaddleAI cannot build the real middleware without
-   this; blocks step 3.
-3. **proxy gRPC server** (`grpc_server.py`): add the mTLS listener +
-   SVID-based interceptor, `PROXY_GRPC_AUTH_TOKEN` becomes fallback-only.
-   Interim credential while this rolls out: the existing static token stays
-   the *only* check, unchanged — no regression, just not yet improved.
-4. **proxy → management REST**: add outbound SVID + JWT fallback to the one
-   real inter-service call surface (currently none beyond `/healthz`, which
-   stays open/unauthenticated as a standard liveness probe). Interim: none —
-   this is a net-new auth addition, not a credential swap.
+1. **penguin-aaa first (Decision 2)**: contribute the Workload-API-fetch +
+   mTLS/JWT-SVID wiring described in Dependencies below — the first
+   dependency; nothing downstream can be built without it landing upstream
+   and being released.
+2. **Deploy the chosen SPIRE mode** (Decision 1): `own` — apply this
+   repo's new `spire-server`/`spire-agent` Helm templates and complete the
+   upstream-authority join to the root; `shared` — coordinate with
+   skauswatch's team to add the three registration entries to their
+   existing dal2-beta/dal2-gamma child servers (cross-repo ask). Interim:
+   no code changes ship before whichever path is live to test against.
+3. **Proxy gRPC server** (`grpc_server.py`): add the mTLS + JWT-SVID
+   listener/interceptor, `PROXY_GRPC_AUTH_TOKEN` becomes fallback-only.
+   Interim: the static token stays the *only* check, unchanged.
+4. **proxy → management REST**: add outbound SVID + JWT-SVID (or OIDC
+   machine JWT where no SPIRE identity exists yet) to the one real
+   inter-service call surface (`/healthz` stays open as a liveness probe).
+   Interim: none — net-new auth, not a credential swap.
 5. **AIProxy → external fleet**: fold the existing beta/prod cert-manager
    client cert (`fleet-external-mtls.yaml:19-42`) into a proper SVID (URI
-   SAN instead of plain CN); alpha/dev `FLEET_EXTERNAL_TOKEN` mode becomes
-   fallback-only. Interim: token mode is explicitly alpha/dev-only already
-   per the chart's own comments — lowest urgency.
-6. **Retire fallback tokens** once every environment has confirmed SVID
-   issuance is live (all four env files) — remove
-   `PROXY_GRPC_AUTH_TOKEN`/`FLEET_EXTERNAL_TOKEN` fallback code paths
-   entirely, not just stop using them.
+   SAN instead of plain CN); alpha/dev `FLEET_EXTERNAL_TOKEN` becomes
+   fallback-only — already alpha/dev-only per the chart's comments, lowest
+   urgency.
+6. **Retire fallback tokens** once every environment confirms SVID issuance
+   is live — remove `PROXY_GRPC_AUTH_TOKEN`/`FLEET_EXTERNAL_TOKEN` fallback
+   code paths entirely, not just stop using them.
+
+**Parallel with credential-reference-injection (Decision 3)**: that
+feature's `CredentialResolver` (the proxy's own auth when it talks to
+Vault/skauswatch) takes an injected auth-provider and ships first, ahead of
+this migration completing, using a short-lived OIDC machine JWT — the
+`security.md`-sanctioned no-SPIRE fallback, never a static token. Once step
+1 above lands, this SPIFFE work swaps in an SVID-based provider behind the
+same call site with no caller-visible change — a hard interface seam, not a
+sequencing dependency in either direction, so both features' PRs into
+`release/v0.2.X` can proceed in parallel.
 
 ## Dependencies on penguin-aaa
 
-**Contribute upstream** (belongs in `penguin-aaa`, benefits every PenguinTech
-service, not WaddleAI-specific):
-- The actual `py-spiffe` Workload API client wiring — fetching the SVID from
-  `workload_socket`, watching for rotation, exposing it as a cert/key pair
-  usable by both grpc and hypercorn/quart.
-- A generic ASGI/Quart middleware analogous to the existing
-  `penguin_aaa.middleware.asgi` module that checks peer SVID first, falls
-  back to JWT — so every Python service gets this contract by importing one
-  middleware, not reimplementing the order-of-checks logic.
-- A grpc server-side interceptor equivalent (mirrors the ASGI middleware,
-  for the gRPC transport).
+**Upstream contract (Decision 2 — built here first, released, then pinned
+in WaddleAI; this repo ships no local reimplementation):**
 
-**Stays product-local** (WaddleAI-specific, not general enough for
-penguin-aaa):
-- The `waddleai-<service>` ID list and its scope-bundle mapping.
-- Helm wiring for the workload socket mount and the internal mTLS listener
-  port.
-- The `PROXY_GRPC_AUTH_TOKEN`/`FLEET_EXTERNAL_TOKEN` fallback-and-retire
-  sequence, since those credentials are WaddleAI-specific.
+```python
+# penguin_aaa.authn.spiffe (fetches/rotates SVID material from the socket)
+class WorkloadAPIClient:
+    def __init__(self, workload_socket: str = "/run/spire/agent.sock"): ...
+    async def fetch_x509_svid(self) -> X509SVIDBundle: ...
+    async def fetch_jwt_svid(self, audience: str) -> JWTSVID: ...
+
+# penguin_aaa.middleware.spiffe (Quart/ASGI: peer SVID or JWT-SVID/OIDC JWT)
+class SPIFFEASGIMiddleware:
+    def __init__(self, app, *, authenticator: SPIFFEAuthenticator,
+                 jwt_fallback: JWTValidator): ...
+
+# penguin_aaa.grpc.spiffe (gRPC equivalent, same check order)
+class SPIFFEServerInterceptor(grpc.aio.ServerInterceptor):
+    def __init__(self, authenticator: SPIFFEAuthenticator,
+                 jwt_fallback: JWTValidator): ...
+```
+
+Already published: `penguin_aaa.authn.spiffe.SPIFFEAuthenticator`
+(`python-aaa/src/penguin_aaa/authn/spiffe.py:26-99`, identity-comparison
+only, no transport) and `validate_spiffe_id`. The three items above are
+what's missing — the Workload-API-fetch/transport wiring
+`SPIFFEAuthenticator`'s own docstring says doesn't exist yet.
+
+**Stays product-local**: the `waddleai-<service>` ID list and scope-bundle
+mapping; Helm wiring for `spire.mode`, the socket mount, and the internal
+mTLS listener port; the token fallback-and-retire sequence.
 
 ## Test strategy
 
-- **Unit**: generate self-signed SVID-shaped certs at test time with
-  `cryptography` (already pinned, `requirements.in:38`) — X.509 cert with a
-  `spiffe://penguintech.io/test/...` URI SAN, short validity. Exercise the
-  middleware's accept/reject paths without a real SPIRE agent.
+- **Unit**: generate a root → intermediate → leaf X.509 chain with
+  `cryptography` (already pinned, `requirements.in:38`), each cert carrying
+  a `spiffe://penguintech.io/test/...` URI SAN. Assert: (i) the leaf
+  validates via the trust bundle; (ii) a *rotated* intermediate (new
+  intermediate, same root) still validates a leaf issued under it; (iii)
+  the verifier accepts a **new leaf under the same root** — i.e. prove
+  pinning a leaf fingerprint would fail this test, since that's exactly the
+  case such a check would reject; (iv) a JWT-SVID with a rotated `kid`
+  validates against the refreshed JWKS, wrong `aud` is rejected. These four
+  are the direct test of Decision 4's "never leaf pinning" rule.
 - **Contract tests**: one shared test module asserting the middleware
-  behaves identically whether the peer identity arrives via mTLS SVID or via
-  JWT-SVID fallback — same scope resolution, same rejection behavior for an
-  unregistered/expired identity. This is what proves Option A/B/C
+  behaves identically whether identity arrives via X.509-SVID mTLS or
+  JWT-SVID — run in both modes explicitly (not "primary + fallback", per
+  Decision 4). Proves `spire.mode` (own/shared) and identity-mechanism
   interchangeability at the service-side contract layer.
 - **E2E**: SPIRE in a kind/MicroK8s cluster (mirrors `local-alpha` context),
-  standalone topology (matches skauswatch's own `alpha.yml` "standalone,
-  self-signed, local dev only" mode) — register WaddleAI's three service
-  IDs, deploy proxy+management, confirm gRPC and REST calls succeed with
-  mTLS and fail closed when the peer cert is absent or wrong trust domain.
+  **`spire.mode: own`** (Decision 4 pins e2e to the mode this repo fully
+  controls) — register WaddleAI's three service IDs, deploy
+  proxy+management, confirm gRPC and REST calls succeed with both
+  X.509-SVID mTLS and JWT-SVID, and fail closed when the peer cert/JWT is
+  absent, expired, or from the wrong trust domain.
 
-## Open questions for the owner
+## Decisions (2026-08-21)
 
-1. Confirm with skauswatch's owner: is registering WaddleAI workloads on the
-   existing dal2-beta/dal2-gamma child SPIRE servers (Option B) acceptable,
-   or does skauswatch's team want WaddleAI to run its own child server under
-   the same root instead?
-2. Does the `penguin-aaa` Workload-API-fetch + mTLS wiring get built as part
-   of this migration (WaddleAI contributes it upstream first), or does
-   WaddleAI build it locally first and upstream it after proving it out?
-3. Priority/timing: does this need to land before the credential-reference-
-   injection feature starts implementation, or can they land as parallel
-   PRs merging into the same release branch?
-4. Local alpha dev without a mounted workload socket — is the JWT-SVID/OIDC
-   machine JWT fallback sufficient, or does alpha need its own standalone
-   SPIRE (mirroring skauswatch's own `alpha.yml` pattern) for parity?
+1. **SPIRE host**: both topologies are supported, selected by a Helm
+   values toggle `spire.mode: own | shared`, **default `own`**. `own` =
+   WaddleAI runs its own child SPIRE server joined to the `penguintech.io`
+   root. `shared` = WaddleAI workloads register on skauswatch's existing
+   child servers. Docs/values comments recommend `shared` wherever
+   skauswatch is already deployed in that cluster. The service-side
+   contract is identical in both modes.
+2. **Where built**: the Workload-API fetch + mTLS/JWT-SVID wiring is built
+   upstream in `penguin-aaa` first (local clone
+   `~/code/penguin-libs/packages/python-aaa`; `py-spiffe` already a
+   declared optional extra), released, then pinned here. WaddleAI ships
+   only configuration, registration entries, and call sites — first
+   dependency in the migration sequence.
+3. **Sequencing vs. credential-reference-injection**: parallel PRs into
+   `release/v0.2.X` with a hard interface seam. That feature's
+   `CredentialResolver` takes an injected auth-provider and ships first
+   using a short-lived OIDC machine JWT (the `security.md`-sanctioned
+   no-SPIRE fallback, never a static token); this SPIFFE work later swaps
+   in an SVID-based provider with no caller changes.
+4. **Identity modes + validation depth**: both X.509-SVID over mTLS and
+   JWT-SVID are first-class and tested everywhere — not "mTLS preferred,
+   JWT fallback." Many companies run JWT-SVID in production because mTLS
+   is operationally risky; alpha uses JWT-SVID as a genuine test of that
+   path, beta/gamma exercise both. Validation is at the trust root /
+   intermediate CA level, never leaf pinning: X.509-SVIDs validate
+   chain-to-bundle (rotating intermediates tolerated) then authorize on the
+   SPIFFE ID; JWT-SVIDs validate signature against the bundle's JWKS
+   (`kid` rotation tolerated) + `aud` + `exp`, then authorize on `sub`.
+   Forbidden: pinning a leaf certificate fingerprint, pinning a single
+   `kid`, or allowlisting by certificate serial number.
