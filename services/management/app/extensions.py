@@ -206,7 +206,22 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
             enabled=True,
         )
 
-        logger.info("Created admin user and virtual key")
+        # Also seed the api_keys row that the proxy's
+        # RBACManager.authenticate_api_key (shared/auth/rbac.py) actually
+        # checks -- virtual_keys alone leaves the bootstrap admin unable to
+        # authenticate against the proxy. Same plaintext key value, hashed
+        # separately; never logged or printed.
+        db.api_keys.insert(
+            key_id=f"admin-key-{secrets.token_hex(8)}",
+            key_hash=bcrypt.hash(api_key),
+            user_id=admin_id,
+            organization_id=org_id,
+            name="Admin Master Key",
+            api_access_level="admin_api",
+            permissions={"*": True},
+        )
+
+        logger.info("Created admin user, API key, and virtual key")
         # Never log or print the plaintext API key
         result_password = admin_password
 

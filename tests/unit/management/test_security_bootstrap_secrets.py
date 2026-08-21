@@ -313,3 +313,124 @@ class TestDefaultSecretsSecurityC:
                 )
         finally:
             os.environ.pop("ADMIN_INITIAL_PASSWORD", None)
+
+
+class TestMasterKeyPlaintextRegressionCodeQL2507:
+    """Regression: codeql-2507 -- py/clear-text-logging-sensitive-data.
+
+    shared/database/models.py used to carry its own duplicate
+    init_default_data() (reachable only via `python3 -m
+    shared.database.models`) that printed the generated admin API key in
+    plaintext. That duplicate bootstrap has been removed; these tests assert
+    the sole remaining bootstrap (services.management.app.extensions) never
+    surfaces the generated key value on stdout/stderr/logs, and that it seeds
+    an api_keys row (not just virtual_keys) so the CodeQL fix didn't
+    regress proxy auth (shared/auth/rbac.py's RBACManager.authenticate_api_key
+    only ever queries db.api_keys).
+    """
+
+    def test_generated_admin_key_sentinel_never_reaches_stdout_or_logs(
+        self, capsys, caplog, monkeypatch
+    ):
+        """Uses a distinctive sentinel value, not just a 'wa-' substring check.
+
+        Ties the assertion to the exact generated value, not a heuristic.
+        """
+        # regression: codeql-2507
+        import logging
+        import secrets
+
+        sentinel = "CODEQL-2507-SENTINEL-VALUE-DO-NOT-LEAK"  # noqa: S105 -- test sentinel
+        monkeypatch.setattr(secrets, "token_urlsafe", lambda *_a, **_kw: sentinel)
+        monkeypatch.setenv("ADMIN_INITIAL_PASSWORD", "test_password_123")
+
+        from services.management.app.extensions import init_default_data
+
+        mock_db = MagicMock()
+        mock_db.commit = MagicMock()
+        mock_db.return_value.select.return_value = []
+        mock_db.organizations.insert = MagicMock(return_value=1)
+        mock_db.users.insert = MagicMock(return_value=1)
+        mock_db.virtual_keys.insert = MagicMock(return_value=1)
+        mock_db.api_keys.insert = MagicMock(return_value=1)
+
+        with caplog.at_level(logging.INFO):
+            init_default_data(mock_db, config={"ADMIN_INITIAL_PASSWORD": "test_password_123"})
+
+        captured = capsys.readouterr()
+        assert sentinel not in captured.out
+        assert sentinel not in captured.err
+        for record in caplog.records:
+            assert sentinel not in record.getMessage()
+
+    def test_seeded_admin_api_key_org_id_matches_admin_user_org_id(self):
+        """Bootstrap seeds an api_keys row (proxy auth), not just virtual_keys."""
+        # regression: codeql-2507 -- porting the missing seed into the hardened path
+        os.environ["ADMIN_INITIAL_PASSWORD"] = "test123"  # noqa: S105 -- fixed test credential
+        try:
+            from services.management.app.extensions import init_default_data
+
+            inserted_users = []
+            inserted_api_keys = []
+
+            mock_db = MagicMock()
+            mock_db.commit = MagicMock()
+            mock_db.return_value.select.return_value = []
+            mock_db.organizations.insert = MagicMock(return_value=1)
+            mock_db.users.insert = MagicMock(
+                side_effect=lambda **kw: inserted_users.append(kw) or 1
+            )
+            mock_db.virtual_keys.insert = MagicMock(return_value=1)
+            mock_db.api_keys.insert = MagicMock(
+                side_effect=lambda **kw: inserted_api_keys.append(kw) or 1
+            )
+
+            init_default_data(mock_db, config={"ADMIN_INITIAL_PASSWORD": "test123"})
+
+            assert inserted_api_keys, "bootstrap did not seed an api_keys row for proxy auth"
+            assert inserted_api_keys[0]["organization_id"] == inserted_users[0]["organization_id"]
+            assert inserted_api_keys[0]["permissions"] == {"*": True}
+        finally:
+            os.environ.pop("ADMIN_INITIAL_PASSWORD", None)
+
+
+class TestModelsPyNoPlaintextKeyPrint:
+    """Static guard: models.py must never regain a plaintext-key print().
+
+    shared/database/models.py must never regain a print() call that
+    references an API-key-like value (CodeQL-2507 regression guard).
+    """
+
+    def test_no_print_call_references_api_key(self):
+        """Walk the AST for print() calls referencing an api_key-like name.
+
+        Uses AST inspection rather than a brittle text substring check.
+        """
+        # regression: codeql-2507
+        import ast
+        from pathlib import Path
+
+        models_path = Path(__file__).resolve().parents[3] / "shared" / "database" / "models.py"
+        tree = ast.parse(models_path.read_text())
+
+        def references_api_key(node: ast.AST) -> bool:
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and "api_key" in child.id.lower():
+                    return True
+                if isinstance(child, ast.JoinedStr):
+                    for value in child.values:
+                        if isinstance(value, ast.FormattedValue) and references_api_key(
+                            value.value
+                        ):
+                            return True
+            return False
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id != "print":
+                    continue
+                for arg in node.args:
+                    assert not references_api_key(arg), (
+                        f"models.py print() call references an api_key-like "
+                        f"name at line {node.lineno}"
+                    )
