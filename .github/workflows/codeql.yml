@@ -50,6 +50,9 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          # Scope only -- see .github/codeql/codeql-config.yml. Vendored code
+          # produced 19 of 24 high alerts and buried the first-party ones.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3  # v4
