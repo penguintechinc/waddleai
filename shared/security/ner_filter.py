@@ -5,6 +5,7 @@ Fallback backend: HuggingFace transformers NER pipeline (uses existing torch/tra
 If neither is available, the NER tier is skipped and a warning is logged once.
 """
 
+import importlib.util
 import logging
 import os
 from dataclasses import dataclass
@@ -144,6 +145,28 @@ class NERFilter:
             )
 
     def _init_presidio(self, spacy_model: str) -> None:
+        # Check the model is already importable BEFORE building the engine.
+        # NlpEngineProvider.create_engine() will try to fetch a missing spaCy
+        # model (en_core_web_lg is ~600MB) rather than failing fast, so on a
+        # machine without it this turns into a long download -- or an
+        # indefinite stall where egress is blocked. CI never installs a spaCy
+        # model (it is in no requirements file and there is no `spacy
+        # download` step), which is exactly how the unit-test job came to hang
+        # at the first test constructing a ContentFilter.
+        #
+        # Absent model => fall through to the documented degradation (regex +
+        # custom-rule tiers) without a network call. Install the model
+        # deliberately to enable this backend:
+        #     python -m spacy download en_core_web_lg
+        if importlib.util.find_spec(spacy_model) is None:
+            logger.warning(
+                "spaCy model %r is not installed; skipping the Presidio backend rather "
+                "than triggering a model download. Run `python -m spacy download %s` to "
+                "enable it.",
+                spacy_model,
+                spacy_model,
+            )
+            return
         try:
             from presidio_analyzer import AnalyzerEngine
             from presidio_analyzer.nlp_engine import NlpEngineProvider
