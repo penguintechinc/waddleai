@@ -48,7 +48,11 @@ class FakeEncoder:
 @pytest.fixture
 def chroma_store(tmp_path):
     """Build a real ChromaDBMemoryStore against a temp dir, with a deterministic fake encoder."""
-    with patch("shared.utils.memory_integration.SentenceTransformer"):
+    # Patches the deferred-import helper, not a module-level
+    # SentenceTransformer name: that import is now made inside
+    # _sentence_transformer() so importing this module does not drag torch
+    # and transformers into every test process.
+    with patch("shared.utils.memory_integration._sentence_transformer"):
         store = ChromaDBMemoryStore(
             persist_directory=str(tmp_path / "chroma"),
             collection_name="scope_test",

@@ -14,7 +14,24 @@ from typing import Any, Optional
 
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+
+
+def _sentence_transformer(model_name: str):
+    """Construct a SentenceTransformer, importing the library on first use.
+
+    Deferred for the same reason as the twin helper in
+    shared/utils/rag_integration.py: a module-scope
+    `from sentence_transformers import ...` drags torch and transformers into
+    every process that imports this module, and `pytest --cov=shared` imports
+    it everywhere. That OOM-killed the CI runner mid-suite.
+
+    Model unchanged: all-MiniLM-L6-v2, 384-dim -- deliberately not the 768-dim
+    nomic-embed-text path, and the two must not converge.
+    """
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name)
+
 
 # Optional mem0 import (if available)
 try:
@@ -377,7 +394,7 @@ class ChromaDBMemoryStore(MemoryStore):
     def _init_encoder(self):
         """Initialize sentence transformer for embeddings."""
         try:
-            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+            self.encoder = _sentence_transformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")

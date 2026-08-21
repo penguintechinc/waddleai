@@ -12,7 +12,25 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sentence_transformers import SentenceTransformer
+
+def _sentence_transformer(model_name: str):
+    """Construct a SentenceTransformer, importing the library on first use.
+
+    The import is deferred because `from sentence_transformers import ...` at
+    module scope pulls in torch and transformers eagerly, and this module is
+    imported transitively by most of `shared`. Under `pytest --cov=shared`
+    that loaded the full torch stack into every test process and the CI runner
+    was OOM-killed at 63% of the suite (SIGTERM/143) after torch 2.11 -> 2.13
+    and transformers 5.3 -> 5.15 landed.
+
+    The model name is unchanged: all-MiniLM-L6-v2, 384-dim. That matters --
+    it is deliberately NOT the 768-dim nomic-embed-text path used elsewhere,
+    and the two must not converge (see shared/vectorstore/base.py).
+    """
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name)
+
 
 # Supabase import (optional)
 try:
@@ -136,7 +154,7 @@ class SupabaseVectorStore(RAGStore):
     def _init_encoder(self):
         """Initialize sentence transformer for embeddings."""
         try:
-            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+            self.encoder = _sentence_transformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")
@@ -346,7 +364,7 @@ class QdrantRAGStore(RAGStore):
     def _init_encoder(self):
         """Initialize sentence transformer for embeddings."""
         try:
-            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+            self.encoder = _sentence_transformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")
@@ -584,7 +602,7 @@ class ChromaDBRAGStore(RAGStore):
     def _init_encoder(self):
         """Initialize sentence transformer for embeddings."""
         try:
-            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+            self.encoder = _sentence_transformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")
