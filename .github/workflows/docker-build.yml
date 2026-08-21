@@ -114,7 +114,10 @@ jobs:
 
     - name: Run unit tests
       run: |
-        python -m pytest tests/unit/ -v --cov=shared --cov-report=xml --cov-report=html
+        # No --cov-report=html: Codecov consumes coverage.xml, nothing in CI
+        # reads the HTML render, and generating both held a second copy of the
+        # coverage data in memory while torch/transformers were resident.
+        python -m pytest tests/unit/ -q --cov=shared --cov-report=xml
       env:
         PYTHONPATH: ${{ github.workspace }}
 

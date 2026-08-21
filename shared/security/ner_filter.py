@@ -6,6 +6,7 @@ If neither is available, the NER tier is skipped and a warning is logged once.
 """
 
 import logging
+import os
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,24 @@ class NERFilter:
                 self._init_transformers()
 
     def _init_transformers(self) -> None:
+        # hf_pipeline() fetches dslim/bert-base-NER from the HuggingFace Hub on
+        # first use. That is a network call with no timeout, and it does not
+        # fail fast when egress is blocked -- it stalls. CI's unit-test job hit
+        # this deterministically: the first test constructing a ContentFilter
+        # hung until the runner was cancelled, always at the same point.
+        #
+        # Downloading a model is now opt-in. Unset (the default) means: use
+        # Presidio + spaCy if a model is installed, otherwise disable the NER
+        # tier and keep the regex and custom-rule tiers running. That is the
+        # already-documented degradation path, reached without a network call.
+        # Deployments that want the transformers backend set
+        # WADDLEAI_NER_ALLOW_DOWNLOAD=1 and pre-warm the model.
+        if os.getenv("WADDLEAI_NER_ALLOW_DOWNLOAD") != "1":
+            logger.warning(
+                "Transformers NER backend needs a model download; skipping because "
+                "WADDLEAI_NER_ALLOW_DOWNLOAD is not set. NER tier disabled."
+            )
+            return
         try:
             from transformers import pipeline as hf_pipeline
 

@@ -97,7 +97,15 @@ def _install_fake_transformers(monkeypatch: pytest.MonkeyPatch, entities: list[d
     Each entity dict needs entity_group/word/start/end/score, mirroring the
     HF `pipeline("ner", aggregation_strategy="simple")` output shape that
     `_analyze_transformers` reads.
+
+    Also opts in to the transformers backend. `_init_transformers` is gated
+    behind WADDLEAI_NER_ALLOW_DOWNLOAD because the real pipeline() fetches a
+    model from the HuggingFace Hub with no timeout, which stalled CI
+    indefinitely. Nothing is fetched here -- the pipeline installed below is a
+    stub -- so the gate is opened deliberately to exercise the code path the
+    stub stands in for.
     """
+    monkeypatch.setenv("WADDLEAI_NER_ALLOW_DOWNLOAD", "1")
 
     class _Pipeline:
         def __call__(self, _text: str) -> list[dict]:
