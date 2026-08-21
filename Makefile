@@ -206,7 +206,8 @@ deploy-dev:
 	@echo "Deploy to dev/alpha environment"
 
 deploy-prod:
-	@echo "Deploy to production environment"
+	@echo "ERROR: deploy-prod is not implemented. See docs/docs-site/docs/deployment/kubernetes.md" >&2
+	@exit 1
 
 pre-commit:
 	@echo "=== Pre-commit checks ==="

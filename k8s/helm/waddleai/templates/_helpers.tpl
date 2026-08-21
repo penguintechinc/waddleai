@@ -64,7 +64,13 @@ Create the name of the service account to use
 Image name for management service
 */}}
 {{- define "waddleai.management.image" -}}
+{{- if .Values.management.image.digest }}
 {{- if .Values.global.imageRegistry }}
+{{- printf "%s/%s@%s" .Values.global.imageRegistry .Values.management.image.repository .Values.management.image.digest }}
+{{- else }}
+{{- printf "%s@%s" .Values.management.image.repository .Values.management.image.digest }}
+{{- end }}
+{{- else if .Values.global.imageRegistry }}
 {{- printf "%s/%s:%s" .Values.global.imageRegistry .Values.management.image.repository .Values.management.image.tag }}
 {{- else }}
 {{- printf "%s:%s" .Values.management.image.repository .Values.management.image.tag }}
@@ -92,7 +98,13 @@ Image name for proxy service (AIProxy)
 Image name for webui service
 */}}
 {{- define "waddleai.webui.image" -}}
+{{- if .Values.webui.image.digest }}
 {{- if .Values.global.imageRegistry }}
+{{- printf "%s/%s@%s" .Values.global.imageRegistry .Values.webui.image.repository .Values.webui.image.digest }}
+{{- else }}
+{{- printf "%s@%s" .Values.webui.image.repository .Values.webui.image.digest }}
+{{- end }}
+{{- else if .Values.global.imageRegistry }}
 {{- printf "%s/%s:%s" .Values.global.imageRegistry .Values.webui.image.repository .Values.webui.image.tag }}
 {{- else }}
 {{- printf "%s:%s" .Values.webui.image.repository .Values.webui.image.tag }}
@@ -378,4 +390,90 @@ Shape must match services/management/app/services/cilium_policy.py::DEFAULT_TOPO
       "selectors" .Values.cilium.topology.selectors
 -}}
 {{- $t | toJson }}
+{{- end }}
+
+{{/*
+Stable, auto-generated pre-shared bearer for the proxy's internal gRPC
+server (GrpcAuthInterceptor in proxy/apps/proxy_server/grpc_server.py,
+wired via PROXY_GRPC_AUTH_TOKEN in proxy/apps/proxy_server/main.py).
+Unlike the other secrets.* values in values.yaml (operator-set human
+credentials with an obvious "changeme" default an install checklist
+catches), nothing prompts anyone to set this one — it's pure
+machine-to-machine, and it's the *only* check on that gRPC surface. A
+static "changeme" default here would mean every fresh install shares the
+same known bearer, so this key alone uses generate-once-and-keep-stable
+instead of the chart's normal static-placeholder convention:
+  1. Explicit override (secrets.proxyGrpcAuthToken) always wins — this is
+     how beta/prod pin a value pushed by External Secrets Operator.
+  2. Otherwise, reuse whatever value already lives in the cluster's
+     waddleai-secrets Secret (`lookup`) so `helm upgrade` never rotates it
+     out from under the proxy and drops every caller into
+     UNAUTHENTICATED. `lookup` always returns empty under `helm
+     template`/`--dry-run` (no live API server), so the branch below
+     falls through to (3) for template rendering and CI — never breaks
+     `helm template`.
+  3. Otherwise (first install, or template-only rendering), generate a
+     fresh 64-char random value.
+*/}}
+{{- define "waddleai.proxyGrpcAuthToken" -}}
+{{- if .Values.secrets.proxyGrpcAuthToken -}}
+{{- .Values.secrets.proxyGrpcAuthToken -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Values.namespace "waddleai-secrets" -}}
+{{- if and $existing (hasKey $existing.data "proxy-grpc-auth-token") -}}
+{{- index $existing.data "proxy-grpc-auth-token" | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 64 -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Credential encryption key (management only — CREDENTIAL_ENCRYPTION_KEY,
+consumed by shared/security/credential_encryption.py to Fernet-encrypt
+provider API keys before they hit the DB). Same lookup-based
+generate-once-and-keep-stable pattern as waddleai.proxyGrpcAuthToken above,
+for a stronger reason: this key is NOT just an auth bearer that can be
+rotated by bouncing callers — rotating it makes every already-encrypted
+`enc:...` credential in the database permanently undecryptable (the
+decrypt path in credential_encryption.py has no key-versioning/migration
+support). So:
+  1. Explicit override (secrets.credentialEncryptionKey) always wins.
+  2. Otherwise, reuse whatever value already lives in the cluster's
+     waddleai-secrets Secret (`lookup`), so a routine `helm upgrade` never
+     silently rotates it out from under already-stored credentials.
+  3. Otherwise (first install, or template-only rendering, where `lookup`
+     always returns empty), generate a fresh 64-char random value.
+*/}}
+{{- define "waddleai.credentialEncryptionKey" -}}
+{{- if .Values.secrets.credentialEncryptionKey -}}
+{{- .Values.secrets.credentialEncryptionKey -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Values.namespace "waddleai-secrets" -}}
+{{- if and $existing (hasKey $existing.data "credential-encryption-key") -}}
+{{- index $existing.data "credential-encryption-key" | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 64 -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Shared DATABASE_URL secretKeyRef snippet — used by both the management
+Deployment (via management.secretEnv, rendered generically below) and the
+Alembic migration Job (templates/migration-job.yaml), so the Job reads the
+DB connection string through the exact same waddleai-secrets/database-url
+key the app itself uses, and the two can never drift apart. The migration
+Job intentionally does NOT reuse the full management.env/secretEnv lists
+(CACHE_HOST, CILIUM_TOPOLOGY, OLLAMA_HOST, ...) — `alembic upgrade head`
+(services/management/alembic/env.py) only ever reads DATABASE_URL, and
+pulling in CILIUM_TOPOLOGY would add a second hook-ordering dependency
+(the cilium-topology ConfigMap) for zero benefit.
+*/}}
+{{- define "waddleai.management.databaseUrlEnv" -}}
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: waddleai-secrets
+      key: database-url
 {{- end }}

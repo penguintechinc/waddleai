@@ -1,0 +1,107 @@
+{{/*
+Alembic database migration Job — runs `alembic upgrade head` from the
+management image, once, before the management Deployment rolls out new
+pods. services/management/app/extensions.py's init_extensions() only
+bootstraps the legacy PyDAL schema + default data (idempotent on every pod
+start); the newer SQLAlchemy-model tables (content filter, memory scope,
+fleet, integrations, security v2) only ever land via versioned Alembic
+migrations (services/management/alembic/versions/*.py), which per house
+rule must never run from application startup code — hence this dedicated
+Job instead of a container CMD/entrypoint hack.
+
+Hook ordering: templates/secret.yaml is ALSO a pre-install,pre-upgrade hook
+(weight -20) specifically so waddleai-secrets (this Job's DATABASE_URL
+source) is guaranteed to exist before this Job's hook runs — Helm applies
+plain (non-hook) resources only after all pre-install hooks complete, so
+without that, a fresh `helm install` would dangle this Job's secretKeyRef.
+This Job's weight (-10) sorts after the Secret but before the management
+Deployment rollout (a plain resource, applied in the normal
+create/update phase that follows all pre-install/pre-upgrade hooks).
+
+hook-delete-policy includes hook-succeeded (unlike the Secret) — the Job
+itself is disposable once the migration has run; before-hook-creation
+additionally cleans up a stale Job from a previous failed attempt so
+retrying `helm upgrade` doesn't hit "already exists".
+*/}}
+{{- if .Values.migrations.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "waddleai.fullname" . }}-migration
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "waddleai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: management
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+          command: ['sh', '-c', 'until nc -z {{ include "waddleai.fullname" . }}-postgres 5432; do echo waiting for postgres; sleep 2; done;']
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: migrate
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "waddleai.management.image" . }}
+          imagePullPolicy: {{ .Values.management.image.pullPolicy }}
+          workingDir: /app
+          # /app/alembic.ini has script_location = alembic (relative to
+          # cwd), so no -c flag is needed as long as workingDir matches the
+          # image's WORKDIR (services/management/Dockerfile). Invoked as
+          # "python3 -m alembic" (not the /opt/venv/bin/alembic console
+          # script) so the process the Tetragon exec-allowlist observes is
+          # /opt/venv/bin/python3 — already allowlisted for the management
+          # component (values.yaml tetragon.exec.components.management) —
+          # instead of a second, unlisted binary.
+          command:
+            - /opt/venv/bin/python3
+            - -m
+            - alembic
+            - upgrade
+            - head
+          env:
+            {{- include "waddleai.management.databaseUrlEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

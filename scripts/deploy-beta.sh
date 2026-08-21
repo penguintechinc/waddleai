@@ -1,21 +1,26 @@
 #!/bin/bash
 # Deploy to Beta - waddleai
+#
+# Beta images are CI-built only, pushed to ghcr.io/penguintechinc/waddleai/<service>
+# by .github/workflows/docker-build.yml (tag: beta-<epoch64>). This script never
+# builds or pushes images -- it only deploys a CI-built tag via Helm. Pass the
+# tag to deploy with --tag; the image registry itself is chart-managed
+# (k8s/helm/waddleai/values-beta.yaml global.imageRegistry).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-dal2-beta}"
-NAMESPACE="${NAMESPACE:-waddleai-beta}"
+NAMESPACE="${NAMESPACE:-waddleai}"
 RELEASE_NAME="waddleai"
 CHART_PATH="$PROJECT_ROOT/k8s/helm/waddleai"
 VALUES_FILE="$CHART_PATH/values-beta.yaml"
-IMAGE_REGISTRY="registry-dal2.penguintech.io"
 APP_HOST="waddleai.penguintech.cloud"
+SERVICES=(management proxy webui)
 
 DRY_RUN=0
 ROLLBACK=0
-BUILD_IMAGES=1
 SERVICE=""
 IMAGE_TAG=""
 
@@ -32,48 +37,57 @@ log_section() { echo ""; echo -e "${BLUE}=======================================
 
 check_prerequisites() {
     log_section "Checking Prerequisites"
-    for cmd in docker kubectl helm; do
+    for cmd in kubectl helm; do
         if ! command -v "$cmd" &>/dev/null; then
             log_error "$cmd is not installed"
             return 1
         fi
         log_info "$cmd: found"
     done
-}
 
-build_and_push_images() {
-    log_section "Building and Pushing Docker Images"
-    local EPOCH
-    EPOCH=$(date +%s)
-    if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "beta" ]; then
-        IMAGE_TAG="beta-${EPOCH}"
+    if ! kubectl config get-contexts "$KUBE_CONTEXT" &>/dev/null; then
+        log_error "Kubernetes context '$KUBE_CONTEXT' not found"
+        echo "Available contexts:"
+        kubectl config get-contexts --output=name
+        return 1
     fi
-    local SERVICES=("management")
-    for svc in "${SERVICES[@]}"; do
-        if [ -n "$SERVICE" ] && [ "$SERVICE" != "$svc" ]; then continue; fi
-        log_info "Building $svc..."
-        docker build -t "$IMAGE_REGISTRY/waddleai-$svc:$IMAGE_TAG" -t "$IMAGE_REGISTRY/waddleai-$svc:beta" -f "$PROJECT_ROOT/services/$svc/Dockerfile" "$PROJECT_ROOT"
-        docker push "$IMAGE_REGISTRY/waddleai-$svc:$IMAGE_TAG"
-        docker push "$IMAGE_REGISTRY/waddleai-$svc:beta"
-        log_info "✓ $svc pushed successfully"
-    done
+    log_info "context: $KUBE_CONTEXT"
+
+    if [ ! -f "$VALUES_FILE" ]; then
+        log_error "Helm values file not found: $VALUES_FILE"
+        return 1
+    fi
 }
 
 do_deploy() {
     log_section "Deploying with Helm"
-    local helm_args=("upgrade" "--install" "$RELEASE_NAME" "$CHART_PATH" "--kube-context=$KUBE_CONTEXT" "--namespace=$NAMESPACE" "--values=$VALUES_FILE" "--set=image.tag=$IMAGE_TAG" "--wait" "--timeout=10m")
-    if ! kubectl --context="$KUBE_CONTEXT" get namespace "$NAMESPACE" &>/dev/null; then
-        helm_args+=("--create-namespace")
+
+    if [ -z "$IMAGE_TAG" ]; then
+        log_error "No image tag supplied. Beta images are CI-built only (ghcr.io/penguintechinc/waddleai/<service>:beta-<epoch64>) -- pass one with --tag"
+        return 1
     fi
+
+    local helm_args=("upgrade" "--install" "$RELEASE_NAME" "$CHART_PATH" \
+        "--kube-context=$KUBE_CONTEXT" "--namespace=$NAMESPACE" "--create-namespace" \
+        "--values=$VALUES_FILE" "--wait" "--timeout=10m")
+
+    for svc in "${SERVICES[@]}"; do
+        if [ -n "$SERVICE" ] && [ "$SERVICE" != "$svc" ]; then continue; fi
+        helm_args+=("--set=${svc}.image.tag=$IMAGE_TAG")
+    done
+
     if [ "$DRY_RUN" -eq 1 ]; then
         helm_args+=("--dry-run")
         log_warn "DRY RUN MODE"
     fi
+
+    log_info "Running: helm ${helm_args[*]}"
     helm "${helm_args[@]}"
 }
 
 do_rollback() {
     log_section "Rolling Back"
+    log_info "Running: helm rollback $RELEASE_NAME --kube-context=$KUBE_CONTEXT -n $NAMESPACE"
     helm rollback "$RELEASE_NAME" --kube-context="$KUBE_CONTEXT" -n "$NAMESPACE"
     log_info "Rollback completed"
 }
@@ -81,7 +95,7 @@ do_rollback() {
 verify_deployment() {
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
     log_section "Verifying Deployment"
-    kubectl --context="$KUBE_CONTEXT" -n "$NAMESPACE" rollout status deployment/"$RELEASE_NAME" --timeout=300s || true
+    kubectl --context="$KUBE_CONTEXT" -n "$NAMESPACE" rollout status deployment/"$RELEASE_NAME" --timeout=300s
     kubectl --context="$KUBE_CONTEXT" -n "$NAMESPACE" get pods
 }
 
@@ -91,10 +105,9 @@ while [[ $# -gt 0 ]]; do
         --tag) IMAGE_TAG="$2"; shift 2;;
         --service=*) SERVICE="${1#*=}"; shift;;
         --service) SERVICE="$2"; shift 2;;
-        --skip-build) BUILD_IMAGES=0; shift;;
         --dry-run) DRY_RUN=1; shift;;
         --rollback) ROLLBACK=1; shift;;
-        -h|--help) echo "Usage: $0 [--tag=TAG] [--service=SVC] [--skip-build] [--dry-run] [--rollback]"; exit 0;;
+        -h|--help) echo "Usage: $0 --tag=TAG [--service=SVC] [--dry-run] [--rollback]"; exit 0;;
         *) log_error "Unknown: $1"; exit 1;;
     esac
 done
@@ -103,7 +116,6 @@ main() {
     log_section "WaddleAI - Beta Deployment"
     check_prerequisites || exit 1
     if [ "$ROLLBACK" -eq 1 ]; then do_rollback; exit $?; fi
-    if [ "$BUILD_IMAGES" -eq 1 ]; then build_and_push_images || exit 2; fi
     do_deploy || exit 3
     verify_deployment
     log_section "Deployment Summary"

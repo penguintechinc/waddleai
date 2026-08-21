@@ -24,6 +24,7 @@ management:
   image:
     repository: waddleai/management
     tag: latest
+    # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
   service:
@@ -69,6 +70,16 @@ management:
     ENABLE_COHERE: "true"
     OLLAMA_MANAGEMENT_MODE: both
     LOG_LEVEL: INFO
+    # shared/licensing/python_client.py's own default if unset — templated
+    # explicitly so it's visible/overridable per environment.
+    LICENSE_SERVER_URL: "https://license.penguintech.io"
+    # shared/security/ner_filter.py default. The owner's chosen model is the
+    # "lg" (large) variant, not the smaller "sm"/"md" spaCy models.
+    NER_SPACY_MODEL: "en_core_web_lg"
+    # Never let the image pull a model at runtime by default — bake it into
+    # the image ahead of time instead (see docs/deployment/kubernetes.md
+    # Troubleshooting). Flip to "true" only for a deliberate one-off.
+    WADDLEAI_NER_ALLOW_DOWNLOAD: "false"
 
   # Secret env vars (from k8s secrets)
   secretEnv:
@@ -87,6 +98,23 @@ management:
     - name: POSTGRES_PASSWORD
       secretName: waddleai-secrets
       key: postgres-password
+    # Bootstrap admin password (services/management/app/config.py,
+    # services/management/app/extensions.py). Empty by default — see
+    # secrets.adminInitialPassword / templates/secret.yaml.
+    - name: ADMIN_INITIAL_PASSWORD
+      secretName: waddleai-secrets
+      key: admin-initial-password
+    # shared/licensing/python_client.py, services/management/app/api/v1/
+    # fleet.py, services/management/app/services/content_filter_deps.py.
+    # Empty by default = community tier.
+    - name: LICENSE_KEY
+      secretName: waddleai-secrets
+      key: license-key
+    # shared/security/credential_encryption.py. GENERATE ONCE, NEVER
+    # ROTATE — see waddleai.credentialEncryptionKey (_helpers.tpl).
+    - name: CREDENTIAL_ENCRYPTION_KEY
+      secretName: waddleai-secrets
+      key: credential-encryption-key
 
 # AIProxy Service (data plane — /v1/chat/completions, /v1/messages, /v1/models, /mem0/*)
 # Plain Quart + hypercorn app; Cilium handles networking at the cluster level (no XDP/NET_ADMIN needed).
@@ -138,6 +166,11 @@ proxy:
     LOG_LEVEL: INFO
     HTTP_PORT: "8080"
     GRPC_PORT: "50051"
+    # See management.env above for the same three keys — proxy reads them
+    # too (proxy/apps/proxy_server/main.py, shared/security/ner_filter.py).
+    LICENSE_SERVER_URL: "https://license.penguintech.io"
+    NER_SPACY_MODEL: "en_core_web_lg"
+    WADDLEAI_NER_ALLOW_DOWNLOAD: "false"
 
   # Secret env vars (from k8s secrets) — mirrors management's DATABASE_URL source
   secretEnv:
@@ -147,6 +180,12 @@ proxy:
     - name: PROXY_GRPC_AUTH_TOKEN
       secretName: waddleai-secrets
       key: proxy-grpc-auth-token
+    # shared/licensing/python_client.py — same community-tier-by-default
+    # key as management.secretEnv's LICENSE_KEY above. proxy does NOT read
+    # CREDENTIAL_ENCRYPTION_KEY or ADMIN_INITIAL_PASSWORD (management-only).
+    - name: LICENSE_KEY
+      secretName: waddleai-secrets
+      key: license-key
 
   # gRPC NetworkPolicy configuration (fail-closed: defaults to deny all)
   grpc:
@@ -166,6 +205,7 @@ webui:
   image:
     repository: waddleai/webui
     tag: latest
+    # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
   service:
@@ -498,6 +538,54 @@ secrets:
   # sidecar) — present unconditionally here, same convention as the other
   # secret.yaml keys above.
   fleetExternalToken: "changeme-fleet-external-shared-token"
+  # Pre-shared bearer for the proxy's internal gRPC server (proxy.secretEnv's
+  # PROXY_GRPC_AUTH_TOKEN, validated by GrpcAuthInterceptor in
+  # proxy/apps/proxy_server/grpc_server.py). Left empty on purpose:
+  # templates/secret.yaml auto-generates a 64-char random value when this is
+  # unset (kept stable across `helm upgrade` via `lookup` — see
+  # waddleai.proxyGrpcAuthToken in _helpers.tpl), so a fresh install never
+  # hits CreateContainerConfigError. Set explicitly to pin/rotate it (e.g.
+  # beta/prod supplying a value from External Secrets Operator), or set
+  # secrets.manage: false and provide the whole waddleai-secrets Secret
+  # externally, including this key.
+  proxyGrpcAuthToken: ""
+  # Bootstrap admin password (management, ADMIN_INITIAL_PASSWORD). Empty by
+  # design — NOT auto-generated like the keys above. Leaving it unset lets
+  # services/management/app/extensions.py's own fail-closed random-password
+  # path run instead (see templates/secret.yaml). Set explicitly via
+  # --set-string secrets.adminInitialPassword=... before first install.
+  adminInitialPassword: ""
+  # License key (management + proxy, LICENSE_KEY). Empty by default =
+  # community tier — see templates/secret.yaml.
+  licenseKey: ""
+  # Credential encryption key (management only, CREDENTIAL_ENCRYPTION_KEY).
+  # Left empty so templates/secret.yaml generates-and-keeps-stable via
+  # waddleai.credentialEncryptionKey (_helpers.tpl) — NEVER set this to a
+  # fresh value after go-live; rotating it bricks every stored credential.
+  # Set explicitly only to pin/restore a known value (e.g. disaster
+  # recovery, or External Secrets Operator supplying it in beta/prod).
+  credentialEncryptionKey: ""
+
+# Alembic database migration Job (templates/migration-job.yaml) — runs
+# `alembic upgrade head` from the management image as a pre-install,
+# pre-upgrade Helm hook, ahead of the management Deployment's own rollout.
+# See services/management/app/extensions.py for why this is still needed
+# even with migrations.enabled: init_extensions() only creates the legacy
+# PyDAL bootstrap schema + default data (idempotent, safe on every pod
+# start); the newer SQLAlchemy-model tables (content filter, memory scope,
+# fleet, integrations, security v2 — services/management/alembic/versions/)
+# are Alembic-only and are never created by application startup code.
+migrations:
+  enabled: true
+  activeDeadlineSeconds: 300
+  backoffLimit: 3
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
 
 # Ollama GPU Inference Engine (spec §10.2)
 # Deployed as a DaemonSet on nodes labeled gpu=true by default (mode:
