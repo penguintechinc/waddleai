@@ -27,7 +27,7 @@ cd waddleai
                              #   --create-namespace --values k8s/helm/waddleai/values-alpha.yaml
 ```
 
-`./scripts/deploy-beta.sh` deploys the same chart with `values-beta.yaml` to the shared beta cluster (CI-built `ghcr.io/penguintechinc/waddleai/{proxy,management,webui}:beta-<epoch>` images — never build beta/prod images locally). There is no `values-production.yaml` in this repo yet; production deployments start from `values.yaml` with an operator-supplied overlay — see [Kubernetes Deployment](../deployment/kubernetes.md) for the current guidance.
+`./scripts/deploy-beta.sh` deploys the same chart with `values-beta.yaml` to the shared beta cluster (CI-built on merge to `main` — `ghcr.io/penguintechinc/waddleai/{proxy,management,webui}:beta-<epoch64>` images — never build beta/prod images locally). There is no `values-production.yaml` in this repo yet; production deployments start from `values.yaml` with an operator-supplied overlay — see [Kubernetes Deployment](../deployment/kubernetes.md) for the current guidance and the full five-tier release pipeline.
 
 ## Option B: Local development
 

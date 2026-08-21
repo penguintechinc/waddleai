@@ -1,11 +1,13 @@
 #!/bin/bash
 # Deploy to Beta - waddleai
 #
-# Beta images are CI-built only, pushed to ghcr.io/penguintechinc/waddleai/<service>
-# by .github/workflows/docker-build.yml (tag: beta-<epoch64>). This script never
-# builds or pushes images -- it only deploys a CI-built tag via Helm. Pass the
-# tag to deploy with --tag; the image registry itself is chart-managed
-# (k8s/helm/waddleai/values-beta.yaml global.imageRegistry).
+# Beta images are CI-built only -- built and pushed on every merge to main, to
+# ghcr.io/penguintechinc/waddleai/<service> by .github/workflows/docker-build.yml
+# (tag: beta-<epoch64>). This script never builds or pushes images -- it only
+# deploys a CI-built tag via Helm. Pass the tag to deploy with --tag; the image
+# registry itself is chart-managed (k8s/helm/waddleai/values-beta.yaml
+# global.imageRegistry). dal2-beta may be temporarily offline -- see
+# docs/docs-site/docs/deployment/kubernetes.md Release pipeline for status.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

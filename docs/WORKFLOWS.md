@@ -51,12 +51,16 @@ WaddleAI ships three workflows under `.github/workflows/`: `docker-build.yml`,
 
 ### 1. **docker-build.yml**
 
-**Trigger Events:**
-- Push to `main` or `v*` branches
-- Push of version tags (`v*`)
-- Pull requests targeting `main` **and** `release/**` (release-targeted PRs used to run no
-  tests or builds at all; this was fixed so the auto-merge green gate has something to
-  actually gate on)
+**Trigger Events** (five-tier image mapping — see Image Tagging Logic below):
+- Push to `release/v{Major}.{Minor}.X` branches → alpha tier (`alpha-<epoch64>`)
+- Push to `main` → beta tier (`beta-<epoch64>`)
+- GitHub Release published, flagged pre-release → gamma tier (`gamma-<epoch64>`)
+- GitHub Release published, not pre-release (v1.x+ only) → prod tier
+  (`v{Major}.{Minor}.{Patch}`)
+- Push to `feature/`, `fix/`, `chore/`, `hotfix/`, `docs/`, `refactor/` branches, and
+  pull requests targeting `main` **and** `release/**` (release-targeted PRs used to run
+  no tests or builds at all; this was fixed so the auto-merge green gate has something
+  to actually gate on) → pre-alpha: build/test only, image not pushed
 - Path-based: changes to `proxy/**`, `services/**`, `shared/**`, `.version`, or the
   workflow file itself
 
@@ -94,11 +98,16 @@ WaddleAI ships three workflows under `.github/workflows/`: `docker-build.yml`,
 **Image Tagging Logic** (per architecture, then merged into a manifest — see
 `merge-manifests` below):
 
-| Scenario | On a `v*` branch | On `main` | Other branches |
-|----------|-------------------|-----------|-----------------|
-| `.version` unchanged | `beta-<epoch64>-<arch>` | `gamma-<epoch64>-<arch>` | `alpha-<epoch64>-<arch>` |
-| `.version` changed | `<semver>-<arch>-beta` | `<semver>-<arch>-gamma` | — |
-| Any push event | `ci-<arch>-<sha>` (long SHA) | | |
+| Tier | Source | Tag |
+|------|--------|-----|
+| Pre-alpha | `feature/`/`fix/`/`chore/`/`hotfix/`/`docs/`/`refactor/` branches, PRs | build-only, not pushed (local builds → `localhost:32000`) |
+| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>-<arch>` |
+| Beta | `main` | `beta-<epoch64>-<arch>` |
+| Gamma | GitHub release flagged pre-release | `gamma-<epoch64>-<arch>` |
+| Prod | GitHub release, not pre-release (v1.x+ only) | `v{Major}.{Minor}.{Patch}-<arch>` |
+
+Every pushed (non-pre-alpha) build additionally gets a `ci-<arch>-<sha>` (long SHA) tag
+for traceability.
 
 #### merge-manifests
 - **Purpose**: Combine the per-arch images from `build-platform` into a single
@@ -190,10 +199,10 @@ rather than a shipped service.
 **Format**: `vMajor.Minor.Patch.epoch64build` — e.g. `v0.2.0.1787265396`
 
 **Usage**:
-- Edit `.version` to trigger the `version-release.yml` pre-release workflow
-- `docker-build.yml` also detects `.version` changes and switches its image tags from the
-  `<env>-<epoch64>-<arch>` scheme to the `<semver>-<arch>-<env>` scheme (see Image Tagging
-  Logic above)
+- Edit `.version` on `main` to trigger `version-release.yml`'s auto pre-release, which
+  in turn triggers the gamma-tier build (`gamma-<epoch64>`); promoting that pre-release
+  to a full GitHub release triggers the prod-tier build (`v{Major}.{Minor}.{Patch}`,
+  v1.x+ only) — see Image Tagging Logic above
 - Only increment Major/Minor/Patch once the current version has a published tag/release —
   otherwise update the build/epoch component only (see the `versioning` skill)
 
@@ -251,10 +260,14 @@ git diff --name-only HEAD^ HEAD | grep -q "^.version$"
 1. Update `.version` file with the new version number
 2. Commit: `git add .version && git commit -m "Release vX.X.X"`
 3. Push to `main` (only via an approved release → main PR, never directly — see
-   `.claude/rules` `devops.md` Branch & Release Strategy)
-4. `docker-build.yml` tags images with the semver-based scheme automatically
-5. `version-release.yml` creates a GitHub pre-release
-6. Promote to a final GitHub release manually once validated
+   `.claude/rules` `devops.md` Branch & Release Strategy) → CI builds and pushes the
+   beta tier (`beta-<epoch64>`)
+4. `version-release.yml` detects the `.version` change and auto-creates a GitHub
+   pre-release → CI builds and pushes the gamma tier (`gamma-<epoch64>`); validate
+   gamma (upgrade-in-place — the only tier that exercises a real migration upgrade,
+   mandatory before prod)
+5. Promote the pre-release to a final GitHub release manually once gamma is validated
+   → CI builds and pushes the prod tier (`v{Major}.{Minor}.{Patch}`, v1.x+ only)
 
 ---
 
@@ -285,8 +298,10 @@ git diff --name-only HEAD^ HEAD | grep -q "^.version$"
 ### Workflow Not Triggering
 
 1. **Check path filters**: Ensure modified files match `paths:` configuration
-2. **Check branches**: Ensure pushing to/PR-targeting a configured branch (`main`,
-   `v*`, or `release/**` depending on the workflow)
+2. **Check branches/events**: Ensure pushing to/PR-targeting a configured branch
+   (`main`, `release/v{Major}.{Minor}.X`, or `release/**` depending on the workflow),
+   or — for gamma/prod — that the GitHub Release event fired with the right
+   pre-release flag
 3. **Verify permissions**: Token must have the permissions the job declares
 4. **Check workflow file**: Syntax errors prevent execution
 

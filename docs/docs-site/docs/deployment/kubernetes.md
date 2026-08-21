@@ -32,15 +32,54 @@ including local development — see [Docker Compose](docker-compose.md) for why.
 
 | Context | Cluster | Values file | Namespace |
 |---|---|---|---|
-| `local-alpha` | Local MicroK8s | `values-alpha.yaml` | `waddleai` |
-| `dal2-beta` | dal2.penguintech.cloud | `values-beta.yaml` | `waddleai` |
-| `dal2-gamma` | dal2.penguintech.cloud | *(no values-gamma.yaml yet)* | — |
-| `{repo}-prod` | Per-repo prod cluster | *(no values-production.yaml yet)* | — |
+| `local-alpha` | Local MicroK8s / Docker Desktop — shared by the pre-alpha and alpha tiers today | `values-alpha.yaml` | `waddleai` |
+| `dal2-beta` | dal2.penguintech.cloud (**temporarily offline as of 2026-08-21**, expected back within ~1 week) | `values-beta.yaml` | `waddleai` |
+| TBD | DigitalOcean gamma cluster (context name not yet assigned) | *(no values-gamma.yaml yet)* | `waddleai` |
+| TBD | DigitalOcean prod cluster — separate cluster from gamma, not built yet | *(no values-production.yaml yet)* | `waddleai` |
 
 `namespace` defaults to `waddleai` in the base `values.yaml` and neither
 `values-alpha.yaml` nor `values-beta.yaml` overrides it, and `scripts/deploy-beta.sh`
 defaults its own `NAMESPACE` env var to `waddleai` too — every environment uses the
 product-name-only namespace, no environment suffix.
+
+See [Release pipeline](#release-pipeline) below for which branch/event produces which
+tag and cluster.
+
+## Release pipeline
+
+WaddleAI images move through five tiers, each with its own source branch/event, tag,
+and cluster:
+
+| Tier | Source | Tag | Cluster / deploy |
+|---|---|---|---|
+| Pre-alpha | `feature/` `fix/` `chore/` `hotfix/` `docs/` `refactor/` branches | build-only in CI (compile test, not pushed); local builds → `localhost:32000` | Local K8s (MicroK8s / Docker Desktop), `./scripts/deploy-alpha.sh`, destroy + fresh |
+| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>` | Local K8s today (`dal3` planned), destroy + fresh |
+| Beta | Merge to `main` | `beta-<epoch64>` | `dal2-beta` context, GitHub Actions, destroy + fresh — `./scripts/deploy-beta.sh --tag beta-<epoch64>` |
+| Gamma | GitHub release flagged pre-release | `gamma-<epoch64>` | DigitalOcean (context TBD), **upgrade in place** — the only upgrade-path test, mandatory before prod |
+| Prod | GitHub release (non-pre-release), **v1.x+ only** | `v{Major}.{Minor}.{Patch}` | DigitalOcean, separate cluster (not built yet), upgrade in place |
+
+Namespace is always `waddleai` in every context; registry is
+`ghcr.io/penguintechinc/waddleai/{proxy,management,webui,ollama}`.
+
+**Destroy-fresh vs. upgrade-in-place**: pre-alpha, alpha, and beta clusters are torn
+down and rebuilt for every deploy — the [migration Job](#database-migrations) still
+runs on `helm upgrade --install` there, but against an empty database every time, so it
+never actually exercises an upgrade path. **Gamma is the first tier that keeps its
+database across deploys** (upgrade in place) — it's the only environment where the
+Alembic migration Job runs against real prior state, which is why a clean gamma pass is
+mandatory before promoting to prod.
+
+**Promotion chain**: `main` → beta (`beta-<epoch64>`, automated tests) → auto
+pre-release (`version-release.yml` creates a GitHub pre-release on a `.version` change)
+→ gamma (`gamma-<epoch64>`, upgrade-in-place validation) → **manual** promotion of the
+pre-release to a full GitHub release → prod (`v{Major}.{Minor}.{Patch}`, v1.x+ only —
+this repo is still pre-1.0 (`.version` currently `v0.2.x`), so the prod tier has no
+deploy target yet).
+
+!!! note "dal2-beta is temporarily offline (2026-08-21)"
+    As of 2026-08-21 the `dal2-beta` cluster is offline; it's expected back within
+    ~1 week. `./scripts/deploy-beta.sh` will fail to reach the `dal2-beta` context
+    until then.
 
 ## Quick install (alpha / local MicroK8s)
 
@@ -300,18 +339,22 @@ check `/readyz` manually.
 ## Beta / gamma / prod notes
 
 - **Never build beta/prod/gamma images locally** — CI builds and pushes to
-  `ghcr.io/penguintechinc/waddleai/{proxy,management,webui,ollama}`. Tag conventions:
-  `alpha-<epoch64>` (local only), `beta-<epoch64>` (release branches), `gamma-<epoch64>`
-  (`main`), `v{Major}.{Minor}.{Patch}` (tagged releases).
+  `ghcr.io/penguintechinc/waddleai/{proxy,management,webui,ollama}`. Tag/source
+  conventions are the five-tier table in [Release pipeline](#release-pipeline) above —
+  `alpha-<epoch64>` from `release/v{Major}.{Minor}.X` branches, `beta-<epoch64>` from
+  merge to `main`, `gamma-<epoch64>` from a GitHub pre-release, `v{Major}.{Minor}.{Patch}`
+  from a full GitHub release (v1.x+ only).
 - `./scripts/deploy-beta.sh` drives `helm upgrade --install` against `dal2-beta` with
   `values-beta.yaml`, namespace `waddleai`; it also has `--rollback` and `--dry-run`
   modes. It **never builds or pushes images itself** — it only deploys an
   already-CI-built tag via Helm, and requires one:
   `./scripts/deploy-beta.sh --tag=beta-<epoch64>` (optionally `--service=management`
   to bump a single service's tag). It prints the exact `helm upgrade --install`
-  command it runs before executing it.
+  command it runs before executing it. `dal2-beta` is temporarily offline as of
+  2026-08-21 — see the note in Release pipeline above.
 - There is no `deploy-gamma.sh` or `deploy-prod.sh` script and no gamma/production
-  values file — see the warning at the top of this page.
+  values file — see the warning at the top of this page. Gamma and prod also move to
+  a new DigitalOcean cluster/context (TBD) instead of `dal2.penguintech.cloud`.
 
 ## Troubleshooting
 
