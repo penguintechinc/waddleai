@@ -31,12 +31,6 @@ convention = "google"
 # sys.path manipulation before imports in entry points, and re-export
 # wildcard imports in package __init__ files.
 [tool.ruff.lint.per-file-ignores]
-# ruff's isort rule wants a blank line between the two first-party import
-# groups nested inside this file's `try:` block, and `ruff format` deletes it
-# again on the very next pass -- the two rules fight indefinitely, so no commit
-# can satisfy both. The imports are correctly grouped and sorted; only the
-# separating blank line is contested.
-"tests/unit/test_request_router.py" = ["I001"]
 "services/management/apps/*/main.py" = ["E402"]
 "proxy/apps/*/main.py" = ["E402"]
 "examples/*.py" = ["E402"]

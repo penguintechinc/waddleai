@@ -116,7 +116,7 @@ test:
 
 test-unit:
 	@echo "Running unit tests..."
-	$(PY) -m pytest tests/unit -v --cov-report=html:htmlcov
+	@scripts/check_collected_floor.sh $(PY) tests/unit -v --cov-report=html:htmlcov
 
 # --no-cov: a tests/integration-only run only exercises a fraction of
 # shared/+services/management/app, so pytest.ini's default --cov addopts

@@ -204,8 +204,20 @@ tests/unit/
 ```
 
 Token-accounting tests: `test_token_manager.py`, `test_token_manager_costmodel.py`,
-`test_token_limiter.py`, `test_metering.py`. Routing tests: `test_request_router.py`,
-`test_request_router_breaker.py`, `test_request_router_merge.py`, `test_routing_matrix.py`.
+`test_token_limiter.py`, `test_metering.py`. Routing tests: `test_request_router_breaker.py`,
+`test_request_router_merge.py`, `test_routing_matrix.py` (the pre-merge `test_request_router.py`
+was deleted -- it imported a `RequestRouter`/`LoadBalancer` API removed when AILB routing was
+merged into `shared/utils/request_router.py`; the merge/breaker files cover the current
+`LLMRequestRouter` API).
+
+`test_collection_guard.py` guards against exactly that kind of file going stale silently: it
+walks every module-level skip mechanism in `tests/unit/` (`pytest.importorskip`,
+`pytest.skip(..., allow_module_level=True)`, `pytestmark = pytest.mark.skip(...)`, and
+try/except ImportError around a first-party import) and re-executes every first-party import it
+finds -- a first-party import failing is a bug, not grounds to skip. `make test-unit` and CI also
+assert pytest's own `collected N items` count never drops below the floor in
+`tests/COLLECTED_FLOOR`, so a module silently vanishing from collection fails loudly instead of
+reporting the same green summary line.
 
 ### Execution
 
