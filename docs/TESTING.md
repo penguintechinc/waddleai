@@ -395,5 +395,36 @@ There is no separate nightly or performance-test CI job. See
 
 ---
 
+<!-- BEGIN: added by chore/mypy-runs-to-completion — another agent is
+     rewriting this file this wave; this section is intentionally isolated
+     so it can be moved/merged without touching surrounding prose. -->
+
+## mypy gate
+
+`make lint` runs `scripts/mypy-gate.sh`, which fails on any mypy `error:`
+line not already present in the committed `mypy-baseline.txt` (688 lines as
+of 2026-08-22 — see
+[`docs/superpowers/plans/2026-08-22-mypy-baseline.md`](superpowers/plans/2026-08-22-mypy-baseline.md)
+for the invocation, the full error breakdown, and the module-path config fix
+that let mypy complete a run at all). It also fails if mypy examines zero
+source files, so a config regression can't silently pass.
+
+Introducing a real type error fails the gate immediately; fixing it, or
+regenerating the baseline for an intentional/pre-existing one, is:
+
+```bash
+.venv/bin/python -m mypy proxy services shared scripts tests --ignore-missing-imports \
+  2>&1 | grep -E ': error:' | sort > mypy-baseline.txt
+```
+
+Baseline entries include the line number, so an unrelated edit that shifts a
+downstream error's line number will also require a baseline regen — a
+deliberate tradeoff for a simple, honest diff over fuzzy matching that could
+mask real regressions.
+
+<!-- END: added by chore/mypy-runs-to-completion -->
+
+---
+
 **Last Updated**: 2026-08-10
 **Maintained by**: Penguin Tech Inc
