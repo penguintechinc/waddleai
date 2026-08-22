@@ -7,11 +7,11 @@ tests, smoke tests, and dual-token/multi-backend-routing verification.
 
 | Test Level | Purpose | Runner | Status Today |
 |-----------|---------|--------|--------------|
-| **Unit Tests** | Isolated function/method testing | `pytest tests/unit/` | ~1141 passed, 4 skipped |
-| **Contract Tests** | Request/response snapshot assertions for proxy + management | `pytest tests/contract/` | 79 tests collected |
+| **Unit Tests** | Isolated function/method testing | `pytest tests/unit/` | 3540 passed, 5 skipped, 92.52% coverage (90% gate) |
+| **Contract Tests** | Request/response snapshot assertions for proxy + management | `pytest tests/contract/` | 80 tests collected |
 | **Web UI Tests** | React component/unit tests | `npm test` (vitest) in `services/webui/` | 244 tests, 90% gate met |
 | **Smoke Tests** | Fast post-deploy verification | two standalone bash scripts | not `pytest`-discoverable — see [Smoke Tests](#smoke-tests) |
-| **Integration Tests** | Component interaction against live backends | `pytest tests/integration/` | 35 tests across 4 modules; needs reachable services |
+| **Integration Tests** | Component interaction against live backends | `pytest tests/integration/` | 84 tests across 10 modules; needs reachable services |
 | **E2E Tests** | Critical workflows end-to-end | Playwright, `tests/e2e/` (separate npm project) | not wired into `make test-e2e` — see [End-to-End Tests](#end-to-end-tests) |
 | **Performance Tests** | Scalability/throughput | — | no `make` target or script exists yet |
 
@@ -124,7 +124,7 @@ in that directory for the exact current surface.
 
 ```bash
 make test-contract                    # Via Makefile
-pytest tests/contract/ -v --no-cov    # Direct — 79 tests collected today
+pytest tests/contract/ -v --no-cov    # Direct — 80 tests collected today
 ```
 
 ---
@@ -190,18 +190,25 @@ Isolated function/method tests with mocked dependencies.
 
 ```
 tests/unit/
-├── *.py                    # ~24 files: token accounting, routing, RBAC, security,
-│                            # memory/mem0 scoping, metering, feature flags, gRPC auth
-├── proxy/
-│   ├── test_endpoint_parity.py
-│   ├── test_pipeline.py
-│   └── test_pipeline_stages.py
-├── management/
-│   ├── ~24 files covering auth, keys, orgs, quotas, usage, providers, ollama,
-│   │   llamacpp, webhooks, and app init
-└── security/
-    └── test_content_filter_redaction.py
+├── *.py            # 28 files: token accounting, routing, RBAC, feature flags, gRPC auth
+├── cache/          # 11 files -- response cache eligibility/replay/poisoning
+├── docs/           # 1 file -- docs/docs-site mirroring guard (see test_docs_site_sync.py)
+├── fleet/          # 7 files -- llama.cpp/Ollama fleet backend management
+├── knowledge/      # 6 files -- CodeRAG/knowledge layer primitives
+├── management/     # 56 files -- auth, keys, orgs, quotas, usage, providers, ollama,
+│                   #   llamacpp, webhooks, app init
+├── mcp/            # 9 files -- MCP endpoint integration/config
+├── memory/         # 10 files -- the four proxy memory layers, mem0 scoping
+├── proxy/          # 15 files -- pipeline stages, endpoint parity, connectors
+├── routing/        # 15 files -- smart-routing engine, capability veto, complexity classifier
+├── security/       # 23 files -- content filter tiers, NER, prompt security, hooks
+└── vectorstore/    # 4 files -- pgvector/Qdrant backend seam
 ```
+
+The subdirectory split (`cache/`, `fleet/`, `knowledge/`, `mcp/`, `memory/`, `routing/`,
+`vectorstore/`) grew out of the coverage-ratchet work that took this suite from ~1141 to
+3540 tests — new feature areas get their own subdirectory rather than flat files in
+`tests/unit/`.
 
 Token-accounting tests: `test_token_manager.py`, `test_token_manager_costmodel.py`,
 `test_token_limiter.py`, `test_metering.py`. Routing tests: `test_request_router.py`,
@@ -218,10 +225,17 @@ pytest tests/unit/test_token_manager.py -v  # Specific file
 ### Requirements
 
 - All external dependencies mocked (network, DB)
-- Coverage gate: **60%** (`.coveragerc`, `fail_under = 60`) — actual coverage today is
-  ~78%, comfortably above the gate; don't let it regress toward the floor
+- Coverage gate: **90%**, branch coverage on (`.coveragerc`, `fail_under = 90`,
+  `branch = True`) — actual coverage today is 92.52%, comfortably above the gate; don't
+  let it regress toward the floor. Run with `--cov-report=term-missing` to see exactly
+  which lines/branches are uncovered before adding a test, not just the percentage
 - Coverage source scope is `shared` and `services/management/app` only (see
-  `[run] source =` in `.coveragerc`) — `proxy/` unit coverage isn't counted toward the gate
+  `[run] source =` in `.coveragerc`) — `pytest.ini` additionally passes `--cov=proxy`,
+  but no `proxy/` files appear in the coverage report or count toward the gate; the
+  `.coveragerc` `source` restriction wins
+- CI asserts a minimum collected-test count for `tests/unit`, so a path filter or import
+  error that silently collects zero tests fails the build loudly instead of reporting a
+  false "clean" 90%
 
 ---
 
@@ -233,23 +247,30 @@ Component interaction verification against a real database.
 
 ### Current State
 
-`tests/integration/` holds **35 tests across four modules**, all tracked in git:
+`tests/integration/` holds **84 tests across ten modules**, all tracked in git:
 
-| Module | Covers |
-|---|---|
-| `test_claude_integration.py` | Anthropic-compatible path |
-| `test_llamacpp_integration.py` | llama.cpp connector and fleet |
-| `test_mem0_integration.py` | mem0-compatible memory API over pgvector |
-| `test_ollama_integration.py` | Ollama connector and lifecycle |
+| Module | Covers | Needs a live service? |
+|---|---|---|
+| `test_claude_integration.py` | Anthropic Claude API, real calls | Yes — skips without `ANTHROPIC_API_KEY` |
+| `test_llamacpp_integration.py` | llama.cpp connector and fleet | Yes |
+| `test_mem0_integration.py` | mem0-compatible memory API over pgvector | Yes — PostgreSQL + pgvector |
+| `test_ollama_integration.py` | Ollama connector and lifecycle | Yes |
+| `test_vectorstore_local_profile.py` | Local-only profile vector-store seam | Yes — Qdrant + Ollama, skips if unreachable |
+| `test_knowledge_acceptance.py` | §9.8 knowledge layer end-to-end + org isolation | No — in-memory/`pytest-httpserver` fixtures |
+| `test_proxy_memory_acceptance.py` | §6A.6 four proxy memory layers end-to-end | No — stubbed connectors + in-memory Valkey/DB doubles |
+| `test_response_cache_acceptance.py` | §6.5 response cache: eligibility, replay, TTL, poisoning defense | No |
+| `test_security_v2_acceptance.py` | §8.10 security-v2 request path via a real `ProxyPipeline` | No |
+| `test_smart_routing_acceptance.py` | §7.7 smart routing across `shared.routing` + pipeline stages | No |
 
-These exercise live backends, so they need the relevant service reachable — an
-Ollama or llama.cpp endpoint, and a PostgreSQL instance with pgvector for the
-memory tests. They are not part of the `test (3.13)` CI job, which runs
-`tests/unit/` only; the `integration-test` job is gated on non-pull-request
-events and reports `skipping` on PRs.
+Only the first five genuinely need a reachable external service (Ollama, llama.cpp,
+Anthropic's API, or Postgres/pgvector/Qdrant) — the other five are acceptance-level
+tests that compose multiple modules against stubs/in-memory doubles and need nothing
+external. None of the ten are part of the `test (3.13)` CI job, which runs
+`tests/unit/` only; the `integration-test` job is gated on non-pull-request events and
+reports `skipping` on PRs.
 
-Note that running this suite on its own trips the 60% coverage gate configured
-in `pytest.ini`, since 35 integration tests exercise only a narrow slice of the
+Note that running this suite on its own trips the 90% coverage gate configured
+in `pytest.ini`, since these tests exercise only a narrow slice of the
 codebase. That is a reporting artifact of running the suite in isolation, not a
 failure of the tests. Run the full suite, or pass `--no-cov`, when you only want
 the integration results.
@@ -379,21 +400,39 @@ Matches `make pre-commit` plus the additional steps this doc covers:
 
 ## CI/CD Integration
 
-GitHub Actions (`docker-build.yml`) runs, on every push/PR touching `proxy/**`,
-`services/**`, or `shared/**`:
+GitHub Actions (`.github/workflows/docker-build.yml`) triggers on push to
+`main`/`release/**`/tags and on pull requests targeting `main` or `release/**`, when the
+change touches `proxy/**`, `services/**`, `shared/**`, `images/**`, `openapi/**`,
+`tests/**`, or one of a short list of tooling files (`pyproject.toml`,
+`requirements.txt`, `Makefile`, `.pre-commit-config.yaml`, `.version`, the workflow file
+itself, `.spectral.yaml`, `scripts/generate_openapi_spec.py`) — the tooling-file list
+exists specifically so a dependency bump or a new make target isn't invisible to CI.
+**PRs into `release/**` run the full pipeline, same as `main`** — this was a P1 fix;
+previously only `main` triggered CI, so release-targeted PRs built and tested nothing
+and the "fully green" auto-merge gate was passing on unbuilt code.
 
-- **`test`**: Python unit tests + bandit
-- **`test-webui`**: ESLint + vitest (coverage-gated) + build, for `services/webui`
-- **`build-platform`** → **`merge-manifests`**: multi-arch image builds, gated on `test`
-- **`security-scan`**: Trivy on the merged images (skipped on PRs)
-- **`integration-test`**: ephemeral docker-compose stack, health + auth checks (skipped
-  on PRs)
-- **`release`** / **`cleanup`**: on version tags / always, respectively
+| Job | Purpose |
+|---|---|
+| `determine-tier` | Resolves the five-tier model (pre-alpha/alpha/beta/gamma/prod) to a tag prefix and whether to push |
+| `test` | Python unit tests (`pytest tests/unit`) + `bandit -lll` (HIGH severity gates the build) |
+| `test-webui` | ESLint + vitest (coverage-gated) + build, for `services/webui` |
+| `openapi-lint` | `spectral lint openapi/v1.yaml` |
+| `test-contract` | `pytest tests/contract` |
+| `test-integration` | Runs the full `tests/integration/` directory with no live services provisioned — tests needing one self-skip (unreachable Ollama/Qdrant, missing `ANTHROPIC_API_KEY`), so only the acceptance-level suite actually executes |
+| `test-e2e` | Playwright suite setup/smoke check |
+| `build-platform` | Multi-arch image builds — needs `determine-tier`, `test`, `test-webui`, `openapi-lint`, `test-contract`, `test-integration`, `test-e2e` all green |
+| `merge-manifests` | Merges per-arch manifests into one tag — skipped on PRs (nothing was pushed to merge) |
+| `build-ollama-image` | Builds the Ollama sidecar image — needs `determine-tier`, `test` |
+| `security-scan` | Trivy on the merged images — needs `merge-manifests` |
+| `integration-test` | Ephemeral docker-compose stack (CI-only, not a local-dev artifact), health + auth checks — `continue-on-error`, skipped on PRs |
+| `release` / `cleanup` | On a GitHub pre-release/release event / always, respectively |
 
-There is no separate nightly or performance-test CI job. See
-[Workflows](WORKFLOWS.md) for the full per-job breakdown.
+There is no separate nightly or performance-test CI job. Note the naming trap: `test-integration`
+(runs on every trigger, no live services) and `integration-test` (skipped on PRs, spins up
+its own throwaway docker-compose stack) are two different jobs testing different things.
+See [Workflows](WORKFLOWS.md) for further detail.
 
 ---
 
-**Last Updated**: 2026-08-10
+**Last Updated**: 2026-08-21
 **Maintained by**: Penguin Tech Inc
