@@ -6,22 +6,18 @@ pre-scan context-line rendering, against the real sqlite-backed
 `content_filter_config` table (see `conftest.content_filter_db`).
 
 `_load_system_prompt` and `_load_shieldgemma_policy` both read the same
-`auditor_system_prompt` config key but build their query differently:
-`_load_shieldgemma_policy` combines its filter conditions with `&` (a single
-`db(query).select().first()` call, matching real penguin_dal's `QuerySet`,
-which has no `__call__`); `_load_system_prompt` instead does
-`query = db(cond1); query = query(cond2)` -- chaining a second call directly
-onto the returned `QuerySet`. Real penguin_dal's `QuerySet` has no
-`__call__` (confirmed against the installed `penguin_dal.query.QuerySet`),
-so that chain always raises `TypeError`, caught by `_load_system_prompt`'s
-own broad `except Exception`, and a configured custom system prompt is
-therefore silently never applied in production -- the same regression class
-already fixed once in `_load_custom_rules` (see that method's source
-comment) was apparently not also applied here.
-`test_custom_prompt_configured_in_db_is_never_applied_bug` below pins down
-and documents this actual (buggy) behaviour rather than a hoped-for one; it
-is not something this test suite can fix (`content_filter.py` is out of
-scope for this change).
+`auditor_system_prompt` config key. `_load_shieldgemma_policy` combines its
+filter conditions with `&` (a single `db(query).select().first()` call,
+matching real penguin_dal's `QuerySet`, which has no `__call__`).
+`_load_system_prompt` previously did `query = db(cond1); query =
+query(cond2)` -- chaining a second call directly onto the returned
+`QuerySet` -- which always raised `TypeError` (real penguin_dal's
+`QuerySet` has no `__call__`), caught by `_load_system_prompt`'s own broad
+`except Exception`, so a configured custom system prompt was silently
+never applied in production. This was the same regression class already
+fixed once in `_load_custom_rules` (see that method's source comment);
+`_load_system_prompt` now mirrors that fix -- conditions are combined with
+`&` before a single `db()` call.
 """
 
 from __future__ import annotations
@@ -55,12 +51,7 @@ class TestLoadSystemPromptNoDatabase:
 
 
 class TestLoadSystemPromptWithDatabase:
-    """A real DB is present -- exercises the org_id branch and the query path.
-
-    See the module docstring: a configured custom prompt is never actually
-    applied due to a QuerySet-chaining bug in this method, so both cases
-    below still resolve to the default body.
-    """
+    """A real DB is present -- exercises the org_id branch and the query path."""
 
     def test_org_scoped_lookup_falls_back_to_default(
         self,
@@ -68,26 +59,25 @@ class TestLoadSystemPromptWithDatabase:
         content_filter_db: DAL,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """An org_id is supplied (exercises the org_id-truthy condition branch)."""
+        """An org_id is supplied but no matching row exists -- default, no warning."""
         with caplog.at_level(logging.WARNING):
             prompt = filter_instance._load_system_prompt(org_id=7)
 
         assert "You are a security auditor for an AI proxy" in prompt
-        assert "Failed to load custom auditor prompt" in caplog.text
+        assert "Failed to load custom auditor prompt" not in caplog.text
 
-    def test_custom_prompt_configured_in_db_is_never_applied_bug(
+    def test_custom_prompt_configured_in_db_is_applied(
         self,
         filter_instance: ContentFilter,
         content_filter_db: DAL,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A configured global custom prompt is silently ignored (documents the real bug).
+        """A configured global custom prompt is used instead of the default body.
 
         `content_filter_config` has a row for the 'auditor_system_prompt'
-        key, exactly as an admin would configure via the API -- the method
-        still returns the built-in default body because its DB query raises
-        internally (`'QuerySet' object is not callable`) and that exception
-        is swallowed by its own `except Exception`.
+        key, exactly as an admin would configure via the API -- the fixed
+        method's single combined-condition `db()` call finds it and no
+        exception is raised or logged.
         """
         content_filter_db.content_filter_config.insert(
             key="auditor_system_prompt",
@@ -98,9 +88,104 @@ class TestLoadSystemPromptWithDatabase:
         with caplog.at_level(logging.WARNING):
             prompt = filter_instance._load_system_prompt(org_id=None)
 
-        assert "CUSTOM ADMIN-CONFIGURED PROMPT" not in prompt
+        assert "CUSTOM ADMIN-CONFIGURED PROMPT" in prompt
+        assert "You are a security auditor for an AI proxy" not in prompt
+        assert "'QuerySet' object is not callable" not in caplog.text
+        assert caplog.text == ""
+
+    def test_org_specific_prompt_takes_precedence_over_global(
+        self,
+        filter_instance: ContentFilter,
+        content_filter_db: DAL,
+    ) -> None:
+        """An org-specific override outranks a global fallback row for the same org."""
+        content_filter_db.content_filter_config.insert(
+            key="auditor_system_prompt", value="GLOBAL PROMPT", organization_id=None
+        )
+        content_filter_db.content_filter_config.insert(
+            key="auditor_system_prompt", value="ORG 5 PROMPT", organization_id=5
+        )
+
+        prompt = filter_instance._load_system_prompt(org_id=5)
+
+        assert "ORG 5 PROMPT" in prompt
+        assert "GLOBAL PROMPT" not in prompt
+
+    def test_org_with_no_override_falls_back_to_global(
+        self,
+        filter_instance: ContentFilter,
+        content_filter_db: DAL,
+    ) -> None:
+        """An org with no row of its own still gets the global prompt, not the default."""
+        content_filter_db.content_filter_config.insert(
+            key="auditor_system_prompt", value="GLOBAL PROMPT", organization_id=None
+        )
+
+        prompt = filter_instance._load_system_prompt(org_id=99)
+
+        assert "GLOBAL PROMPT" in prompt
+        assert "You are a security auditor for an AI proxy" not in prompt
+
+    def test_malformed_row_with_empty_value_falls_back_to_default_and_warns(
+        self,
+        filter_instance: ContentFilter,
+        content_filter_db: DAL,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A row exists for the key but its value is empty -- default, with a warning."""
+        content_filter_db.content_filter_config.insert(
+            key="auditor_system_prompt",
+            value=None,
+            organization_id=None,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            prompt = filter_instance._load_system_prompt(org_id=None)
+
         assert "You are a security auditor for an AI proxy" in prompt
-        assert "'QuerySet' object is not callable" in caplog.text
+        assert "empty" in caplog.text.lower()
+
+    def test_db_error_is_caught_and_falls_back_to_default(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A broken db object degrades to the default body rather than raising.
+
+        This is the prompt-loading fail-open path only -- it must never be
+        confused with the filter's own block/allow decision, which has its
+        own separate fail-open/fail-closed split (see the module-level
+        comment in `content_filter.py`).
+        """
+
+        class _BrokenDB:
+            def __getattr__(self, name: str) -> None:
+                raise RuntimeError("db down")
+
+        cf = ContentFilter(db=_BrokenDB())
+
+        with caplog.at_level(logging.WARNING):
+            prompt = cf._load_system_prompt(org_id=None)
+
+        assert "You are a security auditor for an AI proxy" in prompt
+        assert "Failed to load custom auditor prompt" in caplog.text
+
+    def test_not_cached_second_call_reflects_updated_db_row(
+        self,
+        filter_instance: ContentFilter,
+        content_filter_db: DAL,
+    ) -> None:
+        """Unlike `_load_custom_rules`, this method has no TTL cache -- every call re-queries."""
+        prompt_before = filter_instance._load_system_prompt(org_id=None)
+        assert "You are a security auditor for an AI proxy" in prompt_before
+
+        content_filter_db.content_filter_config.insert(
+            key="auditor_system_prompt",
+            value="FRESHLY CONFIGURED PROMPT",
+            organization_id=None,
+        )
+
+        prompt_after = filter_instance._load_system_prompt(org_id=None)
+        assert "FRESHLY CONFIGURED PROMPT" in prompt_after
 
 
 class TestLoadShieldgemmaPolicyNoDatabase:

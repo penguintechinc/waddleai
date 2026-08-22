@@ -889,14 +889,31 @@ class ContentFilter:
                 else:
                     conditions.append(self.db.content_filter_config.organization_id == None)  # noqa: E711 -- penguin-dal query expression, not a bool comparison
 
-                query = self.db(conditions[0])
+                # regression: mirrors the `_load_custom_rules` fix -- penguin_dal's
+                # QuerySet (penguin_dal/query.py) has no __call__, so `db(q1)`
+                # cannot be chained again as `query(q2)` (previously
+                # `query = db(q1); query = query(q2)` raised TypeError on every
+                # call, silently caught below, so a configured custom prompt
+                # was never applied). Combine conditions with `&` before the
+                # single db() call instead.
+                combined_condition = conditions[0]
                 for condition in conditions[1:]:
-                    query = query(condition)
+                    combined_condition = combined_condition & condition
 
                 # Order by org_id DESC to prioritize org-specific over global
-                rows = query.select(orderby=~self.db.content_filter_config.organization_id)
+                rows = self.db(combined_condition).select(
+                    orderby=~self.db.content_filter_config.organization_id
+                )
                 if rows:
-                    custom_body = rows[0].value
+                    row_value = rows[0].value
+                    if row_value:
+                        custom_body = row_value
+                    else:
+                        logger.warning(
+                            "Custom auditor prompt row found (org_id=%s) but its "
+                            "value is empty; falling back to default body",
+                            org_id,
+                        )
         except Exception as e:
             logger.warning(f"Failed to load custom auditor prompt: {e}")
 
