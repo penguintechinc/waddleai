@@ -2,6 +2,9 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from services.management.app.api.v1.llamacpp import _validate_model_filename, _validate_model_url
 from tests.unit.management.conftest import make_select_result
 
 
@@ -376,3 +379,298 @@ class TestExportManifest:
                 "/api/v1/llamacpp/deployments/1/export/k8s", headers=auth_headers
             )
         assert resp.content_type == "application/x-yaml"
+
+
+# ---------------------------------------------------------------------------
+# _validate_model_url / _validate_model_filename (Vuln D: command injection /
+# path traversal, security review 2026-07-26). Direct unit tests for the two
+# validators plus the routes that call them -- previously untested.
+# ---------------------------------------------------------------------------
+
+
+class TestValidateModelUrl:
+    """Direct unit tests for _validate_model_url."""
+
+    @pytest.mark.parametrize("char", list(";|&$`()\\\"'<>"))
+    def test_rejects_each_shell_metacharacter(self, char):
+        """Every character in the validator's shell_chars set is rejected."""
+        assert _validate_model_url(f"https://example.com/x{char}y") is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/model.gguf",
+            "http://example.com/model.gguf",
+            "https://cdn.example.com/path/to/model.gguf?x=1",
+        ],
+    )
+    def test_accepts_documented_good_shapes(self, url):
+        """Http and https URLs with no shell metacharacters are accepted.
+
+        Note: the validator accepts http:// as well as https:// -- there is
+        no https-only enforcement in the current implementation. See the PR
+        description for this as a reported (not fixed) finding.
+        """
+        assert _validate_model_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "",
+            "   ",
+            "ftp://example.com/model.gguf",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "example.com/model.gguf",
+            "//example.com/model.gguf",
+        ],
+    )
+    def test_rejects_non_http_schemes_and_empty(self, url):
+        """Empty strings and any non-http(s) scheme are rejected."""
+        assert _validate_model_url(url) is False
+
+    def test_embedded_newline_alone_is_accepted_known_gap(self):
+        r"""KNOWN GAP (not fixed here -- reported in the PR description, source untouched).
+
+        The rejected-character set (;|&$`()\"'<>) does not include a newline.
+        A URL with an embedded newline and none of those characters currently
+        passes validation. Locked in explicitly so a future fix to the
+        validator changes this assertion on purpose, not as a silent
+        behaviour change.
+        """
+        assert _validate_model_url("https://example.com/x\ny") is True
+
+
+class TestValidateModelFilename:
+    """Direct unit tests for _validate_model_filename."""
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "model.gguf",
+            "Llama-3.2-3B_Instruct.Q4_K_M.gguf",
+            "a",
+            "a.b.c-d_e",
+        ],
+    )
+    def test_accepts_documented_good_shapes(self, filename):
+        """Bare alphanumeric/dot/dash/underscore filenames are accepted."""
+        assert _validate_model_filename(filename) is True
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "",
+            "a/b",
+            "a\\b",
+            "/etc/passwd",
+            "../etc/passwd",
+            "~/model.gguf",
+            "model;rm -rf.gguf",
+            "model|cat.gguf",
+            "model&whoami.gguf",
+            "model$(whoami).gguf",
+            "model`whoami`.gguf",
+            "model<script>.gguf",
+            "model with space.gguf",
+        ],
+    )
+    def test_rejects_path_traversal_and_disallowed_characters(self, filename):
+        """Path separators, absolute/traversal paths, and disallowed characters are rejected."""
+        assert _validate_model_filename(filename) is False
+
+    def test_bare_dot_dot_is_accepted_known_gap(self):
+        """KNOWN GAP (not fixed here -- reported in the PR description, source untouched).
+
+        ".." contains no path separator and only characters in the allowed
+        set (dot), so it passes _validate_model_filename despite being the
+        canonical parent-directory traversal token. Locked in explicitly, not
+        silently accepted.
+        """
+        assert _validate_model_filename("..") is True
+
+
+class TestCreateDeploymentModelValidation:
+    """POST /api/v1/llamacpp/deployments -- model_url/model_filename rejection paths."""
+
+    async def test_create_invalid_model_url_returns_400(self, client, auth_headers):
+        """A model_url containing a shell metacharacter is rejected with 400."""
+        payload = {
+            "name": "bad-url",
+            "model_name": "llama-3.2-3b-instruct",
+            "model_url": "https://example.com/model.gguf; rm -rf /",
+        }
+        resp = await client.post("/api/v1/llamacpp/deployments", headers=auth_headers, json=payload)
+        assert resp.status_code == 400
+        assert "model_url" in (await resp.get_json())["error"]
+
+    async def test_create_invalid_model_filename_returns_400(self, client, auth_headers):
+        """A model_filename containing a path separator is rejected with 400."""
+        payload = {
+            "name": "bad-filename",
+            "model_name": "llama-3.2-3b-instruct",
+            "model_filename": "../../etc/passwd",
+        }
+        resp = await client.post("/api/v1/llamacpp/deployments", headers=auth_headers, json=payload)
+        assert resp.status_code == 400
+        assert "model_filename" in (await resp.get_json())["error"]
+
+
+class TestUpdateDeploymentModelValidation:
+    """PATCH /api/v1/llamacpp/deployments/<id> -- model_url/model_filename validation."""
+
+    async def test_update_invalid_model_url_returns_400(self, client, app_mock_db, auth_headers):
+        """A PATCH with a shell-metacharacter model_url is rejected with 400."""
+        dep = _mock_deployment(status="stopped")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        resp = await client.patch(
+            "/api/v1/llamacpp/deployments/1",
+            headers=auth_headers,
+            json={"model_url": "https://example.com/model.gguf`whoami`"},
+        )
+        assert resp.status_code == 400
+        assert "model_url" in (await resp.get_json())["error"]
+
+    async def test_update_invalid_model_filename_returns_400(
+        self, client, app_mock_db, auth_headers
+    ):
+        """A PATCH with a path-traversal model_filename is rejected with 400."""
+        dep = _mock_deployment(status="stopped")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        resp = await client.patch(
+            "/api/v1/llamacpp/deployments/1",
+            headers=auth_headers,
+            json={"model_filename": "../evil.gguf"},
+        )
+        assert resp.status_code == 400
+        assert "model_filename" in (await resp.get_json())["error"]
+
+    async def test_update_with_no_recognized_fields_skips_db_write(
+        self, client, app_mock_db, auth_headers
+    ):
+        """A PATCH payload with no allowed keys returns 200 without touching the DB."""
+        dep = _mock_deployment(status="stopped")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        resp = await client.patch(
+            "/api/v1/llamacpp/deployments/1",
+            headers=auth_headers,
+            json={"unrecognized_field": "value"},
+        )
+        assert resp.status_code == 200
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_update_empty_model_url_skips_validation(self, client, app_mock_db, auth_headers):
+        """An empty-string model_url in the PATCH body is falsy, so validation is skipped."""
+        dep = _mock_deployment(status="stopped")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        resp = await client.patch(
+            "/api/v1/llamacpp/deployments/1",
+            headers=auth_headers,
+            json={"model_url": "  "},
+        )
+        assert resp.status_code == 200
+
+    async def test_update_empty_model_filename_skips_validation(
+        self, client, app_mock_db, auth_headers
+    ):
+        """An empty-string model_filename in the PATCH body is falsy, so validation is skipped."""
+        dep = _mock_deployment(status="stopped")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        resp = await client.patch(
+            "/api/v1/llamacpp/deployments/1",
+            headers=auth_headers,
+            json={"model_filename": "  "},
+        )
+        assert resp.status_code == 200
+
+
+class TestDeleteDeploymentForceErrorHandling:
+    """DELETE ...?force=true -- a manager exception during forced removal is swallowed."""
+
+    async def test_force_delete_manager_exception_still_deletes_row(
+        self, client, app_mock_db, auth_headers
+    ):
+        """remove_daemonset raising on a forced delete is logged, not fatal -- row is deleted."""
+        dep = _mock_deployment(status="running", deployment_type="kubernetes")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
+            mock_mgr = MagicMock()
+            mock_mgr.remove_daemonset.side_effect = Exception("k8s unreachable")
+            mock_mgr_class.return_value = mock_mgr
+            resp = await client.delete(
+                "/api/v1/llamacpp/deployments/1?force=true", headers=auth_headers
+            )
+        assert resp.status_code == 200
+        app_mock_db.return_value.delete.assert_called_once()
+
+
+class TestRemoveRouteErrorHandling:
+    """POST .../remove -- a manager exception is translated into a 503."""
+
+    async def test_remove_kubernetes_manager_exception_returns_503(
+        self, client, app_mock_db, auth_headers
+    ):
+        """remove_daemonset raising during remove returns 503 with the error message."""
+        dep = _mock_deployment(status="running", deployment_type="kubernetes")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
+            mock_mgr = MagicMock()
+            mock_mgr.remove_daemonset.side_effect = Exception("k8s unreachable")
+            mock_mgr_class.return_value = mock_mgr
+            resp = await client.post("/api/v1/llamacpp/deployments/1/remove", headers=auth_headers)
+        assert resp.status_code == 503
+        assert "k8s unreachable" in (await resp.get_json())["error"]
+
+
+class TestHealthRouteErrorHandling:
+    """GET .../health -- a request exception is reported as unhealthy, not a 500."""
+
+    async def test_health_check_request_exception_returns_unhealthy(
+        self, client, app_mock_db, auth_headers
+    ):
+        """requests.get raising is caught and reported as status=unhealthy with the error text."""
+        dep = _mock_deployment(status="running")
+        dep.endpoint_url = "http://localhost:8080"
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        with patch("services.management.app.api.v1.llamacpp.requests") as mock_requests:
+            mock_requests.get.side_effect = Exception("connection refused")
+            resp = await client.get("/api/v1/llamacpp/deployments/1/health", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["status"] == "unhealthy"
+        assert "connection refused" in data["error"]
+
+
+class TestAuthorizationBoundary:
+    """Scope-boundary coverage.
+
+    LLAMACPP_ADMIN is a global-admin-only permission (shared/auth/rbac.py) --
+    resource_manager and plain user roles never hold it. llamacpp_deployments
+    has no org_id column (see services/management/app/models_sqlalchemy.py)
+    and Role.ADMIN is a single system-wide role, not per-org, so there is no
+    cross-org 403/404 case to test here: the resource is platform-global by
+    design, not tenant-scoped (see the PR description). The scope check below
+    is the equivalent authorization boundary that does apply.
+    """
+
+    async def test_list_resource_manager_forbidden(self, client, rm_auth_headers):
+        """resource_manager cannot list deployments -- 403."""
+        resp = await client.get("/api/v1/llamacpp/deployments", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_list_plain_user_forbidden(self, client, user_auth_headers):
+        """A plain user cannot list deployments -- 403."""
+        resp = await client.get("/api/v1/llamacpp/deployments", headers=user_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_create_resource_manager_forbidden(self, client, rm_auth_headers):
+        """resource_manager cannot create a deployment -- 403, before any validation runs."""
+        resp = await client.post(
+            "/api/v1/llamacpp/deployments", headers=rm_auth_headers, json={"name": "x"}
+        )
+        assert resp.status_code == 403
+
+    async def test_delete_resource_manager_forbidden(self, client, rm_auth_headers):
+        """resource_manager cannot delete a deployment -- 403."""
+        resp = await client.delete("/api/v1/llamacpp/deployments/1", headers=rm_auth_headers)
+        assert resp.status_code == 403
