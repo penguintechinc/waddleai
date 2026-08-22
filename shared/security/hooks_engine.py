@@ -195,7 +195,9 @@ class HooksPolicyEngine:
         """Call the existing §8 engine against `matchable_text`, bounded by its own timeout."""
         if self.security_policy_resolver is None:
             return HookEvaluation(
-                decision="allow", reason="Tier 2 misconfigured (no policy resolver)", rule_id=None,
+                decision="allow",
+                reason="Tier 2 misconfigured (no policy resolver)",
+                rule_id=None,
                 tier="default",
             )
         try:

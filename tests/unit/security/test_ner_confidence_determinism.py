@@ -30,6 +30,7 @@ installed:
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from concurrent.futures import Future
@@ -41,11 +42,28 @@ import pytest
 from shared.security import content_filter as content_filter_module
 from shared.security.content_filter import ContentFilter
 
+# Captured before any fixture monkeypatches it, so the passthrough branch
+# below calls the real implementation rather than recursing.
+_real_find_spec = importlib.util.find_spec
+
 # ── Layer 1: NERFilter backend-selection seam ───────────────────────────────
 # Fake presidio/transformers modules matching the real libraries' call
 # shapes closely enough to exercise NERFilter._init_presidio /
 # _init_transformers and _analyze_presidio / _analyze_transformers for real,
 # without installing either dependency or loading a real model.
+
+
+class _LicensedForNER:
+    """Licence stub entitling the NER tier.
+
+    The NER tier is licence-gated (ContentFilter._ner_tier_enabled); the
+    ungated pattern tiers are unaffected. Tests that assert on ner:* rules
+    must therefore supply an entitlement, otherwise they are asserting a
+    feature the filter has correctly switched off.
+    """
+
+    def check_feature(self, _feature: str) -> bool:
+        return True
 
 
 def _install_fake_presidio(monkeypatch: pytest.MonkeyPatch, entities: list[dict]) -> Any:
@@ -54,6 +72,17 @@ def _install_fake_presidio(monkeypatch: pytest.MonkeyPatch, entities: list[dict]
     Each entity dict needs entity_type/start/end/score; mirrors the
     attributes `_analyze_presidio` reads off Presidio's `RecognizerResult`.
     """
+    # _init_presidio() now checks the spaCy model is importable before it
+    # builds an engine, because NlpEngineProvider.create_engine() FETCHES a
+    # missing model (~600MB) instead of failing fast. The engine below is a
+    # stub that never touches spaCy, so the precondition is satisfied here
+    # rather than requiring the real model to be installed -- CI installs no
+    # spaCy model at all.
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name.startswith("en_core_web") else _real_find_spec(name),
+    )
 
     class _Result:
         def __init__(self, entity_type: str, start: int, end: int, score: float) -> None:
@@ -97,7 +126,15 @@ def _install_fake_transformers(monkeypatch: pytest.MonkeyPatch, entities: list[d
     Each entity dict needs entity_group/word/start/end/score, mirroring the
     HF `pipeline("ner", aggregation_strategy="simple")` output shape that
     `_analyze_transformers` reads.
+
+    Also opts in to the transformers backend. `_init_transformers` is gated
+    behind WADDLEAI_NER_ALLOW_DOWNLOAD because the real pipeline() fetches a
+    model from the HuggingFace Hub with no timeout, which stalled CI
+    indefinitely. Nothing is fetched here -- the pipeline installed below is a
+    stub -- so the gate is opened deliberately to exercise the code path the
+    stub stands in for.
     """
+    monkeypatch.setenv("WADDLEAI_NER_ALLOW_DOWNLOAD", "1")
 
     class _Pipeline:
         def __call__(self, _text: str) -> list[dict]:
@@ -262,7 +299,7 @@ def _make_filter(
     of round-tripping through a real forked worker (see `_InlineExecutor`).
     """
     monkeypatch.setenv("WADDLEAI_STUB_UPSTREAM", "1")
-    cf = ContentFilter(db=None)
+    cf = ContentFilter(db=None, license_client=_LicensedForNER())
     cf.ner_filter = _FakeNERFilter(mode=backend)  # type: ignore[assignment]
 
     def _fake_ner_analyze(_text: str) -> list[dict]:
@@ -450,7 +487,7 @@ class TestNERBackendObservability:
     ) -> None:
         """With NER unavailable, ner_backend is 'none', not silently omitted."""
         monkeypatch.setenv("WADDLEAI_STUB_UPSTREAM", "1")
-        cf = ContentFilter(db=None)
+        cf = ContentFilter(db=None, license_client=_LicensedForNER())
         assert cf.ner_filter is None
 
         result = await cf.filter_input("hello world")

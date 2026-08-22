@@ -20,9 +20,10 @@ from proxy.apps.proxy_server.pipeline.stages import (
     SecurityOutStage,
 )
 from shared.security.bypass import BYPASS_SCOPE, BypassGrant, BypassResolver, BypassStore
+from shared.security.intent_classifier import IntentResult
 from shared.security.output_guardrails import OutputGuardrails
-from shared.security.policy_engine import SecurityPolicyEngine
-from shared.security.policy_resolver import PolicyResolver, _CandidateRow
+from shared.security.policy_engine import SecurityPolicyEngine, SecurityVerdict
+from shared.security.policy_resolver import PolicyResolver, ResolvedPolicy, _CandidateRow
 
 
 class _StubCF:
@@ -204,6 +205,106 @@ class TestSecurityInStageBypass:
         assert result.messages[0]["content"] == "ssn 123-45-6789"  # untouched
 
 
+class TestSecurityInStageIntentClassifier:
+    """(§8.3) intent_classifier escalates/overrides the policy-engine verdict."""
+
+    @pytest.mark.asyncio
+    async def test_intent_flag_upgrades_allow_but_does_not_block(self) -> None:
+        """An intent 'flag' verdict upgrades a policy-engine 'allow' but never blocks."""
+        scanner = Mock(
+            scan_messages=Mock(return_value=([], None)), should_block=Mock(return_value=False)
+        )
+        policy_resolver = Mock()
+        policy_resolver.resolve = AsyncMock(
+            return_value=ResolvedPolicy(intent_classifier_enabled=True)
+        )
+        policy_engine = Mock()
+        policy_engine.evaluate = AsyncMock(
+            return_value=SecurityVerdict(action="allow", filtered_text="hi")
+        )
+        intent_classifier = Mock()
+        intent_classifier.classify = AsyncMock(return_value=IntentResult(action="flag"))
+
+        stage = SecurityInStage(
+            "security_in",
+            scanner,
+            Mock(),
+            policy_resolver=policy_resolver,
+            policy_engine=policy_engine,
+            intent_classifier=intent_classifier,
+            features=_AlwaysFeaturesOn(),
+        )
+        ctx = _ctx(messages=[{"role": "user", "content": "hi"}])
+
+        result = await stage(ctx)
+
+        intent_classifier.classify.assert_awaited_once()
+        assert result.blocked is False
+        assert result.messages[0]["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_intent_block_overrides_policy_engine_allow(self) -> None:
+        """An intent 'block' verdict overrides a policy-engine 'allow' and blocks."""
+        scanner = Mock(
+            scan_messages=Mock(return_value=([], None)), should_block=Mock(return_value=False)
+        )
+        policy_resolver = Mock()
+        policy_resolver.resolve = AsyncMock(
+            return_value=ResolvedPolicy(intent_classifier_enabled=True)
+        )
+        policy_engine = Mock()
+        policy_engine.evaluate = AsyncMock(
+            return_value=SecurityVerdict(action="allow", filtered_text="hi")
+        )
+        intent_classifier = Mock()
+        intent_classifier.classify = AsyncMock(return_value=IntentResult(action="block"))
+
+        stage = SecurityInStage(
+            "security_in",
+            scanner,
+            Mock(),
+            policy_resolver=policy_resolver,
+            policy_engine=policy_engine,
+            intent_classifier=intent_classifier,
+            features=_AlwaysFeaturesOn(),
+        )
+        ctx = _ctx(messages=[{"role": "user", "content": "hi"}])
+
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 400
+        assert result.block_reason == "security_v2_blocked"
+
+    @pytest.mark.asyncio
+    async def test_degraded_verdict_sets_ctx_security_degraded(self) -> None:
+        """A degraded SecurityVerdict propagates to ctx.security_degraded (no intent_classifier)."""
+        scanner = Mock(
+            scan_messages=Mock(return_value=([], None)), should_block=Mock(return_value=False)
+        )
+        policy_resolver = Mock()
+        policy_resolver.resolve = AsyncMock(return_value=ResolvedPolicy())
+        policy_engine = Mock()
+        policy_engine.evaluate = AsyncMock(
+            return_value=SecurityVerdict(action="allow", filtered_text="hi", degraded=True)
+        )
+
+        stage = SecurityInStage(
+            "security_in",
+            scanner,
+            Mock(),
+            policy_resolver=policy_resolver,
+            policy_engine=policy_engine,
+            features=_AlwaysFeaturesOn(),
+        )
+        ctx = _ctx(messages=[{"role": "user", "content": "hi"}])
+
+        result = await stage(ctx)
+
+        assert result.security_degraded is True
+        assert result.blocked is False
+
+
 class TestSecurityOutStageV2Wiring:
     """(b): SecurityOutStage runs output guardrails under the resolved policy."""
 
@@ -230,6 +331,100 @@ class TestSecurityOutStageV2Wiring:
 
         real_content_filter.filter_output.assert_not_awaited()
         assert "[REDACTED]" in result.response_text
+
+    @pytest.mark.asyncio
+    async def test_flag_off_uses_v1_path_even_with_guardrails_wired(self) -> None:
+        """Flag-off never touches OutputGuardrails, even wired -- v1 content_filter runs instead."""
+        resolver = PolicyResolver(_AllowAllStore())
+        guardrails = Mock()
+        guardrails.scan_output = AsyncMock()
+        real_content_filter = Mock()
+        real_content_filter.filter_output = AsyncMock(
+            return_value=SimpleNamespace(allowed=True, filtered_text="clean", violations=[])
+        )
+
+        stage = SecurityOutStage(
+            "security_out",
+            real_content_filter,
+            output_guardrails=guardrails,
+            policy_resolver=resolver,
+            features=_AlwaysFeaturesOff(),
+        )
+        ctx = _ctx(response_text="ssn 123-45-6789")
+
+        result = await stage(ctx)
+
+        guardrails.scan_output.assert_not_awaited()
+        real_content_filter.filter_output.assert_awaited()
+        assert result.response_text == "clean"
+
+    @pytest.mark.asyncio
+    async def test_v2_scan_output_type_error_fails_closed(self) -> None:
+        """A programming-error TypeError from scan_output blocks the response (fail CLOSED)."""
+        resolver = PolicyResolver(_AllowAllStore())
+        guardrails = Mock()
+        guardrails.scan_output = AsyncMock(side_effect=TypeError("bad kwargs"))
+
+        stage = SecurityOutStage(
+            "security_out",
+            Mock(),
+            output_guardrails=guardrails,
+            policy_resolver=resolver,
+            features=_AlwaysFeaturesOn(),
+        )
+        ctx = _ctx(response_text="hello there")
+
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 500
+        assert result.block_reason == "output_filter_defect"
+
+    @pytest.mark.asyncio
+    async def test_v2_degraded_verdict_sets_ctx_security_degraded(self) -> None:
+        """A degraded verdict from OutputGuardrails propagates to ctx.security_degraded."""
+        resolver = PolicyResolver(_AllowAllStore())
+        verdict = SecurityVerdict(action="allow", filtered_text="clean text", degraded=True)
+        guardrails = Mock()
+        guardrails.scan_output = AsyncMock(return_value=verdict)
+
+        stage = SecurityOutStage(
+            "security_out",
+            Mock(),
+            output_guardrails=guardrails,
+            policy_resolver=resolver,
+            features=_AlwaysFeaturesOn(),
+        )
+        ctx = _ctx(response_text="hello")
+
+        result = await stage(ctx)
+
+        assert result.security_degraded is True
+        assert result.blocked is False
+        assert result.response_text == "clean text"
+
+    @pytest.mark.asyncio
+    async def test_v2_block_verdict_blocks_response(self) -> None:
+        """A 'block' verdict from OutputGuardrails blocks the response."""
+        resolver = PolicyResolver(_AllowAllStore())
+        verdict = SecurityVerdict(action="block", filtered_text="")
+        guardrails = Mock()
+        guardrails.scan_output = AsyncMock(return_value=verdict)
+
+        stage = SecurityOutStage(
+            "security_out",
+            Mock(),
+            output_guardrails=guardrails,
+            policy_resolver=resolver,
+            features=_AlwaysFeaturesOn(),
+        )
+        ctx = _ctx(response_text="sensitive stuff")
+
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 400
+        assert result.block_reason == "security_v2_output_blocked"
 
 
 class TestDispatchStageUpstreamFilter:
@@ -275,3 +470,84 @@ class TestDispatchStageUpstreamFilter:
 
         assert calls == ["commercial"]
         assert "[REDACTED]" in result.messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_upstream_filter_skipped_when_flag_off(self) -> None:
+        """Flag-off never invokes the security_v2 upstream filter, even when wired."""
+        resolver = PolicyResolver(_AllowAllStore())
+        calls: list[str] = []
+
+        class _StubUpstreamFilter:
+            async def apply(self, text, resolved, destination_kind, ctx=None):
+                calls.append(destination_kind)
+                return SimpleNamespace(text=text, mapping_id=None, counts={})
+
+            async def depseudonymize(self, text, mapping_id):
+                return text
+
+            async def cleanup(self, mapping_id):
+                pass
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4"))
+        connector = Mock()
+        connector.chat_completion = AsyncMock(
+            return_value=("ok", {"input_tokens": 1, "output_tokens": 1, "finish_reason": "stop"})
+        )
+
+        stage = DispatchStage(
+            "dispatch",
+            router,
+            {"openai": connector},
+            upstream_filter=_StubUpstreamFilter(),
+            policy_resolver=resolver,
+            features=_AlwaysFeaturesOff(),
+        )
+        ctx = _ctx(messages=[{"role": "user", "content": "ssn 123-45-6789"}])
+
+        result = await stage(ctx)
+
+        assert calls == []  # upstream filter never invoked
+        assert result.messages[0]["content"] == "ssn 123-45-6789"  # untouched
+
+    @pytest.mark.asyncio
+    async def test_upstream_mapping_id_depseudonymized_and_cleaned_up_after_dispatch(self) -> None:
+        """A mapping_id stashed during pre-dispatch filtering is depseudonymized, then dropped."""
+        resolver = PolicyResolver(_AllowAllStore())
+        cleanup_calls: list[str] = []
+
+        class _StubUpstreamFilter:
+            async def apply(self, text, resolved, destination_kind, ctx=None):
+                return SimpleNamespace(text=text, mapping_id="map-123", counts={})
+
+            async def depseudonymize(self, text, mapping_id):
+                return f"{text}[depseudo:{mapping_id}]"
+
+            async def cleanup(self, mapping_id):
+                cleanup_calls.append(mapping_id)
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4"))
+        connector = Mock()
+        connector.chat_completion = AsyncMock(
+            return_value=(
+                "raw response",
+                {"input_tokens": 1, "output_tokens": 1, "finish_reason": "stop"},
+            )
+        )
+
+        stage = DispatchStage(
+            "dispatch",
+            router,
+            {"openai": connector},
+            upstream_filter=_StubUpstreamFilter(),
+            policy_resolver=resolver,
+            features=_AlwaysFeaturesOn(),
+        )
+        ctx = _ctx(messages=[{"role": "user", "content": "hi"}])
+
+        result = await stage(ctx)
+
+        assert result.response_text == "raw response[depseudo:map-123]"
+        assert result.upstream_mapping_id is None
+        assert cleanup_calls == ["map-123"]

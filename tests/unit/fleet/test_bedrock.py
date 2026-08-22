@@ -151,7 +151,9 @@ async def test_deprovision_full_lifecycle_deletes(bedrock_backend) -> None:
     with patch("shared.fleet.bedrock.boto3") as mock_boto3:
         mock_boto3.client.return_value = mock_client
         await bedrock_backend.deprovision("node-a")
-    mock_client.delete_provisioned_model_throughput.assert_called_once_with(provisionedModelId="node-a")
+    mock_client.delete_provisioned_model_throughput.assert_called_once_with(
+        provisionedModelId="node-a"
+    )
 
 
 async def test_deprovision_already_gone_is_noop(bedrock_backend) -> None:

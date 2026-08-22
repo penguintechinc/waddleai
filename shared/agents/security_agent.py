@@ -1,6 +1,6 @@
-"""
-Security Agent — threat evaluation combining RAG pattern matching with
-the existing PromptSecurityScanner regex engine.
+"""Security Agent — threat evaluation combining RAG pattern matching with.
+
+The existing PromptSecurityScanner regex engine.
 
 For every inbound command / prompt the agent:
 
@@ -13,7 +13,6 @@ For every inbound command / prompt the agent:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
 
 from shared.security.prompt_security import Action, PromptSecurityScanner, ThreatDetection
 from shared.utils.rag_integration import PgvectorRAGStore, SearchResult
@@ -47,10 +46,10 @@ class SecurityDecision:
 
     safe: bool
     risk_score: float
-    threat_type: Optional[str]
+    threat_type: str | None
     explanation: str
     blocked: bool
-    matched_patterns: List[str]
+    matched_patterns: list[str]
 
 
 class SecurityAgent:
@@ -68,9 +67,15 @@ class SecurityAgent:
             scanner and the RAG store).
         embedding_manager: An :class:`EmbeddingManager` used by the
             PgvectorRAGStore for vector similarity search.
+
     """
 
     def __init__(self, db, embedding_manager) -> None:  # type: ignore[type-arg]
+        """Wire up the regex scanner and RAG store against *db*.
+
+        Uses the "balanced" policy for the regex layer; see class docstring
+        for argument details.
+        """
         self._scanner = PromptSecurityScanner(db, policy_name="balanced")
         self._rag_store = PgvectorRAGStore(
             write_db=db,
@@ -82,7 +87,7 @@ class SecurityAgent:
         self,
         raw_command: str,
         tool_type: str,
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
     ) -> SecurityDecision:
         """Analyse *raw_command* for security threats.
 
@@ -93,6 +98,7 @@ class SecurityAgent:
 
         Returns:
             A :class:`SecurityDecision` summarising the risk assessment.
+
         """
         # ------------------------------------------------------------------
         # Layer 1 — regex-based scanner
@@ -149,7 +155,7 @@ class SecurityAgent:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _regex_risk_score(threats: List[ThreatDetection]) -> float:
+    def _regex_risk_score(threats: list[ThreatDetection]) -> float:
         """Compute a [0, 1] risk score from regex-based detections."""
         if not threats:
             return 0.0
@@ -158,16 +164,20 @@ class SecurityAgent:
         blocked_count = sum(1 for t in threats if t.suggested_action == Action.BLOCK)
         threat_count_factor = min(len(threats) / 5.0, 1.0)
 
-        score = max_confidence * 0.50 + (blocked_count / max(len(threats), 1)) * 0.30 + threat_count_factor * 0.20
+        score = (
+            max_confidence * 0.50
+            + (blocked_count / max(len(threats), 1)) * 0.30
+            + threat_count_factor * 0.20
+        )
         return min(score, 1.0)
 
     async def _rag_risk_score(
         self,
         text: str,
-    ) -> tuple[float, List[SearchResult]]:
+    ) -> tuple[float, list[SearchResult]]:
         """Search the threat RAG collection and derive a risk score."""
         try:
-            results: List[SearchResult] = await self._rag_store.search(
+            results: list[SearchResult] = await self._rag_store.search(
                 query=text,
                 collection=_THREAT_COLLECTION,
                 organization_id=0,
@@ -194,9 +204,9 @@ class SecurityAgent:
 
     @staticmethod
     def _dominant_threat(
-        scanner_threats: List[ThreatDetection],
-        rag_matches: List[SearchResult],
-    ) -> Optional[str]:
+        scanner_threats: list[ThreatDetection],
+        rag_matches: list[SearchResult],
+    ) -> str | None:
         """Pick the single most relevant threat label."""
         if scanner_threats:
             # Highest-confidence regex threat
@@ -223,8 +233,8 @@ class SecurityAgent:
         sensitivity: float,
         risk_score: float,
         blocked: bool,
-        scanner_threats: List[ThreatDetection],
-        rag_matches: List[SearchResult],
+        scanner_threats: list[ThreatDetection],
+        rag_matches: list[SearchResult],
         tool_type: str,
     ) -> str:
         """Construct a human-readable explanation string."""
@@ -247,6 +257,6 @@ class SecurityAgent:
 
         if rag_matches:
             top_sim = rag_matches[0].score
-            parts.append(f"RAG matches: {len(rag_matches)} " f"(top similarity={top_sim:.2f}).")
+            parts.append(f"RAG matches: {len(rag_matches)} (top similarity={top_sim:.2f}).")
 
         return " ".join(parts)

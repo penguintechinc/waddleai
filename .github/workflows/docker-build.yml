@@ -50,6 +50,17 @@ on:
       - '.pre-commit-config.yaml'
       - '.version'
       - '.github/workflows/docker-build.yml'
+  release:
+    # Five-tier model (devops.md CI/CD Tag Naming): a pre-release maps to the
+    # gamma tier, a full release to prod. `release` events don't support
+    # `paths:` filtering, so these always run regardless of what changed --
+    # acceptable, a release/pre-release is a deliberate, infrequent action.
+    # Deliberately NOT `published` -- that type fires for pre-releases too,
+    # which would let a gamma pre-release slip through the prod path.
+    types: [ prereleased, released ]
+
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
@@ -58,6 +69,123 @@ env:
   IMAGE_NAME_OLLAMA: ${{ github.repository }}/ollama
 
 jobs:
+  # Single source of truth for the five-tier model (devops.md CI/CD Tag
+  # Naming): every other job reads tier/tag_prefix/push/epoch64/semver from
+  # here instead of re-deriving them from github.ref. This also fixes a
+  # latent bug -- build-platform, merge-manifests, and build-ollama-image
+  # each used to generate their own independent `date +%s` epoch64, so the
+  # per-arch tags merge-manifests tried to merge were never the ones
+  # build-platform had actually pushed.
+  determine-tier:
+    name: Determine release tier
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      tag_prefix: ${{ steps.tier.outputs.tag_prefix }}
+      push: ${{ steps.tier.outputs.push }}
+      epoch64: ${{ steps.tier.outputs.epoch64 }}
+      semver: ${{ steps.tier.outputs.semver }}
+      version_changed: ${{ steps.tier.outputs.version_changed }}
+      release_tag: ${{ steps.tier.outputs.release_tag }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        fetch-depth: 0
+        # This job only reads .version and diffs git history -- never pushes
+        # -- so the checkout token doesn't need to persist (avoids a new
+        # zizmor artipacked finding the rest of this file already carries).
+        persist-credentials: false
+
+    - name: Determine tier, tag prefix, push flag, epoch and version
+      id: tier
+      # Values reach the script through env, not ${{ }} interpolation --
+      # matches the pattern already established below in merge-manifests'
+      # "Determine manifest tags" step (template injection / SC2193).
+      env:
+        REF: ${{ github.ref }}
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_ACTION: ${{ github.event.action }}
+        RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+        EPOCH64=$(date +%s)
+
+        if [ -f .version ]; then
+          VERSION=$(tr -d '[:space:]' < .version)
+          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
+          if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
+            VERSION_CHANGED=true
+          else
+            VERSION_CHANGED=false
+          fi
+        else
+          SEMVER=0.0.0
+          VERSION_CHANGED=false
+        fi
+
+        # release_tag is only meaningful for the prod tier (release: released)
+        # -- the exact tag name off the GitHub Release, e.g. "v1.2.3".
+        if [ -n "$RELEASE_TAG_NAME" ]; then
+          RELEASE_TAG="$RELEASE_TAG_NAME"
+        else
+          RELEASE_TAG="$REF_NAME"
+        fi
+
+        # Five-tier decision -- the ONLY place branch/event -> tier mapping
+        # happens in this workflow.
+        if [ "$EVENT_NAME" = "release" ] && [ "$EVENT_ACTION" = "released" ]; then
+          TIER=prod; TAG_PREFIX="prod"; PUSH=true
+        elif [ "$EVENT_NAME" = "release" ] && [ "$EVENT_ACTION" = "prereleased" ]; then
+          TIER=gamma; TAG_PREFIX="gamma"; PUSH=true
+        elif [ "$REF" = "refs/heads/main" ]; then
+          TIER=beta; TAG_PREFIX="beta"; PUSH=true
+        elif [[ "$REF" == refs/tags/v* ]]; then
+          # Raw `git push --tags` (no GitHub Release object). Kept building
+          # for compile-test/security-scan coverage, deliberately NOT treated
+          # as prod -- prod is gated on the release:released event only. See
+          # the "release" job below for the pre-existing tag->GH-Release path.
+          TIER=alpha; TAG_PREFIX="alpha"; PUSH=true
+        elif [[ "$REF" == refs/heads/release/v* || "$REF" == refs/heads/v* ]]; then
+          TIER=alpha; TAG_PREFIX="alpha"; PUSH=true
+        else
+          # feature/ fix/ chore/ hotfix/ docs/ refactor/ branches, and any
+          # other non-release branch: pre-alpha -- build only, never push.
+          TIER=prealpha; TAG_PREFIX="prealpha"; PUSH=false
+        fi
+
+        {
+          echo "epoch64=$EPOCH64"
+          echo "semver=$SEMVER"
+          echo "version_changed=$VERSION_CHANGED"
+          echo "release_tag=$RELEASE_TAG"
+          echo "tier=$TIER"
+          echo "tag_prefix=$TAG_PREFIX"
+          echo "push=$PUSH"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Fail-closed prod version gate
+      # Runs before any prod image push. Accepts v1.2.3, 1.2.3, or
+      # 1.2.3.<epoch64>; unparseable or missing -> exit 1; major < 1 -> exit 1
+      # (this repo is v0.2.0, so this correctly refuses every prod build
+      # until v1.0.0 is tagged).
+      if: steps.tier.outputs.tier == 'prod'
+      env:
+        RAW_TAG: ${{ steps.tier.outputs.release_tag }}
+      run: |
+        set -euo pipefail
+        if [[ "$RAW_TAG" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]]; then
+          MAJOR="${BASH_REMATCH[1]}"
+        else
+          echo "::error::prod release tag '$RAW_TAG' does not match v{Major}.{Minor}.{Patch}[.{build}] -- refusing to build a prod image"
+          exit 1
+        fi
+        if [ "$MAJOR" -lt 1 ]; then
+          echo "::error::prod release tag '$RAW_TAG' has major version $MAJOR < 1 -- fail-closed, refusing to build a prod image"
+          exit 1
+        fi
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -114,7 +242,19 @@ jobs:
 
     - name: Run unit tests
       run: |
-        python -m pytest tests/unit/ -v --cov=shared --cov-report=xml --cov-report=html
+        # --cov sources come from pytest.ini's addopts (shared,
+        # services/management/app, proxy) so CI measures the identical
+        # surface as `make test-unit` locally -- previously this step's
+        # explicit --cov=shared silently narrowed the *reported* subset
+        # Codecov saw, even though pytest.ini's addopts always contributed
+        # extra --cov/--cov-report values on top of it (pytest-cov
+        # accumulates repeated options, it doesn't let a later flag replace
+        # an earlier one). No --cov-report=html here: Codecov consumes
+        # coverage.xml, nothing in CI reads the HTML render, and pytest.ini
+        # no longer defaults to html (moved to `make test-unit` for local
+        # dev only) so generating both never holds a second copy of the
+        # coverage data in memory while torch/transformers are resident.
+        python -m pytest tests/unit/ -q --cov-report=xml
       env:
         PYTHONPATH: ${{ github.workspace }}
 
@@ -346,7 +486,7 @@ jobs:
         PYTHONPATH: ${{ github.workspace }}
 
   build-platform:
-    needs: [test, test-webui, openapi-lint, test-contract, test-integration, test-e2e]
+    needs: [determine-tier, test, test-webui, openapi-lint, test-contract, test-integration, test-e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -373,30 +513,6 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Generate epoch64 timestamp
-      id: timestamp
-      run: |
-        EPOCH64=$(date +%s)
-        echo "epoch64=$EPOCH64" >> "$GITHUB_OUTPUT"
-
-    - name: Check version file
-      id: version
-      run: |
-        if [ -f .version ]; then
-          VERSION=$(tr -d '[:space:]' < .version)
-          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
-          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
-
-          if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-        else
-          echo "semver=0.0.0" >> "$GITHUB_OUTPUT"
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Set up QEMU
       uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
 
@@ -404,7 +520,7 @@ jobs:
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
 
     - name: Log in to Container Registry
-      if: github.event_name != 'pull_request'
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
       with:
         registry: ${{ env.REGISTRY }}
@@ -424,11 +540,11 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
         tags: |
-          type=raw,value=${{ steps.version.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed == 'true' }}
-          type=raw,value=${{ steps.version.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
-          type=raw,value=beta-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
-          type=raw,value=gamma-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
-          type=raw,value=alpha-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-alpha,enable=${{ needs.determine-tier.outputs.tier == 'alpha' && needs.determine-tier.outputs.version_changed == 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ needs.determine-tier.outputs.tier == 'beta' && needs.determine-tier.outputs.version_changed == 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ needs.determine-tier.outputs.tier == 'gamma' }}
+          type=raw,value=${{ needs.determine-tier.outputs.tag_prefix }}-${{ needs.determine-tier.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier != 'prod' }}
+          type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
           type=sha,prefix=ci-${{ steps.arch.outputs.suffix }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
 
     - name: Build and push Docker image for ${{ matrix.platform }}
@@ -437,7 +553,7 @@ jobs:
         context: ${{ matrix.context || '.' }}
         file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
         platforms: ${{ matrix.platform }}
-        push: ${{ github.event_name != 'pull_request' }}
+        push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha,scope=${{ matrix.service }}-${{ steps.arch.outputs.suffix }}
@@ -447,12 +563,14 @@ jobs:
           VCS_REF=${{ github.sha }}
 
   merge-manifests:
-    needs: build-platform
+    needs: [determine-tier, build-platform]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    if: github.event_name != 'pull_request'
+    # Nothing to merge when build-platform didn't push (pre-alpha branches) --
+    # the per-arch source tags below were never uploaded to the registry.
+    if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -463,30 +581,6 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
-
-    - name: Generate epoch64 timestamp
-      id: timestamp
-      run: |
-        EPOCH64=$(date +%s)
-        echo "epoch64=$EPOCH64" >> "$GITHUB_OUTPUT"
-
-    - name: Check version file
-      id: version
-      run: |
-        if [ -f .version ]; then
-          VERSION=$(tr -d '[:space:]' < .version)
-          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
-          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
-
-          if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-        else
-          echo "semver=0.0.0" >> "$GITHUB_OUTPUT"
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-        fi
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -506,38 +600,53 @@ jobs:
       # cannot parse ${{ }} so it reported every [[ ... == ref/... ]] here as
       # a comparison that "can never be equal" (SC2193).
       env:
-        REF: ${{ github.ref }}
-        REF_NAME: ${{ github.ref_name }}
         IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
-        SEMVER: ${{ steps.version.outputs.semver }}
-        VERSION_CHANGED: ${{ steps.version.outputs.changed }}
-        EPOCH64: ${{ steps.timestamp.outputs.epoch64 }}
+        TIER: ${{ needs.determine-tier.outputs.tier }}
+        TAG_PREFIX: ${{ needs.determine-tier.outputs.tag_prefix }}
+        SEMVER: ${{ needs.determine-tier.outputs.semver }}
+        VERSION_CHANGED: ${{ needs.determine-tier.outputs.version_changed }}
+        EPOCH64: ${{ needs.determine-tier.outputs.epoch64 }}
+        RELEASE_TAG: ${{ needs.determine-tier.outputs.release_tag }}
       run: |
-        TAGS=""
-        if [[ "$REF" == refs/tags/v* ]]; then
-          TAGS="--tag ${IMAGE}:${REF_NAME} --tag ${IMAGE}:latest"
-        elif [[ "$REF" == refs/heads/release/v* || "$REF" == refs/heads/v* ]]; then
-          if [[ "$VERSION_CHANGED" == "true" ]]; then
-            TAGS="--tag ${IMAGE}:v${SEMVER}-beta --tag ${IMAGE}:beta-${EPOCH64}"
-          else
-            TAGS="--tag ${IMAGE}:beta-${EPOCH64}"
-          fi
-        elif [[ "$REF" == refs/heads/main ]]; then
-          if [[ "$VERSION_CHANGED" == "true" ]]; then
+        set -euo pipefail
+        case "$TIER" in
+          prod)
+            TAGS="--tag ${IMAGE}:${RELEASE_TAG} --tag ${IMAGE}:latest"
+            SOURCE_TAG="${RELEASE_TAG}"
+            ;;
+          gamma)
             TAGS="--tag ${IMAGE}:v${SEMVER}-gamma --tag ${IMAGE}:gamma-${EPOCH64}"
-          else
-            TAGS="--tag ${IMAGE}:gamma-${EPOCH64}"
-          fi
-        else
-          TAGS="--tag ${IMAGE}:alpha-${EPOCH64}"
-        fi
+            SOURCE_TAG="gamma-${EPOCH64}"
+            ;;
+          beta)
+            if [[ "$VERSION_CHANGED" == "true" ]]; then
+              TAGS="--tag ${IMAGE}:v${SEMVER}-beta --tag ${IMAGE}:beta-${EPOCH64}"
+            else
+              TAGS="--tag ${IMAGE}:beta-${EPOCH64}"
+            fi
+            SOURCE_TAG="beta-${EPOCH64}"
+            ;;
+          alpha)
+            if [[ "$VERSION_CHANGED" == "true" ]]; then
+              TAGS="--tag ${IMAGE}:v${SEMVER}-alpha --tag ${IMAGE}:alpha-${EPOCH64}"
+            else
+              TAGS="--tag ${IMAGE}:alpha-${EPOCH64}"
+            fi
+            SOURCE_TAG="alpha-${EPOCH64}"
+            ;;
+          *)
+            echo "::error::merge-manifests reached with unexpected/prealpha tier '$TIER' -- should have been skipped by the job-level push guard"
+            exit 1
+            ;;
+        esac
         echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+        echo "source_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
 
     - name: Create and push manifest
       run: |
         docker buildx imagetools create ${{ steps.tags.outputs.tags }} \
-          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-amd64 \
-          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-arm64
+          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ steps.tags.outputs.source_tag }}-amd64 \
+          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ steps.tags.outputs.source_tag }}-arm64
 
   # Hardened Ollama fleet image (spec §10.2, plan Task 13). Separate from the
   # build-platform/merge-manifests pair above: only two tags exist (hardened,
@@ -546,11 +655,12 @@ jobs:
   # here is a hard block (exit-code 1), unlike the SARIF-only, non-blocking
   # security-scan job below — Task 13 explicitly calls for a blocking gate.
   build-ollama-image:
-    needs: test
+    needs: [determine-tier, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -562,23 +672,6 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Generate epoch64 timestamp
-      id: timestamp
-      run: |
-        EPOCH64=$(date +%s)
-        echo "epoch64=$EPOCH64" >> "$GITHUB_OUTPUT"
-
-    - name: Check version file
-      id: version
-      run: |
-        if [ -f .version ]; then
-          VERSION=$(tr -d '[:space:]' < .version)
-          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
-          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
-        else
-          echo "semver=0.0.0" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Set up QEMU
       uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
 
@@ -586,7 +679,7 @@ jobs:
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
 
     - name: Log in to Container Registry
-      if: github.event_name != 'pull_request'
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
       with:
         registry: ${{ env.REGISTRY }}
@@ -597,6 +690,8 @@ jobs:
     # tags exactly, consumed as-is by ollama.image.tag in values.yaml) plus
     # one immutable per-run tag the Trivy step below scans, so the gate
     # checks the exact digest just built rather than racing a floating tag.
+    # The version-suffixed tag now fires on the prod tier only (release:
+    # released), not on a raw tag push -- see determine-tier's tag-push note.
     - name: Extract metadata for Docker
       id: meta
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
@@ -604,7 +699,7 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}
         tags: |
           type=raw,value=${{ matrix.target }}
-          type=raw,value=${{ matrix.target }}-v${{ steps.version.outputs.semver }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          type=raw,value=${{ matrix.target }}-v${{ needs.determine-tier.outputs.semver }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
           type=sha,prefix=ci-${{ matrix.target }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
 
     - name: Build and push ${{ matrix.target }} (multi-arch)
@@ -615,7 +710,7 @@ jobs:
         file: ./images/ollama/Dockerfile
         target: ${{ matrix.target }}
         platforms: linux/amd64,linux/arm64
-        push: ${{ github.event_name != 'pull_request' }}
+        push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha,scope=ollama-${{ matrix.target }}
@@ -625,8 +720,11 @@ jobs:
     # digest just pushed, ignoring only the documented, justified entries in
     # images/ollama/.trivyignore (upstream-embedded Go module CVEs + Debian
     # baseline CVEs with no published fix). Anything else fails the job.
+    # Gated on push=='true' too -- Trivy pulls the image back from the
+    # registry by digest, which doesn't exist there for a pre-alpha,
+    # build-only run.
     - name: Trivy vulnerability gate
-      if: github.event_name != 'pull_request'
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
       with:
         image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}@${{ steps.build.outputs.digest }}
@@ -637,7 +735,7 @@ jobs:
         version: 'v0.69.3'
 
     - name: Trivy scan for GitHub Security tab (SARIF, non-blocking)
-      if: always() && github.event_name != 'pull_request'
+      if: always() && github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
       with:
         image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}@${{ steps.build.outputs.digest }}
@@ -646,7 +744,7 @@ jobs:
         version: 'v0.69.3'
 
     - name: Upload Trivy scan results to GitHub Security tab
-      if: always() && github.event_name != 'pull_request'
+      if: always() && github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
       with:
         sarif_file: 'trivy-results-ollama-${{ matrix.target }}.sarif'
@@ -681,6 +779,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
 
     steps:
     - name: Checkout code
@@ -777,7 +878,14 @@ jobs:
   release:
     needs: [test, security-scan, integration-test]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # github.ref for a `release` event is also refs/tags/<tag>, so this must
+    # be scoped to push events specifically -- otherwise the new release:
+    # [prereleased, released] triggers added above would make this job try
+    # to create a second, duplicate GitHub Release on top of the one that
+    # already exists (the one whose event just fired this workflow run).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout code

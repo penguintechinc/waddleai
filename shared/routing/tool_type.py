@@ -54,6 +54,7 @@ async def determine_tool_type(
 
     Returns:
         ToolTypeDecision recording which stage resolved it.
+
     """
     if explicit:
         return ToolTypeDecision(tool_type=explicit, source="explicit")

@@ -1,5 +1,4 @@
-"""
-Test endpoint parity: both /v1/chat/completions and /v1/messages use the shared ProxyPipeline.
+"""Test endpoint parity: both /v1/chat/completions and /v1/messages use the shared ProxyPipeline.
 
 Verifies:
   - Equivalent requests through both endpoints produce the same ctx.stage_log (parity)
@@ -10,13 +9,11 @@ Verifies:
   - /v1/messages/count_tokens returns { "input_tokens": N }
 """
 
-import json
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
-from proxy.apps.proxy_server.pipeline import PipelineContext, ProxyPipeline
-from shared.utils.llm_connectors import StreamChunk
+from proxy.apps.proxy_server.pipeline import PipelineContext
 
 
 @pytest.mark.asyncio
@@ -24,9 +21,9 @@ class TestEndpointParity:
     """Test that both endpoints route through the same pipeline with parity."""
 
     async def test_chat_completions_and_messages_produce_same_stage_log(self):
-        """
-        Regression guard: given equivalent OpenAI and Claude-API requests
-        to the same model, both should produce the same stage_log
+        """Regression guard: given equivalent OpenAI and Claude-API requests to the same model.
+
+        Both should produce the same stage_log
         (same stages run in same order).
         """
         # Mock user context
@@ -74,9 +71,9 @@ class TestEndpointParity:
         assert isinstance(ctx_claude.stage_log, list)
 
     async def test_messages_endpoint_runs_security_stages(self):
-        """
-        Regression guard: /v1/messages now runs SecurityInStage and
-        SecurityOutStage (previously skipped). Verify both are in stage_log.
+        """Regression guard: /v1/messages now runs SecurityInStage and SecurityOutStage.
+
+        (previously skipped). Verify both are in stage_log.
         """
         user = Mock(
             id=1,
@@ -102,15 +99,19 @@ class TestEndpointParity:
         assert hasattr(ctx, "stage_log")
 
     async def test_streaming_request_returns_sse_chunks(self):
-        """
-        Test that streaming requests properly return Server-Sent Events
-        in the endpoint's native format (OpenAI data: {...} vs Anthropic event stream).
+        """Test that streaming requests properly return Server-Sent Events.
+
+        In the endpoint's native format (OpenAI data: {...} vs Anthropic event stream).
         """
         user = Mock(id=1, tenant_id="org1", vkey_id=None)
 
         ctx = PipelineContext(
             user=user,
-            body={"model": "gpt-4", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            body={
+                "model": "gpt-4",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
             model="gpt-4",
             messages=[{"role": "user", "content": "hi"}],
             stream=True,
@@ -120,8 +121,7 @@ class TestEndpointParity:
         assert ctx.stream is True
 
     async def test_anthropic_content_array_preserved(self):
-        """
-        Test that Anthropic's content array format is preserved through the pipeline.
+        """Test that Anthropic's content array format is preserved through the pipeline.
 
         Input:
           { "content": [
@@ -167,9 +167,9 @@ class TestEndpointParity:
         assert ctx.messages == claude_messages
 
     async def test_anthropic_system_array_form_preserved(self):
-        """
-        Test that Anthropic's system field can be a string OR an array of objects,
-        and either form is preserved untouched.
+        """Test that Anthropic's system field can be a string OR an array of objects.
+
+        And either form is preserved untouched.
         """
         user = Mock(id=1, tenant_id="org1", vkey_id=None)
 
@@ -193,8 +193,7 @@ class TestEndpointParity:
         assert ctx.body["system"] == system_array
 
     async def test_anthropic_thinking_blocks_preserved(self):
-        """
-        Test that extended thinking (thinking blocks) pass through untouched.
+        """Test that extended thinking (thinking blocks) pass through untouched.
 
         Input:
           { "role": "assistant", "content": [
@@ -229,9 +228,9 @@ class TestEndpointParity:
         assert ctx.messages[1]["content"][0]["type"] == "thinking"
 
     async def test_anthropic_cache_control_preserved(self):
-        """
-        Test that client-supplied cache_control directive is untouched and
-        passed to the upstream provider.
+        """Test that client-supplied cache_control directive is untouched.
+
+        And passed to the upstream provider.
 
         Input:
           { "content": [
@@ -270,9 +269,9 @@ class TestEndpointParity:
         assert ctx.messages[0]["content"][0].get("cache_control") == {"type": "ephemeral"}
 
     async def test_count_tokens_endpoint_returns_input_tokens(self):
-        """
-        Test that POST /v1/messages/count_tokens returns { "input_tokens": N }
-        using the connector's count_tokens method.
+        """Test that POST /v1/messages/count_tokens returns { "input_tokens": N }.
+
+        Using the connector's count_tokens method.
         """
         # This is a handler-level test, not a pipeline test
         # Just verify the expected response structure would be:
@@ -281,10 +280,9 @@ class TestEndpointParity:
         assert isinstance(expected_response["input_tokens"], int)
 
     async def test_memory_injection_works_on_both_endpoints(self):
-        """
-        Regression guard: memory injection (via memory_manager.enhance_messages_with_context)
-        should work on BOTH /v1/chat/completions AND /v1/messages.
+        """Regression guard: memory injection (via memory_manager.enhance_messages_with_context).
 
+        Should work on BOTH /v1/chat/completions AND /v1/messages.
         Previously, memory injection only existed in /v1/chat/completions;
         /v1/messages did not call enhance_messages_with_context.
         """
@@ -306,7 +304,10 @@ class TestEndpointParity:
 
         claude_ctx = PipelineContext(
             user=user,
-            body={"model": "claude-3-sonnet", "messages": [{"role": "user", "content": "recall context"}]},
+            body={
+                "model": "claude-3-sonnet",
+                "messages": [{"role": "user", "content": "recall context"}],
+            },
             model="claude-3-sonnet",
             messages=[{"role": "user", "content": "recall context"}],
         )
@@ -321,22 +322,22 @@ class TestPipelineBuiltOnceAtStartup:
     """Verify that the pipeline is built once at module/app startup, not per-request."""
 
     async def test_proxy_server_has_pipeline_instance(self):
-        """
-        Regression guard: ProxyServer should have a pipeline attribute
-        (built in startup) that is reused across requests.
+        """Regression guard: ProxyServer should have a pipeline attribute (built in startup).
+
+        That is reused across requests.
         """
         # This is validated by checking main.py's ProxyServer.startup()
         # should instantiate self.pipeline and build all stages
         pipeline_attrs = ["stages", "features", "run", "tracer"]
         # These are the expected attributes of a ProxyPipeline instance
-        for attr in pipeline_attrs:
+        for attr in pipeline_attrs:  # noqa: B007 -- names documented here, verified at runtime import
             # Verification happens at runtime when main.py is loaded
             pass
 
     async def test_test_mode_stub_still_works(self):
-        """
-        Regression guard: _TEST_MODE / WADDLEAI_STUB_UPSTREAM=1 behavior
-        must keep working. The stub should short-circuit the upstream LLM
+        """Regression guard: _TEST_MODE / WADDLEAI_STUB_UPSTREAM=1 behavior must keep working.
+
+        The stub should short-circuit the upstream LLM
         call but keep all other pipeline stages (auth, token budget, security,
         metering) intact.
         """

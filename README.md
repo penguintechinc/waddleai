@@ -6,9 +6,13 @@
 
 </div>
 
-# WaddleAI — Open-First AI Platform
+# WaddleAI — The Control Plane for AI
 
-An empowering, open-source AI infrastructure suite for developers and teams who want powerful AI capabilities without expensive subscriptions or vendor lock-in.
+WaddleAI is to AI what Terraform and Mist.io were to cloud: one control plane over
+heterogeneous providers, with consistent access control, policy, and cost visibility —
+whether the model behind it is a frontier API or a GPU in your rack.
+
+It does not replace your models. It sits in front of them.
 
 ```
 ██╗    ██╗ █████╗ ██████╗ ██████╗ ██╗     ███████╗ █████╗ ██╗
@@ -19,22 +23,91 @@ An empowering, open-source AI infrastructure suite for developers and teams who 
  ╚══╝╚══╝ ╚═╝  ╚═╝╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝
 ```
 
-**For developers and teams**: Run cutting-edge AI assistance on your own hardware, with your data staying local, using open-source models like Llama and Mistral, or route to commercial providers when you need them. No expensive subscriptions. No vendor lock-in. Full control.
+**The problem it solves**: once more than one person is using AI, you have a fleet —
+several providers, several models, several teams, and no single place to say who may use
+what, what may leave the building, or what it costs. WaddleAI is that place.
 
 ---
 
-## 🎯 Philosophy: "Open First"
+## 🎯 What WaddleAI Is For
 
-WaddleAI is built on the principle that powerful AI capabilities should be accessible to everyone, not just those who can afford Claude Max or GPT-4 Pro subscriptions. We use:
+Three goals. Everything in this repo serves one of them.
 
-- **Open-source models** (Ollama, llama.cpp, Llama 3.2, Mistral, CodeLlama)
-- **Open embeddings** (Nomic, open-source alternatives to proprietary APIs)
-- **Self-hosted infrastructure** (Kubernetes — your servers, your data)
-- **Permissive licensing** (AGPL with commercial exception)
+### 1. Cross-cloud management of models — and of who may reach them
 
-While our models may not match Claude's capability, WaddleAI empowers teams to run powerful AI locally with full infrastructure control.
+One endpoint in front of OpenAI, Anthropic, Google Gemini, xAI, AWS Bedrock, Ollama and
+self-hosted llama.cpp. Add a provider once; every team, key and quota already knows about
+it. Move a workload from a commercial API to your own GPUs — or back — without the calling
+application noticing.
+
+Access is managed centrally: virtual keys, per-user and per-team quotas, org scoping, and
+usage attribution across every provider at once. The same question Terraform answers for
+infrastructure — *what exists, who may change it, what does it cost* — asked of models.
+
+### 2. Security controls that apply to commercial and open engines alike
+
+Policy belongs to the platform, not to whichever vendor happens to serve the request. PII
+detection and redaction, prompt-injection scanning, output guardrails and audit logging run
+in the proxy, so they behave identically whether the request lands on a frontier API or a
+local Llama. Swapping the backend does not swap your controls.
+
+That matters most in the direction people forget: **what leaves your building**. A prompt
+routed to a commercial provider gets scanned and redacted on the way out, under the same
+rules as one served locally.
+
+#### PII detection and prevention
+
+Content filtering runs in tiers, on both the inbound prompt and the outbound response:
+
+| Tier | Catches | Needs |
+|---|---|---|
+| **1. Built-in patterns** | 23 rules: credit cards (incl. Amex), IBAN, routing numbers, SSN (formatted and bare), US/UK passports, driver's licence, Medicare ID, national insurance, email, US and international phone, date of birth, private and public IPs, passwords in prose, and API keys (OpenAI, Anthropic, GitHub, AWS, generic) | nothing |
+| **2. Org custom rules** | your own regexes, scoped per organisation, managed through the API | nothing |
+| **3. NER** | the things a regex cannot know: **person names**, locations, organisations — matched by meaning rather than shape | a spaCy model |
+
+Tier 3 is what distinguishes "redact anything matching `\d{3}-\d{2}-\d{4}`" from recognising
+that *Maria Gonzalez* is a person. It runs on Microsoft Presidio with `en_core_web_lg`,
+which is **pinned in `requirements.txt` and installed into the images** — set
+`NER_SPACY_MODEL=en_core_web_md` to trade ~350MB of image size for slightly lower
+entity-detection accuracy.
+
+Detections carry a confidence score and are gated by a floor before they redact, so a weak
+match does not silently mangle a legitimate prompt. Every block and redaction is written to
+an audit trail with the phase, the rule, and which NER backend decided it.
+
+### 3. Efficiency, without degrading the harness calling you
+
+The expensive parts of an AI workload are rarely the clever ones. WaddleAI attacks the
+waste directly:
+
+- **Response and semantic caching** — repeated and near-repeated questions do not become
+  repeated bills.
+- **Just-in-time RAG** — retrieve the context a request actually needs, at the moment it
+  needs it, rather than stuffing everything into every prompt.
+- **Lazy-loading over MCP** — tools and context are surfaced on demand, so a coding agent
+  does not re-process your entire codebase every session.
+- **Routing by fitness for purpose** — cheap questions go to cheap models.
+
+Two concrete failures this prevents, even when you own a frontier model:
+
+> Bob asks the most expensive model on your account what the weather is like outside.
+>
+> Your coding agent re-reads the whole repository at the start of every session, every day,
+> for every developer.
+
+The constraint is that none of this may make the calling harness worse. Claude Code, Cursor,
+Antigravity and the rest must behave exactly as they would talking to the provider directly —
+same API shape, same streaming, same tool calls. Efficiency that costs you capability is not
+efficiency; it is just a cheaper bad answer.
 
 ---
+
+## 🐧 Open-First, Not Open-Only
+
+WaddleAI defaults to open models and open embeddings (Ollama, llama.cpp, Llama, Mistral,
+Nomic) and runs on your own Kubernetes. That is a default, not a limit — routing to
+Anthropic, OpenAI, Gemini, xAI or Bedrock is a first-class path, and the security and
+efficiency controls above apply the same either way.
 
 ## 📦 Platform Components
 
@@ -135,12 +208,7 @@ cd services/penguincode
 ./penguincode chat
 ```
 
-> **Known chart gap**: `management.secretEnv` requires a `proxy-grpc-auth-token` key on `waddleai-secrets`, but the chart's own `templates/secret.yaml` doesn't generate one — the management pod fails to start (`CreateContainerConfigError`) on a fresh install. Work around it until fixed:
-> ```bash
-> kubectl patch secret waddleai-secrets -n waddleai --type merge \
->   -p "{\"stringData\":{\"proxy-grpc-auth-token\":\"$(openssl rand -hex 32)\"}}"
-> kubectl rollout restart deployment/waddleai-management -n waddleai
-> ```
+> The chart auto-generates the `proxy-grpc-auth-token` key on `waddleai-secrets` (stable across `helm upgrade`); to pin or rotate it yourself — e.g. beta/prod sourcing it from External Secrets Operator — pass `--set secrets.proxyGrpcAuthToken=<token>` (or set `secrets.manage: false` and supply the whole `waddleai-secrets` Secret externally).
 
 The Assistant automatically detects the Platform and enables:
 - Multi-user management
@@ -329,11 +397,18 @@ See [LICENSE.md](LICENSE.md) for the full terms.
 
 ## 🌟 Why WaddleAI?
 
-1. **Open First**: Uses open-source models (Llama, Mistral) where possible
-2. **Self-Hosted**: Full control — no SaaS fees, data stays on your servers
-3. **Team-Ready**: Multi-user quotas, audit logging, usage tracking
-4. **Flexible**: Connect to any LLM provider (local Ollama, OpenAI, Anthropic, etc.)
-5. **Powerful**: Enterprise-grade features at open-source prices
+1. **One control plane, many providers** — add a model once; every key, quota and policy
+   already applies to it. Terraform and Mist.io did this for cloud; WaddleAI does it for AI.
+2. **Portable policy** — PII redaction, injection scanning, output guardrails and audit
+   logging live in the proxy, so they hold whether the request is served by a frontier API
+   or a local GPU.
+3. **Spend that tracks value** — caching, just-in-time RAG and MCP lazy-loading remove the
+   repeated work, and routing keeps cheap questions on cheap models.
+4. **Invisible to the caller** — OpenAI- and Anthropic-compatible endpoints, streaming and
+   tool calls preserved, so Claude Code, Cursor and Antigravity behave exactly as they do
+   against the provider directly.
+5. **Yours to run** — self-hosted on your Kubernetes, open-first by default, no data leaving
+   without a policy that allows it.
 
 ---
 

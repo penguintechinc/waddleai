@@ -89,15 +89,11 @@ class SecurityPolicyEngine:
             tiers_run.append("tier1")
 
         if resolved.tier2_enabled:
-            violations.extend(
-                await self.content_filter._run_custom_rules(text, direction, org_id)
-            )
+            violations.extend(await self.content_filter._run_custom_rules(text, direction, org_id))
             tiers_run.append("tier2")
 
         if resolved.tier3_enabled and not self._budget_exceeded(resolved, start):
-            violations.extend(
-                await self.content_filter._run_ner_patterns(text, direction, org_id)
-            )
+            violations.extend(await self.content_filter._run_ner_patterns(text, direction, org_id))
             tiers_run.append("tier3")
 
         deterministic_action, filtered_text = self.content_filter._determine_action(

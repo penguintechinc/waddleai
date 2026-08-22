@@ -58,6 +58,7 @@ def split_provider_prefix(model: str) -> tuple[str | None, str]:
 
     Returns:
         (provider_or_None, bare_model).
+
     """
     if ":" in model:
         prefix, rest = model.split(":", 1)
@@ -82,7 +83,7 @@ def explicit_tool_type(
     if mcp_tool:
         return mcp_tool
     if model and model.startswith(_WADDLEAI_ALIAS_PREFIX):
-        return model[len(_WADDLEAI_ALIAS_PREFIX):]
+        return model[len(_WADDLEAI_ALIAS_PREFIX) :]
     return None
 
 
@@ -96,6 +97,7 @@ class AliasResolver:
             db: penguin-dal DB instance exposing a ``model_aliases`` table.
             valkey: Reserved for future cache wiring (aliases change rarely
                 enough that most callers can read straight through).
+
         """
         self.db = db
         self.valkey = valkey
@@ -113,6 +115,7 @@ class AliasResolver:
         Returns:
             AliasResolution with the target model, any pinned provider, and
             ``routed_from`` set to the original model string when redirected.
+
         """
         provider, bare_model = split_provider_prefix(model)
         row = await asyncio.to_thread(self._fetch, bare_model, org_id)

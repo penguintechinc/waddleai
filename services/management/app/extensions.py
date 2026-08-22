@@ -1,6 +1,6 @@
-"""
-WaddleAI Management Server Extensions
-penguin-dal, Redis initialization
+"""WaddleAI Management Server Extensions.
+
+penguin-dal, Redis initialization.
 
 Auth is handled entirely via OIDC through shared.auth.penguin_auth (see
 app/api/v1/auth.py) -- Flask-Security-Too is not used anywhere in this
@@ -10,7 +10,6 @@ has been removed.
 
 import logging
 from datetime import datetime
-from typing import Optional
 from urllib.parse import quote
 
 import redis
@@ -21,13 +20,13 @@ from quart import Quart
 logger = logging.getLogger(__name__)
 
 # Global instances
-db: Optional[DB] = None
-redis_client: Optional[redis.Redis] = None
-cache_client: Optional[redis.Redis] = None  # Alias for redis_client
+db: DB | None = None
+redis_client: redis.Redis | None = None
+cache_client: redis.Redis | None = None  # Alias for redis_client
 
 
 def init_db(app: Quart) -> DB:
-    """Initialize database with SQLAlchemy for schema, penguin-dal for runtime operations"""
+    """Initialize database with SQLAlchemy for schema, penguin-dal for runtime operations."""
     import time
 
     from app.models_sqlalchemy import init_schema
@@ -71,8 +70,8 @@ def init_db(app: Quart) -> DB:
                 raise
 
 
-def init_cache(app: Quart) -> Optional[redis.Redis]:
-    """Initialize cache (Valkey/Redis) connection with CACHE_* env precedence"""
+def init_cache(app: Quart) -> redis.Redis | None:
+    """Initialize cache (Valkey/Redis) connection with CACHE_* env precedence."""
     global redis_client, cache_client
 
     # Precedence: CACHE_HOST > REDIS_URL
@@ -96,7 +95,9 @@ def init_cache(app: Quart) -> Optional[redis.Redis]:
         # Fall back to REDIS_URL (deprecated)
         cache_url = app.config.get("REDIS_URL")
         if cache_url:
-            logger.warning("REDIS_URL is deprecated; set CACHE_HOST/CACHE_PORT (honored for one release)")
+            logger.warning(
+                "REDIS_URL is deprecated; set CACHE_HOST/CACHE_PORT (honored for one release)"
+            )
 
     if not cache_url:
         logger.warning("Cache URL not configured, running without cache")
@@ -119,7 +120,7 @@ init_redis = init_cache
 
 
 def init_extensions(app: Quart):
-    """Initialize all extensions"""
+    """Initialize all extensions."""
     global db, redis_client, cache_client
 
     # Initialize database
@@ -133,16 +134,17 @@ def init_extensions(app: Quart):
     init_default_data(db, config=app.config)
 
 
-def init_default_data(db: DB, config: Optional[dict] = None) -> Optional[str]:
-    """
-    Initialize default data for the database.
+def init_default_data(db: DB, config: dict | None = None) -> str | None:
+    """Initialize default data for the database.
 
     Args:
         db: Database instance
         config: Flask app config object (used to read ADMIN_INITIAL_PASSWORD)
 
     Returns:
-        The generated admin password (only for testing/development; production should never log this)
+        The generated admin password (only for testing/development; production
+        should never log this)
+
     """
     import secrets
 
@@ -161,7 +163,7 @@ def init_default_data(db: DB, config: Optional[dict] = None) -> Optional[str]:
 
     # Tracks the initial admin password to return (only populated when a new
     # admin is created; consumed by dev/test callers, never logged).
-    result_password: Optional[str] = None
+    result_password: str | None = None
 
     # Create default organization
     if not db(db.organizations.name == "default").select():
@@ -204,7 +206,22 @@ def init_default_data(db: DB, config: Optional[dict] = None) -> Optional[str]:
             enabled=True,
         )
 
-        logger.info("Created admin user and virtual key")
+        # Also seed the api_keys row that the proxy's
+        # RBACManager.authenticate_api_key (shared/auth/rbac.py) actually
+        # checks -- virtual_keys alone leaves the bootstrap admin unable to
+        # authenticate against the proxy. Same plaintext key value, hashed
+        # separately; never logged or printed.
+        db.api_keys.insert(
+            key_id=f"admin-key-{secrets.token_hex(8)}",
+            key_hash=bcrypt.hash(api_key),
+            user_id=admin_id,
+            organization_id=org_id,
+            name="Admin Master Key",
+            api_access_level="admin_api",
+            permissions={"*": True},
+        )
+
+        logger.info("Created admin user, API key, and virtual key")
         # Never log or print the plaintext API key
         result_password = admin_password
 
@@ -230,7 +247,8 @@ def init_default_data(db: DB, config: Optional[dict] = None) -> Optional[str]:
 
     for provider, model, input_rate, output_rate, cost in default_rates:
         if not db(
-            (db.token_conversion_rates.provider == provider) & (db.token_conversion_rates.model == model)
+            (db.token_conversion_rates.provider == provider)
+            & (db.token_conversion_rates.model == model)
         ).select():
             db.token_conversion_rates.insert(
                 provider=provider,

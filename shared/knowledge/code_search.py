@@ -69,9 +69,7 @@ class CodeSearchBackend(Protocol):
         ...
 
 
-def reciprocal_rank_fusion(
-    ranked_lists: list[list[str]], k: int = 60
-) -> dict[str, float]:
+def reciprocal_rank_fusion(ranked_lists: list[list[str]], k: int = 60) -> dict[str, float]:
     """Fuse multiple rankings of the same id-space via reciprocal-rank fusion.
 
     ``score(d) = sum(1 / (k + rank_i(d)))`` over every ranking ``d`` appears
@@ -106,6 +104,7 @@ async def search_code(
 
     Returns:
         Ranked, scope-filtered, ``status='active'``-only results.
+
     """
     exact = await backend.symbol_exact(query, caller)
 

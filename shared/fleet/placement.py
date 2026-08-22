@@ -150,6 +150,7 @@ class PlacementEngine:
             from the same node class.
         ttl_seconds: Session-affinity TTL, sliding on every successful
             lookup (mirrors ``shared.cache.affinity.SessionAffinityMap``).
+
     """
 
     def __init__(
@@ -336,6 +337,7 @@ class PlacementEngine:
                 exceeded.
             InsufficientCapacityError: No node reachable via ``backend`` has
                 enough free VRAM for the registry's ``min_vram``.
+
         """
         bare_model = _bare_model_name(model)
 

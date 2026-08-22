@@ -33,6 +33,10 @@ from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import PromptSecurityScanner
 
 from ...extensions import db
+from ...services.content_filter_deps import (
+    get_content_filter_features,
+    get_content_filter_license_client,
+)
 from . import api_v1_bp
 from .auth import require_auth, require_scope
 
@@ -220,7 +224,11 @@ async def memory_correct(item_id: int):
         return jsonify({"error": "only the owner or an admin may correct this memory"}), 403
 
     scanner = PromptSecurityScanner(db)
-    content_filter = ContentFilter(db=db)
+    content_filter = ContentFilter(
+        db=db,
+        license_client=get_content_filter_license_client(),
+        features=get_content_filter_features(),
+    )
     filter_result = await filter_for_store(
         new_content, scanner, content_filter, org_id=org_id, user_id=user_id
     )

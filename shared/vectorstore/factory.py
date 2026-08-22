@@ -68,18 +68,14 @@ class LocalProfileConfig:
         return cls(
             qdrant_url=os.getenv("WADDLEAI_LOCAL_QDRANT_URL", _DEFAULT_QDRANT_URL),
             qdrant_api_key=os.getenv("WADDLEAI_LOCAL_QDRANT_API_KEY") or None,
-            qdrant_timeout_seconds=float(
-                os.getenv("WADDLEAI_LOCAL_QDRANT_TIMEOUT_SECONDS", "5.0")
-            ),
+            qdrant_timeout_seconds=float(os.getenv("WADDLEAI_LOCAL_QDRANT_TIMEOUT_SECONDS", "5.0")),
             collection_prefix=os.getenv(
                 "WADDLEAI_LOCAL_COLLECTION_PREFIX", _DEFAULT_COLLECTION_PREFIX
             ),
             ollama_host=os.getenv("OLLAMA_HOST", _DEFAULT_OLLAMA_HOST),
             embedding_model=os.getenv("WADDLEAI_LOCAL_EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL),
             embedding_dimensions=int(
-                os.getenv(
-                    "WADDLEAI_LOCAL_EMBEDDING_DIMENSIONS", str(_DEFAULT_EMBEDDING_DIMENSIONS)
-                )
+                os.getenv("WADDLEAI_LOCAL_EMBEDDING_DIMENSIONS", str(_DEFAULT_EMBEDDING_DIMENSIONS))
             ),
             chat_model=os.getenv("WADDLEAI_LOCAL_CHAT_MODEL", _DEFAULT_CHAT_MODEL),
         )

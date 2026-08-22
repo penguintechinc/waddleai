@@ -9,6 +9,7 @@ Requires: Ollama running locally with llama3.2:latest available.
 import httpx
 import pytest
 import pytest_asyncio
+
 from penguincode_cli.agents.chat import ChatAgent
 from penguincode_cli.agents.intent import detect_user_intent, estimate_complexity
 from penguincode_cli.config.settings import Settings, load_settings

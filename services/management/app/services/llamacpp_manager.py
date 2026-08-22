@@ -1,5 +1,4 @@
-"""
-llama.cpp Deployment Manager
+"""llama.cpp Deployment Manager.
 
 Manages llama-server instances in two modes:
 - kubernetes: Creates/removes K8s DaemonSets targeting GPU-labelled nodes
@@ -35,14 +34,15 @@ LLAMACPP_IMAGE: str = (
     "51570a4f93c5ce81ac6f2b1ea16a58771cfded2adb34241df7e75329b24fe76e"
 )
 CURL_DOWNLOADER_IMAGE: str = (
-    "curlimages/curl@sha256:"
-    "7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
+    "curlimages/curl@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
 )
 
 
 def get_k8s_apps_client():
     """Return a configured AppsV1Api client."""
-    from kubernetes import client, config as k8s_config  # type: ignore[import]
+    from kubernetes import client  # type: ignore[import]
+    from kubernetes import config as k8s_config
+
     try:
         k8s_config.load_incluster_config()
     except Exception:
@@ -53,7 +53,9 @@ def get_k8s_apps_client():
 
 def get_k8s_core_client():
     """Return a configured CoreV1Api client."""
-    from kubernetes import client, config as k8s_config  # type: ignore[import]
+    from kubernetes import client  # type: ignore[import]
+    from kubernetes import config as k8s_config
+
     try:
         k8s_config.load_incluster_config()
     except Exception:
@@ -100,6 +102,7 @@ class LlamaCppManager(InferenceFleetBackend):
     management_scope = ManagementScope.FULL_LIFECYCLE
 
     def __init__(self, db, *, config: dict[str, Any] | None = None, credentials: str | None = None):
+        """Bind the DAL handle and optional backend config/credentials for this fleet instance."""
         self.db = db
         # registry.build_backend construction contract (§10.1 Task 3).
         # llama.cpp has no cloud credentials of its own; `credentials` is
@@ -178,7 +181,7 @@ class LlamaCppManager(InferenceFleetBackend):
             },
             "volumeMounts": [
                 {"name": "llamacpp-models", "mountPath": "/models"},
-                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 -- pod volumeMount path in a generated manifest, not a host temp file; required because the container runs readOnlyRootFilesystem
+                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 # noqa: S108 -- pod volumeMount path in a generated manifest, not a host temp file; required because the container runs readOnlyRootFilesystem
             ],
         }
 
@@ -186,11 +189,16 @@ class LlamaCppManager(InferenceFleetBackend):
             "name": "llama-server",
             "image": LLAMACPP_IMAGE,
             "args": [
-                "--model", f"/models/{deployment.model_filename}",
-                "--n-gpu-layers", str(deployment.n_gpu_layers),
-                "--ctx-size", str(deployment.n_ctx),
-                "--port", "8080",
-                "--host", "0.0.0.0",  # nosec B104 -- container listen address inside its own pod network namespace; reachability is governed by Service + CiliumNetworkPolicy
+                "--model",
+                f"/models/{deployment.model_filename}",
+                "--n-gpu-layers",
+                str(deployment.n_gpu_layers),
+                "--ctx-size",
+                str(deployment.n_ctx),
+                "--port",
+                "8080",
+                "--host",
+                "0.0.0.0",  # nosec B104 # noqa: S104 -- container listen address inside its own pod network namespace; reachability is governed by Service + CiliumNetworkPolicy
             ],
             "ports": [{"name": "http", "containerPort": 8080, "protocol": "TCP"}],
             "securityContext": {
@@ -228,7 +236,7 @@ class LlamaCppManager(InferenceFleetBackend):
             },
             "volumeMounts": [
                 {"name": "llamacpp-models", "mountPath": "/models"},
-                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 -- pod volumeMount path in a generated manifest, not a host temp file
+                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 # noqa: S108 -- pod volumeMount path in a generated manifest, not a host temp file
             ],
         }
 

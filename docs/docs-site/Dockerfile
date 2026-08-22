@@ -2,8 +2,13 @@ FROM python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c1
 
 WORKDIR /docs
 
-# Install dependencies
-RUN pip install --no-cache-dir mkdocs mkdocs-material pymdown-extensions mkdocs-mermaid2-plugin
+# Install dependencies from the hash-pinned lockfile that already sits beside
+# this Dockerfile. It was previously ignored in favour of an unpinned
+# `pip install mkdocs ...`, so the published docs image installed whatever was
+# newest at build time -- an unpinned supply chain for a public artifact.
+COPY docs/docs-site/requirements.txt /tmp/docs-requirements.txt
+RUN pip install --no-cache-dir --require-hashes --requirement /tmp/docs-requirements.txt \
+    && rm -f /tmp/docs-requirements.txt
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash appuser

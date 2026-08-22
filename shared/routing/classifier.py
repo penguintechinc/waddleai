@@ -114,6 +114,7 @@ async def classify(
         The Classification. Malformed/non-JSON model output degrades to a
         safe default (tool_type="general", low complexity) rather than
         raising -- a classifier failure must never break the request.
+
     """
     cache_key = _cache_key(prompt)
     cached = await _cache_get(valkey, cache_key)

@@ -1,572 +1,251 @@
 # MCP Protocol Integration
 
-Model Context Protocol (MCP) support in WaddleAI enables seamless integration with Claude Code, Cursor IDE, and other MCP-compatible tools.
+WaddleAI implements the [Model Context Protocol](https://modelcontextprotocol.io/) two ways on
+the same deployment:
 
-## Overview
+1. **MCP server** — WaddleAI exposes its own tools (code/docs search, memory, routing, usage) over
+   Streamable HTTP so any MCP client (Claude Code, Cursor, OpenCode, a custom agent) can call them.
+2. **MCP gateway** — WaddleAI acts as an MCP *client*, aggregating external MCP servers an org
+   registers (e.g. an internal Elder MCP server) and re-serving their tools through the same
+   endpoint, namespaced, so a caller configures one MCP connection and sees everything.
 
-MCP (Model Context Protocol) is a standardized protocol for connecting AI development tools to language models. WaddleAI implements MCP to provide:
+Both live behind the `waddleai.mcp_v2` feature flag (PostHog, per-org, default OFF).
 
-- **Bidirectional communication** - Real-time streaming between tools and LLMs
-- **Context sharing** - Share workspace context, files, and metadata
-- **Tool integration** - Enable AI assistants to use external tools
-- **Multi-model support** - Route MCP requests to any configured LLM
-- **Authentication** - Secure MCP connections with API keys
+!!! note "No legacy WebSocket server"
+    Earlier revisions of this page documented a WebSocket MCP server on port 8765
+    (`MCP_AUTO_START`/`MCP_PORT` env vars, `ws://localhost:8765/mcp`). That implementation was
+    deleted with no compatibility window before this release — there is no trace of it in the
+    codebase. Everything below reflects the current Streamable HTTP implementation.
 
 ## Architecture
 
 ```
-┌──────────────┐          WebSocket          ┌─────────────────┐
-│ Claude Code  │◄─────────────────────────►│  WaddleAI MCP   │
-│   /Cursor    │      MCP Protocol          │     Server      │
-└──────────────┘                             └────────┬────────┘
-                                                      │
-┌──────────────┐          WebSocket          ┌───────▼─────────┐
-│   VS Code    │◄─────────────────────────►│  WaddleAI Proxy │
-│  Extension   │      MCP Protocol          │  (LLM Routing)  │
-└──────────────┘                             └────────┬────────┘
-                                                      │
-                                              ┌───────▼────────┐
-                                              │  OpenAI, Claude│
-                                              │  Ollama, etc.  │
-                                              └────────────────┘
+                       Authorization: Bearer <wa-key | sk-key | JWT>
+Claude Code / Cursor /  ─────────────────────────────────────────►  AIProxy
+OpenCode / custom agent ◄─────────────────────────────────────────  /mcp        (users)
+                                                                     /mcp/admin  (admins)
+                                                                          │
+                                                          MCPMount (proxy/apps/proxy_server/mcp_mount.py)
+                                                          resolves identity → ToolContext, then
+                                                          builds a fresh FastMCP app for this request
+                                                                          │
+                              ┌───────────────────────────────┬─────────┴─────────┐
+                              ▼                                ▼                   ▼
+                    WaddleAITools/AdminTools          GatewayAggregator      knowledge / memory /
+                    (shared/mcp/tools.py)             (shared/mcp/gateway/)  routing / usage
+                              │                                │            services (§7, §9)
+                              │                                ▼
+                              │                   external MCP servers registered per-org
+                              │                   via /api/v1/integrations/mcp-endpoints
+                              ▼                   (namespaced elder.*, custom.*, ...)
+                    native WaddleAI tools
 ```
 
-## MCP Server Configuration
+## Transport and mount
 
-### Enable MCP in WaddleAI
+- **Streamable HTTP only.** No stdio server runs inside WaddleAI itself.
+- Mounted directly on the AIProxy's ASGI app, *ahead of* the OIDC/audit middleware chain, so
+  `/mcp*` resolves its own auth before any other request handling runs
+  (`proxy/apps/proxy_server/mcp_mount.py::MCPMount`, wired in `proxy/apps/proxy_server/main.py`).
+- Two separate paths on one deployment — never one tool set filtered by role:
 
-MCP is configured in `.env.dev`:
+  | Path | Audience | Gate |
+  |---|---|---|
+  | `/mcp` | End users | Authenticated `wa-`/`sk-` key or OIDC Bearer JWT |
+  | `/mcp/admin` | Administrators | Same auth, plus `Role.ADMIN` (`shared/auth/rbac.py`) |
 
-```bash
-# Auto-start MCP WebSocket server
-MCP_AUTO_START=true
+  A non-admin caller gets `403` *before* any admin FastMCP app is constructed, so an
+  unauthorized client never even sees a filtered admin tool list — the same reasoning as the
+  house rule against serving the full OpenAPI document unauthenticated.
+- `stateless_http=True`: a fresh `FastMCP` instance is built per authenticated HTTP request,
+  bound by closure to that request's resolved `ToolContext`. There is no shared, long-lived
+  server or session state across calls.
+- A Rust static binary (`waddleai-mcp`, ships as `waddleai mcp`) is planned as a stdio transport
+  adapter for dev machines that can't speak HTTP MCP directly — it forwards to the same `/mcp`
+  endpoint over HTTP rather than reimplementing tool logic.
 
-# MCP WebSocket port
-MCP_PORT=8765
+## Authentication and identity
 
-# MCP authentication (use WaddleAI API keys)
-MCP_AUTH_REQUIRED=true
+Send one header on either path:
 
-# MCP protocol version
-MCP_VERSION=1.0.0
+```
+Authorization: Bearer <token>
 ```
 
-### Start MCP Server
+The value may be a `wa-`/`sk-` virtual key or an OIDC-issued JWT — `mcp_mount.py` mirrors the
+same resolution `main.py::get_current_user` uses for `/v1/*` traffic. From that, one
+`ToolContext` (`shared/mcp/tools.py`) is resolved per request:
 
-MCP server runs alongside WaddleAI management server:
+| Field | Source |
+|---|---|
+| `org_id` | The authenticated caller's organization |
+| `user_uuid` | Caller's user id (opaque, non-PII stand-in until a native UUID column exists) |
+| `session_id` | `X-WaddleAI-Session-Id` header, else `key-<api_key_id or user_id>` — matches the virtual key the data plane uses, so memory/scratchpad scope lines up between `/v1/*` and `/mcp` |
+| `workspace_hint` | `X-WaddleAI-Workspace` header, optional |
+| `scopes` | Caller's OIDC permission scopes |
 
-```bash
-# With docker-compose
-docker-compose -f docker-compose.env.yml up -d
+**No tool accepts an identity parameter the caller controls.** `/mcp` user tools take no subject
+at all — `usage_summary()` always means "the authenticated caller," full stop — because an MCP
+tool argument is something an LLM (or a poisoned prompt) can populate, and a parameter that
+doesn't exist can't be abused that way. `/mcp/admin` tools take an explicit `user_id`/`org_id`
+because company-wide visibility and control is the point of that endpoint. This mirrors a fix
+already made once in the plain REST management API (IDOR/privilege-escalation, PR #55) — the MCP
+surface doesn't reopen the same door.
 
-# MCP server starts automatically on port 8765
-# WebSocket endpoint: ws://localhost:8765/mcp
-```
+Admin session freshness is asymmetric: read tools tolerate the full 24h JWT ceiling; write tools
+(`add_model`, `update_quota`, ...) require re-authentication within the last 15 minutes. A stale
+admin session loses write access before it loses read access.
 
-### Manual MCP Server Control
+## Tools — `/mcp` (user-scoped)
 
-Control MCP server via management portal or API:
+From `shared/mcp/tools.py::WaddleAITools` / `shared/mcp/server.py::USER_TOOL_NAMES`:
 
-```bash
-# Start MCP server
-curl -X POST http://localhost:8001/api/mcp/control \
-  -H "Authorization: Bearer your-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{"action": "start", "port": 8765}'
+| Tool | Purpose |
+|---|---|
+| `search_code(query, repo?, branch?)` | Hybrid CodeRAG search over the org's indexed repos |
+| `get_symbol(symbol, repo?)` | Symbol-exact chunk lookup |
+| `search_docs(query, ecosystem?)` | Search the cached package-docs index |
+| `fetch_docs(ecosystem, package, version?)` | Fetch a package's docs on demand, populating the cache |
+| `memory_add(content, scope="session")` | Write a memory, after the write-time security filter |
+| `memory_search(query)` | Search the caller's memory; results carry a trust tier |
+| `list_models()` | Registry/assignment view — each model's exact pinnable, provider-qualified string |
+| `get_routing_policy()` | The caller's org routing-policy summary |
+| `usage_summary(window?)` | Token/$ usage for the caller's key/org — self only |
+| `set_preference(model_or_tag, weight=0.5)` | Record a weight-only routing signal |
 
-# Stop MCP server
-curl -X POST http://localhost:8001/api/mcp/control \
-  -H "Authorization: Bearer your-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{"action": "stop"}'
+`set_preference` never pins a model and never overrides policy — the weight is clamped to
+`[0, 1]` and stays subordinate to org allow-lists, tier caps, the `local_only` sensitivity clamp,
+and budget pressure. It's a structured tool call only, never inferred from conversation text, so
+a poisoned document can't plant a routing preference the way it could plant a memory.
 
-# Get MCP server status
-curl http://localhost:8001/api/mcp/status \
-  -H "Authorization: Bearer your-admin-token"
-```
+Any external gateway tools an org has registered (see below) are added to this same list,
+namespaced `<endpoint_namespace>.*`.
 
-## Client Configuration
+## Tools — `/mcp/admin` (administrator-scoped)
+
+From `shared/mcp/tools.py::AdminTools` / `shared/mcp/server.py::ADMIN_*_TOOL_NAMES`:
+
+**Read** (safe, frequent — 24h session ceiling):
+
+| Tool | Purpose |
+|---|---|
+| `usage_by_user(user_id, window?, resolve_names=False)` | Usage for one user in the caller's org |
+| `usage_by_org(org_id, window?)` | Usage aggregated by org, model, and provider |
+| `cost_attribution(org_id, window?)` | Cost attribution over a period |
+| `quota_status(org_id, user_id?)` | Quota status for an org, or one user in it |
+| `provider_budget_headroom(org_id)` | Provider plan-budget headroom (window-based, not cumulative) |
+
+**Write** (deliberate, consequence-bearing — 15 minute session ceiling):
+
+| Tool | Purpose |
+|---|---|
+| `add_model(name, provider, config?)` | Add a model to the registry |
+| `remove_model(name)` | Remove a model from the registry |
+| `add_destination(name, kind, config?)` | Add a destination (provider or endpoint) |
+| `remove_destination(name)` | Remove a destination |
+| `update_quota(org_id, monthly_limit?, daily_limit?)` | Update an org's quota limits |
+| `update_provider_config(provider, config)` | Update a provider's configuration |
+
+Admin responses carry `"sensitivity": "internal"`, and per-user figures return UUIDs by default
+(only resolving to names on explicit request) — an admin working from a commercially-hosted
+agent must not leak per-user cost or vendor-spend data to a third party by default.
+
+**Neither endpoint exposes a risk-acceptance tool.** The PRC-origin model-weight acknowledgement
+and the non-commercial-license acknowledgement are deliberate-UI-only acts and are never
+reachable as an MCP tool on either path (enforced by name/description substring checks in
+`shared/mcp/server.py`).
+
+## Result provenance
+
+Every tool result — native or gateway — is returned as a dict carrying an explicit `_provenance`
+marker (`{"source": ..., "trust_tier": ...}`), never a bare string a calling agent could mistake
+for an instruction rather than fetched data. Results from an external gateway server carry
+`trust_tier: "external_untrusted"`, distinct from WaddleAI's own retrieved content.
+
+## MCP gateway — WaddleAI as an MCP client
+
+Admins register external MCP servers per org via the Management API
+(`/api/v1/integrations/mcp-endpoints`, see [Management API](../api/management-api.md#mcp-gateway))
+or the WebUI: URL, transport, and auth config. `shared/mcp/gateway/aggregator.py::GatewayAggregator`
+then:
+
+- **Discovers and namespaces** each endpoint's tools (`<endpoint_namespace>.<tool>`) and merges
+  them into the same `/mcp` listing native tools appear in — one MCP connection, one aggregated
+  toolset.
+- **Discovers lazily, per request** — tools are not cached at startup. One endpoint's discovery
+  failure (unreachable, auth misconfigured) is logged and skipped; it never blocks the rest of
+  the org's endpoints or the native tool set.
+- **Resolves outbound auth** three ways, configured per endpoint (`shared/mcp/gateway/auth.py`):
+  a static header, OAuth2 client-credentials (M2M), or OAuth2 authorization-code with dynamic
+  client registration (RFC 7591). Tokens are minted, cached, and refreshed server-side and are
+  never returned to the calling MCP client.
+- **Identity mode per endpoint**: `shared` (one org-wide credential) or `per_user` — a user
+  completes their own OAuth2 link via `GET /api/v1/integrations/mcp-endpoints/{id}/link` and
+  `.../link/callback`. An unlinked per-user caller gets `{"link_required": true, "link_url": ...}`
+  back instead of the tool executing; if no shared fallback is configured the tool is withheld
+  from the listing entirely.
+- **Runs every call through the policy chokepoint**, both directions. Today's real (not stubbed)
+  implementation, `ContentFilterPolicyResolver`, runs the phase-1 tiers-1-3
+  `shared.security.content_filter.ContentFilter` — the same engine the data plane's
+  `SecurityInStage`/`SecurityOutStage` already run — against both the outbound call arguments and
+  the inbound result. A block verdict raises before the call reaches the external server (input)
+  or before the result reaches the caller (output); anything else is logged as `audit`. This
+  becomes the full per-tool `security_policies` engine once `feature/security-v2` lands, same
+  call shape.
+- **Isolates by org**: one `GatewayAggregator` is bound to exactly one `(org_id, user_uuid)` per
+  request, and its endpoint repository only ever returns that org's registrations.
+
+## Feature flag and availability
+
+`waddleai.mcp_v2` — PostHog flag, per-org, default OFF. Auth is checked *before* the flag, so an
+unauthenticated caller always gets `401` regardless of flag state; once authenticated, a
+flagged-off org gets `404 {"error": "not_found"}` on either path. Individual tool methods also
+check the flag defensively and raise `ToolDisabledError` if it flips off mid-session.
+
+| Status | Meaning |
+|---|---|
+| `401 unauthorized` | Missing or unrecognized `Authorization` header |
+| `403 forbidden` | Non-admin caller on `/mcp/admin` |
+| `404 not_found` | `waddleai.mcp_v2` is off for the caller's org |
+
+## Client configuration
 
 ### Claude Code
 
-Configure Claude Code to use WaddleAI's MCP endpoint:
-
-**Linux/macOS**: `~/.config/claude-code/settings.json`
-**Windows**: `%APPDATA%\claude-code\settings.json`
-
 ```json
 {
-  "mcp": {
-    "servers": {
-      "waddleai": {
-        "url": "ws://localhost:8765/mcp",
-        "apiKey": "wa-your-api-key-here",
-        "name": "WaddleAI Multi-Model Proxy",
-        "models": ["auto", "gpt-4", "claude-3-opus", "llama3.2"]
-      }
-    },
-    "defaultServer": "waddleai"
-  }
-}
-```
-
-### Cursor IDE
-
-Configure Cursor to use WaddleAI's MCP:
-
-**Settings** → **Extensions** → **MCP Settings**
-
-```json
-{
-  "mcp.servers": [
-    {
-      "name": "WaddleAI",
-      "url": "ws://localhost:8765/mcp",
-      "apiKey": "wa-your-api-key-here"
-    }
-  ],
-  "mcp.defaultServer": "WaddleAI"
-}
-```
-
-### VS Code Extension
-
-Install MCP extension and configure:
-
-```json
-// settings.json
-{
-  "mcp.endpoint": "ws://localhost:8765/mcp",
-  "mcp.apiKey": "wa-your-api-key-here",
-  "mcp.autoConnect": true
-}
-```
-
-### Custom Integration
-
-Connect your own application via WebSocket:
-
-```python
-import asyncio
-import websockets
-import json
-
-async def connect_mcp():
-    uri = "ws://localhost:8765/mcp"
-    headers = {
-        "X-API-Key": "wa-your-api-key-here"
-    }
-
-    async with websockets.connect(uri, extra_headers=headers) as websocket:
-        # Send MCP handshake
-        await websocket.send(json.dumps({
-            "type": "mcp.init",
-            "version": "1.0.0",
-            "capabilities": ["chat", "tools", "context"]
-        }))
-
-        # Receive server response
-        response = await websocket.recv()
-        print(f"Server: {response}")
-
-        # Send chat message
-        await websocket.send(json.dumps({
-            "type": "mcp.chat",
-            "model": "auto",  # Use intelligent routing
-            "messages": [
-                {"role": "user", "content": "Hello, WaddleAI!"}
-            ]
-        }))
-
-        # Receive response
-        async for message in websocket:
-            data = json.loads(message)
-            if data["type"] == "mcp.chat.response":
-                print(f"Assistant: {data['content']}")
-                break
-
-asyncio.run(connect_mcp())
-```
-
-## MCP Protocol Messages
-
-### Initialization
-
-```json
-// Client → Server
-{
-  "type": "mcp.init",
-  "version": "1.0.0",
-  "client": "claude-code/1.5.0",
-  "capabilities": ["chat", "tools", "context", "streaming"]
-}
-
-// Server → Client
-{
-  "type": "mcp.init.ack",
-  "version": "1.0.0",
-  "server": "waddleai/1.0.0",
-  "capabilities": ["chat", "tools", "context", "streaming", "multi-model"],
-  "models": ["auto", "gpt-4", "claude-3-opus", "llama3.2", "codellama"]
-}
-```
-
-### Chat Message
-
-```json
-// Client → Server
-{
-  "type": "mcp.chat",
-  "id": "req_123",
-  "model": "auto",
-  "messages": [
-    {"role": "user", "content": "Write a Python function to sort a list"}
-  ],
-  "temperature": 0.7,
-  "max_tokens": 500,
-  "stream": true
-}
-
-// Server → Client (streaming)
-{
-  "type": "mcp.chat.delta",
-  "id": "req_123",
-  "delta": "Here's a Python function...",
-  "model_used": "codellama:34b",
-  "routing_reasoning": "Programming task detected"
-}
-
-// Server → Client (complete)
-{
-  "type": "mcp.chat.response",
-  "id": "req_123",
-  "content": "Here's a Python function that sorts a list...",
-  "model_used": "codellama:34b",
-  "routing_decision": "codellama:34b",
-  "routing_reasoning": "Programming task detected, routing to code-specialized model",
-  "usage": {
-    "waddleai_tokens": 150,
-    "llm_tokens": {"prompt_tokens": 45, "completion_tokens": 105}
-  },
-  "latency_ms": 1250
-}
-```
-
-### Context Sharing
-
-```json
-// Client → Server (share workspace context)
-{
-  "type": "mcp.context",
-  "id": "ctx_123",
-  "context": {
-    "type": "workspace",
-    "files": [
-      {
-        "path": "/project/main.py",
-        "language": "python",
-        "content": "def main():\n    pass"
-      }
-    ],
-    "selected_text": "def main():",
-    "cursor_position": {"line": 1, "column": 12}
-  }
-}
-
-// Server → Client (acknowledge)
-{
-  "type": "mcp.context.ack",
-  "id": "ctx_123",
-  "stored": true
-}
-```
-
-### Tool Calls
-
-```json
-// Server → Client (request tool execution)
-{
-  "type": "mcp.tool.call",
-  "id": "tool_123",
-  "tool": "read_file",
-  "arguments": {
-    "path": "/project/config.json"
-  }
-}
-
-// Client → Server (tool result)
-{
-  "type": "mcp.tool.result",
-  "id": "tool_123",
-  "result": {
-    "success": true,
-    "content": "{\"api_key\": \"...\"}"
-  }
-}
-```
-
-### Error Handling
-
-```json
-{
-  "type": "mcp.error",
-  "id": "req_123",
-  "error": {
-    "code": "rate_limit_exceeded",
-    "message": "Daily token quota exceeded",
-    "details": {
-      "quota": 100000,
-      "used": 100523,
-      "reset_at": "2024-01-16T00:00:00Z"
-    }
-  }
-}
-```
-
-## Features
-
-### Model Selection via MCP
-
-Clients can specify models in MCP messages:
-
-```json
-// Use specific model
-{"model": "claude-3-opus"}
-
-// Use intelligent routing
-{"model": "auto"}
-
-// Use header preference
-// X-Preferred-Model: gpt-4
-{"model": "auto"}
-```
-
-WaddleAI's routing hierarchy applies:
-1. Request model parameter
-2. X-Preferred-Model header
-3. API key default model
-4. Routing LLM decision
-
-### Streaming Responses
-
-Enable streaming for real-time output:
-
-```json
-{
-  "type": "mcp.chat",
-  "stream": true,
-  "messages": [...]
-}
-```
-
-Server sends incremental deltas:
-
-```json
-{"type": "mcp.chat.delta", "delta": "Here"}
-{"type": "mcp.chat.delta", "delta": "'s"}
-{"type": "mcp.chat.delta", "delta": " a"}
-{"type": "mcp.chat.delta", "delta": " solution"}
-{"type": "mcp.chat.complete", "usage": {...}}
-```
-
-### Context Persistence
-
-WaddleAI stores MCP context in mem0:
-
-- Workspace files
-- Selected text
-- Cursor positions
-- Previous messages
-
-Context is used for:
-- Better routing decisions
-- More accurate responses
-- Cross-session continuity
-
-### Tool Integration
-
-MCP tools allow AI to interact with your environment:
-
-```python
-# Example: File reading tool
-{
-  "type": "mcp.tool.register",
-  "tools": [
-    {
-      "name": "read_file",
-      "description": "Read contents of a file",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {"type": "string", "description": "File path"}
-        },
-        "required": ["path"]
+  "mcpServers": {
+    "waddleai": {
+      "type": "http",
+      "url": "https://your-waddleai-host/mcp",
+      "headers": {
+        "Authorization": "Bearer $WADDLEAI_API_KEY"
       }
     }
-  ]
+  }
 }
 ```
 
-## Management Portal
+See [Claude Code + WaddleAI](claude-code.md#mcp-tools-optional-requires-waddleaimcp_v2) for the
+stdio-shim fallback and how this relates to the `/v1/messages` proxy path.
 
-### MCP Management Page
+### Cursor and other Streamable HTTP clients
 
-Access at `http://localhost:8001/mcp-management`
+Any MCP client that supports the Streamable HTTP transport connects the same way: point it at
+`https://your-waddleai-host/mcp` with an `Authorization: Bearer <your-waddleai-key>` header.
+Consult the client's own MCP configuration docs for its exact config-file shape — see
+[Cursor IDE](cursor-ide.md) for WaddleAI's `/v1`-compatible chat integration.
 
-**Features**:
-- Start/stop MCP server
-- View connected clients
-- Monitor MCP message traffic
-- Configure MCP settings
-- View error logs
-
-### Client Monitoring
-
-See all connected MCP clients:
+### Custom integration
 
 ```bash
-curl http://localhost:8001/api/mcp/clients \
-  -H "Authorization: Bearer your-admin-token"
+curl -X POST https://your-waddleai-host/mcp \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
 ```
 
-Response:
-
-```json
-{
-  "clients": [
-    {
-      "id": "client_abc123",
-      "type": "claude-code",
-      "version": "1.5.0",
-      "connected_at": "2024-01-15T10:30:00Z",
-      "user_id": 5,
-      "api_key_id": 12,
-      "messages_sent": 42,
-      "messages_received": 45
-    }
-  ],
-  "total": 1
-}
-```
-
-## Security
-
-### Authentication
-
-MCP connections require valid WaddleAI API keys:
-
-```json
-// WebSocket header
-{
-  "X-API-Key": "wa-your-api-key-here"
-}
-
-// Or in handshake message
-{
-  "type": "mcp.init",
-  "auth": {
-    "type": "bearer",
-    "token": "wa-your-api-key-here"
-  }
-}
-```
-
-### Rate Limiting
-
-MCP connections respect API key rate limits:
-
-- Quota checks per message
-- Rate limiting at XDP layer (if enabled)
-- Automatic disconnection on quota exceeded
-
-### TLS/SSL
-
-For production, use WSS (WebSocket Secure):
-
-```nginx
-# Nginx reverse proxy
-server {
-    listen 443 ssl;
-    server_name waddleai.example.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location /mcp {
-        proxy_pass http://localhost:8765;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-```
-
-Client configuration:
-
-```json
-{
-  "mcp": {
-    "url": "wss://waddleai.example.com/mcp",
-    "apiKey": "wa-your-api-key-here"
-  }
-}
-```
-
-## Troubleshooting
-
-### Connection Refused
-
-**Problem**: Cannot connect to MCP WebSocket
-
-**Solutions**:
-1. Verify MCP server is running: Check management portal
-2. Check port 8765 is not blocked by firewall
-3. Verify `MCP_AUTO_START=true` in `.env.dev`
-4. Check MCP server logs: `docker logs waddleai-management`
-
-### Authentication Failed
-
-**Problem**: "Invalid API key" or 401 errors
-
-**Solutions**:
-1. Verify API key format: `wa-`
-2. Check API key is active in management portal
-3. Ensure API key has quota remaining
-4. Verify API key in client configuration
-
-### Messages Not Streaming
-
-**Problem**: Responses appear all at once instead of streaming
-
-**Solutions**:
-1. Verify `"stream": true` in request
-2. Check client supports streaming
-3. Verify WebSocket connection is not buffered
-4. Check for proxies that might buffer WebSocket messages
-
-### Slow Responses
-
-**Problem**: MCP messages take too long
-
-**Solutions**:
-1. Check WaddleAI routing LLM performance
-2. Monitor proxy server resource usage
-3. Enable XDP acceleration for better network performance
-4. Use faster models for routing (llama3.2:1b)
-
-## Best Practices
-
-1. **Use streaming**: Enable streaming for better UX in IDEs
-2. **Share context**: Send workspace context for better routing decisions
-3. **Handle errors**: Implement reconnection logic for dropped connections
-4. **Monitor usage**: Track MCP message counts in analytics
-5. **Use intelligent routing**: Let WaddleAI's routing LLM choose the best model
-6. **Secure in production**: Always use WSS with valid certificates
-
-## See Also
-
-- [Claude Code Integration](claude-code.md)
-- [Cursor IDE Integration](cursor-ide.md)
-- [VS Code Extension](vscode-extension.md)
-- [Authentication Guide](../api/authentication.md)
-- [MCP Protocol Specification](https://modelcontextprotocol.io)
+This is the standard MCP Streamable HTTP transport (JSON-RPC 2.0 over HTTP, optionally
+upgrading to Server-Sent Events for streaming responses) — there is no WaddleAI-specific wire
+protocol to implement.

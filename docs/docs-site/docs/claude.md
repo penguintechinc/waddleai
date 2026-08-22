@@ -17,16 +17,13 @@ import openai
 
 # Configure client to use WaddleAI proxy
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here",
-    base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 # Use exactly like OpenAI API
 response = client.chat.completions.create(
     model="gpt-4",  # Will be routed by WaddleAI
-    messages=[
-        {"role": "user", "content": "Hello, how are you?"}
-    ]
+    messages=[{"role": "user", "content": "Hello, how are you?"}],
 )
 
 print(response.choices[0].message.content)
@@ -39,7 +36,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-    apiKey: 'wa-your-api-key-here',
+    apiKey: '<your-waddleai-key>',
     baseURL: 'https://your-waddleai-proxy.com/v1'
 });
 
@@ -52,10 +49,16 @@ console.log(completion.choices[0].message.content);
 ```
 
 #### cURL
+Set your key first:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 ```bash
 curl https://your-waddleai-proxy.com/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer wa-your-api-key-here" \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -d '{
     "model": "gpt-4",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -73,25 +76,18 @@ import requests
 # Login to get JWT token
 auth_response = requests.post(
     "https://your-waddleai-mgmt.com/auth/login",
-    json={
-        "username": "admin",
-        "password": "your-password"
-    }
+    json={"username": "admin", "password": "your-password"},
 )
 token = auth_response.json()["access_token"]
 
-headers = {
-    "Authorization": f"Bearer {token}",
-    "Content-Type": "application/json"
-}
+headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 ```
 
 ### Token Usage Analytics
 ```python
 # Check WaddleAI token usage
 usage = requests.get(
-    "https://your-waddleai-mgmt.com/analytics/tokens/waddleai",
-    headers=headers
+    "https://your-waddleai-mgmt.com/analytics/tokens/waddleai", headers=headers
 ).json()
 
 print(f"Total WaddleAI tokens used: {usage['total_waddleai_tokens']}")
@@ -99,8 +95,7 @@ print(f"LLM breakdown: {usage['llm_breakdown']}")
 
 # Check specific user usage
 user_usage = requests.get(
-    "https://your-waddleai-mgmt.com/analytics/tokens/123",
-    headers=headers
+    "https://your-waddleai-mgmt.com/analytics/tokens/123", headers=headers
 ).json()
 ```
 
@@ -146,10 +141,10 @@ WaddleAI uses a sophisticated dual token system for accurate billing and analyti
 # Usage response includes both token types
 {
     "usage": {
-        "prompt_tokens": 100,      # Raw LLM input tokens
-        "completion_tokens": 50,   # Raw LLM output tokens
-        "total_tokens": 150,       # Total LLM tokens
-        "waddleai_tokens": 15      # Normalized WaddleAI tokens
+        "prompt_tokens": 100,  # Raw LLM input tokens
+        "completion_tokens": 50,  # Raw LLM output tokens
+        "total_tokens": 150,  # Total LLM tokens
+        "waddleai_tokens": 15,  # Normalized WaddleAI tokens
     }
 }
 ```
@@ -161,13 +156,13 @@ WaddleAI uses a sophisticated dual token system for accurate billing and analyti
 # WaddleAI automatically routes based on your configuration
 response = client.chat.completions.create(
     model="smart-router",  # Uses routing LLM to select best model
-    messages=[{"role": "user", "content": "Complex reasoning task..."}]
+    messages=[{"role": "user", "content": "Complex reasoning task..."}],
 )
 
 # Force specific provider
 response = client.chat.completions.create(
     model="ollama:llama2",  # Route to specific Ollama model
-    messages=[{"role": "user", "content": "Local processing needed"}]
+    messages=[{"role": "user", "content": "Local processing needed"}],
 )
 ```
 
@@ -179,8 +174,8 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Remember my preferences"}],
     extra_headers={
         "X-WaddleAI-Memory": "user-session-123",
-        "X-WaddleAI-Memory-Type": "conversation"
-    }
+        "X-WaddleAI-Memory-Type": "conversation",
+    },
 )
 ```
 
@@ -197,8 +192,7 @@ Security events are logged and can be monitored:
 ```python
 # Check recent security alerts (admin/reporter only)
 alerts = requests.get(
-    "https://your-waddleai-proxy.com/api/security/threats",
-    headers=headers
+    "https://your-waddleai-proxy.com/api/security/threats", headers=headers
 ).json()
 ```
 

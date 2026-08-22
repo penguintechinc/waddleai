@@ -179,6 +179,7 @@ def _columns(engine: sa.engine.Engine, table: str) -> set:
 
 @pytest.fixture
 def scratch_db(tmp_path, monkeypatch):
+    """Build a fresh SQLite DB at the pre-007 schema and point DATABASE_URL at it."""
     db_path = tmp_path / "migration007.db"
     db_url = f"sqlite:///{db_path}"
     monkeypatch.setenv("DATABASE_URL", db_url)
@@ -270,6 +271,7 @@ def test_upgrade_fold_safe_on_empty_ailb_tables(scratch_db):
 
 
 def test_upgrade_drops_ailb_tables_and_columns(scratch_db):
+    """Upgrade drops the AILB tables/columns and adds the new virtual_keys budget columns."""
     db_url, engine = scratch_db
     _seed_ailb_usage(engine)
     cfg = _alembic_config(db_url)
@@ -288,6 +290,7 @@ def test_upgrade_drops_ailb_tables_and_columns(scratch_db):
 
 
 def test_upgrade_adds_native_limit_columns(scratch_db):
+    """Upgrade adds token_usage.source/estimated and organizations.rpm_limit columns."""
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "006_add_memory_scope")
@@ -299,6 +302,7 @@ def test_upgrade_adds_native_limit_columns(scratch_db):
 
 
 def test_upgrade_seeds_conversion_rates_without_truncation(scratch_db):
+    """Seeded conversion rates keep full float precision after the column widens to Float."""
     db_url, engine = scratch_db
     cfg = _alembic_config(db_url)
     command.stamp(cfg, "006_add_memory_scope")
@@ -322,6 +326,7 @@ def test_upgrade_seeds_conversion_rates_without_truncation(scratch_db):
 
 
 def test_downgrade_restores_ailb_tables_but_keeps_folded_usage(scratch_db):
+    """Downgrade restores empty AILB tables/columns without unfolding already-folded usage rows."""
     db_url, engine = scratch_db
     _seed_ailb_usage(engine)
     cfg = _alembic_config(db_url)

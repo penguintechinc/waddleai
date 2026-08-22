@@ -9,6 +9,7 @@ process crashes and can be reviewed or resumed later.
 
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 
 from penguincode_cli.ollama import Message, OllamaClient
@@ -333,9 +334,9 @@ class PlannerAgent:
 
     def _render_plan_file(self, plan: Plan) -> str:
         """Render a Plan object as markdown for the .plan file."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        ts = datetime.fromtimestamp(plan.created_at, tz=timezone.utc)
+        ts = datetime.fromtimestamp(plan.created_at, tz=UTC)
         ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S")
 
         lines = [
@@ -406,11 +407,11 @@ class PlannerAgent:
             elif stripped.startswith("- **Status**:"):
                 plan_status = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("- **Created**:"):
-                from datetime import datetime, timezone
+                from datetime import datetime
 
                 try:
                     ts_str = stripped.split(":", 1)[1].strip()
-                    dt = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+                    dt = datetime.fromisoformat(ts_str).replace(tzinfo=UTC)
                     created_at = dt.timestamp()
                 except (ValueError, IndexError):
                     pass

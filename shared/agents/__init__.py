@@ -1,5 +1,4 @@
-"""
-WaddleAI Agent System
+"""WaddleAI Agent System.
 
 Provides security enforcement and usage tracking for the AI load balancer.
 

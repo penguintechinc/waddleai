@@ -1,11 +1,24 @@
 [tool.ruff]
 target-version = "py313"
+# Exclusions below apply even when files are passed explicitly on the command
+# line, which is how pre-commit invokes ruff. Without this, `make lint` and the
+# commit hook disagreed: the gate skipped vendored services/penguincode while
+# the hook still linted it, so a clean gate could not produce a clean commit.
+force-exclude = true
 line-length = 100
 extend-exclude = [
     "grpc_proto",
     "grpc/proto",
     "*_pb2.py",
     "*_pb2_grpc.py",
+    # Vendored upstream, not maintained here. Excluded from every scan
+    # (bandit, gitleaks, shellcheck, hadolint) for the same reason; ruff was
+    # the odd one out, so `make lint` reported 283 errors from code this repo
+    # does not own while first-party code was already clean.
+    "services/penguincode",
+    # Build artifacts and nested checkouts, not source.
+    ".venv",
+    ".worktrees",
 ]
 
 [tool.ruff.lint]
@@ -18,6 +31,12 @@ convention = "google"
 # sys.path manipulation before imports in entry points, and re-export
 # wildcard imports in package __init__ files.
 [tool.ruff.lint.per-file-ignores]
+# ruff's isort rule wants a blank line between the two first-party import
+# groups nested inside this file's `try:` block, and `ruff format` deletes it
+# again on the very next pass -- the two rules fight indefinitely, so no commit
+# can satisfy both. The imports are correctly grouped and sorted; only the
+# separating blank line is contested.
+"tests/unit/test_request_router.py" = ["I001"]
 "services/management/apps/*/main.py" = ["E402"]
 "proxy/apps/*/main.py" = ["E402"]
 "examples/*.py" = ["E402"]

@@ -66,6 +66,22 @@ class TestRoutingStageWiring:
         assert result.routed_from == {"cause": "escalation", "trigger": "complexity"}
         engine.decide.assert_awaited_once()
 
+    async def test_non_numeric_org_id_falls_back_to_zero(self):
+        """A non-numeric tenant_id (ValueError on int()) resolves org_id=0, never raises."""
+        engine = Mock(spec=RoutingEngine)
+        engine.decide = AsyncMock(return_value=RouteDecision(model="gpt-4o"))
+        db = _fake_db_with_model_configs([_config_row("gpt-4o")])
+
+        stage = RoutingStage(name="routing", engine=engine, db=db, flag=None)
+        user = Mock(id=1, tenant_id="not-a-number", organization_id=None)
+        ctx = PipelineContext(user=user, body={"messages": []}, model="gpt-4o")
+
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        called_input = engine.decide.call_args.args[0]
+        assert called_input.org_id == 0
+
     async def test_engine_failure_leaves_ctx_model_unchanged(self):
         """A RoutingEngine exception never propagates -- ctx.model is left as-is."""
         engine = Mock(spec=RoutingEngine)
@@ -283,3 +299,70 @@ class TestDispatchStageConsumesFallbackChain:
         assert result.blocked is True
         assert result.status_code == 503
         assert result.block_reason == "no_available_providers"
+
+    async def test_fallback_chain_skips_unavailable_entries_before_success(self):
+        """A dead first fallback entry doesn't stop the loop from reaching a live one."""
+        router = Mock()
+
+        def _select(model, preferred_backend=None):
+            if model in ("primary-model", "dead-fallback"):
+                return None
+            if model == "live-fallback":
+                return ("anthropic", "live-fallback")
+            return None
+
+        router.select_provider = Mock(side_effect=_select)
+
+        connector = Mock()
+        connector.chat_completion = AsyncMock(
+            return_value=("ok", {"input_tokens": 1, "output_tokens": 1, "finish_reason": "stop"})
+        )
+
+        stage = DispatchStage(
+            name="dispatch", router=router, connectors={"anthropic": connector}, flag=None
+        )
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "primary-model"},
+            model="primary-model",
+            messages=[{"role": "user", "content": "hi"}],
+            fallback_chain=["dead-fallback", "live-fallback"],
+        )
+
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        assert result.provider == "anthropic"
+        assert result.model == "live-fallback"
+
+    async def test_fallback_chain_select_provider_exception_maps_to_routing_error(self):
+        """An exception raised while trying a fallback candidate blocks with routing_error.
+
+        The primary-selection try/except only wraps the *first* select_provider
+        call; a raise from inside the fallback for-loop is deliberately left
+        to the outer try/except so it still maps to a clean 500, not an
+        unhandled exception.
+        """
+        router = Mock()
+
+        def _select(model, preferred_backend=None):
+            raise RuntimeError(f"{model} boom")
+
+        router.select_provider = Mock(side_effect=_select)
+
+        stage = DispatchStage(name="dispatch", router=router, connectors={}, flag=None)
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "primary-model"},
+            model="primary-model",
+            messages=[{"role": "user", "content": "hi"}],
+            fallback_chain=["fallback-model"],
+        )
+
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 500
+        assert result.block_reason == "routing_error"

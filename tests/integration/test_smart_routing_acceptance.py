@@ -319,9 +319,7 @@ class TestFlagOffByteIdenticalProof:
         pipeline = ProxyPipeline(stages=[routing_stage], features=_FakeFeatures(enabled=False))
 
         user = Mock(id=1, tenant_id="1")
-        ctx = PipelineContext(
-            user=user, body={"messages": []}, model="legacy-picked-model"
-        )
+        ctx = PipelineContext(user=user, body={"messages": []}, model="legacy-picked-model")
 
         result = await pipeline.run(ctx)
 

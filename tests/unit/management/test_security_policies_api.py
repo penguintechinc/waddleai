@@ -219,9 +219,7 @@ class TestListBypassGrants:
         other_org_grant = _mock_grant_row(grant_id=1, organization_id=999)
         app_mock_db.return_value.select.return_value = make_select_result([other_org_grant])
 
-        resp = await client.get(
-            "/api/v1/security-policies/bypass-grants", headers=rm_auth_headers
-        )
+        resp = await client.get("/api/v1/security-policies/bypass-grants", headers=rm_auth_headers)
 
         assert resp.status_code == 200
         data = await resp.get_json()

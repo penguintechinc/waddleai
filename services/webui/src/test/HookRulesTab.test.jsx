@@ -187,6 +187,94 @@ describe('HookRulesTab', () => {
       expect(screen.getByDisplayValue('Protects against destructive shell commands')).toBeInTheDocument();
     });
 
+    it('submits an edit as a PUT to the rule id and reports success', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      axios.put.mockResolvedValue({ data: { status: 'success', data: orgRule } });
+      const { onSuccess } = renderTab({ isAdmin: true });
+      await waitFor(() => screen.getAllByTestId('hook-rule-row'));
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+      fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+      await waitFor(() =>
+        expect(axios.put).toHaveBeenCalledWith('/api/v1/hooks/rules/1', expect.any(Object)),
+      );
+      expect(onSuccess).toHaveBeenCalledWith('Hook rule updated');
+      confirmSpy.mockRestore();
+    });
+
+    it('reports the server error when saving an edit fails', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      axios.put.mockRejectedValue({ response: { data: { error: 'stale rule version' } } });
+      const { onError } = renderTab({ isAdmin: true });
+      await waitFor(() => screen.getAllByTestId('hook-rule-row'));
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
+      fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('stale rule version'));
+      confirmSpy.mockRestore();
+    });
+
+    it('falls back to a generic message when saving a new rule fails without a response error', async () => {
+      axios.post.mockRejectedValue(new Error('network down'));
+      const { onError } = renderTab({ isAdmin: true });
+      await waitFor(() => screen.getAllByTestId('hook-rule-row'));
+
+      fireEvent.click(screen.getByText('+ New Rule'));
+      fireEvent.change(screen.getByLabelText('Decision'), { target: { value: 'allow' } });
+      fireEvent.change(screen.getByLabelText('Reason (shown to the developer)'), {
+        target: { value: 'Fine to allow' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Rule' }));
+
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to save hook rule'));
+    });
+
+    it('reports the server error when toggling enabled fails', async () => {
+      axios.put.mockRejectedValue({ response: { data: { error: 'rule locked' } } });
+      const { onError } = renderTab({ isAdmin: true });
+      await waitFor(() => screen.getAllByTestId('hook-rule-row'));
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Disable' })[0]);
+
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('rule locked'));
+    });
+
+    it('falls back to a generic message when toggling enabled fails without a response error', async () => {
+      axios.put.mockRejectedValue(new Error('network down'));
+      const { onError } = renderTab({ isAdmin: true });
+      await waitFor(() => screen.getAllByTestId('hook-rule-row'));
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Disable' })[0]);
+
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to update hook rule'));
+    });
+
+    it('reports the server error when deleting a rule fails', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      axios.delete.mockRejectedValue({ response: { data: { error: 'rule in use' } } });
+      const { onError } = renderTab({ isAdmin: true });
+      await waitFor(() => screen.getAllByTestId('hook-rule-row'));
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('rule in use'));
+      confirmSpy.mockRestore();
+    });
+
+    it('falls back to a generic message when deleting a rule fails without a response error', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      axios.delete.mockRejectedValue(new Error('network down'));
+      const { onError } = renderTab({ isAdmin: true });
+      await waitFor(() => screen.getAllByTestId('hook-rule-row'));
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to delete hook rule'));
+      confirmSpy.mockRestore();
+    });
+
     it('deletes a rule after confirmation', async () => {
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
       axios.delete.mockResolvedValue({ data: { status: 'success', data: { id: 1 } } });

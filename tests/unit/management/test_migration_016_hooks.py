@@ -63,21 +63,54 @@ def test_upgrade_creates_hooks_tables(scratch_db):
         ht_cols = {r[1] for r in conn.execute(sa.text("PRAGMA table_info(hook_telemetry_events)"))}
 
     assert hr_cols == {
-        "id", "scope_type", "scope_ref", "ecosystem", "event", "tool_name_pattern",
-        "match_pattern", "decision", "reason", "enabled", "priority", "created_by",
-        "created_at", "updated_at",
+        "id",
+        "scope_type",
+        "scope_ref",
+        "ecosystem",
+        "event",
+        "tool_name_pattern",
+        "match_pattern",
+        "decision",
+        "reason",
+        "enabled",
+        "priority",
+        "created_by",
+        "created_at",
+        "updated_at",
     }
     assert hd_cols == {
-        "id", "scope_type", "scope_ref", "pattern", "reason", "enabled", "created_by",
-        "created_at", "updated_at",
+        "id",
+        "scope_type",
+        "scope_ref",
+        "pattern",
+        "reason",
+        "enabled",
+        "created_by",
+        "created_at",
+        "updated_at",
     }
     assert hc_cols == {
-        "id", "scope_type", "scope_ref", "remote_eval_enabled", "remote_eval_timeout_ms",
-        "remote_eval_fail_mode", "capture_raw_payloads", "created_at", "updated_at",
+        "id",
+        "scope_type",
+        "scope_ref",
+        "remote_eval_enabled",
+        "remote_eval_timeout_ms",
+        "remote_eval_fail_mode",
+        "capture_raw_payloads",
+        "created_at",
+        "updated_at",
     }
     assert ht_cols == {
-        "id", "organization_id", "ecosystem", "event", "tool_name", "session_id",
-        "tool_input_hash", "tool_input_raw", "occurred_at", "received_at",
+        "id",
+        "organization_id",
+        "ecosystem",
+        "event",
+        "tool_name",
+        "session_id",
+        "tool_input_hash",
+        "tool_input_raw",
+        "occurred_at",
+        "received_at",
     }
 
 
@@ -115,10 +148,7 @@ def test_downgrade_drops_hooks_tables(scratch_db):
 
     with engine.connect() as conn:
         tables = {
-            r[0]
-            for r in conn.execute(
-                sa.text("SELECT name FROM sqlite_master WHERE type='table'")
-            )
+            r[0] for r in conn.execute(sa.text("SELECT name FROM sqlite_master WHERE type='table'"))
         }
 
     assert "hook_rules" not in tables

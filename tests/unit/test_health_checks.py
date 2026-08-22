@@ -1,6 +1,6 @@
-"""
-Comprehensive tests for health check system
-Tests all checker classes, status transitions, and the monitor
+"""Comprehensive tests for health check system.
+
+Tests all checker classes, status transitions, and the monitor.
 """
 
 import asyncio
@@ -24,27 +24,27 @@ from shared.utils.health_checks import (
 
 # Tests for HealthStatus enum
 class TestHealthStatus:
-    """Test HealthStatus enum"""
+    """Test HealthStatus enum."""
 
     def test_health_status_values(self):
-        """Verify enum values match expected strings"""
+        """Verify enum values match expected strings."""
         assert HealthStatus.HEALTHY.value == "healthy"
         assert HealthStatus.UNHEALTHY.value == "unhealthy"
         assert HealthStatus.DEGRADED.value == "degraded"
         assert HealthStatus.UNKNOWN.value == "unknown"
 
     def test_health_status_comparison(self):
-        """Test enum comparisons"""
+        """Test enum comparisons."""
         assert HealthStatus.HEALTHY == HealthStatus.HEALTHY
         assert HealthStatus.HEALTHY != HealthStatus.UNHEALTHY
 
 
 # Tests for HealthCheckResult dataclass
 class TestHealthCheckResult:
-    """Test HealthCheckResult dataclass"""
+    """Test HealthCheckResult dataclass."""
 
     def test_result_initialization(self):
-        """Test creating a result"""
+        """Test creating a result."""
         result = HealthCheckResult(
             name="test_check",
             status=HealthStatus.HEALTHY,
@@ -60,7 +60,7 @@ class TestHealthCheckResult:
         assert result.duration_ms == 50.5
 
     def test_result_to_dict(self):
-        """Test to_dict converts status to string value"""
+        """Test to_dict converts status to string value."""
         result = HealthCheckResult(
             name="db_check",
             status=HealthStatus.HEALTHY,
@@ -79,7 +79,7 @@ class TestHealthCheckResult:
         assert result_dict["timestamp"] == "2025-01-01T00:00:00"
 
     def test_result_to_dict_all_statuses(self):
-        """Test to_dict with all status values"""
+        """Test to_dict with all status values."""
         for status in HealthStatus:
             result = HealthCheckResult(
                 name="test",
@@ -95,11 +95,11 @@ class TestHealthCheckResult:
 
 # Tests for HealthChecker base class
 class TestHealthChecker:
-    """Test HealthChecker base class"""
+    """Test HealthChecker base class."""
 
     @pytest.mark.asyncio
     async def test_check_calls_perform_check(self):
-        """Test that check() calls _perform_check()"""
+        """Test that check() calls _perform_check()."""
         checker = HealthChecker("test_checker")
         checker._perform_check = AsyncMock(return_value=(HealthStatus.HEALTHY, "OK", {}))
 
@@ -112,7 +112,7 @@ class TestHealthChecker:
 
     @pytest.mark.asyncio
     async def test_check_measures_duration(self):
-        """Test that check() measures execution time"""
+        """Test that check() measures execution time."""
         checker = HealthChecker("test")
 
         async def slow_check():
@@ -126,7 +126,7 @@ class TestHealthChecker:
 
     @pytest.mark.asyncio
     async def test_check_captures_timestamp(self):
-        """Test that check() captures ISO timestamp"""
+        """Test that check() captures ISO timestamp."""
         checker = HealthChecker("test")
         checker._perform_check = AsyncMock(return_value=(HealthStatus.HEALTHY, "OK", {}))
 
@@ -137,7 +137,7 @@ class TestHealthChecker:
 
     @pytest.mark.asyncio
     async def test_check_handles_exception(self):
-        """Test that check() catches exceptions and returns UNHEALTHY"""
+        """Test that check() catches exceptions and returns UNHEALTHY."""
         checker = HealthChecker("test")
         checker._perform_check = AsyncMock(side_effect=ValueError("DB error"))
 
@@ -149,7 +149,7 @@ class TestHealthChecker:
 
     @pytest.mark.asyncio
     async def test_perform_check_not_implemented(self):
-        """Test that _perform_check raises NotImplementedError"""
+        """Test that _perform_check raises NotImplementedError."""
         checker = HealthChecker("test")
 
         with pytest.raises(NotImplementedError):
@@ -158,11 +158,11 @@ class TestHealthChecker:
 
 # Tests for DatabaseHealthChecker
 class TestDatabaseHealthChecker:
-    """Test DatabaseHealthChecker"""
+    """Test DatabaseHealthChecker."""
 
     @pytest.mark.asyncio
     async def test_database_healthy_fast(self):
-        """Test database is HEALTHY when SELECT 1 returns 1 quickly"""
+        """Test database is HEALTHY when SELECT 1 returns 1 quickly."""
         mock_db = Mock()
         mock_db.executesql = Mock(return_value=[[1]])
         mock_db._adapter = Mock(pool_size=5)
@@ -177,7 +177,7 @@ class TestDatabaseHealthChecker:
 
     @pytest.mark.asyncio
     async def test_database_degraded_slow(self):
-        """Test database is DEGRADED when query takes > 1000ms"""
+        """Test database is DEGRADED when query takes > 1000ms."""
         mock_db = Mock()
         mock_db._adapter = Mock(pool_size=5)
 
@@ -204,7 +204,7 @@ class TestDatabaseHealthChecker:
 
     @pytest.mark.asyncio
     async def test_database_unhealthy_wrong_result(self):
-        """Test database is UNHEALTHY when SELECT 1 doesn't return 1"""
+        """Test database is UNHEALTHY when SELECT 1 doesn't return 1."""
         mock_db = Mock()
         mock_db.executesql = Mock(return_value=[[0]])
         mock_db._adapter = Mock(pool_size=5)
@@ -217,7 +217,7 @@ class TestDatabaseHealthChecker:
 
     @pytest.mark.asyncio
     async def test_database_unhealthy_exception(self):
-        """Test database is UNHEALTHY on connection error"""
+        """Test database is UNHEALTHY on connection error."""
         mock_db = Mock()
         mock_db.executesql = Mock(side_effect=ConnectionError("Connection refused"))
 
@@ -230,7 +230,7 @@ class TestDatabaseHealthChecker:
 
     @pytest.mark.asyncio
     async def test_database_pool_size_unknown(self):
-        """Test handles missing pool_size gracefully"""
+        """Test handles missing pool_size gracefully."""
         mock_db = Mock()
         mock_db.executesql = Mock(return_value=[[1]])
         mock_db._adapter = Mock(spec=[])  # No pool_size attribute
@@ -244,15 +244,19 @@ class TestDatabaseHealthChecker:
 
 # Tests for RedisHealthChecker
 class TestRedisHealthChecker:
-    """Test RedisHealthChecker"""
+    """Test RedisHealthChecker."""
 
     @pytest.mark.asyncio
     async def test_redis_healthy_fast(self):
-        """Test Redis is HEALTHY when ping < 100ms"""
+        """Test Redis is HEALTHY when ping < 100ms."""
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(return_value=True)
         mock_client.info = AsyncMock(
-            return_value={"connected_clients": 5, "used_memory_human": "100M", "redis_version": "7.0"}
+            return_value={
+                "connected_clients": 5,
+                "used_memory_human": "100M",
+                "redis_version": "7.0",
+            }
         )
         mock_client.close = AsyncMock()
 
@@ -269,7 +273,7 @@ class TestRedisHealthChecker:
 
     @pytest.mark.asyncio
     async def test_redis_degraded_slow(self):
-        """Test Redis is DEGRADED when ping > 100ms"""
+        """Test Redis is DEGRADED when ping > 100ms."""
         mock_client = AsyncMock()
 
         async def slow_ping():
@@ -290,7 +294,7 @@ class TestRedisHealthChecker:
 
     @pytest.mark.asyncio
     async def test_redis_unhealthy_ping_fails(self):
-        """Test Redis is UNHEALTHY when ping returns False"""
+        """Test Redis is UNHEALTHY when ping returns False."""
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(return_value=False)
         mock_client.close = AsyncMock()
@@ -304,7 +308,7 @@ class TestRedisHealthChecker:
 
     @pytest.mark.asyncio
     async def test_redis_unhealthy_exception(self):
-        """Test Redis is UNHEALTHY on connection error"""
+        """Test Redis is UNHEALTHY on connection error."""
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(side_effect=ConnectionError("Connection refused"))
         mock_client.close = AsyncMock()
@@ -318,7 +322,7 @@ class TestRedisHealthChecker:
 
     @pytest.mark.asyncio
     async def test_redis_client_closed_on_error(self):
-        """Test Redis client is closed even on exception"""
+        """Test Redis client is closed even on exception."""
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(side_effect=ValueError("Test error"))
         mock_client.close = AsyncMock()
@@ -331,7 +335,7 @@ class TestRedisHealthChecker:
 
     @pytest.mark.asyncio
     async def test_redis_missing_info_fields(self):
-        """Test handles missing fields in Redis info"""
+        """Test handles missing fields in Redis info."""
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(return_value=True)
         mock_client.info = AsyncMock(return_value={})  # Empty info
@@ -349,19 +353,22 @@ class TestRedisHealthChecker:
 
 # Tests for SystemResourcesHealthChecker
 class TestSystemResourcesHealthChecker:
-    """Test SystemResourcesHealthChecker"""
+    """Test SystemResourcesHealthChecker."""
 
     @pytest.mark.asyncio
     async def test_system_healthy_all_green(self):
-        """Test system is HEALTHY when all metrics below thresholds"""
-        with patch("psutil.cpu_percent", return_value=50.0), patch("psutil.virtual_memory") as mock_mem, patch(
-            "psutil.disk_usage"
-        ) as mock_disk:
-
+        """Test system is HEALTHY when all metrics below thresholds."""
+        with (
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_mem.return_value = Mock(percent=60.0, available=500 * 1024**3)
             mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
-            checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
+            checker = SystemResourcesHealthChecker(
+                "system", cpu_threshold=90.0, memory_threshold=90.0
+            )
             result = await checker.check()
 
             assert result.status == HealthStatus.HEALTHY
@@ -372,15 +379,18 @@ class TestSystemResourcesHealthChecker:
 
     @pytest.mark.asyncio
     async def test_system_degraded_single_issue_cpu(self):
-        """Test system is DEGRADED when only CPU above threshold"""
-        with patch("psutil.cpu_percent", return_value=95.0), patch("psutil.virtual_memory") as mock_mem, patch(
-            "psutil.disk_usage"
-        ) as mock_disk:
-
+        """Test system is DEGRADED when only CPU above threshold."""
+        with (
+            patch("psutil.cpu_percent", return_value=95.0),
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_mem.return_value = Mock(percent=60.0, available=500 * 1024**3)
             mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
-            checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
+            checker = SystemResourcesHealthChecker(
+                "system", cpu_threshold=90.0, memory_threshold=90.0
+            )
             result = await checker.check()
 
             assert result.status == HealthStatus.DEGRADED
@@ -388,15 +398,18 @@ class TestSystemResourcesHealthChecker:
 
     @pytest.mark.asyncio
     async def test_system_degraded_single_issue_memory(self):
-        """Test system is DEGRADED when only memory above threshold"""
-        with patch("psutil.cpu_percent", return_value=50.0), patch("psutil.virtual_memory") as mock_mem, patch(
-            "psutil.disk_usage"
-        ) as mock_disk:
-
+        """Test system is DEGRADED when only memory above threshold."""
+        with (
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_mem.return_value = Mock(percent=95.0, available=10 * 1024**3)
             mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
-            checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
+            checker = SystemResourcesHealthChecker(
+                "system", cpu_threshold=90.0, memory_threshold=90.0
+            )
             result = await checker.check()
 
             assert result.status == HealthStatus.DEGRADED
@@ -404,15 +417,18 @@ class TestSystemResourcesHealthChecker:
 
     @pytest.mark.asyncio
     async def test_system_degraded_single_issue_disk(self):
-        """Test system is DEGRADED when disk > 95%"""
-        with patch("psutil.cpu_percent", return_value=50.0), patch("psutil.virtual_memory") as mock_mem, patch(
-            "psutil.disk_usage"
-        ) as mock_disk:
-
+        """Test system is DEGRADED when disk > 95%."""
+        with (
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_mem.return_value = Mock(percent=60.0, available=500 * 1024**3)
             mock_disk.return_value = Mock(percent=96.0, free=5 * 1024**3)
 
-            checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
+            checker = SystemResourcesHealthChecker(
+                "system", cpu_threshold=90.0, memory_threshold=90.0
+            )
             result = await checker.check()
 
             assert result.status == HealthStatus.DEGRADED
@@ -420,15 +436,18 @@ class TestSystemResourcesHealthChecker:
 
     @pytest.mark.asyncio
     async def test_system_unhealthy_multiple_issues(self):
-        """Test system is UNHEALTHY when multiple issues exist"""
-        with patch("psutil.cpu_percent", return_value=95.0), patch("psutil.virtual_memory") as mock_mem, patch(
-            "psutil.disk_usage"
-        ) as mock_disk:
-
+        """Test system is UNHEALTHY when multiple issues exist."""
+        with (
+            patch("psutil.cpu_percent", return_value=95.0),
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_mem.return_value = Mock(percent=95.0, available=10 * 1024**3)
             mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
-            checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
+            checker = SystemResourcesHealthChecker(
+                "system", cpu_threshold=90.0, memory_threshold=90.0
+            )
             result = await checker.check()
 
             assert result.status == HealthStatus.UNHEALTHY
@@ -437,37 +456,43 @@ class TestSystemResourcesHealthChecker:
 
     @pytest.mark.asyncio
     async def test_system_unhealthy_cpu_memory_disk(self):
-        """Test system is UNHEALTHY when all three metrics are issues"""
-        with patch("psutil.cpu_percent", return_value=95.0), patch("psutil.virtual_memory") as mock_mem, patch(
-            "psutil.disk_usage"
-        ) as mock_disk:
-
+        """Test system is UNHEALTHY when all three metrics are issues."""
+        with (
+            patch("psutil.cpu_percent", return_value=95.0),
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_mem.return_value = Mock(percent=95.0, available=10 * 1024**3)
             mock_disk.return_value = Mock(percent=96.0, free=5 * 1024**3)
 
-            checker = SystemResourcesHealthChecker("system", cpu_threshold=90.0, memory_threshold=90.0)
+            checker = SystemResourcesHealthChecker(
+                "system", cpu_threshold=90.0, memory_threshold=90.0
+            )
             result = await checker.check()
 
             assert result.status == HealthStatus.UNHEALTHY
 
     @pytest.mark.asyncio
     async def test_system_custom_thresholds(self):
-        """Test custom CPU and memory thresholds"""
-        with patch("psutil.cpu_percent", return_value=80.0), patch("psutil.virtual_memory") as mock_mem, patch(
-            "psutil.disk_usage"
-        ) as mock_disk:
-
+        """Test custom CPU and memory thresholds."""
+        with (
+            patch("psutil.cpu_percent", return_value=80.0),
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.disk_usage") as mock_disk,
+        ):
             mock_mem.return_value = Mock(percent=85.0, available=100 * 1024**3)
             mock_disk.return_value = Mock(percent=50.0, free=100 * 1024**3)
 
-            checker = SystemResourcesHealthChecker("system", cpu_threshold=85.0, memory_threshold=90.0)
+            checker = SystemResourcesHealthChecker(
+                "system", cpu_threshold=85.0, memory_threshold=90.0
+            )
             result = await checker.check()
 
             assert result.status == HealthStatus.HEALTHY
 
     @pytest.mark.asyncio
     async def test_system_exception(self):
-        """Test system check handles exceptions"""
+        """Test system check handles exceptions."""
         with patch("psutil.cpu_percent", side_effect=OSError("psutil error")):
             checker = SystemResourcesHealthChecker("system")
             result = await checker.check()
@@ -478,11 +503,11 @@ class TestSystemResourcesHealthChecker:
 
 # Tests for LLMProviderHealthChecker
 class TestLLMProviderHealthChecker:
-    """Test LLMProviderHealthChecker"""
+    """Test LLMProviderHealthChecker."""
 
     @pytest.mark.asyncio
     async def test_llm_all_healthy(self):
-        """Test LLM is HEALTHY when all providers healthy"""
+        """Test LLM is HEALTHY when all providers healthy."""
         mock_manager = AsyncMock()
         mock_manager.health_check_all = AsyncMock(
             return_value={
@@ -500,7 +525,7 @@ class TestLLMProviderHealthChecker:
 
     @pytest.mark.asyncio
     async def test_llm_some_healthy(self):
-        """Test LLM is DEGRADED when some providers healthy"""
+        """Test LLM is DEGRADED when some providers healthy."""
         mock_manager = AsyncMock()
         mock_manager.health_check_all = AsyncMock(
             return_value={
@@ -517,7 +542,7 @@ class TestLLMProviderHealthChecker:
 
     @pytest.mark.asyncio
     async def test_llm_all_unhealthy(self):
-        """Test LLM is UNHEALTHY when all providers unhealthy"""
+        """Test LLM is UNHEALTHY when all providers unhealthy."""
         mock_manager = AsyncMock()
         mock_manager.health_check_all = AsyncMock(
             return_value={
@@ -534,7 +559,7 @@ class TestLLMProviderHealthChecker:
 
     @pytest.mark.asyncio
     async def test_llm_exception(self):
-        """Test LLM check handles exceptions"""
+        """Test LLM check handles exceptions."""
         mock_manager = AsyncMock()
         mock_manager.health_check_all = AsyncMock(side_effect=RuntimeError("Manager error"))
 
@@ -547,11 +572,11 @@ class TestLLMProviderHealthChecker:
 
 # Tests for HTTPServiceHealthChecker
 class TestHTTPServiceHealthChecker:
-    """Test HTTPServiceHealthChecker"""
+    """Test HTTPServiceHealthChecker."""
 
     @pytest.mark.asyncio
     async def test_http_healthy_200_fast(self):
-        """Test HTTP is HEALTHY for 200 response < 5s"""
+        """Test HTTP is HEALTHY for 200 response < 5s."""
         mock_response = MagicMock()
         mock_response.status = 200
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
@@ -572,7 +597,7 @@ class TestHTTPServiceHealthChecker:
 
     @pytest.mark.asyncio
     async def test_http_degraded_200_slow(self):
-        """Test HTTP is DEGRADED for 200 response > 5s"""
+        """Test HTTP is DEGRADED for 200 response > 5s."""
         mock_response = MagicMock()
         mock_response.status = 200
 
@@ -597,7 +622,7 @@ class TestHTTPServiceHealthChecker:
 
     @pytest.mark.asyncio
     async def test_http_unhealthy_non_200(self):
-        """Test HTTP is UNHEALTHY for non-200 status"""
+        """Test HTTP is UNHEALTHY for non-200 status."""
         mock_response = MagicMock()
         mock_response.status = 500
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
@@ -617,9 +642,9 @@ class TestHTTPServiceHealthChecker:
 
     @pytest.mark.asyncio
     async def test_http_unhealthy_timeout(self):
-        """Test HTTP is UNHEALTHY on timeout"""
+        """Test HTTP is UNHEALTHY on timeout."""
         mock_response = MagicMock()
-        mock_response.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_response.__aenter__ = AsyncMock(side_effect=TimeoutError())
         mock_response.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
@@ -636,7 +661,7 @@ class TestHTTPServiceHealthChecker:
 
     @pytest.mark.asyncio
     async def test_http_unhealthy_exception(self):
-        """Test HTTP is UNHEALTHY on exception"""
+        """Test HTTP is UNHEALTHY on exception."""
         mock_response = MagicMock()
         mock_response.__aenter__ = AsyncMock(side_effect=ConnectionError("Connection failed"))
         mock_response.__aexit__ = AsyncMock(return_value=None)
@@ -655,7 +680,7 @@ class TestHTTPServiceHealthChecker:
 
     @pytest.mark.asyncio
     async def test_http_custom_timeout(self):
-        """Test custom timeout value"""
+        """Test custom timeout value."""
         mock_response = MagicMock()
         mock_response.status = 200
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
@@ -676,17 +701,17 @@ class TestHTTPServiceHealthChecker:
 
 # Tests for WaddleAIHealthMonitor
 class TestWaddleAIHealthMonitor:
-    """Test WaddleAIHealthMonitor"""
+    """Test WaddleAIHealthMonitor."""
 
     def test_monitor_initialization(self):
-        """Test monitor initializes with empty checkers"""
+        """Test monitor initializes with empty checkers."""
         monitor = WaddleAIHealthMonitor("test_service")
         assert monitor.service_name == "test_service"
         assert monitor.checkers == []
         assert monitor.last_results == {}
 
     def test_add_checker(self):
-        """Test adding a custom checker"""
+        """Test adding a custom checker."""
         monitor = WaddleAIHealthMonitor("service")
         checker = HealthChecker("test_check")
         monitor.add_checker(checker)
@@ -695,7 +720,7 @@ class TestWaddleAIHealthMonitor:
         assert monitor.checkers[0] == checker
 
     def test_add_database_check(self):
-        """Test helper to add database check"""
+        """Test helper to add database check."""
         monitor = WaddleAIHealthMonitor("service")
         mock_db = Mock()
 
@@ -706,7 +731,7 @@ class TestWaddleAIHealthMonitor:
         assert monitor.checkers[0].name == "db"
 
     def test_add_redis_check(self):
-        """Test helper to add Redis check"""
+        """Test helper to add Redis check."""
         monitor = WaddleAIHealthMonitor("service")
 
         monitor.add_redis_check("redis", "redis://localhost:6379")
@@ -716,7 +741,7 @@ class TestWaddleAIHealthMonitor:
         assert monitor.checkers[0].name == "redis"
 
     def test_add_system_resources_check(self):
-        """Test helper to add system resources check"""
+        """Test helper to add system resources check."""
         monitor = WaddleAIHealthMonitor("service")
 
         monitor.add_system_resources_check()
@@ -726,7 +751,7 @@ class TestWaddleAIHealthMonitor:
         assert monitor.checkers[0].name == "system_resources"
 
     def test_add_system_resources_check_custom_name(self):
-        """Test system resources check with custom name"""
+        """Test system resources check with custom name."""
         monitor = WaddleAIHealthMonitor("service")
 
         monitor.add_system_resources_check("custom_system")
@@ -734,7 +759,7 @@ class TestWaddleAIHealthMonitor:
         assert monitor.checkers[0].name == "custom_system"
 
     def test_add_llm_providers_check(self):
-        """Test helper to add LLM providers check"""
+        """Test helper to add LLM providers check."""
         monitor = WaddleAIHealthMonitor("service")
         mock_manager = Mock()
 
@@ -745,7 +770,7 @@ class TestWaddleAIHealthMonitor:
         assert monitor.checkers[0].name == "llm"
 
     def test_add_http_service_check(self):
-        """Test helper to add HTTP service check"""
+        """Test helper to add HTTP service check."""
         monitor = WaddleAIHealthMonitor("service")
 
         monitor.add_http_service_check("api", "http://localhost:8080")
@@ -755,7 +780,7 @@ class TestWaddleAIHealthMonitor:
         assert monitor.checkers[0].name == "api"
 
     def test_add_http_service_check_custom_timeout(self):
-        """Test HTTP service check with custom timeout"""
+        """Test HTTP service check with custom timeout."""
         monitor = WaddleAIHealthMonitor("service")
 
         monitor.add_http_service_check("api", "http://localhost:8080", timeout=30)
@@ -764,7 +789,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_all_all_healthy(self):
-        """Test check_all with all healthy checks"""
+        """Test check_all with all healthy checks."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker1 = AsyncMock(spec=HealthChecker)
@@ -807,7 +832,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_all_with_degraded(self):
-        """Test check_all overall status is DEGRADED with any degraded check"""
+        """Test check_all overall status is DEGRADED with any degraded check."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker1 = AsyncMock(spec=HealthChecker)
@@ -847,7 +872,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_all_with_unhealthy(self):
-        """Test check_all overall status is UNHEALTHY with any unhealthy check"""
+        """Test check_all overall status is UNHEALTHY with any unhealthy check."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker1 = AsyncMock(spec=HealthChecker)
@@ -885,7 +910,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_all_stores_last_results(self):
-        """Test check_all stores results in last_results"""
+        """Test check_all stores results in last_results."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker = AsyncMock(spec=HealthChecker)
@@ -910,7 +935,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_all_handles_exception(self):
-        """Test check_all handles exceptions from gather"""
+        """Test check_all handles exceptions from gather."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker = AsyncMock(spec=HealthChecker)
@@ -927,7 +952,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_single_found(self):
-        """Test check_single returns result for found checker"""
+        """Test check_single returns result for found checker."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker = AsyncMock(spec=HealthChecker)
@@ -953,7 +978,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_single_not_found(self):
-        """Test check_single returns None for unknown checker"""
+        """Test check_single returns None for unknown checker."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker = AsyncMock(spec=HealthChecker)
@@ -966,7 +991,7 @@ class TestWaddleAIHealthMonitor:
 
     @pytest.mark.asyncio
     async def test_check_single_stores_result(self):
-        """Test check_single stores result in last_results"""
+        """Test check_single stores result in last_results."""
         monitor = WaddleAIHealthMonitor("service")
 
         mock_checker = AsyncMock(spec=HealthChecker)
@@ -989,7 +1014,7 @@ class TestWaddleAIHealthMonitor:
         assert "check1" in monitor.last_results
 
     def test_get_last_results_empty(self):
-        """Test get_last_results when no checks performed"""
+        """Test get_last_results when no checks performed."""
         monitor = WaddleAIHealthMonitor("service")
 
         result = monitor.get_last_results()
@@ -1000,7 +1025,7 @@ class TestWaddleAIHealthMonitor:
         assert result["results"] == {}
 
     def test_get_last_results_with_results(self):
-        """Test get_last_results with stored results"""
+        """Test get_last_results with stored results."""
         monitor = WaddleAIHealthMonitor("service")
 
         result1 = HealthCheckResult(
@@ -1031,7 +1056,7 @@ class TestWaddleAIHealthMonitor:
         assert results["results"]["check2"]["status"] == "degraded"
 
     def test_get_last_results_all_unhealthy(self):
-        """Test get_last_results with unhealthy check"""
+        """Test get_last_results with unhealthy check."""
         monitor = WaddleAIHealthMonitor("service")
 
         result = HealthCheckResult(

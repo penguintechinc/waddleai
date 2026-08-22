@@ -7,7 +7,7 @@ metadata scope mirror, and MemoryEntry field population.
 
 import json
 from datetime import datetime
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 from shared.utils.memory_integration import MemoryEntry, PgvectorMemoryStore
 
@@ -15,21 +15,26 @@ from shared.utils.memory_integration import MemoryEntry, PgvectorMemoryStore
 class FakeDB:
     """Captures executesql calls; returns queued results."""
 
-    def __init__(self, results: Optional[List[Any]] = None) -> None:
-        self.calls: List[Tuple[str, tuple]] = []
+    def __init__(self, results: list[Any] | None = None) -> None:
+        """Queue up the result batches executesql should return, one per call, in order."""
+        self.calls: list[tuple[str, tuple]] = []
         self._results = results or []
 
     def executesql(self, sql: str, params: Any = None) -> Any:
+        """Record the SQL/params call and pop the next queued result batch."""
         self.calls.append((sql, tuple(params) if params else ()))
         return self._results.pop(0) if self._results else []
 
 
 class FakeEmbedder:
-    def embed(self, text: str) -> List[float]:
+    """Stand-in embedding manager returning a fixed vector, so tests never call a real model."""
+
+    def embed(self, text: str) -> list[float]:
+        """Return a fixed embedding vector regardless of input text."""
         return [0.1, 0.2, 0.3]
 
 
-def _store(results: Optional[List[Any]] = None) -> Tuple[PgvectorMemoryStore, FakeDB]:
+def _store(results: list[Any] | None = None) -> tuple[PgvectorMemoryStore, FakeDB]:
     db = FakeDB(results)
     return PgvectorMemoryStore(write_db=db, embedding_manager=FakeEmbedder()), db
 
@@ -53,6 +58,10 @@ def _entry(scope_type: str = "user", author: int = 0) -> MemoryEntry:
 
 
 async def test_store_memory_defaults_to_personal_scope() -> None:
+    """A store_memory call writes scope_type/author_user_id.
+
+    Defaulting author to the entry's user.
+    """
     store, db = _store()
     ok = await store.store_memory(_entry())
     assert ok is True
@@ -65,6 +74,7 @@ async def test_store_memory_defaults_to_personal_scope() -> None:
 
 
 async def test_store_memory_org_scope_writes_column_and_metadata_mirror() -> None:
+    """org-scope entries write "org" as both the scope_type param and the metadata.scope mirror."""
     store, db = _store()
     ok = await store.store_memory(_entry(scope_type="org", author=5))
     assert ok is True
@@ -75,6 +85,7 @@ async def test_store_memory_org_scope_writes_column_and_metadata_mirror() -> Non
 
 
 async def test_store_memory_personal_metadata_mirror() -> None:
+    """Personal-scope entries mirror scope="user" into the stored metadata JSON."""
     store, db = _store()
     await store.store_memory(_entry())
     _, params = db.calls[0]
@@ -104,6 +115,7 @@ def _search_row(scope_type: str = "user", author: int = 5) -> tuple:
 
 
 async def test_search_scope_user_filters_to_owner() -> None:
+    """scope="user" search generates a scope_type='user' AND user_id filter, no org OR-branch."""
     store, db = _store(results=[[_search_row()]])
     entries = await store.search_memories("q", user_id=5, organization_id=3, scope="user")
     sql, params = db.calls[0]
@@ -114,6 +126,7 @@ async def test_search_scope_user_filters_to_owner() -> None:
 
 
 async def test_search_scope_org_has_no_user_filter() -> None:
+    """scope="org" search filters on scope_type='org' only, with no user_id restriction."""
     store, db = _store(results=[[_search_row("org", 9)]])
     entries = await store.search_memories("q", user_id=5, organization_id=3, scope="org")
     sql, params = db.calls[0]
@@ -124,6 +137,7 @@ async def test_search_scope_org_has_no_user_filter() -> None:
 
 
 async def test_search_scope_all_is_merged_or_branch() -> None:
+    """scope="all" search ORs the org branch with the personal branch and returns both rows."""
     store, db = _store(results=[[_search_row(), _search_row("org", 9)]])
     entries = await store.search_memories("q", user_id=5, organization_id=3, scope="all")
     sql, params = db.calls[0]
@@ -143,6 +157,7 @@ async def test_search_default_scope_is_user() -> None:
 
 
 async def test_history_scope_all_merged() -> None:
+    """Conversation history with scope="all" applies the same merged org/personal OR-filter."""
     store, db = _store(results=[[]])
     await store.get_conversation_history(user_id=5, organization_id=3, session_id="s1", scope="all")
     sql, params = db.calls[0]
@@ -154,6 +169,7 @@ async def test_history_scope_all_merged() -> None:
 
 
 async def test_clear_default_personal_only() -> None:
+    """clear_memories with no scope arg deletes only the caller's own personal-scope rows."""
     store, db = _store()
     ok = await store.clear_memories(user_id=5, organization_id=3)
     assert ok is True
@@ -163,6 +179,7 @@ async def test_clear_default_personal_only() -> None:
 
 
 async def test_clear_org_author_only() -> None:
+    """scope="org" without org_all clears only the caller's own authored org rows."""
     store, db = _store()
     await store.clear_memories(user_id=5, organization_id=3, scope="org")
     sql, params = db.calls[0]
@@ -171,6 +188,7 @@ async def test_clear_org_author_only() -> None:
 
 
 async def test_clear_org_all_has_no_author_filter() -> None:
+    """scope="org" with org_all=True clears every org row, dropping both author and user filters."""
     store, db = _store()
     await store.clear_memories(user_id=5, organization_id=3, scope="org", org_all=True)
     sql, params = db.calls[0]

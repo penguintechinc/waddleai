@@ -8,6 +8,7 @@ end, then tears them down at the end of the test session.
 import os
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -59,8 +60,24 @@ def _launch(module_app, port, cwd, db_dir=None, extra_env=None):
     }
     if extra_env:
         env.update(extra_env)
+    # sys.executable, not a bare "hypercorn" resolved via $PATH: if the venv's
+    # bin/ isn't first on PATH (e.g. an unactivated venv), "hypercorn" can
+    # silently resolve to an unrelated hypercorn on the machine (different
+    # Python, different site-packages/editable installs) and the service
+    # under test boots against the wrong dependency tree entirely.
+    # `-m hypercorn` guarantees the subprocess uses the exact interpreter and
+    # site-packages running pytest.
     proc = subprocess.Popen(  # noqa: S603 -- fixed argv launching the service under test, no shell, no user input
-        ["hypercorn", module_app, "--bind", f"127.0.0.1:{port}", "--workers", "1"],  # noqa: S607 -- "hypercorn" is a fixed literal resolved from the test venv PATH, not user input
+        [
+            sys.executable,
+            "-m",
+            "hypercorn",
+            module_app,
+            "--bind",
+            f"127.0.0.1:{port}",
+            "--workers",
+            "1",
+        ],
         cwd=str(cwd),
         env=env,
     )

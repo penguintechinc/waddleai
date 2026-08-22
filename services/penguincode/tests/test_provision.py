@@ -5,6 +5,7 @@ feature gating, and GPU-aware model filtering.
 """
 
 import pytest
+
 from penguincode_cli.server.models.config_store import ConfigStore
 
 

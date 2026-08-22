@@ -221,7 +221,7 @@ set -e
 
 PROXY_URL="http://localhost:8080"
 MGMT_URL="http://localhost:8001"
-TOKEN="wa-test-token"
+TOKEN="$WADDLEAI_API_KEY"
 
 # Health
 curl -sf "$PROXY_URL/healthz"

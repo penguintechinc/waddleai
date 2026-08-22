@@ -112,9 +112,7 @@ class TestTrustOrderingAndRanking:
     def test_rank_orders_by_relevance_times_trust(self) -> None:
         """A verified item with slightly lower relevance still outranks unverified."""
         caller_records = [
-            _record(
-                id="low-trust-high-relevance", trust_tier=TrustTier.UNVERIFIED, relevance=0.95
-            ),
+            _record(id="low-trust-high-relevance", trust_tier=TrustTier.UNVERIFIED, relevance=0.95),
             _record(
                 id="high-trust-similar-relevance", trust_tier=TrustTier.VERIFIED, relevance=0.9
             ),

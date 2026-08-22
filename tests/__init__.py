@@ -1,1 +1,1 @@
-# WaddleAI Tests
+"""WaddleAI test suite root package."""

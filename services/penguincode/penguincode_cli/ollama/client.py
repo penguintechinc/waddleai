@@ -5,7 +5,15 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from .types import ChatRequest, ChatResponse, GenerateRequest, GenerateResponse, Message, ModelInfo, ToolCall
+from .types import (
+    ChatRequest,
+    ChatResponse,
+    GenerateRequest,
+    GenerateResponse,
+    Message,
+    ModelInfo,
+    ToolCall,
+)
 
 
 class OllamaClient:

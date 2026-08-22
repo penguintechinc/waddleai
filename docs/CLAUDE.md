@@ -201,13 +201,11 @@ WaddleAI provides a fully compatible OpenAI API that can be used as a drop-in re
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here",
-    base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Hello, how are you?"}]
+    model="gpt-4", messages=[{"role": "user", "content": "Hello, how are you?"}]
 )
 
 print(response.choices[0].message.content)
@@ -218,7 +216,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-    apiKey: 'wa-your-api-key-here',
+    apiKey: '<your-waddleai-key>',
     baseURL: 'https://your-waddleai-proxy.com/v1'
 });
 
@@ -236,7 +234,7 @@ import requests
 
 auth_response = requests.post(
     "https://your-waddleai-mgmt.com/auth/login",
-    json={"username": "admin", "password": "your-password"}
+    json={"username": "admin", "password": "your-password"},
 )
 token = auth_response.json()["access_token"]
 headers = {"Authorization": f"Bearer {token}"}
@@ -245,8 +243,7 @@ headers = {"Authorization": f"Bearer {token}"}
 ### Token Usage Analytics
 ```python
 usage = requests.get(
-    "https://your-waddleai-mgmt.com/analytics/tokens/waddleai",
-    headers=headers
+    "https://your-waddleai-mgmt.com/analytics/tokens/waddleai", headers=headers
 ).json()
 ```
 
@@ -255,7 +252,7 @@ usage = requests.get(
 quota_update = requests.post(
     "https://your-waddleai-mgmt.com/analytics/quotas/user123",
     headers=headers,
-    json={"monthly_limit": 200000, "daily_limit": 20000}
+    json={"monthly_limit": 200000, "daily_limit": 20000},
 )
 ```
 
@@ -299,7 +296,7 @@ WaddleAI uses a dual token system for accurate billing and analytics:
         "prompt_tokens": 100,
         "completion_tokens": 50,
         "total_tokens": 150,
-        "waddleai_tokens": 15
+        "waddleai_tokens": 15,
     }
 }
 ```
@@ -310,14 +307,12 @@ WaddleAI uses a dual token system for accurate billing and analytics:
 ```python
 # Automatic routing
 response = client.chat.completions.create(
-    model="smart-router",
-    messages=[{"role": "user", "content": "Complex reasoning task..."}]
+    model="smart-router", messages=[{"role": "user", "content": "Complex reasoning task..."}]
 )
 
 # Force specific provider
 response = client.chat.completions.create(
-    model="ollama:llama2",
-    messages=[{"role": "user", "content": "Local processing needed"}]
+    model="ollama:llama2", messages=[{"role": "user", "content": "Local processing needed"}]
 )
 ```
 
@@ -328,8 +323,8 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Remember my preferences"}],
     extra_headers={
         "X-WaddleAI-Memory": "user-session-123",
-        "X-WaddleAI-Memory-Type": "conversation"
-    }
+        "X-WaddleAI-Memory-Type": "conversation",
+    },
 )
 ```
 
@@ -343,17 +338,15 @@ response = client.chat.completions.create(
 
 ### Environment Variables
 ```bash
-# Proxy Server
-export PROXY_HOST=0.0.0.0
-export PROXY_PORT=8000
+# Proxy Server -- binds 0.0.0.0 always; only the port is configurable
+export HTTP_PORT=8080  # default; proxy/apps/proxy_server/main.py
 export DATABASE_URL=postgresql://user:pass@localhost/waddleai
 export JWT_SECRET=your-jwt-secret
 export SECURITY_POLICY=balanced
 
-# Management Server
-export MGMT_HOST=0.0.0.0
-export MGMT_PORT=8001
-export ADMIN_PASSWORD=secure-admin-password
+# Management Server -- no host/port env var; bound via hypercorn CLI/Dockerfile
+# (0.0.0.0:8001, see services/management/Dockerfile)
+export ADMIN_INITIAL_PASSWORD=secure-admin-password
 ```
 
 ### Docker Compose

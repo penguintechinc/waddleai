@@ -58,6 +58,7 @@ class MCPServer:
                 ProxyMemoryConfig, used by scratchpad tools to re-resolve
                 the flag+per-key config on every call (never cached across
                 calls -- a config change must take effect immediately).
+
         """
         self.tools: dict[str, BoundToolHandler] = {}
         self.tool_schemas: dict[str, dict] = {}

@@ -13,10 +13,15 @@ startup crash rather than an edge case. It reached CI as
 ``SystemExit: 1`` aborting the whole unit-test run.
 """
 
+import importlib.util
 import sys
 import types
 
 import pytest
+
+# Captured before any fixture monkeypatches it, so the passthrough branch
+# below calls the real implementation rather than recursing.
+_real_find_spec = importlib.util.find_spec
 
 
 @pytest.fixture
@@ -26,6 +31,17 @@ def _presidio_raising(monkeypatch, request):
     Yields the freshly-imported ``ner_filter`` module with
     ``_PRESIDIO_AVAILABLE`` forced on, so ``_init_presidio`` is reached.
     """
+    # _init_presidio() now checks the spaCy model is importable before it
+    # builds an engine, because NlpEngineProvider.create_engine() FETCHES a
+    # missing model (~600MB) instead of failing fast. The engine below is a
+    # stub that never touches spaCy, so the precondition is satisfied here
+    # rather than requiring the real model to be installed -- CI installs no
+    # spaCy model at all.
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name.startswith("en_core_web") else _real_find_spec(name),
+    )
     exc = request.param
 
     analyzer_mod = types.ModuleType("presidio_analyzer")

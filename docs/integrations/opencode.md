@@ -17,7 +17,7 @@ session.
 
 1. Export your key:
    ```bash
-   export WADDLEAI_API_KEY=wa-your-key-here
+   export WADDLEAI_API_KEY=<your-waddleai-key>
    ```
 2. Copy [`examples/opencode/opencode.json`](../../examples/opencode/opencode.json)
    into your project (or `~/.config/opencode/opencode.json` for a global

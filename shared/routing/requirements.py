@@ -103,6 +103,7 @@ def derive_requirements(body: dict, complexity: int | None = None) -> Requiremen
 
     Returns:
         The derived RequirementsVector.
+
     """
     messages = body.get("messages", []) or []
     token_count = _count_tokens(messages)

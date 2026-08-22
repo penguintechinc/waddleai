@@ -28,10 +28,23 @@ def _counter_value(phase: str, mode: str) -> float:
     return _content_filter_fail_total.labels(phase=phase, mode=mode)._value.get()
 
 
+class _LicensedForNER:
+    """Licence stub entitling the NER tier.
+
+    Needed because the tier is licence-gated: without an entitlement the
+    filter skips _run_ner_patterns entirely, and a test that patches that
+    method to raise would assert fail-closed behaviour against code that
+    never runs.
+    """
+
+    def check_feature(self, _feature: str) -> bool:
+        return True
+
+
 @pytest.fixture
 def filter_instance() -> ContentFilter:
-    """Create a content filter with no database backend for testing."""
-    return ContentFilter(db=None)
+    """Create a content filter with no database backend, NER tier entitled."""
+    return ContentFilter(db=None, license_client=_LicensedForNER())
 
 
 class TestProgrammingErrorsFailClosed:
@@ -196,11 +209,113 @@ class TestKeyboardInterruptNotSwallowed:
             await filter_instance.filter_input("some text")
 
 
+class TestAuditorOverridesRuleBasedAction:
+    """A blocking auditor verdict escalates an otherwise non-block rule-based action."""
+
+    @pytest.mark.asyncio
+    async def test_auditor_should_block_true_escalates_log_only_action_to_block(
+        self, filter_instance: ContentFilter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A log-only rule-based action is overridden to 'block' when the auditor says so."""
+        from shared.security.content_filter import FilterViolation
+
+        async def _log_only_violation(text: str, target: str, org_id: int | None = None) -> list:
+            return [
+                FilterViolation(
+                    rule_name="custom_log_rule",
+                    rule_type="custom_string",
+                    matched_text="x",
+                    action="log",
+                    confidence=0.5,
+                )
+            ]
+
+        async def _blocking_auditor(*args: object, **kwargs: object) -> tuple[bool, str]:
+            return True, "BLOCK - contains a credential"
+
+        monkeypatch.setattr(filter_instance, "_run_builtin_patterns", _log_only_violation)
+        monkeypatch.setattr(filter_instance, "_invoke_llm_auditor", _blocking_auditor)
+
+        result = await filter_instance.filter_input("some text")
+
+        assert result.action == "block"
+        assert result.allowed is False
+        assert result.auditor_used is True
+
+
+class TestAuditorUnclassifiedExceptionFailsOpen:
+    """An auditor exception outside the classified programming-defect list fails open."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_error_from_auditor_keeps_rule_based_action(
+        self, filter_instance: ContentFilter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A RuntimeError (not a classified defect type) logs and falls open; action unchanged."""
+        from shared.security.content_filter import FilterViolation
+
+        async def _log_only_violation(text: str, target: str, org_id: int | None = None) -> list:
+            return [
+                FilterViolation(
+                    rule_name="custom_log_rule",
+                    rule_type="custom_string",
+                    matched_text="x",
+                    action="log",
+                    confidence=0.5,
+                )
+            ]
+
+        async def _boom(*args: object, **kwargs: object) -> tuple[bool, str]:
+            raise RuntimeError("unexpected auditor failure")
+
+        monkeypatch.setattr(filter_instance, "_run_builtin_patterns", _log_only_violation)
+        monkeypatch.setattr(filter_instance, "_invoke_llm_auditor", _boom)
+        before = _counter_value("input", "fail_open")
+
+        result = await filter_instance.filter_input("some text")
+
+        # The rule-based action (log-only) stands -- a defect in the auditor
+        # call itself must not silently turn into a block, distinct from
+        # the classified-defect case above which deliberately fails closed.
+        assert result.action == "log"
+        assert result.allowed is True
+        assert result.auditor_used is False
+        assert _counter_value("input", "fail_open") == before + 1
+
+
+class TestNerTierDisabledSkipsTier3:
+    """When the NER tier gate is closed, `_filter()` never calls `_run_ner_patterns`."""
+
+    @pytest.mark.asyncio
+    async def test_unlicensed_filter_never_invokes_ner_tier(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A filter with no license_client (NER tier off) skips `_run_ner_patterns` entirely."""
+        monkeypatch.setenv(
+            "WADDLEAI_STUB_UPSTREAM", "1"
+        )  # skip real NER model init; irrelevant here
+        cf = ContentFilter(db=None)  # no license_client -> _ner_tier_enabled() is False
+
+        async def _boom(text: str, target: str, org_id: int | None = None) -> list:
+            raise AssertionError(
+                "_run_ner_patterns must not be called when the NER tier is disabled"
+            )
+
+        monkeypatch.setattr(cf, "_run_ner_patterns", _boom)
+
+        result = await cf.filter_input("plain text, no PII")
+
+        assert result.action == "allow"
+        assert result.ner_backend == "none"
+
+
 class TestLogFilterEventNeverOverridesDecision:
     """`_log_filter_event`'s own failures must never change the already-finalized result."""
 
     def test_broken_audit_insert_does_not_raise(
-        self, filter_instance: ContentFilter, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self,
+        filter_instance: ContentFilter,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A TypeError from a broken audit-log insert is swallowed and logged loudly, not raised."""
         from shared.security.content_filter import FilterResult

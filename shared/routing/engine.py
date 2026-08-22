@@ -89,6 +89,7 @@ class RoutingEngine:
                 sticky-escalation state.
             classifier_client: The stage-2 classifier connector; None skips
                 stage 2 (heuristics-only cascade with a safe fallback).
+
         """
         self.db = db
         self.valkey = valkey
@@ -120,6 +121,7 @@ class RoutingEngine:
         Returns:
             RouteDecision with the chosen model, ordered fallback chain, and
             routed_from transparency metadata.
+
         """
         trace = RouteTrace(request_id=request.request_id, organization_id=request.org_id)
 

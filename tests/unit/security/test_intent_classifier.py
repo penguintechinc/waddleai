@@ -145,9 +145,7 @@ class TestConstrainedParsing:
         policy = _Policy(fail_mode="closed", intent_categories=("malware_generation",))
         post.responses = ["malware_generation: well it depends"]
 
-        result = await classifier.classify(
-            [{"role": "user", "content": "hello"}], "sys", policy
-        )
+        result = await classifier.classify([{"role": "user", "content": "hello"}], "sys", policy)
 
         assert result.categories["malware_generation"] == "block"
         assert result.action == "block"
@@ -160,9 +158,7 @@ class TestConstrainedParsing:
         policy = _Policy(fail_mode="open", intent_categories=("malware_generation",))
         post.responses = ["malware_generation: unclear"]
 
-        result = await classifier.classify(
-            [{"role": "user", "content": "hello"}], "sys", policy
-        )
+        result = await classifier.classify([{"role": "user", "content": "hello"}], "sys", policy)
 
         assert result.categories["malware_generation"] == "allow"
 
@@ -174,9 +170,7 @@ class TestConstrainedParsing:
         policy = _Policy(fail_mode="degrade", intent_categories=("malware_generation",))
         post.responses = ["malware_generation: sure why not", "malware_generation: still unclear"]
 
-        result = await classifier.classify(
-            [{"role": "user", "content": "hello"}], "sys", policy
-        )
+        result = await classifier.classify([{"role": "user", "content": "hello"}], "sys", policy)
 
         assert result.action == "flag"
         assert result.degraded is True

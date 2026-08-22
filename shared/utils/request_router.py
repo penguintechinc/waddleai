@@ -39,7 +39,7 @@ class RoutingStrategy(Enum):
 
 @dataclass(slots=True)
 class ProviderStats:
-    """Statistics for a provider"""
+    """Statistics for a provider."""
 
     total_requests: int = 0
     successful_requests: int = 0
@@ -90,6 +90,7 @@ class LLMRequestRouter:
             db: penguin-dal DB instance (reserved; not currently queried --
                 model-selection metadata is now read by shared.routing, not
                 here).
+
         """
         self.llm_manager = llm_manager
         self.db = db
@@ -111,7 +112,7 @@ class LLMRequestRouter:
         logger.info("Initialized LLMRequestRouter (provider-tier, §7.5)")
 
     def _initialize_provider_stats(self):
-        """Initialize statistics for all providers"""
+        """Initialize statistics for all providers."""
         for provider_name in self.llm_manager.connectors:
             if provider_name not in self.provider_stats:
                 self.provider_stats[provider_name] = ProviderStats()
@@ -119,7 +120,7 @@ class LLMRequestRouter:
                 self.round_robin_counters[provider_name] = 0
 
     def _get_available_providers(self, model: str) -> list[str]:
-        """Get list of available providers for a model"""
+        """Get list of available providers for a model."""
         available = []
 
         for provider_name, connector in self.llm_manager.connectors.items():
@@ -165,7 +166,7 @@ class LLMRequestRouter:
         strategy: RoutingStrategy,
         user_preferences: dict[str, Any] | None = None,
     ) -> str:
-        """Select provider based on routing strategy"""
+        """Select provider based on routing strategy."""
         if strategy == RoutingStrategy.ROUND_ROBIN:
             return self._round_robin_selection(model, available_providers)
 
@@ -182,14 +183,15 @@ class LLMRequestRouter:
             return self._failover_selection(model, available_providers)
 
         elif strategy == RoutingStrategy.RANDOM:
-            return random.choice(available_providers)  # nosec B311 -- upstream provider selection for load distribution, not security-sensitive
+            # Upstream provider selection for load distribution, not security-sensitive.
+            return random.choice(available_providers)  # nosec B311 # noqa: S311
 
         else:
             # Default to first available
             return available_providers[0]
 
     def _round_robin_selection(self, model: str, providers: list[str]) -> str:
-        """Round robin provider selection"""
+        """Round robin provider selection."""
         if not providers:
             raise ValueError("No providers available")
 
@@ -204,7 +206,7 @@ class LLMRequestRouter:
         return providers[selected_index]
 
     def _cost_optimized_selection(self, model: str, providers: list[str]) -> str:
-        """Select provider with lowest cost"""
+        """Select provider with lowest cost."""
         model_config = self.model_configs.get(model)
         if not model_config:
             return providers[0]
@@ -221,7 +223,7 @@ class LLMRequestRouter:
         return best_provider
 
     def _latency_optimized_selection(self, providers: list[str]) -> str:
-        """Select provider with lowest average latency"""
+        """Select provider with lowest average latency."""
         min_latency = float("inf")
         best_provider = providers[0]
 
@@ -234,7 +236,7 @@ class LLMRequestRouter:
         return best_provider
 
     def _load_balanced_selection(self, providers: list[str]) -> str:
-        """Select provider with least load"""
+        """Select provider with least load."""
         min_load = float("inf")
         best_provider = providers[0]
 
@@ -252,7 +254,7 @@ class LLMRequestRouter:
         return best_provider
 
     def _failover_selection(self, model: str, providers: list[str]) -> str:
-        """Select provider based on failover priority"""
+        """Select provider based on failover priority."""
         model_config = self.model_configs.get(model)
         if not model_config:
             return providers[0]
@@ -273,10 +275,10 @@ class LLMRequestRouter:
         messages: list[dict[str, str]],
         **kwargs,
     ) -> tuple[str, Any]:
-        """Execute a request against primary_provider, falling back across
-        available_providers on failure, updating breaker stats as it goes.
+        """Execute a request against primary_provider, falling back on failure.
 
-        A lower-level building block available to any caller needing
+        Falls back across available_providers on failure, updating breaker
+        stats as it goes. A lower-level building block available to any caller needing
         automatic provider-level fallback; DispatchStage (spec §7.5) does
         not currently use it, calling connectors directly instead to support
         streaming.
@@ -337,7 +339,7 @@ class LLMRequestRouter:
         raise Exception(f"All providers failed. Last error: {last_error}")
 
     def _update_provider_stats(self, provider_name: str, success: bool, latency: float = 0):
-        """Update provider statistics"""
+        """Update provider statistics."""
         if provider_name not in self.provider_stats:
             self.provider_stats[provider_name] = ProviderStats()
 
@@ -387,6 +389,7 @@ class LLMRequestRouter:
 
         Returns:
             (provider_name, model) or None when no provider can serve the model.
+
         """
         available = self._get_available_providers(model)
         if not available:
@@ -412,7 +415,7 @@ class LLMRequestRouter:
         return isinstance(connector, (OllamaConnector, LlamaCppConnector))
 
     def get_provider_stats(self) -> dict[str, dict[str, Any]]:
-        """Get current provider statistics"""
+        """Get current provider statistics."""
         stats_dict = {}
         for provider_name, stats in self.provider_stats.items():
             stats_dict[provider_name] = {
@@ -428,7 +431,7 @@ class LLMRequestRouter:
         return stats_dict
 
     async def health_check_providers(self):
-        """Periodic health check of all providers"""
+        """Periodic health check of all providers."""
         logger.info("Running provider health checks")
 
         health_results = await self.llm_manager.health_check_all()
@@ -446,7 +449,7 @@ class LLMRequestRouter:
                     self.provider_stats[provider_name].last_failure = datetime.utcnow()
 
     def set_routing_strategy(self, strategy: RoutingStrategy):
-        """Set the default routing strategy"""
+        """Set the default routing strategy."""
         self.default_strategy = strategy
         logger.info(f"Routing strategy changed to: {strategy.value}")
 

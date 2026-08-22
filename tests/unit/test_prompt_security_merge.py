@@ -1,19 +1,20 @@
-"""
-Test suite for merged Prompt Security Scanner
+"""Test suite for merged Prompt Security Scanner.
+
 Tests prompt injection, jailbreak, data extraction detection and sanitization.
 
 Adapted from AILB prompt_security.py test suite (marchproxy@9dca05a).
 """
 
-import pytest
 from unittest.mock import Mock
 
+import pytest
+
 from shared.security.prompt_security import (
-    PromptSecurityScanner,
-    ThreatType,
-    Severity,
     Action,
+    PromptSecurityScanner,
+    Severity,
     ThreatDetection,
+    ThreatType,
 )
 
 
@@ -525,7 +526,10 @@ class TestMessageScanning:
     def test_scan_messages_returns_tuple(self, mock_db):
         """Test that scan_messages returns tuple of threats and sanitized messages."""
         scanner = PromptSecurityScanner(mock_db)
-        messages = [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi there"}]
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
 
         threats, sanitized = scanner.scan_messages(messages)
 

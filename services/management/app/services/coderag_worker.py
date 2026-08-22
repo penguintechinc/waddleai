@@ -94,6 +94,7 @@ class CodeRagWorker:
             repo_id: ``code_repos.id``.
             branch: Branch to index; defaults to the repo's configured branch.
             trigger: ``"webhook" | "cron" | "manual"``, for logging/audit.
+
         """
         fallback_branch_ref = branch or "main"
         repo_row = await asyncio.to_thread(self._fetch_repo, repo_id)

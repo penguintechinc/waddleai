@@ -1,9 +1,6 @@
-"""
-Unit tests for usage tracking routes: /api/v1/usage/*
-"""
+"""Unit tests for usage tracking routes: /api/v1/usage/*."""
 
 from datetime import date, datetime
-from typing import Dict
 from unittest.mock import MagicMock
 
 from tests.unit.management.conftest import make_select_result
@@ -90,15 +87,19 @@ def make_mock_key(key_id: int = 1, name: str = "Test Key", prefix: str = "wa-tes
 
 
 class TestGetUsageSummary:
-    """Tests for GET /api/v1/usage/summary"""
+    """Tests for GET /api/v1/usage/summary."""
 
-    async def test_summary_admin_gets_all_usage(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_summary_admin_gets_all_usage(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can see summary of all token usage."""
         _today = date.today()
         monthly_start = _today.replace(day=1)
 
         daily_usage = make_mock_token_usage(user_id=1, org_id=1, cost_usd=0.10, usage_date=_today)
-        monthly_usage = make_mock_token_usage(user_id=2, org_id=1, cost_usd=0.25, usage_date=monthly_start)
+        monthly_usage = make_mock_token_usage(
+            user_id=2, org_id=1, cost_usd=0.25, usage_date=monthly_start
+        )
 
         app_mock_db.return_value.select.side_effect = [
             make_select_result([daily_usage]),
@@ -116,7 +117,7 @@ class TestGetUsageSummary:
         assert data["summary"]["monthly"]["month"] == monthly_start.isoformat()
 
     async def test_summary_resource_manager_filters_by_org(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager sees only their organization's usage."""
         org_usage = make_mock_token_usage(org_id=1, cost_usd=0.15)
@@ -132,7 +133,7 @@ class TestGetUsageSummary:
         assert data["summary"]["daily"]["cost_usd"] == 0.15
 
     async def test_summary_regular_user_filters_by_user_id(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user sees only their own usage."""
         user_usage = make_mock_token_usage(user_id=2, cost_usd=0.05)
@@ -153,7 +154,7 @@ class TestGetUsageSummary:
         assert resp.status_code == 401
 
     async def test_summary_accumulates_multiple_records(
-        self, client, app_mock_db: MagicMock, auth_headers: Dict
+        self, client, app_mock_db: MagicMock, auth_headers: dict
     ) -> None:
         """Summary sums across multiple records."""
         r1 = make_mock_token_usage(waddleai_tokens=500, cost_usd=0.05)
@@ -177,9 +178,11 @@ class TestGetUsageSummary:
 
 
 class TestGetUsageByModel:
-    """Tests for GET /api/v1/usage/by-model"""
+    """Tests for GET /api/v1/usage/by-model."""
 
-    async def test_by_model_groups_usage(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_model_groups_usage(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Usage grouped by model_used field."""
         gpt4_usage = make_mock_usage_log(model="gpt-4o", waddleai_tokens=1000, cost_usd=0.10)
         gpt35_usage = make_mock_usage_log(model="gpt-3.5-turbo", waddleai_tokens=500, cost_usd=0.01)
@@ -196,7 +199,9 @@ class TestGetUsageByModel:
         assert data["by_model"]["gpt-4o"]["cost_usd"] == 0.10
         assert data["period_days"] == 30
 
-    async def test_by_model_custom_days(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_model_custom_days(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Custom days parameter is reflected in response."""
         app_mock_db.return_value.select.return_value = make_select_result([])
 
@@ -206,7 +211,7 @@ class TestGetUsageByModel:
         assert data["period_days"] == 60
 
     async def test_by_model_resource_manager_filter(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager sees only their org's model usage."""
         usage = make_mock_usage_log(org_id=1, model="gpt-4o")
@@ -217,7 +222,9 @@ class TestGetUsageByModel:
         data = await resp.get_json()
         assert "gpt-4o" in data["by_model"]
 
-    async def test_by_model_user_filter(self, client, app_mock_db: MagicMock, user_auth_headers: Dict) -> None:
+    async def test_by_model_user_filter(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
         """Regular user sees only their own model usage."""
         usage = make_mock_usage_log(user_id=2, model="gpt-3.5-turbo")
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -227,7 +234,9 @@ class TestGetUsageByModel:
         data = await resp.get_json()
         assert "gpt-3.5-turbo" in data["by_model"]
 
-    async def test_by_model_empty_result(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_model_empty_result(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Empty result returns empty model dict."""
         app_mock_db.return_value.select.return_value = make_select_result([])
 
@@ -243,18 +252,30 @@ class TestGetUsageByModel:
 
 
 class TestGetUsageByProvider:
-    """Tests for GET /api/v1/usage/by-provider"""
+    """Tests for GET /api/v1/usage/by-provider."""
 
-    async def test_by_provider_groups_usage(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_provider_groups_usage(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Usage grouped by provider_type field."""
         openai_usage = make_mock_usage_log(
-            provider="openai", waddleai_tokens=2000, cost_usd=0.20, tokens_input=1000, tokens_output=1000
+            provider="openai",
+            waddleai_tokens=2000,
+            cost_usd=0.20,
+            tokens_input=1000,
+            tokens_output=1000,
         )
         anthropic_usage = make_mock_usage_log(
-            provider="anthropic", waddleai_tokens=800, cost_usd=0.08, tokens_input=400, tokens_output=400
+            provider="anthropic",
+            waddleai_tokens=800,
+            cost_usd=0.08,
+            tokens_input=400,
+            tokens_output=400,
         )
 
-        app_mock_db.return_value.select.return_value = make_select_result([openai_usage, anthropic_usage])
+        app_mock_db.return_value.select.return_value = make_select_result(
+            [openai_usage, anthropic_usage]
+        )
 
         resp = await client.get("/api/v1/usage/by-provider?days=30", headers=auth_headers)
         assert resp.status_code == 200
@@ -267,7 +288,9 @@ class TestGetUsageByProvider:
         assert data["by_provider"]["openai"]["tokens_output"] == 1000
         assert data["by_provider"]["anthropic"]["cost_usd"] == 0.08
 
-    async def test_by_provider_custom_days(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_provider_custom_days(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Custom days parameter reflected in response."""
         app_mock_db.return_value.select.return_value = make_select_result([])
 
@@ -276,7 +299,9 @@ class TestGetUsageByProvider:
         data = await resp.get_json()
         assert data["period_days"] == 90
 
-    async def test_by_provider_empty_result(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_provider_empty_result(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Empty result returns empty provider dict."""
         app_mock_db.return_value.select.return_value = make_select_result([])
 
@@ -292,9 +317,11 @@ class TestGetUsageByProvider:
 
 
 class TestGetUsageByUser:
-    """Tests for GET /api/v1/usage/by-user"""
+    """Tests for GET /api/v1/usage/by-user."""
 
-    async def test_by_user_admin_sees_all(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_user_admin_sees_all(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin sees usage for all users."""
         user1_usage = make_mock_token_usage(user_id=1, cost_usd=0.10)
         user2_usage = make_mock_token_usage(user_id=2, cost_usd=0.05)
@@ -316,7 +343,7 @@ class TestGetUsageByUser:
         assert data["by_user"][1]["user_id"] == 2
 
     async def test_by_user_resource_manager_filters_org(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager sees only their org's users."""
         usage = make_mock_token_usage(user_id=1, org_id=1)
@@ -332,7 +359,7 @@ class TestGetUsageByUser:
         data = await resp.get_json()
         assert len(data["by_user"]) == 1
 
-    async def test_by_user_regular_user_forbidden(self, client, user_auth_headers: Dict) -> None:
+    async def test_by_user_regular_user_forbidden(self, client, user_auth_headers: dict) -> None:
         """Regular user cannot access by-user endpoint → 403."""
         resp = await client.get("/api/v1/usage/by-user", headers=user_auth_headers)
         assert resp.status_code == 403
@@ -342,7 +369,9 @@ class TestGetUsageByUser:
         resp = await client.get("/api/v1/usage/by-user")
         assert resp.status_code == 401
 
-    async def test_by_user_accumulates_per_user(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_user_accumulates_per_user(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Multiple records per user are summed."""
         r1 = make_mock_token_usage(user_id=1, waddleai_tokens=500, request_count=2, cost_usd=0.05)
         r2 = make_mock_token_usage(user_id=1, waddleai_tokens=300, request_count=1, cost_usd=0.03)
@@ -360,7 +389,9 @@ class TestGetUsageByUser:
         assert data["by_user"][0]["requests"] == 3
         assert data["by_user"][0]["cost_usd"] == 0.08
 
-    async def test_by_user_unknown_user_handled(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_user_unknown_user_handled(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """User not found returns 'unknown' username."""
         usage = make_mock_token_usage(user_id=999)
 
@@ -381,9 +412,11 @@ class TestGetUsageByUser:
 
 
 class TestGetUsageByKey:
-    """Tests for GET /api/v1/usage/by-key"""
+    """Tests for GET /api/v1/usage/by-key."""
 
-    async def test_by_key_groups_by_virtual_key_id(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_key_groups_by_virtual_key_id(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Usage grouped by virtual_key_id with key details."""
         key1_usage = make_mock_token_usage(key_id=1, waddleai_tokens=500, cost_usd=0.05)
         key2_usage = make_mock_token_usage(key_id=2, waddleai_tokens=300, cost_usd=0.03)
@@ -405,7 +438,9 @@ class TestGetUsageByKey:
         assert data["by_key"][0]["key_name"] == "Production Key"
         assert data["by_key"][1]["key_id"] == 2
 
-    async def test_by_key_admin_sees_all(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_key_admin_sees_all(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin sees usage across all keys."""
         usage = make_mock_token_usage(key_id=1)
         key_rec = make_mock_key(key_id=1)
@@ -421,7 +456,7 @@ class TestGetUsageByKey:
         assert len(data["by_key"]) == 1
 
     async def test_by_key_resource_manager_filters_org(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager sees only their org's keys."""
         usage = make_mock_token_usage(key_id=1, org_id=1)
@@ -435,7 +470,9 @@ class TestGetUsageByKey:
         resp = await client.get("/api/v1/usage/by-key", headers=rm_auth_headers)
         assert resp.status_code == 200
 
-    async def test_by_key_user_filter(self, client, app_mock_db: MagicMock, user_auth_headers: Dict) -> None:
+    async def test_by_key_user_filter(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
         """Regular user sees only their own keys."""
         usage = make_mock_token_usage(user_id=2, key_id=1)
         key_rec = make_mock_key(key_id=1)
@@ -448,7 +485,9 @@ class TestGetUsageByKey:
         resp = await client.get("/api/v1/usage/by-key", headers=user_auth_headers)
         assert resp.status_code == 200
 
-    async def test_by_key_no_key_id_skipped(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_key_no_key_id_skipped(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Records without key_id are skipped."""
         usage_with_key = make_mock_token_usage(key_id=1)
         usage_no_key = make_mock_token_usage(key_id=None)
@@ -464,7 +503,9 @@ class TestGetUsageByKey:
         data = await resp.get_json()
         assert len(data["by_key"]) == 1
 
-    async def test_by_key_unknown_key_handled(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_by_key_unknown_key_handled(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Key not found returns 'unknown' name/prefix."""
         usage = make_mock_token_usage(key_id=999)
 
@@ -486,9 +527,11 @@ class TestGetUsageByKey:
 
 
 class TestGetCostAnalytics:
-    """Tests for GET /api/v1/usage/cost"""
+    """Tests for GET /api/v1/usage/cost."""
 
-    async def test_cost_analytics_basic(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_cost_analytics_basic(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Cost analytics returns daily breakdown and totals."""
         today = date.today()
         r1 = make_mock_token_usage(cost_usd=0.10, usage_date=today)
@@ -506,7 +549,9 @@ class TestGetCostAnalytics:
         assert data["total_cost_usd"] == 0.15
         assert data["period_days"] == 30
 
-    async def test_cost_analytics_daily_breakdown(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_cost_analytics_daily_breakdown(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Daily costs are keyed by date ISO format."""
         date1 = date(2025, 1, 1)
         date2 = date(2025, 1, 2)
@@ -522,7 +567,9 @@ class TestGetCostAnalytics:
         assert date2.isoformat() in data["daily_cost"]
         assert data["daily_cost"][date1.isoformat()] == 0.10
 
-    async def test_cost_analytics_admin_all_usage(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_cost_analytics_admin_all_usage(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin sees all cost usage."""
         usage = make_mock_token_usage(org_id=1, cost_usd=0.20)
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -533,7 +580,7 @@ class TestGetCostAnalytics:
         assert data["total_cost_usd"] == 0.20
 
     async def test_cost_analytics_resource_manager_filter(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager sees only their org's costs."""
         usage = make_mock_token_usage(org_id=1, cost_usd=0.15)
@@ -544,7 +591,9 @@ class TestGetCostAnalytics:
         data = await resp.get_json()
         assert data["total_cost_usd"] == 0.15
 
-    async def test_cost_analytics_user_filter(self, client, app_mock_db: MagicMock, user_auth_headers: Dict) -> None:
+    async def test_cost_analytics_user_filter(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
         """Regular user sees only their own costs."""
         usage = make_mock_token_usage(user_id=2, cost_usd=0.08)
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -553,7 +602,7 @@ class TestGetCostAnalytics:
         assert resp.status_code == 200
 
     async def test_cost_analytics_calculates_projections(
-        self, client, app_mock_db: MagicMock, auth_headers: Dict
+        self, client, app_mock_db: MagicMock, auth_headers: dict
     ) -> None:
         """Calculates average daily and projected monthly costs."""
         usage = make_mock_token_usage(cost_usd=1.00)
@@ -567,7 +616,9 @@ class TestGetCostAnalytics:
         assert abs(data["avg_daily_cost_usd"] - expected_avg) < 0.0001
         assert abs(data["projected_monthly_cost_usd"] - expected_proj) < 0.0001
 
-    async def test_cost_analytics_empty_result(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_cost_analytics_empty_result(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Empty result returns zero costs."""
         app_mock_db.return_value.select.return_value = make_select_result([])
 
@@ -585,9 +636,11 @@ class TestGetCostAnalytics:
 
 
 class TestExportUsage:
-    """Tests for GET /api/v1/usage/export"""
+    """Tests for GET /api/v1/usage/export."""
 
-    async def test_export_json_format(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_json_format(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """JSON export returns data array with count."""
         usage = make_mock_token_usage(user_id=1, cost_usd=0.10)
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -601,7 +654,9 @@ class TestExportUsage:
         assert len(data["data"]) == 1
         assert data["count"] == 1
 
-    async def test_export_json_includes_fields(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_json_includes_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """JSON export includes all required fields."""
         usage = make_mock_token_usage(
             user_id=1,
@@ -628,7 +683,9 @@ class TestExportUsage:
         assert record["cost_usd"] == 0.10
         assert record["date"] == "2025-01-01"
 
-    async def test_export_csv_format(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_csv_format(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """CSV export returns proper CSV content."""
         usage = make_mock_token_usage(cost_usd=0.10)
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -639,7 +696,9 @@ class TestExportUsage:
         assert "content-disposition" in resp.headers
         assert "date,user_id" in (await resp.get_data(as_text=True))
 
-    async def test_export_csv_includes_headers(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_csv_includes_headers(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """CSV has proper header row."""
         usage = make_mock_token_usage(cost_usd=0.10)
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -652,7 +711,9 @@ class TestExportUsage:
         # Check for at least one header field
         assert "date" in lines[0] or "user_id" in lines[0]
 
-    async def test_export_csv_empty_returns_empty(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_csv_empty_returns_empty(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """CSV with no data returns empty response."""
         app_mock_db.return_value.select.return_value = make_select_result([])
 
@@ -661,7 +722,9 @@ class TestExportUsage:
         assert resp.mimetype == "text/csv"
         assert (await resp.get_data(as_text=True)) == ""
 
-    async def test_export_default_format_json(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_default_format_json(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Default format without parameter is JSON."""
         usage = make_mock_token_usage()
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -672,7 +735,9 @@ class TestExportUsage:
         data = await resp.get_json()
         assert "data" in data
 
-    async def test_export_admin_all_usage(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_admin_all_usage(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin exports all usage."""
         r1 = make_mock_token_usage(user_id=1)
         r2 = make_mock_token_usage(user_id=2)
@@ -683,7 +748,9 @@ class TestExportUsage:
         data = await resp.get_json()
         assert data["count"] == 2
 
-    async def test_export_resource_manager_filter(self, client, app_mock_db: MagicMock, rm_auth_headers: Dict) -> None:
+    async def test_export_resource_manager_filter(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
         """Resource manager exports only their org's usage."""
         usage = make_mock_token_usage(org_id=1)
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -693,7 +760,9 @@ class TestExportUsage:
         data = await resp.get_json()
         assert data["count"] == 1
 
-    async def test_export_user_filter(self, client, app_mock_db: MagicMock, user_auth_headers: Dict) -> None:
+    async def test_export_user_filter(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
         """Regular user exports only their own usage."""
         usage = make_mock_token_usage(user_id=2)
         app_mock_db.return_value.select.return_value = make_select_result([usage])
@@ -703,7 +772,9 @@ class TestExportUsage:
         data = await resp.get_json()
         assert data["count"] == 1
 
-    async def test_export_custom_days(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_export_custom_days(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Custom days parameter filters results appropriately."""
         usage = make_mock_token_usage()
         app_mock_db.return_value.select.return_value = make_select_result([usage])

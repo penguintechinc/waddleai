@@ -1,8 +1,5 @@
-"""
-Unit tests for auth routes: /api/v1/auth/*
-"""
+"""Unit tests for auth routes: /api/v1/auth/*."""
 
-from typing import Dict
 from unittest.mock import MagicMock
 
 from tests.unit.management.route_conftest import make_mock_org, make_mock_user, make_token
@@ -13,7 +10,7 @@ from tests.unit.management.route_conftest import make_mock_org, make_mock_user, 
 
 
 class TestLogin:
-    """Tests for POST /api/v1/auth/login"""
+    """Tests for POST /api/v1/auth/login."""
 
     async def test_login_success(self, client, app_mock_db: MagicMock) -> None:
         """Valid credentials return a JWT access token."""
@@ -29,7 +26,7 @@ class TestLogin:
         assert resp.status_code == 200
         data = await resp.get_json()
         assert "access_token" in data
-        assert data["token_type"] == "bearer"
+        assert data["token_type"] == "bearer"  # noqa: S105 -- OAuth2 field value, not a credential
         assert data["user"]["username"] == "admin"
 
     async def test_login_missing_fields(self, client, app_mock_db: MagicMock) -> None:
@@ -86,9 +83,9 @@ class TestLogin:
 
 
 class TestLogout:
-    """Tests for POST /api/v1/auth/logout"""
+    """Tests for POST /api/v1/auth/logout."""
 
-    async def test_logout_success(self, client, auth_headers: Dict) -> None:
+    async def test_logout_success(self, client, auth_headers: dict) -> None:
         """Authenticated logout returns 200."""
         resp = await client.post("/api/v1/auth/logout", headers=auth_headers)
         assert resp.status_code == 200
@@ -114,9 +111,9 @@ class TestLogout:
 
 
 class TestRefreshToken:
-    """Tests for POST /api/v1/auth/refresh"""
+    """Tests for POST /api/v1/auth/refresh."""
 
-    async def test_refresh_success(self, client, auth_headers: Dict) -> None:
+    async def test_refresh_success(self, client, auth_headers: dict) -> None:
         """Authenticated refresh returns a new access token."""
         resp = await client.post("/api/v1/auth/refresh", headers=auth_headers)
         assert resp.status_code == 200
@@ -144,9 +141,9 @@ class TestRefreshToken:
 
 
 class TestGetCurrentUser:
-    """Tests for GET /api/v1/auth/me"""
+    """Tests for GET /api/v1/auth/me."""
 
-    async def test_get_me_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_me_success(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
         """Authenticated request returns current user details."""
         user = make_mock_user()
         org = make_mock_org()
@@ -162,7 +159,9 @@ class TestGetCurrentUser:
         resp = await client.get("/api/v1/auth/me")
         assert resp.status_code == 401
 
-    async def test_get_me_user_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_me_user_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """DB returns no user row → 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
@@ -176,9 +175,11 @@ class TestGetCurrentUser:
 
 
 class TestChangePassword:
-    """Tests for POST /api/v1/auth/change-password"""
+    """Tests for POST /api/v1/auth/change-password."""
 
-    async def test_change_password_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_change_password_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Valid old + new password returns 200."""
         user = make_mock_user()
         app_mock_db.return_value.select.return_value.first.return_value = user
@@ -191,7 +192,7 @@ class TestChangePassword:
         assert resp.status_code == 200
         assert "changed" in (await resp.get_json())["message"].lower()
 
-    async def test_change_password_no_body(self, client, auth_headers: Dict) -> None:
+    async def test_change_password_no_body(self, client, auth_headers: dict) -> None:
         """Missing body returns 400."""
         resp = await client.post(
             "/api/v1/auth/change-password",
@@ -200,7 +201,7 @@ class TestChangePassword:
         )
         assert resp.status_code == 400
 
-    async def test_change_password_missing_fields(self, client, auth_headers: Dict) -> None:
+    async def test_change_password_missing_fields(self, client, auth_headers: dict) -> None:
         """Missing new_password field returns 400."""
         resp = await client.post(
             "/api/v1/auth/change-password",
@@ -209,7 +210,9 @@ class TestChangePassword:
         )
         assert resp.status_code == 400
 
-    async def test_change_password_too_short(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_change_password_too_short(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """New password under 8 chars returns 400."""
         user = make_mock_user()
         app_mock_db.return_value.select.return_value.first.return_value = user
@@ -221,7 +224,9 @@ class TestChangePassword:
         )
         assert resp.status_code == 400
 
-    async def test_change_password_wrong_current(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_change_password_wrong_current(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Wrong current password returns 401."""
         user = make_mock_user()
         app_mock_db.return_value.select.return_value.first.return_value = user
@@ -233,7 +238,9 @@ class TestChangePassword:
         )
         assert resp.status_code == 401
 
-    async def test_change_password_user_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_change_password_user_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """User row missing in DB returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 

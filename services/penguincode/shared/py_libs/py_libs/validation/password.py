@@ -1,5 +1,4 @@
-"""
-Password validators - PyDAL-style validators for password strength.
+"""Password validators - PyDAL-style validators for password strength.
 
 Provides:
 - IsStrongPassword: Configurable password strength validation
@@ -17,8 +16,7 @@ from py_libs.validation.base import ValidationResult, Validator
 
 @dataclass(slots=True, frozen=True)
 class PasswordOptions:
-    """
-    Configuration options for password validation.
+    """Configuration options for password validation.
 
     Attributes:
         min_length: Minimum password length (default: 8)
@@ -29,6 +27,7 @@ class PasswordOptions:
         require_special: Require at least one special character
         special_chars: Set of allowed special characters
         disallow_spaces: Whether to disallow spaces in passwords
+
     """
 
     min_length: int = 8
@@ -87,8 +86,7 @@ class PasswordOptions:
 
 
 class IsStrongPassword(Validator[str, str]):
-    """
-    Validates password strength based on configurable requirements.
+    """Validates password strength based on configurable requirements.
 
     Args:
         options: PasswordOptions instance or use defaults
@@ -104,6 +102,7 @@ class IsStrongPassword(Validator[str, str]):
 
         # Custom options
         validator = IsStrongPassword(min_length=12, require_special=True)
+
     """
 
     def __init__(
@@ -172,8 +171,7 @@ class IsStrongPassword(Validator[str, str]):
         return ValidationResult.success(value)
 
     def get_strength_score(self, password: str) -> int:
-        """
-        Calculate a password strength score (0-100).
+        """Calculate a password strength score (0-100).
 
         This is a supplementary method for UI feedback.
         Higher scores indicate stronger passwords.
@@ -183,6 +181,7 @@ class IsStrongPassword(Validator[str, str]):
 
         Returns:
             Integer score from 0 to 100
+
         """
         score = 0
 

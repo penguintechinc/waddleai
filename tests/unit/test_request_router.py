@@ -1,24 +1,28 @@
-"""
-Unit tests for request routing system
-"""
+"""Unit tests for request routing system."""
 
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 try:
-    from proxy.utils.request_router import LoadBalancer, RequestRouter, RoutingStrategy, create_request_router
-
+    from proxy.utils.request_router import (
+        LoadBalancer,
+        RequestRouter,
+        RoutingStrategy,
+        create_request_router,
+    )
     from shared.utils.llm_connectors import ConnectionLink
 except ImportError as e:
-    pytest.skip(f"Skipping: proxy.utils.request_router not available ({e})", allow_module_level=True)
+    pytest.skip(
+        f"Skipping: proxy.utils.request_router not available ({e})", allow_module_level=True
+    )
 
 
 class TestRoutingStrategy:
-    """Test RoutingStrategy enum"""
+    """Test RoutingStrategy enum."""
 
     def test_routing_strategy_values(self):
-        """Test routing strategy enum values"""
+        """Test routing strategy enum values."""
         assert RoutingStrategy.ROUND_ROBIN.value == "round_robin"
         assert RoutingStrategy.COST_OPTIMIZED.value == "cost_optimized"
         assert RoutingStrategy.LATENCY_OPTIMIZED.value == "latency_optimized"
@@ -27,15 +31,15 @@ class TestRoutingStrategy:
 
 
 class TestLoadBalancer:
-    """Test LoadBalancer class"""
+    """Test LoadBalancer class."""
 
     def test_load_balancer_init(self):
-        """Test load balancer initialization"""
+        """Test load balancer initialization."""
         balancer = LoadBalancer()
         assert balancer.connection_stats == {}
 
     def test_record_success(self):
-        """Test recording successful request"""
+        """Test recording successful request."""
         balancer = LoadBalancer()
         connection_id = 1
         latency = 1.5
@@ -50,7 +54,7 @@ class TestLoadBalancer:
         assert stats["success_rate"] == 1.0
 
     def test_record_failure(self):
-        """Test recording failed request"""
+        """Test recording failed request."""
         balancer = LoadBalancer()
         connection_id = 1
 
@@ -62,11 +66,15 @@ class TestLoadBalancer:
         assert stats["success_rate"] == 0.0
 
     def test_get_best_connection_latency_optimized(self):
-        """Test getting best connection for latency optimization"""
+        """Test getting best connection for latency optimization."""
         balancer = LoadBalancer()
 
         # Mock connections
-        connections = [Mock(id=1, enabled=True), Mock(id=2, enabled=True), Mock(id=3, enabled=False)]  # Disabled
+        connections = [
+            Mock(id=1, enabled=True),
+            Mock(id=2, enabled=True),
+            Mock(id=3, enabled=False),
+        ]  # Disabled
 
         # Record different latencies
         balancer.record_success(1, 2.0)
@@ -76,7 +84,7 @@ class TestLoadBalancer:
         assert best.id == 2
 
     def test_get_best_connection_load_balanced(self):
-        """Test getting best connection for load balancing"""
+        """Test getting best connection for load balancing."""
         balancer = LoadBalancer()
 
         connections = [Mock(id=1, enabled=True), Mock(id=2, enabled=True)]
@@ -91,7 +99,7 @@ class TestLoadBalancer:
         assert best.id == 2
 
     def test_get_best_connection_no_stats(self):
-        """Test getting connection when no stats available"""
+        """Test getting connection when no stats available."""
         balancer = LoadBalancer()
 
         connections = [Mock(id=1, enabled=True), Mock(id=2, enabled=True)]
@@ -101,7 +109,7 @@ class TestLoadBalancer:
         assert best.id == 1
 
     def test_get_connection_stats(self):
-        """Test getting connection statistics"""
+        """Test getting connection statistics."""
         balancer = LoadBalancer()
 
         # Record some stats
@@ -117,16 +125,18 @@ class TestLoadBalancer:
 
 
 class TestRequestRouter:
-    """Test RequestRouter class"""
+    """Test RequestRouter class."""
 
     def test_router_init(self, mock_db):
-        """Test router initialization"""
+        """Test router initialization."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = RequestRouter(mock_db, token_manager, security_scanner, memory_manager, llm_manager)
+        router = RequestRouter(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager
+        )
 
         assert router.db == mock_db
         assert router.token_manager == token_manager
@@ -138,13 +148,15 @@ class TestRequestRouter:
 
     @pytest.mark.asyncio
     async def test_get_available_connections(self, mock_db):
-        """Test getting available connections for model"""
+        """Test getting available connections for model."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = RequestRouter(mock_db, token_manager, security_scanner, memory_manager, llm_manager)
+        router = RequestRouter(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager
+        )
 
         # Mock database query
         mock_connections = [
@@ -181,14 +193,19 @@ class TestRequestRouter:
 
     @pytest.mark.asyncio
     async def test_select_connection_round_robin(self, mock_db):
-        """Test round-robin connection selection"""
+        """Test round-robin connection selection."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
         router = RequestRouter(
-            mock_db, token_manager, security_scanner, memory_manager, llm_manager, RoutingStrategy.ROUND_ROBIN
+            mock_db,
+            token_manager,
+            security_scanner,
+            memory_manager,
+            llm_manager,
+            RoutingStrategy.ROUND_ROBIN,
         )
 
         # Mock connections
@@ -226,14 +243,19 @@ class TestRequestRouter:
 
     @pytest.mark.asyncio
     async def test_select_connection_cost_optimized(self, mock_db):
-        """Test cost-optimized connection selection"""
+        """Test cost-optimized connection selection."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
         router = RequestRouter(
-            mock_db, token_manager, security_scanner, memory_manager, llm_manager, RoutingStrategy.COST_OPTIMIZED
+            mock_db,
+            token_manager,
+            security_scanner,
+            memory_manager,
+            llm_manager,
+            RoutingStrategy.COST_OPTIMIZED,
         )
 
         connections = [
@@ -265,20 +287,25 @@ class TestRequestRouter:
 
     @pytest.mark.asyncio
     async def test_enhance_with_memory(self, mock_db, sample_user_context):
-        """Test memory enhancement"""
+        """Test memory enhancement."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = RequestRouter(mock_db, token_manager, security_scanner, memory_manager, llm_manager)
+        router = RequestRouter(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager
+        )
 
         # Mock memory manager
         memory_manager.get_relevant_memories = AsyncMock(
             return_value=[{"content": "User likes Python", "similarity": 0.8}]
         )
         memory_manager.enhance_messages = AsyncMock(
-            return_value=[{"role": "system", "content": "Enhanced with memory"}, {"role": "user", "content": "Hello"}]
+            return_value=[
+                {"role": "system", "content": "Enhanced with memory"},
+                {"role": "user", "content": "Hello"},
+            ]
         )
 
         messages = [{"role": "user", "content": "Hello"}]
@@ -290,20 +317,24 @@ class TestRequestRouter:
 
     @pytest.mark.asyncio
     async def test_route_request_success(self, mock_db, sample_user_context):
-        """Test successful request routing"""
+        """Test successful request routing."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = RequestRouter(mock_db, token_manager, security_scanner, memory_manager, llm_manager)
+        router = RequestRouter(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager
+        )
 
         # Mock successful LLM response
         mock_response = {
             "choices": [{"message": {"content": "Hello there!"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
         }
-        llm_manager.make_request = AsyncMock(return_value=(mock_response, {"provider": "openai", "model": "gpt-4"}))
+        llm_manager.make_request = AsyncMock(
+            return_value=(mock_response, {"provider": "openai", "model": "gpt-4"})
+        )
 
         # Mock available connections
         mock_connections = [
@@ -323,7 +354,9 @@ class TestRequestRouter:
         mock_db.connection_links = Mock()
 
         # Mock memory enhancement
-        memory_manager.enhance_messages = AsyncMock(return_value=[{"role": "user", "content": "Hello"}])
+        memory_manager.enhance_messages = AsyncMock(
+            return_value=[{"role": "user", "content": "Hello"}]
+        )
 
         # Mock token processing
         mock_usage = Mock()
@@ -348,16 +381,23 @@ class TestRequestRouter:
 
     @pytest.mark.asyncio
     async def test_route_request_security_blocked(self, mock_db, sample_user_context):
-        """Test request blocked by security scanner"""
+        """Test request blocked by security scanner."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = RequestRouter(mock_db, token_manager, security_scanner, memory_manager, llm_manager)
+        router = RequestRouter(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager
+        )
 
         # Mock security threat detection
-        from shared.security.prompt_security import Action, SecurityThreat, SeverityLevel, ThreatType
+        from shared.security.prompt_security import (
+            Action,
+            SecurityThreat,
+            SeverityLevel,
+            ThreatType,
+        )
 
         threat = SecurityThreat(
             threat_type=ThreatType.PROMPT_INJECTION,
@@ -380,13 +420,15 @@ class TestRequestRouter:
 
     @pytest.mark.asyncio
     async def test_route_request_no_connections(self, mock_db, sample_user_context):
-        """Test request with no available connections"""
+        """Test request with no available connections."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = RequestRouter(mock_db, token_manager, security_scanner, memory_manager, llm_manager)
+        router = RequestRouter(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager
+        )
 
         # Mock no available connections
         mock_db.return_value = Mock()
@@ -405,13 +447,15 @@ class TestRequestRouter:
         assert "No available connections" in str(exc_info.value)
 
     def test_get_provider_stats(self, mock_db):
-        """Test getting provider statistics"""
+        """Test getting provider statistics."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = RequestRouter(mock_db, token_manager, security_scanner, memory_manager, llm_manager)
+        router = RequestRouter(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager
+        )
 
         # Record some stats
         router.load_balancer.record_success(1, 1.0)
@@ -430,10 +474,10 @@ class TestRequestRouter:
 
 
 class TestRequestRouterFactory:
-    """Test request router factory function"""
+    """Test request router factory function."""
 
     def test_create_request_router(self, mock_db):
-        """Test creating request router"""
+        """Test creating request router."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
@@ -447,12 +491,14 @@ class TestRequestRouterFactory:
         assert router.default_strategy == RoutingStrategy.COST_OPTIMIZED
 
     def test_create_request_router_default_strategy(self, mock_db):
-        """Test creating router with default strategy"""
+        """Test creating router with default strategy."""
         token_manager = Mock()
         security_scanner = Mock()
         memory_manager = Mock()
         llm_manager = Mock()
 
-        router = create_request_router(mock_db, token_manager, security_scanner, memory_manager, llm_manager, "unknown")
+        router = create_request_router(
+            mock_db, token_manager, security_scanner, memory_manager, llm_manager, "unknown"
+        )
 
         assert router.default_strategy == RoutingStrategy.LOAD_BALANCED

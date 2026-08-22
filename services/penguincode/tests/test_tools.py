@@ -4,8 +4,9 @@ import pytest
 
 pytest.importorskip("penguincode_cli.tools.search")
 
-from penguincode_cli.tools.base import BaseTool, ToolPermission, ToolRegistry, ToolResult
 from penguincode_cli.tools.search import GlobTool, GrepTool
+
+from penguincode_cli.tools.base import BaseTool, ToolPermission, ToolRegistry, ToolResult
 
 
 class MockTool(BaseTool):

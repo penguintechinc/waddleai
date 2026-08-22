@@ -13,18 +13,19 @@ Revises: 005_add_content_filter_tables
 Create Date: 2026-07-15
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "006_add_memory_scope"
-down_revision: Union[str, None] = "005_add_content_filter_tables"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "005_add_content_filter_tables"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Add scope_type/author_user_id to memory_embeddings, backfilling rows to personal scope."""
     # NOT NULL with server_default is safe as a single step on both
     # PostgreSQL and SQLite: existing rows take the default.
     op.add_column(
@@ -49,6 +50,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drop the scope_type/author_user_id columns and their indexes from memory_embeddings."""
     op.drop_index("idx_mememb_org_scope", table_name="memory_embeddings")
     op.drop_index("idx_mememb_author_user", table_name="memory_embeddings")
     op.drop_index("idx_mememb_scope_type", table_name="memory_embeddings")

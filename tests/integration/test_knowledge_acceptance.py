@@ -367,12 +367,24 @@ class TestOrgIsolationAcrossStores:
         from shared.knowledge.scoping import ScopedRecord
 
         org_a = ScopedRecord(
-            id="a", content="x", scope_type=ScopeType.REPO, scope_ref="r1",
-            trust_tier=TrustTier.DERIVED, author_user_id=None, org="org-a", repo="r1",
+            id="a",
+            content="x",
+            scope_type=ScopeType.REPO,
+            scope_ref="r1",
+            trust_tier=TrustTier.DERIVED,
+            author_user_id=None,
+            org="org-a",
+            repo="r1",
         )
         org_b = ScopedRecord(
-            id="b", content="y", scope_type=ScopeType.REPO, scope_ref="r1",
-            trust_tier=TrustTier.DERIVED, author_user_id=None, org="org-b", repo="r1",
+            id="b",
+            content="y",
+            scope_type=ScopeType.REPO,
+            scope_ref="r1",
+            trust_tier=TrustTier.DERIVED,
+            author_user_id=None,
+            org="org-b",
+            repo="r1",
         )
         caller = ScopeKey(org="org-a", repo="r1")
         assert {r.id for r in filter_visible([org_a, org_b], caller)} == {"a"}
@@ -382,12 +394,22 @@ class TestOrgIsolationAcrossStores:
         from shared.knowledge.scoping import ScopedRecord
 
         org_a_doc = ScopedRecord(
-            id="doc-a", content="knowledge", scope_type=ScopeType.ORG, scope_ref="org-a",
-            trust_tier=TrustTier.VERIFIED, author_user_id="admin", org="org-a",
+            id="doc-a",
+            content="knowledge",
+            scope_type=ScopeType.ORG,
+            scope_ref="org-a",
+            trust_tier=TrustTier.VERIFIED,
+            author_user_id="admin",
+            org="org-a",
         )
         org_b_doc = ScopedRecord(
-            id="doc-b", content="knowledge", scope_type=ScopeType.ORG, scope_ref="org-b",
-            trust_tier=TrustTier.VERIFIED, author_user_id="admin", org="org-b",
+            id="doc-b",
+            content="knowledge",
+            scope_type=ScopeType.ORG,
+            scope_ref="org-b",
+            trust_tier=TrustTier.VERIFIED,
+            author_user_id="admin",
+            org="org-b",
         )
         caller = ScopeKey(org="org-a")
         assert {r.id for r in filter_visible([org_a_doc, org_b_doc], caller)} == {"doc-a"}
@@ -397,12 +419,22 @@ class TestOrgIsolationAcrossStores:
         from shared.knowledge.scoping import ScopedRecord
 
         org_a_mem = ScopedRecord(
-            id="mem-a", content="fact", scope_type=ScopeType.ORG, scope_ref="org-a",
-            trust_tier=TrustTier.CONFIRMED, author_user_id="1", org="org-a",
+            id="mem-a",
+            content="fact",
+            scope_type=ScopeType.ORG,
+            scope_ref="org-a",
+            trust_tier=TrustTier.CONFIRMED,
+            author_user_id="1",
+            org="org-a",
         )
         org_b_mem = ScopedRecord(
-            id="mem-b", content="fact", scope_type=ScopeType.ORG, scope_ref="org-b",
-            trust_tier=TrustTier.CONFIRMED, author_user_id="1", org="org-b",
+            id="mem-b",
+            content="fact",
+            scope_type=ScopeType.ORG,
+            scope_ref="org-b",
+            trust_tier=TrustTier.CONFIRMED,
+            author_user_id="1",
+            org="org-b",
         )
         caller = ScopeKey(org="org-a")
         assert {r.id for r in filter_visible([org_a_mem, org_b_mem], caller)} == {"mem-a"}

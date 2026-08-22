@@ -24,14 +24,15 @@ _SITE_DOCS = _DOCS / "docs-site" / "docs"
 # Pages that must stay byte-identical between the repo and the published site.
 _MIRRORED = (
     "api/openai-compatible.md",
+    "getting-started/installation.md",
     "integrations/claude-code.md",
     "integrations/vscode-extension.md",
 )
 
-# Known fork, deliberately not asserted: BOTH copies predate v0.2 (repo ~12
-# months, site ~8 months), so making them identical would only pick which
-# stale text to publish. It needs a rewrite, not a copy -- tracked separately.
-_KNOWN_FORKED = ("getting-started/installation.md",)
+# Known fork, deliberately not asserted: none currently. Add an entry here
+# only when a page genuinely needs a content rewrite before it can be
+# brought under the _MIRRORED guard above -- see test_known_fork_list_stays_honest.
+_KNOWN_FORKED: tuple[str, ...] = ()
 
 
 @pytest.mark.parametrize("relpath", _MIRRORED)

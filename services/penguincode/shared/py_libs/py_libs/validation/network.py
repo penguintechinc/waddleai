@@ -1,5 +1,4 @@
-"""
-Network validators - PyDAL-style validators for network-related inputs.
+"""Network validators - PyDAL-style validators for network-related inputs.
 
 Provides:
 - IsEmail: Validates email addresses (RFC 5322)
@@ -18,8 +17,7 @@ from py_libs.validation.base import ValidationResult, Validator
 
 
 class IsEmail(Validator[str, str]):
-    """
-    Validates that a string is a valid email address.
+    """Validates that a string is a valid email address.
 
     Uses RFC 5322 compliant regex pattern. Optionally normalizes
     the email to lowercase.
@@ -31,6 +29,7 @@ class IsEmail(Validator[str, str]):
         validator = IsEmail()
         result = validator("user@example.com")  # Valid
         result = validator("invalid-email")     # Invalid
+
     """
 
     # RFC 5322 compliant email regex (simplified but robust)
@@ -71,8 +70,7 @@ class IsEmail(Validator[str, str]):
 
 
 class IsURL(Validator[str, str]):
-    """
-    Validates that a string is a valid URL.
+    """Validates that a string is a valid URL.
 
     Args:
         require_tld: Require a top-level domain
@@ -85,6 +83,7 @@ class IsURL(Validator[str, str]):
 
         validator = IsURL(allowed_schemes=["ftp"])
         result = validator("ftp://files.example.com")  # Valid
+
     """
 
     def __init__(
@@ -132,8 +131,7 @@ class IsURL(Validator[str, str]):
 
 
 class IsIPAddress(Validator[str, str]):
-    """
-    Validates that a string is a valid IP address.
+    """Validates that a string is a valid IP address.
 
     Args:
         version: IP version to accept (4, 6, or None for both)
@@ -146,6 +144,7 @@ class IsIPAddress(Validator[str, str]):
 
         validator = IsIPAddress(version=4)
         result = validator("::1")              # Invalid (IPv6 not allowed)
+
     """
 
     def __init__(
@@ -190,8 +189,7 @@ class IsIPAddress(Validator[str, str]):
 
 
 class IsHostname(Validator[str, str]):
-    """
-    Validates that a string is a valid hostname.
+    """Validates that a string is a valid hostname.
 
     Validates according to RFC 1123 hostname rules.
 
@@ -204,6 +202,7 @@ class IsHostname(Validator[str, str]):
         result = validator("example.com")   # Valid
         result = validator("my-server")     # Valid
         result = validator("invalid..com")  # Invalid
+
     """
 
     # RFC 1123 hostname pattern

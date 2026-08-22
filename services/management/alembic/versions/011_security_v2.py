@@ -36,15 +36,15 @@ Revises: 010_routing_engine
 Create Date: 2026-07-09
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "011_security_v2"
-down_revision: Union[str, None] = "010_routing_engine"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "010_routing_engine"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 # Fully-populated defaults for the seeded 'global' row -- the resolution
 # floor, so every configurable field must be concrete here. Mirrors the

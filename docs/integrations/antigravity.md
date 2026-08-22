@@ -15,8 +15,14 @@ already, the same values apply here.
 
 ## MCP tools (optional, requires `waddleai.mcp_v2`)
 
+Export your virtual key first:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 Add a remote MCP server pointed at `https://your-waddleai-host/mcp` with an
-`Authorization: Bearer wa-your-key-here` header, using whichever MCP-config
+`Authorization: Bearer $WADDLEAI_API_KEY` header, using whichever MCP-config
 mechanism your Antigravity version exposes (check its docs for the exact
 config file location — this has moved between releases).
 

@@ -85,9 +85,7 @@ class TestMemoryConfigDefaults:
         AttributeError here exactly like it would in production, instead of
         silently succeeding against an auto-attribute MagicMock.
         """
-        existing = make_dal_row(
-            id=7, organization_id=1, enabled=True, similarity_threshold=0.7
-        )
+        existing = make_dal_row(id=7, organization_id=1, enabled=True, similarity_threshold=0.7)
         app_mock_db.return_value.select.return_value = make_select_result([existing])
 
         resp = await client.post(

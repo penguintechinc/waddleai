@@ -153,9 +153,7 @@ class TestPullPathServiceFunctions:
     @pytest.mark.asyncio
     async def test_memory_search_ranks_and_scope_filters(self) -> None:
         """memory_search() ranks candidates and applies scope isolation."""
-        own_session = _record(
-            id="mine", scope_type=ScopeType.SESSION, scope_ref="s1", org="org-a"
-        )
+        own_session = _record(id="mine", scope_type=ScopeType.SESSION, scope_ref="s1", org="org-a")
         other_session = _record(
             id="theirs", scope_type=ScopeType.SESSION, scope_ref="s2", org="org-a"
         )

@@ -1,5 +1,4 @@
-"""
-WaddleAI Usage Tracking Service
+"""WaddleAI Usage Tracking Service.
 
 Records usage events directly into `token_usage` (the AILB webhook ingest
 path and its raw per-event AILB bookkeeping table were retired alongside
@@ -12,13 +11,12 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-class QuotaStatus(str, Enum):
-    """Quota status"""
+class QuotaStatus(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
+    """Quota status."""
 
     OK = "ok"
     WARNING = "warning"  # >80% used
@@ -40,22 +38,23 @@ class UsageEvent:
     cost_usd: float
     latency_ms: int
     status: str
-    error_message: Optional[str] = None
+    error_message: str | None = None
     timestamp: datetime = None
 
     def __post_init__(self):
+        """Default timestamp to now if the caller did not supply one."""
         if self.timestamp is None:
             self.timestamp = datetime.utcnow()
 
 
 @dataclass
 class DailyUsage:
-    """Daily usage summary"""
+    """Daily usage summary."""
 
     date: date
-    key_id: Optional[int] = None
-    user_id: Optional[int] = None
-    organization_id: Optional[int] = None
+    key_id: int | None = None
+    user_id: int | None = None
+    organization_id: int | None = None
     waddleai_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -65,33 +64,32 @@ class DailyUsage:
 
 @dataclass
 class UsageStats:
-    """Usage statistics"""
+    """Usage statistics."""
 
     total_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     request_count: int = 0
     cost_usd: float = 0.0
-    by_model: Dict[str, int] = field(default_factory=dict)
-    by_provider: Dict[str, int] = field(default_factory=dict)
-    by_day: Dict[str, int] = field(default_factory=dict)
+    by_model: dict[str, int] = field(default_factory=dict)
+    by_provider: dict[str, int] = field(default_factory=dict)
+    by_day: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
 class QuotaInfo:
-    """Quota information"""
+    """Quota information."""
 
     status: QuotaStatus
-    limit: Optional[int] = None
+    limit: int | None = None
     used: int = 0
-    remaining: Optional[int] = None
+    remaining: int | None = None
     percentage: float = 0.0
-    resets_at: Optional[datetime] = None
+    resets_at: datetime | None = None
 
 
 class UsageTrackingService:
-    """
-    Tracks usage events and enforces quotas.
+    """Tracks usage events and enforces quotas.
 
     Features:
     - Record usage events directly into token_usage
@@ -101,14 +99,14 @@ class UsageTrackingService:
     """
 
     def __init__(self, db, redis_client=None):
+        """Bind the DAL/DB handle and optional Redis client, and reset the rate cache."""
         self.db = db
         self.redis = redis_client
         self._conversion_rates_cache = {}
         self._cache_ttl = 300  # 5 minutes
 
     def record_usage(self, event: UsageEvent) -> bool:
-        """
-        Record a usage event by updating the `token_usage` aggregate.
+        """Record a usage event by updating the `token_usage` aggregate.
 
         Args:
             event: UsageEvent to record
@@ -119,6 +117,7 @@ class UsageTrackingService:
             table to fall back to, so an unresolvable key means nothing is
             persisted (callers should treat this as a signal to investigate,
             not silently retry).
+
         """
         db = self.db
 
@@ -126,7 +125,9 @@ class UsageTrackingService:
         # left once the AILB-specific key-id column was dropped).
         virtual_key = None
         if event.key_id and event.key_id.startswith("wa-"):
-            virtual_key = db(db.virtual_keys.key_prefix.like(f"{event.key_id[:12]}%")).select().first()
+            virtual_key = (
+                db(db.virtual_keys.key_prefix.like(f"{event.key_id[:12]}%")).select().first()
+            )
 
         if not virtual_key:
             logger.warning("record_usage: no key for key_id=%s, dropping event", event.key_id)
@@ -142,9 +143,10 @@ class UsageTrackingService:
         db.commit()
         return True
 
-    def calculate_waddleai_tokens(self, provider: str, model: str, input_tokens: int, output_tokens: int) -> int:
-        """
-        Calculate WaddleAI normalized tokens from LLM tokens.
+    def calculate_waddleai_tokens(
+        self, provider: str, model: str, input_tokens: int, output_tokens: int
+    ) -> int:
+        """Calculate WaddleAI normalized tokens from LLM tokens.
 
         Uses conversion rates from database, falls back to defaults.
         """
@@ -186,8 +188,8 @@ class UsageTrackingService:
 
         return int(input_tokens / input_rate) + int(output_tokens / output_rate)
 
-    def _get_default_rates(self, provider: str, model: str) -> Tuple[int, int]:
-        """Get default conversion rates by provider/model"""
+    def _get_default_rates(self, provider: str, model: str) -> tuple[int, int]:
+        """Get default conversion rates by provider/model."""
         # More expensive models have lower rates (more WaddleAI tokens per LLM token)
         # Cheaper models have higher rates
 
@@ -229,13 +231,15 @@ class UsageTrackingService:
         return (10, 10)
 
     def _update_usage_aggregates(self, virtual_key, event: UsageEvent, waddleai_tokens: int):
-        """Update aggregated usage tables"""
+        """Update aggregated usage tables."""
         db = self.db
         today = date.today()
 
         # Get or create daily usage record
         usage_record = (
-            db((db.token_usage.virtual_key_id == virtual_key.id) & (db.token_usage.date == today)).select().first()
+            db((db.token_usage.virtual_key_id == virtual_key.id) & (db.token_usage.date == today))
+            .select()
+            .first()
         )
 
         if usage_record:
@@ -284,10 +288,14 @@ class UsageTrackingService:
         )
 
     def aggregate_daily_usage(self, key_id: int, target_date: date) -> DailyUsage:
-        """Get aggregated daily usage for a key"""
+        """Get aggregated daily usage for a key."""
         db = self.db
 
-        usage = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == target_date)).select().first()
+        usage = (
+            db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == target_date))
+            .select()
+            .first()
+        )
 
         if usage:
             return DailyUsage(
@@ -306,12 +314,12 @@ class UsageTrackingService:
 
     def get_usage_stats(
         self,
-        key_id: Optional[int] = None,
-        user_id: Optional[int] = None,
-        organization_id: Optional[int] = None,
+        key_id: int | None = None,
+        user_id: int | None = None,
+        organization_id: int | None = None,
         days: int = 30,
     ) -> UsageStats:
-        """Get usage statistics"""
+        """Get usage statistics."""
         db = self.db
         start_date = date.today() - timedelta(days=days)
 
@@ -341,12 +349,12 @@ class UsageTrackingService:
 
     # Quota Management
 
-    def check_quota(self, key_id: int) -> Tuple[bool, QuotaInfo]:
-        """
-        Check if a key has available quota.
+    def check_quota(self, key_id: int) -> tuple[bool, QuotaInfo]:
+        """Check if a key has available quota.
 
         Returns:
             (allowed, quota_info) tuple
+
         """
         db = self.db
 
@@ -359,7 +367,11 @@ class UsageTrackingService:
 
         # Check daily budget
         today = date.today()
-        daily_usage = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == today)).select().first()
+        daily_usage = (
+            db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date == today))
+            .select()
+            .first()
+        )
 
         daily_cost = daily_usage.cost_usd_total if daily_usage else 0
 
@@ -375,7 +387,9 @@ class UsageTrackingService:
 
         # Check monthly budget
         month_start = today.replace(day=1)
-        monthly_usage = db((db.token_usage.virtual_key_id == key_id) & (db.token_usage.date >= month_start)).select()
+        monthly_usage = db(
+            (db.token_usage.virtual_key_id == key_id) & (db.token_usage.date >= month_start)
+        ).select()
 
         monthly_cost = sum(u.cost_usd_total or 0 for u in monthly_usage)
 
@@ -406,8 +420,8 @@ class UsageTrackingService:
 
         return True, QuotaInfo(status=QuotaStatus.OK)
 
-    def check_user_quota(self, user_id: int) -> Tuple[bool, QuotaInfo]:
-        """Check user-level quota"""
+    def check_user_quota(self, user_id: int) -> tuple[bool, QuotaInfo]:
+        """Check user-level quota."""
         db = self.db
 
         user = db(db.users.id == user_id).select().first()
@@ -418,7 +432,9 @@ class UsageTrackingService:
 
         # Daily quota
         if user.token_quota_daily:
-            daily_usage = db((db.token_usage.user_id == user_id) & (db.token_usage.date == today)).select()
+            daily_usage = db(
+                (db.token_usage.user_id == user_id) & (db.token_usage.date == today)
+            ).select()
             daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)
 
             if daily_tokens >= user.token_quota_daily:
@@ -433,7 +449,9 @@ class UsageTrackingService:
         # Monthly quota
         if user.token_quota_monthly:
             month_start = today.replace(day=1)
-            monthly_usage = db((db.token_usage.user_id == user_id) & (db.token_usage.date >= month_start)).select()
+            monthly_usage = db(
+                (db.token_usage.user_id == user_id) & (db.token_usage.date >= month_start)
+            ).select()
             monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
 
             if monthly_tokens >= user.token_quota_monthly:
@@ -456,8 +474,8 @@ class UsageTrackingService:
 
         return True, QuotaInfo(status=QuotaStatus.OK)
 
-    def check_org_quota(self, org_id: int) -> Tuple[bool, QuotaInfo]:
-        """Check organization-level quota"""
+    def check_org_quota(self, org_id: int) -> tuple[bool, QuotaInfo]:
+        """Check organization-level quota."""
         db = self.db
 
         org = db(db.organizations.id == org_id).select().first()

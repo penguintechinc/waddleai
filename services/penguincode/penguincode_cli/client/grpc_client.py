@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 
 import grpc
+
 from penguincode_cli.config.settings import ClientConfig, ServerConfig
 from penguincode_cli.proto import (
     AuthRequest,

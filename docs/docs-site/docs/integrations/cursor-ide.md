@@ -23,7 +23,7 @@ Configure Cursor IDE to use WaddleAI for intelligent routing and cost optimizati
 3. Set:
    - **API Provider**: OpenAI Compatible
    - **Base URL**: `http://localhost:8000/v1`
-   - **API Key**: `wai_your_key_here`
+   - **API Key**: `<your-waddleai-key>`
    - **Model**: Leave empty for auto-routing
 
 ### Step 3: Test
@@ -46,7 +46,7 @@ Edit `~/.cursor/settings.json`:
   "cursor.ai": {
     "apiProvider": "openai-compatible",
     "apiBaseUrl": "http://localhost:8000/v1",
-    "apiKey": "wai_your_key_here",
+    "apiKey": "<your-waddleai-key>",
     "model": "auto",
     "streamResponses": true,
     "maxTokens": 2000
@@ -193,7 +193,7 @@ Management Portal → Analytics:
 
 ```bash
 # Export Cursor IDE usage
-curl -H "Authorization: Bearer wai_admin_token" \
+curl -H "Authorization: Bearer <your-admin-token>" \
   "http://localhost:8001/api/analytics/export?application=cursor" \
   -o cursor_usage.csv
 ```
@@ -216,7 +216,7 @@ curl -H "Authorization: Bearer wai_admin_token" \
 curl http://localhost:8000/healthz
 
 # Test with your key
-curl -H "Authorization: Bearer wai_your_key" \
+curl -H "Authorization: Bearer <your-waddleai-key>" \
   http://localhost:8000/v1/models
 ```
 

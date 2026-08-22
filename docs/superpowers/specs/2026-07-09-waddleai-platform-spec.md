@@ -1198,9 +1198,88 @@ A denylisted path is refused end-to-end (adapter-side offline AND server-side de
 
 ---
 
+## 19. Product Positioning — The Control Plane for AI (2026-08-21)
+
+Owner direction, recorded because §1-18 describe capabilities without saying what the
+product *is*, and the README had drifted into selling it as a budget alternative to
+frontier models. It is not that.
+
+**WaddleAI is to AI what Terraform and Mist.io were to cloud management**: one control
+plane over heterogeneous providers, with consistent access control, policy and cost
+visibility. It does not replace models. It sits in front of them.
+
+Three goals, in priority order. Every feature in this spec should trace to one:
+
+1. **Cross-cloud management of models, and of who may reach them.** One endpoint in front
+   of OpenAI, Anthropic, Gemini, xAI, Bedrock, Ollama and llama.cpp. Add a provider once;
+   every key, quota and policy already applies. Move a workload between a commercial API
+   and your own GPUs without the caller noticing.
+
+2. **Security controls that apply to commercial and open engines alike.** Policy belongs
+   to the platform, not to whichever vendor serves the request — PII detection/redaction,
+   prompt-injection scanning, output guardrails, audit. Emphasis on the outbound
+   direction: what leaves the building. A prompt routed to a commercial provider is
+   scanned and redacted under the same rules as one served locally.
+
+3. **Efficiency without degrading the calling harness.** Response + semantic caching,
+   just-in-time RAG, MCP lazy-loading, and fitness-for-purpose routing. The hard
+   constraint: Claude Code, Cursor and Antigravity must behave exactly as they would
+   talking to the provider directly — same API shape, streaming and tool calls.
+   Efficiency that costs capability is just a cheaper bad answer.
+
+   Canonical framing: *Bob should not be asking a frontier model what the weather is, and
+   a coding agent should not re-process the entire codebase every session.*
+
+**Open-first is a default, not a limit.** Open models, open embeddings and self-hosting
+remain the default posture; routing to commercial providers is a first-class path and the
+controls above apply identically either way. README language implying WaddleAI is for
+people who cannot afford frontier models has been removed.
+
+### 19.1 PII detection is licence-gated — but only tier 3
+
+PII detection and prevention is a licensed feature (customer requirement, 2026-08-21).
+Gated with flag `waddleai.pii_ner` AND entitlement `pii_ner_detection`; both must pass.
+
+**Only the NER tier is gated.** Tiers 1 and 2 — the 23 built-in patterns and the org's own
+custom rules — are never gated. Gating the whole content filter on a licence check would
+turn a licence-server outage into a PII leak: prompts would reach commercial providers
+unredacted precisely when the platform could not verify itself. The licence buys what
+regex cannot do — person names, locations and organisations matched by meaning.
+
+Verified behaviour: with the licence server unreachable, SSN/credit-card/email are still
+detected and redacted; with a licence, `ner:PERSON` and `ner:ORGANIZATION` are added.
+
+`en_core_web_lg` is now a hash-pinned dependency. It had been declared NOWHERE — not in a
+requirements file, Dockerfile or doc — so the NER tier never ran in any built image, and
+Presidio's `create_engine()` attempted a ~600MB runtime download instead of failing fast.
+
+### 19.2 Credential reference injection (design drafted, not built)
+
+See `docs/superpowers/specs/2026-08-21-credential-reference-injection-design.md`.
+
+An agent holds a *reference*, never a credential. An MCP tool mints
+`proxytoken:<opaque>` gated by the MCP session's own authenticated identity; the proxy
+redeems it at egress after confirming the redeeming identity matches the minting one.
+Backends in preference order: skauswatch, HashiCorp Vault, then GCP/Azure/AWS.
+
+Governing hazard: **substitution must never touch the prompt path**, or the real
+credential is delivered to the model provider — the inverse of the goal.
+
+### 19.3 SPIFFE/SPIRE is docs-only today
+
+Every service must be SPIFFE-*ready* (accepting mTLS/X.509-SVID as a first-class identity)
+whether or not SPIRE is deployed. There is currently no implementation in `shared/`,
+`proxy/`, `services/` or `k8s/`. Either a lightweight intra-product issuer or the full
+SPIRE deployment managed by skauswatch. This should land before or with §19.2: the proxy
+authenticating to a secret backend is itself a service-to-service call, and a static token
+there would protect the credential broker with exactly the kind of long-lived secret it
+exists to remove.
+
+---
+
 ## Status
 
-**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**; **§17 (local-only profile) complete**, migration 015; **§18 (Agent Hooks) complete**, migration 016. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
+**§19 records product positioning and the 2026-08-21 direction (licence-gated PII, credential reference injection, SPIFFE readiness); §19.2 and §19.3 are drafted, not built.** **Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**; **§17 (local-only profile) complete**, migration 015; **§18 (Agent Hooks) complete**, migration 016. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
 
 ---
 

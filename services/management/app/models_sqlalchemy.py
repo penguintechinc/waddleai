@@ -32,6 +32,8 @@ Base = declarative_base()
 
 
 class Organization(Base):
+    """A tenant: owns users, API keys, and per-org token quotas/rate limits."""
+
     __tablename__ = "organizations"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -46,6 +48,8 @@ class Organization(Base):
 
 
 class User(Base):
+    """A login identity scoped to one organization, with role, quotas, and login-tracking fields."""
+
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -71,6 +75,8 @@ class User(Base):
 
 
 class APIKey(Base):
+    """A hashed API credential issued to a user, carrying its own quotas, rate limit, and scopes."""
+
     __tablename__ = "api_keys"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -97,6 +103,8 @@ class APIKey(Base):
 
 
 class AIProvider(Base):
+    """A configured upstream LLM provider (OpenAI, Anthropic, Ollama, etc) and its routing setup."""
+
     __tablename__ = "ai_providers"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -185,6 +193,8 @@ class FleetBackend(Base):
 
 
 class OllamaDeployment(Base):
+    """A managed or external Ollama instance, its resource limits, and fleet-backend linkage."""
+
     __tablename__ = "ollama_deployments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -211,6 +221,8 @@ class OllamaDeployment(Base):
 
 
 class LlamaCppDeployment(Base):
+    """A llama.cpp inference deployment (Kubernetes or remote) with model, GPU, resource config."""
+
     __tablename__ = "llamacpp_deployments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -263,6 +275,8 @@ class LlamaCppDeployment(Base):
 
 
 class OllamaModel(Base):
+    """A model pulled (or pending pull) on a given OllamaDeployment, with pull progress/status."""
+
     __tablename__ = "ollama_models"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -277,6 +291,8 @@ class OllamaModel(Base):
 
 
 class VirtualKey(Base):
+    """A user- or org-issued proxy key with its own model allowlist, budgets, and rate limits."""
+
     __tablename__ = "virtual_keys"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -302,6 +318,8 @@ class VirtualKey(Base):
 
 
 class TokenUsage(Base):
+    """A per-period token/cost usage rollup for a virtual key, user, or organization."""
+
     __tablename__ = "token_usage"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -328,6 +346,8 @@ class TokenUsage(Base):
 
 
 class UsageCache(Base):
+    """A precomputed daily/monthly usage snapshot for a virtual key or organization."""
+
     __tablename__ = "usage_cache"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -342,6 +362,8 @@ class UsageCache(Base):
 
 
 class TokenConversionRate(Base):
+    """Per-provider-model cost rates used to convert LLM tokens into WaddleAI token accounting."""
+
     __tablename__ = "token_conversion_rates"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -384,6 +406,8 @@ class ModelRegistry(Base):
 
 
 class RoutingRule(Base):
+    """A legacy priority-ordered rule matching requests to a target/fallback AIProvider."""
+
     __tablename__ = "routing_rules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -398,6 +422,8 @@ class RoutingRule(Base):
 
 
 class OllamaModelRoute(Base):
+    """A priority-ordered regex pattern mapping model names to an OllamaDeployment."""
+
     __tablename__ = "ollama_model_routes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -409,6 +435,8 @@ class OllamaModelRoute(Base):
 
 
 class UsageLog(Base):
+    """A per-request audit record of endpoint, model, token counts, latency, and outcome."""
+
     __tablename__ = "usage_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -429,6 +457,8 @@ class UsageLog(Base):
 
 
 class SecurityLog(Base):
+    """A detected-threat audit record: matched rule, severity, and whether it was blocked."""
+
     __tablename__ = "security_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -446,6 +476,8 @@ class SecurityLog(Base):
 
 
 class EmbeddingSettings(Base):
+    """Per-organization (or global default) embedding backend/model configuration."""
+
     __tablename__ = "embedding_settings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -459,6 +491,8 @@ class EmbeddingSettings(Base):
 
 
 class MemoryEmbedding(Base):
+    """A stored conversational memory vector, scoped to a user/org session (personal or org)."""
+
     __tablename__ = "memory_embeddings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -582,6 +616,8 @@ class EmbeddingCacheEntry(Base):
 
 
 class RAGDocument(Base):
+    """A chunked, embedded document in an org's RAG collection, with §9.7 scope/trust/versioning."""
+
     __tablename__ = "rag_documents"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -704,6 +740,8 @@ class DocsCachePage(Base):
 
 
 class ConversationMemoryConfig(Base):
+    """Per-organization conversation-summarization/memory settings (message window, similarity)."""
+
     __tablename__ = "conversation_memory_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -715,6 +753,8 @@ class ConversationMemoryConfig(Base):
 
 
 class RAGConfig(Base):
+    """Per-organization RAG retrieval settings (collection, top_k, similarity threshold)."""
+
     __tablename__ = "rag_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -896,12 +936,12 @@ class RoutingDecisionTrace(Base):
     routed_from = Column(JSON, nullable=True)
     escalated = Column(Boolean, default=False)
 
-    __table_args__ = (
-        Index("idx_rdt_org_timestamp", "organization_id", "timestamp"),
-    )
+    __table_args__ = (Index("idx_rdt_org_timestamp", "organization_id", "timestamp"),)
 
 
 class AILBUsageRecord(Base):
+    """A legacy per-request usage record imported from MarchProxy AILB (pre migration 007 fold)."""
+
     __tablename__ = "ailb_usage_records"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -919,6 +959,8 @@ class AILBUsageRecord(Base):
 
 
 class ContentFilterRule(Base):
+    """A PII/custom-string/regex content-filter rule, its target phase, and enforcement action."""
+
     __tablename__ = "content_filter_rules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -944,6 +986,8 @@ class ContentFilterRule(Base):
 
 
 class ContentFilterAuditLog(Base):
+    """An audit record of a content-filter/security-v2 decision, incl. auditor/bypass linkage."""
+
     __tablename__ = "content_filter_audit_log"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -1038,6 +1082,8 @@ class ResponseCacheEntry(Base):
     expires_at = Column(DateTime, nullable=False)
 
     __table_args__ = (Index("idx_rce_org_model_expires", "org_id", "model_class", "expires_at"),)
+
+
 class SecurityPolicy(Base):
     """Scoped security policy row (§8.1).
 
@@ -1249,13 +1295,10 @@ def init_schema(database_url: str):
         with engine.connect() as conn:
             # Add vector columns if not present
             conn.execute(
-                text(
-                    "ALTER TABLE memory_embeddings "
-                    "ADD COLUMN IF NOT EXISTS embedding vector(768)"
-                )
+                text("ALTER TABLE memory_embeddings ADD COLUMN IF NOT EXISTS embedding vector(768)")
             )
             conn.execute(
-                text("ALTER TABLE rag_documents " "ADD COLUMN IF NOT EXISTS embedding vector(768)")
+                text("ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS embedding vector(768)")
             )
             # IVFFlat indexes for cosine similarity search
             conn.execute(

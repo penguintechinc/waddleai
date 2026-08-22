@@ -67,6 +67,7 @@ class PolicyResolver:
             db: penguin-dal DB instance exposing a ``routing_policies`` table.
             valkey: Optional redis.asyncio-compatible client for caching.
             cache_ttl: Cache entry TTL in seconds.
+
         """
         self.db = db
         self.valkey = valkey
@@ -178,6 +179,7 @@ def filter_and_sort(
         Ordered offers: mode="local_only" drops commercial entries entirely,
         mode="commercial_only" drops local entries, other modes keep both
         but order by the mode's ranking key.
+
     """
     mode = policy.mode if policy.mode in _VALID_MODES else "local_first"
     filtered = [o for o in candidates if _passes_filters(o, allowed_models, tier_cap)]

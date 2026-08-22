@@ -1,6 +1,4 @@
-"""
-Comprehensive unit tests for UsageTrackingService
-"""
+"""Comprehensive unit tests for UsageTrackingService."""
 
 from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -20,24 +18,24 @@ from tests.unit.management.conftest import _make_mock_db
 
 @pytest.fixture
 def mock_db():
-    """Create a mock database connection that supports PyDAL-style queries"""
+    """Create a mock database connection that supports PyDAL-style queries."""
     return _make_mock_db()
 
 
 @pytest.fixture
 def mock_redis():
-    """Create a mock Redis client"""
+    """Create a mock Redis client."""
     return MagicMock()
 
 
 @pytest.fixture
 def tracker(mock_db, mock_redis):
-    """Create a UsageTrackingService instance with mocked dependencies"""
+    """Create a UsageTrackingService instance with mocked dependencies."""
     return UsageTrackingService(mock_db, mock_redis)
 
 
 def make_usage_event(**kwargs):
-    """Helper to create UsageEvent instances with defaults"""
+    """Helper to create UsageEvent instances with defaults."""
     defaults = {
         "event_id": "evt-001",
         "key_id": "wa-testkey",
@@ -55,12 +53,16 @@ def make_usage_event(**kwargs):
 
 
 class TestUsageEventDataclass:
-    """Test UsageEvent creation and timestamp handling"""
+    """Test UsageEvent creation and timestamp handling."""
 
     def test_usage_event_creation(self):
-        """Test creating a UsageEvent with all fields"""
+        """Test creating a UsageEvent with all fields."""
         event = make_usage_event(
-            event_id="evt-123", key_id="wa-key123", model="gpt-4o", input_tokens=150, output_tokens=250
+            event_id="evt-123",
+            key_id="wa-key123",
+            model="gpt-4o",
+            input_tokens=150,
+            output_tokens=250,
         )
 
         assert event.event_id == "evt-123"
@@ -70,7 +72,7 @@ class TestUsageEventDataclass:
         assert event.output_tokens == 250
 
     def test_usage_event_default_timestamp(self):
-        """Test UsageEvent gets default timestamp if not provided"""
+        """Test UsageEvent gets default timestamp if not provided."""
         before = datetime.utcnow()
         event = make_usage_event()
         after = datetime.utcnow()
@@ -79,7 +81,7 @@ class TestUsageEventDataclass:
         assert before <= event.timestamp <= after
 
     def test_usage_event_custom_timestamp(self):
-        """Test UsageEvent accepts custom timestamp"""
+        """Test UsageEvent accepts custom timestamp."""
         custom_time = datetime(2025, 1, 15, 12, 0, 0)
         event = make_usage_event(timestamp=custom_time)
 
@@ -87,10 +89,10 @@ class TestUsageEventDataclass:
 
 
 class TestCalculateWaddleaiTokens:
-    """Test token conversion calculation"""
+    """Test token conversion calculation."""
 
     def test_calculate_tokens_with_cached_rates(self, tracker):
-        """Test conversion uses cached rates when available"""
+        """Test conversion uses cached rates when available."""
         # Pre-populate cache
         cache_key = "openai:gpt-4"
         tracker._conversion_rates_cache[cache_key] = {
@@ -107,7 +109,7 @@ class TestCalculateWaddleaiTokens:
         tracker.db.assert_not_called()
 
     def test_calculate_tokens_expired_cache(self, tracker, mock_db):
-        """Test conversion fetches from DB when cache expired"""
+        """Test conversion fetches from DB when cache expired."""
         cache_key = "openai:gpt-4"
         tracker._conversion_rates_cache[cache_key] = {
             "input_rate": 5.0,
@@ -129,7 +131,7 @@ class TestCalculateWaddleaiTokens:
         assert tracker._conversion_rates_cache[cache_key]["input_rate"] == 10
 
     def test_calculate_tokens_db_lookup_found(self, tracker, mock_db):
-        """Test conversion looks up from DB when no cache"""
+        """Test conversion looks up from DB when no cache."""
         mock_rate = MagicMock()
         mock_rate.input_rate = 8
         mock_rate.output_rate = 8
@@ -144,7 +146,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 30
 
     def test_calculate_tokens_no_rate_found_defaults(self, tracker, mock_db):
-        """Test conversion uses default rates when no DB match"""
+        """Test conversion uses default rates when no DB match."""
         mock_select = MagicMock()
         mock_select.first.return_value = None  # No rate found
         mock_db.return_value = mock_select
@@ -157,7 +159,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 60
 
     def test_calculate_tokens_gpt35_cheaper(self, tracker, mock_db):
-        """Test GPT-3.5 has higher conversion rate (cheaper)"""
+        """Test GPT-3.5 has higher conversion rate (cheaper)."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -170,7 +172,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 19
 
     def test_calculate_tokens_o1_more_expensive(self, tracker, mock_db):
-        """Test o1 has lower conversion rate (more expensive)"""
+        """Test o1 has lower conversion rate (more expensive)."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -183,7 +185,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 99
 
     def test_calculate_tokens_anthropic_opus(self, tracker, mock_db):
-        """Test Anthropic Opus conversion"""
+        """Test Anthropic Opus conversion."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -194,7 +196,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 99
 
     def test_calculate_tokens_anthropic_sonnet(self, tracker, mock_db):
-        """Test Anthropic Sonnet conversion"""
+        """Test Anthropic Sonnet conversion."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -207,7 +209,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 37
 
     def test_calculate_tokens_anthropic_haiku(self, tracker, mock_db):
-        """Test Anthropic Haiku conversion (cheapest)"""
+        """Test Anthropic Haiku conversion (cheapest)."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -220,7 +222,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 15
 
     def test_calculate_tokens_ollama(self, tracker, mock_db):
-        """Test Ollama (local) conversion rate"""
+        """Test Ollama (local) conversion rate."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -233,7 +235,7 @@ class TestCalculateWaddleaiTokens:
         assert result == 30
 
     def test_calculate_tokens_cache_stores_result(self, tracker, mock_db):
-        """Test cache stores lookup result"""
+        """Test cache stores lookup result."""
         mock_rate = MagicMock()
         mock_rate.input_rate = 5
         mock_rate.output_rate = 5
@@ -252,10 +254,10 @@ class TestCalculateWaddleaiTokens:
 
 
 class TestRecordUsage:
-    """Test recording usage events"""
+    """Test recording usage events."""
 
     def test_record_usage_with_virtual_key(self, tracker, mock_db):
-        """Test recording usage with existing virtual key"""
+        """Test recording usage with existing virtual key."""
         event = make_usage_event(key_id="wa-key123")
 
         # Mock virtual key lookup - return key on first call, None for usage check
@@ -301,7 +303,7 @@ class TestRecordUsage:
         mock_db.usage_logs.insert.assert_not_called()
 
     def test_record_usage_calls_calculate_waddleai_tokens(self, tracker, mock_db):
-        """Test record_usage calls token conversion once a virtual key resolves"""
+        """Test record_usage calls token conversion once a virtual key resolves."""
         event = make_usage_event(model="gpt-4o")
 
         mock_key = MagicMock()
@@ -320,7 +322,7 @@ class TestRecordUsage:
             mock_calc.assert_called_once_with("openai", "gpt-4o", 100, 200)
 
     def test_record_usage_updates_existing_daily_usage(self, tracker, mock_db):
-        """Test updating existing daily usage record"""
+        """Test updating existing daily usage record."""
         event = make_usage_event()
 
         mock_key = MagicMock()
@@ -352,7 +354,7 @@ class TestRecordUsage:
         mock_db.token_usage.insert.assert_not_called()
 
     def test_record_usage_inserts_new_daily_usage(self, tracker, mock_db):
-        """Test inserting new daily usage record"""
+        """Test inserting new daily usage record."""
         event = make_usage_event()
 
         mock_key = MagicMock()
@@ -361,7 +363,11 @@ class TestRecordUsage:
         mock_key.organization_id = 5
 
         mock_select = MagicMock()
-        mock_select.first.side_effect = [mock_key, None, None]  # Key found, no usage record, no vkey update
+        mock_select.first.side_effect = [
+            mock_key,
+            None,
+            None,
+        ]  # Key found, no usage record, no vkey update
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 
@@ -372,7 +378,7 @@ class TestRecordUsage:
         mock_db.token_usage.insert.assert_called_once()
 
     def test_record_usage_creates_usage_log(self, tracker, mock_db):
-        """Test creating usage_logs entry"""
+        """Test creating usage_logs entry."""
         event = make_usage_event()
 
         mock_key = MagicMock()
@@ -381,7 +387,11 @@ class TestRecordUsage:
         mock_key.organization_id = 5
 
         mock_select = MagicMock()
-        mock_select.first.side_effect = [mock_key, None, None]  # Key found, no usage record, no vkey update
+        mock_select.first.side_effect = [
+            mock_key,
+            None,
+            None,
+        ]  # Key found, no usage record, no vkey update
         mock_db.return_value = mock_select
         mock_db.return_value.select.return_value = mock_select
 
@@ -393,10 +403,10 @@ class TestRecordUsage:
 
 
 class TestCheckQuota:
-    """Test quota checking"""
+    """Test quota checking."""
 
     def test_check_quota_key_not_found(self, tracker, mock_db):
-        """Test quota check when key doesn't exist"""
+        """Test quota check when key doesn't exist."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -408,7 +418,7 @@ class TestCheckQuota:
         assert quota_info.status == QuotaStatus.DISABLED
 
     def test_check_quota_key_disabled(self, tracker, mock_db):
-        """Test quota check when key is disabled"""
+        """Test quota check when key is disabled."""
         mock_key = MagicMock()
         mock_key.enabled = False
         mock_select = MagicMock()
@@ -422,7 +432,7 @@ class TestCheckQuota:
         assert quota_info.status == QuotaStatus.DISABLED
 
     def test_check_quota_no_limit_ok(self, tracker, mock_db):
-        """Test quota check with no limit set"""
+        """Test quota check with no limit set."""
         mock_key = MagicMock()
         mock_key.enabled = True
         mock_key.budget_limit_daily = None
@@ -439,7 +449,7 @@ class TestCheckQuota:
         assert quota_info.status == QuotaStatus.OK
 
     def test_check_quota_daily_limit_exceeded(self, tracker, mock_db):
-        """Test quota check when daily limit exceeded"""
+        """Test quota check when daily limit exceeded."""
         mock_key = MagicMock()
         mock_key.enabled = True
         mock_key.budget_limit_daily = 10.0
@@ -462,7 +472,7 @@ class TestCheckQuota:
         assert quota_info.remaining == 0
 
     def test_check_quota_monthly_limit_exceeded(self, tracker, mock_db):
-        """Test quota check when monthly limit exceeded"""
+        """Test quota check when monthly limit exceeded."""
         mock_key = MagicMock()
         mock_key.enabled = True
         mock_key.budget_limit_daily = None
@@ -486,7 +496,7 @@ class TestCheckQuota:
         assert quota_info.limit == 100.0
 
     def test_check_quota_warning_80_percent(self, tracker, mock_db):
-        """Test quota check returns WARNING over 80% usage"""
+        """Test quota check returns WARNING over 80% usage."""
         mock_key = MagicMock()
         mock_key.enabled = True
         mock_key.budget_limit_daily = None
@@ -509,7 +519,7 @@ class TestCheckQuota:
         assert quota_info.percentage == 81.0
 
     def test_check_quota_ok_under_80_percent(self, tracker, mock_db):
-        """Test quota check returns OK when under 80% usage"""
+        """Test quota check returns OK when under 80% usage."""
         mock_key = MagicMock()
         mock_key.enabled = True
         mock_key.budget_limit_daily = None
@@ -532,10 +542,10 @@ class TestCheckQuota:
 
 
 class TestCheckUserQuota:
-    """Test user-level quota checking"""
+    """Test user-level quota checking."""
 
     def test_check_user_quota_user_not_found(self, tracker, mock_db):
-        """Test user quota check when user doesn't exist"""
+        """Test user quota check when user doesn't exist."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -547,7 +557,7 @@ class TestCheckUserQuota:
         assert quota_info.status == QuotaStatus.DISABLED
 
     def test_check_user_quota_no_quota_set(self, tracker, mock_db):
-        """Test user quota check when no quota is set"""
+        """Test user quota check when no quota is set."""
         mock_user = MagicMock()
         mock_user.token_quota_daily = None
         mock_user.token_quota_monthly = None
@@ -563,7 +573,7 @@ class TestCheckUserQuota:
         assert quota_info.status == QuotaStatus.OK
 
     def test_check_user_quota_monthly_exceeded(self, tracker, mock_db):
-        """Test user quota check when monthly quota exceeded"""
+        """Test user quota check when monthly quota exceeded."""
         mock_user = MagicMock()
         mock_user.token_quota_daily = None
         mock_user.token_quota_monthly = 10000
@@ -585,7 +595,7 @@ class TestCheckUserQuota:
         assert quota_info.status == QuotaStatus.EXCEEDED
 
     def test_check_user_quota_warning_at_80_percent(self, tracker, mock_db):
-        """Test user quota check returns WARNING over 80% usage"""
+        """Test user quota check returns WARNING over 80% usage."""
         mock_user = MagicMock()
         mock_user.token_quota_daily = None
         mock_user.token_quota_monthly = 10000
@@ -608,10 +618,10 @@ class TestCheckUserQuota:
 
 
 class TestCheckOrgQuota:
-    """Test organization-level quota checking"""
+    """Test organization-level quota checking."""
 
     def test_check_org_quota_org_not_found(self, tracker, mock_db):
-        """Test org quota check when org doesn't exist"""
+        """Test org quota check when org doesn't exist."""
         mock_select = MagicMock()
         mock_select.first.return_value = None
         mock_db.return_value = mock_select
@@ -623,7 +633,7 @@ class TestCheckOrgQuota:
         assert quota_info.status == QuotaStatus.DISABLED
 
     def test_check_org_quota_no_quota_set(self, tracker, mock_db):
-        """Test org quota check when no quota is set"""
+        """Test org quota check when no quota is set."""
         mock_org = MagicMock()
         mock_org.token_quota_monthly = None
 
@@ -638,7 +648,7 @@ class TestCheckOrgQuota:
         assert quota_info.status == QuotaStatus.OK
 
     def test_check_org_quota_exceeded(self, tracker, mock_db):
-        """Test org quota check when quota exceeded"""
+        """Test org quota check when quota exceeded."""
         mock_org = MagicMock()
         mock_org.token_quota_monthly = 100000
 
@@ -659,7 +669,7 @@ class TestCheckOrgQuota:
         assert quota_info.status == QuotaStatus.EXCEEDED
 
     def test_check_org_quota_warning(self, tracker, mock_db):
-        """Test org quota check returns WARNING over 80% usage"""
+        """Test org quota check returns WARNING over 80% usage."""
         mock_org = MagicMock()
         mock_org.token_quota_monthly = 100000
 
@@ -681,10 +691,10 @@ class TestCheckOrgQuota:
 
 
 class TestAggregateDailyUsage:
-    """Test daily usage aggregation"""
+    """Test daily usage aggregation."""
 
     def test_aggregate_daily_usage_found(self, tracker, mock_db):
-        """Test aggregating existing daily usage"""
+        """Test aggregating existing daily usage."""
         today = date.today()
 
         mock_usage = MagicMock()
@@ -713,7 +723,7 @@ class TestAggregateDailyUsage:
         assert result.cost_usd == 0.15
 
     def test_aggregate_daily_usage_not_found(self, tracker, mock_db):
-        """Test aggregating when no usage record exists"""
+        """Test aggregating when no usage record exists."""
         today = date.today()
 
         mock_select = MagicMock()
@@ -730,7 +740,7 @@ class TestAggregateDailyUsage:
         assert result.request_count == 0
 
     def test_aggregate_daily_usage_null_fields(self, tracker, mock_db):
-        """Test aggregating with null numeric fields"""
+        """Test aggregating with null numeric fields."""
         today = date.today()
 
         mock_usage = MagicMock()
@@ -758,10 +768,10 @@ class TestAggregateDailyUsage:
 
 
 class TestGetUsageStats:
-    """Test usage statistics generation"""
+    """Test usage statistics generation."""
 
     def test_get_usage_stats_by_key(self, tracker, mock_db):
-        """Test getting stats filtered by key_id"""
+        """Test getting stats filtered by key_id."""
         mock_usage1 = MagicMock()
         mock_usage1.waddleai_tokens = 100
         mock_usage1.tokens_input_total = 500
@@ -785,7 +795,7 @@ class TestGetUsageStats:
         assert result.cost_usd == 0.15
 
     def test_get_usage_stats_by_user(self, tracker, mock_db):
-        """Test getting stats filtered by user_id"""
+        """Test getting stats filtered by user_id."""
         mock_usage = MagicMock()
         mock_usage.waddleai_tokens = 50
         mock_usage.tokens_input_total = 250
@@ -805,7 +815,7 @@ class TestGetUsageStats:
         assert result.request_count == 3
 
     def test_get_usage_stats_by_org(self, tracker, mock_db):
-        """Test getting stats filtered by organization_id"""
+        """Test getting stats filtered by organization_id."""
         mock_select = MagicMock()
         mock_select.__iter__.return_value = iter([])
         mock_db.return_value = mock_select
@@ -817,7 +827,7 @@ class TestGetUsageStats:
         assert result.request_count == 0
 
     def test_get_usage_stats_multiple_days(self, tracker, mock_db):
-        """Test aggregating stats across multiple days"""
+        """Test aggregating stats across multiple days."""
         mock_usage1 = MagicMock()
         mock_usage1.waddleai_tokens = 100
         mock_usage1.tokens_input_total = 500
@@ -846,7 +856,7 @@ class TestGetUsageStats:
         assert result.cost_usd == 0.20  # 0.15 + 0.05
 
     def test_get_usage_stats_by_day_grouping(self, tracker, mock_db):
-        """Test stats grouped by day"""
+        """Test stats grouped by day."""
         today = date.today()
         yesterday = today - timedelta(days=1)
 
@@ -879,7 +889,7 @@ class TestGetUsageStats:
         assert result.by_day[yesterday.isoformat()] == 50
 
     def test_get_usage_stats_empty(self, tracker, mock_db):
-        """Test getting stats when no usage records exist"""
+        """Test getting stats when no usage records exist."""
         mock_select = MagicMock()
         mock_select.__iter__.return_value = iter([])
         mock_db.return_value = mock_select
@@ -893,10 +903,10 @@ class TestGetUsageStats:
 
 
 class TestDataclassDefaults:
-    """Test dataclass default values"""
+    """Test dataclass default values."""
 
     def test_daily_usage_defaults(self):
-        """Test DailyUsage default values"""
+        """Test DailyUsage default values."""
         today = date.today()
         usage = DailyUsage(date=today, key_id=1)
 
@@ -909,7 +919,7 @@ class TestDataclassDefaults:
         assert usage.cost_usd == 0.0
 
     def test_usage_stats_defaults(self):
-        """Test UsageStats default values"""
+        """Test UsageStats default values."""
         stats = UsageStats()
 
         assert stats.total_tokens == 0
@@ -922,7 +932,7 @@ class TestDataclassDefaults:
         assert stats.by_day == {}
 
     def test_quota_info_defaults(self):
-        """Test QuotaInfo default values"""
+        """Test QuotaInfo default values."""
         info = QuotaInfo(status=QuotaStatus.OK)
 
         assert info.status == QuotaStatus.OK

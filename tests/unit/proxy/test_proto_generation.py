@@ -1,5 +1,4 @@
-"""
-Test the in-repo WaddleAI proto definition and its generated Python stubs.
+"""Test the in-repo WaddleAI proto definition and its generated Python stubs.
 
 Guards two things: (1) proto/waddleai/v1/proxy.proto exists, is proto3,
 declares `package waddleai.v1;`, and every request message carries the
@@ -19,9 +18,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PROTO_PATH = REPO_ROOT / "proto" / "waddleai" / "v1" / "proxy.proto"
-GENERATED_PKG_DIR = (
-    REPO_ROOT / "proxy" / "apps" / "proxy_server" / "grpc_proto" / "waddleai" / "v1"
-)
+GENERATED_PKG_DIR = REPO_ROOT / "proxy" / "apps" / "proxy_server" / "grpc_proto" / "waddleai" / "v1"
 
 # Every message sent as an RPC request on WaddleAIService. UsageReport is
 # included despite its name -- it is ReportUsage's request message, recovered
@@ -61,15 +58,19 @@ class TestProxyProtoSource:
     """Assertions against the checked-in .proto source text."""
 
     def test_proto_file_exists(self) -> None:
+        """The checked-in proxy.proto file exists at the expected repo-relative path."""
         assert PROTO_PATH.is_file(), f"expected {PROTO_PATH} to exist"
 
     def test_proto3_syntax(self) -> None:
+        """The proto declares `syntax = "proto3";`."""
         assert re.search(r'syntax\s*=\s*"proto3";', _proto_text())
 
     def test_declares_waddleai_v1_package(self) -> None:
+        """The proto declares `package waddleai.v1;`."""
         assert re.search(r"package\s+waddleai\.v1;", _proto_text())
 
     def test_declares_go_package_option(self) -> None:
+        """The proto declares the go_package option pinned to proto/waddleai/v1;waddleaiv1."""
         text = _proto_text()
         assert "option go_package" in text
         assert "proto/waddleai/v1;waddleaiv1" in text
@@ -89,8 +90,10 @@ class TestProxyProtoSource:
         assert "api_version" not in body
 
     def test_no_marchproxy_proto_import(self) -> None:
-        """No `import "marchproxy/...";` dependency — a doc-comment mention of
-        the recovered-from stub (for provenance) is fine, an import isn't."""
+        """No `import "marchproxy/...";` dependency.
+
+        A doc-comment mention of the recovered-from stub (for provenance) is fine, an import isn't.
+        """
         text = _proto_text()
         assert not re.search(r'import\s+"[^"]*marchproxy[^"]*"', text, re.I)
 
@@ -125,9 +128,11 @@ class TestGeneratedWaddleaiStubs:
                 sys.path.remove(proxy_server_dir)
 
     def test_generated_package_declares_waddleai_v1(self) -> None:
+        """Generated proxy_pb2 module's DESCRIPTOR.package matches the proto's `waddleai.v1`."""
         assert self.proxy_pb2.DESCRIPTOR.package == "waddleai.v1"
 
     def test_servicer_exposes_all_rpc_methods(self) -> None:
+        """Generated WaddleAIServiceServicer exposes all six RPC methods from the proto."""
         servicer_methods = {
             name
             for name in dir(self.proxy_pb2_grpc.WaddleAIServiceServicer)
@@ -145,6 +150,7 @@ class TestGeneratedWaddleaiStubs:
 
     @pytest.mark.parametrize("message_name", REQUEST_MESSAGE_NAMES)
     def test_generated_request_message_has_api_version_field(self, message_name: str) -> None:
+        """Generated request message class has a string api_version field numbered 1."""
         message_cls = getattr(self.proxy_pb2, message_name)
         fields = message_cls.DESCRIPTOR.fields_by_name
         assert "api_version" in fields, f"{message_name} missing api_version field"

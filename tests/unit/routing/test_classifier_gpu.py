@@ -26,7 +26,9 @@ async def test_real_gemma4_e2b_classifies_a_coding_prompt():
     """Real gemma4:e2b returns a plausible structured classification for a code prompt."""
     from shared.utils.llm_connectors import OllamaConnector
 
-    connector = OllamaConnector(name="ollama", config={"base_url": os.getenv("OLLAMA_HOST", "http://localhost:11434")})
+    connector = OllamaConnector(
+        name="ollama", config={"base_url": os.getenv("OLLAMA_HOST", "http://localhost:11434")}
+    )
 
     class _OllamaClassifierClient:
         async def complete(self, prompt: str, model: str, system_prompt=None) -> str:

@@ -38,6 +38,7 @@ def validate_de_escalation(value: str) -> None:
     Raises:
         RoutingConfigError: When value is "task_detect" (deferred per §7.3,
             §14.1 -- ships in a later release built on real traffic data).
+
     """
     if value == _DEFERRED_DE_ESCALATION:
         raise RoutingConfigError(
@@ -78,6 +79,7 @@ def should_escalate(
     Returns:
         EscalationDecision with the first trigger that fired, or
         escalate=False when none did.
+
     """
     if explicit_hint in ("true", "auto:high"):
         return EscalationDecision(escalate=True, trigger="explicit_hint")
@@ -144,6 +146,7 @@ class StickyState:
         Returns:
             True if the session remains escalated; False otherwise (never
             escalated, or idle_reset has cleared it).
+
         """
         if self.valkey is None or not session_id:
             return False

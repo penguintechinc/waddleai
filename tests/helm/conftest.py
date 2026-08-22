@@ -31,8 +31,9 @@ def _helm_dependency_build():
     """
     if shutil.which("helm") is None:
         return
+    # Fixed argv invoking the helm CLI, no shell, no user input.
     subprocess.run(
-        ["helm", "dependency", "build"],
+        ["helm", "dependency", "build"],  # noqa: S607
         cwd=CHART_DIR,
         check=True,
         capture_output=True,
@@ -56,7 +57,8 @@ def render(
         cmd += ["--api-versions", api_version]
     for key, value in (set_values or {}).items():
         cmd += ["--set", f"{key}={value}"]
-    result = subprocess.run(cmd, cwd=CHART_DIR, capture_output=True, text=True)
+    # Fixed argv invoking the helm CLI, no shell, no user input.
+    result = subprocess.run(cmd, cwd=CHART_DIR, capture_output=True, text=True)  # noqa: S603
     assert result.returncode == 0, f"helm template failed: {result.stderr}"
     docs = [d for d in yaml.safe_load_all(result.stdout) if d]
     assert docs, "helm template rendered zero objects — dependency build likely missing"

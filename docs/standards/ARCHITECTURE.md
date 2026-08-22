@@ -186,7 +186,7 @@ curl -X POST http://localhost:5000/api/v1/auth/login \
 
 # Use token to get users
 curl -X GET http://localhost:5000/api/v1/users \
-  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+  -H "Authorization: Bearer <your-token>"
 ```
 
 ### Step 4: Seeding Test Data

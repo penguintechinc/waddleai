@@ -45,9 +45,7 @@ MIGRATION_PATH = os.path.join(
 
 def _load_migration_014():
     """Load migration 014."""
-    spec = importlib.util.spec_from_file_location(
-        "migration_014_integrations", MIGRATION_PATH
-    )
+    spec = importlib.util.spec_from_file_location("migration_014_integrations", MIGRATION_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

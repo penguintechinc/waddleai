@@ -220,7 +220,7 @@ The Memory Config page shows:
 
 ```bash
 curl http://localhost:8001/api/memory/conversations \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -G \
   --data-urlencode "query=database optimization" \
   --data-urlencode "limit=5"
@@ -257,14 +257,14 @@ Response:
 
 ```bash
 curl http://localhost:8001/api/memory/conversations/conv_123 \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 ### Get Memory Statistics
 
 ```bash
 curl http://localhost:8001/api/memory/stats \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 Response:
@@ -305,11 +305,11 @@ Response:
 ```bash
 # Delete specific conversation
 curl -X DELETE http://localhost:8001/api/memory/conversations/conv_123 \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 
 # Delete old conversations (GDPR compliance)
 curl -X DELETE http://localhost:8001/api/memory/conversations/cleanup \
-  -H "Authorization: Bearer your-admin-token" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "older_than_days": 90,
@@ -432,7 +432,7 @@ CONVERSATION_RETENTION_DAYS=90
 # Automatic cleanup runs daily
 # Or manually trigger:
 curl -X POST http://localhost:8001/api/memory/cleanup \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 ### GDPR Right to Erasure
@@ -441,7 +441,7 @@ Delete all data for a specific user:
 
 ```bash
 curl -X DELETE "http://localhost:8001/api/memory/user/123/all" \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 ```
 
 ### Data Anonymization
@@ -501,7 +501,7 @@ docker exec waddleai-chromadb du -sh /chroma/chroma
 
 # Trigger cleanup
 curl -X POST http://localhost:8001/api/memory/cleanup \
-  -H "Authorization: Bearer your-admin-token"
+  -H "Authorization: Bearer <your-admin-token>"
 
 # Reduce retention period
 # In .env.dev: CONVERSATION_RETENTION_DAYS=30

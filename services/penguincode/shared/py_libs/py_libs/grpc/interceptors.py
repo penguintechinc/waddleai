@@ -1,5 +1,4 @@
-"""
-gRPC security interceptors for authentication, rate limiting, and audit logging.
+"""gRPC security interceptors for authentication, rate limiting, and audit logging.
 """
 
 from __future__ import annotations
@@ -9,9 +8,10 @@ import time
 import traceback
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable, Optional
+from typing import Any
 
 import grpc
 import jwt
@@ -20,8 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthInterceptor(grpc.ServerInterceptor):
-    """
-    JWT authentication interceptor for gRPC servers.
+    """JWT authentication interceptor for gRPC servers.
 
     Validates JWT tokens in metadata and sets user context.
     """
@@ -29,16 +28,16 @@ class AuthInterceptor(grpc.ServerInterceptor):
     def __init__(
         self,
         secret_key: str,
-        algorithms: Optional[list[str]] = None,
-        public_methods: Optional[set[str]] = None,
+        algorithms: list[str] | None = None,
+        public_methods: set[str] | None = None,
     ):
-        """
-        Initialize auth interceptor.
+        """Initialize auth interceptor.
 
         Args:
             secret_key: JWT secret key for validation
             algorithms: List of allowed JWT algorithms (default: ['HS256'])
             public_methods: Set of method names that don't require auth
+
         """
         self.secret_key = secret_key
         self.algorithms = algorithms or ["HS256"]
@@ -116,8 +115,7 @@ class RateLimitEntry:
 
 
 class RateLimitInterceptor(grpc.ServerInterceptor):
-    """
-    Rate limiting interceptor with per-client limits.
+    """Rate limiting interceptor with per-client limits.
 
     Implements sliding window rate limiting.
     """
@@ -127,12 +125,12 @@ class RateLimitInterceptor(grpc.ServerInterceptor):
         requests_per_minute: int = 100,
         per_user: bool = True,
     ):
-        """
-        Initialize rate limiter.
+        """Initialize rate limiter.
 
         Args:
             requests_per_minute: Maximum requests per minute
             per_user: Rate limit per user (True) or per IP (False)
+
         """
         self.requests_per_minute = requests_per_minute
         self.per_user = per_user
@@ -209,8 +207,7 @@ class RateLimitInterceptor(grpc.ServerInterceptor):
 
 
 class AuditInterceptor(grpc.ServerInterceptor):
-    """
-    Audit logging interceptor for request/response tracking.
+    """Audit logging interceptor for request/response tracking.
 
     Logs method calls, duration, and status codes.
     """
@@ -283,8 +280,7 @@ class AuditInterceptor(grpc.ServerInterceptor):
 
 
 class CorrelationInterceptor(grpc.ServerInterceptor):
-    """
-    Correlation ID interceptor for request tracing.
+    """Correlation ID interceptor for request tracing.
 
     Adds or propagates correlation IDs across service calls.
     """
@@ -310,8 +306,7 @@ class CorrelationInterceptor(grpc.ServerInterceptor):
 
 
 class RecoveryInterceptor(grpc.ServerInterceptor):
-    """
-    Recovery interceptor for exception handling.
+    """Recovery interceptor for exception handling.
 
     Catches unexpected exceptions and returns proper gRPC errors.
     """

@@ -50,9 +50,7 @@ async def _embed_via_ollama(ollama_base_url: str, text: str) -> list[float]:
         return response.json()["embedding"]
 
 
-async def test_qdrant_vector_store_round_trip(
-    qdrant_available: bool, qdrant_base_url: str
-) -> None:
+async def test_qdrant_vector_store_round_trip(qdrant_available: bool, qdrant_base_url: str) -> None:
     """ensure_collection -> upsert -> search -> delete -> delete_collection, for real."""
     _skip_if_unavailable(qdrant_available, "Qdrant")
 

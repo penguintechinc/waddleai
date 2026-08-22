@@ -28,8 +28,11 @@ class StubDenylistStore:
         """Insert one admin-added denylist entry."""
         self.entries.setdefault((scope_type, scope_ref), []).append(
             DenylistEntry(
-                id=entry_id, pattern=pattern, source="admin",
-                scope_type=scope_type, scope_ref=scope_ref,
+                id=entry_id,
+                pattern=pattern,
+                source="admin",
+                scope_type=scope_type,
+                scope_ref=scope_ref,
             )
         )
 
@@ -120,9 +123,13 @@ class TestBuiltinSeedList:
     )
     def test_builtin_patterns_catch_protected_paths(self, text: str) -> None:
         """Every representative protected-path example matches at least one builtin pattern."""
-        assert match_denylist(
-            [DenylistEntry(pattern=p, source="builtin") for p in BUILTIN_DENYLIST_PATTERNS], text
-        ) is not None
+        assert (
+            match_denylist(
+                [DenylistEntry(pattern=p, source="builtin") for p in BUILTIN_DENYLIST_PATTERNS],
+                text,
+            )
+            is not None
+        )
 
     def test_benign_command_not_matched(self) -> None:
         """A benign, unrelated command matches nothing in the builtin set."""

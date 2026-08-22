@@ -15,7 +15,7 @@ This guide provides instructions for setting up a manual testing environment wit
 Export the values OpenWebUI needs to reach the proxy — there is no `.env.testing` template in this repo, so set these directly:
 
 ```bash
-export WADDLEAI_API_KEY=wa-your-api-key-here
+export WADDLEAI_API_KEY=<your-waddleai-key>
 ```
 
 ### 2. Launch OpenWebUI

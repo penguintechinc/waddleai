@@ -11,7 +11,7 @@ and any other client with a "custom OpenAI-compatible endpoint" option.
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-key-here",
+    api_key="<your-waddleai-key>",
     base_url="https://your-waddleai-host/v1",
 )
 
@@ -25,7 +25,7 @@ response = client.chat.completions.create(
 import OpenAI from 'openai';
 
 const client = new OpenAI({
-  apiKey: 'wa-your-key-here',
+  apiKey: '<your-waddleai-key>',
   baseURL: 'https://your-waddleai-host/v1',
 });
 
@@ -61,9 +61,15 @@ const completion = await client.chat.completions.create({
 
 ## Troubleshooting
 
+`$WADDLEAI_API_KEY` in the table below is your exported virtual key:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 | Symptom | Cause | Fix |
 |---|---|---|
-| `401` | Malformed `Authorization` header (some clients need `Bearer <key>`, others just `<key>`) | Confirm your SDK sends `Authorization: Bearer wa-...` |
+| `401` | Malformed `Authorization` header (some clients need `Bearer <key>`, others just `<key>`) | Confirm your SDK sends `Authorization: Bearer $WADDLEAI_API_KEY` |
 | `404` on `/v1/chat/completions` | `base_url` missing `/v1` or has a trailing slash mismatch | Use exactly `https://your-waddleai-host/v1` |
 | Response missing expected model | Requested `smart-router` and got routed elsewhere | Pin an explicit model, or check `get_routing_policy` via MCP |
 

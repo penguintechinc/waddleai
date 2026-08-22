@@ -76,9 +76,7 @@ class _CandidateRow:
 class PolicyStore(Protocol):
     """Read/write seam PolicyResolver depends on -- implemented by penguin-dal."""
 
-    async def fetch_scope_rows(
-        self, scope_type: str, scope_ref: str | None
-    ) -> list[_CandidateRow]:
+    async def fetch_scope_rows(self, scope_type: str, scope_ref: str | None) -> list[_CandidateRow]:
         """Return the (usually 0 or 1 per direction) rows for one scope."""
         ...
 
@@ -258,9 +256,7 @@ class PenguinDALPolicyStore:
         """Wrap a penguin-dal/PyDAL connection exposing `db.security_policies`."""
         self.db = db
 
-    async def fetch_scope_rows(
-        self, scope_type: str, scope_ref: str | None
-    ) -> list[_CandidateRow]:
+    async def fetch_scope_rows(self, scope_type: str, scope_ref: str | None) -> list[_CandidateRow]:
         """Query rows for one scope, offloading the sync DAL call to a thread."""
         import asyncio
 

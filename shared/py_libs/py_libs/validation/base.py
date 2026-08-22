@@ -1,5 +1,4 @@
-"""
-Base validation classes and utilities.
+"""Base validation classes and utilities.
 
 Provides the foundation for PyDAL-style validators with:
 - Validator abstract base class with __call__ pattern
@@ -11,8 +10,9 @@ Provides the foundation for PyDAL-style validators with:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Sequence, TypeVar
+from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 V = TypeVar("V")
@@ -22,25 +22,27 @@ class ValidationError(Exception):
     """Exception raised when validation fails."""
 
     def __init__(self, message: str, field: str | None = None) -> None:
+        """Store the failure *message* and the optional *field* it applies to."""
         self.message = message
         self.field = field
         super().__init__(message)
 
     def __str__(self) -> str:
+        """Render as ``"field: message"`` when a field is set, else just the message."""
         if self.field:
             return f"{self.field}: {self.message}"
         return self.message
 
 
 @dataclass(slots=True, frozen=True)
-class ValidationResult(Generic[T]):
-    """
-    Result of a validation operation.
+class ValidationResult(Generic[T]):  # noqa: UP046 -- PEP 695 type-param syntax is a class-definition change, out of scope for this pass
+    """Result of a validation operation.
 
     Attributes:
         is_valid: Whether the validation passed
         value: The validated (possibly transformed) value, or None if invalid
         error: Error message if validation failed, or None if valid
+
     """
 
     is_valid: bool
@@ -58,37 +60,36 @@ class ValidationResult(Generic[T]):
         return cls(is_valid=False, value=None, error=error)
 
     def unwrap(self) -> T:
-        """
-        Get the validated value or raise ValidationError.
+        """Get the validated value or raise ValidationError.
 
         Returns:
             The validated value
 
         Raises:
             ValidationError: If validation failed
+
         """
         if not self.is_valid or self.value is None:
             raise ValidationError(self.error or "Validation failed")
         return self.value
 
     def unwrap_or(self, default: T) -> T:
-        """
-        Get the validated value or return a default.
+        """Get the validated value or return a default.
 
         Args:
             default: Value to return if validation failed
 
         Returns:
             The validated value or the default
+
         """
         if self.is_valid and self.value is not None:
             return self.value
         return default
 
 
-class Validator(ABC, Generic[T, V]):
-    """
-    Abstract base class for validators.
+class Validator(ABC, Generic[T, V]):  # noqa: UP046 -- PEP 695 type-param syntax is a class-definition change, out of scope for this pass
+    """Abstract base class for validators.
 
     Validators follow the PyDAL IS_* pattern with __call__ method.
     Subclasses must implement the validate() method.
@@ -106,55 +107,56 @@ class Validator(ABC, Generic[T, V]):
 
         validator = IsUpper()
         result = validator("HELLO")  # ValidationResult(is_valid=True, value="HELLO")
+
     """
 
     def __call__(self, value: T) -> ValidationResult[V]:
-        """
-        Validate the input value.
+        """Validate the input value.
 
         Args:
             value: The value to validate
 
         Returns:
             ValidationResult with success/failure status
+
         """
         return self.validate(value)
 
     @abstractmethod
     def validate(self, value: T) -> ValidationResult[V]:
-        """
-        Perform the actual validation.
+        """Perform the actual validation.
 
         Args:
             value: The value to validate
 
         Returns:
             ValidationResult with success/failure status
+
         """
         ...
 
     def and_then(self, other: Validator[V, Any]) -> ChainedValidator[T, Any]:
-        """
-        Chain this validator with another.
+        """Chain this validator with another.
 
         Args:
             other: The next validator in the chain
 
         Returns:
             A new ChainedValidator that runs both validators
+
         """
         return ChainedValidator([self, other])
 
 
 class ChainedValidator(Validator[T, V]):
-    """
-    A validator that chains multiple validators together.
+    """A validator that chains multiple validators together.
 
     Validators are run in sequence. If any validator fails,
     the chain stops and returns the failure result.
     """
 
     def __init__(self, validators: Sequence[Validator[Any, Any]]) -> None:
+        """Store the ordered *validators* to run in sequence on :meth:`validate`."""
         self._validators = list(validators)
 
     def validate(self, value: T) -> ValidationResult[V]:
@@ -175,8 +177,7 @@ class ChainedValidator(Validator[T, V]):
 
 
 def chain(*validators: Validator[Any, Any]) -> ChainedValidator[Any, Any]:
-    """
-    Create a chained validator from multiple validators.
+    """Create a chained validator from multiple validators.
 
     Validators are run in sequence. If any validator fails,
     the chain stops and returns the failure result.
@@ -190,6 +191,7 @@ def chain(*validators: Validator[Any, Any]) -> ChainedValidator[Any, Any]:
     Example:
         validators = chain(IsNotEmpty(), IsLength(3, 50), IsEmail())
         result = validators("user@example.com")
+
     """
     return ChainedValidator(validators)
 

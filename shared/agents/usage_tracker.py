@@ -1,6 +1,4 @@
-"""
-Usage Tracker — records per-request usage metrics and enforces license-gated
-quotas.
+"""Usage Tracker — records per-request usage metrics and enforces license-gated quotas.
 
 Writes every completed request into the ``token_usage`` table via
 penguin-dal (query-builder calls, never raw SQL) and, when the
@@ -24,7 +22,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +40,10 @@ class UsageReport:
     input_tokens: int
     output_tokens: int
     total_tokens: int
-    api_key_id: Optional[str] = None
-    provider: Optional[str] = None
-    latency_ms: Optional[float] = None
-    request_id: Optional[str] = None
+    api_key_id: str | None = None
+    provider: str | None = None
+    latency_ms: float | None = None
+    request_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -78,9 +76,14 @@ class UsageTracker:
             When provided, premium features (per-user quotas, unlimited
             users) are gated behind the ``premium_usage_tracking`` feature
             flag.
+
     """
 
     def __init__(self, db: Any, license_client: Any = None) -> None:
+        """Bind the tracker to *db* and an optional license client.
+
+        See class docstring for argument details.
+        """
         self._db = db
         self._license_client = license_client
 
@@ -100,6 +103,7 @@ class UsageTracker:
 
         Returns:
             A :class:`UsageAck` indicating whether the record was accepted.
+
         """
         return await asyncio.to_thread(self._record_usage_sync, report)
 
@@ -188,7 +192,7 @@ class UsageTracker:
     # Identity resolution
     # ------------------------------------------------------------------
 
-    def _resolve_identity(self, user_id_str: str) -> tuple[Optional[int], Optional[int]]:
+    def _resolve_identity(self, user_id_str: str) -> tuple[int | None, int | None]:
         """Resolve a report's external ``user_id`` string to (users.id, organization_id).
 
         Tries a numeric ``users.id`` match first, then falls back to
@@ -222,11 +226,15 @@ class UsageTracker:
     # ------------------------------------------------------------------
 
     def _has_premium(self) -> bool:
-        """Return True when the premium_usage_tracking feature is licensed."""
+        """Return True when the premium_usage_tracking feature is licensed.
+
+        ``penguin_licensing.LicenseClient`` exposes ``check_feature`` /
+        ``check_tier`` only -- there is no ``has_feature`` method.
+        """
         if self._license_client is None:
             return False
         try:
-            return bool(self._license_client.has_feature("premium_usage_tracking"))
+            return bool(self._license_client.check_feature("premium_usage_tracking"))
         except Exception as exc:
             logger.warning("License check failed: %s", exc)
             return False

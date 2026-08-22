@@ -168,17 +168,21 @@ Complete checklist for deploying WaddleAI to production safely and securely.
 
 - [ ] **Test endpoints**
   ```bash
+  export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+  ```
+
+  ```bash
   # Health checks
   curl https://api.waddleai.example.com/healthz
   curl https://manage.waddleai.example.com/healthz
 
   # API endpoints
   curl https://api.waddleai.example.com/v1/models \
-    -H "Authorization: Bearer wa-test-key"
+    -H "Authorization: Bearer $WADDLEAI_API_KEY"
 
   # MCP endpoint
   wscat -c wss://api.waddleai.example.com:8765/mcp \
-    -H "X-API-Key: wa-test-key"
+    -H "X-API-Key: $WADDLEAI_API_KEY"
   ```
 
 ### XDP/AF_XDP (Optional)
@@ -207,13 +211,13 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   ```bash
   # Check XDP statistics
   curl https://manage.waddleai.example.com/api/performance/xdp \
-    -H "Authorization: Bearer admin-token"
+    -H "Authorization: Bearer <your-admin-token>"
   ```
 
 - [ ] **Configure rate limits**
   ```bash
   curl -X POST https://manage.waddleai.example.com/api/performance/xdp/rate-limits \
-    -H "Authorization: Bearer admin-token" \
+    -H "Authorization: Bearer <your-admin-token>" \
     -H "Content-Type: application/json" \
     -d '{
       "default_rate": 1000,
@@ -259,7 +263,7 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   ```bash
   # Use Apache Bench
   ab -n 10000 -c 100 \
-    -H "Authorization: Bearer wa-test-key" \
+    -H "Authorization: Bearer $WADDLEAI_API_KEY" \
     -p request.json \
     -T "application/json" \
     https://api.waddleai.example.com/v1/chat/completions

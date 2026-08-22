@@ -1,6 +1,6 @@
-"""
-WaddleAI Database Models
-Shared database models for both proxy and management servers
+"""WaddleAI Database Models.
+
+Shared database models for both proxy and management servers.
 """
 
 import os
@@ -19,6 +19,7 @@ def get_db(db_uri=None, migrate=False):
             other context (including production) this stays False: Alembic
             (services/management/app/models_sqlalchemy.py) is the sole schema
             authority and this module must not auto-migrate against it.
+
     """
     if db_uri is None:
         db_uri = os.getenv("DATABASE_URL", "sqlite://waddleai.db")
@@ -34,8 +35,7 @@ def get_db(db_uri=None, migrate=False):
 
 
 def define_tables(db):
-    """Define all database tables"""
-
+    """Define all database tables."""
     # Organizations for Multi-tenancy
     db.define_table(
         "organizations",
@@ -178,7 +178,9 @@ def define_tables(db):
         # WaddleAI Tokens (normalized usage units)
         Field("waddleai_tokens", "integer", default=0),
         # Individual LLM Token Counts
-        Field("llm_tokens", "json"),  # {"openai_gpt4": {"input": 100, "output": 50}, "claude": {...}}
+        Field(
+            "llm_tokens", "json"
+        ),  # {"openai_gpt4": {"input": 100, "output": 50}, "claude": {...}}
         Field("tokens_input_total", "integer", default=0),  # Sum across all LLMs
         Field("tokens_output_total", "integer", default=0),  # Sum across all LLMs
         Field("request_count", "integer", default=0),
@@ -244,7 +246,9 @@ def define_tables(db):
         "content_filter_rules",
         Field("name", "string", notnull=True),
         Field("description", "text"),
-        Field("rule_type", "string", notnull=True),  # 'builtin_pii', 'custom_string', 'custom_regex'
+        Field(
+            "rule_type", "string", notnull=True
+        ),  # 'builtin_pii', 'custom_string', 'custom_regex'
         Field("target", "string", default="both"),  # 'input', 'output', 'both'
         Field("pattern", "text", notnull=True),
         Field("action", "string", default="log"),  # 'block', 'redact', 'log'
@@ -378,81 +382,13 @@ def define_tables(db):
     return db
 
 
-def init_default_data(db):
-    """Initialize default data for the database"""
-
-    # Create default organization
-    if not db(db.organizations.name == "default").select():
-        org_id = db.organizations.insert(
-            name="default",
-            description="Default organization for initial setup",
-            token_quota_monthly=1000000,
-            token_quota_daily=100000,
-        )
-    else:
-        org_id = db(db.organizations.name == "default").select().first().id
-
-    # Create admin user if doesn't exist
-    if not db(db.users.username == "admin").select():
-        from passlib.hash import bcrypt
-
-        admin_id = db.users.insert(
-            username="admin",
-            email="admin@waddleai.local",
-            password_hash=bcrypt.hash("admin123"),  # Change in production!
-            role="admin",
-            organization_id=org_id,
-            token_quota_monthly=999999999,
-            token_quota_daily=999999,
-        )
-
-        # Create admin API key
-        import secrets
-
-        api_key = "wa-" + secrets.token_urlsafe(32)
-        api_key_hash = bcrypt.hash(api_key)
-
-        db.api_keys.insert(
-            key_id=f"admin-key-{secrets.token_hex(8)}",
-            key_hash=api_key_hash,
-            user_id=admin_id,
-            organization_id=org_id,
-            name="Admin Master Key",
-            api_access_level="admin_api",
-            permissions={"*": True},
-        )
-
-        print(f"Admin API Key (save this!): {api_key}")
-
-    # Default token conversion rates
-    default_rates = [
-        ("openai", "gpt-4", 10, 20),
-        ("openai", "gpt-3.5-turbo", 20, 30),
-        ("anthropic", "claude-3-opus", 8, 15),
-        ("anthropic", "claude-3-sonnet", 12, 18),
-        ("ollama", "llama2", 50, 50),
-        ("ollama", "mistral", 45, 45),
-    ]
-
-    for provider, model, input_rate, output_rate in default_rates:
-        if not db(
-            (db.token_conversion_rates.provider == provider) & (db.token_conversion_rates.model == model)
-        ).select():
-            db.token_conversion_rates.insert(
-                provider=provider,
-                model=model,
-                input_rate=input_rate,
-                output_rate=output_rate,
-                base_cost_per_waddleai_token=0.001,
-            )
-
-    db.commit()
-    return db
-
-
-if __name__ == "__main__":
-    # Test database creation
-    db = get_db()
-    init_default_data(db)
-    print("Database initialized successfully!")
-    print(f"Tables: {', '.join(db.tables)}")
+# NOTE: default-data bootstrap (default org, admin user, admin API key, token
+# conversion rates) lives solely in
+# services/management/app/extensions.py::init_default_data now -- it sources
+# the admin password from ADMIN_INITIAL_PASSWORD (fail-closed random password
+# if unset) and never prints/logs the plaintext admin API key. This module
+# used to carry a duplicate bootstrap (reachable only via `python3 -m
+# shared.database.models`) that hardcoded "admin123" and printed the master
+# API key to stdout (CodeQL alert #2507, py/clear-text-logging-sensitive-data)
+# -- removed rather than fixed in place since nothing but that script called
+# it and the hardened version is a strict superset.

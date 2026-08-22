@@ -13,7 +13,13 @@ https://your-waddleai-proxy.com/v1
 Use your WaddleAI API key in the Authorization header:
 
 ```
-Authorization: Bearer $WADDLEAI_API_KEY-here
+Authorization: Bearer $WADDLEAI_API_KEY
+```
+
+Set it in your shell first:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
 ```
 
 ## Chat Completions
@@ -57,10 +63,10 @@ curl https://your-waddleai-proxy.com/v1/chat/completions \
 Prefix the `model` field with a provider name to pin **both** the provider and the model:
 
 ```python
-model="anthropic:claude-opus-5-1m"   # this model, from Anthropic directly
-model="bedrock:claude-opus-5-1m"     # the same model, via AWS Bedrock
-model="ollama:gemma4:e2b"            # local Ollama
-model="gemma4:e2b"                   # no provider pinned — WaddleAI routes
+model = "anthropic:claude-opus-5-1m"  # this model, from Anthropic directly
+model = "bedrock:claude-opus-5-1m"  # the same model, via AWS Bedrock
+model = "ollama:gemma4:e2b"  # local Ollama
+model = "gemma4:e2b"  # no provider pinned — WaddleAI routes
 ```
 
 This matters because naming a model does not determine who serves it. The same Claude model is reachable through Anthropic direct, AWS Bedrock and GCP Vertex, each with different data residency, contractual terms, quota pools and pricing. Without a pin, WaddleAI chooses.
@@ -303,8 +309,7 @@ from openai import OpenAIError
 
 try:
     response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": "Hello"}]
+        model="gpt-4", messages=[{"role": "user", "content": "Hello"}]
     )
 except openai.RateLimitError as e:
     # Handle quota/rate limit exceeded

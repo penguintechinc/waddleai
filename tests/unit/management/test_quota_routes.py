@@ -1,11 +1,13 @@
-"""
-Unit tests for quota management routes: /api/v1/quotas/*
-"""
+"""Unit tests for quota management routes: /api/v1/quotas/*."""
 
-from typing import Dict
 from unittest.mock import MagicMock
 
-from tests.unit.management.conftest import make_mock_key, make_mock_org, make_mock_user, make_select_result
+from tests.unit.management.conftest import (
+    make_mock_key,
+    make_mock_org,
+    make_mock_user,
+    make_select_result,
+)
 
 # ---------------------------------------------------------------------------
 # GET /api/v1/quotas
@@ -13,9 +15,11 @@ from tests.unit.management.conftest import make_mock_key, make_mock_org, make_mo
 
 
 class TestListQuotas:
-    """Tests for GET /api/v1/quotas"""
+    """Tests for GET /api/v1/quotas."""
 
-    async def test_list_quotas_admin_all_entities(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_list_quotas_admin_all_entities(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin gets all orgs, users, and keys."""
         org = make_mock_org()
         user = make_mock_user()
@@ -42,7 +46,7 @@ class TestListQuotas:
         assert "key" in types
 
     async def test_list_quotas_resource_manager_org_scoped(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager gets only their org's entities."""
         org = make_mock_org(org_id=1)
@@ -60,7 +64,9 @@ class TestListQuotas:
         data = await resp.get_json()
         assert data["total"] == 3
 
-    async def test_list_quotas_empty(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_list_quotas_empty(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Empty quota list returns 200 with empty list."""
         empty = make_select_result([])
         app_mock_db.return_value.select.side_effect = [empty, empty, empty]
@@ -76,7 +82,7 @@ class TestListQuotas:
         resp = await client.get("/api/v1/quotas")
         assert resp.status_code == 401
 
-    async def test_list_quotas_invalid_role(self, client, user_auth_headers: Dict) -> None:
+    async def test_list_quotas_invalid_role(self, client, user_auth_headers: dict) -> None:
         """Regular user (non-admin, non-resource_manager) returns 403."""
         resp = await client.get("/api/v1/quotas", headers=user_auth_headers)
         assert resp.status_code == 403
@@ -88,9 +94,11 @@ class TestListQuotas:
 
 
 class TestSetUserQuota:
-    """Tests for PUT /api/v1/quotas/user/<user_id>"""
+    """Tests for PUT /api/v1/quotas/user/<user_id>."""
 
-    async def test_set_user_quota_admin_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_user_quota_admin_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can set user quota."""
         user = make_mock_user(user_id=5, username="testuser")
         app_mock_db.return_value.select.return_value.first.return_value = user
@@ -107,7 +115,7 @@ class TestSetUserQuota:
         assert "message" in data
 
     async def test_set_user_quota_resource_manager_own_org(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager can set user quota in their org."""
         user = make_mock_user(user_id=5, org_id=1, role="user")
@@ -121,7 +129,7 @@ class TestSetUserQuota:
         assert resp.status_code == 200
 
     async def test_set_user_quota_resource_manager_other_org_forbidden(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager cannot set user quota for user in different org."""
         user = make_mock_user(user_id=5, org_id=2)  # Different org
@@ -134,7 +142,9 @@ class TestSetUserQuota:
         )
         assert resp.status_code == 403
 
-    async def test_set_user_quota_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_user_quota_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Non-existent user returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
@@ -145,7 +155,7 @@ class TestSetUserQuota:
         )
         assert resp.status_code == 404
 
-    async def test_set_user_quota_no_body(self, client, auth_headers: Dict) -> None:
+    async def test_set_user_quota_no_body(self, client, auth_headers: dict) -> None:
         """Missing request body returns 400."""
         resp = await client.put(
             "/api/v1/quotas/user/5",
@@ -154,7 +164,9 @@ class TestSetUserQuota:
         )
         assert resp.status_code == 400
 
-    async def test_set_user_quota_daily_only(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_user_quota_daily_only(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Can update only daily quota."""
         user = make_mock_user()
         app_mock_db.return_value.select.return_value.first.return_value = user
@@ -166,7 +178,9 @@ class TestSetUserQuota:
         )
         assert resp.status_code == 200
 
-    async def test_set_user_quota_monthly_only(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_user_quota_monthly_only(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Can update only monthly quota."""
         user = make_mock_user()
         app_mock_db.return_value.select.return_value.first.return_value = user
@@ -185,9 +199,11 @@ class TestSetUserQuota:
 
 
 class TestSetOrganizationQuota:
-    """Tests for PUT /api/v1/quotas/org/<org_id>"""
+    """Tests for PUT /api/v1/quotas/org/<org_id>."""
 
-    async def test_set_org_quota_admin_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_org_quota_admin_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can set organization quota."""
         org = make_mock_org(org_id=2, name="TestOrg")
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -203,7 +219,9 @@ class TestSetOrganizationQuota:
         assert data["organization_name"] == "TestOrg"
         assert "message" in data
 
-    async def test_set_org_quota_resource_manager_forbidden(self, client, rm_auth_headers: Dict) -> None:
+    async def test_set_org_quota_resource_manager_forbidden(
+        self, client, rm_auth_headers: dict
+    ) -> None:
         """Resource manager cannot set org quota (admin only)."""
         resp = await client.put(
             "/api/v1/quotas/org/1",
@@ -212,7 +230,9 @@ class TestSetOrganizationQuota:
         )
         assert resp.status_code == 403
 
-    async def test_set_org_quota_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_org_quota_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Non-existent org returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
@@ -223,7 +243,7 @@ class TestSetOrganizationQuota:
         )
         assert resp.status_code == 404
 
-    async def test_set_org_quota_no_body(self, client, auth_headers: Dict) -> None:
+    async def test_set_org_quota_no_body(self, client, auth_headers: dict) -> None:
         """Missing request body returns 400."""
         resp = await client.put(
             "/api/v1/quotas/org/1",
@@ -232,7 +252,9 @@ class TestSetOrganizationQuota:
         )
         assert resp.status_code == 400
 
-    async def test_set_org_quota_daily_only(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_org_quota_daily_only(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Can update only daily quota."""
         org = make_mock_org()
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -244,7 +266,9 @@ class TestSetOrganizationQuota:
         )
         assert resp.status_code == 200
 
-    async def test_set_org_quota_monthly_only(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_org_quota_monthly_only(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Can update only monthly quota."""
         org = make_mock_org()
         app_mock_db.return_value.select.return_value.first.return_value = org
@@ -263,9 +287,11 @@ class TestSetOrganizationQuota:
 
 
 class TestSetKeyQuota:
-    """Tests for PUT /api/v1/quotas/key/<key_id>"""
+    """Tests for PUT /api/v1/quotas/key/<key_id>."""
 
-    async def test_set_key_quota_admin_success(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_key_quota_admin_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can set key quota."""
         key = make_mock_key(key_id=10, name="AdminKey")
         app_mock_db.return_value.select.return_value.first.return_value = key
@@ -287,7 +313,7 @@ class TestSetKeyQuota:
         assert "updated successfully" in data["message"]
 
     async def test_set_key_quota_resource_manager_own_key(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager can set key quota in their org."""
         key = make_mock_key(key_id=10, org_id=1)
@@ -301,7 +327,7 @@ class TestSetKeyQuota:
         assert resp.status_code == 200
 
     async def test_set_key_quota_resource_manager_other_org_forbidden(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager cannot set key quota in different org."""
         key = make_mock_key(key_id=10, org_id=2)
@@ -315,7 +341,7 @@ class TestSetKeyQuota:
         assert resp.status_code == 403
 
     async def test_set_key_quota_regular_user_own_key(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user can set quota for own key."""
         # user_auth_headers has user_id=2 (from conftest)
@@ -330,7 +356,7 @@ class TestSetKeyQuota:
         assert resp.status_code == 200
 
     async def test_set_key_quota_regular_user_other_key_forbidden(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user cannot set quota for another user's key."""
         key = make_mock_key(key_id=10, user_id=3, org_id=1)  # Different user
@@ -343,7 +369,9 @@ class TestSetKeyQuota:
         )
         assert resp.status_code == 403
 
-    async def test_set_key_quota_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_key_quota_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Non-existent key returns 404."""
         app_mock_db.return_value.select.return_value.first.return_value = None
 
@@ -354,7 +382,7 @@ class TestSetKeyQuota:
         )
         assert resp.status_code == 404
 
-    async def test_set_key_quota_no_body(self, client, auth_headers: Dict) -> None:
+    async def test_set_key_quota_no_body(self, client, auth_headers: dict) -> None:
         """Missing request body returns 400."""
         resp = await client.put(
             "/api/v1/quotas/key/1",
@@ -363,7 +391,9 @@ class TestSetKeyQuota:
         )
         assert resp.status_code == 400
 
-    async def test_set_key_quota_budget_daily_only(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_key_quota_budget_daily_only(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Can update only budget_limit_daily."""
         key = make_mock_key()
         app_mock_db.return_value.select.return_value.first.return_value = key
@@ -375,7 +405,9 @@ class TestSetKeyQuota:
         )
         assert resp.status_code == 200
 
-    async def test_set_key_quota_budget_monthly_only(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_key_quota_budget_monthly_only(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Can update only budget_limit_monthly."""
         key = make_mock_key()
         app_mock_db.return_value.select.return_value.first.return_value = key
@@ -387,7 +419,9 @@ class TestSetKeyQuota:
         )
         assert resp.status_code == 200
 
-    async def test_set_key_quota_tpm_rpm_limits(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_set_key_quota_tpm_rpm_limits(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Can update TPM and RPM limits."""
         key = make_mock_key()
         app_mock_db.return_value.select.return_value.first.return_value = key
@@ -417,7 +451,9 @@ class TestGetQuotaStatus:
 
     # --- Key Status Tests ---
 
-    async def test_get_key_quota_status_admin(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_key_quota_status_admin(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can get quota status for any key."""
         key = make_mock_key(key_id=10)
         daily = self._make_usage(tokens=5000, cost=0.10)
@@ -437,7 +473,7 @@ class TestGetQuotaStatus:
         assert "usage" in data
 
     async def test_get_key_quota_status_regular_user_own_key(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user can get status for own key (user_id=2)."""
         key = make_mock_key(key_id=10, user_id=2)
@@ -455,7 +491,7 @@ class TestGetQuotaStatus:
         assert data["id"] == 10
 
     async def test_get_key_quota_status_regular_user_other_key_forbidden(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user cannot get status for another user's key."""
         key = make_mock_key(key_id=10, user_id=3)
@@ -475,7 +511,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 403
 
     async def test_get_key_quota_status_resource_manager_own_org(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager can get status for keys in their org."""
         key = make_mock_key(key_id=10, org_id=1)
@@ -491,7 +527,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 200
 
     async def test_get_key_quota_status_resource_manager_other_org_forbidden(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager cannot get status for keys in different org."""
         key = make_mock_key(key_id=10, org_id=2)
@@ -506,7 +542,9 @@ class TestGetQuotaStatus:
         resp = await client.get("/api/v1/quotas/status/10?type=key", headers=rm_auth_headers)
         assert resp.status_code == 403
 
-    async def test_get_key_quota_status_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_key_quota_status_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Non-existent key returns 404."""
         app_mock_db.return_value.select.side_effect = [make_select_result([])]
 
@@ -514,7 +552,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 404
 
     async def test_get_key_quota_status_includes_rate_limits(
-        self, client, app_mock_db: MagicMock, auth_headers: Dict
+        self, client, app_mock_db: MagicMock, auth_headers: dict
     ) -> None:
         """Key status includes rate limit info."""
         key = make_mock_key(key_id=10, user_id=1)
@@ -536,7 +574,9 @@ class TestGetQuotaStatus:
 
     # --- User Status Tests ---
 
-    async def test_get_user_quota_status_admin(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_user_quota_status_admin(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can get quota status for any user."""
         user = make_mock_user(user_id=5)
         user.token_quota_daily = 50000
@@ -556,7 +596,7 @@ class TestGetQuotaStatus:
         assert "quotas" in data
 
     async def test_get_user_quota_status_regular_user_self(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user can get status for themselves (user_id=2)."""
         user = make_mock_user(user_id=2)
@@ -571,7 +611,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 200
 
     async def test_get_user_quota_status_regular_user_other_forbidden(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user cannot get status for another user."""
         user = make_mock_user(user_id=5)
@@ -587,7 +627,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 403
 
     async def test_get_user_quota_status_resource_manager_own_org(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager can get status for users in their org."""
         user = make_mock_user(user_id=5, org_id=1)
@@ -602,7 +642,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 200
 
     async def test_get_user_quota_status_resource_manager_other_org_forbidden(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager cannot get status for users in different org."""
         user = make_mock_user(user_id=5, org_id=2)
@@ -617,7 +657,9 @@ class TestGetQuotaStatus:
         resp = await client.get("/api/v1/quotas/status/5?type=user", headers=rm_auth_headers)
         assert resp.status_code == 403
 
-    async def test_get_user_quota_status_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_user_quota_status_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Non-existent user returns 404."""
         app_mock_db.return_value.select.side_effect = [make_select_result([])]
 
@@ -625,7 +667,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 404
 
     async def test_get_user_quota_status_includes_usage(
-        self, client, app_mock_db: MagicMock, auth_headers: Dict
+        self, client, app_mock_db: MagicMock, auth_headers: dict
     ) -> None:
         """User status includes daily and monthly usage."""
         user = make_mock_user(user_id=5)
@@ -647,7 +689,9 @@ class TestGetQuotaStatus:
 
     # --- Organization Status Tests ---
 
-    async def test_get_org_quota_status_admin(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_org_quota_status_admin(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Admin can get quota status for any org."""
         org = make_mock_org(org_id=2)
         org.token_quota_daily = 500000
@@ -666,7 +710,7 @@ class TestGetQuotaStatus:
         assert data["id"] == 2
 
     async def test_get_org_quota_status_regular_user_own_org(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user can get status for own org (org_id=1)."""
         org = make_mock_org(org_id=1)
@@ -681,7 +725,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 200
 
     async def test_get_org_quota_status_regular_user_other_org_forbidden(
-        self, client, app_mock_db: MagicMock, user_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
         """Regular user cannot get status for another org."""
         org = make_mock_org(org_id=2)
@@ -697,7 +741,7 @@ class TestGetQuotaStatus:
         assert resp.status_code == 403
 
     async def test_get_org_quota_status_resource_manager_own_org(
-        self, client, app_mock_db: MagicMock, rm_auth_headers: Dict
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
     ) -> None:
         """Resource manager can get status for own org."""
         org = make_mock_org(org_id=1)
@@ -711,7 +755,9 @@ class TestGetQuotaStatus:
         resp = await client.get("/api/v1/quotas/status/1?type=org", headers=rm_auth_headers)
         assert resp.status_code == 200
 
-    async def test_get_org_quota_status_not_found(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_org_quota_status_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Non-existent org returns 404."""
         app_mock_db.return_value.select.side_effect = [make_select_result([])]
 
@@ -720,14 +766,16 @@ class TestGetQuotaStatus:
 
     # --- Invalid Type and No Auth Tests ---
 
-    async def test_get_quota_status_invalid_type(self, client, auth_headers: Dict) -> None:
+    async def test_get_quota_status_invalid_type(self, client, auth_headers: dict) -> None:
         """Invalid entity type returns 400."""
         resp = await client.get("/api/v1/quotas/status/1?type=invalid", headers=auth_headers)
         assert resp.status_code == 400
         data = await resp.get_json()
         assert "error" in data
 
-    async def test_get_quota_status_default_type_key(self, client, app_mock_db: MagicMock, auth_headers: Dict) -> None:
+    async def test_get_quota_status_default_type_key(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
         """Default entity type is 'key' if not specified."""
         key = make_mock_key(key_id=10)
         daily = self._make_usage()

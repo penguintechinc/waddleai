@@ -26,7 +26,10 @@ class TestResourceListingAndRead:
             await session.initialize()
             listing = await session.list_resource_templates()
             templates = {r.uriTemplate for r in listing.resourceTemplates}
-        assert templates == {"waddleai://docs/{ecosystem}/{package}", "waddleai://repo/{repo}/{path}"}
+        assert templates == {
+            "waddleai://docs/{ecosystem}/{package}",
+            "waddleai://repo/{repo}/{path}",
+        }
 
     async def test_read_docs_page_returns_scoped_content(self):
         """Read docs page returns scoped content."""

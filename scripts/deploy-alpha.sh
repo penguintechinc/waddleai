@@ -3,6 +3,11 @@
 # waddleai Alpha Deployment Script
 # Local MicroK8s Deployment via Helm
 #
+# Serves both the pre-alpha tier (local, uncommitted work -- this script's default
+# local build+import path) and the alpha tier (release/v{Major}.{Minor}.X branches,
+# CI tag alpha-<epoch64>) -- both deploy to the shared local-alpha context and are
+# destroyed and recreated on every deploy, never upgraded in place.
+#
 # Usage:
 #   ./scripts/deploy-alpha.sh [OPTIONS]
 #
@@ -31,8 +36,10 @@ set -euo pipefail
 # Configuration
 # =============================================================================
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
+readonly PROJECT_ROOT
 
 readonly APP_NAME="${APP_NAME:-waddleai}"
 readonly KUBE_CONTEXT="${KUBE_CONTEXT:-local-alpha}"

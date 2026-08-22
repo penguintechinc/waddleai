@@ -10,22 +10,27 @@ from shared.auth.rbac import ROLE_PERMISSIONS, Permission, Role, UserContext
 
 
 def test_memory_moderate_permission_exists() -> None:
+    """The MEMORY_MODERATE permission enum has the wire value "memory:moderate"."""
     assert Permission.MEMORY_MODERATE.value == "memory:moderate"
 
 
 def test_memory_moderate_granted_to_admin_and_resource_manager() -> None:
+    """ADMIN and RESOURCE_MANAGER role bundles include memory:moderate."""
     assert Permission.MEMORY_MODERATE in ROLE_PERMISSIONS[Role.ADMIN]
     assert Permission.MEMORY_MODERATE in ROLE_PERMISSIONS[Role.RESOURCE_MANAGER]
 
 
 def test_memory_moderate_not_granted_to_reporter_or_user() -> None:
+    """REPORTER and USER role bundles do not include memory:moderate."""
     assert Permission.MEMORY_MODERATE not in ROLE_PERMISSIONS[Role.REPORTER]
     assert Permission.MEMORY_MODERATE not in ROLE_PERMISSIONS[Role.USER]
 
 
 def test_memory_moderate_survives_claims_round_trip() -> None:
-    """The claims-dict path stores permissions as STRINGS — the middleware
-    auth path must still see memory:moderate after round-tripping."""
+    """The claims-dict path stores permissions as STRINGS.
+
+    The middleware auth path must still see memory:moderate after round-tripping.
+    """
     uc = UserContext(
         user_id=7,
         username="admin-user",

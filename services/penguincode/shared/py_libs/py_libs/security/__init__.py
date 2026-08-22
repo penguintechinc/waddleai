@@ -1,5 +1,4 @@
-"""
-Security module - Security utilities for Flask/Quart applications.
+"""Security module - Security utilities for Flask/Quart applications.
 
 Provides:
 - sanitize: XSS/HTML sanitization, SQL parameter escaping

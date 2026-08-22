@@ -112,6 +112,7 @@ class CapEnforcer:
             exposing a synchronous ``validate()`` returning a ``.tier``
             attribute) -- calls are offloaded via ``asyncio.to_thread``.
         org_id: The organization these checks are scoped to.
+
     """
 
     def __init__(self, db: Any, license_client: Any, org_id: int) -> None:
@@ -217,8 +218,7 @@ class CapEnforcer:
         names: set[str] = set()
 
         deployment_ids = {
-            r.id
-            for r in db(db.ollama_deployments.fleet_backend_id.belongs(backend_ids)).select()
+            r.id for r in db(db.ollama_deployments.fleet_backend_id.belongs(backend_ids)).select()
         }
         if deployment_ids:
             for row in db(db.ollama_models.deployment_id.belongs(deployment_ids)).select():

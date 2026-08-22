@@ -1,6 +1,4 @@
-"""
-Pytest configuration and shared fixtures for WaddleAI tests
-"""
+"""Pytest configuration and shared fixtures for WaddleAI tests."""
 
 import importlib
 import os
@@ -8,7 +6,7 @@ import shutil
 import sys
 import tempfile
 import types
-from unittest.mock import Mock, MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -45,7 +43,7 @@ from shared.auth.rbac import RBACManager, Role, UserContext
 
 @pytest.fixture
 def temp_dir():
-    """Create temporary directory for tests"""
+    """Create temporary directory for tests."""
     temp_dir = tempfile.mkdtemp()
     yield temp_dir
     shutil.rmtree(temp_dir)
@@ -53,7 +51,7 @@ def temp_dir():
 
 @pytest.fixture
 def mock_db():
-    """Mock database for testing"""
+    """Mock database for testing."""
     db = Mock()
 
     # Mock tables
@@ -68,7 +66,14 @@ def mock_db():
     db.executesql = Mock(return_value=[[1]])
 
     # Mock table operations
-    for table in [db.users, db.organizations, db.api_keys, db.connection_links, db.token_usage, db.security_logs]:
+    for table in [
+        db.users,
+        db.organizations,
+        db.api_keys,
+        db.connection_links,
+        db.token_usage,
+        db.security_logs,
+    ]:
         table.insert = Mock(return_value=1)
         table.update = Mock(return_value=1)
         table.delete = Mock(return_value=1)
@@ -79,7 +84,7 @@ def mock_db():
 
 @pytest.fixture
 def sample_user_context():
-    """Sample user context for testing"""
+    """Sample user context for testing."""
     from shared.auth.rbac import ROLE_PERMISSIONS
 
     return UserContext(
@@ -95,7 +100,7 @@ def sample_user_context():
 
 @pytest.fixture
 def admin_user_context():
-    """Admin user context for testing"""
+    """Admin user context for testing."""
     from shared.auth.rbac import ROLE_PERMISSIONS
 
     return UserContext(
@@ -111,13 +116,13 @@ def admin_user_context():
 
 @pytest.fixture
 def rbac_manager(mock_db):
-    """RBAC manager for testing"""
+    """RBAC manager for testing."""
     return RBACManager(mock_db)
 
 
 @pytest.fixture
 def sample_messages():
-    """Sample chat messages for testing"""
+    """Sample chat messages for testing."""
     return [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello, how are you?"},
@@ -126,9 +131,14 @@ def sample_messages():
 
 @pytest.fixture
 def mock_llm_response():
-    """Mock LLM response for testing"""
+    """Mock LLM response for testing."""
     return {
-        "choices": [{"message": {"content": "I'm doing well, thank you for asking!"}, "finish_reason": "stop"}],
+        "choices": [
+            {
+                "message": {"content": "I'm doing well, thank you for asking!"},
+                "finish_reason": "stop",
+            }
+        ],
         "usage": {"prompt_tokens": 15, "completion_tokens": 12, "total_tokens": 27},
         "model": "gpt-3.5-turbo",
     }
@@ -136,32 +146,34 @@ def mock_llm_response():
 
 @pytest.fixture
 def mock_security_threats():
-    """Mock security threats for testing"""
+    """Mock security threats for testing."""
     return []  # Empty list means no threats detected
 
 
 # Database fixtures for different environments
 @pytest.fixture
 def test_db_config():
-    """Test database configuration"""
+    """Test database configuration."""
     return {"folder": ":memory:", "auto_import": True, "check_reserved": ["all"]}
 
 
 @pytest.fixture
 def mock_redis_client():
-    """Mock Redis client for testing"""
+    """Mock Redis client for testing."""
     redis_mock = Mock()
     redis_mock.get = Mock(return_value=None)
     redis_mock.set = Mock(return_value=True)
     redis_mock.delete = Mock(return_value=1)
     redis_mock.ping = Mock(return_value=True)
-    redis_mock.info = Mock(return_value={"connected_clients": 1, "used_memory_human": "1M", "redis_version": "7.0.0"})
+    redis_mock.info = Mock(
+        return_value={"connected_clients": 1, "used_memory_human": "1M", "redis_version": "7.0.0"}
+    )
     return redis_mock
 
 
 @pytest.fixture
 def mock_websocket():
-    """Mock WebSocket for MCP testing"""
+    """Mock WebSocket for MCP testing."""
     websocket_mock = Mock()
     websocket_mock.remote_address = ("127.0.0.1", 12345)
     websocket_mock.send = Mock()
@@ -172,7 +184,7 @@ def mock_websocket():
 
 @pytest.fixture(autouse=True)
 def cleanup_env():
-    """Cleanup environment variables after each test"""
+    """Cleanup environment variables after each test."""
     original_env = os.environ.copy()
     yield
     # Restore original environment
@@ -183,7 +195,7 @@ def cleanup_env():
 # Test data fixtures
 @pytest.fixture
 def sample_api_key_data():
-    """Sample API key data for testing"""
+    """Sample API key data for testing."""
     return {
         "name": "Test API Key",
         "user_id": 1,
@@ -196,7 +208,7 @@ def sample_api_key_data():
 
 @pytest.fixture
 def sample_organization_data():
-    """Sample organization data for testing"""
+    """Sample organization data for testing."""
     return {
         "name": "Test Organization",
         "description": "A test organization",
@@ -208,7 +220,7 @@ def sample_organization_data():
 
 @pytest.fixture
 def sample_connection_link_data():
-    """Sample connection link data for testing"""
+    """Sample connection link data for testing."""
     return {
         "name": "Test OpenAI Link",
         "provider": "openai",
@@ -224,7 +236,7 @@ def sample_connection_link_data():
 # Mock external services
 @pytest.fixture
 def mock_openai_client():
-    """Mock OpenAI client"""
+    """Mock OpenAI client."""
     client_mock = Mock()
     client_mock.chat = Mock()
     client_mock.chat.completions = Mock()
@@ -236,7 +248,7 @@ def mock_openai_client():
 
 @pytest.fixture
 def mock_anthropic_client():
-    """Mock Anthropic client"""
+    """Mock Anthropic client."""
     client_mock = Mock()
     client_mock.messages = Mock()
     client_mock.messages.create = Mock()
@@ -245,7 +257,7 @@ def mock_anthropic_client():
 
 @pytest.fixture
 def mock_sentence_transformer():
-    """Mock sentence transformer for testing"""
+    """Mock sentence transformer for testing."""
     transformer_mock = Mock()
     transformer_mock.encode = Mock(return_value=[0.1, 0.2, 0.3, 0.4])
     return transformer_mock

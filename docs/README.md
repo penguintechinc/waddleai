@@ -31,13 +31,11 @@ WaddleAI consists of two main components:
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here",
-    base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Hello!"}]
+    model="gpt-4", messages=[{"role": "user", "content": "Hello!"}]
 )
 ```
 
@@ -51,15 +49,11 @@ import requests
 MGMT = "https://your-waddleai-mgmt.com/api/v1"
 
 # Login
-auth = requests.post(f"{MGMT}/auth/login", json={
-    "username": "admin", "password": "password"
-})
+auth = requests.post(f"{MGMT}/auth/login", json={"username": "admin", "password": "password"})
 token = auth.json()["access_token"]
 
 # Get usage stats
-usage = requests.get(f"{MGMT}/usage/summary",
-    headers={"Authorization": f"Bearer {token}"}
-).json()
+usage = requests.get(f"{MGMT}/usage/summary", headers={"Authorization": f"Bearer {token}"}).json()
 ```
 
 All Management API routes are mounted under `/api/v1` (e.g. `/api/v1/auth/login`, `/api/v1/usage/summary`, `/api/v1/quotas`) — there is no separate `/analytics/*` namespace.

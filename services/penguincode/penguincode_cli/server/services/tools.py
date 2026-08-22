@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 import grpc
+
 from penguincode_cli.proto import ToolCallbackServiceServicer, ToolRequest, ToolResponse
 
 logger = logging.getLogger(__name__)

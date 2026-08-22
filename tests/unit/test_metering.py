@@ -1,6 +1,4 @@
-"""
-Unit tests for MeteringBuffer - batched token usage aggregation
-"""
+"""Unit tests for MeteringBuffer - batched token usage aggregation."""
 
 import asyncio
 from datetime import datetime, timedelta
@@ -18,24 +16,24 @@ from shared.utils.metering import (
 
 
 class MockUsageWriter(UsageWriter):
-    """Mock writer for testing"""
+    """Mock writer for testing."""
 
     def __init__(self):
-        """Initialize with tracking lists"""
+        """Initialize with tracking lists."""
         self.writes: list[AggregatedMetrics] = []
         self.write_count = 0
 
     def write_aggregated_row(self, agg: AggregatedMetrics) -> None:
-        """Record a write call"""
+        """Record a write call."""
         self.writes.append(agg)
         self.write_count += 1
 
 
 class TestMeteringEvent:
-    """Test MeteringEvent dataclass"""
+    """Test MeteringEvent dataclass."""
 
     def test_event_with_usage(self):
-        """Test event creation with usage"""
+        """Test event creation with usage."""
         usage = {"input_tokens": 100, "output_tokens": 50}
         event = MeteringEvent(
             virtual_key_id=123,
@@ -50,7 +48,7 @@ class TestMeteringEvent:
         assert event.estimated is False
 
     def test_event_without_usage(self):
-        """Test event creation without usage (will require estimation)"""
+        """Test event creation without usage (will require estimation)."""
         event = MeteringEvent(
             virtual_key_id=123,
             model="claude-3-opus",
@@ -63,22 +61,22 @@ class TestMeteringEvent:
 
 
 class TestMeteringBuffer:
-    """Test MeteringBuffer batching and aggregation"""
+    """Test MeteringBuffer batching and aggregation."""
 
     @pytest.fixture
     def mock_writer(self):
-        """Create mock writer"""
+        """Create mock writer."""
         return MockUsageWriter()
 
     def test_buffer_initialization(self, mock_writer):
-        """Test buffer initialization"""
+        """Test buffer initialization."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         assert buffer.writer is mock_writer
         assert buffer.interval == 1.0
         assert len(buffer._buffer) == 0
 
     def test_record_single_event(self, mock_writer):
-        """Test recording a single event"""
+        """Test recording a single event."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         usage = {"input_tokens": 100, "output_tokens": 50}
         event = MeteringEvent(
@@ -92,7 +90,7 @@ class TestMeteringBuffer:
         assert len(buffer._buffer) == 1
 
     def test_record_multiple_events_same_key(self, mock_writer):
-        """Test recording multiple events for the same key"""
+        """Test recording multiple events for the same key."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         now = datetime.utcnow()
         for i in range(3):
@@ -108,7 +106,7 @@ class TestMeteringBuffer:
         assert len(buffer._buffer) == 3
 
     def test_aggregation_key_format(self, mock_writer):
-        """Test aggregation key includes minute bucket"""
+        """Test aggregation key includes minute bucket."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         now = datetime(2026, 7, 28, 12, 34, 45)
         event = MeteringEvent(
@@ -130,14 +128,14 @@ class TestMeteringBuffer:
         assert key[3].microsecond == 0
 
     def test_aggregation_same_minute_coalescses(self, mock_writer):
-        """Test that events in same minute coalesce"""
+        """Test that events in same minute coalesce."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         base_time = datetime(2026, 7, 28, 12, 34, 0)
 
         events_data = [
             (1, "gpt-4", "openai", 100, 50),
             (1, "gpt-4", "openai", 200, 75),  # Same key, same minute
-            (1, "gpt-4", "openai", 50, 25),   # Same key, same minute
+            (1, "gpt-4", "openai", 50, 25),  # Same key, same minute
         ]
 
         for vkey, model, provider, inp, out in events_data:
@@ -154,7 +152,7 @@ class TestMeteringBuffer:
         assert len(buffer._buffer) == 3
 
     def test_missing_usage_fallback(self, mock_writer):
-        """Test fallback token estimation for missing usage"""
+        """Test fallback token estimation for missing usage."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         event = MeteringEvent(
             virtual_key_id=1,
@@ -169,7 +167,7 @@ class TestMeteringBuffer:
 
     @pytest.mark.asyncio
     async def test_flush_writes_aggregated_rows(self, mock_writer):
-        """Test that flush writes aggregated rows to database"""
+        """Test that flush writes aggregated rows to database."""
         buffer = MeteringBuffer(mock_writer, interval=10.0)  # Long interval
         now = datetime.utcnow()
 
@@ -192,7 +190,7 @@ class TestMeteringBuffer:
 
     @pytest.mark.asyncio
     async def test_flush_aggregates_counts(self, mock_writer):
-        """Test that flush properly aggregates token counts"""
+        """Test that flush properly aggregates token counts."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         now = datetime.utcnow()
 
@@ -225,7 +223,7 @@ class TestMeteringBuffer:
 
     @pytest.mark.asyncio
     async def test_concurrent_record_during_flush(self, mock_writer):
-        """Test that events recorded during flush are not lost"""
+        """Test that events recorded during flush are not lost."""
         # Mock the writer to be slow
         slow_writer = MockUsageWriter()
 
@@ -237,7 +235,7 @@ class TestMeteringBuffer:
         now = datetime.utcnow()
 
         # Record initial events
-        for i in range(2):
+        for i in range(2):  # noqa: B007 -- loop count only, index unused
             event = MeteringEvent(
                 virtual_key_id=1,
                 model="gpt-4",
@@ -256,7 +254,7 @@ class TestMeteringBuffer:
             await asyncio.sleep(0.01)
 
             # Record more events during flush (after swap but before write complete)
-            for i in range(3):
+            for i in range(3):  # noqa: B007 -- loop count only, index unused
                 event = MeteringEvent(
                     virtual_key_id=1,
                     model="gpt-4",
@@ -274,12 +272,12 @@ class TestMeteringBuffer:
 
     @pytest.mark.asyncio
     async def test_stop_flushes_remaining_events(self, mock_writer):
-        """Test that stop() flushes remaining buffered events"""
+        """Test that stop() flushes remaining buffered events."""
         buffer = MeteringBuffer(mock_writer, interval=10.0)  # Long interval
         now = datetime.utcnow()
 
         # Record some events
-        for i in range(3):
+        for i in range(3):  # noqa: B007 -- loop count only, index unused
             event = MeteringEvent(
                 virtual_key_id=1,
                 model="gpt-4",
@@ -301,7 +299,7 @@ class TestMeteringBuffer:
 
     @pytest.mark.asyncio
     async def test_background_flush_task(self, mock_writer):
-        """Test that background flush task runs"""
+        """Test that background flush task runs."""
         buffer = MeteringBuffer(mock_writer, interval=0.1)  # Short interval
         now = datetime.utcnow()
 
@@ -330,7 +328,7 @@ class TestMeteringBuffer:
         assert mock_writer.write_count >= 1
 
     def test_estimated_usage_fallback_calculation(self, mock_writer):
-        """Test that estimated usage is calculated correctly"""
+        """Test that estimated usage is calculated correctly."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
 
         # Create an event without usage
@@ -354,7 +352,7 @@ class TestMeteringBuffer:
 
     @pytest.mark.asyncio
     async def test_missing_usage_marked_as_estimated(self, mock_writer):
-        """Test that rows with missing usage are marked as estimated"""
+        """Test that rows with missing usage are marked as estimated."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         now = datetime.utcnow()
 
@@ -377,10 +375,10 @@ class TestMeteringBuffer:
 
 
 class TestCreateMeteringBuffer:
-    """Test factory function"""
+    """Test factory function."""
 
     def test_create_metering_buffer_with_writer(self):
-        """Test create_metering_buffer factory with writer"""
+        """Test create_metering_buffer factory with writer."""
         mock_writer = MockUsageWriter()
         buffer = create_metering_buffer(writer=mock_writer, interval=1.0)
         assert isinstance(buffer, MeteringBuffer)
@@ -388,7 +386,7 @@ class TestCreateMeteringBuffer:
         assert buffer.interval == 1.0
 
     def test_create_metering_buffer_without_writer_or_db_raises(self):
-        """Test create_metering_buffer raises when neither writer nor db provided"""
+        """Test create_metering_buffer raises when neither writer nor db provided."""
         with pytest.raises(ValueError, match="Must provide either writer or db"):
             create_metering_buffer()
 
@@ -403,6 +401,7 @@ class TestFlushFailureDoesNotLoseUsage:
 
     @pytest.mark.asyncio
     async def test_failed_write_is_retried_on_next_flush(self):
+        """A failed flush keeps the aggregate pending and re-sends it on the next flush call."""
         writer = MagicMock()
         writer.write_aggregated_row.side_effect = [RuntimeError("db down"), None]
 

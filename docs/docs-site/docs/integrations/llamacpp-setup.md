@@ -46,7 +46,7 @@ Route requests to llama.cpp by prefixing the model name:
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key",
+    api_key="<your-waddleai-key>",
     base_url="http://localhost:8000/v1"
 )
 

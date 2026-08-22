@@ -1,5 +1,4 @@
-"""
-gRPC utilities for Python services.
+"""gRPC utilities for Python services.
 
 Provides server helpers, client utilities, and security interceptors
 for gRPC services following project standards.

@@ -14,7 +14,31 @@ pytest.importorskip("sentence_transformers")
 
 from unittest.mock import MagicMock
 
+import penguin_licensing
+
 from shared.agents.usage_tracker import _FREE_TIER_MAX_USERS, UsageAck, UsageReport, UsageTracker
+
+
+class _FakeLicenseClient:
+    """Hand-written fake exposing ONLY the real ``penguin_licensing.LicenseClient`` methods.
+
+    Deliberately has no ``has_feature`` -- unlike a plain ``MagicMock()``,
+    which silently accepts any attribute name, calling a nonexistent method
+    on this fake raises ``AttributeError``, catching a regression of the
+    ``has_feature``/``check_feature`` bug this module was shipped with.
+    """
+
+    def __init__(self, feature_enabled: bool) -> None:
+        self._feature_enabled = feature_enabled
+        self.checked_features: list[str] = []
+
+    def check_feature(self, feature_name: str) -> bool:
+        self.checked_features.append(feature_name)
+        return self._feature_enabled
+
+    def check_tier(self, required_tier: str) -> bool:
+        return True
+
 
 # ------------------------------------------------------------------
 # Mock DB helpers (PyDAL/penguin-dal query-builder style)
@@ -63,16 +87,19 @@ def _mock_usage_row(input_tokens: int, output_tokens: int) -> MagicMock:
 
 @pytest.fixture
 def mock_db() -> MagicMock:
+    """Stand in for the DAL so UsageTracker tests never touch a real database."""
     return _mock_db()
 
 
 @pytest.fixture
 def tracker(mock_db: MagicMock) -> UsageTracker:
+    """Build a UsageTracker wired to the mock DB fixture."""
     return UsageTracker(mock_db)
 
 
 @pytest.fixture
 def sample_report() -> UsageReport:
+    """A representative UsageReport for exercising tracker methods without building one per test."""
     return UsageReport(
         user_id="1",
         model="llama3.1:8b",
@@ -99,7 +126,7 @@ def test_usage_tracker_init(mock_db: MagicMock) -> None:
 def test_usage_tracker_with_license(mock_db: MagicMock) -> None:
     """UsageTracker should accept an optional license_client."""
     mock_license = MagicMock()
-    mock_license.has_feature = MagicMock(return_value=True)
+    mock_license.check_feature = MagicMock(return_value=True)
     tracker = UsageTracker(mock_db, license_client=mock_license)
     assert tracker is not None
 
@@ -118,16 +145,16 @@ def test_has_premium_no_client(mock_db: MagicMock) -> None:
 def test_has_premium_with_feature(mock_db: MagicMock) -> None:
     """License client reporting the feature returns True."""
     mock_license = MagicMock()
-    mock_license.has_feature = MagicMock(return_value=True)
+    mock_license.check_feature = MagicMock(return_value=True)
     tracker = UsageTracker(mock_db, license_client=mock_license)
     assert tracker._has_premium() is True
-    mock_license.has_feature.assert_called_with("premium_usage_tracking")
+    mock_license.check_feature.assert_called_with("premium_usage_tracking")
 
 
 def test_has_premium_without_feature(mock_db: MagicMock) -> None:
     """License client missing the feature returns False."""
     mock_license = MagicMock()
-    mock_license.has_feature = MagicMock(return_value=False)
+    mock_license.check_feature = MagicMock(return_value=False)
     tracker = UsageTracker(mock_db, license_client=mock_license)
     assert tracker._has_premium() is False
 
@@ -135,9 +162,39 @@ def test_has_premium_without_feature(mock_db: MagicMock) -> None:
 def test_has_premium_license_error(mock_db: MagicMock) -> None:
     """License client exception should fail safe (return False)."""
     mock_license = MagicMock()
-    mock_license.has_feature = MagicMock(side_effect=RuntimeError("timeout"))
+    mock_license.check_feature = MagicMock(side_effect=RuntimeError("timeout"))
     tracker = UsageTracker(mock_db, license_client=mock_license)
     assert tracker._has_premium() is False
+
+
+def test_has_premium_with_fake_client_exposing_only_real_methods(mock_db: MagicMock) -> None:
+    """Regression: `_has_premium` must call the real API method (`check_feature`).
+
+    `_FakeLicenseClient` implements only `penguin_licensing.LicenseClient`'s
+    actual methods, so a reintroduced call to the nonexistent `has_feature`
+    would raise `AttributeError` here instead of silently returning a truthy
+    `MagicMock` the way a plain `MagicMock()` would.
+    """
+    fake_license = _FakeLicenseClient(feature_enabled=True)
+    tracker = UsageTracker(mock_db, license_client=fake_license)
+    assert tracker._has_premium() is True
+    assert fake_license.checked_features == ["premium_usage_tracking"]
+
+
+def test_has_premium_spec_restricted_mock_rejects_wrong_method_name(mock_db: MagicMock) -> None:
+    """Same regression, using `spec=penguin_licensing.LicenseClient` instead of a hand-written fake.
+
+    A `spec`'d mock only permits attribute access for methods that actually
+    exist on the real class, so `mock_license.has_feature` would raise
+    `AttributeError` rather than auto-creating a new attribute.
+    """
+    mock_license = MagicMock(spec=penguin_licensing.LicenseClient)
+    mock_license.check_feature.return_value = True
+
+    tracker = UsageTracker(mock_db, license_client=mock_license)
+    assert tracker._has_premium() is True
+    mock_license.check_feature.assert_called_once_with("premium_usage_tracking")
+    assert not hasattr(mock_license, "has_feature")
 
 
 # ------------------------------------------------------------------
@@ -422,7 +479,7 @@ async def test_record_usage_premium_quota_blocked(
 ) -> None:
     """A premium org with an exceeded monthly quota is blocked, not free-tier-capped."""
     mock_license = MagicMock()
-    mock_license.has_feature = MagicMock(return_value=True)
+    mock_license.check_feature = MagicMock(return_value=True)
     tracker = UsageTracker(mock_db, license_client=mock_license)
 
     user_identity = _mock_user(user_id=1, org_id=1)

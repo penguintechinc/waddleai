@@ -189,9 +189,7 @@ def test_downgrade_drops_fleet_backends_and_columns(scratch_db) -> None:
 
         tables = {
             row[0]
-            for row in conn.execute(
-                sa.text("SELECT name FROM sqlite_master WHERE type='table'")
-            )
+            for row in conn.execute(sa.text("SELECT name FROM sqlite_master WHERE type='table'"))
         }
         assert "fleet_backends" not in tables
 

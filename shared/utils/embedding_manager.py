@@ -1,5 +1,4 @@
-"""
-Configurable embedding backend for WaddleAI memory and RAG systems.
+"""Configurable embedding backend for WaddleAI memory and RAG systems.
 
 Supports three backends:
 - ollama: nomic-embed-text (or any Ollama-hosted model) — local, no API key
@@ -12,7 +11,6 @@ Supports three backends:
 import json
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +50,12 @@ class EmbeddingConfig:
 
     @classmethod
     def default_ollama(cls) -> "EmbeddingConfig":
+        """Build the default local Ollama (nomic-embed-text) config."""
         return cls(backend="ollama", model="nomic-embed-text", dimensions=768)
 
     @classmethod
     def default_openai(cls, api_key: str = "") -> "EmbeddingConfig":
+        """Build the default OpenAI (text-embedding-3-small) config."""
         return cls(
             backend="openai",
             model="text-embedding-3-small",
@@ -65,6 +65,7 @@ class EmbeddingConfig:
 
     @classmethod
     def default_anthropic(cls, api_key: str = "") -> "EmbeddingConfig":
+        """Build the default Anthropic (Claude Haiku semantic-embedding) config."""
         return cls(
             backend="anthropic",
             model="claude-haiku-4-5-20251001",
@@ -83,9 +84,10 @@ class EmbeddingManager:
     """
 
     def __init__(self, config: EmbeddingConfig):
+        """Bind the backend config used by every subsequent embed() call."""
         self.config = config
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         """Generate an embedding vector for the given text.
 
         Args:
@@ -97,6 +99,7 @@ class EmbeddingManager:
         Raises:
             ValueError: If the backend is not recognised.
             RuntimeError: If embedding generation fails.
+
         """
         text = text.strip()
         if not text:
@@ -119,20 +122,21 @@ class EmbeddingManager:
     # Backend implementations
     # ------------------------------------------------------------------
 
-    def _embed_ollama(self, text: str) -> List[float]:
+    def _embed_ollama(self, text: str) -> list[float]:
         """Generate embeddings using a locally running Ollama instance."""
         try:
             import ollama  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
-                "ollama package is required for Ollama embeddings. " "Install it with: pip install ollama"
+                "ollama package is required for Ollama embeddings. "
+                "Install it with: pip install ollama"
             ) from exc
 
         client = ollama.Client(host=self.config.ollama_host)
         response = client.embeddings(model=self.config.model, prompt=text)
         return response["embedding"]
 
-    def _embed_openai(self, text: str) -> List[float]:
+    def _embed_openai(self, text: str) -> list[float]:
         """Generate embeddings using the OpenAI Embeddings API."""
         import os
 
@@ -140,7 +144,8 @@ class EmbeddingManager:
             from openai import OpenAI  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
-                "openai package is required for OpenAI embeddings. " "Install it with: pip install openai"
+                "openai package is required for OpenAI embeddings. "
+                "Install it with: pip install openai"
             ) from exc
 
         api_key = self.config.api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -148,7 +153,7 @@ class EmbeddingManager:
         response = client.embeddings.create(input=text, model=self.config.model)
         return response.data[0].embedding
 
-    def _embed_anthropic(self, text: str) -> List[float]:
+    def _embed_anthropic(self, text: str) -> list[float]:
         """Generate a semantic float representation using Claude Haiku.
 
         Anthropic does not offer a dedicated embeddings API. This method uses
@@ -163,7 +168,8 @@ class EmbeddingManager:
             import anthropic  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
-                "anthropic package is required for Anthropic embeddings. " "Install it with: pip install anthropic"
+                "anthropic package is required for Anthropic embeddings. "
+                "Install it with: pip install anthropic"
             ) from exc
 
         api_key = self.config.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -190,17 +196,19 @@ class EmbeddingManager:
         embedding = json.loads(raw)
 
         if len(embedding) != self.config.dimensions:
-            raise RuntimeError(f"Anthropic returned {len(embedding)} dimensions, " f"expected {self.config.dimensions}")
+            raise RuntimeError(
+                f"Anthropic returned {len(embedding)} dimensions, expected {self.config.dimensions}"
+            )
 
         return embedding
 
 
 def create_embedding_manager(
     backend: str = "ollama",
-    model: Optional[str] = None,
+    model: str | None = None,
     ollama_host: str = "http://localhost:11434",
     api_key: str = "",
-    dimensions: Optional[int] = None,
+    dimensions: int | None = None,
 ) -> EmbeddingManager:
     """Factory function to create an EmbeddingManager from simple parameters.
 
@@ -213,6 +221,7 @@ def create_embedding_manager(
 
     Returns:
         A configured EmbeddingManager instance.
+
     """
     default_models = {
         "ollama": "nomic-embed-text",

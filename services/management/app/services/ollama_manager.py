@@ -1,5 +1,4 @@
-"""
-WaddleAI Ollama Deployment Manager
+"""WaddleAI Ollama Deployment Manager.
 
 Manages Ollama deployments in two modes:
 - Manual: Generate docker-compose/k8s manifests for user deployment
@@ -11,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 import yaml
@@ -31,16 +30,16 @@ from shared.fleet.registry import register
 logger = logging.getLogger(__name__)
 
 
-class DeploymentMode(str, Enum):
-    """Ollama deployment management mode"""
+class DeploymentMode(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
+    """Ollama deployment management mode."""
 
     MANUAL = "manual"  # Generate configs only
     ORCHESTRATED = "orchestrated"  # Manage containers directly
     BOTH = "both"  # Support both modes
 
 
-class DeploymentStatus(str, Enum):
-    """Ollama deployment status"""
+class DeploymentStatus(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
+    """Ollama deployment status."""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -50,8 +49,8 @@ class DeploymentStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
-class HealthStatus(str, Enum):
-    """Ollama health status"""
+class HealthStatus(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
+    """Ollama health status."""
 
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
@@ -60,24 +59,26 @@ class HealthStatus(str, Enum):
 
 @dataclass(slots=True)
 class OllamaDeploymentConfig:
-    """Configuration for an Ollama deployment"""
+    """Configuration for an Ollama deployment."""
 
     name: str
     endpoint_url: str = "http://localhost:11434"
     deployment_type: str = "docker"  # docker, kubernetes, kubernetes-daemonset, external
     port: int = 11434
     gpu_count: int = 0
-    gpu_ids: List[str] = field(default_factory=list)
+    gpu_ids: list[str] = field(default_factory=list)
     cpu_limit: str = "4"
     memory_limit: str = "8g"
     auto_start: bool = True
-    environment: Dict[str, str] = field(default_factory=dict)
-    volumes: Dict[str, str] = field(default_factory=dict)
+    environment: dict[str, str] = field(default_factory=dict)
+    volumes: dict[str, str] = field(default_factory=dict)
     # Kubernetes DaemonSet fields
-    node_selector: Dict[str, str] = field(default_factory=lambda: {"gpu": "true"})
-    tolerations: List[Dict] = field(default_factory=lambda: [
-        {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
-    ])
+    node_selector: dict[str, str] = field(default_factory=lambda: {"gpu": "true"})
+    tolerations: list[dict] = field(
+        default_factory=lambda: [
+            {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
+        ]
+    )
     shared_storage_size: str = "200Gi"
     pvc_access_mode: str = "ReadWriteMany"
     storage_class: str = ""
@@ -91,30 +92,29 @@ class OllamaDeploymentConfig:
 
 @dataclass(slots=True)
 class OllamaModel:
-    """Ollama model information"""
+    """Ollama model information."""
 
     name: str
     size: int = 0
     digest: str = ""
     modified_at: str = ""
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class PullStatus:
-    """Model pull operation status"""
+    """Model pull operation status."""
 
     model: str
     status: str
     progress: float = 0.0
     completed: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @register(BackendType.OLLAMA)
 class OllamaDeploymentManager(InferenceFleetBackend):
-    """
-    Manages Ollama deployments in manual or orchestrated mode.
+    """Manages Ollama deployments in manual or orchestrated mode.
 
     Manual mode: Generates docker-compose.yml and Kubernetes manifests
     Orchestrated mode: Directly manages containers via Docker API
@@ -137,6 +137,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         config: dict[str, Any] | None = None,
         credentials: str | None = None,
     ):
+        """Bind the DAL handle, deployment mode, and Docker connection target for this instance."""
         self.db = db
         self.mode = mode
         self.docker_host = docker_host
@@ -149,7 +150,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     @property
     def docker_client(self):
-        """Lazy-load Docker client"""
+        """Lazy-load Docker client."""
         if self._docker_client is None and self.mode != DeploymentMode.MANUAL:
             try:
                 import docker
@@ -161,8 +162,8 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     # Deployment CRUD Operations
 
-    def create_deployment(self, config: OllamaDeploymentConfig) -> Dict[str, Any]:
-        """Create a new Ollama deployment"""
+    def create_deployment(self, config: OllamaDeploymentConfig) -> dict[str, Any]:
+        """Create a new Ollama deployment."""
         db = self.db
 
         # Check for duplicate name
@@ -194,8 +195,10 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "message": "Deployment created successfully",
         }
 
-    def update_deployment(self, deployment_id: int, config: OllamaDeploymentConfig) -> Dict[str, Any]:
-        """Update an existing Ollama deployment"""
+    def update_deployment(
+        self, deployment_id: int, config: OllamaDeploymentConfig
+    ) -> dict[str, Any]:
+        """Update an existing Ollama deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -215,10 +218,14 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         db.commit()
 
         logger.info(f"Updated Ollama deployment: {config.name}")
-        return {"success": True, "deployment_id": deployment_id, "message": "Deployment updated successfully"}
+        return {
+            "success": True,
+            "deployment_id": deployment_id,
+            "message": "Deployment updated successfully",
+        }
 
-    def delete_deployment(self, deployment_id: int) -> Dict[str, Any]:
-        """Delete an Ollama deployment"""
+    def delete_deployment(self, deployment_id: int) -> dict[str, Any]:
+        """Delete an Ollama deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -241,14 +248,17 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     # Config Generation (Manual Mode)
 
-    def _generate_docker_config(self, config: OllamaDeploymentConfig) -> Dict[str, Any]:
-        """Generate Docker configuration for deployment"""
+    def _generate_docker_config(self, config: OllamaDeploymentConfig) -> dict[str, Any]:
+        """Generate Docker configuration for deployment."""
         service_config = {
             "image": "ollama/ollama:latest",
             "container_name": f"waddleai-ollama-{config.name}",
             "ports": [f"{config.port}:11434"],
-            "environment": {"OLLAMA_HOST": "0.0.0.0", **config.environment},  # nosec B104 -- container listen address inside its own pod network namespace
-            "volumes": [f"ollama-{config.name}-data:/root/.ollama", *[f"{k}:{v}" for k, v in config.volumes.items()]],
+            "environment": {"OLLAMA_HOST": "0.0.0.0", **config.environment},  # nosec B104 # noqa: S104 -- container listen address inside its own pod network namespace
+            "volumes": [
+                f"ollama-{config.name}-data:/root/.ollama",
+                *[f"{k}:{v}" for k, v in config.volumes.items()],
+            ],
             "restart": "unless-stopped",
         }
 
@@ -257,7 +267,9 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             service_config["deploy"] = {
                 "resources": {
                     "reservations": {
-                        "devices": [{"driver": "nvidia", "count": config.gpu_count, "capabilities": ["gpu"]}]
+                        "devices": [
+                            {"driver": "nvidia", "count": config.gpu_count, "capabilities": ["gpu"]}
+                        ]
                     }
                 }
             }
@@ -275,7 +287,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         return service_config
 
     def generate_docker_compose(self, deployment_id: int) -> str:
-        """Generate docker-compose.yml for deployment"""
+        """Generate docker-compose.yml for deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -291,7 +303,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         return yaml.dump(compose, default_flow_style=False, sort_keys=False)
 
     def generate_k8s_manifest(self, deployment_id: int) -> str:
-        """Generate Kubernetes manifest for deployment"""
+        """Generate Kubernetes manifest for deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -328,15 +340,19 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                                 "name": "ollama",
                                 "image": "ollama/ollama:latest",
                                 "ports": [{"containerPort": 11434}],
-                                "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],  # nosec B104 -- container listen address inside its own pod network namespace
-                                "volumeMounts": [{"name": "ollama-data", "mountPath": "/root/.ollama"}],
+                                "env": [{"name": "OLLAMA_HOST", "value": "0.0.0.0"}],  # nosec B104 # noqa: S104 -- container listen address inside its own pod network namespace
+                                "volumeMounts": [
+                                    {"name": "ollama-data", "mountPath": "/root/.ollama"}
+                                ],
                                 "resources": {"limits": {}},
                             }
                         ],
                         "volumes": [
                             {
                                 "name": "ollama-data",
-                                "persistentVolumeClaim": {"claimName": f"ollama-{deployment.name}-pvc"},
+                                "persistentVolumeClaim": {
+                                    "claimName": f"ollama-{deployment.name}-pvc"
+                                },
                             }
                         ],
                     },
@@ -358,7 +374,10 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": {"name": f"ollama-{deployment.name}", "namespace": "waddleai"},
-            "spec": {"selector": {"app": f"ollama-{deployment.name}"}, "ports": [{"port": 11434, "targetPort": 11434}]},
+            "spec": {
+                "selector": {"app": f"ollama-{deployment.name}"},
+                "ports": [{"port": 11434, "targetPort": 11434}],
+            },
         }
 
         # PVC manifest
@@ -366,7 +385,10 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "apiVersion": "v1",
             "kind": "PersistentVolumeClaim",
             "metadata": {"name": f"ollama-{deployment.name}-pvc", "namespace": "waddleai"},
-            "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "50Gi"}}},
+            "spec": {
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": "50Gi"}},
+            },
         }
 
         # Combine all manifests
@@ -374,8 +396,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
 
     def generate_metallb_service(self, deployment_id: int) -> str:
-        """
-        Generate MetalLB-compatible Kubernetes Service manifest with model labels.
+        """Generate MetalLB-compatible Kubernetes Service manifest with model labels.
 
         Creates a LoadBalancer Service with model annotations for intelligent routing.
         """
@@ -396,7 +417,11 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "metadata": {
                 "name": f"ollama-{deployment.name}-lb",
                 "namespace": "waddleai",
-                "labels": {"app": f"ollama-{deployment.name}", "managed-by": "waddleai", "service-type": "ollama"},
+                "labels": {
+                    "app": f"ollama-{deployment.name}",
+                    "managed-by": "waddleai",
+                    "service-type": "ollama",
+                },
                 "annotations": {
                     # MetalLB configuration
                     "metallb.universe.tf/allow-shared-ip": f"ollama-{deployment.name}",
@@ -409,7 +434,9 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "spec": {
                 "type": "LoadBalancer",
                 "selector": {"app": f"ollama-{deployment.name}"},
-                "ports": [{"name": "ollama-api", "protocol": "TCP", "port": 11434, "targetPort": 11434}],
+                "ports": [
+                    {"name": "ollama-api", "protocol": "TCP", "port": 11434, "targetPort": 11434}
+                ],
                 "sessionAffinity": "ClientIP",
                 "sessionAffinityConfig": {"clientIP": {"timeoutSeconds": 3600}},
             },
@@ -418,8 +445,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         return yaml.dump(service, default_flow_style=False)
 
     def generate_model_specific_metallb_services(self, deployment_id: int) -> str:
-        """
-        Generate individual MetalLB Services for each model on a deployment.
+        """Generate individual MetalLB Services for each model on a deployment.
 
         This creates separate LoadBalancer IPs for each model, enabling
         direct model-to-IP routing without HTTP inspection.
@@ -427,6 +453,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         Example:
         - llama3.2 → 192.168.1.100:11434
         - mistral → 192.168.1.101:11434
+
         """
         db = self.db
 
@@ -458,7 +485,9 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                     },
                     "annotations": {
                         # MetalLB configuration - unique IP per model
-                        "metallb.universe.tf/allow-shared-ip": f"ollama-{deployment.name}-{model.model_name}",
+                        "metallb.universe.tf/allow-shared-ip": (
+                            f"ollama-{deployment.name}-{model.model_name}"
+                        ),
                         # Model routing information
                         "waddleai.io/model": model.model_name,
                         "waddleai.io/model-tag": model.model_tag or "latest",
@@ -470,7 +499,14 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                 "spec": {
                     "type": "LoadBalancer",
                     "selector": {"app": f"ollama-{deployment.name}"},
-                    "ports": [{"name": "ollama-api", "protocol": "TCP", "port": 11434, "targetPort": 11434}],
+                    "ports": [
+                        {
+                            "name": "ollama-api",
+                            "protocol": "TCP",
+                            "port": 11434,
+                            "targetPort": 11434,
+                        }
+                    ],
                     "sessionAffinity": "ClientIP",
                     "sessionAffinityConfig": {"clientIP": {"timeoutSeconds": 3600}},
                 },
@@ -481,8 +517,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         return "---\n".join(yaml.dump(s, default_flow_style=False) for s in services)
 
     def export_metallb_config(self) -> str:
-        """
-        Export complete MetalLB configuration for all Ollama deployments.
+        """Export complete MetalLB configuration for all Ollama deployments.
 
         Returns YAML with all LoadBalancer Services across all deployments.
         """
@@ -542,13 +577,13 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "image": "ollama/ollama:0.7.1",
             "ports": [{"containerPort": 11434, "name": "http"}],
             "env": [
-                {"name": "OLLAMA_HOST", "value": "0.0.0.0"},  # nosec B104 -- container listen address inside its own pod network namespace
+                {"name": "OLLAMA_HOST", "value": "0.0.0.0"},  # nosec B104 # noqa: S104 -- container listen address inside its own pod network namespace
                 {"name": "OLLAMA_MODELS", "value": "/models"},
-                {"name": "HOME", "value": "/tmp"},  # nosec B108 -- HOME env var in a generated pod spec; needed because the hardened image runs readOnlyRootFilesystem
+                {"name": "HOME", "value": "/tmp"},  # nosec B108 # noqa: S108 -- HOME env var in a generated pod spec; needed because the hardened image runs readOnlyRootFilesystem
             ],
             "volumeMounts": [
                 {"name": "ollama-models", "mountPath": "/models"},
-                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 -- pod volumeMount path in a generated manifest, not a host temp file
+                {"name": "tmp", "mountPath": "/tmp"},  # nosec B108 # noqa: S108 -- pod volumeMount path in a generated manifest, not a host temp file
             ],
             "resources": {
                 "requests": {
@@ -587,8 +622,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         return pvc, container
 
     def generate_daemonset_manifest(self, deployment_id: int) -> str:
-        """
-        Generate Kubernetes DaemonSet manifest for multi-GPU-node Ollama deployment.
+        """Generate Kubernetes DaemonSet manifest for multi-GPU-node Ollama deployment.
 
         Creates DaemonSet (one pod per GPU node) + shared ReadWriteMany PVC
         so models are stored once and served from all GPU nodes.
@@ -601,9 +635,9 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
         gpu_config = deployment.gpu_config or {}
         namespace = deployment.namespace if hasattr(deployment, "namespace") else "waddleai"
-        tolerations = gpu_config.get("tolerations", [
-            {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
-        ])
+        tolerations = gpu_config.get(
+            "tolerations", [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]
+        )
         node_selector = gpu_config.get("node_selector", {"gpu": "true"})
         pvc, container = self._ollama_pvc_and_container(deployment)
 
@@ -620,14 +654,20 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                 "template": {
                     "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
                     "spec": {
-                        "securityContext": {"fsGroup": 1000, "runAsNonRoot": True, "runAsUser": 1000},
+                        "securityContext": {
+                            "fsGroup": 1000,
+                            "runAsNonRoot": True,
+                            "runAsUser": 1000,
+                        },
                         "nodeSelector": node_selector,
                         "tolerations": tolerations,
                         "containers": [container],
                         "volumes": [
                             {
                                 "name": "ollama-models",
-                                "persistentVolumeClaim": {"claimName": f"ollama-{deployment.name}-models"},
+                                "persistentVolumeClaim": {
+                                    "claimName": f"ollama-{deployment.name}-models"
+                                },
                             },
                             {"name": "tmp", "emptyDir": {}},
                         ],
@@ -689,7 +729,9 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                     "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
                     "spec": {
                         "securityContext": {
-                            "fsGroup": 1000, "runAsNonRoot": True, "runAsUser": 1000,
+                            "fsGroup": 1000,
+                            "runAsNonRoot": True,
+                            "runAsUser": 1000,
                         },
                         "nodeSelector": node_selector,
                         "containers": [container],
@@ -727,8 +769,8 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     # Container Management (Orchestrated Mode)
 
-    def start_deployment(self, deployment_id: int) -> Dict[str, Any]:
-        """Start an Ollama deployment (orchestrated mode)"""
+    def start_deployment(self, deployment_id: int) -> dict[str, Any]:
+        """Start an Ollama deployment (orchestrated mode)."""
         if self.mode == DeploymentMode.MANUAL:
             return {"success": False, "error": "Orchestrated mode not enabled"}
 
@@ -774,7 +816,9 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                 self.docker_client.containers.run(**run_params)
 
             # Update status
-            db(db.ollama_deployments.id == deployment_id).update(status="running", health_status="healthy")
+            db(db.ollama_deployments.id == deployment_id).update(
+                status="running", health_status="healthy"
+            )
             db.commit()
 
             logger.info(f"Started Ollama deployment: {deployment.name}")
@@ -782,12 +826,14 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
         except Exception as e:
             logger.error(f"Failed to start deployment: {e}")
-            db(db.ollama_deployments.id == deployment_id).update(status="error", health_status="unhealthy")
+            db(db.ollama_deployments.id == deployment_id).update(
+                status="error", health_status="unhealthy"
+            )
             db.commit()
             return {"success": False, "error": str(e)}
 
-    def stop_deployment(self, deployment_id: int) -> Dict[str, Any]:
-        """Stop an Ollama deployment (orchestrated mode)"""
+    def stop_deployment(self, deployment_id: int) -> dict[str, Any]:
+        """Stop an Ollama deployment (orchestrated mode)."""
         if self.mode == DeploymentMode.MANUAL:
             return {"success": False, "error": "Orchestrated mode not enabled"}
 
@@ -804,7 +850,9 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             container = self.docker_client.containers.get(container_name)
             container.stop()
 
-            db(db.ollama_deployments.id == deployment_id).update(status="stopped", health_status="unknown")
+            db(db.ollama_deployments.id == deployment_id).update(
+                status="stopped", health_status="unknown"
+            )
             db.commit()
 
             logger.info(f"Stopped Ollama deployment: {deployment.name}")
@@ -814,15 +862,15 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             logger.error(f"Failed to stop deployment: {e}")
             return {"success": False, "error": str(e)}
 
-    def restart_deployment(self, deployment_id: int) -> Dict[str, Any]:
-        """Restart an Ollama deployment (orchestrated mode)"""
+    def restart_deployment(self, deployment_id: int) -> dict[str, Any]:
+        """Restart an Ollama deployment (orchestrated mode)."""
         stop_result = self.stop_deployment(deployment_id)
         if not stop_result.get("success"):
             return stop_result
         return self.start_deployment(deployment_id)
 
     def get_logs(self, deployment_id: int, lines: int = 100) -> str:
-        """Get container logs (orchestrated mode)"""
+        """Get container logs (orchestrated mode)."""
         if self.mode == DeploymentMode.MANUAL:
             return "Orchestrated mode not enabled"
 
@@ -843,8 +891,8 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     # Health and Monitoring
 
-    def health_check(self, deployment_id: int) -> Dict[str, Any]:
-        """Perform health check on Ollama deployment"""
+    def health_check(self, deployment_id: int) -> dict[str, Any]:
+        """Perform health check on Ollama deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -858,7 +906,8 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
                 # Update health status
                 db(db.ollama_deployments.id == deployment_id).update(
-                    health_status="healthy" if healthy else "unhealthy", last_health_check=datetime.utcnow()
+                    health_status="healthy" if healthy else "unhealthy",
+                    last_health_check=datetime.utcnow(),
                 )
                 db.commit()
 
@@ -877,8 +926,8 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     # Model Management
 
-    def list_models(self, deployment_id: int) -> List[OllamaModel]:
-        """List models on an Ollama deployment"""
+    def list_models(self, deployment_id: int) -> list[OllamaModel]:
+        """List models on an Ollama deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -909,7 +958,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             return []
 
     def pull_model(self, deployment_id: int, model_name: str) -> PullStatus:
-        """Pull a model to an Ollama deployment"""
+        """Pull a model to an Ollama deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -922,29 +971,41 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
         try:
             with httpx.Client(timeout=3600.0) as client:  # Long timeout for model pulls
-                response = client.post(f"{deployment.endpoint_url}/api/pull", json={"name": model_name}, timeout=3600.0)
+                response = client.post(
+                    f"{deployment.endpoint_url}/api/pull", json={"name": model_name}, timeout=3600.0
+                )
 
                 if response.status_code == 200:
                     # Track model in database
                     existing = (
-                        db((db.ollama_models.deployment_id == deployment_id) & (db.ollama_models.name == model_name))
+                        db(
+                            (db.ollama_models.deployment_id == deployment_id)
+                            & (db.ollama_models.name == model_name)
+                        )
                         .select()
                         .first()
                     )
 
                     if not existing:
                         db.ollama_models.insert(
-                            deployment_id=deployment_id, name=model_name, size=0, pulled_at=datetime.utcnow()
+                            deployment_id=deployment_id,
+                            name=model_name,
+                            size=0,
+                            pulled_at=datetime.utcnow(),
                         )
 
                     db(db.ollama_deployments.id == deployment_id).update(status="running")
                     db.commit()
 
-                    return PullStatus(model=model_name, status="completed", progress=100.0, completed=True)
+                    return PullStatus(
+                        model=model_name, status="completed", progress=100.0, completed=True
+                    )
                 else:
                     db(db.ollama_deployments.id == deployment_id).update(status="running")
                     db.commit()
-                    return PullStatus(model=model_name, status="error", error=f"HTTP {response.status_code}")
+                    return PullStatus(
+                        model=model_name, status="error", error=f"HTTP {response.status_code}"
+                    )
 
         except Exception as e:
             logger.error(f"Failed to pull model: {e}")
@@ -953,7 +1014,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             return PullStatus(model=model_name, status="error", error=str(e))
 
     def remove_model(self, deployment_id: int, model_name: str) -> bool:
-        """Remove a model from an Ollama deployment"""
+        """Remove a model from an Ollama deployment."""
         db = self.db
 
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -962,12 +1023,15 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
         try:
             with httpx.Client(timeout=60.0) as client:
-                response = client.delete(f"{deployment.endpoint_url}/api/delete", json={"name": model_name})
+                response = client.delete(
+                    f"{deployment.endpoint_url}/api/delete", json={"name": model_name}
+                )
 
                 if response.status_code == 200:
                     # Remove from database
                     db(
-                        (db.ollama_models.deployment_id == deployment_id) & (db.ollama_models.name == model_name)
+                        (db.ollama_models.deployment_id == deployment_id)
+                        & (db.ollama_models.name == model_name)
                     ).delete()
                     db.commit()
                     return True

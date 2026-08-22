@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(__file__))
 import asyncio
 import time
 from datetime import datetime
+from typing import Any
 
 import aiohttp
 import structlog
@@ -51,9 +52,6 @@ from proxy.apps.proxy_server.pipeline.memory_stages import (
     ScratchpadStage,
     SummarizationStage,
 )
-from shared.routing.classifier_connector import LLMConnectorClassifierClient
-from shared.routing.engine import RoutingEngine
-from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -73,6 +71,9 @@ from shared.auth.rbac import (
 )
 from shared.cache.response_cache import RESPONSE_CACHE_FLAG, create_response_cache
 from shared.database.models import get_db
+from shared.routing.classifier_connector import LLMConnectorClassifierClient
+from shared.routing.engine import RoutingEngine
+from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import create_security_scanner
 from shared.utils.feature_flags import is_feature_enabled
@@ -95,6 +96,29 @@ logger = structlog.get_logger(__name__)
 
 # Initialize metrics
 proxy_metrics = get_proxy_metrics()
+
+_license_client: Any = None
+
+
+def _get_license_client() -> Any:
+    """Lazily construct + cache the shared ``penguin_licensing.LicenseClient`` (product="waddleai").
+
+    Same pattern as ``services/management/app/api/v1/fleet.py``'s
+    ``_get_license_client`` -- one client per process, reused by every
+    licence-gated feature (currently ``ContentFilter``'s NER tier) rather
+    than a new client per call site.
+    """
+    global _license_client
+    if _license_client is None:
+        from penguin_licensing import LicenseClient
+
+        _license_client = LicenseClient(
+            license_key=os.environ.get("LICENSE_KEY", ""),
+            product="waddleai",
+            base_url=os.environ.get("LICENSE_SERVER_URL", "https://license.penguintech.io"),
+        )
+    return _license_client
+
 
 # ---------------------------------------------------------------------------
 # Contract-test mode (WADDLEAI_STUB_UPSTREAM=1)
@@ -225,9 +249,10 @@ def _merge_waddleai_usage(cache_meta: dict | None, memory_meta: dict | None) -> 
 
 
 class ProxyServer:
-    """WaddleAI Proxy Server"""
+    """WaddleAI Proxy Server."""
 
     def __init__(self):
+        """Declare component slots as unset; real instances are wired in `startup()`."""
         self.db = None
         self.rbac = None
         self.security_scanner = None
@@ -265,7 +290,7 @@ class ProxyServer:
         }
 
     async def startup(self):
-        """Initialize server components"""
+        """Initialize server components."""
         logger.info("Starting WaddleAI Proxy Server")
 
         # Initialize database (pgvector-enabled PostgreSQL primary).
@@ -320,6 +345,8 @@ class ProxyServer:
             db=self.db,
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             auditor_model=os.getenv("SECURITY_AUDITOR_MODEL", "shieldgemma:2b"),
+            license_client=_get_license_client(),
+            features=self.features,
         )
         self.token_manager = create_token_manager(self.db)
         self.llm_manager = create_llm_connection_manager(self.db)
@@ -463,7 +490,8 @@ class ProxyServer:
 
                 async def list_models(self):
                     # Return empty list so stub doesn't pollute the models endpoint
-                    # The stub connector is only used for request dispatch in tests, not for model listing
+                    # The stub connector is only used for request dispatch in tests, not
+                    # for model listing
                     return []
 
             stub = StubConnector(name="stub", config={})
@@ -624,6 +652,7 @@ class ProxyServer:
 
         Returns:
             Initialized ProxyPipeline instance.
+
         """
         from shared.utils.metering import MeteringBuffer, PenguinDALUsageWriter
         from shared.utils.token_limiter import TokenLimiter
@@ -882,7 +911,7 @@ class ProxyServer:
         return ProxyPipeline(stages=stages, features=self.features)
 
     async def shutdown(self):
-        """Cleanup server components"""
+        """Cleanup server components."""
         if self.grpc_server:
             self.grpc_server.stop(grace=5)
             logger.info("gRPC server stopped")
@@ -973,9 +1002,11 @@ if _TEST_MODE:
 
     @app.route(_TEST_AUTH_ROUTE, methods=["GET"])
     async def _contract_test_token():
-        """Contract-test-only: hand the harness a real signed Bearer JWT and
-        the seeded wa- API key. Never registered in production (route
-        definition itself is gated by the module-level _TEST_MODE flag).
+        """Contract-test-only: hand the harness a real signed Bearer JWT and API key.
+
+        Returns the seeded wa- API key and member token too. Never registered in
+        production — the route definition itself is gated by the module-level
+        _TEST_MODE flag.
         """
         return jsonify(
             {
@@ -999,6 +1030,7 @@ async def on_shutdown():
 
 @app.after_request
 async def add_cors_headers(response: Response) -> Response:
+    """Attach permissive CORS headers to every outgoing response."""
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "*"
@@ -1090,7 +1122,7 @@ async def get_current_user():
 def determine_target_model(
     request_model: str | None, user_context, x_preferred_model: str | None = None
 ) -> str:
-    """Determine target model using a fallback hierarchy:
+    """Determine target model using a fallback hierarchy.
 
     1. Request model parameter (if provided)
     2. X-Preferred-Model header (if provided)
@@ -1107,6 +1139,7 @@ def determine_target_model(
 
     Returns:
         Target model name
+
     """
     # Priority 1: Request model parameter
     if request_model:
@@ -1170,7 +1203,7 @@ def determine_target_model(
 
 @app.route("/healthz", methods=["GET"])
 async def health_check():
-    """Kubernetes-style health check"""
+    """Kubernetes-style health check."""
     return "healthy"
 
 
@@ -1221,7 +1254,7 @@ async def readiness_check():
 
 @app.route("/api/status", methods=["GET"])
 async def detailed_status():
-    """Detailed health status"""
+    """Detailed health status."""
     try:
         # Check database connectivity
         proxy_server.db(proxy_server.db.users.id > 0).count()
@@ -1256,7 +1289,7 @@ async def detailed_status():
 
 @app.route("/metrics", methods=["GET"])
 async def prometheus_metrics():
-    """Prometheus metrics endpoint"""
+    """Prometheus metrics endpoint."""
     try:
         metrics_data = proxy_server.metrics.get_metrics()
         return Response(metrics_data, mimetype=CONTENT_TYPE_LATEST)
@@ -1459,7 +1492,7 @@ async def chat_completions():
 
 @app.route("/v1/models", methods=["GET"])
 async def list_models():
-    """List available models"""
+    """List available models."""
     await get_current_user()  # Authentication check
     try:
         # Get actual available models from connection links
@@ -1477,7 +1510,7 @@ async def list_models():
 
 @app.route("/api/routing/stats", methods=["GET"])
 async def get_routing_stats():
-    """Get LLM provider routing statistics"""
+    """Get LLM provider routing statistics."""
     await get_current_user()  # Authentication check
     try:
         stats = proxy_server.request_router.get_provider_stats()
@@ -1496,7 +1529,7 @@ async def get_routing_stats():
 
 @app.route("/api/routing/strategy", methods=["POST"])
 async def set_routing_strategy():
-    """Set routing strategy (Admin only)"""
+    """Set routing strategy (Admin only)."""
     user_context = await get_current_user()
     try:
         # Check admin permission
@@ -1526,7 +1559,7 @@ async def set_routing_strategy():
 
 @app.route("/api/memory/stats", methods=["GET"])
 async def get_memory_stats():
-    """Get memory statistics for current user"""
+    """Get memory statistics for current user."""
     user_context = await get_current_user()
     try:
         stats = await proxy_server.memory_manager.get_memory_stats(
@@ -1542,7 +1575,7 @@ async def get_memory_stats():
 
 @app.route("/api/memory/cleanup", methods=["DELETE"])
 async def cleanup_old_memories():
-    """Cleanup old memories (Admin only or own memories)"""
+    """Cleanup old memories (Admin only or own memories)."""
     user_context = await get_current_user()
     days = request.args.get("days", 90, type=int)
 
@@ -1565,7 +1598,7 @@ async def cleanup_old_memories():
 
 @app.route("/api/usage", methods=["GET"])
 async def get_usage():
-    """Get current API key usage stats"""
+    """Get current API key usage stats."""
     user_context = await get_current_user()
     try:
         stats = proxy_server.token_manager.get_usage_stats(
@@ -1581,7 +1614,7 @@ async def get_usage():
 
 @app.route("/api/quota", methods=["GET"])
 async def get_quota():
-    """Get remaining quota for API key"""
+    """Get remaining quota for API key."""
     user_context = await get_current_user()
     try:
         quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
@@ -1839,4 +1872,7 @@ if __name__ == "__main__":
     # `hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080` (proxy/Dockerfile),
     # which hardcodes the same all-interfaces bind for its containerized network
     # namespace. This block never runs under that CMD.
-    app.run(host="0.0.0.0", port=int(os.getenv("HTTP_PORT", "8080")))  # nosec B104 -- containerized service, binds within pod network namespace only; matches Dockerfile CMD's hypercorn --bind
+    app.run(
+        host="0.0.0.0",  # nosec B104 # noqa: S104 -- containerized service, binds within pod network namespace only; matches Dockerfile CMD's hypercorn --bind
+        port=int(os.getenv("HTTP_PORT", "8080")),
+    )
