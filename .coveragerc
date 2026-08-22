@@ -21,7 +21,7 @@ omit =
     shared/utils/rag_integration.py
 
 [report]
-fail_under = 74
+fail_under = 90
 show_missing = True
 exclude_lines =
     pragma: no cover
