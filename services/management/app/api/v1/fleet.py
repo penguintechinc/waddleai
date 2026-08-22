@@ -60,17 +60,22 @@ def _get_license_client() -> Any:
 
     ``product`` must be ``"waddleai"`` -- the SDK's own default is
     ``"elder"`` and would silently check entitlements for the wrong
-    product.
+    product. Also wires this deployment's public host (see
+    ``shared.licensing.domain_bypass``) so a managed PenguinTech domain
+    bypasses license checks entirely, once the pinned SDK version supports it.
     """
     global _license_client
     if _license_client is None:
         from penguin_licensing import LicenseClient
+
+        from shared.licensing.domain_bypass import apply_deployment_host
 
         _license_client = LicenseClient(
             license_key=os.environ.get("LICENSE_KEY", ""),
             product="waddleai",
             base_url=os.environ.get("LICENSE_SERVER_URL", "https://license.penguintech.io"),
         )
+        apply_deployment_host(_license_client)
     return _license_client
 
 
