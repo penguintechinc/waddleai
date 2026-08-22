@@ -177,12 +177,17 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             endpoint_url=config.endpoint_url,
             deployment_type=config.deployment_type,
             docker_compose_config=self._generate_docker_config(config),
-            gpu_config={"gpu_count": config.gpu_count, "gpu_ids": config.gpu_ids},
+            gpu_config={
+                "gpu_count": config.gpu_count,
+                "gpu_ids": config.gpu_ids,
+                "replicas": config.replicas,
+            },
             resource_limits={"cpu_limit": config.cpu_limit, "memory_limit": config.memory_limit},
             status="pending",
             health_status="unknown",
             auto_start=config.auto_start,
             pool_mode=config.pool_mode,
+            namespace=config.namespace,
             created_at=datetime.utcnow(),
         )
         db.commit()
@@ -210,10 +215,15 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             endpoint_url=config.endpoint_url,
             deployment_type=config.deployment_type,
             docker_compose_config=self._generate_docker_config(config),
-            gpu_config={"gpu_count": config.gpu_count, "gpu_ids": config.gpu_ids},
+            gpu_config={
+                "gpu_count": config.gpu_count,
+                "gpu_ids": config.gpu_ids,
+                "replicas": config.replicas,
+            },
             resource_limits={"cpu_limit": config.cpu_limit, "memory_limit": config.memory_limit},
             auto_start=config.auto_start,
             pool_mode=config.pool_mode,
+            namespace=config.namespace,
         )
         db.commit()
 
@@ -980,7 +990,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                     existing = (
                         db(
                             (db.ollama_models.deployment_id == deployment_id)
-                            & (db.ollama_models.name == model_name)
+                            & (db.ollama_models.model_name == model_name)
                         )
                         .select()
                         .first()
@@ -989,9 +999,10 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                     if not existing:
                         db.ollama_models.insert(
                             deployment_id=deployment_id,
-                            name=model_name,
-                            size=0,
-                            pulled_at=datetime.utcnow(),
+                            model_name=model_name,
+                            status="available",
+                            size_bytes=0,
+                            last_updated=datetime.utcnow(),
                         )
 
                     db(db.ollama_deployments.id == deployment_id).update(status="running")
@@ -1031,7 +1042,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                     # Remove from database
                     db(
                         (db.ollama_models.deployment_id == deployment_id)
-                        & (db.ollama_models.name == model_name)
+                        & (db.ollama_models.model_name == model_name)
                     ).delete()
                     db.commit()
                     return True

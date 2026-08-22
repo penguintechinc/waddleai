@@ -219,6 +219,9 @@ class OllamaDeployment(Base):
     node_uid = Column(String(255), nullable=True)  # Kubernetes node UID, when known
     pool_mode = Column(Boolean, nullable=False, default=False)  # pool vs DaemonSet mode
 
+    # Kubernetes namespace for daemonset/pool manifests (migration 017)
+    namespace = Column(String(255), nullable=False, default="waddleai")
+
 
 class LlamaCppDeployment(Base):
     """A llama.cpp inference deployment (Kubernetes or remote) with model, GPU, resource config."""

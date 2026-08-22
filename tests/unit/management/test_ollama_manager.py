@@ -6,6 +6,7 @@ lifecycle, model pull/list/remove over HTTP, health checks, and the
 fake DAL plus fake Docker/httpx clients. No real Docker socket, no network.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -28,6 +29,49 @@ from shared.fleet.base import Endpoint, FleetHealth, ModelPlacement, NodeInfo, P
 # semantics over plain dicts, so tests exercise the manager's actual query
 # composition instead of stubbing every call site with a MagicMock.
 # ---------------------------------------------------------------------------
+
+# Column allowlist per table, mirrored from ``services/management/app/models_sqlalchemy.py``
+# (``OllamaDeployment``/``OllamaModel``). Field access (``db.<table>.<field>``) and
+# ``.insert()``/``.update()`` kwargs are checked against this so a typo'd or
+# schema-drifted field name raises ``AttributeError`` here too, instead of the
+# fake silently accepting anything -- this is what caught the ``.name`` vs
+# ``.model_name`` bug in the real ``ollama_manager.py``.
+_TABLE_SCHEMAS: dict[str, frozenset[str]] = {
+    "ollama_deployments": frozenset(
+        {
+            "id",
+            "name",
+            "endpoint_url",
+            "deployment_type",
+            "docker_compose_config",
+            "gpu_config",
+            "resource_limits",
+            "status",
+            "health_status",
+            "last_health_check",
+            "auto_start",
+            "created_at",
+            "fleet_backend_id",
+            "management_scope",
+            "node_uid",
+            "pool_mode",
+            "namespace",
+        }
+    ),
+    "ollama_models": frozenset(
+        {
+            "id",
+            "deployment_id",
+            "model_name",
+            "model_tag",
+            "status",
+            "size_bytes",
+            "pull_progress",
+            "last_updated",
+            "auto_pull",
+        }
+    ),
+}
 
 
 class FakeRow:
@@ -82,6 +126,20 @@ class _Rows(list):
         return self[0] if self else None
 
 
+def _check_known_fields(table_name: str, field_names: Iterable[str]) -> None:
+    """Raise ``AttributeError`` for any field not in ``_TABLE_SCHEMAS[table_name]``.
+
+    Mirrors real PyDAL/penguin-dal Table semantics, where referencing an
+    undefined column raises rather than silently no-op'ing.
+    """
+    schema = _TABLE_SCHEMAS.get(table_name)
+    if schema is None:
+        raise AttributeError(f"no schema registered for table {table_name!r}")
+    unknown = set(field_names) - schema
+    if unknown:
+        raise AttributeError(f"table {table_name!r} has no field(s): {sorted(unknown)}")
+
+
 class _Table:
     """``db.<table_name>``: field access builds ``_Field``s; ``.insert()`` writes a row."""
 
@@ -92,10 +150,12 @@ class _Table:
     def __getattr__(self, name: str) -> _Field:
         if name.startswith("_"):
             raise AttributeError(name)
+        _check_known_fields(self._name, [name])
         return _Field(self._name, name)
 
     def insert(self, **fields: Any) -> int:
         """Insert a new row and return its auto-incremented id."""
+        _check_known_fields(self._name, fields)
         return self._db._insert(self._name, fields)
 
 
@@ -116,6 +176,7 @@ class _Set:
 
     def update(self, **fields: Any) -> int:
         """Update matching rows in place and return the count updated."""
+        _check_known_fields(self._query.table_name, fields)
         rows = self._matches()
         for row in rows:
             row.__dict__.update(fields)
@@ -317,6 +378,23 @@ def test_create_deployment_success_inserts_row(manager, db, sample_config):
     assert db.commit_count == 1
 
 
+def test_create_deployment_persists_namespace_and_replicas(manager, db, sample_config):
+    """Namespace lands on its own column; replicas lands inside gpu_config.
+
+    Regression test: both fields were silently dropped from the insert even
+    though `OllamaDeploymentConfig` carries them and the pool/daemonset
+    manifest generators read them back.
+    """
+    sample_config.namespace = "custom-ns"
+    sample_config.replicas = 3
+
+    manager.create_deployment(sample_config)
+
+    row = db._tables["ollama_deployments"][1]
+    assert row.namespace == "custom-ns"
+    assert row.gpu_config["replicas"] == 3
+
+
 def test_create_deployment_duplicate_name_rejected(manager, db, sample_config):
     """A second deployment with the same name is rejected without inserting."""
     manager.create_deployment(sample_config)
@@ -376,12 +454,16 @@ def test_update_deployment_success(manager, db, sample_config):
     """Updating an existing deployment persists the new config fields."""
     dep_id = _seed_deployment(db)
     sample_config.endpoint_url = "http://newhost:11434"
+    sample_config.namespace = "custom-ns"
+    sample_config.replicas = 2
 
     result = manager.update_deployment(dep_id, sample_config)
 
     assert result["success"] is True
     row = db._tables["ollama_deployments"][dep_id]
     assert row.endpoint_url == "http://newhost:11434"
+    assert row.namespace == "custom-ns"
+    assert row.gpu_config["replicas"] == 2
 
 
 def test_delete_deployment_not_found(manager):
@@ -1009,7 +1091,7 @@ def test_pull_model_success_inserts_new_model_row(manager, db):
         model="llama3.2", status="completed", progress=100.0, completed=True
     )
     model_rows = list(db._tables["ollama_models"].values())
-    assert model_rows[0].name == "llama3.2"
+    assert model_rows[0].model_name == "llama3.2"
     row = db._tables["ollama_deployments"][dep_id]
     assert row.status == "running"
 
@@ -1017,7 +1099,7 @@ def test_pull_model_success_inserts_new_model_row(manager, db):
 def test_pull_model_success_skips_insert_for_existing_model(manager, db):
     """Re-pulling an already-tracked model does not insert a duplicate row."""
     dep_id = _seed_deployment(db)
-    _seed_model(db, dep_id, "llama3.2", name="llama3.2")
+    _seed_model(db, dep_id, "llama3.2")
     mock_client = _http_client_mock(post=MagicMock(status_code=200))
 
     with patch(
@@ -1071,7 +1153,7 @@ def test_remove_model_not_found(manager):
 def test_remove_model_success_deletes_row(manager, db):
     """A 200 delete response removes the tracked model row and returns True."""
     dep_id = _seed_deployment(db)
-    _seed_model(db, dep_id, "llama3.2", name="llama3.2")
+    _seed_model(db, dep_id, "llama3.2")
     mock_client = _http_client_mock(delete=MagicMock(status_code=200))
 
     with patch(
@@ -1086,7 +1168,7 @@ def test_remove_model_success_deletes_row(manager, db):
 def test_remove_model_non_200_returns_false(manager, db):
     """A non-200 delete response leaves the row intact and returns False."""
     dep_id = _seed_deployment(db)
-    _seed_model(db, dep_id, "llama3.2", name="llama3.2")
+    _seed_model(db, dep_id, "llama3.2")
     mock_client = _http_client_mock(delete=MagicMock(status_code=404))
 
     with patch(
@@ -1156,13 +1238,14 @@ async def test_provision_creates_deployment_and_returns_node(manager, db):
 
 
 async def test_provision_pool_mode_sets_deployment_type(manager, db):
-    """Mode == 'pool' selects pool-mode deployment_type and persists pool_mode.
+    """Mode == 'pool' selects pool-mode deployment_type and persists pool_mode/namespace/replicas.
 
-    Note: `create_deployment`'s insert doesn't include `namespace`/`replicas`
-    fields even though `OllamaDeploymentConfig` carries them (source gap, not
-    fixed here per "don't modify the module under test") -- only
-    deployment_type/pool_mode are asserted since those are what's actually
-    persisted.
+    `create_deployment` writes `namespace` as its own column (consumed by
+    `generate_daemonset_manifest`/`generate_pool_manifest` via
+    `getattr(deployment, "namespace", ...)`) and `replicas` into the
+    `gpu_config` JSON blob (consumed by `generate_pool_manifest` via
+    `gpu_config.get("replicas", ...)`, see
+    `test_generate_pool_manifest_uses_replicas_and_gpu_count_fallback`).
     """
     spec = ProvisionSpec(
         name="fleet-pool", models=[], mode="pool", constraints={"replicas": 3, "namespace": "ns2"}
@@ -1173,7 +1256,8 @@ async def test_provision_pool_mode_sets_deployment_type(manager, db):
     row = db._tables["ollama_deployments"][1]
     assert row.deployment_type == "kubernetes"
     assert row.pool_mode is True
-    assert not hasattr(row, "namespace")
+    assert row.namespace == "ns2"
+    assert row.gpu_config["replicas"] == 3
 
 
 async def test_provision_raises_when_create_deployment_fails(manager, db):
