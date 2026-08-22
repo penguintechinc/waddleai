@@ -495,7 +495,17 @@ jobs:
       fail-fast: false
       matrix:
         platform: [linux/amd64, linux/arm64]
-        service: [proxy, management]
+        # webui MUST stay in this base list, not live only in `include` below.
+        # `include` entries whose keys don't already appear in the matrix
+        # (webui previously had no `platform:` key) create one standalone
+        # combination instead of merging into the platform x service cross
+        # product -- so webui built once, with `matrix.platform` unset, and
+        # never produced the `-amd64`/`-arm64` tags merge-manifests (and
+        # security-scan) already expect for it. Putting webui here first
+        # expands it across both platforms; the `include` entry below then
+        # merges context/dockerfile onto each of those two combinations,
+        # exactly as it already does for `management`.
+        service: [proxy, management, webui]
         include:
           - service: webui
             context: ./services/webui
