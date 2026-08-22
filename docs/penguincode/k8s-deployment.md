@@ -24,7 +24,7 @@ Complete guide for deploying PenguinCode to Kubernetes clusters using both Helm 
 
 ### Cluster Requirements
 - Kubernetes v1.24+
-- Access to a container registry (for beta: `registry-dal2.penguintech.io`)
+- Access to a container registry (for beta: `ghcr.io`)
 - Appropriate RBAC permissions
 - Storage provisioner (for persistence, if enabled)
 
@@ -90,11 +90,11 @@ kubectl apply -k k8s/kustomize/overlays/alpha
 # Option 2: Using Helm
 helm install penguincode k8s/helm/penguincode \
   -f k8s/helm/penguincode/values-alpha.yaml \
-  --namespace penguincode-alpha --create-namespace
+  --namespace penguincode --create-namespace
 
 # Verify deployment
-kubectl get pods -n penguincode-alpha
-kubectl logs -n penguincode-alpha -l app=penguincode
+kubectl get pods -n penguincode
+kubectl logs -n penguincode -l app=penguincode
 ```
 
 ### Deploy to Beta (Production-like)
@@ -109,11 +109,11 @@ kubectl apply -k k8s/kustomize/overlays/beta
 # Option 3: Using Helm
 helm install penguincode k8s/helm/penguincode \
   -f k8s/helm/penguincode/values-beta.yaml \
-  --namespace penguincode-beta --create-namespace
+  --namespace penguincode --create-namespace
 
 # Verify deployment
-kubectl get pods -n penguincode-beta
-kubectl logs -n penguincode-beta -l app=penguincode
+kubectl get pods -n penguincode
+kubectl logs -n penguincode -l app=penguincode
 ```
 
 ## Using Helm
@@ -131,7 +131,7 @@ helm install penguincode k8s/helm/penguincode \
 
 # Install with namespace creation
 helm install penguincode k8s/helm/penguincode \
-  --namespace penguincode-beta \
+  --namespace penguincode \
   --create-namespace
 
 # Install with additional overrides
@@ -188,14 +188,14 @@ helm lint k8s/helm/penguincode
 ### Helm Values
 
 #### Default Values (values.yaml)
-- Namespace: `penguincode-prod`
+- Namespace: `penguincode`
 - Replicas: 2
 - CPU request/limit: 500m / 1000m
 - Memory request/limit: 1Gi / 2Gi
 - Image: `penguincode/server:latest`
 
 #### Alpha Values Override (values-alpha.yaml)
-- Namespace: `penguincode-alpha`
+- Namespace: `penguincode`
 - Replicas: 1
 - CPU request/limit: 100m / 200m
 - Memory request/limit: 128Mi / 256Mi
@@ -204,13 +204,13 @@ helm lint k8s/helm/penguincode
 - VRAM: 4096 MB
 
 #### Beta Values Override (values-beta.yaml)
-- Namespace: `penguincode-beta`
+- Namespace: `penguincode`
 - Replicas: 2
 - CPU request/limit: 500m / 1000m
 - Memory request/limit: 1Gi / 2Gi
 - Image pull policy: Always (registry)
-- Image repository: `registry-dal2.penguintech.io/penguincode`
-- Image tag: `beta-latest`
+- Image repository: `ghcr.io/penguintechinc/penguincode`
+- Image tag: `latest`
 - SECURITY_LEVEL: 2
 - VRAM: 8192 MB
 
@@ -338,8 +338,8 @@ The `scripts/deploy-beta.sh` script provides automated deployment with:
 
 3. **Build and Push**
    - Builds Docker image with tag
-   - Pushes to `registry-dal2.penguintech.io`
-   - Tags and pushes `beta-latest`
+   - Pushes to `ghcr.io`
+   - Tags and pushes `latest`
 
 4. **Deploy with Helm**
    - Creates namespace if needed
@@ -359,7 +359,7 @@ The `scripts/deploy-beta.sh` script provides automated deployment with:
 RELEASE_NAME="penguincode"
 NAMESPACE="penguincode"
 CHART_PATH="./k8s/helm/penguincode"
-IMAGE_REGISTRY="registry-dal2.penguintech.io"
+IMAGE_REGISTRY="ghcr.io"
 KUBE_CONTEXT="dal2-beta"
 APP_HOST="penguincode.penguintech.io"
 ```
@@ -373,7 +373,7 @@ APP_HOST="penguincode.penguintech.io"
 
 **Configuration**:
 ```yaml
-Namespace: penguincode-alpha
+Namespace: penguincode
 Replicas: 1
 CPU Request: 100m
 CPU Limit: 200m
@@ -400,13 +400,13 @@ Max Concurrent: 1
 
 **Configuration**:
 ```yaml
-Namespace: penguincode-beta
+Namespace: penguincode
 Replicas: 2
 CPU Request: 500m
 CPU Limit: 1000m
 Memory Request: 1Gi
 Memory Limit: 2Gi
-Image: registry-dal2.penguintech.io/penguincode:beta-latest
+Image: ghcr.io/penguintechinc/penguincode:latest
 Image Pull Policy: Always
 Log Level: INFO
 Security Level: 2
@@ -446,7 +446,7 @@ To add a new environment (e.g., `prod`):
    # Or using Helm
    helm install penguincode k8s/helm/penguincode \
      -f k8s/helm/penguincode/values-prod.yaml \
-     --namespace penguincode-prod --create-namespace
+     --namespace penguincode --create-namespace
    ```
 
 ## Advanced Usage
@@ -567,7 +567,7 @@ kubectl get nodes -o wide
 kubectl get secrets -n penguincode
 
 # Verify image exists in registry
-docker pull registry-dal2.penguintech.io/penguincode:beta-latest
+docker pull ghcr.io/penguintechinc/penguincode:latest
 ```
 
 #### Resource constraints
