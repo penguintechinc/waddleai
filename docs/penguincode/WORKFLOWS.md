@@ -4,6 +4,13 @@
 
 Penguin Code uses GitHub Actions for automated building, testing, and releasing. The version management system follows semantic versioning with epoch64 build timestamps.
 
+This page covers the **VS Code extension/CLI release story only** — its own repo
+(`github.com/penguintechinc/penguin-code`), its own workflows (`ci.yml`,
+`build-prerelease.yml`, `release.yml`), and its own VSIX-focused tag scheme below. The
+vendored `penguincode-server` container that gets deployed to Kubernetes (see
+`k8s-deployment.md`) follows WaddleAI's own image/tag/namespace conventions instead —
+the two are genuinely separate release tracks for the same product.
+
 ## Version Format
 
 **Format**: `vMajor.Minor.Patch.epoch64`
