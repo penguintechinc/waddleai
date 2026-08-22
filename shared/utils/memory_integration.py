@@ -1,6 +1,11 @@
 """Memory Integration for WaddleAI.
 
-Provides conversation memory using mem0 or ChromaDB (user choice).
+Provides conversation memory using pgvector (default) or mem0 (user choice).
+
+The chromadb backend was removed: PYSEC-2026-311 is a pre-authentication
+code injection in chromadb's server component with no fixed release in any
+version >=1.0.0. ``create_memory_manager(backend="chromadb")`` now fails
+fast -- see its docstring for the replacement backends.
 """
 
 import asyncio
@@ -11,27 +16,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
-
-import chromadb
-from chromadb.config import Settings
-
-
-def _sentence_transformer(model_name: str):
-    """Construct a SentenceTransformer, importing the library on first use.
-
-    Deferred for the same reason as the twin helper in
-    shared/utils/rag_integration.py: a module-scope
-    `from sentence_transformers import ...` drags torch and transformers into
-    every process that imports this module, and `pytest --cov=shared` imports
-    it everywhere. That OOM-killed the CI runner mid-suite.
-
-    Model unchanged: all-MiniLM-L6-v2, 384-dim -- deliberately not the 768-dim
-    nomic-embed-text path, and the two must not converge.
-    """
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(model_name)
-
 
 # Optional mem0 import (if available)
 try:
@@ -375,314 +359,11 @@ class Mem0MemoryStore(MemoryStore):
             return 0
 
 
-class ChromaDBMemoryStore(MemoryStore):
-    """ChromaDB-based memory storage."""
-
-    def __init__(
-        self, persist_directory: str = "./chroma_data", collection_name: str = "waddleai_memory"
-    ):
-        """Store the ChromaDB persist path/collection name; client is lazy-built in initialize()."""
-        self.persist_directory = persist_directory
-        self.collection_name = collection_name
-        self.client = None
-        self.collection = None
-        self.encoder = None
-
-        # Initialize embedding model
-        self._init_encoder()
-
-    def _init_encoder(self):
-        """Initialize sentence transformer for embeddings."""
-        try:
-            self.encoder = _sentence_transformer("all-MiniLM-L6-v2")
-            logger.info("Initialized SentenceTransformer encoder")
-        except Exception as e:
-            logger.error(f"Failed to initialize encoder: {e}")
-            self.encoder = None
-
-    async def initialize(self):
-        """Initialize ChromaDB client and collection."""
-        try:
-            # Initialize ChromaDB client
-            self.client = chromadb.PersistentClient(
-                path=self.persist_directory,
-                settings=Settings(anonymized_telemetry=False, allow_reset=True),
-            )
-
-            # Get or create collection
-            try:
-                self.collection = self.client.get_collection(name=self.collection_name)
-                logger.info(f"Loaded existing memory collection: {self.collection_name}")
-            except Exception:
-                self.collection = self.client.create_collection(
-                    name=self.collection_name,
-                    metadata={"description": "WaddleAI conversation memory"},
-                )
-                logger.info(f"Created new memory collection: {self.collection_name}")
-
-            logger.info("ChromaDB memory store initialized successfully")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}")
-            raise
-
-    def _generate_embedding(self, text: str) -> list[float] | None:
-        """Generate embedding for text."""
-        if not self.encoder:
-            return None
-
-        try:
-            embedding = self.encoder.encode(text, convert_to_tensor=False)
-            return embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
-        except Exception as e:
-            logger.error(f"Failed to generate embedding: {e}")
-            return None
-
-    async def store_memory(self, entry: MemoryEntry) -> bool:
-        """Store memory entry."""
-        try:
-            if not self.collection:
-                await self.initialize()
-
-            # Generate embedding if not provided
-            if entry.embedding is None:
-                entry.embedding = self._generate_embedding(entry.content)
-
-            # Prepare metadata — 'scope' is the authoritative scope marker on
-            # this schemaless backend (absent key == personal/legacy).
-            metadata = {
-                **entry.metadata,
-                "user_id": entry.user_id,
-                "organization_id": entry.organization_id,
-                "session_id": entry.session_id or "",
-                "created_at": entry.created_at.isoformat(),
-                "content_length": len(entry.content),
-                "scope": entry.scope_type,
-                "author_user_id": entry.author_user_id or entry.user_id,
-            }
-
-            # Store in ChromaDB
-            self.collection.add(
-                ids=[entry.id],
-                documents=[entry.content],
-                metadatas=[metadata],
-                embeddings=[entry.embedding] if entry.embedding else None,
-            )
-
-            logger.debug(f"Stored memory entry: {entry.id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to store memory: {e}")
-            return False
-
-    async def search_memories(
-        self,
-        query: str,
-        user_id: int,
-        organization_id: int,
-        session_id: str | None = None,
-        limit: int = 10,
-        min_relevance: float = 0.7,
-        scope: str = "user",
-    ) -> list[MemoryEntry]:
-        """Search for relevant memories.
-
-        Two-query merge: the personal bucket (user_id match, post-filtered to
-        exclude org rows) and the org bucket (scope=='org' within the org).
-        scope='user' | 'org' selects one bucket; 'all' merges both by
-        relevance and truncates to limit. Chroma's where-filter language
-        cannot express "key absent or != value", so the org-row exclusion in
-        the personal bucket is a Python post-filter.
-        """
-        try:
-            if not self.collection:
-                await self.initialize()
-
-            query_embedding = self._generate_embedding(query)
-
-            def _run_query(where_clause: dict) -> list:
-                if session_id:
-                    where_clause = {**where_clause, "session_id": session_id}
-                if len(where_clause) > 1:
-                    # This chromadb version requires an explicit boolean
-                    # operator for multi-key where dicts (no implicit AND).
-                    where_clause = {"$and": [{k: v} for k, v in where_clause.items()]}
-                if query_embedding:
-                    return self.collection.query(
-                        query_embeddings=[query_embedding],
-                        where=where_clause,
-                        n_results=limit,
-                        include=["documents", "metadatas", "distances"],
-                    )
-                return self.collection.query(
-                    query_texts=[query],
-                    where=where_clause,
-                    n_results=limit,
-                    include=["documents", "metadatas", "distances"],
-                )
-
-            def _to_entries(results: dict, personal_bucket: bool) -> list[MemoryEntry]:
-                memories: list[MemoryEntry] = []
-                if not results or not results["documents"]:
-                    return memories
-                for i in range(len(results["documents"][0])):
-                    metadata = results["metadatas"][0][i]
-                    entry_scope = metadata.get("scope", "user")
-                    if personal_bucket and entry_scope == "org":
-                        # Author's own org rows come from the org bucket —
-                        # skipping here prevents merged-view duplicates.
-                        continue
-                    distance = results["distances"][0][i] if results.get("distances") else 0.0
-                    relevance_score = 1.0 - distance
-                    if relevance_score < min_relevance:
-                        continue
-                    memories.append(
-                        MemoryEntry(
-                            id=results["ids"][0][i],
-                            user_id=metadata["user_id"],
-                            organization_id=metadata["organization_id"],
-                            session_id=metadata.get("session_id"),
-                            content=results["documents"][0][i],
-                            metadata={
-                                k: v
-                                for k, v in metadata.items()
-                                if k
-                                not in ["user_id", "organization_id", "session_id", "created_at"]
-                            },
-                            embedding=None,
-                            created_at=datetime.fromisoformat(metadata["created_at"]),
-                            relevance_score=relevance_score,
-                            scope_type=entry_scope,
-                            author_user_id=int(metadata.get("author_user_id", metadata["user_id"])),
-                        )
-                    )
-                return memories
-
-            memories: list[MemoryEntry] = []
-            if scope in ("user", "all"):
-                personal = _run_query({"user_id": user_id, "organization_id": organization_id})
-                memories.extend(_to_entries(personal, personal_bucket=True))
-            if scope in ("org", "all"):
-                org = _run_query({"organization_id": organization_id, "scope": "org"})
-                memories.extend(_to_entries(org, personal_bucket=False))
-
-            memories.sort(key=lambda m: m.relevance_score, reverse=True)
-            return memories[:limit]
-
-        except Exception as e:
-            logger.error(f"Failed to search memories: {e}")
-            return []
-
-    async def get_recent_memories(
-        self,
-        user_id: int,
-        organization_id: int,
-        session_id: str | None = None,
-        hours: int = 24,
-        limit: int = 20,
-    ) -> list[MemoryEntry]:
-        """Get recent memories."""
-        try:
-            if not self.collection:
-                await self.initialize()
-
-            # Calculate cutoff time
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
-
-            # Build where clause
-            where_clause = {"user_id": user_id, "organization_id": organization_id}
-
-            if session_id:
-                where_clause["session_id"] = session_id
-
-            # Query recent memories
-            results = self.collection.get(
-                where=where_clause, include=["documents", "metadatas"], limit=limit
-            )
-
-            # Convert and filter by time
-            memories = []
-            if results and results["documents"]:
-                for i in range(len(results["documents"])):
-                    metadata = results["metadatas"][i]
-                    created_at = datetime.fromisoformat(metadata["created_at"])
-
-                    if created_at >= cutoff:
-                        memory = MemoryEntry(
-                            id=results["ids"][i],
-                            user_id=metadata["user_id"],
-                            organization_id=metadata["organization_id"],
-                            session_id=metadata.get("session_id"),
-                            content=results["documents"][i],
-                            metadata={
-                                k: v
-                                for k, v in metadata.items()
-                                if k
-                                not in ["user_id", "organization_id", "session_id", "created_at"]
-                            },
-                            embedding=None,
-                            created_at=created_at,
-                        )
-                        memories.append(memory)
-
-            # Sort by created_at descending
-            memories.sort(key=lambda m: m.created_at, reverse=True)
-            return memories
-
-        except Exception as e:
-            logger.error(f"Failed to get recent memories: {e}")
-            return []
-
-    async def delete_memory(self, memory_id: str) -> bool:
-        """Delete a specific memory."""
-        try:
-            if not self.collection:
-                await self.initialize()
-
-            self.collection.delete(ids=[memory_id])
-            logger.debug(f"Deleted memory: {memory_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to delete memory: {e}")
-            return False
-
-    async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup memories older than specified days."""
-        try:
-            if not self.collection:
-                await self.initialize()
-
-            cutoff = datetime.utcnow() - timedelta(days=days)
-
-            # Get all memories to check dates
-            all_results = self.collection.get(include=["metadatas"])
-
-            old_ids = []
-            if all_results and all_results["ids"]:
-                for i, metadata in enumerate(all_results["metadatas"]):
-                    created_at = datetime.fromisoformat(metadata["created_at"])
-                    if created_at < cutoff:
-                        old_ids.append(all_results["ids"][i])
-
-            # Delete old memories
-            if old_ids:
-                self.collection.delete(ids=old_ids)
-                logger.info(f"Cleaned up {len(old_ids)} old memories")
-
-            return len(old_ids)
-
-        except Exception as e:
-            logger.error(f"Failed to cleanup memories: {e}")
-            return 0
-
-
 class WaddleAIMemoryManager:
     """Main memory management system for WaddleAI."""
 
     def __init__(self, db, memory_store: MemoryStore):
-        """Bind the DAL handle and backing memory store (mem0 or ChromaDB) used by this manager."""
+        """Bind the DAL handle and backing memory store (pgvector or mem0) used by this manager."""
         self.db = db
         self.memory_store = memory_store
 
@@ -968,7 +649,7 @@ class WaddleAIMemoryManager:
         Returns list of conversation dictionaries with full metadata
         """
         try:
-            # Perform search in ChromaDB
+            # Perform search against the configured memory store (pgvector/mem0)
             if user_id:
                 memories = await self.memory_store.search_memories(
                     query=query,
@@ -979,7 +660,7 @@ class WaddleAIMemoryManager:
                     min_relevance=min_relevance,
                 )
             else:
-                # Admin search across all users (need to implement in ChromaDBMemoryStore)
+                # Admin search across all users -- not implemented on any backend yet
                 memories = []
 
             # Convert to detailed conversation format
@@ -1080,7 +761,6 @@ class WaddleAIMemoryManager:
 def create_memory_manager(
     db=None,
     backend: str = "pgvector",
-    persist_directory: str = "./chroma_data",
     api_key: str | None = None,
     org_id: str | None = None,
     config: dict | None = None,
@@ -1096,8 +776,7 @@ def create_memory_manager(
         db: Database connection (used as write_db for pgvector when write_db is not provided;
             also forwarded to WaddleAIMemoryManager as the primary db reference).
         backend: Memory backend to use. Default is "pgvector".
-                 Supported values: "pgvector", "mem0", "chromadb".
-        persist_directory: ChromaDB persist directory (chromadb only).
+                 Supported values: "pgvector", "mem0".
         api_key: API key for mem0 (mem0 only).
         org_id: Organization ID for mem0 (mem0 only).
         config: Additional configuration dictionary.
@@ -1114,6 +793,18 @@ def create_memory_manager(
         retrieval_cache: Optional shared.memory.retrieval_cache.RetrievalResultCache
                          (§6A.3), forwarded to PgvectorMemoryStore. None
                          preserves the pre-existing always-query behavior.
+
+    Raises:
+        ValueError: For an unrecognized backend, including "chromadb" -- that
+            backend was removed (PYSEC-2026-311, pre-auth code injection in
+            chromadb's server component with no fixed release); use
+            "pgvector" (default) or "mem0" instead. A config value that still
+            says "chromadb" must fail loudly here rather than silently
+            resolving to a different backend and moving someone's data store.
+        ImportError: For backend="mem0" when the mem0ai package is not
+            installed. This used to fall back to the (now-removed) ChromaDB
+            backend silently; failing fast is safer than an unannounced
+            backend switch.
 
     Returns:
         WaddleAIMemoryManager instance
@@ -1146,21 +837,19 @@ def create_memory_manager(
         )
     elif backend == "mem0":
         if not HAS_MEM0:
-            logger.warning("mem0 not available, falling back to ChromaDB")
-            memory_store = ChromaDBMemoryStore(persist_directory=persist_directory)
-        else:
-            memory_store = Mem0MemoryStore(api_key=api_key, org_id=org_id, config=config)
+            raise ImportError(
+                "mem0ai package not installed, required for backend='mem0'. "
+                "Install with: pip install mem0ai, or use backend='pgvector' instead."
+            )
+        memory_store = Mem0MemoryStore(api_key=api_key, org_id=org_id, config=config)
     elif backend == "chromadb":
-        collection_name = (
-            config.get("collection_name", "waddleai_memory") if config else "waddleai_memory"
-        )
-        memory_store = ChromaDBMemoryStore(
-            persist_directory=persist_directory, collection_name=collection_name
+        raise ValueError(
+            "The chromadb memory backend was removed (PYSEC-2026-311, "
+            "pre-authentication code injection in chromadb's server component, "
+            "no fixed release available). Use 'pgvector' (default) or 'mem0' instead."
         )
     else:
-        raise ValueError(
-            f"Unknown memory backend: {backend}. Use 'pgvector', 'mem0', or 'chromadb'"
-        )
+        raise ValueError(f"Unknown memory backend: {backend}. Use 'pgvector' or 'mem0'")
 
     return WaddleAIMemoryManager(db or write_db, memory_store)
 

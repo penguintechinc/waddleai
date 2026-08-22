@@ -60,7 +60,7 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   - Enable password authentication
   - Configure maxmemory policy
 
-- [ ] **ChromaDB**
+- [ ] **pgvector** (memory storage, part of the primary PostgreSQL database)
   - Use persistent storage
   - Configure backup strategy
   - Set appropriate retention policy
@@ -159,9 +159,8 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   - Configure resource limits
 
 - [ ] **Verify connectivity**
-  - Proxy ↔ Database
+  - Proxy ↔ Database (also serves pgvector memory storage)
   - Proxy ↔ Redis
-  - Proxy ↔ ChromaDB
   - Management ↔ All dependencies
   - External ↔ Proxy (port 8000)
   - External ↔ Management (port 8001)
@@ -310,10 +309,10 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   - Verified: cached responses also pass through output filtering
 
 - [ ] **Memory injection hardened against indirect prompt injection**
-  - Past conversations injected via mem0/ChromaDB use structured delimiters
+  - Past conversations injected via mem0/pgvector use structured delimiters
   - Injected context marked as data-only (not executable instructions)
   - System prompt explicitly instructs model to ignore instructions in retrieved context
-  - ChromaDB queries filtered by `user_id` AND `organization_id` (no cross-tenant retrieval)
+  - pgvector queries filtered by `user_id` AND `organization_id` (no cross-tenant retrieval)
 
 - [ ] **Semantic cache poisoning mitigated**
   - Cache keys use `Hash(TenantID + OrgID + UserRole)` namespace prefix
@@ -350,15 +349,13 @@ Complete checklist for deploying WaddleAI to production safely and securely.
 ### Backup and Recovery
 
 - [ ] **Automated backups**
-  - Database backups (daily)
+  - Database backups (daily, covers pgvector memory tables)
   - Redis snapshots (hourly)
-  - ChromaDB backups (daily)
   - Configuration backups (on change)
 
 - [ ] **Test restore procedures**
-  - Restore database from backup
+  - Restore database from backup (covers pgvector memory tables)
   - Restore Redis from snapshot
-  - Restore ChromaDB data
   - Verify data integrity
 
 - [ ] **Disaster recovery plan**

@@ -22,11 +22,11 @@ WaddleAI uses a **secure Docker bridge network** architecture where all services
         ┌────────────────▼────────────────────────────────┐
         │  waddleai-dev Bridge Network (PRIVATE)          │
         │                                                  │
-        │  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-        │  │ postgres │  │  redis   │  │  chromadb    │  │
-        │  │  :5432   │  │  :6379   │  │   :8000      │  │
-        │  │ INTERNAL │  │ INTERNAL │  │  INTERNAL    │  │
-        │  └──────────┘  └──────────┘  └──────────────┘  │
+        │  ┌──────────┐  ┌──────────┐                    │
+        │  │ postgres │  │  redis   │                    │
+        │  │  :5432   │  │  :6379   │                    │
+        │  │ INTERNAL │  │ INTERNAL │                    │
+        │  └──────────┘  └──────────┘                    │
         │                                                  │
         │  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
         │  │ ollama   │  │prometheus│  │   grafana    │  │
@@ -56,9 +56,8 @@ WaddleAI uses a **secure Docker bridge network** architecture where all services
 
 | Service | Internal Port | Purpose |
 |---------|---------------|---------|
-| `postgres` | `5432` | Database |
+| `postgres` | `5432` | Database (also backs pgvector mem0 conversation storage) |
 | `redis` | `6379` | Cache + routing config |
-| `chromadb` | `8000` | mem0 conversation storage |
 | `ollama` | `11434` | Local LLM backend |
 | `prometheus` | `9090` | Metrics collection |
 
@@ -85,9 +84,6 @@ DATABASE_URL = "postgresql://waddleai:password@postgres:5432/waddleai"
 
 REDIS_URL = "redis://:password@redis:6379/0"
 # ↑ Uses service name "redis", no public exposure needed
-
-CHROMADB_URL = "http://chromadb:8000"
-# ↑ Uses service name "chromadb", completely internal
 ```
 
 ### 4. **Defense in Depth**

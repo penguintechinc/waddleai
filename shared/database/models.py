@@ -132,7 +132,7 @@ def define_tables(db):
     db.define_table(
         "conversation_memory_configs",
         Field("name", notnull=True),
-        Field("provider", "string", default="mem0"),  # mem0, chromadb
+        Field("provider", "string", default="mem0"),  # mem0, pgvector
         Field("connection_string"),
         Field("api_key", "password"),
         Field("collection_name"),
@@ -145,7 +145,7 @@ def define_tables(db):
     db.define_table(
         "rag_configs",
         Field("name", notnull=True),
-        Field("provider", "string", default="supabase"),  # supabase, qdrant, chromadb
+        Field("provider", "string", default="supabase"),  # supabase, qdrant, pgvector
         Field("connection_string"),
         Field("api_key", "password"),
         Field("collection_name"),

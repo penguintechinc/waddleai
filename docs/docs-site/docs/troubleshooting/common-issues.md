@@ -342,32 +342,35 @@ docker-compose exec proxy python -m shared.database.archive_old_usage
 
 ## Memory Integration Issues
 
-### ChromaDB connection failed
+> WaddleAI's memory backends are pgvector (default) and mem0. The former
+> ChromaDB backend was removed (PYSEC-2026-311, pre-authentication code
+> injection in chromadb's server component with no fixed release available).
+> A configuration that still names `chromadb` fails fast at startup naming
+> `pgvector`/`mem0` as the replacements -- there is no automated migration,
+> so re-index/re-populate memory after switching backends.
 
-**Problem**: Can't connect to ChromaDB
+### pgvector connection failed
+
+**Problem**: Can't connect to the memory database
 
 **Solutions**:
 
-1. **Check ChromaDB is running**:
+1. **Check PostgreSQL is running**:
 ```bash
-# Docker
-docker-compose ps chromadb
-
-# Standalone
-curl http://localhost:8000/api/v1/heartbeat
+docker-compose ps postgres
+docker-compose exec postgres pg_isready
 ```
 
 2. **Verify configuration**:
 ```bash
 # .env
 ENABLE_MEMORY=true
-CHROMADB_HOST=localhost  # or chromadb in Docker
-CHROMADB_PORT=8000
+DATABASE_URL=postgresql://waddleai:password@postgres:5432/waddleai
 ```
 
-3. **Restart ChromaDB**:
+3. **Confirm the pgvector extension is installed**:
 ```bash
-docker-compose restart chromadb
+docker-compose exec postgres psql -U waddleai -c "\dx vector"
 ```
 
 ### Conversation search not working
@@ -386,9 +389,10 @@ docker-compose restart chromadb
 ENABLE_MEMORY=true
 ```
 
-3. **Check ChromaDB storage**:
+3. **Check memory table storage**:
 ```bash
-docker-compose exec chromadb ls -lh /chroma/chroma
+docker-compose exec postgres psql -U waddleai -c \
+  "SELECT pg_size_pretty(pg_total_relation_size('memory_embeddings'));"
 ```
 
 ## Security Issues

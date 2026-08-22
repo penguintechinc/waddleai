@@ -68,9 +68,7 @@ ROUTING_INSTRUCTIONS="Route programming queries to codellama. Route analysis to 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENABLE_MEMORY` | false | Enable mem0 integration |
-| `CHROMADB_HOST` | localhost | ChromaDB server host |
-| `CHROMADB_PORT` | 8000 | ChromaDB server port |
+| `ENABLE_MEMORY` | false | Enable mem0/pgvector memory integration |
 | `MEMORY_RETENTION_DAYS` | 90 | Conversation retention period |
 | `MEMORY_MAX_CONVERSATIONS` | 1000 | Max conversations per user |
 
