@@ -121,6 +121,67 @@ def test_multiple_long_secrets_all_redacted(filter_instance: ContentFilter) -> N
     assert token2 not in redacted, "Second secret should not appear"
 
 
+def test_determine_action_block_violation_wins_over_redact_and_log(
+    filter_instance: ContentFilter,
+) -> None:
+    """A single block-level violation short-circuits to 'block', leaving text untouched."""
+    text = "some text with a block-worthy secret and a redactable one"
+    violations = [
+        FilterViolation(
+            rule_name="api_key_openai",
+            rule_type="builtin_pii",
+            matched_text="sk-abc",
+            full_matched_text="sk-abc",
+            action="block",
+            confidence=0.98,
+        ),
+        FilterViolation(
+            rule_name="email",
+            rule_type="builtin_pii",
+            matched_text="a@b.com",
+            full_matched_text="a@b.com",
+            action="redact",
+            confidence=0.85,
+        ),
+    ]
+
+    action, filtered_text = filter_instance._determine_action(text, violations)
+
+    assert action == "block"
+    # Block short-circuits before any redaction is applied -- original text returned.
+    assert filtered_text == text
+
+
+def test_determine_action_log_only_violations_allow_text_through_unchanged(
+    filter_instance: ContentFilter,
+) -> None:
+    """All-log-only violations return action='log' with the text untouched."""
+    text = "borderline content"
+    violations = [
+        FilterViolation(
+            rule_name="password_in_text",
+            rule_type="builtin_pii",
+            matched_text="x",
+            full_matched_text="x",
+            action="log",
+            confidence=0.5,
+        )
+    ]
+
+    action, filtered_text = filter_instance._determine_action(text, violations)
+
+    assert action == "log"
+    assert filtered_text == text
+
+
+def test_determine_action_no_violations_allows(filter_instance: ContentFilter) -> None:
+    """An empty violations list always allows, text unchanged."""
+    action, filtered_text = filter_instance._determine_action("clean text", [])
+
+    assert action == "allow"
+    assert filtered_text == "clean text"
+
+
 def test_logged_matched_text_stays_truncated(filter_instance: ContentFilter) -> None:
     """Logged matched_text should remain truncated (≤100 chars) for storage efficiency.
 

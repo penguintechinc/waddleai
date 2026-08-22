@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from services.management.app.services.ollama_manager import OllamaDeploymentManager, PullStatus
 from tests.unit.management.conftest import make_select_result
 
 # ============================================================================
@@ -59,6 +60,18 @@ def make_mock_model(model_id=1, name="llama3.2", deployment_id=1):
     m.auto_pull = True
     m.last_updated = None
     return m
+
+
+def make_mock_manager(**method_returns):
+    """Build a spec'd fake OllamaDeploymentManager returning fixed values per method.
+
+    Specced against the real class so a call to a nonexistent method name
+    fails loudly instead of silently auto-creating an attribute.
+    """
+    manager = MagicMock(spec=OllamaDeploymentManager)
+    for name, value in method_returns.items():
+        getattr(manager, name).return_value = value
+    return manager
 
 
 # ============================================================================
@@ -857,5 +870,520 @@ async def test_remove_ollama_model_not_admin(client, app_mock_db, user_auth_head
     resp = await client.delete(
         "/api/v1/ollama/deployments/1/models/llama3.2", headers=user_auth_headers
     )
+
+    assert resp.status_code == 403
+
+
+# ============================================================================
+# POST /ollama/deployments - Create Deployment: extra validation/type branches
+# ============================================================================
+
+
+async def test_create_ollama_deployment_empty_body_dict(client, app_mock_db, auth_headers):
+    """A syntactically valid but empty JSON object ({}) is falsy -> 400.
+
+    Distinct from test_create_ollama_deployment_no_body: sending no body at
+    all never reaches the handler's own `if not data` check (it fails
+    earlier during Quart's request parsing). This exercises that check
+    directly.
+    """
+    resp = await client.post(
+        "/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps({})
+    )
+
+    assert resp.status_code == 400
+    assert "required" in (await resp.get_json())["error"].lower()
+
+
+async def test_create_ollama_deployment_docker_type_generates_compose(
+    client, app_mock_db, auth_headers
+):
+    """Creating a 'docker' deployment generates a docker-compose config."""
+    app_mock_db.return_value.select.return_value = make_select_result([])
+    app_mock_db.ollama_deployments.insert.return_value = 7
+
+    payload = {
+        "name": "docker-dep",
+        "endpoint_url": "http://ollama:11434",
+        "deployment_type": "docker",
+    }
+
+    resp = await client.post(
+        "/api/v1/ollama/deployments", headers=auth_headers, data=json.dumps(payload)
+    )
+
+    assert resp.status_code == 201
+    data = await resp.get_json()
+    assert data["deployment_type"] == "docker"
+
+
+# ============================================================================
+# PUT /ollama/deployments/<id> - Update Deployment: field/branch coverage
+# ============================================================================
+
+
+async def test_update_ollama_deployment_empty_body_dict(client, app_mock_db, auth_headers):
+    """An empty JSON object ({}) body is falsy -> 400."""
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps({})
+    )
+
+    assert resp.status_code == 400
+
+
+async def test_update_ollama_deployment_only_endpoint_url(client, app_mock_db, auth_headers):
+    """Updating only endpoint_url skips the name-conflict check entirely."""
+    dep = make_mock_deployment(dep_id=1, name="unchanged")
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    payload = {"endpoint_url": "http://new-endpoint:11434"}
+
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload)
+    )
+
+    assert resp.status_code == 200
+
+
+async def test_update_ollama_deployment_only_gpu_config_external(client, app_mock_db, auth_headers):
+    """Updating gpu_config on a non-docker deployment updates fields but skips regen."""
+    dep = make_mock_deployment(dep_id=1)
+    dep.deployment_type = "external"
+
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),  # fetch deployment to update
+        make_select_result([dep]),  # refetch to decide on docker-compose regen
+    ]
+
+    payload = {"gpu_config": {"count": 1, "driver": "nvidia"}}
+
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload)
+    )
+
+    assert resp.status_code == 200
+
+
+async def test_update_ollama_deployment_resource_limits_docker_regenerates_compose(
+    client, app_mock_db, auth_headers
+):
+    """Updating resource_limits on a docker deployment regenerates its compose config."""
+    dep = make_mock_deployment(dep_id=1, name="docker-dep")
+    dep.deployment_type = "docker"
+
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),  # fetch deployment to update
+        make_select_result([dep]),  # refetch -> deployment_type == "docker" -> regen
+    ]
+
+    payload = {"resource_limits": {"cpu": "8", "memory": "16G"}}
+
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload)
+    )
+
+    assert resp.status_code == 200
+
+
+async def test_update_ollama_deployment_only_auto_start(client, app_mock_db, auth_headers):
+    """Updating only auto_start skips the docker-compose regeneration path."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    payload = {"auto_start": False}
+
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload)
+    )
+
+    assert resp.status_code == 200
+
+
+async def test_update_ollama_deployment_unrecognized_field_is_a_noop(
+    client, app_mock_db, auth_headers
+):
+    """A body with no recognized fields leaves update_fields empty (no-op update)."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    payload = {"unrelated_field": "some-value"}
+
+    resp = await client.put(
+        "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps(payload)
+    )
+
+    assert resp.status_code == 200
+    assert "updated" in (await resp.get_json())["message"].lower()
+
+
+# ============================================================================
+# POST /ollama/deployments/<id>/stop, /restart - manual-mode disabled branch
+# ============================================================================
+
+
+async def test_stop_ollama_deployment_manual_mode(client, app_mock_db, auth_headers, flask_app):
+    """Returns 400 when orchestrated mode is disabled."""
+    flask_app.config["OLLAMA_MANAGEMENT_MODE"] = "manual"
+
+    resp = await client.post("/api/v1/ollama/deployments/1/stop", headers=auth_headers)
+
+    assert resp.status_code == 400
+    assert "disabled" in (await resp.get_json())["error"].lower()
+
+
+async def test_restart_ollama_deployment_manual_mode(client, app_mock_db, auth_headers, flask_app):
+    """Returns 400 when orchestrated mode is disabled."""
+    flask_app.config["OLLAMA_MANAGEMENT_MODE"] = "manual"
+
+    resp = await client.post("/api/v1/ollama/deployments/1/restart", headers=auth_headers)
+
+    assert resp.status_code == 400
+    assert "disabled" in (await resp.get_json())["error"].lower()
+
+
+# ============================================================================
+# GET /ollama/deployments/<id>/logs - Get Logs
+# ============================================================================
+
+
+async def test_get_ollama_logs_manual_mode(client, app_mock_db, auth_headers, flask_app):
+    """Returns 400 when orchestrated mode is disabled."""
+    flask_app.config["OLLAMA_MANAGEMENT_MODE"] = "manual"
+
+    resp = await client.get("/api/v1/ollama/deployments/1/logs", headers=auth_headers)
+
+    assert resp.status_code == 400
+
+
+async def test_get_ollama_logs_not_found(client, app_mock_db, auth_headers):
+    """Returns 404 if deployment not found."""
+    app_mock_db.return_value.select.return_value = make_select_result([])
+
+    resp = await client.get("/api/v1/ollama/deployments/999/logs", headers=auth_headers)
+
+    assert resp.status_code == 404
+
+
+async def test_get_ollama_logs_default_lines(client, app_mock_db, auth_headers):
+    """Without a 'lines' query param, defaults to 100."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    resp = await client.get("/api/v1/ollama/deployments/1/logs", headers=auth_headers)
+
+    assert resp.status_code == 200
+    data = await resp.get_json()
+    assert data["lines"] == 100
+    assert data["deployment_id"] == 1
+
+
+async def test_get_ollama_logs_custom_lines(client, app_mock_db, auth_headers):
+    """A 'lines' query param overrides the default line count."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    resp = await client.get("/api/v1/ollama/deployments/1/logs?lines=50", headers=auth_headers)
+
+    assert resp.status_code == 200
+    data = await resp.get_json()
+    assert data["lines"] == 50
+
+
+async def test_get_ollama_logs_invalid_lines_falls_back_to_default(
+    client, app_mock_db, auth_headers
+):
+    """A non-integer 'lines' query param silently falls back to the default (100)."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    resp = await client.get(
+        "/api/v1/ollama/deployments/1/logs?lines=not-a-number", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    data = await resp.get_json()
+    assert data["lines"] == 100
+
+
+async def test_get_ollama_logs_not_admin(client, app_mock_db, user_auth_headers):
+    """Non-admin users get 403."""
+    resp = await client.get("/api/v1/ollama/deployments/1/logs", headers=user_auth_headers)
+
+    assert resp.status_code == 403
+
+
+# ============================================================================
+# POST /ollama/deployments/<id>/models/pull - manager error branch
+# ============================================================================
+
+
+async def test_pull_ollama_model_manager_error(client, app_mock_db, auth_headers):
+    """A manager pull failure (PullStatus.error set) maps to a 500 response."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),  # route's own deployment existence check
+    ]
+
+    fake_status = PullStatus(
+        model="llama3.2", status="error", completed=False, error="connection refused"
+    )
+    fake_manager = make_mock_manager(pull_model=fake_status)
+
+    payload = {"model": "llama3.2"}
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.post(
+            "/api/v1/ollama/deployments/1/models/pull",
+            headers=auth_headers,
+            data=json.dumps(payload),
+        )
+
+    assert resp.status_code == 500
+    data = await resp.get_json()
+    assert data["error"] == "connection refused"
+    assert data["status"] == "error"
+
+
+# ============================================================================
+# GET /ollama/deployments/<id>/docker-compose - existing-config & GPU branches
+# ============================================================================
+
+
+async def test_export_docker_compose_uses_existing_config(client, app_mock_db, auth_headers):
+    """If a stored docker_compose_config exists, it is dumped as-is (no regeneration)."""
+    dep = make_mock_deployment(dep_id=1, name="test-dep")
+    dep.docker_compose_config = {"version": "3.8", "services": {"stored": {}}}
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    resp = await client.get("/api/v1/ollama/deployments/1/docker-compose", headers=auth_headers)
+
+    assert resp.status_code == 200
+    text = await resp.get_data(as_text=True)
+    assert "stored" in text
+
+
+async def test_export_docker_compose_generates_with_gpu(client, app_mock_db, auth_headers):
+    """No stored config + gpu_config.count > 0 generates a compose file with a GPU reservation."""
+    dep = make_mock_deployment(dep_id=1, name="gpu-dep")
+    dep.docker_compose_config = None
+    dep.gpu_config = {"count": 2, "driver": "nvidia"}
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    resp = await client.get("/api/v1/ollama/deployments/1/docker-compose", headers=auth_headers)
+
+    assert resp.status_code == 200
+    text = await resp.get_data(as_text=True)
+    assert "nvidia" in text
+    assert "capabilities" in text
+
+
+# ============================================================================
+# GET /ollama/deployments/<id>/k8s-manifest - daemonset & GPU branches
+# ============================================================================
+
+
+async def test_export_k8s_manifest_daemonset_uses_manager(client, app_mock_db, auth_headers):
+    """A 'kubernetes-daemonset' deployment delegates manifest generation to the manager."""
+    dep = make_mock_deployment(dep_id=1, name="ds-dep")
+    dep.deployment_type = "kubernetes-daemonset"
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    fake_manifest = "apiVersion: apps/v1\nkind: DaemonSet\n"
+    fake_manager = make_mock_manager(generate_daemonset_manifest=fake_manifest)
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get("/api/v1/ollama/deployments/1/k8s-manifest", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert "daemonset" in resp.headers.get("Content-Disposition", "").lower()
+    text = await resp.get_data(as_text=True)
+    assert "DaemonSet" in text
+
+
+async def test_export_k8s_manifest_with_gpu(client, app_mock_db, auth_headers):
+    """A non-daemonset deployment with gpu_config.count > 0 requests nvidia.com/gpu limits."""
+    dep = make_mock_deployment(dep_id=1, name="gpu-k8s-dep")
+    dep.deployment_type = "external"
+    dep.gpu_config = {"count": 3, "driver": "nvidia"}
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    resp = await client.get("/api/v1/ollama/deployments/1/k8s-manifest", headers=auth_headers)
+
+    assert resp.status_code == 200
+    text = await resp.get_data(as_text=True)
+    assert "nvidia.com/gpu" in text
+
+
+# ============================================================================
+# GET /ollama/deployments/<id>/metallb-service - Export MetalLB Service
+# ============================================================================
+
+
+async def test_export_metallb_service_success(client, app_mock_db, auth_headers):
+    """Admin can export a MetalLB LoadBalancer Service for a deployment."""
+    dep = make_mock_deployment(dep_id=1, name="metallb-dep")
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    fake_yaml = "apiVersion: v1\nkind: Service\n"
+    fake_manager = make_mock_manager(generate_metallb_service=fake_yaml)
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get(
+            "/api/v1/ollama/deployments/1/metallb-service", headers=auth_headers
+        )
+
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/yaml"
+    assert "attachment" in resp.headers.get("Content-Disposition", "")
+
+
+async def test_export_metallb_service_not_found(client, app_mock_db, auth_headers):
+    """Returns 404 if deployment not found."""
+    app_mock_db.return_value.select.return_value = make_select_result([])
+
+    resp = await client.get("/api/v1/ollama/deployments/999/metallb-service", headers=auth_headers)
+
+    assert resp.status_code == 404
+
+
+async def test_export_metallb_service_no_models(client, app_mock_db, auth_headers):
+    """Returns 400 if the deployment has no models assigned (empty manager output)."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    fake_manager = make_mock_manager(generate_metallb_service="")
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get(
+            "/api/v1/ollama/deployments/1/metallb-service", headers=auth_headers
+        )
+
+    assert resp.status_code == 400
+    assert "no models" in (await resp.get_json())["error"].lower()
+
+
+async def test_export_metallb_service_not_admin(client, app_mock_db, user_auth_headers):
+    """Non-admin users get 403."""
+    resp = await client.get(
+        "/api/v1/ollama/deployments/1/metallb-service", headers=user_auth_headers
+    )
+
+    assert resp.status_code == 403
+
+
+# ============================================================================
+# GET /ollama/deployments/<id>/metallb-model-services - Per-Model Services
+# ============================================================================
+
+
+async def test_export_metallb_model_services_success(client, app_mock_db, auth_headers):
+    """Admin can export per-model MetalLB Services for a deployment."""
+    dep = make_mock_deployment(dep_id=1, name="metallb-dep")
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    fake_yaml = "apiVersion: v1\nkind: Service\n---\napiVersion: v1\nkind: Service\n"
+    fake_manager = make_mock_manager(generate_model_specific_metallb_services=fake_yaml)
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get(
+            "/api/v1/ollama/deployments/1/metallb-model-services", headers=auth_headers
+        )
+
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/yaml"
+    assert "models-metallb" in resp.headers.get("Content-Disposition", "")
+
+
+async def test_export_metallb_model_services_not_found(client, app_mock_db, auth_headers):
+    """Returns 404 if deployment not found."""
+    app_mock_db.return_value.select.return_value = make_select_result([])
+
+    resp = await client.get(
+        "/api/v1/ollama/deployments/999/metallb-model-services", headers=auth_headers
+    )
+
+    assert resp.status_code == 404
+
+
+async def test_export_metallb_model_services_no_models(client, app_mock_db, auth_headers):
+    """Returns 400 if the deployment has no models assigned (empty manager output)."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
+    fake_manager = make_mock_manager(generate_model_specific_metallb_services="")
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get(
+            "/api/v1/ollama/deployments/1/metallb-model-services", headers=auth_headers
+        )
+
+    assert resp.status_code == 400
+
+
+async def test_export_metallb_model_services_not_admin(client, app_mock_db, user_auth_headers):
+    """Non-admin users get 403."""
+    resp = await client.get(
+        "/api/v1/ollama/deployments/1/metallb-model-services", headers=user_auth_headers
+    )
+
+    assert resp.status_code == 403
+
+
+# ============================================================================
+# GET /ollama/export/metallb-all - Export All MetalLB Services
+# ============================================================================
+
+
+async def test_export_all_metallb_services_success(client, app_mock_db, auth_headers):
+    """Admin can export MetalLB config for all active deployments."""
+    fake_yaml = "apiVersion: v1\nkind: Service\n"
+    fake_manager = make_mock_manager(export_metallb_config=fake_yaml)
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get("/api/v1/ollama/export/metallb-all", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/yaml"
+    assert "metallb-all" in resp.headers.get("Content-Disposition", "")
+
+
+async def test_export_all_metallb_services_empty(client, app_mock_db, auth_headers):
+    """Returns 404 if no active deployments have models (empty manager output)."""
+    fake_manager = make_mock_manager(export_metallb_config="")
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get("/api/v1/ollama/export/metallb-all", headers=auth_headers)
+
+    assert resp.status_code == 404
+    assert "no active" in (await resp.get_json())["error"].lower()
+
+
+async def test_export_all_metallb_services_not_admin(client, app_mock_db, user_auth_headers):
+    """Non-admin users get 403."""
+    resp = await client.get("/api/v1/ollama/export/metallb-all", headers=user_auth_headers)
 
     assert resp.status_code == 403

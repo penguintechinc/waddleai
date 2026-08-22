@@ -169,6 +169,21 @@ class TestProxyPipelineBasic:
         assert len(skipped_entries) > 0
         assert "skipped:token_budget" in result.stage_log
 
+    async def test_pipeline_run_reraises_and_logs_stage_exceptions(self):
+        """A stage exception must be logged onto the span and re-raised, never swallowed."""
+
+        class ExplodingStage(Stage):
+            async def __call__(self, ctx: PipelineContext) -> PipelineContext:
+                raise RuntimeError("stage exploded")
+
+        stages = [ExplodingStage(name="dispatch", flag=None)]
+        features = Mock(is_feature_enabled=Mock(return_value=True))
+        pipeline = ProxyPipeline(stages, features)
+
+        ctx = PipelineContext(user=Mock(), body={})
+        with pytest.raises(RuntimeError, match="stage exploded"):
+            await pipeline.run(ctx)
+
     async def test_pipeline_stage_log_format(self):
         """Stage-log should track 'ran', 'skipped', and 'short-circuit' entries."""
 

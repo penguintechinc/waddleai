@@ -255,3 +255,37 @@ def test_export_k8s_manifest_readiness_probe(manager, k8s_deployment):
     assert probe["httpGet"]["port"] == 8080
     assert probe["initialDelaySeconds"] >= 5
     assert probe["periodSeconds"] >= 5
+
+
+def test_export_k8s_manifest_malicious_filename_confined_to_env_var(manager, k8s_deployment):
+    """Malicious model_filename/model_url values only ever reach an env var.
+
+    They never reach the interpolated command string -- the injection vector
+    the cache-skip guard's env-var indirection closes (security review 2026-07-26).
+    """
+    k8s_deployment.model_filename = "../../etc/passwd; rm -rf / #"
+    k8s_deployment.model_url = "https://example.com/model.gguf`whoami`"
+
+    manifest_yaml = manager.export_k8s_manifest(k8s_deployment)
+    docs = list(yaml.safe_load_all(manifest_yaml))
+    ds = next(d for d in docs if d["kind"] == "DaemonSet")
+    init_c = ds["spec"]["template"]["spec"]["initContainers"][0]
+    env_vars = {e["name"]: e["value"] for e in init_c["env"]}
+
+    assert env_vars["MODEL_FILE"] == "../../etc/passwd; rm -rf / #"
+    assert env_vars["MODEL_URL"] == "https://example.com/model.gguf`whoami`"
+    # The init container's command is a fixed literal script -- never
+    # string-interpolated with the (attacker-controlled) filename/URL, so
+    # nothing in it can execute as shell code regardless of their content.
+    script = init_c["command"][2]
+    assert "rm -rf" not in script
+    assert "whoami" not in script
+    assert script == (
+        "set -eu\n"
+        'if [ -f "/models/$MODEL_FILE" ]; then\n'
+        '  echo "$MODEL_FILE already cached, skipping download"\n'
+        "else\n"
+        '  echo "Downloading $MODEL_FILE"\n'
+        '  curl -fsSL -o "/models/$MODEL_FILE" "$MODEL_URL"\n'
+        "fi"
+    )

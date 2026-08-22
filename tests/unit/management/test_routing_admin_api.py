@@ -4,8 +4,12 @@ Covers routing_assignments, routing_policies, routing_rules, model_aliases,
 and routing_decisions.
 """
 
+from datetime import datetime
 from unittest.mock import MagicMock, Mock
 
+import pytest
+
+import services.management.app.api.v1.routing_assignments as routing_assignments_mod
 from tests.unit.management.conftest import make_select_result
 
 
@@ -234,6 +238,442 @@ class TestRoutingAssignments:
         resp = await client.post("/api/v1/routing/assignments/seed", headers=rm_auth_headers)
         assert resp.status_code == 403
 
+    # -- list filters / pagination-adjacent behaviour --------------------
+
+    async def test_list_filter_tool_type(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """tool_type query param takes the tool_type-filter branch."""
+        app_mock_db.return_value.select.return_value = make_select_result([_assignment_row()])
+
+        resp = await client.get("/api/v1/routing/assignments/?tool_type=code", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"][0]["tool_type"] == "code"
+
+    async def test_list_filter_scope(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Scope query param takes the scope-filter branch."""
+        app_mock_db.return_value.select.return_value = make_select_result([_assignment_row()])
+
+        resp = await client.get("/api/v1/routing/assignments/?scope=global", headers=auth_headers)
+        assert resp.status_code == 200
+
+    async def test_list_filter_enabled_true_and_false(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """enabled=true and enabled=false both take the enabled-filter branch."""
+        app_mock_db.return_value.select.return_value = make_select_result([_assignment_row()])
+
+        resp_true = await client.get(
+            "/api/v1/routing/assignments/?enabled=true", headers=auth_headers
+        )
+        resp_false = await client.get(
+            "/api/v1/routing/assignments/?enabled=false", headers=auth_headers
+        )
+        assert resp_true.status_code == 200
+        assert resp_false.status_code == 200
+
+    async def test_list_all_filters_combined(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """tool_type + scope + enabled together all narrow the same query."""
+        app_mock_db.return_value.select.return_value = make_select_result([_assignment_row()])
+
+        resp = await client.get(
+            "/api/v1/routing/assignments/?tool_type=code&scope=global&enabled=true",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+    async def test_list_empty_results(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """No matching rows returns 200 with an empty list, not an error."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.get("/api/v1/routing/assignments/", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"] == []
+        assert data["meta"]["total"] == 0
+
+    async def test_list_non_admin_uses_org_scoped_visibility(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """A non-admin caller exercises the org-scoped branch of _visible_query."""
+        app_mock_db.return_value.select.return_value = make_select_result(
+            [_assignment_row(scope="org", scope_ref=1)]
+        )
+
+        resp = await client.get("/api/v1/routing/assignments/", headers=rm_auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"][0]["scope"] == "org"
+
+    # -- get_entry ---------------------------------------------------------
+
+    async def test_get_entry_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A known id returns its full row, including a formatted created_at."""
+        row = _assignment_row(created_at=datetime(2025, 1, 1, 12, 0, 0))
+        app_mock_db.return_value.select.return_value.first.return_value = row
+
+        resp = await client.get("/api/v1/routing/assignments/1", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"]["created_at"] == "2025-01-01T12:00:00"
+
+    async def test_get_entry_non_admin(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """A non-admin get exercises the org-scoped branch of _visible_query."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row(
+            scope="org", scope_ref=1
+        )
+
+        resp = await client.get("/api/v1/routing/assignments/1", headers=rm_auth_headers)
+        assert resp.status_code == 200
+
+    # -- create validation ---------------------------------------------------
+
+    async def test_create_requires_body(self, client, auth_headers: dict) -> None:
+        """An empty JSON body ({}) is falsy and returns 400 before any field is checked."""
+        resp = await client.post("/api/v1/routing/assignments/", headers=auth_headers, json={})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("missing_field", ["tool_type", "model_name"])
+    async def test_create_missing_required_field_each(
+        self, client, auth_headers: dict, missing_field: str
+    ) -> None:
+        """Each of tool_type/model_name is individually required."""
+        payload = {"tool_type": "chat", "model_name": "gpt-4o"}
+        del payload[missing_field]
+
+        resp = await client.post("/api/v1/routing/assignments/", headers=auth_headers, json=payload)
+        assert resp.status_code == 400
+
+    async def test_create_tool_type_too_long_rejected(self, client, auth_headers: dict) -> None:
+        """tool_type longer than 50 characters is rejected before any DB write."""
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "x" * 51, "model_name": "gpt-4o"},
+        )
+        assert resp.status_code == 400
+
+    async def test_create_invalid_scope_rejected(self, client, auth_headers: dict) -> None:
+        """Scope must be 'global' or 'org'."""
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "chat", "model_name": "gpt-4o", "scope": "tenant"},
+        )
+        assert resp.status_code == 400
+
+    async def test_create_org_scope_without_scope_ref_rejected(
+        self, client, auth_headers: dict
+    ) -> None:
+        """scope='org' requires an explicit scope_ref."""
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "chat", "model_name": "gpt-4o", "scope": "org"},
+        )
+        assert resp.status_code == 400
+
+    async def test_create_global_scope_forces_scope_ref_none(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A stray scope_ref on a global-scope create is discarded, not persisted."""
+        app_mock_db.return_value.select.return_value.first.side_effect = [
+            None,
+            _assignment_row(),
+        ]
+
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={
+                "tool_type": "chat",
+                "model_name": "gpt-4o",
+                "scope": "global",
+                "scope_ref": 5,
+            },
+        )
+        assert resp.status_code == 201
+        assert app_mock_db.model_assignments.insert.call_args.kwargs["scope_ref"] is None
+
+    async def test_create_new_entry_is_a_true_insert(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """No existing row means action='created' / HTTP 201 (the genuine insert path)."""
+        new_row = _assignment_row(id=7, tool_type="embed", model_name="gpt-4o")
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, new_row]
+
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "embed", "model_name": "gpt-4o"},
+        )
+        assert resp.status_code == 201
+        data = await resp.get_json()
+        assert data["meta"]["action"] == "created"
+        assert data["data"]["id"] == 7
+
+    async def test_create_upsert_updates_existing_entry(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An existing (tool_type, scope, scope_ref) row is updated, not duplicated."""
+        existing = _assignment_row(id=3, model_name="gpt-3.5")
+        app_mock_db.return_value.select.return_value.first.return_value = existing
+
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "chat", "model_name": "gpt-4o"},
+        )
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["action"] == "updated"
+
+    # -- update_entry --------------------------------------------------------
+
+    async def test_update_requires_body(self, client, auth_headers: dict) -> None:
+        """An empty JSON body ({}) returns 400."""
+        resp = await client.put("/api/v1/routing/assignments/1", headers=auth_headers, json={})
+        assert resp.status_code == 400
+
+    async def test_update_forbidden_for_other_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager cannot update a row scoped to a different org."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row(
+            scope="org", scope_ref=999
+        )
+
+        resp = await client.put(
+            "/api/v1/routing/assignments/1",
+            headers=rm_auth_headers,
+            json={"model_name": "gpt-4o"},
+        )
+        assert resp.status_code == 403
+
+    async def test_update_no_fields_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A body with no recognized writable field returns 400."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row()
+
+        resp = await client.put(
+            "/api/v1/routing/assignments/1", headers=auth_headers, json={"bogus_field": "x"}
+        )
+        assert resp.status_code == 400
+
+    async def test_update_success_with_model_name_runs_capability_check(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Updating model_name populates meta.warnings from capability validation."""
+        updated = _assignment_row(model_name="gpt-4o-mini")
+        app_mock_db.return_value.select.return_value.first.return_value = updated
+
+        resp = await client.put(
+            "/api/v1/routing/assignments/1",
+            headers=auth_headers,
+            json={"model_name": "gpt-4o-mini"},
+        )
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["warnings"] == ["model is not present in the registry"]
+
+    async def test_update_success_without_model_name_skips_capability_check(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Updating a non-model field leaves meta.warnings empty (no capability lookup run)."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row()
+
+        resp = await client.put(
+            "/api/v1/routing/assignments/1", headers=auth_headers, json={"enabled": False}
+        )
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["warnings"] == []
+
+    # -- delete_entry ----------------------------------------------------
+
+    async def test_delete_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Deleting an unknown id returns 404."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+
+        resp = await client.delete("/api/v1/routing/assignments/999", headers=auth_headers)
+        assert resp.status_code == 404
+
+    async def test_delete_forbidden_for_other_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager cannot delete a row scoped to a different org."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row(
+            scope="org", scope_ref=999
+        )
+
+        resp = await client.delete("/api/v1/routing/assignments/1", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    # -- Valkey cache invalidation ----------------------------------------
+
+    async def test_cache_invalidation_skipped_when_redis_unconfigured(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """redis_client is None -> AssignmentResolver is never constructed."""
+        monkeypatch.setattr(routing_assignments_mod, "redis_client", None)
+        constructed: list = []
+
+        class _FakeResolver:
+            """Records constructor calls; must never be invoked when caching is off."""
+
+            def __init__(self, *args, **kwargs) -> None:
+                constructed.append((args, kwargs))
+
+            async def invalidate(self, *args, **kwargs) -> None:
+                pass
+
+        monkeypatch.setattr("shared.routing.assignments.AssignmentResolver", _FakeResolver)
+        app_mock_db.return_value.select.return_value.first.side_effect = [
+            None,
+            _assignment_row(),
+        ]
+
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "chat", "model_name": "gpt-4o", "scope": "global"},
+        )
+        assert resp.status_code == 201
+        assert constructed == []
+
+    async def test_cache_invalidation_runs_when_redis_configured(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """A configured redis_client triggers AssignmentResolver.invalidate(org_id, tool_type)."""
+        invalidated: list = []
+
+        class _FakeResolver:
+            """Records invalidate() calls instead of touching real Valkey/DAL logic."""
+
+            def __init__(self, db, valkey=None, cache_ttl=300) -> None:
+                self.valkey = valkey
+
+            async def invalidate(self, org_id, tool_type=None) -> None:
+                invalidated.append((org_id, tool_type))
+
+        # Explicit, not ambient: module-import timing determines whether
+        # routing_assignments.redis_client binds to the real default (None)
+        # or the test app's mock redis, so force a known non-None value
+        # rather than relying on when this module happened to first import.
+        monkeypatch.setattr(routing_assignments_mod, "redis_client", MagicMock())
+        monkeypatch.setattr("shared.routing.assignments.AssignmentResolver", _FakeResolver)
+        app_mock_db.return_value.select.return_value.first.side_effect = [
+            None,
+            _assignment_row(),
+        ]
+
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "chat", "model_name": "gpt-4o", "scope": "global"},
+        )
+        assert resp.status_code == 201
+        assert invalidated == [(None, "chat")]
+
+    # -- _capability_warnings (direct) ------------------------------------
+
+    async def test_capability_warnings_no_matching_model(self, app_mock_db: MagicMock) -> None:
+        """An unknown model_name against an empty model_configs table warns, never raises."""
+        warnings = await routing_assignments_mod._capability_warnings("unknown-model")
+        assert warnings == ["model is not present in the registry"]
+
+    async def test_capability_warnings_matching_available_model(
+        self, app_mock_db: MagicMock
+    ) -> None:
+        """A known, available model_configs row produces no warnings."""
+        model_row = Mock(
+            model_name="gpt-4o",
+            preferred_providers=[],
+            cost_per_token={},
+            capabilities=[],
+            context_length=8192,
+        )
+        app_mock_db.return_value.select.return_value = make_select_result([model_row])
+
+        warnings = await routing_assignments_mod._capability_warnings("gpt-4o")
+        assert warnings == []
+
+    # -- _can_write (direct) -- unreachable-via-HTTP branch --------------
+
+    def test_can_write_denies_roles_other_than_admin_or_resource_manager(self) -> None:
+        """A role with neither admin nor resource_manager write access is always denied.
+
+        Unreachable through the HTTP layer (require_scope already blocks any
+        other role before _can_write ever runs) -- exercised directly for
+        full branch coverage of that guard.
+        """
+        assert routing_assignments_mod._can_write("user", 1, "org", 1) is False
+        assert routing_assignments_mod._can_write("reporter", None, "global", None) is False
+
+
+class TestSeedAssignments:
+    """Coverage for POST /api/v1/routing/assignments/seed (admin-only, idempotent upsert)."""
+
+    async def test_seed_requires_auth(self, client) -> None:
+        """Missing auth returns 401 before the seed logic ever runs."""
+        resp = await client.post("/api/v1/routing/assignments/seed")
+        assert resp.status_code == 401
+
+    async def test_seed_creates_all_when_db_is_empty(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An empty model_assignments table creates every DEFAULT_ASSIGNMENTS entry."""
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, None, None]
+
+        resp = await client.post("/api/v1/routing/assignments/seed", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        n = len(routing_assignments_mod.DEFAULT_ASSIGNMENTS)
+        assert data["data"] == {"created": n, "updated": 0, "total": n}
+
+    async def test_seed_is_idempotent_on_rerun(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Re-running seed against already-seeded rows updates in place, creates nothing new."""
+        existing = _assignment_row()
+        app_mock_db.return_value.select.return_value.first.side_effect = [
+            existing,
+            existing,
+            existing,
+        ]
+
+        resp = await client.post("/api/v1/routing/assignments/seed", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        n = len(routing_assignments_mod.DEFAULT_ASSIGNMENTS)
+        assert data["data"] == {"created": 0, "updated": n, "total": n}
+
+    async def test_seed_handles_partial_existing_rows(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """One entry already exists, the other two don't -- mixed created/updated counts."""
+        existing = _assignment_row()
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, existing, None]
+
+        resp = await client.post("/api/v1/routing/assignments/seed", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"] == {"created": 2, "updated": 1, "total": 3}
+
 
 # ---------------------------------------------------------------------------
 # routing_policies
@@ -359,6 +799,252 @@ class TestRoutingRules:
             json={"name": "x", "match": {}, "action": {}, "organization_id": 999},
         )
         assert resp.status_code == 403
+
+    # -- list_rules --------------------------------------------------------
+
+    async def test_list_requires_auth(self, client) -> None:
+        """Missing auth returns 401."""
+        resp = await client.get("/api/v1/routing/rules/")
+        assert resp.status_code == 401
+
+    async def test_list_filters_enabled_true_and_false(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """enabled=true and enabled=false both take the enabled-filter branch."""
+        app_mock_db.return_value.select.return_value = make_select_result([_rule_row()])
+
+        resp_true = await client.get("/api/v1/routing/rules/?enabled=true", headers=auth_headers)
+        resp_false = await client.get("/api/v1/routing/rules/?enabled=false", headers=auth_headers)
+        assert resp_true.status_code == 200
+        assert resp_false.status_code == 200
+
+    async def test_list_non_admin_uses_org_scoped_visibility(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """A non-admin caller exercises the org-scoped branch of _visible_query."""
+        app_mock_db.return_value.select.return_value = make_select_result(
+            [_rule_row(organization_id=1)]
+        )
+
+        resp = await client.get("/api/v1/routing/rules/", headers=rm_auth_headers)
+        assert resp.status_code == 200
+
+    async def test_list_preserves_db_priority_order(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """The endpoint trusts the DB's priority-ordered result set, returning rows as given."""
+        rows = [
+            _rule_row(id=1, name="highest", priority=10),
+            _rule_row(id=2, name="middle", priority=50),
+            _rule_row(id=3, name="lowest", priority=200),
+        ]
+        app_mock_db.return_value.select.return_value = make_select_result(rows)
+
+        resp = await client.get("/api/v1/routing/rules/", headers=auth_headers)
+        data = await resp.get_json()
+        assert [r["name"] for r in data["data"]] == ["highest", "middle", "lowest"]
+        assert [r["priority"] for r in data["data"]] == [10, 50, 200]
+
+    # -- get_rule ------------------------------------------------------------
+
+    async def test_get_rule_success(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A known id returns its full row, including a formatted created_at."""
+        row = _rule_row(created_at=datetime(2025, 1, 1, 12, 0, 0))
+        app_mock_db.return_value.select.return_value.first.return_value = row
+
+        resp = await client.get("/api/v1/routing/rules/1", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"]["created_at"] == "2025-01-01T12:00:00"
+
+    async def test_get_rule_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An unknown id returns 404."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+
+        resp = await client.get("/api/v1/routing/rules/999", headers=auth_headers)
+        assert resp.status_code == 404
+
+    async def test_get_rule_non_admin(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """A non-admin get exercises the org-scoped branch of _visible_query."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=1
+        )
+
+        resp = await client.get("/api/v1/routing/rules/1", headers=rm_auth_headers)
+        assert resp.status_code == 200
+
+    # -- create_rule validation ----------------------------------------------
+
+    async def test_create_requires_body(self, client, auth_headers: dict) -> None:
+        """An empty JSON body ({}) is falsy and returns 400 before any field is checked."""
+        resp = await client.post("/api/v1/routing/rules/", headers=auth_headers, json={})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("missing_field", ["name", "match", "action"])
+    async def test_create_missing_required_field(
+        self, client, auth_headers: dict, missing_field: str
+    ) -> None:
+        """Each of name/match/action is individually required."""
+        payload = {"name": "r", "match": {}, "action": {}}
+        del payload[missing_field]
+
+        resp = await client.post("/api/v1/routing/rules/", headers=auth_headers, json=payload)
+        assert resp.status_code == 400
+        data = await resp.get_json()
+        assert missing_field in data["error"]
+
+    async def test_create_uses_priority_and_enabled_defaults(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Omitting priority/enabled falls back to priority=100, enabled=True."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            priority=100, enabled=True
+        )
+
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=auth_headers,
+            json={"name": "defaulted", "match": {}, "action": {}},
+        )
+        assert resp.status_code == 201
+        assert app_mock_db.routing_rules_v2.insert.call_args.kwargs["priority"] == 100
+        assert app_mock_db.routing_rules_v2.insert.call_args.kwargs["enabled"] is True
+
+    async def test_create_honors_explicit_priority_and_disabled(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An explicit priority/enabled value is passed through, not overridden by the default."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            priority=5, enabled=False
+        )
+
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=auth_headers,
+            json={"name": "custom", "match": {}, "action": {}, "priority": 5, "enabled": False},
+        )
+        assert resp.status_code == 201
+        assert app_mock_db.routing_rules_v2.insert.call_args.kwargs["priority"] == 5
+        assert app_mock_db.routing_rules_v2.insert.call_args.kwargs["enabled"] is False
+
+    async def test_create_rm_own_org_success(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager can create a rule scoped to their own org."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=1
+        )
+
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=rm_auth_headers,
+            json={"name": "own-org", "match": {}, "action": {}, "organization_id": 1},
+        )
+        assert resp.status_code == 201
+
+    async def test_create_rm_global_rule_forbidden(self, client, rm_auth_headers: dict) -> None:
+        """resource_manager cannot create a GLOBAL rule (organization_id omitted -> None)."""
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=rm_auth_headers,
+            json={"name": "global-attempt", "match": {}, "action": {}},
+        )
+        assert resp.status_code == 403
+
+    # -- update_rule -----------------------------------------------------
+
+    async def test_update_requires_body(self, client, auth_headers: dict) -> None:
+        """An empty JSON body ({}) returns 400."""
+        resp = await client.put("/api/v1/routing/rules/1", headers=auth_headers, json={})
+        assert resp.status_code == 400
+
+    async def test_update_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Updating a non-existent rule returns 404."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+
+        resp = await client.put(
+            "/api/v1/routing/rules/999", headers=auth_headers, json={"name": "x"}
+        )
+        assert resp.status_code == 404
+
+    async def test_update_forbidden_for_other_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager cannot update a rule belonging to a different org."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=999
+        )
+
+        resp = await client.put(
+            "/api/v1/routing/rules/1", headers=rm_auth_headers, json={"name": "hijack"}
+        )
+        assert resp.status_code == 403
+
+    async def test_update_no_valid_fields_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A body containing only non-writable keys returns 400."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+
+        resp = await client.put(
+            "/api/v1/routing/rules/1", headers=auth_headers, json={"id": 999, "created_at": "x"}
+        )
+        assert resp.status_code == 400
+
+    async def test_update_success(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
+        """A valid field update returns the updated row."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            name="renamed", priority=1, enabled=False
+        )
+
+        resp = await client.put(
+            "/api/v1/routing/rules/1",
+            headers=auth_headers,
+            json={"name": "renamed", "priority": 1, "enabled": False},
+        )
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"]["name"] == "renamed"
+        assert data["data"]["enabled"] is False
+
+    # -- delete_rule -----------------------------------------------------
+
+    async def test_delete_not_found(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Deleting an unknown rule returns 404."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+
+        resp = await client.delete("/api/v1/routing/rules/999", headers=auth_headers)
+        assert resp.status_code == 404
+
+    async def test_delete_forbidden_for_other_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager cannot delete a rule belonging to a different org."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=999
+        )
+
+        resp = await client.delete("/api/v1/routing/rules/1", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_delete_success(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
+        """Admin can delete an existing rule."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+
+        resp = await client.delete("/api/v1/routing/rules/1", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["action"] == "deleted"
 
 
 # ---------------------------------------------------------------------------
