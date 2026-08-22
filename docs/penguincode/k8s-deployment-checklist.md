@@ -17,7 +17,7 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Access to appropriate Kubernetes context (dal2-beta for beta)
 - [ ] Cluster resource availability (`kubectl top nodes`)
 - [ ] Storage provisioner available (if using persistence)
-- [ ] Container registry access (`docker login registry-dal2.penguintech.io`)
+- [ ] Container registry access (`docker login ghcr.io`)
 
 ### Code Repository
 - [ ] Latest code pulled (`git status`)
@@ -30,8 +30,9 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Helm values reviewed (values.yaml, values-alpha.yaml, values-beta.yaml)
 - [ ] Kustomize overlays reviewed (alpha/ and beta/)
 - [ ] Deploy script reviewed and understood (`./scripts/deploy-beta.sh --help`)
-- [ ] Target namespace confirmed (penguincode-alpha or penguincode-beta)
-- [ ] Image registry configured correctly (registry-dal2.penguintech.io for beta)
+- [ ] Target namespace confirmed (`penguincode` — same in every environment, no
+      alpha/beta/prod suffix)
+- [ ] Image registry configured correctly (ghcr.io for beta)
 
 ## Alpha Deployment Checklist
 
@@ -55,35 +56,35 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
   ```bash
   helm install penguincode k8s/helm/penguincode \
     -f k8s/helm/penguincode/values-alpha.yaml \
-    -n penguincode-alpha --create-namespace
+    -n penguincode --create-namespace
   ```
   - [ ] Lint first: `helm lint k8s/helm/penguincode`
   - [ ] Dry-run first: add `--dry-run --debug`
   - [ ] Review output
 
 ### Post-Deployment Verification
-- [ ] Namespace created: `kubectl get ns | grep penguincode-alpha`
-- [ ] ServiceAccount created: `kubectl get sa -n penguincode-alpha`
-- [ ] Pods running: `kubectl get pods -n penguincode-alpha`
-- [ ] Deployment ready: `kubectl get deployment -n penguincode-alpha`
-- [ ] Service created: `kubectl get svc -n penguincode-alpha`
-- [ ] Pod logs clean: `kubectl logs -n penguincode-alpha -l app=penguincode`
+- [ ] Namespace created: `kubectl get ns | grep penguincode`
+- [ ] ServiceAccount created: `kubectl get sa -n penguincode`
+- [ ] Pods running: `kubectl get pods -n penguincode`
+- [ ] Deployment ready: `kubectl get deployment -n penguincode`
+- [ ] Service created: `kubectl get svc -n penguincode`
+- [ ] Pod logs clean: `kubectl logs -n penguincode -l app=penguincode`
 - [ ] Health endpoint responds:
   ```bash
-  kubectl port-forward -n penguincode-alpha svc/penguincode-server 8080:8080 &
+  kubectl port-forward -n penguincode svc/penguincode-server 8080:8080 &
   curl http://localhost:8080/api/v1/health
   ```
 
 ### Testing
-- [ ] Port-forward to service: `kubectl port-forward -n penguincode-alpha svc/penguincode-server 50051:50051`
+- [ ] Port-forward to service: `kubectl port-forward -n penguincode svc/penguincode-server 50051:50051`
 - [ ] Test gRPC connectivity with grpcurl or client
-- [ ] Check logs for errors: `kubectl logs -n penguincode-alpha -l app=penguincode -f`
-- [ ] Monitor resource usage: `kubectl top pods -n penguincode-alpha`
+- [ ] Check logs for errors: `kubectl logs -n penguincode -l app=penguincode -f`
+- [ ] Monitor resource usage: `kubectl top pods -n penguincode`
 
 ### Cleanup (if needed)
 - [ ] Delete deployment: `kubectl delete -k k8s/kustomize/overlays/alpha`
-- [ ] Or uninstall helm: `helm uninstall penguincode -n penguincode-alpha`
-- [ ] Verify cleanup: `kubectl get all -n penguincode-alpha`
+- [ ] Or uninstall helm: `helm uninstall penguincode -n penguincode`
+- [ ] Verify cleanup: `kubectl get all -n penguincode`
 
 ## Beta Deployment Checklist
 
@@ -107,7 +108,7 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Option 2 - Manual build and push:
   - [ ] Build image:
     ```bash
-    docker build -t registry-dal2.penguintech.io/penguincode:beta-latest \
+    docker build -t ghcr.io/penguintechinc/penguincode:latest \
       -f Dockerfile.server .
     ```
     - [ ] Build succeeds without errors
@@ -115,7 +116,7 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 
   - [ ] Push image:
     ```bash
-    docker push registry-dal2.penguintech.io/penguincode:beta-latest
+    docker push ghcr.io/penguintechinc/penguincode:latest
     ```
     - [ ] Login to registry first if needed
     - [ ] Push completes successfully
@@ -136,16 +137,16 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
   kubectl apply -k k8s/kustomize/overlays/beta
   ```
   - [ ] Dry-run first: `kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml`
-  - [ ] Review namespace (penguincode-beta)
+  - [ ] Review namespace (penguincode)
   - [ ] Review resource names (beta- prefix)
-  - [ ] Review image registry (registry-dal2.penguintech.io)
+  - [ ] Review image registry (ghcr.io)
 
 - [ ] Option 3 - Helm:
   ```bash
   helm install penguincode k8s/helm/penguincode \
     -f k8s/helm/penguincode/values-beta.yaml \
     -f k8s/helm/penguincode/values.yaml \
-    -n penguincode-beta --create-namespace \
+    -n penguincode --create-namespace \
     --set image.tag=<your-tag>
   ```
   - [ ] Lint chart: `helm lint k8s/helm/penguincode`
@@ -154,43 +155,43 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
   - [ ] Apply with --wait: add `--wait --timeout 5m`
 
 ### Deployment Verification
-- [ ] Namespace created: `kubectl get ns | grep penguincode-beta`
-- [ ] ServiceAccount created: `kubectl get sa -n penguincode-beta`
-- [ ] Deployment created: `kubectl get deployment -n penguincode-beta`
-- [ ] Replicas: 2 running and ready: `kubectl get deployment -n penguincode-beta`
-- [ ] Pods healthy: `kubectl get pods -n penguincode-beta`
-- [ ] Service endpoints: `kubectl get endpoints -n penguincode-beta`
-- [ ] Recent image deployed: `kubectl get pods -n penguincode-beta -o wide`
+- [ ] Namespace created: `kubectl get ns | grep penguincode`
+- [ ] ServiceAccount created: `kubectl get sa -n penguincode`
+- [ ] Deployment created: `kubectl get deployment -n penguincode`
+- [ ] Replicas: 2 running and ready: `kubectl get deployment -n penguincode`
+- [ ] Pods healthy: `kubectl get pods -n penguincode`
+- [ ] Service endpoints: `kubectl get endpoints -n penguincode`
+- [ ] Recent image deployed: `kubectl get pods -n penguincode -o wide`
 - [ ] Logs showing startup:
   ```bash
-  kubectl logs -n penguincode-beta -l app=penguincode -f
+  kubectl logs -n penguincode -l app=penguincode -f
   ```
 - [ ] No error events:
   ```bash
-  kubectl get events -n penguincode-beta --sort-by='.lastTimestamp'
+  kubectl get events -n penguincode --sort-by='.lastTimestamp'
   ```
 
 ### Health and Connectivity Verification
 - [ ] Pod health probes passing:
   ```bash
-  kubectl get pods -n penguincode-beta -o jsonpath='{.items[*].status.conditions}'
+  kubectl get pods -n penguincode -o jsonpath='{.items[*].status.conditions}'
   ```
 
 - [ ] Health endpoint responding:
   ```bash
-  kubectl port-forward -n penguincode-beta svc/penguincode-server 8080:8080
+  kubectl port-forward -n penguincode svc/penguincode-server 8080:8080
   curl http://localhost:8080/api/v1/health
   ```
 
 - [ ] Service connectivity:
   ```bash
-  kubectl port-forward -n penguincode-beta svc/penguincode-server 50051:50051
+  kubectl port-forward -n penguincode svc/penguincode-server 50051:50051
   grpcurl -plaintext localhost:50051 list
   ```
 
 - [ ] Resource usage acceptable:
   ```bash
-  kubectl top pods -n penguincode-beta
+  kubectl top pods -n penguincode
   kubectl top nodes
   ```
 
@@ -206,9 +207,9 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Set up dashboard for deployment metrics
 
 ### Helm Release Management
-- [ ] Check release status: `helm status penguincode -n penguincode-beta`
-- [ ] View release history: `helm history penguincode -n penguincode-beta`
-- [ ] Get deployment values: `helm get values penguincode -n penguincode-beta`
+- [ ] Check release status: `helm status penguincode -n penguincode`
+- [ ] View release history: `helm history penguincode -n penguincode`
+- [ ] Get deployment values: `helm get values penguincode -n penguincode`
 - [ ] Document release notes for your team
 
 ### Testing
@@ -234,7 +235,7 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Set up on-call procedures
 
 ### Backup and Recovery
-- [ ] Document current state: `helm get manifest penguincode -n penguincode-beta > backup.yaml`
+- [ ] Document current state: `helm get manifest penguincode -n penguincode > backup.yaml`
 - [ ] Test rollback procedure: `./scripts/deploy-beta.sh --rollback penguincode-1`
 - [ ] Verify rollback worked
 - [ ] Document rollback steps
@@ -260,14 +261,14 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 
 - [ ] Option 2 - Using Helm directly:
   ```bash
-  helm rollback penguincode -n penguincode-beta
-  helm rollout status deployment/penguincode-server -n penguincode-beta
+  helm rollback penguincode -n penguincode
+  helm rollout status deployment/penguincode-server -n penguincode
   ```
 
 - [ ] Option 3 - Using kubectl:
   ```bash
-  kubectl rollout undo deployment/penguincode-server -n penguincode-beta
-  kubectl rollout status deployment/penguincode-server -n penguincode-beta
+  kubectl rollout undo deployment/penguincode-server -n penguincode
+  kubectl rollout status deployment/penguincode-server -n penguincode
   ```
 
 ### Verification After Rollback
@@ -288,10 +289,10 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 ## Troubleshooting Decision Tree
 
 ### Pods not starting?
-- [ ] Check pod status: `kubectl get pods -n penguincode-beta`
-- [ ] Describe pod: `kubectl describe pod <name> -n penguincode-beta`
-- [ ] Check events: `kubectl get events -n penguincode-beta`
-- [ ] Check logs: `kubectl logs <pod-name> -n penguincode-beta`
+- [ ] Check pod status: `kubectl get pods -n penguincode`
+- [ ] Describe pod: `kubectl describe pod <name> -n penguincode`
+- [ ] Check events: `kubectl get events -n penguincode`
+- [ ] Check logs: `kubectl logs <pod-name> -n penguincode`
 - [ ] Resolution checklist:
   - [ ] Image exists and is correct
   - [ ] Image pull secrets configured
@@ -299,29 +300,29 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
   - [ ] Security context not blocking
 
 ### Image pull failing?
-- [ ] Verify registry credentials: `docker login registry-dal2.penguintech.io`
-- [ ] Check image exists: `docker pull registry-dal2.penguintech.io/penguincode:tag`
-- [ ] Verify pull policy: `kubectl get deployment -n penguincode-beta -o yaml | grep imagePullPolicy`
-- [ ] Check pull secrets: `kubectl get secrets -n penguincode-beta`
+- [ ] Verify registry credentials: `docker login ghcr.io`
+- [ ] Check image exists: `docker pull ghcr.io/penguintechinc/penguincode:tag`
+- [ ] Verify pull policy: `kubectl get deployment -n penguincode -o yaml | grep imagePullPolicy`
+- [ ] Check pull secrets: `kubectl get secrets -n penguincode`
 
 ### Pods crashing?
-- [ ] Check pod logs: `kubectl logs <pod-name> -n penguincode-beta`
-- [ ] Check previous logs: `kubectl logs <pod-name> -n penguincode-beta --previous`
-- [ ] Describe pod: `kubectl describe pod <pod-name> -n penguincode-beta`
-- [ ] Check resource limits: `kubectl top pod <pod-name> -n penguincode-beta`
+- [ ] Check pod logs: `kubectl logs <pod-name> -n penguincode`
+- [ ] Check previous logs: `kubectl logs <pod-name> -n penguincode --previous`
+- [ ] Describe pod: `kubectl describe pod <pod-name> -n penguincode`
+- [ ] Check resource limits: `kubectl top pod <pod-name> -n penguincode`
 - [ ] Check for OOM: Look for "Out of memory" in events
 
 ### Service not responding?
-- [ ] Check service exists: `kubectl get svc -n penguincode-beta`
-- [ ] Check endpoints: `kubectl get endpoints -n penguincode-beta`
-- [ ] Check pod labels: `kubectl get pods -n penguincode-beta -L app,component`
-- [ ] Test port-forward: `kubectl port-forward svc/penguincode-server 8080:8080 -n penguincode-beta`
+- [ ] Check service exists: `kubectl get svc -n penguincode`
+- [ ] Check endpoints: `kubectl get endpoints -n penguincode`
+- [ ] Check pod labels: `kubectl get pods -n penguincode -L app,component`
+- [ ] Test port-forward: `kubectl port-forward svc/penguincode-server 8080:8080 -n penguincode`
 
 ### Deployment stuck?
-- [ ] Check deployment status: `kubectl get deployment -n penguincode-beta`
-- [ ] Check rollout status: `kubectl rollout status deployment/penguincode-server -n penguincode-beta`
-- [ ] Increase timeout: `kubectl rollout status deployment/penguincode-server -n penguincode-beta --timeout=10m`
-- [ ] Force rollout: `kubectl rollout restart deployment/penguincode-server -n penguincode-beta`
+- [ ] Check deployment status: `kubectl get deployment -n penguincode`
+- [ ] Check rollout status: `kubectl rollout status deployment/penguincode-server -n penguincode`
+- [ ] Increase timeout: `kubectl rollout status deployment/penguincode-server -n penguincode --timeout=10m`
+- [ ] Force rollout: `kubectl rollout restart deployment/penguincode-server -n penguincode`
 
 ## Emergency Procedures
 
@@ -331,19 +332,19 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 ./scripts/deploy-beta.sh --rollback penguincode-1
 
 # Option 2 - Using Helm
-helm rollback penguincode 0 -n penguincode-beta
+helm rollback penguincode 0 -n penguincode
 
 # Verify
-kubectl rollout status deployment/penguincode-server -n penguincode-beta
+kubectl rollout status deployment/penguincode-server -n penguincode
 ```
 
 ### Delete Stuck Deployment
 ```bash
 # Force delete pods
-kubectl delete pods -n penguincode-beta -l app=penguincode --grace-period=0 --force
+kubectl delete pods -n penguincode -l app=penguincode --grace-period=0 --force
 
 # Delete deployment
-kubectl delete deployment penguincode-server -n penguincode-beta --grace-period=0 --force
+kubectl delete deployment penguincode-server -n penguincode --grace-period=0 --force
 
 # Redeploy
 kubectl apply -k k8s/kustomize/overlays/beta
@@ -352,13 +353,13 @@ kubectl apply -k k8s/kustomize/overlays/beta
 ### Scale Down (Resource Issues)
 ```bash
 # Reduce replicas
-kubectl scale deployment penguincode-server -n penguincode-beta --replicas=1
+kubectl scale deployment penguincode-server -n penguincode --replicas=1
 
 # Investigate
 # ...
 
 # Scale back up
-kubectl scale deployment penguincode-server -n penguincode-beta --replicas=2
+kubectl scale deployment penguincode-server -n penguincode --replicas=2
 ```
 
 ### Clear All and Restart
@@ -373,7 +374,7 @@ sleep 10
 kubectl apply -k k8s/kustomize/overlays/beta
 
 # Monitor
-kubectl rollout status deployment/penguincode-server -n penguincode-beta --watch
+kubectl rollout status deployment/penguincode-server -n penguincode --watch
 ```
 
 ## Sign-Off
