@@ -19,27 +19,28 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Check if .version file exists
         id: check_version
         run: |
           if [ ! -f .version ]; then
             echo "0.0.0" > .version
-            echo "version=0.0.0" >> $GITHUB_OUTPUT
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
           else
-            VERSION=$(cat .version | tr -d '[:space:]')
+            VERSION=$(tr -d '[:space:]' < .version)
             # Extract semantic version (strip build timestamp if present)
             SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3)
-            echo "version=$SEMVER" >> $GITHUB_OUTPUT
-            echo "full_version=$VERSION" >> $GITHUB_OUTPUT
+            echo "version=$SEMVER" >> "$GITHUB_OUTPUT"
+            echo "full_version=$VERSION" >> "$GITHUB_OUTPUT"
 
             # Check if version is default
             if [ "$SEMVER" = "0.0.0" ]; then
-              echo "should_release=false" >> $GITHUB_OUTPUT
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
               echo "Version is default (0.0.0), skipping release"
             else
-              echo "should_release=true" >> $GITHUB_OUTPUT
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
               echo "Version is $SEMVER, proceeding with release"
             fi
           fi
@@ -49,13 +50,14 @@ jobs:
         if: steps.check_version.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STEPS_CHECK_VERSION_OUTPUTS_VERSION: ${{ steps.check_version.outputs.version }}
         run: |
-          VERSION="${{ steps.check_version.outputs.version }}"
+          VERSION="${STEPS_CHECK_VERSION_OUTPUTS_VERSION}"
           if gh release view "v$VERSION" > /dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Release v$VERSION already exists"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "Release v$VERSION does not exist, will create"
           fi
 
@@ -63,8 +65,8 @@ jobs:
         id: release_notes
         if: steps.check_version.outputs.should_release == 'true' && steps.check_release.outputs.exists != 'true'
         run: |
-          VERSION="${{ steps.check_version.outputs.version }}"
-          FULL_VERSION="${{ steps.check_version.outputs.full_version }}"
+          VERSION="${STEPS_CHECK_VERSION_OUTPUTS_VERSION}"
+          FULL_VERSION="${STEPS_CHECK_VERSION_OUTPUTS_FULL_VERSION}"
 
           # Create release notes
           cat << EOF > release_notes.md
@@ -76,7 +78,7 @@ jobs:
           - Semantic Version: \`$VERSION\`
           - Full Version: \`$FULL_VERSION\`
           - Commit: \`${{ github.sha }}\`
-          - Branch: \`${{ github.ref_name }}\`
+          - Branch: \`${GITHUB_REF_NAME}\`
 
           ### Changes
 
@@ -85,13 +87,17 @@ jobs:
           ---
           *This pre-release was automatically generated when the .version file was updated.*
           EOF
+        env:
+          STEPS_CHECK_VERSION_OUTPUTS_VERSION: ${{ steps.check_version.outputs.version }}
+          STEPS_CHECK_VERSION_OUTPUTS_FULL_VERSION: ${{ steps.check_version.outputs.full_version }}
 
       - name: Create pre-release
         if: steps.check_version.outputs.should_release == 'true' && steps.check_release.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STEPS_CHECK_VERSION_OUTPUTS_VERSION: ${{ steps.check_version.outputs.version }}
         run: |
-          VERSION="${{ steps.check_version.outputs.version }}"
+          VERSION="${STEPS_CHECK_VERSION_OUTPUTS_VERSION}"
           gh release create "v$VERSION" \
             --title "v$VERSION" \
             --notes-file release_notes.md \
@@ -103,8 +109,11 @@ jobs:
       - name: Skip release (version is default or release exists)
         if: steps.check_version.outputs.should_release != 'true' || steps.check_release.outputs.exists == 'true'
         run: |
-          if [ "${{ steps.check_version.outputs.should_release }}" != "true" ]; then
+          if [ "${STEPS_CHECK_VERSION_OUTPUTS_SHOULD_RELEASE}" != "true" ]; then
             echo "⏭️ Skipping release - version is 0.0.0 (default)"
           else
-            echo "⏭️ Skipping release - v${{ steps.check_version.outputs.version }} already exists"
+            echo "⏭️ Skipping release - v${STEPS_CHECK_VERSION_OUTPUTS_VERSION} already exists"
           fi
+        env:
+          STEPS_CHECK_VERSION_OUTPUTS_SHOULD_RELEASE: ${{ steps.check_version.outputs.should_release }}
+          STEPS_CHECK_VERSION_OUTPUTS_VERSION: ${{ steps.check_version.outputs.version }}
