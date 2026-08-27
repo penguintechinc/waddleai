@@ -108,3 +108,19 @@ CVE-2026-9538
 # 2026-11-22 or whenever `apt-cache policy libssl3t64` shows a newer
 # candidate, whichever comes first.
 CVE-2026-14456
+
+# Added 2026-08-27 -- libsqlite3-0 CVE-2026-11822/-11824 (SQLite FTS5
+# crafted-data arbitrary code execution + heap buffer overflow, both HIGH).
+# Newly published/scored since the 08-22 refresh above (Trivy DB pulled
+# 2026-08-27 for this scan, vs 08-22 when the rest of this file was
+# calibrated) -- this is DB drift, not a regression introduced by any change
+# to the Dockerfile. Trivy status "affected", FixedVersion: None for both
+# (confirmed via `trivy image --format json`); `apt-cache policy
+# libsqlite3-0` against this exact runtime-base shows Candidate == Installed
+# (3.46.1-7+deb13u1) on both trixie/main and trixie-security, so Debian
+# security has not shipped a patched package yet -- no version of this
+# Dockerfile can resolve this today. Review by 2026-11-27 or whenever
+# `apt-cache policy libsqlite3-0` shows a newer candidate, whichever comes
+# first.
+CVE-2026-11822
+CVE-2026-11824
