@@ -861,6 +861,23 @@ jobs:
         docker compose -f docker-compose.test.yml up -d
         sleep 45
 
+    - name: Run database migrations
+      # This compose stack starts an empty postgres -- unlike the real
+      # deploy path, where k8s/helm/waddleai/templates/migration-job.yaml
+      # runs `alembic upgrade head` as a pre-install/pre-upgrade Helm hook
+      # before the management Deployment rolls out. Without this step
+      # /readyz's checks fail against the unmigrated schema and the health
+      # check below 503s. Mirrors the migration Job's exact command
+      # (/opt/venv/bin/python3 -m alembic upgrade head from the management
+      # image's /app WORKDIR) so it reaches the same head as
+      # services/management/alembic/versions/. `docker compose run` honors
+      # this service's depends_on: condition: service_healthy for db/redis,
+      # so it won't run before the database is ready. No `|| true` --
+      # a migration failure here must fail the job, not silently proceed.
+      run: |
+        docker compose -f docker-compose.test.yml run --rm -T \
+          management /opt/venv/bin/python3 -m alembic upgrade head
+
     - name: Test management health endpoints
       run: |
         curl -f http://localhost:8001/healthz
