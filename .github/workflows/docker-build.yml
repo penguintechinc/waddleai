@@ -862,12 +862,15 @@ jobs:
         sleep 45
 
     - name: Run database migrations
-      # This compose stack starts an empty postgres -- unlike the real
-      # deploy path, where k8s/helm/waddleai/templates/migration-job.yaml
-      # runs `alembic upgrade head` as a pre-install/pre-upgrade Helm hook
-      # before the management Deployment rolls out. Without this step
-      # /readyz's checks fail against the unmigrated schema and the health
-      # check below 503s. Mirrors the migration Job's exact command
+      # NOTE: this does NOT fix the /readyz 503 (that was app/config.py's
+      # TestingConfig.REDIS_URL hardcode -- see below). /readyz's database
+      # check is a bare `SELECT 1`, which an empty-but-reachable postgres
+      # already satisfies. Kept anyway as a legitimate harness improvement:
+      # the real deploy path always runs migrations before management comes
+      # up (k8s/helm/waddleai/templates/migration-job.yaml, a pre-install/
+      # pre-upgrade Helm hook), so this compose harness should match that
+      # precondition for any future test that queries a migration-only
+      # table. Mirrors the migration Job's exact command
       # (/opt/venv/bin/python3 -m alembic upgrade head from the management
       # image's /app WORKDIR) so it reaches the same head as
       # services/management/alembic/versions/. `docker compose run` honors
@@ -879,11 +882,27 @@ jobs:
           management /opt/venv/bin/python3 -m alembic upgrade head
 
     - name: Test management health endpoints
+      # On a non-200, print the response body before failing -- /readyz's
+      # body is {"ready": bool, "checks": {"database": bool, "redis": bool}},
+      # which names the exact failing dependency instead of leaving a bare
+      # `curl: (22)` to re-diagnose from scratch next time.
       run: |
-        curl -f http://localhost:8001/healthz
-        curl -f http://localhost:8001/livez
-        curl -f http://localhost:8001/readyz
-        curl -f http://localhost:8001/metrics
+        check() {
+          url="$1"
+          body=$(curl -s -w '\n%{http_code}' "$url")
+          code=$(echo "$body" | tail -n1)
+          resp=$(echo "$body" | sed '$d')
+          if [ "$code" != "200" ]; then
+            echo "FAIL $url -> HTTP $code"
+            echo "$resp"
+            exit 1
+          fi
+          echo "OK $url -> HTTP $code"
+        }
+        check http://localhost:8001/healthz
+        check http://localhost:8001/livez
+        check http://localhost:8001/readyz
+        check http://localhost:8001/metrics
 
     - name: Test proxy health endpoint
       run: |
