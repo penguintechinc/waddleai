@@ -1,6 +1,6 @@
-"""
-Memory Integration for WaddleAI
-Provides conversation memory using mem0 or ChromaDB (user choice)
+"""Memory Integration for WaddleAI.
+
+Provides conversation memory using mem0 or ChromaDB (user choice).
 """
 
 import asyncio
@@ -10,11 +10,28 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+
+
+def _sentence_transformer(model_name: str):
+    """Construct a SentenceTransformer, importing the library on first use.
+
+    Deferred for the same reason as the twin helper in
+    shared/utils/rag_integration.py: a module-scope
+    `from sentence_transformers import ...` drags torch and transformers into
+    every process that imports this module, and `pytest --cov=shared` imports
+    it everywhere. That OOM-killed the CI runner mid-suite.
+
+    Model unchanged: all-MiniLM-L6-v2, 384-dim -- deliberately not the 768-dim
+    nomic-embed-text path, and the two must not converge.
+    """
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name)
+
 
 # Optional mem0 import (if available)
 try:
@@ -30,15 +47,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MemoryEntry:
-    """Memory entry structure"""
+    """Memory entry structure."""
 
     id: str
     user_id: int
     organization_id: int
-    session_id: Optional[str]
+    session_id: str | None
     content: str
-    metadata: Dict[str, Any]
-    embedding: Optional[List[float]]
+    metadata: dict[str, Any]
+    embedding: list[float] | None
     created_at: datetime
     relevance_score: float = 0.0
     # Access-control scope: 'user' (personal, default) | 'org' (shared).
@@ -49,27 +66,27 @@ class MemoryEntry:
 
 @dataclass
 class ConversationContext:
-    """Conversation context with memory"""
+    """Conversation context with memory."""
 
     user_id: int
     organization_id: int
-    session_id: Optional[str]
-    recent_messages: List[Dict[str, str]]
-    relevant_memories: List[MemoryEntry]
-    conversation_summary: Optional[str] = None
+    session_id: str | None
+    recent_messages: list[dict[str, str]]
+    relevant_memories: list[MemoryEntry]
+    conversation_summary: str | None = None
 
 
 class MemoryStore(ABC):
-    """Abstract base class for memory storage backends"""
+    """Abstract base class for memory storage backends."""
 
     @abstractmethod
     async def initialize(self):
-        """Initialize the memory store connection"""
+        """Initialize the memory store connection."""
         pass
 
     @abstractmethod
     async def store_memory(self, entry: MemoryEntry) -> bool:
-        """Store a memory entry"""
+        """Store a memory entry."""
         pass
 
     @abstractmethod
@@ -78,11 +95,11 @@ class MemoryStore(ABC):
         query: str,
         user_id: int,
         organization_id: int,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         limit: int = 10,
         min_relevance: float = 0.7,
         scope: str = "user",
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Search for relevant memories.
 
         scope: 'user' (caller's personal rows), 'org' (org-shared rows),
@@ -92,26 +109,34 @@ class MemoryStore(ABC):
 
     @abstractmethod
     async def get_recent_memories(
-        self, user_id: int, organization_id: int, session_id: Optional[str] = None, hours: int = 24, limit: int = 20
-    ) -> List[MemoryEntry]:
-        """Get recent memories within time window"""
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: str | None = None,
+        hours: int = 24,
+        limit: int = 20,
+    ) -> list[MemoryEntry]:
+        """Get recent memories within time window."""
         pass
 
     @abstractmethod
     async def delete_memory(self, memory_id: str) -> bool:
-        """Delete a specific memory"""
+        """Delete a specific memory."""
         pass
 
     @abstractmethod
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup memories older than specified days"""
+        """Cleanup memories older than specified days."""
         pass
 
 
 class Mem0MemoryStore(MemoryStore):
-    """mem0-based memory storage"""
+    """mem0-based memory storage."""
 
-    def __init__(self, api_key: Optional[str] = None, org_id: Optional[str] = None, config: Optional[Dict] = None):
+    def __init__(
+        self, api_key: str | None = None, org_id: str | None = None, config: dict | None = None
+    ):
+        """Store mem0 credentials/config; raises if the optional mem0ai package isn't installed."""
         if not HAS_MEM0:
             raise ImportError("mem0ai package not installed. Install with: pip install mem0ai")
 
@@ -121,7 +146,7 @@ class Mem0MemoryStore(MemoryStore):
         self.client = None
 
     async def initialize(self):
-        """Initialize mem0 client"""
+        """Initialize mem0 client."""
         try:
             # Initialize mem0 client
             client_config = {}
@@ -138,7 +163,7 @@ class Mem0MemoryStore(MemoryStore):
             raise
 
     async def store_memory(self, entry: MemoryEntry) -> bool:
-        """Store memory in mem0"""
+        """Store memory in mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -157,7 +182,9 @@ class Mem0MemoryStore(MemoryStore):
 
             # mem0's API is user-keyed: org-shared entries live under a
             # synthetic per-org user so any org member can retrieve them.
-            mem0_user = f"org-{entry.organization_id}" if entry.scope_type == "org" else str(entry.user_id)
+            mem0_user = (
+                f"org-{entry.organization_id}" if entry.scope_type == "org" else str(entry.user_id)
+            )
             self.client.add(entry.content, user_id=mem0_user, metadata=metadata)
 
             logger.debug(f"Stored memory in mem0: {entry.id}")
@@ -172,11 +199,11 @@ class Mem0MemoryStore(MemoryStore):
         query: str,
         user_id: int,
         organization_id: int,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         limit: int = 10,
         min_relevance: float = 0.7,
         scope: str = "user",
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Search memories in mem0.
 
         mem0's search is user-keyed, so the merged view ('all') issues two
@@ -187,8 +214,8 @@ class Mem0MemoryStore(MemoryStore):
             if not self.client:
                 await self.initialize()
 
-            def _convert(results: list, personal_bucket: bool) -> List[MemoryEntry]:
-                memories: List[MemoryEntry] = []
+            def _convert(results: list, personal_bucket: bool) -> list[MemoryEntry]:
+                memories: list[MemoryEntry] = []
                 for result in results:
                     metadata = result.get("metadata", {})
                     entry_scope = metadata.get("scope", "user")
@@ -211,7 +238,14 @@ class Mem0MemoryStore(MemoryStore):
                             metadata={
                                 k: v
                                 for k, v in metadata.items()
-                                if k not in ["user_id", "organization_id", "session_id", "created_at", "memory_id"]
+                                if k
+                                not in [
+                                    "user_id",
+                                    "organization_id",
+                                    "session_id",
+                                    "created_at",
+                                    "memory_id",
+                                ]
                             },
                             embedding=None,
                             created_at=datetime.fromisoformat(
@@ -219,12 +253,14 @@ class Mem0MemoryStore(MemoryStore):
                             ),
                             relevance_score=relevance_score,
                             scope_type=entry_scope,
-                            author_user_id=int(metadata.get("author_user_id", metadata.get("user_id", user_id))),
+                            author_user_id=int(
+                                metadata.get("author_user_id", metadata.get("user_id", user_id))
+                            ),
                         )
                     )
                 return memories
 
-            memories: List[MemoryEntry] = []
+            memories: list[MemoryEntry] = []
             if scope in ("user", "all"):
                 personal = self.client.search(query, user_id=str(user_id), limit=limit)
                 memories.extend(_convert(personal, personal_bucket=True))
@@ -240,9 +276,14 @@ class Mem0MemoryStore(MemoryStore):
             return []
 
     async def get_recent_memories(
-        self, user_id: int, organization_id: int, session_id: Optional[str] = None, hours: int = 24, limit: int = 20
-    ) -> List[MemoryEntry]:
-        """Get recent memories from mem0"""
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: str | None = None,
+        hours: int = 24,
+        limit: int = 20,
+    ) -> list[MemoryEntry]:
+        """Get recent memories from mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -264,7 +305,9 @@ class Mem0MemoryStore(MemoryStore):
                     continue
 
                 # Check time
-                created_at = datetime.fromisoformat(metadata.get("created_at", datetime.utcnow().isoformat()))
+                created_at = datetime.fromisoformat(
+                    metadata.get("created_at", datetime.utcnow().isoformat())
+                )
                 if created_at < cutoff:
                     continue
 
@@ -277,7 +320,14 @@ class Mem0MemoryStore(MemoryStore):
                     metadata={
                         k: v
                         for k, v in metadata.items()
-                        if k not in ["user_id", "organization_id", "session_id", "created_at", "memory_id"]
+                        if k
+                        not in [
+                            "user_id",
+                            "organization_id",
+                            "session_id",
+                            "created_at",
+                            "memory_id",
+                        ]
                     },
                     embedding=None,
                     created_at=created_at,
@@ -296,7 +346,7 @@ class Mem0MemoryStore(MemoryStore):
             return []
 
     async def delete_memory(self, memory_id: str) -> bool:
-        """Delete memory from mem0"""
+        """Delete memory from mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -310,7 +360,7 @@ class Mem0MemoryStore(MemoryStore):
             return False
 
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup old memories from mem0"""
+        """Cleanup old memories from mem0."""
         try:
             if not self.client:
                 await self.initialize()
@@ -326,9 +376,12 @@ class Mem0MemoryStore(MemoryStore):
 
 
 class ChromaDBMemoryStore(MemoryStore):
-    """ChromaDB-based memory storage"""
+    """ChromaDB-based memory storage."""
 
-    def __init__(self, persist_directory: str = "./chroma_data", collection_name: str = "waddleai_memory"):
+    def __init__(
+        self, persist_directory: str = "./chroma_data", collection_name: str = "waddleai_memory"
+    ):
+        """Store the ChromaDB persist path/collection name; client is lazy-built in initialize()."""
         self.persist_directory = persist_directory
         self.collection_name = collection_name
         self.client = None
@@ -339,20 +392,21 @@ class ChromaDBMemoryStore(MemoryStore):
         self._init_encoder()
 
     def _init_encoder(self):
-        """Initialize sentence transformer for embeddings"""
+        """Initialize sentence transformer for embeddings."""
         try:
-            self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+            self.encoder = _sentence_transformer("all-MiniLM-L6-v2")
             logger.info("Initialized SentenceTransformer encoder")
         except Exception as e:
             logger.error(f"Failed to initialize encoder: {e}")
             self.encoder = None
 
     async def initialize(self):
-        """Initialize ChromaDB client and collection"""
+        """Initialize ChromaDB client and collection."""
         try:
             # Initialize ChromaDB client
             self.client = chromadb.PersistentClient(
-                path=self.persist_directory, settings=Settings(anonymized_telemetry=False, allow_reset=True)
+                path=self.persist_directory,
+                settings=Settings(anonymized_telemetry=False, allow_reset=True),
             )
 
             # Get or create collection
@@ -361,7 +415,8 @@ class ChromaDBMemoryStore(MemoryStore):
                 logger.info(f"Loaded existing memory collection: {self.collection_name}")
             except Exception:
                 self.collection = self.client.create_collection(
-                    name=self.collection_name, metadata={"description": "WaddleAI conversation memory"}
+                    name=self.collection_name,
+                    metadata={"description": "WaddleAI conversation memory"},
                 )
                 logger.info(f"Created new memory collection: {self.collection_name}")
 
@@ -371,8 +426,8 @@ class ChromaDBMemoryStore(MemoryStore):
             logger.error(f"Failed to initialize ChromaDB: {e}")
             raise
 
-    def _generate_embedding(self, text: str) -> Optional[List[float]]:
-        """Generate embedding for text"""
+    def _generate_embedding(self, text: str) -> list[float] | None:
+        """Generate embedding for text."""
         if not self.encoder:
             return None
 
@@ -384,7 +439,7 @@ class ChromaDBMemoryStore(MemoryStore):
             return None
 
     async def store_memory(self, entry: MemoryEntry) -> bool:
-        """Store memory entry"""
+        """Store memory entry."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -426,11 +481,11 @@ class ChromaDBMemoryStore(MemoryStore):
         query: str,
         user_id: int,
         organization_id: int,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         limit: int = 10,
         min_relevance: float = 0.7,
         scope: str = "user",
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Search for relevant memories.
 
         Two-query merge: the personal bucket (user_id match, post-filtered to
@@ -467,8 +522,8 @@ class ChromaDBMemoryStore(MemoryStore):
                     include=["documents", "metadatas", "distances"],
                 )
 
-            def _to_entries(results: dict, personal_bucket: bool) -> List[MemoryEntry]:
-                memories: List[MemoryEntry] = []
+            def _to_entries(results: dict, personal_bucket: bool) -> list[MemoryEntry]:
+                memories: list[MemoryEntry] = []
                 if not results or not results["documents"]:
                     return memories
                 for i in range(len(results["documents"][0])):
@@ -492,7 +547,8 @@ class ChromaDBMemoryStore(MemoryStore):
                             metadata={
                                 k: v
                                 for k, v in metadata.items()
-                                if k not in ["user_id", "organization_id", "session_id", "created_at"]
+                                if k
+                                not in ["user_id", "organization_id", "session_id", "created_at"]
                             },
                             embedding=None,
                             created_at=datetime.fromisoformat(metadata["created_at"]),
@@ -503,7 +559,7 @@ class ChromaDBMemoryStore(MemoryStore):
                     )
                 return memories
 
-            memories: List[MemoryEntry] = []
+            memories: list[MemoryEntry] = []
             if scope in ("user", "all"):
                 personal = _run_query({"user_id": user_id, "organization_id": organization_id})
                 memories.extend(_to_entries(personal, personal_bucket=True))
@@ -519,9 +575,14 @@ class ChromaDBMemoryStore(MemoryStore):
             return []
 
     async def get_recent_memories(
-        self, user_id: int, organization_id: int, session_id: Optional[str] = None, hours: int = 24, limit: int = 20
-    ) -> List[MemoryEntry]:
-        """Get recent memories"""
+        self,
+        user_id: int,
+        organization_id: int,
+        session_id: str | None = None,
+        hours: int = 24,
+        limit: int = 20,
+    ) -> list[MemoryEntry]:
+        """Get recent memories."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -536,7 +597,9 @@ class ChromaDBMemoryStore(MemoryStore):
                 where_clause["session_id"] = session_id
 
             # Query recent memories
-            results = self.collection.get(where=where_clause, include=["documents", "metadatas"], limit=limit)
+            results = self.collection.get(
+                where=where_clause, include=["documents", "metadatas"], limit=limit
+            )
 
             # Convert and filter by time
             memories = []
@@ -555,7 +618,8 @@ class ChromaDBMemoryStore(MemoryStore):
                             metadata={
                                 k: v
                                 for k, v in metadata.items()
-                                if k not in ["user_id", "organization_id", "session_id", "created_at"]
+                                if k
+                                not in ["user_id", "organization_id", "session_id", "created_at"]
                             },
                             embedding=None,
                             created_at=created_at,
@@ -571,7 +635,7 @@ class ChromaDBMemoryStore(MemoryStore):
             return []
 
     async def delete_memory(self, memory_id: str) -> bool:
-        """Delete a specific memory"""
+        """Delete a specific memory."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -585,7 +649,7 @@ class ChromaDBMemoryStore(MemoryStore):
             return False
 
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup memories older than specified days"""
+        """Cleanup memories older than specified days."""
         try:
             if not self.collection:
                 await self.initialize()
@@ -615,14 +679,15 @@ class ChromaDBMemoryStore(MemoryStore):
 
 
 class WaddleAIMemoryManager:
-    """Main memory management system for WaddleAI"""
+    """Main memory management system for WaddleAI."""
 
     def __init__(self, db, memory_store: MemoryStore):
+        """Bind the DAL handle and backing memory store (mem0 or ChromaDB) used by this manager."""
         self.db = db
         self.memory_store = memory_store
 
     async def initialize(self):
-        """Initialize memory manager"""
+        """Initialize memory manager."""
         await self.memory_store.initialize()
         logger.info("Memory manager initialized")
 
@@ -630,12 +695,12 @@ class WaddleAIMemoryManager:
         self,
         user_id: int,
         organization_id: int,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         response: str,
-        session_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
-        """Add a conversation turn to memory with complete context including routing information"""
+        """Add a conversation turn to memory with complete context including routing information."""
         try:
             # Combine user message and assistant response
             user_messages = [msg for msg in messages if msg.get("role") == "user"]
@@ -683,7 +748,8 @@ class WaddleAIMemoryManager:
             if success:
                 logger.debug(
                     f"Added conversation turn to memory for user {user_id} "
-                    f"(model={memory_metadata['model_used']}, provider={memory_metadata['provider']}, "
+                    f"(model={memory_metadata['model_used']}, "
+                    f"provider={memory_metadata['provider']}, "
                     f"routing={memory_metadata['routing_decision']})"
                 )
 
@@ -697,14 +763,16 @@ class WaddleAIMemoryManager:
         self,
         user_id: int,
         organization_id: int,
-        current_messages: List[Dict[str, str]],
-        session_id: Optional[str] = None,
+        current_messages: list[dict[str, str]],
+        session_id: str | None = None,
         context_limit: int = 5,
     ) -> ConversationContext:
-        """Get conversation context with relevant memories"""
+        """Get conversation context with relevant memories."""
         try:
             # Extract query from current messages
-            user_messages = [msg["content"] for msg in current_messages if msg.get("role") == "user"]
+            user_messages = [
+                msg["content"] for msg in current_messages if msg.get("role") == "user"
+            ]
             query = " ".join(user_messages[-2:])  # Use last 2 user messages as query
 
             # Search for relevant memories
@@ -718,7 +786,11 @@ class WaddleAIMemoryManager:
 
             # Get recent memories for additional context
             recent_memories = await self.memory_store.get_recent_memories(
-                user_id=user_id, organization_id=organization_id, session_id=session_id, hours=24, limit=3
+                user_id=user_id,
+                organization_id=organization_id,
+                session_id=session_id,
+                hours=24,
+                limit=3,
             )
 
             # Combine and deduplicate memories
@@ -726,7 +798,9 @@ class WaddleAIMemoryManager:
             combined_memories = list(all_memories.values())
 
             # Sort by relevance and recency
-            combined_memories.sort(key=lambda m: (m.relevance_score, m.created_at.timestamp()), reverse=True)
+            combined_memories.sort(
+                key=lambda m: (m.relevance_score, m.created_at.timestamp()), reverse=True
+            )
 
             # Generate conversation summary if we have memories
             conversation_summary = None
@@ -753,8 +827,8 @@ class WaddleAIMemoryManager:
                 conversation_summary=None,
             )
 
-    async def _generate_conversation_summary(self, memories: List[MemoryEntry]) -> str:
-        """Generate a summary of relevant conversation memories"""
+    async def _generate_conversation_summary(self, memories: list[MemoryEntry]) -> str:
+        """Generate a summary of relevant conversation memories."""
         if not memories:
             return ""
 
@@ -770,9 +844,9 @@ class WaddleAIMemoryManager:
         return " | ".join(summary_parts)
 
     async def enhance_messages_with_context(
-        self, messages: List[Dict[str, str]], context: ConversationContext
-    ) -> List[Dict[str, str]]:
-        """Enhance messages with memory context"""
+        self, messages: list[dict[str, str]], context: ConversationContext
+    ) -> list[dict[str, str]]:
+        """Enhance messages with memory context."""
         try:
             if not context.relevant_memories and not context.conversation_summary:
                 return messages
@@ -781,7 +855,9 @@ class WaddleAIMemoryManager:
             context_parts = []
 
             if context.conversation_summary:
-                context_parts.append(f"Previous conversation context: {context.conversation_summary}")
+                context_parts.append(
+                    f"Previous conversation context: {context.conversation_summary}"
+                )
 
             if context.relevant_memories:
                 memory_summaries = []
@@ -793,7 +869,9 @@ class WaddleAIMemoryManager:
                         content = content[:300] + "..."
                     memory_summaries.append(f"[{timestamp}] {content}")
 
-                context_parts.append("Relevant conversation history:\n" + "\n".join(memory_summaries))
+                context_parts.append(
+                    "Relevant conversation history:\n" + "\n".join(memory_summaries)
+                )
 
             # Add context to system message or create new system message
             context_text = "\n\n".join(context_parts)
@@ -813,7 +891,11 @@ class WaddleAIMemoryManager:
             # If no system message, add context as new system message
             if not has_system_message:
                 enhanced_messages.insert(
-                    0, {"role": "system", "content": f"Context from previous conversations:\n{context_text}"}
+                    0,
+                    {
+                        "role": "system",
+                        "content": f"Context from previous conversations:\n{context_text}",
+                    },
                 )
 
             return enhanced_messages
@@ -823,15 +905,18 @@ class WaddleAIMemoryManager:
             return messages
 
     async def cleanup_old_memories(self, days: int = 90) -> int:
-        """Cleanup old memories"""
+        """Cleanup old memories."""
         return await self.memory_store.cleanup_old_memories(days)
 
-    async def get_memory_stats(self, user_id: int, organization_id: int) -> Dict[str, Any]:
-        """Get memory statistics for user/organization"""
+    async def get_memory_stats(self, user_id: int, organization_id: int) -> dict[str, Any]:
+        """Get memory statistics for user/organization."""
         try:
             # Get recent memories to calculate stats
             recent_memories = await self.memory_store.get_recent_memories(
-                user_id=user_id, organization_id=organization_id, hours=24 * 30, limit=1000  # Last 30 days
+                user_id=user_id,
+                organization_id=organization_id,
+                hours=24 * 30,
+                limit=1000,  # Last 30 days
             )
 
             # Calculate statistics
@@ -849,10 +934,14 @@ class WaddleAIMemoryManager:
                 "average_content_length": round(avg_length, 2),
                 "daily_counts": daily_counts,
                 "oldest_memory": (
-                    min(recent_memories, key=lambda m: m.created_at).created_at.isoformat() if recent_memories else None
+                    min(recent_memories, key=lambda m: m.created_at).created_at.isoformat()
+                    if recent_memories
+                    else None
                 ),
                 "newest_memory": (
-                    max(recent_memories, key=lambda m: m.created_at).created_at.isoformat() if recent_memories else None
+                    max(recent_memories, key=lambda m: m.created_at).created_at.isoformat()
+                    if recent_memories
+                    else None
                 ),
             }
 
@@ -869,13 +958,12 @@ class WaddleAIMemoryManager:
     async def semantic_search_conversations(
         self,
         query: str,
-        user_id: Optional[int] = None,
-        organization_id: Optional[int] = None,
+        user_id: int | None = None,
+        organization_id: int | None = None,
         limit: int = 10,
         min_relevance: float = 0.5,
-    ) -> List[Dict[str, Any]]:
-        """
-        Semantic search across conversations with routing context
+    ) -> list[dict[str, Any]]:
+        """Semantic search across conversations with routing context.
 
         Returns list of conversation dictionaries with full metadata
         """
@@ -909,7 +997,10 @@ class WaddleAIMemoryManager:
                 }
                 conversations.append(conversation)
 
-            logger.info(f"Semantic search returned {len(conversations)} conversations for query: {query[:50]}")
+            logger.info(
+                f"Semantic search returned {len(conversations)} conversations "
+                f"for query: {query[:50]}"
+            )
             return conversations
 
         except Exception as e:
@@ -920,15 +1011,14 @@ class WaddleAIMemoryManager:
         self,
         user_id: int,
         organization_id: int,
-        messages: List[Dict],
+        messages: list[dict],
         response: str,
         model_used: str,
         routing_decision: str,
         routing_reasoning: str,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
     ) -> bool:
-        """
-        Store complete conversation with full routing context for analytics
+        """Store complete conversation with full routing context for analytics.
 
         This is an enhanced version that stores all details for analysis
         """
@@ -991,15 +1081,16 @@ def create_memory_manager(
     db=None,
     backend: str = "pgvector",
     persist_directory: str = "./chroma_data",
-    api_key: Optional[str] = None,
-    org_id: Optional[str] = None,
-    config: Optional[Dict] = None,
+    api_key: str | None = None,
+    org_id: str | None = None,
+    config: dict | None = None,
     write_db=None,
     embedding_manager=None,
     replica_pool: Optional["ReadReplicaPool"] = None,
+    embed_cache: Any | None = None,
+    retrieval_cache: Any | None = None,
 ) -> WaddleAIMemoryManager:
-    """
-    Factory function to create memory manager.
+    """Factory function to create memory manager.
 
     Args:
         db: Database connection (used as write_db for pgvector when write_db is not provided;
@@ -1017,9 +1108,16 @@ def create_memory_manager(
                            ``shared.utils.embedding_manager.create_embedding_manager()``.
         replica_pool: Optional ReadReplicaPool for pgvector read distribution.
                       If None, reads fall back to write_db.
+        embed_cache: Optional shared.memory.embedding_cache.CachedEmbedder (§6A.3),
+                     forwarded to PgvectorMemoryStore. None preserves the
+                     pre-existing direct-embed behavior.
+        retrieval_cache: Optional shared.memory.retrieval_cache.RetrievalResultCache
+                         (§6A.3), forwarded to PgvectorMemoryStore. None
+                         preserves the pre-existing always-query behavior.
 
     Returns:
         WaddleAIMemoryManager instance
+
     """
     if backend == "pgvector":
         _write_db = write_db or db
@@ -1032,17 +1130,19 @@ def create_memory_manager(
                 from shared.utils.embedding_manager import create_embedding_manager
 
                 _embedding_manager = create_embedding_manager()
-            except ImportError:
+            except ImportError as err:
                 raise ImportError(
                     "embedding_manager is required for the pgvector backend. "
                     "Either pass embedding_manager= explicitly or ensure "
                     "shared.utils.embedding_manager is importable."
-                )
+                ) from err
 
         memory_store = PgvectorMemoryStore(
             write_db=_write_db,
             embedding_manager=_embedding_manager,
             replica_pool=replica_pool,
+            embed_cache=embed_cache,
+            retrieval_cache=retrieval_cache,
         )
     elif backend == "mem0":
         if not HAS_MEM0:
@@ -1051,10 +1151,16 @@ def create_memory_manager(
         else:
             memory_store = Mem0MemoryStore(api_key=api_key, org_id=org_id, config=config)
     elif backend == "chromadb":
-        collection_name = config.get("collection_name", "waddleai_memory") if config else "waddleai_memory"
-        memory_store = ChromaDBMemoryStore(persist_directory=persist_directory, collection_name=collection_name)
+        collection_name = (
+            config.get("collection_name", "waddleai_memory") if config else "waddleai_memory"
+        )
+        memory_store = ChromaDBMemoryStore(
+            persist_directory=persist_directory, collection_name=collection_name
+        )
     else:
-        raise ValueError(f"Unknown memory backend: {backend}. Use 'pgvector', 'mem0', or 'chromadb'")
+        raise ValueError(
+            f"Unknown memory backend: {backend}. Use 'pgvector', 'mem0', or 'chromadb'"
+        )
 
     return WaddleAIMemoryManager(db or write_db, memory_store)
 
@@ -1076,6 +1182,7 @@ class ReadReplicaPool:
     """
 
     def __init__(self, replica_dbs: list):
+        """Wrap a fixed list of replica DB connections behind a thread-safe round-robin index."""
         self._replicas = replica_dbs
         self._lock = threading.Lock()
         self._index = 0
@@ -1090,6 +1197,7 @@ class ReadReplicaPool:
         return db
 
     def __len__(self) -> int:
+        """Return the number of configured replica connections."""
         return len(self._replicas)
 
     @classmethod
@@ -1100,7 +1208,7 @@ class ReadReplicaPool:
         """
         import os
 
-        from pydal import DAL
+        from penguin_dal import DAL
 
         urls_raw = os.getenv(replica_url_env, "").strip()
         if not urls_raw:
@@ -1116,7 +1224,9 @@ class ReadReplicaPool:
                     db = DAL(url, pool_size=5, migrate=False)
                     replicas.append(db)
                 except Exception as exc:
-                    logging.getLogger(__name__).warning("Failed to connect to replica %s: %s", url, exc)
+                    logging.getLogger(__name__).warning(
+                        "Failed to connect to replica %s: %s", url, exc
+                    )
         return cls(replicas)
 
 
@@ -1131,18 +1241,50 @@ class PgvectorMemoryStore(MemoryStore):
     (created by services/management/app/models_sqlalchemy.py::init_schema).
     """
 
-    def __init__(self, write_db, embedding_manager, replica_pool: Optional["ReadReplicaPool"] = None):
-        """
+    def __init__(
+        self,
+        write_db,
+        embedding_manager,
+        replica_pool: Optional["ReadReplicaPool"] = None,
+        embed_cache: Any | None = None,
+        retrieval_cache: Any | None = None,
+    ):
+        """Bind write/read connections and optional caches for pgvector-backed memory ops.
+
         Args:
-            write_db: Primary DAL connection (write operations).
-            embedding_manager: EmbeddingManager instance for generating vectors.
-            replica_pool: ReadReplicaPool for distributing similarity searches.
-                          Falls back to write_db if None or empty.
+        write_db: Primary DAL connection (write operations).
+        embedding_manager: EmbeddingManager instance for generating vectors.
+        replica_pool: ReadReplicaPool for distributing similarity searches.
+                      Falls back to write_db if None or empty.
+        embed_cache: Optional shared.memory.embedding_cache.CachedEmbedder
+                     (§6A.3). When provided, embeddings route through it
+                     (content-hash cache-aside, Valkey->Postgres) instead
+                     of calling embedding_manager.embed directly. None
+                     preserves the pre-existing direct-call behavior.
+        retrieval_cache: Optional shared.memory.retrieval_cache.RetrievalResultCache
+                         (§6A.3). When provided, search_memories results are
+                         cached and store_memory/delete_memory/clear_memories
+                         bump the corpus version to invalidate. None preserves
+                         the pre-existing always-query behavior.
         """
         self.write_db = write_db
         self.embedding_manager = embedding_manager
         self.replica_pool = replica_pool
+        self.embed_cache = embed_cache
+        self.retrieval_cache = retrieval_cache
         self._initialized = False
+
+    async def _embed(self, text: str) -> list[float]:
+        """Route through CachedEmbedder when configured; direct call otherwise.
+
+        embedding_manager.embed is blocking either way -- CachedEmbedder
+        dispatches misses via asyncio.to_thread internally (§3.5); the
+        direct-call fallback below does the same via run_in_executor.
+        """
+        if self.embed_cache is not None:
+            return await self.embed_cache.embed(self.embedding_manager.config.model, text)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.embedding_manager.embed, text)
 
     def _read_db(self):
         """Return a read connection: replica if available, else primary."""
@@ -1164,8 +1306,7 @@ class PgvectorMemoryStore(MemoryStore):
         metadata JSON so metadata-only backends/clients see it too.
         """
         try:
-            loop = asyncio.get_event_loop()
-            embedding = await loop.run_in_executor(None, self.embedding_manager.embed, entry.content)
+            embedding = await self._embed(entry.content)
             embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
 
             author_id = entry.author_user_id or entry.user_id
@@ -1188,6 +1329,8 @@ class PgvectorMemoryStore(MemoryStore):
                     author_id,
                 ),
             )
+            if self.retrieval_cache is not None:
+                await self.retrieval_cache.bump_corpus_version(entry.organization_id, "memory")
             return True
         except Exception as exc:
             logger.error("PgvectorMemoryStore.store_memory failed: %s", exc)
@@ -1198,21 +1341,92 @@ class PgvectorMemoryStore(MemoryStore):
         query: str,
         user_id: int,
         organization_id: int,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         limit: int = 10,
         min_relevance: float = 0.7,
         scope: str = "user",
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Search for relevant memories using cosine similarity.
 
         scope='user' returns the caller's personal rows (default — preserves
         pre-scope behavior for internal callers); 'org' returns org-shared
         rows; 'all' returns the merged view in one indexed query, ranked
         purely by relevance.
+
+        When a retrieval_cache is configured, results are cached per
+        (organization_id, cache-partition, query, limit). The cache
+        partition folds in scope/user_id/session_id/min_relevance -- the
+        RetrievalResultCache primitive's own key is only (org, store,
+        query_hash, top_k) per §6A.5, which is safe only for content
+        genuinely identical for every org caller (scope='org'); personal-
+        scope ('user'/'all') results are caller-specific and must never
+        share a cache slot across users, so those are partitioned into a
+        distinct `store` namespace per (scope, user_id, session_id).
         """
+        if self.retrieval_cache is None:
+            return await self._search_memories_uncached(
+                query, user_id, organization_id, session_id, limit, min_relevance, scope
+            )
+
+        if scope == "org":
+            store = f"memory:org:{min_relevance}"
+        else:
+            store = f"memory:{scope}:{user_id}:{session_id or '-'}:{min_relevance}"
+
+        async def _compute() -> list:
+            entries = await self._search_memories_uncached(
+                query, user_id, organization_id, session_id, limit, min_relevance, scope
+            )
+            return [self._memory_entry_to_dict(e) for e in entries]
+
+        cached = await self.retrieval_cache.get_or_compute(
+            organization_id, store, query, limit, _compute
+        )
+        return [self._dict_from_memory_entry(d) for d in cached]
+
+    @staticmethod
+    def _memory_entry_to_dict(entry: "MemoryEntry") -> dict:
+        return {
+            "id": entry.id,
+            "user_id": entry.user_id,
+            "organization_id": entry.organization_id,
+            "session_id": entry.session_id,
+            "content": entry.content,
+            "metadata": entry.metadata,
+            "created_at": entry.created_at.isoformat(),
+            "relevance_score": entry.relevance_score,
+            "scope_type": entry.scope_type,
+            "author_user_id": entry.author_user_id,
+        }
+
+    @staticmethod
+    def _dict_from_memory_entry(d: dict) -> "MemoryEntry":
+        return MemoryEntry(
+            id=d["id"],
+            user_id=d["user_id"],
+            organization_id=d["organization_id"],
+            session_id=d["session_id"],
+            content=d["content"],
+            metadata=d["metadata"],
+            embedding=None,
+            created_at=datetime.fromisoformat(d["created_at"]),
+            relevance_score=d["relevance_score"],
+            scope_type=d["scope_type"],
+            author_user_id=d["author_user_id"],
+        )
+
+    async def _search_memories_uncached(
+        self,
+        query: str,
+        user_id: int,
+        organization_id: int,
+        session_id: str | None,
+        limit: int,
+        min_relevance: float,
+        scope: str,
+    ) -> list[MemoryEntry]:
         try:
-            loop = asyncio.get_event_loop()
-            embedding = await loop.run_in_executor(None, self.embedding_manager.embed, query)
+            embedding = await self._embed(query)
             embedding_str = "[" + ",".join(str(f) for f in embedding) + "]"
 
             read_db = self._read_db()
@@ -1235,11 +1449,14 @@ class PgvectorMemoryStore(MemoryStore):
             params.extend([embedding_str, min_relevance, embedding_str, limit])
 
             sql = (
-                "SELECT id, user_id, organization_id, session_id, content, role, "
+                "SELECT id, user_id, organization_id, session_id, content, role, "  # nosec B608 -- filter fragments are fixed literals; every value is bound via executesql params
                 "created_at, metadata, scope_type, author_user_id, "
                 "1 - (embedding <=> %s::vector) AS similarity "
                 "FROM memory_embeddings "
-                "WHERE organization_id = %s" + scope_filter + session_filter + " AND embedding IS NOT NULL "
+                "WHERE organization_id = %s"
+                + scope_filter
+                + session_filter
+                + " AND embedding IS NOT NULL "
                 "AND 1 - (embedding <=> %s::vector) >= %s "
                 "ORDER BY embedding <=> %s::vector "
                 "LIMIT %s"
@@ -1266,7 +1483,11 @@ class PgvectorMemoryStore(MemoryStore):
                 ) = row
 
                 try:
-                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                    meta = (
+                        json.loads(metadata_raw)
+                        if isinstance(metadata_raw, str)
+                        else (metadata_raw or {})
+                    )
                 except (json.JSONDecodeError, TypeError):
                     meta = {}
 
@@ -1280,7 +1501,9 @@ class PgvectorMemoryStore(MemoryStore):
                         content=content,
                         metadata=meta,
                         embedding=None,
-                        created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
+                        created_at=created_at
+                        if isinstance(created_at, datetime)
+                        else datetime.utcnow(),
                         relevance_score=float(similarity),
                         scope_type=scope_type or "user",
                         author_user_id=int(author_uid or uid),
@@ -1299,7 +1522,7 @@ class PgvectorMemoryStore(MemoryStore):
         session_id: str,
         limit: int = 20,
         scope: str = "user",
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Retrieve recent conversation history ordered by time (no vector search).
 
         scope semantics match search_memories ('user' default | 'org' | 'all').
@@ -1320,7 +1543,7 @@ class PgvectorMemoryStore(MemoryStore):
             params.extend([session_id, limit])
 
             rows = read_db.executesql(
-                "SELECT id, user_id, organization_id, session_id, content, role, "
+                "SELECT id, user_id, organization_id, session_id, content, role, "  # nosec B608 -- filter fragments are fixed literals; every value is bound via executesql params
                 "created_at, metadata, scope_type, author_user_id "
                 "FROM memory_embeddings "
                 "WHERE organization_id = %s" + scope_filter + " AND session_id = %s "
@@ -1345,7 +1568,11 @@ class PgvectorMemoryStore(MemoryStore):
                     author_uid,
                 ) = row
                 try:
-                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                    meta = (
+                        json.loads(metadata_raw)
+                        if isinstance(metadata_raw, str)
+                        else (metadata_raw or {})
+                    )
                 except (json.JSONDecodeError, TypeError):
                     meta = {}
                 meta["role"] = role
@@ -1358,7 +1585,9 @@ class PgvectorMemoryStore(MemoryStore):
                         content=content,
                         metadata=meta,
                         embedding=None,
-                        created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
+                        created_at=created_at
+                        if isinstance(created_at, datetime)
+                        else datetime.utcnow(),
                         relevance_score=1.0,
                         scope_type=scope_type or "user",
                         author_user_id=int(author_uid or uid),
@@ -1374,7 +1603,7 @@ class PgvectorMemoryStore(MemoryStore):
         self,
         user_id: int,
         organization_id: int,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         scope: str = "user",
         org_all: bool = False,
     ) -> bool:
@@ -1400,16 +1629,21 @@ class PgvectorMemoryStore(MemoryStore):
                 where += " AND session_id = %s"
                 params.append(session_id)
 
+            # `where` is built only from fixed literal fragments chosen by the branches
+            # above (never user input); every actual value is bound via `params` below.
             self.write_db.executesql(
-                "DELETE FROM memory_embeddings WHERE " + where,
+                "DELETE FROM memory_embeddings WHERE "  # nosec B608 # noqa: S608 -- fixed literal fragments only
+                + where,
                 params,
             )
+            if self.retrieval_cache is not None:
+                await self.retrieval_cache.bump_corpus_version(organization_id, "memory")
             return True
         except Exception as exc:
             logger.error("PgvectorMemoryStore.clear_memories failed: %s", exc)
             return False
 
-    async def get_memory_stats(self, user_id: int, organization_id: int) -> Dict[str, Any]:
+    async def get_memory_stats(self, user_id: int, organization_id: int) -> dict[str, Any]:
         """Return memory usage statistics. Routes to read replica."""
         try:
             read_db = self._read_db()
@@ -1436,10 +1670,10 @@ class PgvectorMemoryStore(MemoryStore):
         self,
         user_id: int,
         organization_id: int,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         hours: int = 24,
         limit: int = 20,
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Get recent memories within a time window (no vector search).
 
         Routes to a read replica. Required by the MemoryStore ABC -- this was
@@ -1458,10 +1692,12 @@ class PgvectorMemoryStore(MemoryStore):
             params.append(limit)
 
             sql = (
-                "SELECT id, user_id, organization_id, session_id, content, role, "
+                "SELECT id, user_id, organization_id, session_id, content, role, "  # nosec B608 -- filter fragments are fixed literals; every value is bound via executesql params
                 "created_at, metadata "
                 "FROM memory_embeddings "
-                "WHERE user_id = %s AND organization_id = %s AND created_at >= %s" + session_filter + " "
+                "WHERE user_id = %s AND organization_id = %s AND created_at >= %s"
+                + session_filter
+                + " "
                 "ORDER BY created_at DESC LIMIT %s"
             )
             rows = read_db.executesql(sql, params)
@@ -1472,7 +1708,11 @@ class PgvectorMemoryStore(MemoryStore):
             for row in rows:
                 row_id, uid, org_id, sess_id, content, role, created_at, metadata_raw = row
                 try:
-                    meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else (metadata_raw or {})
+                    meta = (
+                        json.loads(metadata_raw)
+                        if isinstance(metadata_raw, str)
+                        else (metadata_raw or {})
+                    )
                 except (json.JSONDecodeError, TypeError):
                     meta = {}
                 meta["role"] = role
@@ -1485,7 +1725,9 @@ class PgvectorMemoryStore(MemoryStore):
                         content=content,
                         metadata=meta,
                         embedding=None,
-                        created_at=created_at if isinstance(created_at, datetime) else datetime.utcnow(),
+                        created_at=created_at
+                        if isinstance(created_at, datetime)
+                        else datetime.utcnow(),
                         relevance_score=1.0,
                     )
                 )
@@ -1498,9 +1740,23 @@ class PgvectorMemoryStore(MemoryStore):
         """Delete a specific memory by id. Always writes to primary.
 
         Required by the MemoryStore ABC (see get_recent_memories docstring).
+        The ABC signature carries no organization_id, so the owning org is
+        looked up before delete solely to bump its corpus version.
         """
         try:
-            self.write_db.executesql("DELETE FROM memory_embeddings WHERE id = %s", (int(memory_id),))
+            org_id = None
+            if self.retrieval_cache is not None:
+                rows = self.write_db.executesql(
+                    "SELECT organization_id FROM memory_embeddings WHERE id = %s", (int(memory_id),)
+                )
+                org_id = rows[0][0] if rows else None
+
+            self.write_db.executesql(
+                "DELETE FROM memory_embeddings WHERE id = %s", (int(memory_id),)
+            )
+
+            if self.retrieval_cache is not None and org_id is not None:
+                await self.retrieval_cache.bump_corpus_version(org_id, "memory")
             return True
         except Exception as exc:
             logger.error("PgvectorMemoryStore.delete_memory failed: %s", exc)

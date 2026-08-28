@@ -1,0 +1,71 @@
+# Gitleaks configuration -- SCOPE ONLY.
+#
+# Per .pre-commit-config.yaml this repo does not allowlist findings by
+# fingerprint: every finding in first-party source is treated as real. What is
+# excluded here are paths that are not this repo's source, plus the fixtures
+# for the secret-detection feature itself.
+#
+#   .venv/, node_modules/     third-party dependencies
+#   .worktrees/               a second checkout of THIS repo (double-counted 78)
+#   services/penguincode/     vendored upstream
+#   __pycache__/, *.pyc       compiled bytecode, not source
+#
+# The three test files below must contain credential-shaped strings -- that is
+# precisely what they assert the content filter and prompt-security scanner
+# detect. Stripping them would delete the subject of the test.
+#
+# Removing a path from this list is fine. Adding a fingerprint allowlist is not.
+#
+# Verify after ANY edit here that detection still works. The canary below is
+# NOT "AKIAIOSFODNN7EXAMPLE" -- that value is silently swallowed by gitleaks'
+# own built-in global allowlist regex `.+EXAMPLE$` (confirmed on gitleaks
+# 8.30.1), so a gate built on it can never fail and is not a gate. Use two
+# canaries instead, one per rule that must stay live:
+#
+#   printf 'AWS_ACCESS_KEY_ID = "AKIAVUU7QZDWASV3TUYA"\napi_key = "wa-nw2w40-sp7sker6heq7y7h0hy92s2f2ejd6jedx"\n' > docs/_canary_tmp.md
+#   gitleaks detect --source . --no-git --redact --config .gitleaks.toml --exit-code 1 --log-level error   # must exit non-zero
+#   rm docs/_canary_tmp.md
+#
+# Expected: exit code 1, with findings naming BOTH `aws-access-token` (the
+# built-in default rule -- proves `[extend] useDefault = true` is still
+# wired up) and `generic-api-key` (the custom rule below -- proves the
+# WaddleAI-specific `wa-` shape is still caught). If either rule id is
+# missing from the output, or the command exits 0, the config is broken.
+#
+# AWS canary format note: the built-in `aws-access-token` regex requires
+# `AKIA` + 16 chars from `[A-Z2-7]` (base32 charset -- digits 0/1/8/9 are NOT
+# valid there) and must NOT end in the literal "EXAMPLE". A key containing
+# `0`/`1`/`8`/`9` in that span silently fails to match -- that is not the
+# same failure mode as the EXAMPLE-suffix allowlist, and produces the same
+# false-confidence "clean" result. Regenerate with:
+#   .venv/bin/python -c "import secrets,string; chars=string.ascii_uppercase+'234567'; print('AKIA'+''.join(secrets.choice(chars) for _ in range(16)))"
+#
+# A config that reports zero findings may be broken rather than clean.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-source trees, bytecode, and secret-detection fixtures"
+paths = [
+  '''^\.venv/''',
+  '''^\.worktrees/''',
+  '''(^|/)node_modules/''',
+  '''^services/penguincode/''',
+  '''(^|/)__pycache__/''',
+  '''\.pyc$''',
+  '''^tests/unit/security/test_content_filter_redaction\.py$''',
+  '''^tests/unit/test_prompt_security_merge\.py$''',
+  '''^services/webui/src/test/VirtualKeys\.test\.jsx$''',
+]
+
+[[rules]]
+id = "generic-api-key"
+description = "generic-api-key, with the None-assignment false positive excluded"
+regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-9a-z\-_\t .]{0,20})(?:[\s|']|[\s|"]){0,3}(?:=|>|:{1,3}=|\|\|:|<=|=>|:|\?=)(?:'|\"|\s|=|\x60){0,5}([0-9a-z\-_.=]{10,150})(?:['|\"|\n|\r|\s|\x60|;]|$)'''
+keywords = ["key", "api", "token", "secret", "client", "passwd", "password", "auth", "access"]
+[rules.allowlist]
+# `reservation_id=None` in a mock's kwargs is not a credential. Matching the
+# VALUE `None` rather than a path keeps this narrow: any real secret in the same
+# file still fails.
+regexes = ['''^None$''']

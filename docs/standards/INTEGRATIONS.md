@@ -114,10 +114,12 @@ Auto-generate MarchProxy config from your app settings:
 
 ```python
 """Generate MarchProxy import configuration"""
+
 import json
 import os
 from dataclasses import dataclass, asdict
 from typing import Optional
+
 
 @dataclass
 class MarchProxyService:
@@ -131,6 +133,7 @@ class MarchProxyService:
     health_check_path: str = "/healthz"
     health_check_interval: int = 30
 
+
 def generate_marchproxy_config(app_name: str, services: list[MarchProxyService]) -> dict:
     """Generate MarchProxy-compatible configuration"""
     return {
@@ -138,15 +141,17 @@ def generate_marchproxy_config(app_name: str, services: list[MarchProxyService])
         "metadata": {
             "app_name": app_name,
             "generated_by": "project-template",
-            "version": os.getenv("APP_VERSION", "0.0.0")
-        }
+            "version": os.getenv("APP_VERSION", "0.0.0"),
+        },
     }
+
 
 def write_marchproxy_config(config: dict, output_dir: str = "config/marchproxy"):
     """Write configuration to file"""
     os.makedirs(output_dir, exist_ok=True)
     with open(f"{output_dir}/import-config.json", "w") as f:
         json.dump(config, f, indent=2)
+
 
 # Example usage
 if __name__ == "__main__":
@@ -156,13 +161,10 @@ if __name__ == "__main__":
             ip_fqdn="flask-backend",
             port=8080,
             protocol="http",
-            auth_type="jwt"
+            auth_type="jwt",
         ),
         MarchProxyService(
-            name="myapp-go-backend",
-            ip_fqdn="go-backend",
-            port=50051,
-            protocol="grpc"
+            name="myapp-go-backend", ip_fqdn="go-backend", port=50051, protocol="grpc"
         ),
     ]
     config = generate_marchproxy_config("myapp", services)
@@ -275,33 +277,31 @@ import os
 import httpx
 from typing import Dict, Any, Optional
 
+
 class WaddleAIClient:
     """Client for WaddleAI service"""
 
     def __init__(self, base_url: Optional[str] = None):
-        self.base_url = base_url or os.getenv('WADDLEAI_URL', 'http://localhost:8000')
+        self.base_url = base_url or os.getenv("WADDLEAI_URL", "http://localhost:8000")
         self.client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
 
     async def analyze_text(self, text: str, task: str = "sentiment") -> Dict[str, Any]:
         """Analyze text with AI model"""
-        response = await self.client.post(
-            "/api/v1/analyze",
-            json={"text": text, "task": task}
-        )
+        response = await self.client.post("/api/v1/analyze", json={"text": text, "task": task})
         response.raise_for_status()
         return response.json()
 
     async def generate_response(self, prompt: str, context: Optional[str] = None) -> str:
         """Generate AI response"""
         response = await self.client.post(
-            "/api/v1/generate",
-            json={"prompt": prompt, "context": context}
+            "/api/v1/generate", json={"prompt": prompt, "context": context}
         )
         response.raise_for_status()
         return response.json()["response"]
 
     async def close(self):
         await self.client.aclose()
+
 
 # Flask integration
 from flask import Flask, request, jsonify
@@ -310,13 +310,14 @@ from shared.licensing import requires_feature
 app = Flask(__name__)
 ai_client = WaddleAIClient()
 
-@app.route('/api/v1/ai/analyze', methods=['POST'])
+
+@app.route("/api/v1/ai/analyze", methods=["POST"])
 @auth_required()
-@requires_feature('ai_analysis')  # License-gate AI features
+@requires_feature("ai_analysis")  # License-gate AI features
 async def ai_analyze():
     """AI-powered analysis - enterprise feature"""
     data = request.get_json()
-    result = await ai_client.analyze_text(data['text'], data.get('task', 'sentiment'))
+    result = await ai_client.analyze_text(data["text"], data.get("task", "sentiment"))
     return jsonify(result)
 ```
 
@@ -355,14 +356,15 @@ AI features should be enterprise/professional tier only:
 ```python
 # Define feature tiers
 AI_FEATURES = {
-    'ai_analysis': 'professional',      # Professional tier+
-    'ai_generation': 'professional',    # Professional tier+
-    'ai_training': 'enterprise',        # Enterprise only
-    'ai_custom_models': 'enterprise'    # Enterprise only
+    "ai_analysis": "professional",  # Professional tier+
+    "ai_generation": "professional",  # Professional tier+
+    "ai_training": "enterprise",  # Enterprise only
+    "ai_custom_models": "enterprise",  # Enterprise only
 }
 
 # Check what's available
 from shared.licensing import license_client
+
 
 def check_ai_features():
     """Check available AI features based on license"""
@@ -438,13 +440,15 @@ Error handling:
 # Python: Check feature entitlement
 from app.license import license_manager
 
-@require_feature('sso_integration')
+
+@require_feature("sso_integration")
 def enable_sso():
     # Only runs if license allows SSO
     pass
 
+
 # Manual check
-if license_manager.is_feature_enabled('audit_logs'):
+if license_manager.is_feature_enabled("audit_logs"):
     # Log important actions
     pass
 ```
@@ -477,13 +481,9 @@ Every hour, report usage to license server:
 
 ```python
 {
-  "license_key": "PENG-XXXX-XXXX-XXXX-XXXX-ABCD",
-  "product": "project-template",
-  "usage": {
-    "active_users": 42,
-    "team_count": 8,
-    "storage_gb": 125
-  }
+    "license_key": "PENG-XXXX-XXXX-XXXX-XXXX-ABCD",
+    "product": "project-template",
+    "usage": {"active_users": 42, "team_count": 8, "storage_gb": 125},
 }
 ```
 
@@ -526,17 +526,22 @@ CREATE INDEX idx_config_key ON config(config_key);
 ### PyDAL Table Definition
 
 ```python
-db.define_table('config',
-    Field('config_key', 'string', unique=True, required=True),
-    Field('config_value', 'text', required=True),
-    Field('config_type', 'string', requires=IS_IN_SET(['string', 'integer', 'boolean', 'json'])),
-    Field('category', 'string', requires=IS_IN_SET(['integration', 'system', 'security', 'database', 'email'])),
-    Field('description', 'text'),
-    Field('is_sensitive', 'boolean', default=False),
-    Field('last_updated', 'datetime', default=request.now, update=request.now),
-    Field('updated_by', 'string'),
-    Field('created_at', 'datetime', default=request.now),
-    migrate=True
+db.define_table(
+    "config",
+    Field("config_key", "string", unique=True, required=True),
+    Field("config_value", "text", required=True),
+    Field("config_type", "string", requires=IS_IN_SET(["string", "integer", "boolean", "json"])),
+    Field(
+        "category",
+        "string",
+        requires=IS_IN_SET(["integration", "system", "security", "database", "email"]),
+    ),
+    Field("description", "text"),
+    Field("is_sensitive", "boolean", default=False),
+    Field("last_updated", "datetime", default=request.now, update=request.now),
+    Field("updated_by", "string"),
+    Field("created_at", "datetime", default=request.now),
+    migrate=True,
 )
 ```
 
@@ -545,11 +550,12 @@ db.define_table('config',
 ```python
 import os, json
 
+
 def bootstrap_configuration(db):
     """Bootstrap config from env vars on first run"""
     mappings = {
-        'smtp_host': ('SMTP_HOST', 'email', 'string', 'SMTP server', False),
-        'waddleai_url': ('WADDLEAI_URL', 'integration', 'string', 'WaddleAI endpoint', False),
+        "smtp_host": ("SMTP_HOST", "email", "string", "SMTP server", False),
+        "waddleai_url": ("WADDLEAI_URL", "integration", "string", "WaddleAI endpoint", False),
     }
 
     for key, (env, cat, typ, desc, sens) in mappings.items():
@@ -557,19 +563,30 @@ def bootstrap_configuration(db):
             val = os.getenv(env)
             if val and (v := validate_config(val, typ)):
                 db.config.insert(
-                    config_key=key, config_value=str(v), config_type=typ,
-                    category=cat, description=desc, is_sensitive=sens, updated_by='system'
+                    config_key=key,
+                    config_value=str(v),
+                    config_type=typ,
+                    category=cat,
+                    description=desc,
+                    is_sensitive=sens,
+                    updated_by="system",
                 )
     db.commit()
+
 
 def validate_config(value, config_type):
     """Validate and parse config value"""
     try:
-        if config_type == 'integer': return int(value)
-        elif config_type == 'boolean': return value.lower() in ['true', '1', 'yes']
-        elif config_type == 'json': return json.dumps(json.loads(value))
-        else: return value
-    except: return None
+        if config_type == "integer":
+            return int(value)
+        elif config_type == "boolean":
+            return value.lower() in ["true", "1", "yes"]
+        elif config_type == "json":
+            return json.dumps(json.loads(value))
+        else:
+            return value
+    except:
+        return None
 ```
 
 ### Admin API Endpoints
@@ -580,36 +597,45 @@ Expose configuration management to admins only:
 from flask import Flask, request, jsonify
 from flask_security import auth_required, roles_required, current_user
 
-@app.route('/api/v1/config', methods=['GET'])
+
+@app.route("/api/v1/config", methods=["GET"])
 @auth_required()
-@roles_required('admin')
+@roles_required("admin")
 def list_config():
     """List all configurations (masks sensitive values)"""
     configs = db(db.config).select(orderby=db.config.category)
-    return jsonify({'configs': [{
-        'key': c.config_key,
-        'value': '***SENSITIVE***' if c.is_sensitive else c.config_value,
-        'type': c.config_type,
-        'category': c.category,
-        'description': c.description
-    } for c in configs]})
+    return jsonify(
+        {
+            "configs": [
+                {
+                    "key": c.config_key,
+                    "value": "***SENSITIVE***" if c.is_sensitive else c.config_value,
+                    "type": c.config_type,
+                    "category": c.category,
+                    "description": c.description,
+                }
+                for c in configs
+            ]
+        }
+    )
 
-@app.route('/api/v1/config/<config_key>', methods=['PUT'])
+
+@app.route("/api/v1/config/<config_key>", methods=["PUT"])
 @auth_required()
-@roles_required('admin')
+@roles_required("admin")
 def update_config(config_key):
     """Update configuration value"""
     config = db(db.config.config_key == config_key).select().first()
     if not config:
-        return jsonify({'error': 'Not found'}), 404
+        return jsonify({"error": "Not found"}), 404
 
-    validated = validate_config(request.get_json().get('value'), config.config_type)
+    validated = validate_config(request.get_json().get("value"), config.config_type)
     if validated is None:
-        return jsonify({'error': 'Invalid value'}), 400
+        return jsonify({"error": "Invalid value"}), 400
 
     config.update_record(config_value=str(validated), updated_by=current_user.email)
     db.commit()
-    return jsonify({'message': 'Updated'})
+    return jsonify({"message": "Updated"})
 ```
 
 ### Settings Page (React)

@@ -11,11 +11,12 @@ from pathlib import Path
 
 import httpx
 import typer
+from rich.console import Console
+from rich.table import Table
+
 from penguincode_cli.config.settings import load_settings
 from penguincode_cli.core import start_repl
 from penguincode_cli.core.session import SessionManager
-from rich.console import Console
-from rich.table import Table
 
 app = typer.Typer(
     name="penguincode",

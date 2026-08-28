@@ -1,219 +1,131 @@
 # Testing Guide
 
-Comprehensive testing documentation for WaddleAI, including unit tests, integration tests, smoke tests, dual token validation, and multi-backend routing verification.
+Comprehensive testing documentation for WaddleAI, including unit tests, contract/snapshot
+tests, smoke tests, and dual-token/multi-backend-routing verification.
 
 ## Overview
 
-Testing is organized into multiple levels to ensure comprehensive coverage, fast feedback, and production-ready code for the proxy and management services:
+| Test Level | Purpose | Runner | Status Today |
+|-----------|---------|--------|--------------|
+| **Unit Tests** | Isolated function/method testing | `pytest tests/unit/` | 3540 passed, 5 skipped, 92.52% coverage (90% gate) |
+| **Contract Tests** | Request/response snapshot assertions for proxy + management | `pytest tests/contract/` | 80 tests collected |
+| **Web UI Tests** | React component/unit tests | `npm test` (vitest) in `services/webui/` | 244 tests, 90% gate met |
+| **Smoke Tests** | Fast post-deploy verification | two standalone bash scripts | not `pytest`-discoverable — see [Smoke Tests](#smoke-tests) |
+| **Integration Tests** | Component interaction against live backends | `pytest tests/integration/` | 84 tests across 10 modules; needs reachable services |
+| **E2E Tests** | Critical workflows end-to-end | Playwright, `tests/e2e/` (separate npm project) | not wired into `make test-e2e` — see [End-to-End Tests](#end-to-end-tests) |
+| **Performance Tests** | Scalability/throughput | — | no `make` target or script exists yet |
 
-| Test Level | Purpose | Speed | Coverage |
-|-----------|---------|-------|----------|
-| **Smoke Tests** | Fast verification of basic functionality | <2 min | Proxy health, management health, dual token validation, backend routing |
-| **Unit Tests** | Isolated function/method testing | <1 min | Proxy logic, token validation, routing algorithms |
-| **Integration Tests** | Component interaction verification | 1-5 min | Proxy-DB interaction, multi-backend routing, token consumption tracking |
-| **E2E Tests** | Critical workflows end-to-end | 5-10 min | API requests with dual token tracking, backend selection |
-| **Performance Tests** | Scalability and throughput validation | 5-15 min | Token validation overhead, routing latency |
+Runtime database access goes through **`penguin-dal`**. **SQLAlchemy + Alembic**
+(`services/management/alembic/`) are schema/migration only — never used for runtime
+queries in tests or application code. Raw PyDAL is being migrated away from; if you find
+it in a test fixture, that's a fix-on-sight per `.claude/rules` `backend-database.md`.
 
 ---
 
 ## Mock Data Scripts
 
+### Current State
+
+**`make seed-mock-data` is a no-op placeholder today** (`@echo "No mock data seeding
+defined"` in the `Makefile`) — there is no `scripts/mock-data/` directory in this repo yet.
+The pattern below is the PenguinTech house standard for when seeders are added (see
+`.claude/rules` `general.md`/`testing.md`, 3-4 items per feature) — treat it as the target
+shape to build toward, not as something you can run today.
+
+### Naming Convention (once implemented)
+
+- **Python**: `scripts/mock-data/seed-{feature-name}.py`, orchestrated by a
+  `scripts/mock-data/seed-all.py` that runs all seeders in order
+- One seeder per logical entity/feature, 3-4 representative items each — enough to cover
+  the feature's variations without bloating the dev database
+
+### Implementation Pattern (target — not yet present)
+
+Use `penguin-dal` for the insert, not raw PyDAL or SQLAlchemy:
+
+```python
+#!/usr/bin/env python3
+"""Seed mock data for API keys with dual-token quotas."""
+
+from penguin_dal import create_dal
+import os
+
+
+def seed_keys() -> None:
+    db = create_dal(
+        db_type=os.getenv("DB_TYPE", "postgresql"), connection_string=os.environ["DATABASE_URL"]
+    )
+
+    keys = [
+        {
+            "name": "unlimited-key",
+            "waddleai_quota": 1_000_000,
+            "llm_quota": 500_000,
+            "status": "active",
+        },
+        {"name": "limited-key", "waddleai_quota": 100_000, "llm_quota": 50_000, "status": "active"},
+        {"name": "demo-key", "waddleai_quota": 10_000, "llm_quota": 5_000, "status": "active"},
+        {"name": "revoked-key", "waddleai_quota": 0, "llm_quota": 0, "status": "revoked"},
+    ]
+
+    for key in keys:
+        db.api_keys.insert(**key)
+
+    print(f"Seeded {len(keys)} API keys")
+
+
+if __name__ == "__main__":
+    seed_keys()
+```
+
+### Execution (once implemented)
+
+```bash
+make seed-mock-data                       # Via Makefile, once wired up
+python3 scripts/mock-data/seed-all.py     # Direct execution
+```
+
+### When to Create a Seeder
+
+Add a `seed-{feature}.py` (and wire it into `seed-all.py` and the `seed-mock-data`
+Makefile target) whenever a new feature needs realistic dev data — quotas, backend
+connections, routing rules, users. This is currently outstanding for every existing
+feature in this repo.
+
+---
+
+## Contract Tests
+
 ### Purpose
 
-Mock data scripts populate the development database with realistic test data, enabling:
-- Rapid local development without manual data entry
-- Consistent test data across the development team
-- Documentation of expected data structure and relationships
-- Quick feature iteration with pre-populated databases for dual token system and routing
+Request/response snapshot tests for the proxy and management APIs — the closest thing
+this repo has to dedicated API tests today. There is **no `tests/api/` directory**;
+contract tests are it.
 
 ### Location & Structure
 
 ```
-scripts/mock-data/
-├── seed-all.py             # Orchestrator: runs all seeders in order
-├── seed-users.py           # 3-4 users with different roles/permissions
-├── seed-backends.py        # 3-4 LLM backend connections (OpenAI, Anthropic, Ollama)
-├── seed-tokens.py          # 3-4 API tokens with dual token quotas
-├── seed-routes.py          # Routing rules and model mappings
-├── seed-[feature].py       # Additional feature-specific seeders
-└── README.md               # Instructions for running mock data
+tests/contract/
+├── conftest.py
+├── snapshot.py
+├── test_proxy_contract.py
+├── test_proxy_health.py
+├── test_management_contract.py
+├── test_management_mutations.py
+└── snapshots/              # stored JSON responses, one per scenario
 ```
 
-### Naming Convention
-
-- **Python**: `seed-{feature-name}.py`
-- **Shell**: `seed-{feature-name}.sh`
-- **Organization**: One seeder per logical entity/feature
-
-### Scope: 3-4 Items Per Feature
-
-Each seeder should create **exactly 3-4 representative items** to test all feature variations without creating excessive test data:
-
-**Example (API Tokens with Dual Token System)**:
-```python
-# seed-tokens.py
-items = [
-    {
-        "name": "unlimited-token",
-        "waddleai_quota": 1000000,
-        "llm_quota": 500000,
-        "status": "active"
-    },
-    {
-        "name": "limited-token",
-        "waddleai_quota": 100000,
-        "llm_quota": 50000,
-        "status": "active"
-    },
-    {
-        "name": "demo-token",
-        "waddleai_quota": 10000,
-        "llm_quota": 5000,
-        "status": "active"
-    },
-    {
-        "name": "revoked-token",
-        "waddleai_quota": 0,
-        "llm_quota": 0,
-        "status": "revoked"
-    },
-]
-```
-
-**Example (Multi-Backend Connections)**:
-```python
-# seed-backends.py
-items = [
-    {
-        "name": "OpenAI GPT-4",
-        "provider": "openai",
-        "endpoint": "https://api.openai.com/v1",
-        "enabled": True
-    },
-    {
-        "name": "Anthropic Claude",
-        "provider": "anthropic",
-        "endpoint": "https://api.anthropic.com/v1",
-        "enabled": True
-    },
-    {
-        "name": "Ollama Local",
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434/v1",
-        "enabled": True
-    },
-    {
-        "name": "Disabled Backend",
-        "provider": "openai",
-        "endpoint": "https://api.openai.com/v1",
-        "enabled": False
-    },
-]
-```
+`tests/contract/snapshots/` covers auth (login/logout/refresh/verify/change-password),
+orgs, users, keys, quotas, usage, providers, routing matrix, ollama/llamacpp deployments,
+webhooks, mem0 memory scoping, and error responses (400/404/401/403) — see the filenames
+in that directory for the exact current surface.
 
 ### Execution
 
-**Seed all test data**:
 ```bash
-make seed-mock-data          # Via Makefile
-python scripts/mock-data/seed-all.py  # Direct execution
+make test-contract                    # Via Makefile
+pytest tests/contract/ -v --no-cov    # Direct — 80 tests collected today
 ```
-
-**Seed specific feature**:
-```bash
-python scripts/mock-data/seed-users.py
-python scripts/mock-data/seed-tokens.py
-python scripts/mock-data/seed-backends.py
-```
-
-### Implementation Pattern
-
-**Python (PyDAL)**:
-```python
-#!/usr/bin/env python3
-"""Seed mock data for API tokens with dual token system."""
-
-from shared.db import get_db
-
-def seed_tokens():
-    db = get_db()
-
-    tokens = [
-        {
-            "name": "unlimited-token",
-            "waddleai_quota": 1000000,
-            "llm_quota": 500000,
-            "status": "active"
-        },
-        {
-            "name": "limited-token",
-            "waddleai_quota": 100000,
-            "llm_quota": 50000,
-            "status": "active"
-        },
-        {
-            "name": "demo-token",
-            "waddleai_quota": 10000,
-            "llm_quota": 5000,
-            "status": "active"
-        },
-        {
-            "name": "revoked-token",
-            "waddleai_quota": 0,
-            "llm_quota": 0,
-            "status": "revoked"
-        },
-    ]
-
-    for token in tokens:
-        db.api_tokens.insert(**token)
-
-    print(f"✓ Seeded {len(tokens)} API tokens")
-
-if __name__ == "__main__":
-    seed_tokens()
-```
-
-**Shell (curl/API)**:
-```bash
-#!/bin/bash
-# seed-backends.sh
-
-API_URL="${API_URL:-http://localhost:8001}"
-TOKEN="${AUTH_TOKEN}"
-
-# Backend 1: OpenAI
-curl -X POST "$API_URL/api/v1/backends" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "OpenAI GPT-4", "provider": "openai", "enabled": true}'
-
-# Backend 2: Anthropic
-curl -X POST "$API_URL/api/v1/backends" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name": "Anthropic", "provider": "anthropic", "enabled": true}'
-
-# Backend 3: Ollama
-curl -X POST "$API_URL/api/v1/backends" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name": "Ollama Local", "provider": "ollama", "enabled": true}'
-
-# Backend 4: Disabled
-curl -X POST "$API_URL/api/v1/backends" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name": "Disabled Backend", "provider": "openai", "enabled": false}'
-
-echo "✓ Seeded 4 backends"
-```
-
-### When to Create Mock Data Scripts
-
-**Create a mock data script after each new feature/entity completion**:
-- After implementing dual token tracking → create `seed-tokens.py`
-- After implementing backend routing → create `seed-backends.py`
-- After implementing user roles → create `seed-users.py`
-
-This ensures developers can immediately test the feature without manual setup.
 
 ---
 
@@ -221,157 +133,50 @@ This ensures developers can immediately test the feature without manual setup.
 
 ### Purpose
 
-Smoke tests provide fast verification that basic functionality works after code changes, preventing regressions in proxy/management services and dual token system.
+Fast verification that basic functionality works after code changes or a deploy.
 
-### Requirements (Mandatory)
+### Current State
 
-All projects **MUST** implement smoke tests before committing:
-
-- ✅ **Proxy Health Check**: Proxy service responds with 200/healthy status
-- ✅ **Management Health Check**: Management service responds with 200/healthy status
-- ✅ **Dual Token Validation**: Token quota system works correctly
-- ✅ **Backend Routing Check**: Multi-backend routing responds correctly
-- ✅ **API Authentication**: API endpoints require valid tokens
-
-### Location & Structure
+`make smoke-test` runs `pytest tests/smoke -v`, but **`tests/smoke/` has no
+`pytest`-discoverable `test_*.py` files today** — only two standalone bash scripts. Running
+`make smoke-test` as-is collects zero tests. Run the scripts directly instead:
 
 ```
 tests/smoke/
-├── health/              # Service health verification
-│   ├── test-proxy-health.sh
-│   ├── test-management-health.sh
-│   └── README.md
-├── tokens/              # Dual token system verification
-│   ├── test-token-validation.sh
-│   ├── test-quota-enforcement.sh
-│   └── README.md
-├── routing/             # Multi-backend routing verification
-│   ├── test-backend-routing.sh
-│   ├── test-model-mapping.sh
-│   └── README.md
-├── run-all.sh      # Execute all smoke tests
-└── README.md       # Documentation
+├── test-production.sh          # Hits a live BASE_URL (default: https://waddleai.penguintech.io)
+└── test_management_build.sh    # Static/build checks for services/management — see caveat below
 ```
 
 ### Execution
 
-**Run all smoke tests**:
 ```bash
-make smoke-test              # Via Makefile
-./tests/smoke/run-all.sh     # Direct execution
+# Against a live deployment
+BASE_URL=https://waddleai.penguintech.io ./tests/smoke/test-production.sh
+
+# Static file/build checks for the management service
+./tests/smoke/test_management_build.sh
 ```
 
-**Run specific test category**:
-```bash
-./tests/smoke/health/test-proxy-health.sh
-./tests/smoke/tokens/test-token-validation.sh
-./tests/smoke/routing/test-backend-routing.sh
-```
+`test-production.sh` checks: WebUI homepage loads (200 or 403 — Cloudflare may challenge),
+login page loads, `/healthz` returns `healthy`, `/readyz` returns 200/503.
+
+**Caveat on `test_management_build.sh`**: it predates the Phase-1 services/ consolidation
+and checks for a root `docker-compose.yml` and for `flask`/`flask-security-too`/`pydal` in
+`services/management/requirements.txt`. None of those are current — the service runs
+Quart/hypercorn with `penguin-dal`, and there is no root `docker-compose.yml` (Docker
+Compose is deprecated for every environment here — deployment is Helm, `k8s/helm/waddleai`).
+Treat its pass/fail as informative about file existence and Docker build success only,
+not as confirmation of the current stack.
 
 ### Speed Requirement
 
-Complete smoke test suite **MUST run in under 2 minutes** to provide fast feedback during development.
-
-### Implementation Examples
-
-**Health Check Test (Shell)**:
-```bash
-#!/bin/bash
-# tests/smoke/health/test-proxy-health.sh
-
-set -e
-
-echo "Testing Proxy service health..."
-HEALTH_URL="http://localhost:8000/health"
-
-RESPONSE=$(curl -s -w "\n%{http_code}" "$HEALTH_URL")
-HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-BODY=$(echo "$RESPONSE" | sed '$d')
-
-if [ "$HTTP_CODE" = "200" ]; then
-    echo "✓ Proxy service is healthy (HTTP $HTTP_CODE)"
-    echo "  Response: $BODY"
-    exit 0
-else
-    echo "✗ Proxy service is unhealthy (HTTP $HTTP_CODE)"
-    exit 1
-fi
-```
-
-**Dual Token Validation Test**:
-```bash
-#!/bin/bash
-# tests/smoke/tokens/test-token-validation.sh
-
-set -e
-
-echo "Validating dual token system..."
-API_URL="http://localhost:8000"
-TEST_TOKEN="wa-test-token"
-
-# Test token authentication
-RESPONSE=$(curl -s -X POST "$API_URL/v1/chat/completions" \
-  -H "Authorization: Bearer $TEST_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "test"}]}' \
-  -w "\n%{http_code}")
-
-HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-
-if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "429" ]; then
-    echo "✓ Token authentication working (HTTP $HTTP_CODE)"
-    exit 0
-else
-    echo "✗ Token authentication failed (HTTP $HTTP_CODE)"
-    exit 1
-fi
-```
-
-**Backend Routing Test**:
-```bash
-#!/bin/bash
-# tests/smoke/routing/test-backend-routing.sh
-
-set -e
-
-echo "Testing multi-backend routing..."
-API_URL="http://localhost:8000"
-TOKEN="wa-test-token"
-
-# Test smart router
-RESPONSE=$(curl -s -X POST "$API_URL/v1/chat/completions" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "smart-router",
-    "messages": [{"role": "user", "content": "test"}]
-  }' \
-  -w "\n%{http_code}")
-
-HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-
-if [ "$HTTP_CODE" = "200" ]; then
-    echo "✓ Backend routing working (HTTP $HTTP_CODE)"
-    exit 0
-else
-    echo "✗ Backend routing failed (HTTP $HTTP_CODE)"
-    exit 1
-fi
-```
+Once a real `pytest`-based smoke suite exists under `tests/smoke/`, it must complete in
+under 2 minutes, per the company-wide standard.
 
 ### Pre-Commit Integration
 
-Smoke tests run as part of the pre-commit checklist (step 5) and **must pass before proceeding** to full test suite:
-
-```bash
-./scripts/pre-commit/pre-commit.sh
-# Step 1: Linters
-# Step 2: Security scans
-# Step 3: No secrets
-# Step 4: Build & Run
-# Step 5: Smoke tests ← Must pass
-# Step 6: Full tests
-```
+Smoke tests are step 3 of `make pre-commit` (`lint` → `test-security` → `test`); there is
+no separate smoke gate wired into `pre-commit` today beyond what `make test` covers.
 
 ---
 
@@ -379,42 +184,58 @@ Smoke tests run as part of the pre-commit checklist (step 5) and **must pass bef
 
 ### Purpose
 
-Unit tests verify individual functions and methods in isolation with mocked dependencies, especially token validation and routing logic.
+Isolated function/method tests with mocked dependencies.
 
 ### Location
 
 ```
 tests/unit/
-├── proxy/
-│   ├── test_auth.py
-│   ├── test_token_validation.py
-│   ├── test_routing.py
-│   ├── test_dual_tokens.py
-│   └── test_cache.py
-├── management/
-│   ├── test_user_management.py
-│   ├── test_analytics.py
-│   └── test_quota_management.py
-└── shared/
-    ├── test_db.py
-    └── test_token_system.py
+├── *.py            # 28 files: token accounting, routing, RBAC, feature flags, gRPC auth
+├── cache/          # 11 files -- response cache eligibility/replay/poisoning
+├── docs/           # 1 file -- docs/docs-site mirroring guard (see test_docs_site_sync.py)
+├── fleet/          # 7 files -- llama.cpp/Ollama fleet backend management
+├── knowledge/      # 6 files -- CodeRAG/knowledge layer primitives
+├── management/     # 56 files -- auth, keys, orgs, quotas, usage, providers, ollama,
+│                   #   llamacpp, webhooks, app init
+├── mcp/            # 9 files -- MCP endpoint integration/config
+├── memory/         # 10 files -- the four proxy memory layers, mem0 scoping
+├── proxy/          # 15 files -- pipeline stages, endpoint parity, connectors
+├── routing/        # 15 files -- smart-routing engine, capability veto, complexity classifier
+├── security/       # 23 files -- content filter tiers, NER, prompt security, hooks
+└── vectorstore/    # 4 files -- pgvector/Qdrant backend seam
 ```
+
+The subdirectory split (`cache/`, `fleet/`, `knowledge/`, `mcp/`, `memory/`, `routing/`,
+`vectorstore/`) grew out of the coverage-ratchet work that took this suite from ~1141 to
+3540 tests — new feature areas get their own subdirectory rather than flat files in
+`tests/unit/`.
+
+Token-accounting tests: `test_token_manager.py`, `test_token_manager_costmodel.py`,
+`test_token_limiter.py`, `test_metering.py`. Routing tests: `test_request_router.py`,
+`test_request_router_breaker.py`, `test_request_router_merge.py`, `test_routing_matrix.py`.
 
 ### Execution
 
 ```bash
-make test-unit              # All unit tests
-pytest tests/unit/          # Python
-pytest tests/unit/proxy/test_token_validation.py  # Specific test
+make test-unit                              # All unit tests
+pytest tests/unit/                          # Same, direct
+pytest tests/unit/test_token_manager.py -v  # Specific file
 ```
 
 ### Requirements
 
-- All dependencies must be mocked
-- Network calls must be stubbed
-- Database access must be isolated
-- Token validation must verify both WaddleAI and LLM tokens
-- Routing logic must test all backend fallback scenarios
+- All external dependencies mocked (network, DB)
+- Coverage gate: **90%**, branch coverage on (`.coveragerc`, `fail_under = 90`,
+  `branch = True`) — actual coverage today is 92.52%, comfortably above the gate; don't
+  let it regress toward the floor. Run with `--cov-report=term-missing` to see exactly
+  which lines/branches are uncovered before adding a test, not just the percentage
+- Coverage source scope is `shared` and `services/management/app` only (see
+  `[run] source =` in `.coveragerc`) — `pytest.ini` additionally passes `--cov=proxy`,
+  but no `proxy/` files appear in the coverage report or count toward the gate; the
+  `.coveragerc` `source` restriction wins
+- CI asserts a minimum collected-test count for `tests/unit`, so a path filter or import
+  error that silently collects zero tests fails the build loudly instead of reporting a
+  false "clean" 90%
 
 ---
 
@@ -422,43 +243,44 @@ pytest tests/unit/proxy/test_token_validation.py  # Specific test
 
 ### Purpose
 
-Integration tests verify that components work together correctly, including real database interactions, multi-backend routing, and dual token consumption tracking.
+Component interaction verification against a real database.
 
-### Location
+### Current State
 
-```
-tests/integration/
-├── proxy/
-│   ├── test_token_consumption.py
-│   ├── test_backend_routing.py
-│   ├── test_quota_enforcement.py
-│   └── test_api_contracts.py
-├── management/
-│   ├── test_user_creation.py
-│   ├── test_analytics_pipeline.py
-│   └── test_quota_management.py
-├── services/
-│   ├── test_proxy_management_integration.py
-│   └── test_dual_token_tracking.py
-└── database/
-    ├── test_migrations.py
-    └── test_queries.py
-```
+`tests/integration/` holds **84 tests across ten modules**, all tracked in git:
+
+| Module | Covers | Needs a live service? |
+|---|---|---|
+| `test_claude_integration.py` | Anthropic Claude API, real calls | Yes — skips without `ANTHROPIC_API_KEY` |
+| `test_llamacpp_integration.py` | llama.cpp connector and fleet | Yes |
+| `test_mem0_integration.py` | mem0-compatible memory API over pgvector | Yes — PostgreSQL + pgvector |
+| `test_ollama_integration.py` | Ollama connector and lifecycle | Yes |
+| `test_vectorstore_local_profile.py` | Local-only profile vector-store seam | Yes — Qdrant + Ollama, skips if unreachable |
+| `test_knowledge_acceptance.py` | §9.8 knowledge layer end-to-end + org isolation | No — in-memory/`pytest-httpserver` fixtures |
+| `test_proxy_memory_acceptance.py` | §6A.6 four proxy memory layers end-to-end | No — stubbed connectors + in-memory Valkey/DB doubles |
+| `test_response_cache_acceptance.py` | §6.5 response cache: eligibility, replay, TTL, poisoning defense | No |
+| `test_security_v2_acceptance.py` | §8.10 security-v2 request path via a real `ProxyPipeline` | No |
+| `test_smart_routing_acceptance.py` | §7.7 smart routing across `shared.routing` + pipeline stages | No |
+
+Only the first five genuinely need a reachable external service (Ollama, llama.cpp,
+Anthropic's API, or Postgres/pgvector/Qdrant) — the other five are acceptance-level
+tests that compose multiple modules against stubs/in-memory doubles and need nothing
+external. None of the ten are part of the `test (3.13)` CI job, which runs
+`tests/unit/` only; the `integration-test` job is gated on non-pull-request events and
+reports `skipping` on PRs.
+
+Note that running this suite on its own trips the 90% coverage gate configured
+in `pytest.ini`, since these tests exercise only a narrow slice of the
+codebase. That is a reporting artifact of running the suite in isolation, not a
+failure of the tests. Run the full suite, or pass `--no-cov`, when you only want
+the integration results.
 
 ### Execution
 
 ```bash
-make test-integration       # All integration tests
-pytest tests/integration/   # Python
+make test-integration          # pytest tests/integration -v
+pytest tests/integration/ --no-cov   # skip the coverage gate when running alone
 ```
-
-### Requirements
-
-- Use real databases (test instances)
-- Test complete workflows including token consumption
-- Verify multi-backend routing decision logic
-- Test error scenarios for token quota enforcement
-- Test API contracts between proxy and management
 
 ---
 
@@ -466,51 +288,45 @@ pytest tests/integration/   # Python
 
 ### Purpose
 
-E2E tests verify critical user workflows from start to finish, testing the entire application stack with dual token tracking.
+Critical user workflows against a real deployment, via Playwright.
+
+### Current State
+
+E2E tests are **not** run through `make test-e2e` — that target (`pytest tests/e2e -v`)
+collects zero tests, because `tests/e2e/` is a separate Playwright/npm project, not a
+pytest tree.
 
 ### Location
 
 ```
 tests/e2e/
-├── token-consumption.spec.ts
-├── backend-routing.spec.ts
-├── user-workflow.spec.ts
-├── quota-enforcement.spec.ts
-└── analytics-tracking.spec.ts
+├── package.json          # scripts: test, test:ui, test:debug, report
+├── playwright.config.js  # baseURL https://waddleai.penguintech.cloud, routes through
+│                          # the dal2 internal LB IP to bypass Cloudflare bot protection
+└── tests/
+    └── smoke.spec.js
 ```
 
 ### Execution
 
 ```bash
-make test-e2e               # All E2E tests
-npx playwright test tests/e2e/  # Playwright
+cd tests/e2e
+npm ci
+npm test                # playwright test
+npm run test:ui         # interactive UI mode
+npm run report          # view the HTML report
 ```
+
+Playwright artifacts (traces, HTML report) go to `/tmp/playwright-waddleai/` — clean up
+after every run, pass or fail, per the company Playwright convention.
 
 ---
 
 ## Performance Tests
 
-### Purpose
-
-Performance tests validate scalability, throughput, and resource usage under load, including dual token validation overhead.
-
-### Location
-
-```
-tests/performance/
-├── load-test.js
-├── stress-test.js
-├── token-validation-benchmark.js
-├── routing-latency-test.js
-└── profile-report.md
-```
-
-### Execution
-
-```bash
-make test-performance
-npm run test:performance
-```
+**No `make test-performance` target and no performance test script exist in this repo
+today.** If you add performance/load testing, add both the script(s) and a `make` target
+that runs them — don't reference this section as a working procedure until that lands.
 
 ---
 
@@ -518,135 +334,136 @@ npm run test:performance
 
 ### Purpose
 
-Cross-architecture testing ensures the application builds and runs correctly on both amd64 and arm64 architectures, preventing platform-specific bugs in token validation and routing.
+Ensure images build and run correctly on both amd64 and arm64 — CI's `build-platform` job
+already does this on every push (see `docs/WORKFLOWS.md`); this section covers doing it
+locally before a final commit.
 
 ### When to Test
 
-**Before every final commit**, test on the alternate architecture:
-- Developing on amd64 → Build and test arm64 with QEMU
-- Developing on arm64 → Build and test amd64 with QEMU
+Before every final commit, build the alternate architecture with QEMU:
+- Developing on amd64 → build arm64
+- Developing on arm64 → build amd64
 
 ### Setup (First Time)
-
-Enable Docker buildx for multi-architecture builds:
 
 ```bash
 docker buildx create --name multiarch --driver docker-container
 docker buildx use multiarch
 ```
 
-### Single Architecture Build
+### Single Architecture Build (native, fast)
 
 ```bash
-# Test current architecture (native, fast)
-docker build -t waddleai-proxy:test proxy/
-
-# Or explicitly specify architecture
-docker build --platform linux/amd64 -t waddleai-proxy:test proxy/
+docker build -f proxy/Dockerfile -t waddleai-proxy:test proxy/
+docker build -f services/management/Dockerfile -t waddleai-management:test .   # context = repo root
 ```
 
 ### Cross-Architecture Build (QEMU)
 
 ```bash
-# Test alternate architecture (uses QEMU emulation)
-docker buildx build --platform linux/arm64 -t waddleai-proxy:test proxy/
-
-# Or test both simultaneously
-docker buildx build --platform linux/amd64,linux/arm64 -t waddleai-proxy:test proxy/
+docker buildx build --platform linux/arm64 -f proxy/Dockerfile -t waddleai-proxy:test proxy/
+docker buildx build --platform linux/amd64,linux/arm64 -f services/management/Dockerfile -t waddleai-management:test .
 ```
 
-### Multi-Architecture Build Script
-
-Create `scripts/build/test-multiarch.sh`:
-
-```bash
-#!/bin/bash
-# Test both architectures before commit
-
-set -e
-
-SERVICES=("proxy" "management")
-ARCHITECTURES=("linux/amd64" "linux/arm64")
-
-for service in "${SERVICES[@]}"; do
-    echo "Testing $service on multiple architectures..."
-
-    for arch in "${ARCHITECTURES[@]}"; do
-        echo "  → Building for $arch..."
-        docker buildx build \
-            --platform "$arch" \
-            -t "waddleai-$service:multiarch-test" \
-            "$service/" || {
-            echo "✗ Build failed for $service on $arch"
-            exit 1
-        }
-    done
-
-    echo "✓ $service builds successfully on amd64 and arm64"
-done
-
-echo "✓ All services passed multi-architecture testing"
-```
-
-### Pre-Commit Integration
-
-Add to pre-commit script (before final commit):
-
-```bash
-# Step 8: Cross-architecture testing
-if [ "$ENABLE_QEMU_TEST" = "true" ]; then
-    echo "Testing cross-architecture builds with QEMU..."
-    make test-multiarch || exit 1
-fi
-```
+There is no committed `scripts/build/test-multiarch.sh` — the commands above are run
+directly; write one if you find yourself repeating this often enough to justify it (see
+`.claude/rules` `general.md` Repeatable Task Migration).
 
 ### Troubleshooting
 
 **QEMU not available**:
 ```bash
-# Install QEMU support
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 ```
 
-**Slow builds with QEMU**:
-- Expect 2-5x slower builds when using QEMU emulation
-- Use for final validation, not every iteration
-- Consider caching intermediate layers
+**Slow builds with QEMU**: expect 2-5x slower builds under emulation; use for final
+validation, not every iteration.
 
-**Architecture-specific issues**:
-- File path separators (Windows vs Linux)
-- Endianness in binary protocols
-- Floating-point precision
-- Package availability
+**Architecture-specific issues to watch for**: endianness in binary protocols,
+floating-point precision, package availability per arch.
 
 ---
 
 ## Test Execution Order (Pre-Commit)
 
-Follow this order for efficient testing before commits:
+Matches `make pre-commit` plus the additional steps this doc covers:
 
-1. **Linters** (fast, <1 min)
-2. **Security scans** (fast, <1 min)
-3. **Secrets check** (fast, <1 min)
-4. **Build & Run** (5-10 min)
-5. **Smoke tests** (fast, <2 min) ← Gates further testing
-6. **Unit tests** (1-2 min)
-7. **Integration tests** (2-5 min)
-8. **E2E tests** (5-10 min)
-9. **Cross-architecture build** (optional, slow)
+1. **Linters** (`make lint`)
+2. **Security scans** (`make test-security`)
+3. **Unit tests** (`make test-unit` — the `test` target currently only runs this)
+4. **Contract tests** (`make test-contract`)
+5. **Web UI tests** (`npm test` in `services/webui/`, if that service changed)
+6. **Integration tests** (`make test-integration` — currently a no-op, see above)
+7. **E2E tests** (`npm test` in `tests/e2e/`, against a real deployment — not part of
+   `make pre-commit`)
+8. **Cross-architecture build** (optional, slow)
 
 ## CI/CD Integration
 
-All tests run automatically in GitHub Actions:
+GitHub Actions (`.github/workflows/docker-build.yml`) triggers on push to
+`main`/`release/**`/tags and on pull requests targeting `main` or `release/**`, when the
+change touches `proxy/**`, `services/**`, `shared/**`, `images/**`, `openapi/**`,
+`tests/**`, or one of a short list of tooling files (`pyproject.toml`,
+`requirements.txt`, `Makefile`, `.pre-commit-config.yaml`, `.version`, the workflow file
+itself, `.spectral.yaml`, `scripts/generate_openapi_spec.py`) — the tooling-file list
+exists specifically so a dependency bump or a new make target isn't invisible to CI.
+**PRs into `release/**` run the full pipeline, same as `main`** — this was a P1 fix;
+previously only `main` triggered CI, so release-targeted PRs built and tested nothing
+and the "fully green" auto-merge gate was passing on unbuilt code.
 
-- **On PR**: Smoke + Unit + Integration tests
-- **On main merge**: All tests + Performance tests
-- **Nightly**: Performance + Cross-architecture tests
-- **Release**: Full suite + Manual sign-off
+| Job | Purpose |
+|---|---|
+| `determine-tier` | Resolves the five-tier model (pre-alpha/alpha/beta/gamma/prod) to a tag prefix and whether to push |
+| `test` | Python unit tests (`pytest tests/unit`) + `bandit -lll` (HIGH severity gates the build) |
+| `test-webui` | ESLint + vitest (coverage-gated) + build, for `services/webui` |
+| `openapi-lint` | `spectral lint openapi/v1.yaml` |
+| `test-contract` | `pytest tests/contract` |
+| `test-integration` | Runs the full `tests/integration/` directory with no live services provisioned — tests needing one self-skip (unreachable Ollama/Qdrant, missing `ANTHROPIC_API_KEY`), so only the acceptance-level suite actually executes |
+| `test-e2e` | Playwright suite setup/smoke check |
+| `build-platform` | Multi-arch image builds — needs `determine-tier`, `test`, `test-webui`, `openapi-lint`, `test-contract`, `test-integration`, `test-e2e` all green |
+| `merge-manifests` | Merges per-arch manifests into one tag — skipped on PRs (nothing was pushed to merge) |
+| `build-ollama-image` | Builds the Ollama sidecar image — needs `determine-tier`, `test` |
+| `security-scan` | Trivy on the merged images — needs `merge-manifests` |
+| `integration-test` | Ephemeral docker-compose stack (CI-only, not a local-dev artifact), health + auth checks — `continue-on-error`, skipped on PRs |
+| `release` / `cleanup` | On a GitHub pre-release/release event / always, respectively |
 
-See [Workflows](WORKFLOWS.md) for detailed CI/CD configuration.
+There is no separate nightly or performance-test CI job. Note the naming trap: `test-integration`
+(runs on every trigger, no live services) and `integration-test` (skipped on PRs, spins up
+its own throwaway docker-compose stack) are two different jobs testing different things.
+See [Workflows](WORKFLOWS.md) for further detail.
 
 ---
 
-**Last Updated**: 2026-01-06
+<!-- BEGIN: added by chore/mypy-runs-to-completion — another agent is
+     rewriting this file this wave; this section is intentionally isolated
+     so it can be moved/merged without touching surrounding prose. -->
+
+## mypy gate
+
+`make lint` runs `scripts/mypy-gate.sh`, which fails on any mypy `error:`
+line not already present in the committed `mypy-baseline.txt` (688 lines as
+of 2026-08-22 — see
+[`docs/superpowers/plans/2026-08-22-mypy-baseline.md`](superpowers/plans/2026-08-22-mypy-baseline.md)
+for the invocation, the full error breakdown, and the module-path config fix
+that let mypy complete a run at all). It also fails if mypy examines zero
+source files, so a config regression can't silently pass.
+
+Introducing a real type error fails the gate immediately; fixing it, or
+regenerating the baseline for an intentional/pre-existing one, is:
+
+```bash
+.venv/bin/python -m mypy proxy services shared scripts tests --ignore-missing-imports \
+  2>&1 | grep -E ': error:' | sort > mypy-baseline.txt
+```
+
+Baseline entries include the line number, so an unrelated edit that shifts a
+downstream error's line number will also require a baseline regen — a
+deliberate tradeoff for a simple, honest diff over fuzzy matching that could
+mask real regressions.
+
+<!-- END: added by chore/mypy-runs-to-completion -->
+
+---
+
+**Last Updated**: 2026-08-21
 **Maintained by**: Penguin Tech Inc

@@ -2,46 +2,69 @@
 
 ## Project Overview
 
-WaddleAI is an AI proxy and management system that provides OpenAI-compatible APIs with advanced routing, security, and token management.
+WaddleAI is an AI proxy and management system that provides OpenAI-compatible and
+Anthropic-compatible APIs with advanced routing, security, and dual-token usage
+management.
 
 **Key Features:**
-- OpenAI-compatible API proxy
-- Advanced model routing
-- Dual token system (WaddleAI tokens + LLM tokens)
+- OpenAI-compatible (`/v1/chat/completions`) and Anthropic-compatible (`/v1/messages`)
+  proxy endpoints, sharing one ordered pipeline (auth → rate limit → security → memory →
+  dispatch → metering)
+- Multi-provider routing: OpenAI, xAI, Anthropic, Google Gemini, Ollama, llama.cpp, AWS
+  Bedrock — SSE streaming across all of them
+- Dual token system (WaddleAI tokens + raw LLM tokens)
 - Role-based access control (Admin, Resource Manager, Reporter, User)
-- Security scanning and threat detection
-- Quota and usage management
-- Prometheus metrics and monitoring
+- 4-tier content filtering pipeline (regex → org rules → NER → LLM auditor)
+- Quota and usage management, OpenTelemetry `gen_ai.*` spans, Prometheus metrics
 
 ## Technology Stack
 
 ### Languages & Frameworks
 
 **Python Stack:**
-- **Python**: 3.13 for all applications (3.12+ minimum)
-- **Web Framework**: Flask + Flask-Security-Too (mandatory)
-- **Database ORM**: PyDAL (mandatory for all Python applications)
-- **Performance**: Dataclasses with slots, type hints, async/await required
+- **Python**: 3.13 (see `.python-version` / CI matrix)
+- **Web framework**: **Quart** (async-native), served by **hypercorn** — Flask and
+  Flask-Security-Too are retired, not present in this repo
+- **Database at runtime**: **`penguin-dal`** in `services/management/` (the control
+  plane). The proxy (`proxy/apps/proxy_server/main.py`) is the one exception: its
+  synchronous API-key auth path (`RBACManager.authenticate_api_key` in
+  `shared/auth/rbac.py`) still uses raw PyDAL, offloaded to a thread pool via
+  `asyncio.to_thread` so it doesn't block the event loop. This is tracked debt, not the
+  target state — fix-on-sight per `backend-database.md` if you touch that code path.
+- **Schema & migrations**: SQLAlchemy models + Alembic (`services/management/alembic/`)
+  — schema/migration authority only, never used for runtime queries.
+  `init_schema()` (`services/management/app/models_sqlalchemy.py`) also
+  idempotently creates missing tables on startup; Alembic upgrades are run manually or
+  via a Helm-templated Kubernetes Job, never automatically at app boot.
+- **Auth**: `penguin-aaa` (OIDC/JWT) — Flask-Security-Too is gone
+- **Performance**: `@dataclass(slots=True)`, type hints, async/await throughout
 
 **Frontend Stack:**
-- **React**: ReactJS for all frontend applications
-- **Node.js**: 18+ for build tooling and React development
+- **React** (TypeScript) at `services/webui/`, served via Express, built with Vite
+- **Node.js**: 24.x for build tooling
 
 ### Infrastructure & DevOps
-- **Containers**: Docker with multi-stage builds, Docker Compose
-- **CI/CD**: GitHub Actions
-- **Monitoring**: Prometheus metrics, Grafana dashboards
-- **Logging**: Structured logging with configurable levels
+- **Deployment**: Kubernetes + Helm only, every environment — **Docker Compose is
+  deprecated and not used anywhere in this repo**, including local development. Docker
+  itself is still used to build service images and to run standalone dependency
+  containers (Postgres, Valkey) for direct-run local dev — see `docs/DEVELOPMENT.md`.
+- **CI/CD**: GitHub Actions — see [Release Pipeline](#release-pipeline--ci-image-tags)
+  below
+- **Monitoring**: Prometheus metrics, OpenTelemetry `gen_ai.*` span attributes on the
+  dispatch span
+- **Logging**: Structured logging, configurable levels; no secrets in span/log data
 
 ### Databases & Storage
-- **Primary**: PostgreSQL (default)
-- **Database Abstraction**: PyDAL for cross-database support
+- **Primary**: PostgreSQL + `pgvector` (memory/embedding storage) — the only supported
+  database; no `DB_TYPE` switch in this repo today
+- **Cache**: **Valkey** (Redis-protocol-compatible) — replaces Redis throughout; the
+  `REDIS_URL` env var name is historical
 
 ### Security & Authentication
-- **Flask-Security-Too**: Role-based access control (RBAC)
-- **JWT**: Token-based authentication
-- **TLS**: Enforce TLS 1.2 minimum
-- **Security Scanning**: Prompt injection detection, jailbreak prevention
+- **`penguin-aaa`**: OIDC/JWT authentication and scope-based authorization
+- **TLS**: 1.2 minimum enforced
+- **Security scanning**: prompt injection detection, jailbreak prevention, PII/PCI
+  detection — see [Content Filtering & Licence Model](#content-filtering--licence-model)
 
 ## Critical Development Rules
 
@@ -105,23 +128,24 @@ WaddleAI is an AI proxy and management system that provides OpenAI-compatible AP
 - **Monitor vulnerabilities via Socket.dev** for all dependencies
 - **Mandatory security scanning** before any dependency changes
 - **Fix all security alerts immediately** - no commits with outstanding vulnerabilities
-- **Regular security audits**: `npm audit`, `safety check`
+- **Regular security audits**: `pip-audit`, `npm audit` (see `make test-security`)
 
 ### Linting & Code Quality Requirements
-- **ALL code must pass linting** before commit - no exceptions
-- **Python**: flake8, black, isort, mypy (type checking), bandit (security)
-- **JavaScript/TypeScript**: ESLint, Prettier
+- **ALL code must pass `make lint`** before commit — no exceptions
+- **Python**: `ruff` (lint + format + import sort — the only Python linter/formatter;
+  flake8/black/isort are not used), `mypy` (advisory, not a hard gate today), `bandit`
+  (security)
+- **JavaScript/TypeScript**: ESLint (`services/webui/`)
 - **Docker**: hadolint
 - **YAML**: yamllint
-- **Markdown**: markdownlint
-- **Shell**: shellcheck
-- **CodeQL**: All code must pass CodeQL security analysis
-- **PEP Compliance**: Python code must follow PEP 8, PEP 257 (docstrings), PEP 484 (type hints)
+- **OpenAPI**: `spectral lint openapi/v1.yaml` (`make openapi-lint`)
+- **CodeQL**: Python, JavaScript/TypeScript and Actions — `.github/workflows/codeql.yml`
+- **PEP Compliance**: PEP 8, PEP 257 (docstrings), PEP 484 (type hints)
 
 ### Build & Deployment Requirements
 - **NEVER mark tasks as completed until successful build verification**
-- All Python builds MUST be executed within Docker containers
-- Use containerized builds for local development and CI/CD pipelines
+- All Python and Node builds MUST be executed within Docker containers (CI and, where
+  practical, local)
 - Build failures must be resolved before task completion
 
 ### Documentation Standards
@@ -162,6 +186,28 @@ PRODUCT_NAME=waddleai
 RELEASE_MODE=false  # Development (default)
 ```
 
+## Content Filtering & Licence Model
+
+The content filter (`shared/security/content_filter.py`) runs a 4-tier pipeline:
+
+1. **Regex patterns** — 23 built-in PII/PCI patterns (credit cards, SSNs, phone
+   numbers, emails, API keys, etc.), toggleable per organization — **never
+   licence-gated**
+2. **Custom organization rules** — org-defined pattern overrides — **never
+   licence-gated**
+3. **NER (Named Entity Recognition)** — Presidio + spaCy (`en_core_web_lg`), transformer
+   fallback, for PERSON/LOCATION/NRP/MEDICAL_LICENSE and more — **licence-gated**: both
+   a PostHog flag and a `penguin_licensing` entitlement
+   (`NER_TIER_LICENSE_FEATURE = "pii_ner_detection"`) must pass; if either check is
+   unavailable or fails, the NER tier is skipped and tiers 1–2 still run, so a caller
+   without a licence client gets baseline PII protection rather than none
+4. **LLM auditor** — ShieldGemma 2B default safety classifier (YES/NO policy format) —
+   not licence-gated by tier, but governed by the same PostHog-flag-first pattern as
+   every other feature
+
+Tiers 1 and 2 are always available regardless of licence tier; tier 3 (NER) is the only
+one gated on `penguin_licensing`/PostHog.
+
 ## Version Management System
 
 **Format**: `vMajor.Minor.Patch.build`
@@ -181,15 +227,87 @@ RELEASE_MODE=false  # Development (default)
 ## Project Structure
 
 ```
-WaddleAI/
-├── proxy/              # OpenAI-compatible proxy server
-├── management/         # Management API server
-├── docs/               # Documentation
-├── tests/              # Test suites
-├── config/             # Configuration files
-├── docker-compose.yml  # Production environment
-└── CLAUDE.md           # This file
+waddleai/
+├── proxy/                    # OpenAI/Anthropic-compatible data-plane (Quart, port 8080)
+├── services/
+│   ├── management/           # Control plane API (Quart, port 8001)
+│   ├── webui/                 # React/TypeScript frontend (Express-served)
+│   └── penguincode/            # Vendored PenguinCode CLI/extension (own release story)
+├── shared/                   # Shared library code (auth, security, DAL helpers)
+├── k8s/helm/waddleai/         # The one Helm chart deploying every environment
+├── docs/                      # Documentation (this tree + docs/docs-site/ mkdocs site)
+├── tests/                     # unit/, contract/, integration/, e2e/, smoke/
+├── openapi/v1.yaml            # Generated management API OpenAPI 3.x spec
+├── Makefile                   # Build/test/lint/deploy automation
+├── .version                   # Version tracking
+└── CLAUDE.md                  # This file
 ```
+
+There is no root `docker-compose.yml` — the Helm chart is the only supported way to run
+more than one service together, in every environment including local dev (see
+`docs/DEVELOPMENT.md` for the direct-run-processes alternative for fast local iteration).
+
+## Real `make` Targets
+
+The full, current target list, defined in the root `Makefile` (run `make help`-style
+`grep -nE '^[a-z][a-z-]*:' Makefile` to regenerate this list):
+
+| Target | Purpose |
+|---|---|
+| `make venv` | Create `.venv` (Python 3.13) from the hash-pinned lockfiles — published deps only |
+| `make setup` | `install-hooks` |
+| `make install-hooks` | Install the `pre-commit` framework + register pre-commit/pre-push hooks |
+| `make verify-hooks` | Report whether the hooks are installed and non-empty |
+| `make dev` | Start development services |
+| `make build` | Build all services |
+| `make docker-build` | Build container images |
+| `make docker-push` | Push container images |
+| `make lint` | Lint everything — fails on error, no `\|\| true`, no silent skips |
+| `make generate-openapi` | Regenerate `openapi/v1.yaml` from the `quart-schema` annotations |
+| `make openapi-lint` | `spectral lint openapi/v1.yaml` — gates on error |
+| `make test` | `test-unit` |
+| `make test-unit` | `pytest tests/unit` — 90% coverage gate, branch coverage on |
+| `make test-integration` | `pytest tests/integration` |
+| `make test-e2e` | `pytest tests/e2e` |
+| `make test-functional` | (placeholder) |
+| `make test-contract` | `pytest tests/contract` — request/response snapshot tests |
+| `make test-security` | Security scans over first-party code — bandit, gitleaks, pip-audit, npm audit, licence gate; fails on findings |
+| `make smoke-test` | Fast post-build verification |
+| `make smoke-test-production` | Live prod checks (network + real deployment required) — not part of pre-commit |
+| `make seed-mock-data` | Mock data seeding |
+| `make clean` | Remove build artifacts |
+| `make deploy-dev` | Deploy to dev/alpha |
+| `make deploy-prod` | Deploy to production |
+| `make pre-commit` | The pre-commit gate sequence |
+
+See `docs/PRE_COMMIT.md`, `docs/TESTING.md`, and `docs/DEVELOPMENT.md` for the full
+procedures behind each target.
+
+## Coverage Gate
+
+`.coveragerc`: `fail_under = 90`, `branch = True`. Coverage source is `shared` and
+`services/management/app`; `pytest.ini` additionally instruments `proxy` for reporting.
+Run `pytest tests/unit -v --cov-report=term-missing` to see exactly which lines are
+uncounted before you add a test — the `Missing` column names the line ranges, not just a
+percentage. CI also asserts a minimum collected-test count for `tests/unit`, so a
+misconfigured path filter that silently collects zero tests fails loudly instead of
+reporting a false "clean" 90%.
+
+## Release Pipeline / CI Image Tags
+
+Five tiers, each with its own source branch/event, tag, and cluster — canonical table
+lives in `docs/docs-site/docs/deployment/kubernetes.md` (§Release pipeline):
+
+| Tier | Source | Tag | Cluster / deploy |
+|---|---|---|---|
+| Pre-alpha | `feature/` `fix/` `chore/` `hotfix/` `docs/` `refactor/` branches | build-only in CI (not pushed) | Local K8s, destroy + fresh |
+| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>` | Local K8s today, destroy + fresh |
+| Beta | Merge to `main` | `beta-<epoch64>` | `dal2-beta` context, destroy + fresh |
+| Gamma | GitHub release flagged pre-release | `gamma-<epoch64>` | DigitalOcean (context TBD), **upgrade in place** — the only upgrade-path test |
+| Prod | GitHub release (non-pre-release), **v1.x+ only** | `v{Major}.{Minor}.{Patch}` | DigitalOcean, separate cluster (not built yet), upgrade in place |
+
+Namespace is always `waddleai` in every context — never environment-suffixed; registry
+is `ghcr.io/penguintechinc/waddleai/{proxy,management,webui,ollama}`.
 
 ## Quick Start for Applications
 
@@ -201,13 +319,11 @@ WaddleAI provides a fully compatible OpenAI API that can be used as a drop-in re
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here",
-    base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Hello, how are you?"}]
+    model="gpt-4", messages=[{"role": "user", "content": "Hello, how are you?"}]
 )
 
 print(response.choices[0].message.content)
@@ -218,7 +334,7 @@ print(response.choices[0].message.content)
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-    apiKey: 'wa-your-api-key-here',
+    apiKey: '<your-waddleai-key>',
     baseURL: 'https://your-waddleai-proxy.com/v1'
 });
 
@@ -236,7 +352,7 @@ import requests
 
 auth_response = requests.post(
     "https://your-waddleai-mgmt.com/auth/login",
-    json={"username": "admin", "password": "your-password"}
+    json={"username": "admin", "password": "your-password"},
 )
 token = auth_response.json()["access_token"]
 headers = {"Authorization": f"Bearer {token}"}
@@ -245,8 +361,7 @@ headers = {"Authorization": f"Bearer {token}"}
 ### Token Usage Analytics
 ```python
 usage = requests.get(
-    "https://your-waddleai-mgmt.com/analytics/tokens/waddleai",
-    headers=headers
+    "https://your-waddleai-mgmt.com/analytics/tokens/waddleai", headers=headers
 ).json()
 ```
 
@@ -255,7 +370,7 @@ usage = requests.get(
 quota_update = requests.post(
     "https://your-waddleai-mgmt.com/analytics/quotas/user123",
     headers=headers,
-    json={"monthly_limit": 200000, "daily_limit": 20000}
+    json={"monthly_limit": 200000, "daily_limit": 20000},
 )
 ```
 
@@ -299,7 +414,7 @@ WaddleAI uses a dual token system for accurate billing and analytics:
         "prompt_tokens": 100,
         "completion_tokens": 50,
         "total_tokens": 150,
-        "waddleai_tokens": 15
+        "waddleai_tokens": 15,
     }
 }
 ```
@@ -310,14 +425,12 @@ WaddleAI uses a dual token system for accurate billing and analytics:
 ```python
 # Automatic routing
 response = client.chat.completions.create(
-    model="smart-router",
-    messages=[{"role": "user", "content": "Complex reasoning task..."}]
+    model="smart-router", messages=[{"role": "user", "content": "Complex reasoning task..."}]
 )
 
 # Force specific provider
 response = client.chat.completions.create(
-    model="ollama:llama2",
-    messages=[{"role": "user", "content": "Local processing needed"}]
+    model="ollama:llama2", messages=[{"role": "user", "content": "Local processing needed"}]
 )
 ```
 
@@ -328,71 +441,49 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Remember my preferences"}],
     extra_headers={
         "X-WaddleAI-Memory": "user-session-123",
-        "X-WaddleAI-Memory-Type": "conversation"
-    }
+        "X-WaddleAI-Memory-Type": "conversation",
+    },
 )
 ```
-
-### Security Features
-- Prompt injection detection
-- Jailbreak attempt prevention
-- Data extraction blocking
-- Credential harvesting protection
 
 ## Configuration
 
 ### Environment Variables
 ```bash
-# Proxy Server
-export PROXY_HOST=0.0.0.0
-export PROXY_PORT=8000
+# Proxy Server -- binds 0.0.0.0 always; only the port is configurable
+export HTTP_PORT=8080  # default; proxy/apps/proxy_server/main.py
 export DATABASE_URL=postgresql://user:pass@localhost/waddleai
 export JWT_SECRET=your-jwt-secret
 export SECURITY_POLICY=balanced
 
-# Management Server
-export MGMT_HOST=0.0.0.0
-export MGMT_PORT=8001
-export ADMIN_PASSWORD=secure-admin-password
+# Management Server -- no host/port env var; bound via hypercorn CLI/Dockerfile
+# (0.0.0.0:8001, see services/management/Dockerfile)
+export ADMIN_INITIAL_PASSWORD=secure-admin-password
 ```
 
-### Docker Compose
-```yaml
-version: '3.8'
-services:
-  waddleai-proxy:
-    build: ./proxy
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/waddleai
-    depends_on:
-      - db
+Full variable list and defaults: `services/management/app/config.py`,
+`proxy/apps/proxy_server/main.py`, and `k8s/helm/waddleai/values.yaml`. There is no
+`.env.example` in this repo — see `docs/DEVELOPMENT.md`.
 
-  waddleai-mgmt:
-    build: ./management
-    ports:
-      - "8001:8001"
-    environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/waddleai
-    depends_on:
-      - db
+### Deployment
 
-  db:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=waddleai
-      - POSTGRES_PASSWORD=password
-```
+Every environment deploys via the Helm chart at `k8s/helm/waddleai` — see
+[Release Pipeline / CI Image Tags](#release-pipeline--ci-image-tags) above and
+`docs/docs-site/docs/deployment/kubernetes.md` for the full procedure. Local multi-service
+runs go through `./scripts/deploy-alpha.sh` against a MicroK8s/Docker Desktop cluster;
+there is no Docker Compose path.
 
 ## Health Monitoring
 
-### Endpoints
+### Endpoints (proxy, port 8080)
 ```bash
 curl https://your-waddleai-proxy.com/healthz
+curl https://your-waddleai-proxy.com/readyz
 curl https://your-waddleai-proxy.com/api/status
 curl https://your-waddleai-proxy.com/metrics
 ```
+
+Management (port 8001) exposes the equivalent `/healthz` and `/readyz`.
 
 ## Error Handling
 
@@ -406,17 +497,21 @@ curl https://your-waddleai-proxy.com/metrics
 ## Troubleshooting
 
 ### Common Issues
-1. **Port Conflicts**: Check docker-compose port mappings
-2. **Database Connections**: Verify connection strings
-3. **License Validation**: Check license key format and network
-4. **Build Failures**: Check dependency versions
+1. **Port Conflicts**: Check what's bound to 8080 (proxy) / 8001 (management) / 3000 (webui)
+2. **Database Connections**: Verify `DATABASE_URL` and that Postgres/pgvector is reachable
+3. **License Validation**: Check license key format and network access to
+   `license.penguintech.io`
+4. **Build Failures**: Check dependency versions; builds run inside containers
 5. **Quota Exceeded**: Monitor WaddleAI token consumption
 
 ### Debug Commands
 ```bash
-docker-compose logs -f waddleai-proxy
-docker exec -it waddleai-proxy /bin/bash
+kubectl --context <ctx> logs -n waddleai -l app=waddleai-proxy -f
+kubectl --context <ctx> exec -it -n waddleai deploy/waddleai-proxy -- /bin/sh
 ```
+
+For direct-run local dev (no cluster), each service logs to its own terminal — see
+`docs/DEVELOPMENT.md`.
 
 ## Best Practices
 
@@ -447,7 +542,7 @@ docker exec -it waddleai-proxy /bin/bash
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: 2025-11-23
+**Version**: 1.1.0
+**Last Updated**: 2026-08-21
 **Maintained by**: Penguin Tech Inc
 **License Server**: https://license.penguintech.io

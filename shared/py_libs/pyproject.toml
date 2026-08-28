@@ -81,7 +81,7 @@ target-version = ["py312", "py313"]
 line-length = 100
 target-version = "py312"
 select = ["E", "F", "W", "I", "N", "D", "UP", "S", "B", "A", "C4", "T20", "RET", "SIM"]
-ignore = ["D100", "D104"]
+lint.ignore = ["D100", "D104"]
 
 [tool.mypy]
 python_version = "3.12"

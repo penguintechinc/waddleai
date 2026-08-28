@@ -1,30 +1,46 @@
 # Core Framework
 py4web>=1.20241201.1
 # Async and HTTP
-aiohttp>=3.9.0
+aiohttp>=3.14.3
 # OpenAI and LLM Clients
 openai>=1.6.0
-anthropic>=0.12.0
+anthropic>=0.87.0
 ollama>=0.1.9
 google-genai==2.14.0
 boto3>=1.28.0
 # NER-based PII Detection (Presidio + spaCy)
+# spaCy model backing Presidio NER (tier 3 of the content filter).
+#
+# Declared here deliberately. It was previously installed on developer machines
+# by hand and declared NOWHERE -- not in a requirements file, a Dockerfile, or a
+# doc -- so the NER PII tier never ran in a built image, silently. Worse,
+# NlpEngineProvider.create_engine() FETCHES a missing model at runtime rather
+# than failing fast, which stalled CI until the job was cancelled.
+#
+# spaCy models are not published to PyPI, so this is a direct wheel URL. It is
+# hash-verified like every other pin.
+#
+# ~382MB wheel / ~425MB installed. Set NER_SPACY_MODEL=en_core_web_md (32MB) for
+# a smaller image at some cost in entity-detection accuracy; the code reads that
+# env var and this pin only decides which model is present.
+en_core_web_lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+
 presidio-analyzer>=2.2.364
 presidio-anonymizer>=2.2.354
 spacy>=3.8.14
 # Security and Authentication
-pyjwt>=2.8.0
+pyjwt>=2.13.0
 # Cap below 5.0: passlib 1.7.4 (the latest release, unmaintained since 2020)
 # is incompatible with bcrypt 5.x — its backend probe hashes an over-length
 # string, which bcrypt 5 rejects with "password cannot be longer than 72
 # bytes" instead of truncating. That failed every auth/key/quota test in CI.
 bcrypt>=4.1.0,<5.0
-cryptography>=41.0.0
+cryptography>=50.0.0
 passlib>=1.7.4
 # Token Processing and AI
 tiktoken>=0.5.2
-transformers>=4.36.0
-torch>=2.1.0
+transformers>=5.5.0
+torch>=2.13.0
 # Memory and Vector Databases
 chromadb>=0.4.20
 mem0ai>=0.1.0
@@ -43,9 +59,9 @@ pgvector>=0.3.0
 redis>=5.0.0
 # Utilities and Validation
 pydantic>=2.5.0
-python-multipart>=0.0.6
+python-multipart>=0.0.31
 python-dotenv>=1.0.0
-click>=8.1.7
+click>=8.3.3
 # HTTP Requests
 requests>=2.31.0
 httpx>=0.26.0
@@ -57,18 +73,23 @@ python-dateutil>=2.8.2
 pyyaml>=6.0.1
 toml>=0.10.2
 # PenguinTech Libraries
-penguin-aaa>=0.1.0
-penguin-dal>=0.2.1
+# 0.2.0 added OIDCAuthMiddleware(api_key_verifier=...), which proxy
+# main.py depends on -- 0.1.x raises TypeError at startup.
+penguin-aaa>=0.2.1
+penguin-dal>=0.4.1
 penguin-utils>=0.1.0
 penguin-sal>=0.2.0
 # Development and Testing
-pytest>=7.4.3
+pytest>=9.0.3
 pytest-asyncio>=0.23.2
 black>=23.12.0
 flake8>=7.0.0
 mypy>=1.8.0
 # MCP Protocol Support
-mcp>=1.0.0
+# Upper bound is deliberate: 1.28.1 carries the security fix, but 2.0.0
+# removed mcp.server.fastmcp, which this codebase imports. Lifting the
+# bound requires migrating to the 2.x server API first.
+mcp>=1.28.1,<2.0
 # Performance
-ujson>=5.9.0
+ujson>=5.13.0
 orjson>=3.9.10

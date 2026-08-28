@@ -1,6 +1,4 @@
-"""
-Unit tests for usage tracking service
-"""
+"""Unit tests for usage tracking service."""
 
 from datetime import date
 
@@ -15,12 +13,12 @@ from services.management.app.services.usage_tracker import (
 
 
 class MockDB:
-    """Mock database for testing"""
+    """Mock database for testing."""
 
     def __init__(self):
+        """Seed the mock DB with an empty row list for each table the tracker touches."""
         self.data = {
             "virtual_keys": [],
-            "ailb_usage_events": [],
             "token_usage": [],
             "usage_logs": [],
             "token_conversion_rates": [],
@@ -30,114 +28,141 @@ class MockDB:
         self._committed = False
 
     def __call__(self, query):
+        """Ignore the query filter and return a MockQuery, mimicking PyDAL's `db(query)` call."""
         return MockQuery(self)
 
     def __getattr__(self, name):
+        """Return a MockTable for known table names, else fall back to normal attribute lookup."""
         if name in self.data:
             return MockTable(name, self)
         return object.__getattribute__(self, name)
 
     def commit(self):
+        """Flag the mock DB as committed so tests can assert a commit was performed."""
         self._committed = True
 
 
 class MockTable:
-    """Mock database table"""
+    """Mock database table."""
 
     def __init__(self, name, db):
+        """Bind this mock table to its name and the parent MockDB it stores rows in."""
         self.name = name
         self.db = db
 
     def insert(self, **kwargs):
+        """Append a row to the parent MockDB's list for this table and return its 1-based id."""
         record = {"id": len(self.db.data[self.name]) + 1, **kwargs}
         self.db.data[self.name].append(record)
         return record["id"]
 
     def __getattr__(self, name):
+        """Resolve any undefined attribute access as a MockField, mimicking PyDAL column access."""
         return MockField(self.name, name)
 
 
 class MockField:
-    """Mock database field"""
+    """Mock database field."""
 
     def __init__(self, table, field):
+        """Bind this mock field to its owning table name and column name."""
         self.table = table
         self.field = field
 
     def __eq__(self, other):
+        """Return self, so any query-expression comparison is a no-op that stays chainable."""
         return self
 
     def __ne__(self, other):
+        """Return self, so any query-expression comparison is a no-op that stays chainable."""
         return self
 
     def __ge__(self, other):
+        """Return self, so any query-expression comparison is a no-op that stays chainable."""
         return self
 
     def __gt__(self, other):
+        """Return self, so any query-expression comparison is a no-op that stays chainable."""
         return self
 
     def __lt__(self, other):
+        """Return self, so any query-expression comparison is a no-op that stays chainable."""
         return self
 
     def __le__(self, other):
+        """Return self, so any query-expression comparison is a no-op that stays chainable."""
         return self
 
     def __and__(self, other):
+        """Return self, so ANDing query expressions together is a no-op that stays chainable."""
         return self
 
     def __rand__(self, other):
+        """Return self, so ANDing query expressions together is a no-op that stays chainable."""
         return self
 
     def __or__(self, other):
+        """Return self, so ORing query expressions together is a no-op that stays chainable."""
         return self
 
     def __ror__(self, other):
+        """Return self, so ORing query expressions together is a no-op that stays chainable."""
         return self
 
     def like(self, pattern):
+        """Return self, so a LIKE query expression is a no-op that stays chainable."""
         return self
 
     def __hash__(self):
+        """Hash by object identity so mock fields are usable as dict/set keys in query builders."""
         return id(self)
 
 
 class MockQuery:
-    """Mock database query"""
+    """Mock database query."""
 
     def __init__(self, db):
+        """Bind this mock query to the parent MockDB it was built against."""
         self.db = db
 
     def select(self):
+        """Return an always-empty MockResultSet, simulating a query that matches no rows."""
         return MockResultSet([])
 
     def first(self):
+        """Return None, simulating a query that matches no rows."""
         return None
 
     def update(self, **kwargs):
+        """Return 0 affected rows, simulating a query that matches nothing to update."""
         return 0
 
 
 class MockResultSet:
-    """Mock result set"""
+    """Mock result set."""
 
     def __init__(self, data):
+        """Wrap the given rows so the result set can be indexed, iterated, and measured."""
         self._data = data
 
     def first(self):
+        """Return the first row, or None if the result set is empty."""
         return self._data[0] if self._data else None
 
     def __iter__(self):
+        """Iterate over the wrapped rows in order."""
         return iter(self._data)
 
     def __len__(self):
+        """Return the number of wrapped rows."""
         return len(self._data)
 
 
 class TestUsageEvent:
-    """Test UsageEvent dataclass"""
+    """Test UsageEvent dataclass."""
 
     def test_create_usage_event(self):
-        """Test creating a usage event"""
+        """Test creating a usage event."""
         event = UsageEvent(
             event_id="evt_123",
             key_id="wa-test",
@@ -157,7 +182,7 @@ class TestUsageEvent:
         assert event.timestamp is not None
 
     def test_usage_event_with_error(self):
-        """Test creating a usage event with error"""
+        """Test creating a usage event with error."""
         event = UsageEvent(
             event_id="evt_err",
             key_id="wa-test",
@@ -176,16 +201,16 @@ class TestUsageEvent:
 
 
 class TestDailyUsage:
-    """Test DailyUsage dataclass"""
+    """Test DailyUsage dataclass."""
 
     def test_create_daily_usage(self):
-        """Test creating daily usage"""
+        """Test creating daily usage."""
         usage = DailyUsage(date=date.today(), key_id=1, waddleai_tokens=1000, request_count=50)
         assert usage.waddleai_tokens == 1000
         assert usage.request_count == 50
 
     def test_daily_usage_defaults(self):
-        """Test daily usage defaults"""
+        """Test daily usage defaults."""
         usage = DailyUsage(date=date.today())
         assert usage.waddleai_tokens == 0
         assert usage.input_tokens == 0
@@ -195,10 +220,10 @@ class TestDailyUsage:
 
 
 class TestUsageStats:
-    """Test UsageStats dataclass"""
+    """Test UsageStats dataclass."""
 
     def test_usage_stats_defaults(self):
-        """Test usage stats defaults"""
+        """Test usage stats defaults."""
         stats = UsageStats()
         assert stats.total_tokens == 0
         assert stats.request_count == 0
@@ -207,31 +232,35 @@ class TestUsageStats:
 
 
 class TestQuotaInfo:
-    """Test QuotaInfo dataclass"""
+    """Test QuotaInfo dataclass."""
 
     def test_quota_info_ok(self):
-        """Test OK quota status"""
-        info = QuotaInfo(status=QuotaStatus.OK, limit=10000, used=5000, remaining=5000, percentage=50.0)
+        """Test OK quota status."""
+        info = QuotaInfo(
+            status=QuotaStatus.OK, limit=10000, used=5000, remaining=5000, percentage=50.0
+        )
         assert info.status == QuotaStatus.OK
         assert info.percentage == 50.0
 
     def test_quota_info_exceeded(self):
-        """Test exceeded quota status"""
-        info = QuotaInfo(status=QuotaStatus.EXCEEDED, limit=10000, used=10000, remaining=0, percentage=100.0)
+        """Test exceeded quota status."""
+        info = QuotaInfo(
+            status=QuotaStatus.EXCEEDED, limit=10000, used=10000, remaining=0, percentage=100.0
+        )
         assert info.status == QuotaStatus.EXCEEDED
 
 
 class TestUsageTrackingService:
-    """Test UsageTrackingService"""
+    """Test UsageTrackingService."""
 
     def test_init(self):
-        """Test service initialization"""
+        """Test service initialization."""
         db = MockDB()
         service = UsageTrackingService(db)
         assert service.db == db
 
     def test_calculate_waddleai_tokens_openai_gpt4(self):
-        """Test token calculation for GPT-4"""
+        """Test token calculation for GPT-4."""
         db = MockDB()
         service = UsageTrackingService(db)
 
@@ -241,7 +270,7 @@ class TestUsageTrackingService:
         assert tokens == 40
 
     def test_calculate_waddleai_tokens_openai_gpt35(self):
-        """Test token calculation for GPT-3.5"""
+        """Test token calculation for GPT-3.5."""
         db = MockDB()
         service = UsageTrackingService(db)
 
@@ -251,7 +280,7 @@ class TestUsageTrackingService:
         assert tokens == 20
 
     def test_calculate_waddleai_tokens_anthropic_opus(self):
-        """Test token calculation for Claude Opus"""
+        """Test token calculation for Claude Opus."""
         db = MockDB()
         service = UsageTrackingService(db)
 
@@ -261,7 +290,7 @@ class TestUsageTrackingService:
         assert tokens == 60
 
     def test_calculate_waddleai_tokens_anthropic_haiku(self):
-        """Test token calculation for Claude Haiku"""
+        """Test token calculation for Claude Haiku."""
         db = MockDB()
         service = UsageTrackingService(db)
 
@@ -271,7 +300,7 @@ class TestUsageTrackingService:
         assert tokens == 20
 
     def test_calculate_waddleai_tokens_ollama(self):
-        """Test token calculation for Ollama (local)"""
+        """Test token calculation for Ollama (local)."""
         db = MockDB()
         service = UsageTrackingService(db)
 
@@ -281,7 +310,7 @@ class TestUsageTrackingService:
         assert tokens == 20
 
     def test_get_default_rates_openai(self):
-        """Test default rates for OpenAI"""
+        """Test default rates for OpenAI."""
         db = MockDB()
         service = UsageTrackingService(db)
 
@@ -294,21 +323,23 @@ class TestUsageTrackingService:
         assert output_rate == 15
 
     def test_get_default_rates_anthropic(self):
-        """Test default rates for Anthropic"""
+        """Test default rates for Anthropic."""
         db = MockDB()
         service = UsageTrackingService(db)
 
         input_rate, output_rate = service._get_default_rates("anthropic", "claude-3-opus-20240229")
         assert input_rate == 3
 
-        input_rate, output_rate = service._get_default_rates("anthropic", "claude-3-sonnet-20240229")
+        input_rate, output_rate = service._get_default_rates(
+            "anthropic", "claude-3-sonnet-20240229"
+        )
         assert input_rate == 8
 
         input_rate, output_rate = service._get_default_rates("anthropic", "claude-3-haiku-20240307")
         assert input_rate == 20
 
     def test_get_default_rates_unknown_provider(self):
-        """Test default rates for unknown provider"""
+        """Test default rates for unknown provider."""
         db = MockDB()
         service = UsageTrackingService(db)
 
@@ -318,10 +349,10 @@ class TestUsageTrackingService:
 
 
 class TestQuotaChecking:
-    """Test quota checking functionality"""
+    """Test quota checking functionality."""
 
     def test_quota_status_enum(self):
-        """Test QuotaStatus enum values"""
+        """Test QuotaStatus enum values."""
         assert QuotaStatus.OK == "ok"
         assert QuotaStatus.WARNING == "warning"
         assert QuotaStatus.EXCEEDED == "exceeded"

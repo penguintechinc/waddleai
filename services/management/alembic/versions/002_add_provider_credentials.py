@@ -5,19 +5,20 @@ Revises: 001_baseline
 Create Date: 2026-04-02
 """
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "002_add_provider_credentials"
-down_revision: Union[str, None] = "001_baseline"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "001_baseline"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Create provider_credentials table and backfill it from ai_providers.api_key."""
     # 1. Create provider_credentials table
     op.create_table(
         "provider_credentials",
@@ -49,7 +50,7 @@ def upgrade() -> None:
     # 2. Migrate existing api_key values into provider_credentials as label='default'
     connection = op.get_bind()
     providers = connection.execute(
-        sa.text("SELECT id, api_key FROM ai_providers " "WHERE api_key IS NOT NULL AND api_key != ''")
+        sa.text("SELECT id, api_key FROM ai_providers WHERE api_key IS NOT NULL AND api_key != ''")
     ).fetchall()
     now = datetime.utcnow()
     for row in providers:
@@ -69,6 +70,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Copy each provider's earliest credential to ai_providers.api_key, then drop the table."""
     # Copy first credential back to ai_providers.api_key before dropping table
     connection = op.get_bind()
     # PostgreSQL: DISTINCT ON; for portability use subquery

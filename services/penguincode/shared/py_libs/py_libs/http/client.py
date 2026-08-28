@@ -1,5 +1,4 @@
-"""
-HTTP client with retry logic and circuit breaker pattern.
+"""HTTP client with retry logic and circuit breaker pattern.
 
 Provides a production-ready HTTP client with exponential backoff,
 configurable timeouts, and optional circuit breaker protection.
@@ -9,7 +8,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -64,14 +63,13 @@ class HTTPClientConfig:
     timeout: float = 30.0  # seconds
     retry: RetryConfig = field(default_factory=RetryConfig)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
-    headers: Dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
     follow_redirects: bool = True
     verify_ssl: bool = True
 
 
 class HTTPClient:
-    """
-    Production-ready HTTP client with retries and circuit breaker.
+    """Production-ready HTTP client with retries and circuit breaker.
 
     Features:
     - Exponential backoff with jitter
@@ -89,14 +87,15 @@ class HTTPClient:
 
         response = client.get("https://api.example.com/users")
         data = response.json()
+
     """
 
-    def __init__(self, config: Optional[HTTPClientConfig] = None) -> None:
-        """
-        Initialize HTTP client.
+    def __init__(self, config: HTTPClientConfig | None = None) -> None:
+        """Initialize HTTP client.
 
         Args:
             config: Client configuration (uses defaults if None)
+
         """
         self.config = config or HTTPClientConfig()
         self._circuit_state = CircuitBreakerState()
@@ -119,14 +118,14 @@ class HTTPClient:
         self._client.close()
 
     def _calculate_delay(self, attempt: int) -> float:
-        """
-        Calculate delay for exponential backoff.
+        """Calculate delay for exponential backoff.
 
         Args:
             attempt: Current attempt number (0-indexed)
 
         Returns:
             float: Delay in seconds
+
         """
         delay = min(
             self.config.retry.base_delay * (self.config.retry.exponential_base**attempt),
@@ -141,11 +140,11 @@ class HTTPClient:
         return delay
 
     def _check_circuit_breaker(self) -> None:
-        """
-        Check circuit breaker state and raise exception if open.
+        """Check circuit breaker state and raise exception if open.
 
         Raises:
             HTTPError: If circuit breaker is open
+
         """
         if not self.config.circuit_breaker.enabled:
             return
@@ -194,15 +193,15 @@ class HTTPClient:
                 logger.warning(f"Circuit breaker opening after {self._circuit_state.failure_count} failures")
                 self._circuit_state.state = CircuitState.OPEN
 
-    def _prepare_headers(self, headers: Optional[Dict[str, str]]) -> Dict[str, str]:
-        """
-        Prepare request headers with correlation ID.
+    def _prepare_headers(self, headers: dict[str, str] | None) -> dict[str, str]:
+        """Prepare request headers with correlation ID.
 
         Args:
             headers: User-provided headers
 
         Returns:
             Dict[str, str]: Combined headers
+
         """
         combined = dict(self.config.headers)
         if headers:
@@ -222,8 +221,7 @@ class HTTPClient:
         url: str,
         **kwargs: Any,
     ) -> httpx.Response:
-        """
-        Execute HTTP request with retry logic.
+        """Execute HTTP request with retry logic.
 
         Args:
             method: HTTP method (GET, POST, etc.)
@@ -235,6 +233,7 @@ class HTTPClient:
 
         Raises:
             HTTPError: If all retries exhausted or circuit breaker open
+
         """
         self._check_circuit_breaker()
 
@@ -242,7 +241,7 @@ class HTTPClient:
         headers = self._prepare_headers(kwargs.get("headers"))
         kwargs["headers"] = headers
 
-        last_exception: Optional[Exception] = None
+        last_exception: Exception | None = None
 
         for attempt in range(self.config.retry.max_retries + 1):
             try:

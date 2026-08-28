@@ -1,6 +1,6 @@
 # Cloudflare Pages Deployment
 
-This guide covers deploying the WaddleAI marketing website to Cloudflare Pages at `waddlebot.ai`.
+> **Stale — does not reflect the current repo.** There is no `website/` directory in this repo (verified: `git log` shows a `/website` tree existed historically but it's gone from the current tree), so `website/wrangler.toml`, `website/.pages.yml`, and the build steps below don't apply as written. Per the current convention (see root `CLAUDE.md` "Website Integration Requirements"), the marketing site is a sparse-checkout submodule of `github.com/penguintechinc/website`, not a folder in this repo. The domain below (`waddlebot.ai`) also doesn't match any WaddleAI domain used elsewhere in this repo's docs and may be left over from an earlier product name. Left in place for reference only — verify against the actual `penguintechinc/website` repo before following any step here.
 
 ## Prerequisites
 
@@ -161,7 +161,7 @@ wrangler pages deploy out --project-name waddleai-website
 # Analytics: Full tracking enabled
 ```
 
-#### Preview Environment  
+#### Preview Environment
 ```bash
 # Environment: preview
 # Domain: <commit-hash>.waddleai-website.pages.dev

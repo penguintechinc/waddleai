@@ -1,32 +1,56 @@
-"""
-ProxyPipeline stage classes with ordered execution and OpenTelemetry instrumentation.
+"""ProxyPipeline stage classes with ordered execution and OpenTelemetry instrumentation.
 
 Standard Execution Order (§3.2, cheapest-first):
-  auth → token_budget → security_in → [CACHE_INSERTION_POINT] → dispatch →
-    → security_out → meter
+  auth → token_budget → security_in → cache → dispatch → security_out → meter
 
 Each stage is independently testable, flag-aware, and emits structured span data.
 
-Future Insertion Points:
-  - CacheStage: Between security_in and dispatch (scheduled release §6).
-    Implements prompt caching and completion reuse.
-    Check cache before dispatch, store cache after dispatch (spec §6).
+CacheStage (spec §6) sits between security_in and dispatch: on a hit it
+populates ctx.response_text/usage/finish_reason from the cache and sets
+ctx.cache_hit, which DispatchStage checks first and short-circuits on (no
+provider call). On a miss it stashes a ctx.cache_write_back closure; the
+route handler in proxy_server/main.py invokes it only after the full
+pipeline (including SecurityOutStage) completes without ctx.blocked --
+never here and never in MeterStage -- so a blocked/filtered-out response is
+never written to any cache layer (poisoning defense, spec §3.6).
 
-  - RoutingStage: Currently handled inline by DispatchStage via router.select_provider().
-    Future: extract as standalone stage between dispatch provider selection and call
-    (for more granular metrics/control per release §7).
+Landed:
+  - RoutingStage (§7, flag waddleai.smart_routing): between security_in and
+    dispatch, after any CacheStage slot. Passes ctx.model through as
+    RoutingInput.requested_model, then resolves stage-0 model aliasing ->
+    tool type -> model assignment -> capability veto -> policy fallback
+    chain -> escalation -> sensitivity -> budget pressure via
+    shared.routing.RoutingEngine, setting
+    ctx.model/ctx.fallback_chain/ctx.routed_from. DispatchStage still owns
+    concrete-endpoint selection (§7.5) and now also consumes
+    ctx.fallback_chain for chaos failover. Optional constructor args
+    `placement`/`backends_provider` (spec §10.4, shared.fleet.placement)
+    annotate local offers against live fleet endpoint state before
+    RoutingEngine sees them; omitted (the default), behavior is unchanged.
+  - KnowledgeInjectStage (§9.5/§9.6, flag waddleai.knowledge_inject, see
+    proxy/apps/proxy_server/pipeline/knowledge_stage.py): between
+    SummarizationStage and DedupStage (see memory_stages.py's module
+    docstring for the full placement rationale) -- auto-injects ranked
+    retrieved context for non-MCP clients before the cache key is derived.
 
 Removed:
   - No more empty placeholder stages; insertion points are documented above.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+from shared.cache.response_cache import RESPONSE_CACHE_FLAG, ResponseCache
 from shared.observability.tracing import get_tracer
+from shared.routing.aliases import explicit_tool_type
+from shared.routing.capability import ModelOffer
+from shared.routing.engine import RoutingEngine, RoutingInput
+from shared.routing.heuristics import HeuristicRule, RequestSignals
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import PromptSecurityScanner
 from shared.utils.llm_connectors import (
@@ -38,6 +62,7 @@ from shared.utils.llm_connectors import (
     ProviderTimeoutError,
 )
 from shared.utils.metering import MeteringBuffer, MeteringEvent
+from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import LLMRequestRouter
 from shared.utils.token_limiter import TokenLimiter
 
@@ -50,49 +75,97 @@ class PipelineContext:
 
     user: Any
     body: dict
-    model: Optional[str] = None
+    model: str | None = None
     messages: list = field(default_factory=list)
     prompt_text: str = ""
     response_text: str = ""
-    usage: Optional[dict] = None
+    usage: dict | None = None
     blocked: bool = False
-    block_reason: Optional[str] = None
+    block_reason: str | None = None
     status_code: int = 200
     stream: bool = False
-    stage_log: List[str] = field(default_factory=list)
+    stage_log: list[str] = field(default_factory=list)
     # Set by the dispatch stage; feeds the gen_ai.* span attributes (§15.3) and
     # lets routing report the actually-served model rather than the requested one.
-    provider: Optional[str] = None
-    requested_model: Optional[str] = None
-    finish_reason: Optional[str] = None
+    provider: str | None = None
+    requested_model: str | None = None
+    finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
-    reservation_id: Optional[str] = None
+    reservation_id: str | None = None
+    # --- CacheStage (spec §6) ---
+    # Which client-facing wire format this request/response uses -- part of
+    # the cache key (see shared.cache.response_cache module docstring) so an
+    # OpenAI- and Anthropic-shaped request for "the same" underlying call
+    # never share a cache entry. Set by the route handler in main.py.
+    response_format: str = "openai"
+    cache_hit: bool = False
+    # exact|semantic|miss -- upstream cache status is reported separately (see main.py).
+    cache_status: str = "miss"
+    tokens_saved: int = 0
+    cache_write_back: Callable[[dict, dict], Awaitable[None]] | None = None
+    # Set by CacheStage.annotate_miss() from shared.cache.affinity; consumed
+    # by DispatchStage's router.select_provider(preferred_backend=...).
+    preferred_backend: str | None = None
+    # Synthetic SSE replay iterator (shared.cache.replay) on a streaming
+    # cache hit. Populating a live chunked HTTP response from this remains a
+    # main.py-level gap shared with the (also not yet implemented) streaming
+    # miss path -- see shared.cache.response_cache module docstring.
+    stream_iter: Any | None = None
+    # §6A memory layers (proxy/apps/proxy_server/pipeline/memory_stages.py):
+    # X-WaddleAI-Session header, plumbed in by the endpoint handler; conversation/
+    # scratchpad identity is keyed off this, never off unauthenticated request state.
+    session_id: str | None = None
+    # Additive-only accounting surfaced as the `usage.waddleai` response object
+    # (§6A.5): {summarized, tokens_elided, tokens_saved, scratchpad_substitutions}.
+    usage_meta: dict[str, Any] = field(default_factory=dict)
+    # --- RoutingStage (spec §7) ---
+    # Set by SecurityInStage when input PII/sensitive content was detected
+    # (redacted or not); consumed by RoutingStage's sensitivity clamp (§7.3).
+    pii_detected: bool = False
+    # Set by RoutingStage (§7): the policy-sorted qualified candidate chain,
+    # excluding the chosen ctx.model, consumed by DispatchStage for failover.
+    fallback_chain: list[str] = field(default_factory=list)
+    # Set by RoutingStage when an alias/escalation/capability-veto redirect
+    # occurred; surfaced to the client as usage.waddleai.routed_from (§7.6).
+    routed_from: dict | None = None
+    # Read by RoutingStage stage-0 cascade (§7.2): the X-WaddleAI-Tool-Type
+    # header value, threaded through by the caller (main.py) at ctx
+    # construction time rather than read from quart.request inside the
+    # stage, so RoutingStage stays unit-testable without a request context.
+    explicit_tool_type_hint: str | None = None
+    # Read by RoutingStage escalation trigger 4 (§7.3): X-WaddleAI-Escalate
+    # or an "auto:high"/"auto:low" model suffix, same threading rationale.
+    escalate_hint: str | None = None
+    # Security v2 (§8) bookkeeping -- only ever populated when
+    # waddleai.security_v2 is enabled; None under v1 (flag-off byte-identical).
+    security_degraded: bool = False
+    upstream_mapping_id: str | None = None
 
 
 class Stage(ABC):
     """Base class for pipeline stages."""
 
-    def __init__(self, name: str, flag: Optional[str] = None) -> None:
-        """
-        Initialize a stage.
+    def __init__(self, name: str, flag: str | None = None) -> None:
+        """Initialize a stage.
 
         Args:
             name: Stage name (e.g., 'auth', 'dispatch')
             flag: Optional feature flag to gate this stage (None = always run)
+
         """
         self.name = name
         self.flag = flag
 
     @abstractmethod
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Execute stage logic.
+        """Execute stage logic.
 
         Args:
             ctx: Pipeline context
 
         Returns:
             Updated context (or blocked context if gated)
+
         """
         raise NotImplementedError
 
@@ -100,21 +173,20 @@ class Stage(ABC):
 class ProxyPipeline:
     """Orchestrates stage execution with short-circuit and tracing."""
 
-    def __init__(self, stages: List[Stage], features: Any) -> None:
-        """
-        Initialize pipeline.
+    def __init__(self, stages: list[Stage], features: Any) -> None:
+        """Initialize pipeline.
 
         Args:
             stages: List of Stage instances in execution order
             features: Feature flag helper with is_feature_enabled(flag_key, distinct_id=...) method
+
         """
         self.stages = stages
         self.features = features
         self.tracer = get_tracer("waddleai-proxy-pipeline")
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Execute all stages in order, short-circuiting if ctx.blocked is set.
+        """Execute all stages in order, short-circuiting if ctx.blocked is set.
 
         Stage-log is updated with:
         - 'ran:{stage_name}' if stage executed
@@ -126,6 +198,7 @@ class ProxyPipeline:
 
         Returns:
             Final context after all stages (or short-circuit point)
+
         """
         with self.tracer.start_as_current_span("pipeline"):
             for stage in self.stages:
@@ -199,8 +272,7 @@ class AuthStage(Stage):
     """Authenticate user and validate tenant/organization context."""
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Validate that ctx.user is present with valid organization/tenant.
+        """Validate that ctx.user is present with valid organization/tenant.
 
         Middleware already authenticated the user; this stage ensures a valid
         organizational context exists for multi-tenant isolation.
@@ -215,7 +287,9 @@ class AuthStage(Stage):
 
         # User must have an organization/tenant ID
         # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
-        tenant_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
+        tenant_id = getattr(ctx.user, "tenant_id", None) or getattr(
+            ctx.user, "organization_id", None
+        )
         if not tenant_id:
             ctx.blocked = True
             ctx.status_code = 403
@@ -232,23 +306,24 @@ class AuthStage(Stage):
 class TokenBudgetStage(Stage):
     """Check TPM and monthly token/USD budgets."""
 
-    def __init__(self, name: str, token_limiter: TokenLimiter, features: Any, flag: Optional[str] = None) -> None:
-        """
-        Initialize TokenBudgetStage.
+    def __init__(
+        self, name: str, token_limiter: TokenLimiter, features: Any, flag: str | None = None
+    ) -> None:
+        """Initialize TokenBudgetStage.
 
         Args:
             name: Stage name
             token_limiter: TokenLimiter instance for budget enforcement
             features: Feature flag helper
             flag: Optional feature flag to gate this stage
+
         """
         super().__init__(name, flag)
         self.token_limiter = token_limiter
         self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Reserve tokens from budget via TokenLimiter.
+        """Reserve tokens from budget via TokenLimiter.
 
         Estimates input tokens, calls reserve, and stashes reservation_id
         for MeterStage to reconcile with actual usage. Sets ctx.blocked if
@@ -283,7 +358,9 @@ class TokenBudgetStage(Stage):
             ctx.blocked = True
             ctx.status_code = 429
             ctx.block_reason = decision.reason
-            logger.warning("TokenBudgetStage: quota exceeded for vkey %s: %s", vkey_id, decision.reason)
+            logger.warning(
+                "TokenBudgetStage: quota exceeded for vkey %s: %s", vkey_id, decision.reason
+            )
             return ctx
 
         # Stash reservation ID for reconciliation in MeterStage
@@ -305,24 +382,40 @@ class SecurityInStage(Stage):
         name: str,
         scanner: PromptSecurityScanner,
         content_filter: ContentFilter,
-        flag: Optional[str] = None,
+        flag: str | None = None,
+        policy_resolver: Any = None,
+        policy_engine: Any = None,
+        intent_classifier: Any = None,
+        bypass_resolver: Any = None,
+        features: Any = None,
     ) -> None:
-        """
-        Initialize SecurityInStage.
+        """Initialize SecurityInStage.
 
         Args:
             name: Stage name
             scanner: PromptSecurityScanner instance
             content_filter: ContentFilter instance
             flag: Optional feature flag to gate this stage
+            policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
+            policy_engine: Optional §8.2 SecurityPolicyEngine (security_v2 only)
+            intent_classifier: Optional §8.3 IntentClassifier (security_v2 only)
+            bypass_resolver: Optional §8.6 BypassResolver (security_v2 only)
+            features: Feature flag helper; when policy_engine is also set,
+                gates the security_v2 code path internally (this stage
+                always runs -- flag-off falls through to v1 below unchanged)
+
         """
         super().__init__(name, flag)
         self.scanner = scanner
         self.content_filter = content_filter
+        self.policy_resolver = policy_resolver
+        self.policy_engine = policy_engine
+        self.intent_classifier = intent_classifier
+        self.bypass_resolver = bypass_resolver
+        self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Scan messages for threats and PII, in order of fail-fast.
+        """Scan messages for threats and PII, in order of fail-fast.
 
         1. PromptSecurityScanner: checks for injection/jailbreak/data-extraction attacks
            (BLOCKS immediately on detection — fail fast)
@@ -330,9 +423,21 @@ class SecurityInStage(Stage):
            (updated messages are written back to ctx.messages)
 
         Returns blocked context if threat detected, otherwise filtered context.
+
+        When `waddleai.security_v2` is enabled AND this stage was built with
+        the v2 collaborators (policy_engine etc.), delegates to
+        `_call_v2()` instead -- flag-off (the default) always takes this
+        v1 path unchanged, byte-identical to pre-security-v2 behavior.
         """
         if not ctx.messages:
             return ctx
+
+        if self.policy_engine is not None and self.features is not None:
+            org_id = getattr(ctx.user, "tenant_id", None) or getattr(
+                ctx.user, "organization_id", None
+            )
+            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+                return await self._call_v2(ctx, org_id)
 
         # STEP 1: Prompt security scan (fail fast on injection attacks)
         # Support both id (generic) and user_id (WaddleAI UserContext)
@@ -359,6 +464,7 @@ class SecurityInStage(Stage):
         # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
         org_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
         filtered_messages = []
+        pii_detected = False
         for msg in ctx.messages:
             content = msg.get("content", "")
             filter_result = await self.content_filter.filter_input(
@@ -375,12 +481,326 @@ class SecurityInStage(Stage):
                 logger.warning("SecurityInStage: PII detected in message for user %s", user_id)
                 return ctx
 
+            # Any violation (even a redacted, allowed one) flags the request
+            # for RoutingStage's sensitivity clamp (§7.3) -- distinct from
+            # ctx.blocked, which only fires on a hard block above.
+            if filter_result.violations:
+                pii_detected = True
+
             # Update message with filtered (redacted) content
             filtered_messages.append({**msg, "content": filter_result.filtered_text})
 
         ctx.messages = filtered_messages
+        ctx.pii_detected = pii_detected
         logger.debug("SecurityInStage: scanned %d messages for user %s", len(ctx.messages), user_id)
         return ctx
+
+    async def _call_v2(self, ctx: PipelineContext, org_id: Any) -> PipelineContext:
+        """Security v2 (§8) input path: resolve -> bypass -> engine + intent classifier.
+
+        Bypass `skip` mode short-circuits enforcement entirely (tiers don't
+        run); `shadow` still runs the full evaluation below but never blocks
+        or redacts, matching §8.6.
+        """
+        from shared.security.intent_classifier import IntentResult
+
+        user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
+        model = ctx.model
+        bypass = None
+        if self.bypass_resolver is not None:
+            bypass = await self.bypass_resolver.resolve(ctx.user)
+
+        filtered_messages = []
+        for msg in ctx.messages:
+            content = msg.get("content", "")
+            resolved = await self.policy_resolver.resolve(
+                org_id, model, tool_name=None, direction="input"
+            )
+
+            if bypass is not None and bypass.active and bypass.mode == "skip":
+                ctx.security_degraded = False
+                filtered_messages.append(msg)
+                continue
+
+            verdict = await self.policy_engine.evaluate(content, "input", resolved, ctx.user)
+            intent_result = IntentResult(action="allow")
+            if self.intent_classifier is not None and resolved.intent_classifier_enabled:
+                intent_result = await self.intent_classifier.classify(
+                    ctx.messages, "", resolved, ctx.user
+                )
+
+            shadowed = bypass is not None and bypass.active and bypass.mode == "shadow"
+            final_action = verdict.action
+            if intent_result.action == "block":
+                final_action = "block"
+            elif intent_result.action == "flag" and final_action == "allow":
+                final_action = "flag"
+
+            if verdict.degraded or intent_result.degraded:
+                ctx.security_degraded = True
+
+            if final_action == "block" and not shadowed:
+                ctx.blocked = True
+                ctx.status_code = 400
+                ctx.block_reason = "security_v2_blocked"
+                logger.warning(
+                    "SecurityInStage(v2): blocked for user %s (degraded=%s)",
+                    user_id,
+                    ctx.security_degraded,
+                )
+                return ctx
+
+            new_content = verdict.filtered_text if not shadowed else content
+            filtered_messages.append({**msg, "content": new_content})
+
+        ctx.messages = filtered_messages
+        logger.debug(
+            "SecurityInStage(v2): scanned %d messages for user %s", len(ctx.messages), user_id
+        )
+        return ctx
+
+
+# §8.7 destination classification for DispatchStage's upstream-filter gate:
+# providers that leave the deployment ("commercial") vs. ones that never do.
+_COMMERCIAL_PROVIDERS = frozenset({"openai", "anthropic", "google", "azure", "bedrock", "gemini"})
+
+
+class CacheStage(Stage):
+    """Response cache lookup (spec §6) -- stage 4, after security_in, before dispatch.
+
+    Flag-gated on ``waddleai.response_cache`` (default OFF via
+    ``ProxyPipeline.run``'s flag handling -- when off, this stage's
+    ``__call__`` never runs and it makes zero Valkey/Postgres calls).
+    """
+
+    def __init__(
+        self, name: str, response_cache: ResponseCache, flag: str | None = RESPONSE_CACHE_FLAG
+    ) -> None:
+        """Initialize CacheStage.
+
+        Args:
+            name: Stage name
+            response_cache: ResponseCache facade (exact/semantic/upstream orchestration)
+            flag: Feature flag gating this stage; defaults to RESPONSE_CACHE_FLAG
+
+        """
+        super().__init__(name, flag)
+        self.response_cache = response_cache
+
+    async def __call__(self, ctx: PipelineContext) -> PipelineContext:
+        """Look up the cache and populate ctx from a hit, short-circuiting dispatch.
+
+        On a miss, stashes a write-back closure for the route handler to
+        invoke after SecurityOutStage passes.
+        """
+        metrics = get_proxy_metrics()
+        result = await self.response_cache.lookup(ctx)
+
+        if result.status in ("exact", "semantic") and result.cached is not None:
+            metrics.record_cache_lookup(layer=result.status, result="hit")
+            cached = result.cached
+            text, finish_reason = _extract_cached_text(cached.response, ctx.response_format)
+            ctx.response_text = text
+            ctx.finish_reason = finish_reason
+            ctx.usage = cached.response.get("usage") or {}
+            ctx.provider = "cache"
+            ctx.cache_hit = True
+            ctx.cache_status = result.status
+            ctx.tokens_saved = _cached_total_tokens(cached.response.get("usage") or {})
+            metrics.record_cache_tokens_saved(layer=result.status, tokens=ctx.tokens_saved)
+            if ctx.stream:
+                from shared.cache.replay import replay_anthropic_sse, replay_openai_sse
+
+                ctx.stream_iter = (
+                    replay_anthropic_sse(cached)
+                    if ctx.response_format == "anthropic"
+                    else replay_openai_sse(cached)
+                )
+            logger.debug(
+                "CacheStage: %s hit for user org=%s model=%s",
+                result.status,
+                getattr(ctx.user, "organization_id", None) or getattr(ctx.user, "tenant_id", None),
+                ctx.model,
+            )
+            return ctx
+
+        metrics.record_cache_lookup(layer="exact", result="miss")
+        ctx.cache_status = "miss"
+        ctx.cache_write_back = result.write_back
+        await self.response_cache.annotate_miss(ctx)
+        return ctx
+
+
+def _extract_cached_text(response: dict, response_format: str) -> tuple:
+    """Extract (text, finish_reason) from a cached full response body by wire format."""
+    if response_format == "anthropic":
+        content = response.get("content") or [{}]
+        text = content[0].get("text", "") if content else ""
+        return text, response.get("stop_reason")
+
+    choice = (response.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    return message.get("content", ""), choice.get("finish_reason")
+
+
+def _cached_total_tokens(usage: dict) -> int:
+    """Best-effort total token count from either wire format's usage block."""
+    if "total_tokens" in usage:
+        return int(usage.get("total_tokens") or 0)
+    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+
+
+class RoutingStage(Stage):
+    """Stage 5: unified smart routing (spec §7).
+
+    Resolves tool type (explicit/heuristic/classifier cascade), the model
+    assignment, capability veto, org policy fallback chain, escalation,
+    sensitivity clamp, and budget pressure via RoutingEngine, then sets
+    ctx.model/ctx.fallback_chain/ctx.routed_from for DispatchStage. Flag-gated
+    (waddleai.smart_routing) -- when off, this stage is skipped entirely by
+    ProxyPipeline.run() and ctx.model is left exactly as determine_target_model
+    set it (§14.2 flag-off byte-identical proof).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        engine: RoutingEngine,
+        db: Any,
+        rules: list[HeuristicRule] | None = None,
+        flag: str | None = None,
+        placement: Any = None,
+        backends_provider: Callable[[int], Awaitable[list[Any]]] | None = None,
+    ) -> None:
+        """Initialize RoutingStage.
+
+        Args:
+            name: Stage name
+            engine: RoutingEngine facade composing the full §7 decision
+            db: penguin-dal DB instance exposing model_configs (candidate offers)
+            rules: Org routing_rules_v2 rows for the stage-1 heuristic cascade
+            flag: Optional feature flag to gate this stage
+            placement: Optional ``shared.fleet.placement.PlacementEngine``
+                (spec §10.4). When given together with ``backends_provider``,
+                local offers are annotated against live fleet endpoint state
+                before RoutingEngine sees them (see
+                ``shared.routing.offers`` module docstring). Omitted
+                (the default), behavior is byte-identical to before fleet
+                placement existed.
+            backends_provider: Async ``org_id -> list[InferenceFleetBackend]``
+                resolver (e.g. ``shared.fleet.registry.build_backends_for_org``
+                bound to this service's db), consulted only when
+                ``placement`` is also given.
+
+        """
+        super().__init__(name, flag)
+        self.engine = engine
+        self.db = db
+        self.rules = rules or []
+        self.placement = placement
+        self.backends_provider = backends_provider
+
+    async def __call__(self, ctx: PipelineContext) -> PipelineContext:
+        """Run the RoutingEngine and apply its decision to ctx.
+
+        Never blocks the request on routing ambiguity -- RoutingEngine
+        always returns a usable model, falling back to ctx.model unchanged
+        if something goes wrong loading candidate offers.
+        """
+        org_id_raw = getattr(ctx.user, "tenant_id", None) or getattr(
+            ctx.user, "organization_id", None
+        )
+        try:
+            org_id = int(org_id_raw) if org_id_raw is not None else 0
+        except (TypeError, ValueError):
+            org_id = 0
+
+        explicit = explicit_tool_type(header_value=ctx.explicit_tool_type_hint, model=ctx.model)
+        signals = RequestSignals(model=ctx.model or "")
+
+        try:
+            offers = await self._load_offers(org_id)
+        except Exception as exc:  # pragma: no cover - defensive, DB I/O failure
+            logger.warning(
+                "RoutingStage: failed to load candidate offers, leaving ctx.model unchanged: %s",
+                exc,
+            )
+            return ctx
+
+        request_id = getattr(ctx.user, "request_id", None) or f"{id(ctx):x}"
+        routing_input = RoutingInput(
+            org_id=org_id,
+            request_id=str(request_id),
+            body=ctx.body,
+            explicit_tool_type=explicit,
+            requested_model=ctx.model,
+            signals=signals,
+            rules=self.rules,
+            offers=offers,
+            pii_detected=ctx.pii_detected,
+            explicit_escalate_hint=ctx.escalate_hint,
+        )
+
+        try:
+            decision = await self.engine.decide(routing_input)
+        except Exception as exc:  # pragma: no cover - defensive, routing must never break dispatch
+            logger.error(
+                "RoutingStage: decide() failed, leaving ctx.model unchanged: %s", exc, exc_info=True
+            )
+            return ctx
+
+        ctx.model = decision.model
+        ctx.fallback_chain = decision.fallback_chain
+        ctx.routed_from = decision.routed_from
+        return ctx
+
+    async def _load_offers(self, org_id: int | None = None) -> list[ModelOffer]:
+        """Build the candidate ModelOffer universe from model_configs (penguin-dal).
+
+        Interim capability source until migration 008 (model_registry) lands
+        -- location is inferred from preferred_providers, cost from the mean
+        of the per-provider cost_per_token map.
+
+        ``org_id`` is optional (defaults to ``None``, preserving the
+        zero-arg call signature every pre-fleet caller/test uses) and is
+        only consulted when both ``self.placement`` and
+        ``self.backends_provider`` are set -- see ``__init__``. When wired,
+        local offers are annotated against live fleet endpoint state (spec
+        §10.4) before being returned; a failure to do so is logged and the
+        un-annotated offers are returned rather than breaking routing.
+        """
+        rows = await asyncio.to_thread(
+            lambda: self.db(self.db.model_configs.enabled == True).select()  # noqa: E712
+        )
+        offers: list[ModelOffer] = []
+        for row in rows:
+            providers = row.preferred_providers or []
+            is_local = any(p in ("ollama", "llamacpp") for p in providers)
+            location = "local" if is_local else "commercial"
+            costs = list((row.cost_per_token or {}).values())
+            avg_cost = sum(costs) / len(costs) if costs else 0.0
+            capabilities = row.capabilities or []
+            offers.append(
+                ModelOffer(
+                    model_name=row.model_name,
+                    context_window=row.context_length or 4096,
+                    cost_per_token=avg_cost,
+                    location=location,
+                    supports_tools=True,
+                    supports_vision="vision" in capabilities,
+                )
+            )
+
+        if self.placement is not None and self.backends_provider is not None and org_id is not None:
+            try:
+                backends = await self.backends_provider(org_id)
+                offers = await self.placement.annotate_offers(offers, backends)
+            except Exception as exc:  # pragma: no cover - defensive, fleet I/O failure
+                logger.warning(
+                    "RoutingStage: fleet placement annotation failed, offers unannotated: %s", exc
+                )
+
+        return offers
 
 
 class DispatchStage(Stage):
@@ -390,25 +810,36 @@ class DispatchStage(Stage):
         self,
         name: str,
         router: LLMRequestRouter,
-        connectors: Dict[str, LLMConnector],
-        flag: Optional[str] = None,
+        connectors: dict[str, LLMConnector],
+        flag: str | None = None,
+        upstream_filter: Any = None,
+        policy_resolver: Any = None,
+        features: Any = None,
     ) -> None:
-        """
-        Initialize DispatchStage.
+        """Initialize DispatchStage.
 
         Args:
             name: Stage name
             router: LLMRequestRouter for provider selection
             connectors: Dict mapping provider name to LLMConnector instance
             flag: Optional feature flag to gate this stage
+            upstream_filter: Optional §8.7 UpstreamFilter (security_v2 only)
+            policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
+            features: Feature flag helper; when upstream_filter is also
+                set, gates the security_v2 pre-dispatch redaction/
+                pseudonymize step internally (flag-off = v1 dispatch
+                unchanged, no upstream transform, no Valkey map)
+
         """
         super().__init__(name, flag)
         self.router = router
         self.connectors = connectors
+        self.upstream_filter = upstream_filter
+        self.policy_resolver = policy_resolver
+        self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Route to provider and dispatch request.
+        """Route to provider and dispatch request.
 
         1. Select provider via router
         2. Call connector (streaming or non-streaming based on ctx.stream)
@@ -417,7 +848,14 @@ class DispatchStage(Stage):
         5. Populate ctx.response_text, ctx.usage, ctx.provider, ctx.model, ctx.finish_reason
 
         Non-retryable errors (4xx) and retries-exhausted errors (502/503) set ctx.blocked.
+
+        Skipped entirely on a cache hit (ctx.cache_hit, set by CacheStage) --
+        ctx.response_text/usage/finish_reason/provider are already populated
+        from the cache, so no provider call happens.
         """
+        if ctx.cache_hit:
+            return ctx
+
         if not ctx.messages:
             ctx.blocked = True
             ctx.status_code = 400
@@ -427,10 +865,38 @@ class DispatchStage(Stage):
         # Select provider and target model via the router's public seam, which
         # applies availability filtering (and therefore the circuit breaker,
         # including its half-open probe). Reaching into the private helpers
-        # here would let a caller bypass breaker semantics.
+        # here would let a caller bypass breaker semantics. preferred_backend
+        # (spec §6.3 session affinity, set by CacheStage.annotate_miss) is a
+        # hint only -- select_provider ignores it for unhealthy/non-Ollama
+        # providers, see that method's docstring.
+        #
+        # ctx.fallback_chain (§7: populated only when RoutingStage ran, i.e.
+        # empty when the flag is off) is consulted whenever the primary model
+        # has no available provider -- whether select_provider() returned
+        # falsy or raised -- this is the chaos-failover path, not a general
+        # retry loop; DispatchStage still calls the router exactly once per
+        # candidate model.
         try:
             model = ctx.model or "gpt-4"
-            selection = self.router.select_provider(model)
+            try:
+                selection = self.router.select_provider(
+                    model, preferred_backend=ctx.preferred_backend
+                )
+            except Exception as e:
+                # A primary-selection failure still leaves the chaos-failover
+                # path available -- don't let it short-circuit ctx.fallback_chain.
+                logger.warning(
+                    "DispatchStage: provider selection for %s failed (%s), trying fallback_chain",
+                    model,
+                    e,
+                )
+                selection = None
+            if not selection:
+                for fallback_model in ctx.fallback_chain:
+                    selection = self.router.select_provider(fallback_model)
+                    if selection:
+                        model = fallback_model
+                        break
             if not selection:
                 logger.error("DispatchStage: no available providers for model %s", model)
                 ctx.blocked = True
@@ -457,12 +923,21 @@ class DispatchStage(Stage):
         ctx.requested_model = ctx.model
         ctx.model = target_model
 
+        if self.upstream_filter is not None and self.features is not None:
+            org_id = getattr(ctx.user, "tenant_id", None) or getattr(
+                ctx.user, "organization_id", None
+            )
+            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+                await self._apply_upstream_filter(ctx, org_id, provider, target_model)
+
         try:
             if ctx.stream:
                 # Streaming: accumulate chunks
                 ctx.response_text = ""
-                usage: Optional[Dict[str, Any]] = None
-                async for chunk in connector.stream_chat_completion(ctx.messages, model=target_model):
+                usage: dict[str, Any] | None = None
+                async for chunk in connector.stream_chat_completion(
+                    ctx.messages, model=target_model
+                ):
                     ctx.response_text += chunk.delta
                     if chunk.done and chunk.usage:
                         usage = chunk.usage
@@ -471,10 +946,22 @@ class DispatchStage(Stage):
                     ctx.finish_reason = usage.get("finish_reason", "stop")
             else:
                 # Non-streaming: single call
-                response_text, usage_info = await connector.chat_completion(ctx.messages, model=target_model)
+                response_text, usage_info = await connector.chat_completion(
+                    ctx.messages, model=target_model
+                )
                 ctx.response_text = response_text
                 ctx.usage = usage_info
                 ctx.finish_reason = usage_info.get("finish_reason", "stop")
+
+            if ctx.upstream_mapping_id and self.upstream_filter is not None:
+                # §8.7: de-pseudonymize before the response reaches the
+                # client, then drop the Valkey map -- it must not outlive
+                # this request.
+                ctx.response_text = await self.upstream_filter.depseudonymize(
+                    ctx.response_text, ctx.upstream_mapping_id
+                )
+                await self.upstream_filter.cleanup(ctx.upstream_mapping_id)
+                ctx.upstream_mapping_id = None
 
             logger.debug(
                 "DispatchStage: dispatched to %s/%s (tokens: in=%s, out=%s)",
@@ -504,7 +991,9 @@ class DispatchStage(Stage):
 
             ctx.blocked = True
             ctx.block_reason = f"provider_error_{e.status_code}"
-            logger.warning("DispatchStage: provider error from %s (retries exhausted): %s", provider, e)
+            logger.warning(
+                "DispatchStage: provider error from %s (retries exhausted): %s", provider, e
+            )
 
         except ProviderError as e:
             # Generic provider error
@@ -522,6 +1011,29 @@ class DispatchStage(Stage):
 
         return ctx
 
+    async def _apply_upstream_filter(
+        self, ctx: PipelineContext, org_id: Any, provider: str, target_model: str
+    ) -> None:
+        """§8.7: redact/pseudonymize ctx.messages in place before the connector call.
+
+        Destination-aware via the resolved policy's `applies_to`
+        (commercial|all); `provider` is classified against
+        `_COMMERCIAL_PROVIDERS` to determine `destination_kind`.
+        """
+        destination_kind = "commercial" if provider in _COMMERCIAL_PROVIDERS else "local"
+        resolved = await self.policy_resolver.resolve(
+            org_id, target_model, tool_name=None, direction="input"
+        )
+        filtered_messages = []
+        for msg in ctx.messages:
+            result = await self.upstream_filter.apply(
+                msg.get("content", ""), resolved, destination_kind, ctx.user
+            )
+            filtered_messages.append({**msg, "content": result.text})
+            if result.mapping_id:
+                ctx.upstream_mapping_id = result.mapping_id
+        ctx.messages = filtered_messages
+
 
 class SecurityOutStage(Stage):
     """Filter response output for PII/sensitive data."""
@@ -530,62 +1042,163 @@ class SecurityOutStage(Stage):
         self,
         name: str,
         content_filter: ContentFilter,
-        flag: Optional[str] = None,
+        flag: str | None = None,
+        output_guardrails: Any = None,
+        policy_resolver: Any = None,
+        features: Any = None,
     ) -> None:
-        """
-        Initialize SecurityOutStage.
+        """Initialize SecurityOutStage.
 
         Args:
             name: Stage name
             content_filter: ContentFilter instance
             flag: Optional feature flag to gate this stage
+            output_guardrails: Optional §8.4 OutputGuardrails (security_v2 only)
+            policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
+            features: Feature flag helper; when output_guardrails is also
+                set, gates the security_v2 code path internally (this stage
+                always runs -- flag-off falls through to v1 below unchanged)
+
         """
         super().__init__(name, flag)
         self.content_filter = content_filter
+        self.output_guardrails = output_guardrails
+        self.policy_resolver = policy_resolver
+        self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Filter LLM response for PII/PCI before returning to user.
+        """Filter LLM response for PII/PCI before returning to user.
 
         Redacts sensitive data from ctx.response_text. If filter denies the
         response (e.g., contains API keys), sets ctx.blocked.
+
+        When `waddleai.security_v2` is enabled AND this stage was built
+        with the v2 collaborators (output_guardrails etc.), delegates to
+        `_call_v2()` -- flag-off (the default) always takes the v1 path
+        below unchanged.
         """
         if not ctx.response_text:
             return ctx
+
+        if self.output_guardrails is not None and self.features is not None:
+            org_id = getattr(ctx.user, "tenant_id", None) or getattr(
+                ctx.user, "organization_id", None
+            )
+            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+                return await self._call_v2(ctx, org_id)
 
         # Support both id (generic) and user_id (WaddleAI UserContext)
         user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
         # Support both tenant_id (generic) and organization_id (WaddleAI UserContext)
         org_id = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
+        ip_address = None  # Would come from request context
 
         try:
             filter_result = await self.content_filter.filter_output(
                 text=ctx.response_text,
                 user_id=user_id,
                 org_id=org_id,
-                ip=None,
+                ip=ip_address,
             )
-
-            if not filter_result.allowed:
-                ctx.blocked = True
-                ctx.status_code = 400
-                ctx.block_reason = "response_blocked_pii"
-                logger.warning("SecurityOutStage: response blocked due to PII for user %s", user_id)
-                return ctx
-
-            # Update response with redacted version
-            ctx.response_text = filter_result.filtered_text
-            logger.debug(
-                "SecurityOutStage: filtered output for user %s (violations=%d)",
+        except (TypeError, AttributeError) as e:
+            # Programming error at the call boundary (wrong kwargs, wrong
+            # attribute) -- NOT a transient failure. ContentFilter._filter()
+            # already fails open internally for genuine runtime/IO errors
+            # (network, DB, LLM auditor unreachable), so anything reaching
+            # here is a code defect that would otherwise silently disable
+            # output PII filtering for every response (see bug: a stale
+            # `ip=` kwarg made every call raise TypeError, and this branch
+            # used to swallow it identically to a filter timeout). Fail
+            # CLOSED and log loudly so this class of bug can never again
+            # be indistinguishable from an ordinary fail-open path.
+            logger.error(
+                "SecurityOutStage: filter_output call is broken (%s: %s) for user %s -- "
+                "this is a code defect, not a transient failure; blocking response.",
+                type(e).__name__,
+                e,
                 user_id,
-                len(filter_result.violations),
+                exc_info=True,
             )
-
+            ctx.blocked = True
+            ctx.status_code = 500
+            ctx.block_reason = "output_filter_defect"
+            return ctx
         except Exception as e:
-            logger.error("SecurityOutStage: filter error for user %s: %s", user_id, e, exc_info=True)
-            # Fail open: don't block the response on filter errors
-            # (security through-put > absolute certainty)
+            logger.error(
+                "SecurityOutStage: filter error for user %s: %s", user_id, e, exc_info=True
+            )
+            # Fail open: don't block the response on genuine runtime/IO
+            # errors reaching this far (ContentFilter._filter() already
+            # fail-opens internally for the expected transient cases).
+            return ctx
 
+        if not filter_result.allowed:
+            ctx.blocked = True
+            ctx.status_code = 400
+            ctx.block_reason = "response_blocked_pii"
+            logger.warning("SecurityOutStage: response blocked due to PII for user %s", user_id)
+            return ctx
+
+        # Update response with redacted version
+        ctx.response_text = filter_result.filtered_text
+        logger.debug(
+            "SecurityOutStage: filtered output for user %s (violations=%d)",
+            user_id,
+            len(filter_result.violations),
+        )
+
+        return ctx
+
+    async def _call_v2(self, ctx: PipelineContext, org_id: Any) -> PipelineContext:
+        """Security v2 (§8.4) output path: resolve -> OutputGuardrails.scan_output.
+
+        Non-streaming only (ctx.response_text is already fully accumulated
+        by DispatchStage by the time this stage runs); streaming responses
+        use `OutputGuardrails.scan_stream()` directly at the dispatch
+        boundary, not through this stage.
+        """
+        user_id = getattr(ctx.user, "id", None) or getattr(ctx.user, "user_id", None)
+        resolved = await self.policy_resolver.resolve(
+            org_id, ctx.model, tool_name=None, direction="output"
+        )
+
+        try:
+            verdict = await self.output_guardrails.scan_output(
+                ctx.response_text, resolved, ctx.user
+            )
+        except (TypeError, AttributeError) as e:
+            # Same fail-CLOSED-on-defect rule as the v1 path above: a
+            # programming error at this call boundary must never be
+            # indistinguishable from an ordinary fail-open transient error.
+            logger.error(
+                "SecurityOutStage(v2): scan_output call is broken (%s: %s) for user %s -- "
+                "blocking response.",
+                type(e).__name__,
+                e,
+                user_id,
+                exc_info=True,
+            )
+            ctx.blocked = True
+            ctx.status_code = 500
+            ctx.block_reason = "output_filter_defect"
+            return ctx
+
+        if verdict.degraded:
+            ctx.security_degraded = True
+
+        if verdict.action == "block":
+            ctx.blocked = True
+            ctx.status_code = 400
+            ctx.block_reason = "security_v2_output_blocked"
+            logger.warning("SecurityOutStage(v2): response blocked for user %s", user_id)
+            return ctx
+
+        ctx.response_text = verdict.filtered_text
+        logger.debug(
+            "SecurityOutStage(v2): filtered output for user %s (redactions=%d)",
+            user_id,
+            verdict.redactions,
+        )
         return ctx
 
 
@@ -597,24 +1210,23 @@ class MeterStage(Stage):
         name: str,
         metering_buffer: MeteringBuffer,
         token_limiter: TokenLimiter,
-        flag: Optional[str] = None,
+        flag: str | None = None,
     ) -> None:
-        """
-        Initialize MeterStage.
+        """Initialize MeterStage.
 
         Args:
             name: Stage name
             metering_buffer: MeteringBuffer instance for batching writes
             token_limiter: TokenLimiter for reconciliation
             flag: Optional feature flag to gate this stage
+
         """
         super().__init__(name, flag)
         self.metering_buffer = metering_buffer
         self.token_limiter = token_limiter
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """
-        Record actual token usage and reconcile budget reservation.
+        """Record actual token usage and reconcile budget reservation.
 
         This stage runs EVEN IF ctx.blocked is True (e.g., if provider returned
         an error after we sent tokens). Metering must be accurate for billing
@@ -628,7 +1240,8 @@ class MeterStage(Stage):
             logger.debug("MeterStage: no vkey_id, skipping")
             return ctx
 
-        # Record usage if provider call occurred
+        # Record usage if provider call occurred (or was served from cache --
+        # ctx.provider == "cache" on a hit, spec §6.4 cache_status/tokens_saved).
         if ctx.usage and ctx.provider and ctx.model:
             event = MeteringEvent(
                 virtual_key_id=vkey_id,
@@ -637,6 +1250,8 @@ class MeterStage(Stage):
                 usage=ctx.usage,
                 timestamp=datetime.utcnow(),
                 estimated=False,  # Actual usage from provider
+                cache_status=ctx.cache_status,
+                tokens_saved=ctx.tokens_saved,
             )
             self.metering_buffer.record(event)
             logger.debug(

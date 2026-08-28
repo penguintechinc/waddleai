@@ -1,0 +1,151 @@
+name: waddleai-cli (Rust) Build and Test
+
+on:
+  push:
+    branches: [ main, 'release/**', 'v*' ]
+    paths:
+      - 'clients/waddleai-cli/**'
+      - '.github/workflows/rust-build.yml'
+  pull_request:
+    # release/** matters as much as main -- feature/fix/chore branches merge
+    # into the release branch first, and that merge is auto-approved when
+    # "fully green". Without this, release-targeted PRs would never build
+    # the CLI at all. Mirrors docker-build.yml's rationale.
+    branches: [ main, 'release/**' ]
+    paths:
+      - 'clients/waddleai-cli/**'
+      - '.github/workflows/rust-build.yml'
+
+defaults:
+  run:
+    working-directory: clients/waddleai-cli
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: fmt, clippy, test, audit, deny, coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # GitHub-hosted ubuntu runners ship rustup preinstalled; `rust-toolchain.toml`
+      # (committed in clients/waddleai-cli/) pins the exact channel + components
+      # (clippy, rustfmt), so this just materializes what's already declared --
+      # no third-party toolchain action needed, nothing extra to SHA-pin.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            clients/waddleai-cli/target
+          key: ${{ runner.os }}-cargo-waddleai-cli-${{ hashFiles('clients/waddleai-cli/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-waddleai-cli-
+          lookup-only: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo deny check
+        run: cargo deny check
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      # House rule: 90%+ line coverage; build fails below threshold.
+      - name: Coverage gate (90% lines)
+        run: cargo llvm-cov --locked --fail-under-lines 90
+
+  build:
+    name: Static build (${{ matrix.target }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Add cross-compilation target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            clients/waddleai-cli/target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('clients/waddleai-cli/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-${{ matrix.target }}-
+          lookup-only: true
+
+      # `cross` runs the actual build inside a pre-built musl-toolchain
+      # container, so we don't hand-maintain a musl-gcc/aarch64 cross-linker
+      # setup here -- only needed for the two Linux musl targets; macOS
+      # targets cross-build natively via Xcode's toolchain on macos-latest.
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (cross, musl)
+        if: matrix.cross
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Build (native, macOS)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Upload static binary artifact
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v5
+        with:
+          name: waddleai-${{ matrix.target }}
+          path: clients/waddleai-cli/target/${{ matrix.target }}/release/waddleai
+          if-no-files-found: error

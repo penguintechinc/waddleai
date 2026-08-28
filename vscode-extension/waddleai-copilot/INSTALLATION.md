@@ -102,12 +102,12 @@ Open VS Code Settings and search for "WaddleAI" to configure:
   // Server Configuration
   "waddleai.apiEndpoint": "http://localhost:8000",
   "waddleai.apiKey": "",  // Stored securely, don't set directly
-  
-  // Model Configuration  
+
+  // Model Configuration
   "waddleai.defaultModel": "gpt-4",
   "waddleai.maxTokens": 2048,
   "waddleai.temperature": 0.7,
-  
+
   // Feature Toggles
   "waddleai.enableMemory": true,
   "waddleai.enableSecurityScanning": true
@@ -157,7 +157,7 @@ Toggle with: `waddleai.enableSecurityScanning`
 - Verify the API key is active in your WaddleAI dashboard
 - Check that your account has proper permissions
 
-#### "Connection Failed"  
+#### "Connection Failed"
 - Ensure WaddleAI server is running and accessible
 - Check firewall/proxy settings
 - Verify the endpoint URL is correct
@@ -183,7 +183,7 @@ For troubleshooting, enable debug logging:
 ### Getting Help
 
 - **Documentation**: Check the [WaddleAI documentation](https://docs.waddleai.com)
-- **Support**: File issues at [GitHub Issues](https://github.com/waddleai/vscode-extension/issues)
+- **Support**: File issues at [GitHub Issues](https://github.com/penguintechinc/waddleai/issues)
 - **Community**: Join our [Discord server](https://discord.gg/waddleai)
 
 ## Uninstallation

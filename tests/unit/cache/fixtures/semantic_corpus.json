@@ -1,0 +1,36 @@
+{
+  "should_hit": [
+    {
+      "cached_text": "What is the capital of France?",
+      "query_text": "What's the capital city of France?",
+      "similarity": 0.97
+    },
+    {
+      "cached_text": "How do I reset my password?",
+      "query_text": "How can I reset my password?",
+      "similarity": 0.99
+    },
+    {
+      "cached_text": "What time zone is UTC?",
+      "query_text": "What is the UTC time zone?",
+      "similarity": 0.96
+    }
+  ],
+  "should_miss": [
+    {
+      "cached_text": "What is the capital of France?",
+      "query_text": "What is the capital of Germany?",
+      "similarity": 0.60
+    },
+    {
+      "cached_text": "How do I reset my password?",
+      "query_text": "How do I delete my account?",
+      "similarity": 0.55
+    },
+    {
+      "cached_text": "What time zone is UTC?",
+      "query_text": "Write a Python function to parse a UTC timestamp",
+      "similarity": 0.40
+    }
+  ]
+}

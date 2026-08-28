@@ -1,0 +1,23 @@
+{
+  "body": {
+    "data": {
+      "budget_pressure_enabled": true,
+      "classifier_prompt": null,
+      "de_escalation": "idle_reset",
+      "escalation_target": null,
+      "escalation_threshold": 3,
+      "id": "<VOLATILE>",
+      "idle_reset_minutes": 10,
+      "mode": "local_first",
+      "organization_id": 1,
+      "provider_failover": "off",
+      "sensitivity_routing": "local_only"
+    },
+    "meta": {
+      "defaulted": true,
+      "timestamp": "<VOLATILE>"
+    },
+    "status": "success"
+  },
+  "status": 200
+}

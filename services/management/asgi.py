@@ -1,4 +1,5 @@
 """WaddleAI Management Service — ASGI entrypoint (hypercorn)."""
+
 import os
 
 from app import create_app

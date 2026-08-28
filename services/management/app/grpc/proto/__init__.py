@@ -1,5 +1,4 @@
-"""
-Generated Protocol Buffer files for MarchProxy AILB ModuleService
+"""Generated Protocol Buffer files for MarchProxy AILB ModuleService.
 
 To regenerate these files, run:
     python -m grpc_tools.protoc \

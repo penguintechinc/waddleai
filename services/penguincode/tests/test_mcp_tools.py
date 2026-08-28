@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from penguincode_cli.config.settings import AuthConfig, MCPConfig, MCPServerConfig
 from penguincode_cli.tools.mcp.manager import MCPToolManager, convert_mcp_to_ollama_schema
 from penguincode_cli.tools.mcp.wrapper import MCPToolWrapper

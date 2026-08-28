@@ -1,5 +1,4 @@
-"""
-Network validators - PyDAL-style validators for network-related inputs.
+"""Network validators - PyDAL-style validators for network-related inputs.
 
 Provides:
 - IsEmail: Validates email addresses (RFC 5322)
@@ -18,8 +17,7 @@ from py_libs.validation.base import ValidationResult, Validator
 
 
 class IsEmail(Validator[str, str]):
-    """
-    Validates that a string is a valid email address.
+    """Validates that a string is a valid email address.
 
     Uses RFC 5322 compliant regex pattern. Optionally normalizes
     the email to lowercase.
@@ -31,6 +29,7 @@ class IsEmail(Validator[str, str]):
         validator = IsEmail()
         result = validator("user@example.com")  # Valid
         result = validator("invalid-email")     # Invalid
+
     """
 
     # RFC 5322 compliant email regex (simplified but robust)
@@ -40,13 +39,13 @@ class IsEmail(Validator[str, str]):
         r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$"
     )
 
-    def __init__(
-        self, normalize: bool = True, error_message: str | None = None
-    ) -> None:
+    def __init__(self, normalize: bool = True, error_message: str | None = None) -> None:
+        """Store whether to lowercase-*normalize* matched emails and the failure message."""
         self.normalize = normalize
         self.error_message = error_message or "Invalid email address"
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check *value* against the RFC 5322 pattern and length limits."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
@@ -73,8 +72,7 @@ class IsEmail(Validator[str, str]):
 
 
 class IsURL(Validator[str, str]):
-    """
-    Validates that a string is a valid URL.
+    """Validates that a string is a valid URL.
 
     Args:
         require_tld: Require a top-level domain
@@ -87,6 +85,7 @@ class IsURL(Validator[str, str]):
 
         validator = IsURL(allowed_schemes=["ftp"])
         result = validator("ftp://files.example.com")  # Valid
+
     """
 
     def __init__(
@@ -95,11 +94,13 @@ class IsURL(Validator[str, str]):
         allowed_schemes: list[str] | None = None,
         error_message: str | None = None,
     ) -> None:
+        """Store TLD/scheme requirements and the failure message."""
         self.require_tld = require_tld
         self.allowed_schemes = set(allowed_schemes or ["http", "https"])
         self.error_message = error_message or "Invalid URL"
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Parse *value* with :func:`urlparse` and check scheme/netloc/TLD."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
@@ -136,8 +137,7 @@ class IsURL(Validator[str, str]):
 
 
 class IsIPAddress(Validator[str, str]):
-    """
-    Validates that a string is a valid IP address.
+    """Validates that a string is a valid IP address.
 
     Args:
         version: IP version to accept (4, 6, or None for both)
@@ -150,6 +150,7 @@ class IsIPAddress(Validator[str, str]):
 
         validator = IsIPAddress(version=4)
         result = validator("::1")              # Invalid (IPv6 not allowed)
+
     """
 
     def __init__(
@@ -157,12 +158,14 @@ class IsIPAddress(Validator[str, str]):
         version: int | None = None,
         error_message: str | None = None,
     ) -> None:
+        """Store the required IP *version* (validating it is 4, 6, or None) and error message."""
         if version is not None and version not in (4, 6):
             raise ValueError("version must be 4, 6, or None")
         self.version = version
         self.error_message = error_message
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Parse *value* with :mod:`ipaddress` and check it matches the required version."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 
@@ -194,8 +197,7 @@ class IsIPAddress(Validator[str, str]):
 
 
 class IsHostname(Validator[str, str]):
-    """
-    Validates that a string is a valid hostname.
+    """Validates that a string is a valid hostname.
 
     Validates according to RFC 1123 hostname rules.
 
@@ -208,6 +210,7 @@ class IsHostname(Validator[str, str]):
         result = validator("example.com")   # Valid
         result = validator("my-server")     # Valid
         result = validator("invalid..com")  # Invalid
+
     """
 
     # RFC 1123 hostname pattern
@@ -222,11 +225,13 @@ class IsHostname(Validator[str, str]):
         require_tld: bool = False,
         error_message: str | None = None,
     ) -> None:
+        """Store the IP-as-hostname and TLD-required flags plus the failure message."""
         self.allow_ip = allow_ip
         self.require_tld = require_tld
         self.error_message = error_message or "Invalid hostname"
 
     def validate(self, value: str) -> ValidationResult[str]:
+        """Check *value* against RFC 1123 hostname rules (optionally accepting IPs)."""
         if not isinstance(value, str):
             return ValidationResult.failure("Value must be a string")
 

@@ -1,6 +1,7 @@
 """Health check service implementation."""
 
 import grpc
+
 from penguincode_cli.config.settings import Settings
 from penguincode_cli.proto import HealthCheckRequest, HealthCheckResponse, HealthServiceServicer
 

@@ -275,7 +275,7 @@ curl http://localhost:11434/api/generate -d '{
 
 ```bash
 curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer wai_your_key" \
+  -H "Authorization: Bearer <your-waddleai-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "llama3.2:3b",

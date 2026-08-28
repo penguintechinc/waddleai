@@ -1,22 +1,22 @@
-"""
-WaddleAI Management API v1 - Quota Management Endpoints
-"""
+"""WaddleAI Management API v1 - Quota Management Endpoints."""
 
 import asyncio
 from datetime import date
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/quotas", methods=["GET"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.QUOTA_LIST)
 async def list_quotas():
-    """List all quota configurations"""
+    """List all quota configurations."""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
@@ -91,9 +91,9 @@ async def list_quotas():
 
 @api_v1_bp.route("/quotas/user/<int:user_id>", methods=["PUT"])
 @require_auth
-@require_role("admin", "resource_manager")
+@require_scope(Permission.QUOTA_UPDATE)
 async def set_user_quota(user_id):
-    """Set user quota"""
+    """Set user quota."""
     data = await request.get_json()
 
     if not data:
@@ -130,14 +130,20 @@ async def set_user_quota(user_id):
 
         await asyncio.to_thread(_update)
 
-    return jsonify({"user_id": user_id, "username": user.username, "message": "User quota updated successfully"})
+    return jsonify(
+        {
+            "user_id": user_id,
+            "username": user.username,
+            "message": "User quota updated successfully",
+        }
+    )
 
 
 @api_v1_bp.route("/quotas/org/<int:org_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.QUOTA_ORG_UPDATE)
 async def set_organization_quota(org_id):
-    """Set organization quota (admin only)"""
+    """Set organization quota (admin only)."""
     data = await request.get_json()
 
     if not data:
@@ -165,14 +171,18 @@ async def set_organization_quota(org_id):
         await asyncio.to_thread(_update)
 
     return jsonify(
-        {"organization_id": org_id, "organization_name": org.name, "message": "Organization quota updated successfully"}
+        {
+            "organization_id": org_id,
+            "organization_name": org.name,
+            "message": "Organization quota updated successfully",
+        }
     )
 
 
 @api_v1_bp.route("/quotas/key/<int:key_id>", methods=["PUT"])
 @require_auth
 async def set_key_quota(key_id):
-    """Set virtual key quota"""
+    """Set virtual key quota."""
     data = await request.get_json()
 
     if not data:
@@ -209,8 +219,6 @@ async def set_key_quota(key_id):
         update_fields["rpm_limit"] = data["rpm_limit"]
 
     if update_fields:
-        # Mark for re-sync
-        update_fields["ailb_sync_status"] = "pending"
 
         def _update():
             db(db.virtual_keys.id == key_id).update(**update_fields)
@@ -219,14 +227,14 @@ async def set_key_quota(key_id):
         await asyncio.to_thread(_update)
 
     return jsonify(
-        {"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully. Re-sync to AILB required."}
+        {"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully."}
     )
 
 
 @api_v1_bp.route("/quotas/status/<int:entity_id>", methods=["GET"])
 @require_auth
 async def get_quota_status(entity_id):
-    """Get current quota status for an entity"""
+    """Get current quota status for an entity."""
     entity_type = request.args.get("type", "key")  # key, user, or org
 
     user_role = g.user.get("role")
@@ -243,7 +251,9 @@ async def get_quota_status(entity_id):
             if not key:
                 return None, None, None
             daily_usage = (
-                db((db.token_usage.virtual_key_id == entity_id) & (db.token_usage.date == today)).select().first()
+                db((db.token_usage.virtual_key_id == entity_id) & (db.token_usage.date == today))
+                .select()
+                .first()
             )
             monthly_usage = db(
                 (db.token_usage.virtual_key_id == entity_id) & (db.token_usage.date >= month_start)
@@ -285,7 +295,9 @@ async def get_quota_status(entity_id):
                         "budget_limit": key.budget_limit_monthly,
                         "used_cost": monthly_cost,
                         "percentage": (
-                            (monthly_cost / key.budget_limit_monthly * 100) if key.budget_limit_monthly else 0
+                            (monthly_cost / key.budget_limit_monthly * 100)
+                            if key.budget_limit_monthly
+                            else 0
                         ),
                     },
                     "rate_limits": {"tpm_limit": key.tpm_limit, "rpm_limit": key.rpm_limit},
@@ -304,7 +316,9 @@ async def get_quota_status(entity_id):
             user = db(db.users.id == entity_id).select().first()
             if not user:
                 return None, None, None
-            daily_usage = db((db.token_usage.user_id == entity_id) & (db.token_usage.date == today)).select()
+            daily_usage = db(
+                (db.token_usage.user_id == entity_id) & (db.token_usage.date == today)
+            ).select()
             monthly_usage = db(
                 (db.token_usage.user_id == entity_id) & (db.token_usage.date >= month_start)
             ).select()
@@ -335,14 +349,18 @@ async def get_quota_status(entity_id):
                         "limit": user.token_quota_daily,
                         "used": daily_tokens,
                         "remaining": max(0, (user.token_quota_daily or 0) - daily_tokens),
-                        "percentage": (daily_tokens / user.token_quota_daily * 100) if user.token_quota_daily else 0,
+                        "percentage": (daily_tokens / user.token_quota_daily * 100)
+                        if user.token_quota_daily
+                        else 0,
                     },
                     "monthly": {
                         "limit": user.token_quota_monthly,
                         "used": monthly_tokens,
                         "remaining": max(0, (user.token_quota_monthly or 0) - monthly_tokens),
                         "percentage": (
-                            (monthly_tokens / user.token_quota_monthly * 100) if user.token_quota_monthly else 0
+                            (monthly_tokens / user.token_quota_monthly * 100)
+                            if user.token_quota_monthly
+                            else 0
                         ),
                     },
                 },
@@ -385,14 +403,18 @@ async def get_quota_status(entity_id):
                         "limit": org.token_quota_daily,
                         "used": daily_tokens,
                         "remaining": max(0, (org.token_quota_daily or 0) - daily_tokens),
-                        "percentage": (daily_tokens / org.token_quota_daily * 100) if org.token_quota_daily else 0,
+                        "percentage": (daily_tokens / org.token_quota_daily * 100)
+                        if org.token_quota_daily
+                        else 0,
                     },
                     "monthly": {
                         "limit": org.token_quota_monthly,
                         "used": monthly_tokens,
                         "remaining": max(0, (org.token_quota_monthly or 0) - monthly_tokens),
                         "percentage": (
-                            (monthly_tokens / org.token_quota_monthly * 100) if org.token_quota_monthly else 0
+                            (monthly_tokens / org.token_quota_monthly * 100)
+                            if org.token_quota_monthly
+                            else 0
                         ),
                     },
                 },

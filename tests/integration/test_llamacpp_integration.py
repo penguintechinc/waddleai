@@ -1,5 +1,4 @@
-"""
-llama.cpp integration tests.
+r"""llama.cpp integration tests.
 
 Requires a running llama-server. Set LLAMACPP_ENDPOINT to enable:
     export LLAMACPP_ENDPOINT=http://localhost:8080
@@ -25,13 +24,16 @@ skip_without_server = pytest.mark.skipif(
 def test_llamacpp_connector_importable():
     """Always runs — verifies the connector class can be imported."""
     from shared.utils.llm_connectors import LlamaCppConnector
+
     assert LlamaCppConnector is not None
 
 
 @skip_without_server
 @pytest.mark.asyncio
 async def test_llamacpp_health_check():
+    """Live health_check() against a running llama-server reports status "healthy"."""
     from shared.utils.llm_connectors import LlamaCppConnector
+
     connector = LlamaCppConnector(
         "integration-test",
         {"endpoint_url": LLAMACPP_ENDPOINT, "model_name": "test-model", "api_key": None},
@@ -44,7 +46,9 @@ async def test_llamacpp_health_check():
 @skip_without_server
 @pytest.mark.asyncio
 async def test_llamacpp_list_models():
+    """Live list_models() returns a non-empty list against a running llama-server."""
     from shared.utils.llm_connectors import LlamaCppConnector
+
     connector = LlamaCppConnector(
         "integration-test",
         {"endpoint_url": LLAMACPP_ENDPOINT, "model_name": "test-model", "api_key": None},
@@ -58,7 +62,9 @@ async def test_llamacpp_list_models():
 @skip_without_server
 @pytest.mark.asyncio
 async def test_llamacpp_tokenize_endpoint():
+    """Live count_tokens() against a running llama-server returns a positive int."""
     from shared.utils.llm_connectors import LlamaCppConnector
+
     connector = LlamaCppConnector(
         "integration-test",
         {"endpoint_url": LLAMACPP_ENDPOINT, "model_name": "test-model", "api_key": None},
@@ -72,7 +78,9 @@ async def test_llamacpp_tokenize_endpoint():
 @skip_without_server
 @pytest.mark.asyncio
 async def test_llamacpp_chat_completion():
+    """Live chat_completion() against llama-server returns content tagged provider=llamacpp."""
     from shared.utils.llm_connectors import LlamaCppConnector
+
     connector = LlamaCppConnector(
         "integration-test",
         {"endpoint_url": LLAMACPP_ENDPOINT, "model_name": "test-model", "api_key": None},

@@ -13,7 +13,6 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +21,9 @@ logger = logging.getLogger(__name__)
 class KeyLimits:
     """Rate limit configuration for a virtual key."""
 
-    tpm_limit: Optional[int]
-    monthly_token_limit: Optional[int]
-    monthly_usd_limit: Optional[int]
+    tpm_limit: int | None
+    monthly_token_limit: int | None
+    monthly_usd_limit: int | None
 
 
 @dataclass(slots=True)
@@ -32,8 +31,8 @@ class GateDecision:
     """Result of a reserve/check operation."""
 
     allowed: bool
-    reason: Optional[str] = None  # tpm_exceeded | monthly_tokens_exceeded | monthly_usd_exceeded
-    reservation_id: Optional[str] = None  # UUID for reconciliation
+    reason: str | None = None  # tpm_exceeded | monthly_tokens_exceeded | monthly_usd_exceeded
+    reservation_id: str | None = None  # UUID for reconciliation
 
 
 class TokenLimiter:
@@ -140,17 +139,17 @@ class TokenLimiter:
     """
 
     def __init__(self, valkey, features) -> None:
-        """
-        Initialize TokenLimiter.
+        """Initialize TokenLimiter.
 
         Args:
             valkey: redis.asyncio.Redis or similar async client
             features: Feature flag helper (with is_feature_enabled method)
+
         """
         self.valkey = valkey
         self.features = features
-        self._reserve_sha: Optional[str] = None
-        self._reconcile_sha: Optional[str] = None
+        self._reserve_sha: str | None = None
+        self._reconcile_sha: str | None = None
 
     async def _load_scripts(self) -> None:
         """Load and cache Lua scripts."""
@@ -173,8 +172,7 @@ class TokenLimiter:
         estimated_usd: float,
         limits: KeyLimits,
     ) -> GateDecision:
-        """
-        Reserve tokens/budget for a request.
+        """Reserve tokens/budget for a request.
 
         Args:
             vkey_id: Virtual key ID
@@ -184,12 +182,15 @@ class TokenLimiter:
 
         Returns:
             GateDecision with allowed/reason/reservation_id
+
         """
         # Load scripts on first use
         await self._load_scripts()
 
         # Check if feature flag is enabled; if not, always allow
-        if not self.features.is_feature_enabled("waddleai.native_rate_limit", distinct_id=str(vkey_id)):
+        if not self.features.is_feature_enabled(
+            "waddleai.native_rate_limit", distinct_id=str(vkey_id)
+        ):
             return GateDecision(allowed=True, reason=None, reservation_id=None)
 
         # If all limits are None, no gating needed
@@ -239,16 +240,14 @@ class TokenLimiter:
             # Fail open: allow the request if there's an error
             return GateDecision(allowed=True, reason=None, reservation_id=None)
 
-    async def reconcile(
-        self, reservation_id: str, actual_tokens: int, actual_usd: float
-    ) -> None:
-        """
-        Reconcile actual usage against reserved estimate.
+    async def reconcile(self, reservation_id: str, actual_tokens: int, actual_usd: float) -> None:
+        """Reconcile actual usage against reserved estimate.
 
         Args:
             reservation_id: UUID from reserve() response
             actual_tokens: Actual tokens used
             actual_usd: Actual cost in micro-USD
+
         """
         # Load scripts on first use
         await self._load_scripts()

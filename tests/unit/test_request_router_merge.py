@@ -1,34 +1,37 @@
-"""
-Tests for merged AILB router integration into request_router.py
+"""Tests for merged AILB router integration into request_router.py.
+
 Verifies all 6 routing strategies, circuit breaker parity, and cost optimization.
 """
 
-import pytest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from shared.utils.request_router import (
     LLMRequestRouter,
-    RoutingStrategy,
-    ProviderStats,
     ModelConfig,
+    ProviderStats,
+    RoutingStrategy,
 )
 
 
 class MockConnector:
-    """Mock LLM connector for testing (not slotted to allow method override in tests)"""
+    """Mock LLM connector for testing (not slotted to allow method override in tests)."""
+
     def __init__(self, model_list, name):
+        """Record the models this mock connector claims to serve and its provider name."""
         self.model_list = model_list
         self.name = name
 
     async def chat_completion(self, messages, model, **kwargs):
-        """Mock chat completion"""
+        """Mock chat completion."""
         return f"Response from {self.name}", {"tokens": 10}
 
 
 @pytest.fixture
 def mock_llm_manager():
-    """Create mock LLM manager with connectors"""
+    """Create mock LLM manager with connectors."""
     manager = MagicMock()
 
     connectors = {
@@ -43,19 +46,21 @@ def mock_llm_manager():
         return connectors.get(name)
 
     manager.get_connector = get_connector
-    manager.health_check_all = AsyncMock(return_value={
-        "openai": {"status": "healthy"},
-        "anthropic": {"status": "healthy"},
-        "ollama": {"status": "healthy"},
-    })
+    manager.health_check_all = AsyncMock(
+        return_value={
+            "openai": {"status": "healthy"},
+            "anthropic": {"status": "healthy"},
+            "ollama": {"status": "healthy"},
+        }
+    )
 
     return manager
 
 
 @pytest.fixture
 def router_with_costs(mock_llm_manager):
-    """Create router with cost-based model configurations"""
-    router = LLMRequestRouter(mock_llm_manager, None, None, None)
+    """Create router with cost-based model configurations."""
+    router = LLMRequestRouter(mock_llm_manager, None)
 
     # Wrap connectors to allow mocking
     for name in list(router.llm_manager.connectors.keys()):
@@ -102,11 +107,12 @@ def router_with_costs(mock_llm_manager):
 # STRATEGY TESTS - All 6 strategies select deterministically
 # ============================================================================
 
+
 class TestAllStrategiesDeterministic:
-    """Test that each strategy selects deterministically on a stubbed connector set"""
+    """Test that each strategy selects deterministically on a stubbed connector set."""
 
     def test_round_robin_selects_deterministically(self, router_with_costs):
-        """ROUND_ROBIN cycles through providers in order"""
+        """ROUND_ROBIN cycles through providers in order."""
         providers = ["openai", "anthropic", "ollama"]
 
         # First call should return first provider
@@ -134,7 +140,7 @@ class TestAllStrategiesDeterministic:
         assert selected == "openai"
 
     def test_cost_optimized_selects_deterministically(self, router_with_costs):
-        """COST_OPTIMIZED picks lowest cost_per_token provider"""
+        """COST_OPTIMIZED picks lowest cost_per_token provider."""
         providers = ["openai", "anthropic", "ollama"]
 
         # For gpt-4: openai=0.03, anthropic=inf, ollama=0.0 -> should pick ollama
@@ -153,7 +159,7 @@ class TestAllStrategiesDeterministic:
         router_with_costs.model_configs["gpt-4"].cost_per_token = {
             "openai": 0.03,
             "anthropic": 0.005,
-            "ollama": 0.02
+            "ollama": 0.02,
         }
 
         selected = router_with_costs._select_provider(
@@ -162,7 +168,7 @@ class TestAllStrategiesDeterministic:
         assert selected == "anthropic"
 
     def test_latency_optimized_selects_deterministically(self, router_with_costs):
-        """LATENCY_OPTIMIZED picks provider with lowest avg_latency_ms"""
+        """LATENCY_OPTIMIZED picks provider with lowest avg_latency_ms."""
         providers = ["openai", "anthropic", "ollama"]
 
         # Set different latencies
@@ -183,7 +189,7 @@ class TestAllStrategiesDeterministic:
         assert selected == "anthropic"
 
     def test_load_balanced_selects_deterministically(self, router_with_costs):
-        """LOAD_BALANCED picks provider with lowest load score"""
+        """LOAD_BALANCED picks provider with lowest load score."""
         providers = ["openai", "anthropic", "ollama"]
 
         # Set different load scenarios
@@ -209,13 +215,11 @@ class TestAllStrategiesDeterministic:
         assert selected == "anthropic"
 
     def test_failover_selects_deterministically(self, router_with_costs):
-        """FAILOVER picks according to preferred_providers priority"""
+        """FAILOVER picks according to preferred_providers priority."""
         providers = ["openai", "anthropic", "ollama"]
 
         # For gpt-4, preferred is ["openai"]
-        selected = router_with_costs._select_provider(
-            "gpt-4", providers, RoutingStrategy.FAILOVER
-        )
+        selected = router_with_costs._select_provider("gpt-4", providers, RoutingStrategy.FAILOVER)
         assert selected == "openai"
 
         # For claude-3, preferred is ["anthropic"]
@@ -225,7 +229,7 @@ class TestAllStrategiesDeterministic:
         assert selected == "anthropic"
 
     def test_random_selects_from_available(self, router_with_costs):
-        """RANDOM picks from available providers (deterministic set membership)"""
+        """RANDOM picks from available providers (deterministic set membership)."""
         providers = ["openai", "anthropic", "ollama"]
 
         # Run multiple times to ensure it picks from available set
@@ -240,11 +244,12 @@ class TestAllStrategiesDeterministic:
 # CIRCUIT BREAKER TESTS
 # ============================================================================
 
+
 class TestCircuitBreakerParity:
-    """Test circuit breaker behavior: skip after 3 failures, re-admit on success"""
+    """Test circuit breaker behavior: skip after 3 failures, re-admit on success."""
 
     def test_breaker_skips_provider_after_3_consecutive_failures(self, router_with_costs):
-        """Provider is excluded from available list after 3 consecutive failures"""
+        """Provider is excluded from available list after 3 consecutive failures."""
         # Ensure all providers support the model
         router_with_costs.llm_manager.connectors["openai"].model_list = ["gpt-4"]
         router_with_costs.llm_manager.connectors["anthropic"].model_list = ["gpt-4"]
@@ -252,8 +257,7 @@ class TestCircuitBreakerParity:
 
         # Set up a provider with 3 consecutive failures
         router_with_costs.provider_stats["openai"] = ProviderStats(
-            consecutive_failures=3,
-            last_failure=datetime.utcnow()
+            consecutive_failures=3, last_failure=datetime.utcnow()
         )
 
         available = router_with_costs._get_available_providers("gpt-4")
@@ -264,11 +268,9 @@ class TestCircuitBreakerParity:
         assert "ollama" in available
 
     def test_breaker_resets_on_success(self, router_with_costs):
-        """consecutive_failures resets to 0 on success"""
+        """consecutive_failures resets to 0 on success."""
         router_with_costs.provider_stats["openai"] = ProviderStats(
-            consecutive_failures=2,
-            last_failure=datetime.utcnow(),
-            avg_latency_ms=0
+            consecutive_failures=2, last_failure=datetime.utcnow(), avg_latency_ms=0
         )
 
         # Simulate a success
@@ -279,13 +281,13 @@ class TestCircuitBreakerParity:
         assert router_with_costs.provider_stats["openai"].successful_requests == 1
 
     def test_breaker_skips_recent_failure_within_5min(self, router_with_costs):
-        """Provider is excluded if it failed within last 5 minutes (without recent success)"""
+        """Provider is excluded if it failed within last 5 minutes (without recent success)."""
         now = datetime.utcnow()
 
         router_with_costs.provider_stats["openai"] = ProviderStats(
             consecutive_failures=1,
             last_failure=now - timedelta(minutes=2),  # Failed 2 minutes ago
-            last_success=now - timedelta(minutes=10)  # Last success was 10 min ago
+            last_success=now - timedelta(minutes=10),  # Last success was 10 min ago
         )
 
         available = router_with_costs._get_available_providers("gpt-4")
@@ -294,13 +296,13 @@ class TestCircuitBreakerParity:
         assert "openai" not in available
 
     def test_breaker_allows_provider_after_5min_cooldown(self, router_with_costs):
-        """Provider is allowed again after 5 minutes pass since last failure"""
+        """Provider is allowed again after 5 minutes pass since last failure."""
         now = datetime.utcnow()
 
         router_with_costs.provider_stats["openai"] = ProviderStats(
             consecutive_failures=1,
             last_failure=now - timedelta(minutes=6),  # Failed 6 minutes ago (past 5-min window)
-            last_success=now - timedelta(minutes=10)
+            last_success=now - timedelta(minutes=10),
         )
 
         available = router_with_costs._get_available_providers("gpt-4")
@@ -309,13 +311,13 @@ class TestCircuitBreakerParity:
         assert "openai" in available
 
     def test_breaker_allows_provider_with_recent_success(self, router_with_costs):
-        """Provider is allowed if it had a recent success, even with a failure"""
+        """Provider is allowed if it had a recent success, even with a failure."""
         now = datetime.utcnow()
 
         router_with_costs.provider_stats["openai"] = ProviderStats(
             consecutive_failures=1,
             last_failure=now - timedelta(minutes=2),
-            last_success=now - timedelta(seconds=30)  # Success 30 seconds ago
+            last_success=now - timedelta(seconds=30),  # Success 30 seconds ago
         )
 
         available = router_with_costs._get_available_providers("gpt-4")
@@ -328,11 +330,12 @@ class TestCircuitBreakerParity:
 # EMA LATENCY TESTS
 # ============================================================================
 
+
 class TestEMALatency:
-    """Test exponential moving average latency calculation"""
+    """Test exponential moving average latency calculation."""
 
     def test_ema_calculation_0_9_0_1_weights(self, router_with_costs):
-        """EMA uses 0.9 weight for old, 0.1 for new"""
+        """EMA uses 0.9 weight for old, 0.1 for new."""
         # Start with no latency
         router_with_costs._update_provider_stats("openai", success=True, latency=100.0)
         assert router_with_costs.provider_stats["openai"].avg_latency_ms == 100.0
@@ -345,7 +348,7 @@ class TestEMALatency:
         assert router_with_costs.provider_stats["openai"].avg_latency_ms == expected
 
     def test_ema_converges_over_time(self, router_with_costs):
-        """EMA gradually converges to new latency values"""
+        """EMA gradually converges to new latency values."""
         router_with_costs._update_provider_stats("openai", success=True, latency=100.0)
 
         # Add multiple high latency measurements
@@ -362,25 +365,24 @@ class TestEMALatency:
 # FAILOVER BEHAVIOR TESTS
 # ============================================================================
 
+
 class TestFailoverBehavior:
-    """Test failover fallback chain raises only when all providers fail"""
+    """Test failover fallback chain raises only when all providers fail."""
 
     @pytest.mark.asyncio
     async def test_failover_raises_when_all_providers_fail(self, router_with_costs):
-        """Failover raises exception only when every provider fails"""
+        """Failover raises exception only when every provider fails."""
         # Make all providers fail by mocking chat_completion
         for provider_name in ["openai", "anthropic", "ollama"]:
             connector = router_with_costs.llm_manager.connectors[provider_name]
-            connector.chat_completion = AsyncMock(
-                side_effect=Exception(f"{provider_name} is down")
-            )
+            connector.chat_completion = AsyncMock(side_effect=Exception(f"{provider_name} is down"))
 
         with pytest.raises(Exception) as exc_info:
             await router_with_costs._execute_with_fallback(
                 "openai",
                 ["openai", "anthropic", "ollama"],
                 "gpt-4",
-                [{"role": "user", "content": "test"}]
+                [{"role": "user", "content": "test"}],
             )
 
         # Exception should mention all providers failed
@@ -388,12 +390,10 @@ class TestFailoverBehavior:
 
     @pytest.mark.asyncio
     async def test_failover_uses_fallback_chain(self, router_with_costs):
-        """Failover tries fallback providers when primary fails"""
+        """Failover tries fallback providers when primary fails."""
         # Make primary fail, but secondary succeed
         openai_connector = router_with_costs.llm_manager.connectors["openai"]
-        openai_connector.chat_completion = AsyncMock(
-            side_effect=Exception("openai is down")
-        )
+        openai_connector.chat_completion = AsyncMock(side_effect=Exception("openai is down"))
 
         anthropic_connector = router_with_costs.llm_manager.connectors["anthropic"]
         anthropic_connector.chat_completion = AsyncMock(
@@ -404,7 +404,7 @@ class TestFailoverBehavior:
             "openai",
             ["openai", "anthropic", "ollama"],
             "gpt-4",
-            [{"role": "user", "content": "test"}]
+            [{"role": "user", "content": "test"}],
         )
 
         # Should have succeeded with anthropic
@@ -416,20 +416,17 @@ class TestFailoverBehavior:
 # COST OPTIMIZATION SPECIFIC TESTS
 # ============================================================================
 
+
 class TestCostOptimization:
-    """Test COST_OPTIMIZED strategy picks lowest cost_per_token"""
+    """Test COST_OPTIMIZED strategy picks lowest cost_per_token."""
 
     def test_cost_optimized_picks_lowest_cost(self, router_with_costs):
-        """COST_OPTIMIZED selects provider with minimum cost_per_token"""
+        """COST_OPTIMIZED selects provider with minimum cost_per_token."""
         # Set up model with different costs per provider
         router_with_costs.model_configs["test-model"] = ModelConfig(
             model_name="test-model",
             preferred_providers=["openai"],
-            cost_per_token={
-                "openai": 0.05,
-                "anthropic": 0.02,
-                "ollama": 0.0
-            },
+            cost_per_token={"openai": 0.05, "anthropic": 0.02, "ollama": 0.0},
             max_tokens=4096,
             context_length=4096,
             capabilities=["chat"],
@@ -444,7 +441,7 @@ class TestCostOptimization:
         assert selected == "ollama"
 
     def test_cost_optimized_fallback_when_no_config(self, router_with_costs):
-        """COST_OPTIMIZED falls back to first provider if model config missing"""
+        """COST_OPTIMIZED falls back to first provider if model config missing."""
         providers = ["anthropic", "openai", "ollama"]
         selected = router_with_costs._select_provider(
             "unknown-model", providers, RoutingStrategy.COST_OPTIMIZED

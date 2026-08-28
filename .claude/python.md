@@ -29,18 +29,20 @@
 # ✅ CORRECT: Use SQLAlchemy for initialization ONLY
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String
 
+
 def initialize_schema():
     """One-time database schema initialization"""
     engine = create_engine(db_url)
     metadata = MetaData()
-    users = Table('auth_user', metadata, Column('id', Integer, primary_key=True), ...)
+    users = Table("auth_user", metadata, Column("id", Integer, primary_key=True), ...)
     metadata.create_all(engine)
+
 
 # ✅ CORRECT: Use PyDAL for ALL runtime operations
 from pydal import DAL, Field
 
 db = DAL(db_uri, pool_size=10, migrate=True, lazy_tables=True)
-db.define_table('auth_user', Field('email', 'string'), ...)
+db.define_table("auth_user", Field("email", "string"), ...)
 users = db(db.auth_user.active == True).select()
 ```
 
@@ -60,10 +62,13 @@ All applications MUST support by default:
 import os
 from pydal import DAL
 
+
 def get_db_connection():
     """Initialize PyDAL with connection pooling"""
     db_uri = f"{os.getenv('DB_TYPE')}://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
-    return DAL(db_uri, pool_size=int(os.getenv('DB_POOL_SIZE', '10')), migrate=True, lazy_tables=True)
+    return DAL(
+        db_uri, pool_size=int(os.getenv("DB_POOL_SIZE", "10")), migrate=True, lazy_tables=True
+    )
 ```
 
 ### Thread-Safe Database Access
@@ -74,9 +79,10 @@ from pydal import DAL
 
 thread_local = threading.local()
 
+
 def get_thread_db():
     """Get thread-local database connection"""
-    if not hasattr(thread_local, 'db'):
+    if not hasattr(thread_local, "db"):
         thread_local.db = DAL(db_uri, pool_size=10, migrate=True)
     return thread_local.db
 ```
@@ -91,9 +97,11 @@ All data structures MUST use dataclasses with slots for 30-50% memory reduction:
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 
+
 @dataclass(slots=True, frozen=True)
 class User:
     """User model with slots for memory efficiency"""
+
     id: int
     name: str
     email: str
@@ -109,10 +117,9 @@ Comprehensive type hints required on ALL functions:
 from typing import List, Optional, Dict, AsyncIterator
 from collections.abc import Callable
 
+
 def process_users(
-    user_ids: List[int],
-    batch_size: int = 100,
-    callback: Optional[Callable[[User], None]] = None
+    user_ids: List[int], batch_size: int = 100, callback: Optional[Callable[[User], None]] = None
 ) -> Dict[int, User]:
     """Process users - full type hints required"""
     results: Dict[int, User] = {}
@@ -146,13 +153,16 @@ async def fetch_users_async(user_ids: List[int]) -> List[User]:
     async with aiohttp.ClientSession() as session:
         return await asyncio.gather(*[fetch_user(uid) for uid in user_ids])
 
+
 # Blocking I/O: threading
 from concurrent.futures import ThreadPoolExecutor
+
 with ThreadPoolExecutor(max_workers=10) as executor:
     users = list(executor.map(fetch_user, user_ids))
 
 # CPU-bound: multiprocessing
 from multiprocessing import Pool
+
 with Pool(processes=8) as pool:
     results = pool.map(compute_hash, data)
 ```
@@ -181,6 +191,7 @@ flake8 . && black . && isort . && mypy . --strict && bandit -r .
 ```python
 """Module docstring following PEP 257"""
 
+
 def function_name(param: str) -> str:
     """
     Function docstring with type hints.
@@ -206,16 +217,18 @@ from pydal import DAL
 
 app = Flask(__name__)
 
+
 def get_db():
     """Get database connection for current request"""
-    if 'db' not in g:
+    if "db" not in g:
         g.db = DAL(db_uri, pool_size=10)
     return g.db
+
 
 @app.teardown_appcontext
 def close_db(error):
     """Close database after request"""
-    db = g.pop('db', None)
+    db = g.pop("db", None)
     if db is not None:
         db.close()
 ```

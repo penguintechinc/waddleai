@@ -2,5 +2,11 @@ dependencies:
 - name: gpu-operator
   repository: https://helm.ngc.nvidia.com/nvidia
   version: v26.3.1
-digest: sha256:952815eb8b5b93a3d5751f162e464e193d703aa44a06841d6742ac9c56200a60
-generated: "2026-05-14T10:02:21.195735-05:00"
+- name: amd-rocm-plugin
+  repository: file://charts/amd-rocm-plugin
+  version: 6.4.0
+- name: intel-gpu-plugin
+  repository: file://charts/intel-gpu-plugin
+  version: 0.31.0
+digest: sha256:75b8de441e1c674cfb1d14bbdf964e63def6853e943f7b73a54c0852c79c9835
+generated: "2026-08-12T08:09:20.406118223-05:00"

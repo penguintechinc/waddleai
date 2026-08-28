@@ -1,5 +1,4 @@
-"""
-Security regression tests for four confirmed vulnerabilities in management API.
+"""Security regression tests for four confirmed vulnerabilities in management API.
 
 Each test proves the vulnerability is blocked and the legitimate flow works.
 Tests use TDD: write failing test first, then implement minimal fix.
@@ -20,7 +19,7 @@ def make_mock_user(user_id: int = 1, role: str = "admin", org_id: int = 1, **kwa
     user.role = role
     user.organization_id = org_id
     user.enabled = kwargs.get("enabled", True)
-    user.password_hash = "$2b$12$test"
+    user.password_hash = "$2b$12$test"  # noqa: S105 -- fixed test hash, not a real secret
     user.token_quota_daily = 10000
     user.token_quota_monthly = 100000
     user.created_at = datetime(2025, 1, 1)
@@ -43,7 +42,6 @@ def make_mock_key(key_id: int = 1, user_id: int = 1, org_id: int = 1, **kwargs) 
     key.tpm_limit = 10000
     key.rpm_limit = 60
     key.enabled = kwargs.get("enabled", True)
-    key.ailb_sync_status = "pending"
     key.expires_at = None
     key.created_at = datetime(2025, 1, 1)
     return key
@@ -62,6 +60,7 @@ class TestVulnAPrivilegeEscalationKeyCreation:
 
         regression: security review 2026-07-26 — Vuln A: key creation for non-existent user
         """
+
         # Mock DB: no user exists with ID 999
         def mock_db_call(*args, **kwargs):
             query = MagicMock()

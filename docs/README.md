@@ -31,13 +31,11 @@ WaddleAI consists of two main components:
 import openai
 
 client = openai.OpenAI(
-    api_key="wa-your-api-key-here",
-    base_url="https://your-waddleai-proxy.com/v1"
+    api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1"
 )
 
 response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Hello!"}]
+    model="gpt-4", messages=[{"role": "user", "content": "Hello!"}]
 )
 ```
 
@@ -48,17 +46,17 @@ Access the management portal at `https://your-waddleai-mgmt.com` or use the Mana
 ```python
 import requests
 
+MGMT = "https://your-waddleai-mgmt.com/api/v1"
+
 # Login
-auth = requests.post("/auth/login", json={
-    "username": "admin", "password": "password"
-})
+auth = requests.post(f"{MGMT}/auth/login", json={"username": "admin", "password": "password"})
 token = auth.json()["access_token"]
 
 # Get usage stats
-usage = requests.get("/analytics/usage", 
-    headers={"Authorization": f"Bearer {token}"}
-).json()
+usage = requests.get(f"{MGMT}/usage/summary", headers={"Authorization": f"Bearer {token}"}).json()
 ```
+
+All Management API routes are mounted under `/api/v1` (e.g. `/api/v1/auth/login`, `/api/v1/usage/summary`, `/api/v1/quotas`) — there is no separate `/analytics/*` namespace.
 
 ## Documentation Structure
 
@@ -66,10 +64,10 @@ usage = requests.get("/analytics/usage",
 - **[Getting Started](getting-started/)** - Installation and setup
 - **[API Reference](api/)** - Complete API documentation
 - **[Integrations](integrations/)** - VS Code extension, OpenWebUI, and LLM provider setup
-- **[Administration](administration/)** - User and system management
 - **[Deployment](deployment/)** - Production deployment guides
-- **[Testing Setup](../TESTING_SETUP.md)** - Complete testing environment with OpenWebUI
-- **[Troubleshooting](troubleshooting/)** - Common issues and solutions
+- **[Local Development](DEVELOPMENT.md)** - Local dev environment setup and workflow
+- **[Testing Setup](TESTING_SETUP.md)** - Manual testing environment with OpenWebUI
+- **[Troubleshooting](DEVELOPMENT.md#troubleshooting)** - Common issues and solutions
 
 ## Roles and Permissions
 
@@ -95,8 +93,8 @@ WaddleAI uses a dual token system:
 
 ## Support
 
-- Health checks: `/healthz` and `/api/status`
-- Metrics: `/metrics` (Prometheus format)
+- Health checks: `/healthz` on both proxy and management; `/livez`/`/readyz` also on management; `/api/status` on the proxy only
+- Metrics: `/metrics` (Prometheus format) on both services
 - Logs: Structured JSON logging
 - Documentation: This documentation site
 

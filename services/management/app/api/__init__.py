@@ -1,3 +1,1 @@
-"""
-WaddleAI Management API
-"""
+"""WaddleAI Management API."""

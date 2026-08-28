@@ -1,5 +1,4 @@
-"""
-mem0-compatible REST API for WaddleAI's pgvector memory backend.
+"""mem0-compatible REST API for WaddleAI's pgvector memory backend.
 
 MarchProxy's AILB is configured with a mem0 endpoint pointing here:
     mem0_endpoint = "http://waddleai-proxy:8080/mem0"
@@ -50,8 +49,11 @@ MEMORY_ORG_SCOPE_FLAG = "waddleai.memory-org-scope"
 
 
 def _resolve_write_scope(body: dict) -> "str | None":
-    """Scope for a write: top-level 'scope' wins, metadata.scope is the
-    fallback, absent means personal. Returns None for invalid values."""
+    """Determine the access-control scope for a write.
+
+    Top-level 'scope' wins, metadata.scope is the fallback, absent means
+    personal. Returns None for invalid values.
+    """
     scope = body.get("scope")
     if scope is None:
         scope = (body.get("metadata") or {}).get("scope")
@@ -61,17 +63,22 @@ def _resolve_write_scope(body: dict) -> "str | None":
 
 
 def _resolve_read_scope(raw: "str | None") -> "str | None":
-    """Scope filter for reads: absent/empty means the merged view ('all',
-    internal sentinel). Returns None for invalid values."""
+    """Determine the scope filter for reads.
+
+    Absent/empty means the merged view ('all', internal sentinel). Returns
+    None for invalid values.
+    """
     if not raw:
         return "all"
     return raw if raw in VALID_SCOPES else None
 
 
 def _is_moderator(user: UserContext) -> bool:
-    """True if the caller holds memory:moderate. Permission sets contain
-    Permission enums (direct auth path) or plain strings (claims path) —
-    check both, never role names."""
+    """Return True if the caller holds memory:moderate.
+
+    Permission sets contain Permission enums (direct auth path) or plain
+    strings (claims path) — check both, never role names.
+    """
     perms = user.permissions or set()
     return Permission.MEMORY_MODERATE in perms or Permission.MEMORY_MODERATE.value in perms
 
@@ -83,8 +90,11 @@ def _delete_allowed(
     token_user: int,
     moderator: bool,
 ) -> "tuple[bool, str]":
-    """Row-level delete decision. Personal rows: owner only (moderation does
-    not reach into personal memory). Org rows: author or moderator."""
+    """Decide whether the caller may delete this row.
+
+    Personal rows: owner only (moderation does not reach into personal
+    memory). Org rows: author or moderator.
+    """
     if scope_type == "org":
         if author_user_id == token_user or moderator:
             return True, ""
@@ -101,6 +111,7 @@ def set_memory_manager(manager) -> None:
 
 
 def get_memory_manager():
+    """Return the injected memory manager, or abort 503 if not yet initialized."""
     if _memory_manager is None:
         abort(503, description="Memory manager not initialized")
     return _memory_manager
@@ -180,7 +191,9 @@ async def add_memories():
     if scope == "org":
         # is_feature_enabled may do a blocking PostHog HTTP call when
         # POSTHOG_KEY is configured — keep it off the event loop.
-        org_scope_enabled = await asyncio.to_thread(is_feature_enabled, MEMORY_ORG_SCOPE_FLAG, str(token_org))
+        org_scope_enabled = await asyncio.to_thread(
+            is_feature_enabled, MEMORY_ORG_SCOPE_FLAG, str(token_org)
+        )
         if not org_scope_enabled:
             return jsonify({"error": "organization memory scope not enabled"}), 403
 

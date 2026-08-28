@@ -1,0 +1,219 @@
+{{/*
+Bootstrap default-deny + explicit-flow CiliumNetworkPolicy set (spec §12.1,
+§10.3). This is the day-0/GitOps protection layer — it exists so a fresh
+`helm install` is locked down even before Management's first successful
+reconcile loop runs (services/management/app/services/cilium_policy.py
+becomes the RUNTIME authority for the same policy set once it starts,
+re-applying it from DB/topology on every reconcile). Content intentionally
+mirrors render_network_policies() in that module — keep the two in sync.
+
+Guarded by BOTH the values toggle (cilium.enabled + cilium.networkPolicy.enabled)
+AND a live capability check (.Capabilities.APIVersions.Has "cilium.io/v2"), so
+non-Cilium clusters (e.g. plain kind/MicroK8s in alpha) render every other
+template in the chart cleanly and simply skip these objects (§12.3) rather
+than failing `helm install`.
+*/}}
+{{- if and .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") -}}
+{{- $ns := .Values.namespace }}
+{{- $t := .Values.cilium.topology }}
+{{- $gw := $t.selectors.gateway }}
+{{- $aiproxy := $t.selectors.aiproxy }}
+{{- $mgmt := $t.selectors.management }}
+{{- $pg := $t.selectors.postgres }}
+{{- $vk := $t.selectors.valkey }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+---
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: {{ $ns }}-allow-client-to-gateway
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- range $k, $v := $gw }}
+      {{ $k }}: {{ $v | quote }}
+      {{- end }}
+      "k8s:io.kubernetes.pod.namespace": {{ $t.gatewayNamespace | quote }}
+  ingress:
+    - fromEntities:
+        - world
+        - cluster
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-gateway-to-aiproxy
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $aiproxy | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- range $k, $v := $gw }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+            "k8s:io.kubernetes.pod.namespace": {{ $t.gatewayNamespace | quote }}
+      toPorts:
+        - ports:
+            - port: {{ $t.aiproxyPort | quote }}
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-aiproxy-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $aiproxy | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchExpressions:
+            - key: {{ $t.fleetComponentKey }}
+              operator: In
+              values:
+                {{- range $t.fleetComponents }}
+                - {{ . | quote }}
+                {{- end }}
+      toPorts:
+        - ports:
+            {{- range $t.fleetPorts }}
+            - port: {{ . | quote }}
+              protocol: TCP
+            {{- end }}
+    - toEndpoints:
+        - matchLabels:
+            {{- toYaml $pg | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.postgresPort | quote }}
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            {{- toYaml $vk | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.valkeyPort | quote }}
+              protocol: TCP
+---
+# §10.3: fleet pods (ollama, llamacpp) admit ingress exclusively from AIProxy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-fleet-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: {{ $t.fleetComponentKey }}
+        operator: In
+        values:
+          {{- range $t.fleetComponents }}
+          - {{ . | quote }}
+          {{- end }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $aiproxy | nindent 12 }}
+      toPorts:
+        - ports:
+            {{- range $t.fleetPorts }}
+            - port: {{ . | quote }}
+              protocol: TCP
+            {{- end }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-postgres-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $pg | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $aiproxy | nindent 12 }}
+        - matchLabels:
+            {{- toYaml $mgmt | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.postgresPort | quote }}
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-valkey-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $vk | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $aiproxy | nindent 12 }}
+        - matchLabels:
+            {{- toYaml $mgmt | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.valkeyPort | quote }}
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-management-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $mgmt | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- toYaml $pg | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.postgresPort | quote }}
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            {{- toYaml $vk | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.valkeyPort | quote }}
+              protocol: TCP
+    - toEntities:
+        - kube-apiserver
+{{- end }}

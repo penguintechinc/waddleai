@@ -1,7 +1,8 @@
-"""
-WaddleAI gRPC Server — receives calls from the Go AILB and delegates
-to the Python agent layer (RoutingAgent, SecurityAgent, UsageTracker)
-and memory subsystem (WaddleAIMemoryManager).
+"""WaddleAI gRPC Server.
+
+Receives calls from the Go AILB and delegates to the Python agent/engine
+layer (RoutingEngineRouteEvaluator, SecurityAgent, UsageTracker) and memory
+subsystem (WaddleAIMemoryManager).
 
 Usage:
     # Standalone (blocking)
@@ -13,19 +14,23 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import hmac
 import threading
+from collections.abc import Callable
 from concurrent import futures
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 import grpc
 import structlog
-from grpc_proto.marchproxy import waddleai_pb2, waddleai_pb2_grpc
+from grpc_proto.waddleai.v1 import proxy_pb2 as waddleai_pb2
+from grpc_proto.waddleai.v1 import proxy_pb2_grpc as waddleai_pb2_grpc
 
-from shared.agents import RoutingAgent, SecurityAgent, UsageTracker
+from shared.agents import SecurityAgent, UsageTracker
 from shared.agents.usage_tracker import UsageReport as AgentUsageReport
+from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
 from shared.utils.memory_integration import WaddleAIMemoryManager
 
 logger = structlog.get_logger(__name__)
@@ -48,12 +53,13 @@ class GrpcAuthInterceptor(grpc.ServerInterceptor):
     protected rather than falling open.
     """
 
-    def __init__(self, configured_token: Optional[str]) -> None:
+    def __init__(self, configured_token: str | None) -> None:
         """Initialize with configured secret token.
 
         Args:
             configured_token: Pre-shared Bearer token. If None or empty,
                 all calls are rejected.
+
         """
         self.configured_token = configured_token
 
@@ -71,7 +77,9 @@ class GrpcAuthInterceptor(grpc.ServerInterceptor):
 
         # Validate format: "Bearer <token>"
         if not auth_header.startswith("Bearer "):
-            return self._abort(grpc.StatusCode.UNAUTHENTICATED, "Missing or invalid authorization header")
+            return self._abort(
+                grpc.StatusCode.UNAUTHENTICATED, "Missing or invalid authorization header"
+            )
 
         # Extract token and validate with constant-time comparison
         provided_token = auth_header[7:]  # Strip "Bearer "
@@ -92,6 +100,49 @@ class GrpcAuthInterceptor(grpc.ServerInterceptor):
 
 
 # ---------------------------------------------------------------------------
+# api_version routing (house gRPC-versioning contract)
+# ---------------------------------------------------------------------------
+
+#: Only wire-compatible request version this server understands today.
+SUPPORTED_API_VERSIONS: frozenset[str] = frozenset({"v1"})
+
+
+@dataclass(slots=True)
+class ApiVersionRouter:
+    """Method decorator enforcing a supported ``api_version`` on every RPC.
+
+    Every request message on ``WaddleAIService`` carries ``api_version``
+    (proto field 1). Wrapping a servicer method with this router makes the
+    version check the first thing that runs: a known version passes through
+    to the handler unmodified, while a missing or unknown version aborts
+    UNIMPLEMENTED before any component (routing/security/memory/usage) is
+    touched -- callers never silently fall through to a handler built for a
+    different wire shape.
+    """
+
+    supported_versions: frozenset[str] = field(default_factory=lambda: SUPPORTED_API_VERSIONS)
+
+    def __call__(self, handler: Callable[..., Any]) -> Callable[..., Any]:
+        """Return *handler* wrapped with an api_version precondition check."""
+
+        @functools.wraps(handler)
+        def _wrapped(servicer: Any, request: Any, context: grpc.ServicerContext) -> Any:
+            version = request.api_version
+            if version not in self.supported_versions:
+                context.abort(
+                    grpc.StatusCode.UNIMPLEMENTED,
+                    f"api_version {version} not supported",
+                )
+            return handler(servicer, request, context)
+
+        return _wrapped
+
+
+#: Shared instance applied to every unary WaddleAIServiceServicer RPC below.
+require_api_version = ApiVersionRouter()
+
+
+# ---------------------------------------------------------------------------
 # Server components container
 # ---------------------------------------------------------------------------
 
@@ -104,10 +155,10 @@ class ServerComponents:
     when a subsystem is unavailable.
     """
 
-    routing_agent: Optional[RoutingAgent] = None
-    security_agent: Optional[SecurityAgent] = None
-    usage_tracker: Optional[UsageTracker] = None
-    memory_manager: Optional[WaddleAIMemoryManager] = None
+    routing_agent: RoutingEngineRouteEvaluator | None = None
+    security_agent: SecurityAgent | None = None
+    usage_tracker: UsageTracker | None = None
+    memory_manager: WaddleAIMemoryManager | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -119,11 +170,13 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
     """Concrete implementation of the WaddleAIService gRPC service."""
 
     def __init__(self, components: ServerComponents) -> None:
+        """Bind the servicer to its backing agent/memory components."""
         self._components = components
 
     # ---- EvaluateRoute ----------------------------------------------------
 
-    def EvaluateRoute(
+    @require_api_version
+    def EvaluateRoute(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.RouteRequest,
         context: grpc.ServicerContext,
@@ -161,7 +214,8 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- EvaluateSecurity -------------------------------------------------
 
-    def EvaluateSecurity(
+    @require_api_version
+    def EvaluateSecurity(  # noqa: N802 -- gRPC servicer method name mandated by proto stub
         self,
         request: waddleai_pb2.SecurityRequest,
         context: grpc.ServicerContext,
@@ -176,7 +230,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         try:
             import asyncio
 
-            user_id: Optional[int] = None
+            user_id: int | None = None
             if request.user_id:
                 try:
                     user_id = int(request.user_id)
@@ -206,7 +260,8 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- StoreTurn --------------------------------------------------------
 
-    def StoreTurn(
+    @require_api_version
+    def StoreTurn(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.StoreTurnRequest,
         context: grpc.ServicerContext,
@@ -222,10 +277,10 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
             import asyncio
 
             user_id_int = _safe_int(request.user_id, default=0)
-            messages: List[Dict[str, str]] = [
+            messages: list[dict[str, str]] = [
                 {"role": "user", "content": request.user_message},
             ]
-            metadata: Dict[str, Any] = dict(request.metadata)
+            metadata: dict[str, Any] = dict(request.metadata)
             metadata.setdefault("model", request.model)
             metadata.setdefault("provider", request.provider)
 
@@ -252,7 +307,8 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- GetContext -------------------------------------------------------
 
-    def GetContext(
+    @require_api_version
+    def GetContext(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.GetContextRequest,
         context: grpc.ServicerContext,
@@ -294,7 +350,8 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- SearchMemories ---------------------------------------------------
 
-    def SearchMemories(
+    @require_api_version
+    def SearchMemories(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.SearchMemoriesRequest,
         context: grpc.ServicerContext,
@@ -334,7 +391,8 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- ReportUsage ------------------------------------------------------
 
-    def ReportUsage(
+    @require_api_version
+    def ReportUsage(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.UsageReport,
         context: grpc.ServicerContext,
@@ -390,9 +448,9 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
 def start_grpc_server(
     port: int = 50051,
-    server_components: Optional[ServerComponents] = None,
+    server_components: ServerComponents | None = None,
     max_workers: int = 10,
-    grpc_auth_token: Optional[str] = None,
+    grpc_auth_token: str | None = None,
 ) -> grpc.Server:
     """Create, configure, and start the gRPC server.
 
@@ -414,6 +472,7 @@ def start_grpc_server(
         The running :class:`grpc.Server` instance.  The caller is
         responsible for calling ``server.wait_for_termination()`` or
         ``server.stop(grace)``.
+
     """
     components = server_components or ServerComponents()
 
@@ -448,9 +507,9 @@ def start_grpc_server(
 
 def run_grpc_in_thread(
     port: int = 50051,
-    components: Optional[ServerComponents] = None,
+    components: ServerComponents | None = None,
     max_workers: int = 10,
-    grpc_auth_token: Optional[str] = None,
+    grpc_auth_token: str | None = None,
 ) -> grpc.Server:
     """Start the gRPC server in a daemon thread.
 
@@ -464,6 +523,7 @@ def run_grpc_in_thread(
 
     Returns:
         The running :class:`grpc.Server` instance.
+
     """
     server = start_grpc_server(
         port=port,
@@ -496,12 +556,12 @@ def _safe_int(value: str, *, default: int = 0) -> int:
 
 
 def _memory_entries_to_proto(
-    entries: List[Any],
-) -> List[waddleai_pb2.MemoryEntry]:
+    entries: list[Any],
+) -> list[waddleai_pb2.MemoryEntry]:
     """Convert internal MemoryEntry objects to protobuf MemoryEntry messages."""
-    proto_entries: List[waddleai_pb2.MemoryEntry] = []
+    proto_entries: list[waddleai_pb2.MemoryEntry] = []
     for entry in entries:
-        metadata_dict: Dict[str, str] = {}
+        metadata_dict: dict[str, str] = {}
         if hasattr(entry, "metadata") and isinstance(entry.metadata, dict):
             metadata_dict = {str(k): str(v) for k, v in entry.metadata.items()}
 

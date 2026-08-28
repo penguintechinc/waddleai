@@ -2,8 +2,21 @@
 # Quart (async-native Flask superset) stack per CLAUDE.md standards
 
 # Web framework (Quart — async-native Flask superset, house standard)
+# Inherit the root pin set, exactly as proxy/requirements.in does.
+# Without this, management was compiled independently and drifted from
+# root/proxy on 14 shared packages (cryptography 46.0.6 vs 48.0.1 among
+# them). CI installs the files sequentially with pip, which tolerates the
+# clash and lets whichever installs last win -- so the effective
+# environment depended on install order.
+-r ../../requirements.txt
+
 quart>=0.19.0
 quart-cors>=0.7.0
+# Exact-pinned (not >=): openapi.py reaches into quart_schema.extension's
+# private _build_openapi_schema helper (no public equivalent in 0.19.x) to
+# implement the public/full spec split required by backend.md OpenAPI --
+# an unpinned minor bump could silently rename/remove it.
+quart-schema==0.19.0
 hypercorn>=0.16.0
 
 # Database
@@ -13,9 +26,16 @@ psycopg2-binary>=2.9.9
 pgvector>=0.3.0
 pymysql>=1.1.0
 
+# Local-only profile (shared/vectorstore/qdrant_backend.py, spec §17): the
+# Qdrant vector-store backend, lazily imported only when
+# waddleai.local_only_profile is enabled -- see shared/vectorstore/factory.py.
+qdrant-client>=1.7.0
+
 # PenguinTech Libraries
-penguin-aaa>=0.1.0
-penguin-dal>=0.2.1
+# 0.2.0 added OIDCAuthMiddleware(api_key_verifier=...), which proxy
+# main.py depends on -- 0.1.x raises TypeError at startup.
+penguin-aaa>=0.2.1
+penguin-dal>=0.4.1
 penguin-utils>=0.1.0
 penguin-sal>=0.2.0
 penguin-licensing>=0.1.0
@@ -26,10 +46,10 @@ penguin-licensing>=0.1.0
 # string, which bcrypt 5 rejects with "password cannot be longer than 72
 # bytes" instead of truncating. That failed every auth/key/quota test in CI.
 bcrypt>=4.1.0,<5.0
-PyJWT>=2.8.0
+PyJWT>=2.13.0
 passlib>=1.7.4
 argon2-cffi>=23.1.0
-cryptography>=41.0.0
+cryptography>=50.0.0
 
 # Cache & Session
 redis>=5.0.0
@@ -37,23 +57,53 @@ redis>=5.0.0
 # gRPC for MarchProxy AILB communication
 grpcio>=1.60.0
 grpcio-tools>=1.60.0
-protobuf>=4.25.0
+# Floor matches the committed proxy_pb2.py gencode (Protobuf Python Version:
+# 6.31.1) — runtime below that raises VersionError at import time. Upper
+# bound mirrors requirements.in / proxy/requirements.in, which are capped
+# <7.0.0 by mem0ai's own protobuf constraint — without this ceiling here too,
+# this file drifts to a newer major (7.x) than the other two and we're back
+# to a cross-file mismatch, just on the other side.
+protobuf>=6.31.1,<7.0.0
 
 # HTTP client for provider connectivity tests
 httpx>=0.26.0
-aiohttp>=3.9.0
+aiohttp>=3.14.3
 
 # AI Provider SDKs
 openai>=1.0.0
-anthropic>=0.18.0
-google-generativeai>=0.3.0
+anthropic>=0.87.0
 boto3>=1.34.0
+# NOTE: Gemini connectivity goes through shared/utils/llm_connectors.py via
+# the `google-genai` SDK (see root requirements.in), not the deprecated
+# `google-generativeai` package. `google-generativeai` was declared here
+# unused (no import anywhere in services/management or shared/) and its
+# exact-pinned dependency google-ai-generativelanguage==0.6.15 caps
+# protobuf<6.0.0dev — blocking the >=6.31.1 floor required above. Removed
+# rather than kept as dead weight forcing a protobuf downgrade.
 
 # Token counting
 tiktoken>=0.5.0
 
 # Docker management (for orchestrated Ollama)
 docker>=7.0.0
+
+# CodeRAG worker (app/services/coderag_worker.py): clone/fetch/checkout
+# registered repos server-side. GitPython over subprocess+shlex to avoid
+# shell-injection surface on user-supplied branch/URL values.
+GitPython>=3.1.44
+# CodeRAG chunker (shared/knowledge/code_chunker.py, lazy import in
+# _chunk_with_tree_sitter): function/class/module-boundary chunking grammars
+# for the tree-sitter parser (MIT). Was only present because it happens to be
+# on this sandbox's PATH -- undeclared, so CI (installs from this file only)
+# hit ImportError-swallowed None returns, failing every chunker test.
+tree-sitter-language-pack>=0.9.0
+# Docs research cache (app/services/docs_cache.py): HTML -> Markdown
+# conversion for §9.2 on-demand docs fetch/chunk/embed pipeline.
+markdownify>=0.13.1
+# Manual knowledge ingestion (app/api/v1/knowledge.py, lazy import in
+# _extract_text): PDF -> text extraction (BSD-3). The AGPL-licensed fitz
+# binding is banned -- never substitute it here.
+pypdf>=4.0.0
 
 # YAML for config generation
 pyyaml>=6.0.1
@@ -66,6 +116,14 @@ marshmallow>=3.20.0
 python-dotenv>=1.0.0
 structlog>=24.1.0
 
+# Kubernetes control-plane (Cilium reconciler). Declared as a floor, not an
+# exact pin: proxy/requirements.in does not declare kubernetes at all -- it
+# arrives transitively via chromadb -- so an exact pin here fought the shared
+# resolution once this file began inheriting the root lockfile. The resolver
+# unifies all three on one version; the floor only guards against going below
+# the API surface the reconciler needs.
+kubernetes>=35.0.0
+
 # Schema migrations — Alembic is the sole schema authority for this service.
 # Every file under alembic/versions imports it, as do the migration round-trip
 # tests. It was previously undeclared and only present incidentally, so CI
@@ -74,7 +132,19 @@ structlog>=24.1.0
 alembic>=1.13.1
 
 # Development & Testing
-pytest>=7.4.0
+pytest>=9.0.3
 pytest-cov>=4.1.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
+# `httpserver` fixture: tests/unit/management/test_docs_cache.py and
+# tests/integration/test_knowledge_acceptance.py serve real HTTP responses
+# instead of mocking the docs-fetch client. Was resolving from whatever
+# happened to be installed in-sandbox; CI has no such package and failed
+# with "fixture 'httpserver' not found".
+pytest-httpserver>=1.0.8
+
+# Fast JSON used by shared/cache and shared/memory, which the management
+# service imports via api/v1/cache_configs.py. Declared in the root and
+# proxy requirements but NOT here, so the management image built fine,
+# passed syntax checks, and then crashed on boot with ModuleNotFoundError.
+orjson>=3.9.10

@@ -1,21 +1,39 @@
-"""
-WaddleAI Management API v1 - Organization Management Endpoints
-"""
+"""WaddleAI Management API v1 - Organization Management Endpoints."""
 
 import asyncio
 from datetime import datetime
 
 from quart import g, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
+from ...services.cilium_policy import CiliumPolicyReconciler
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
+
+
+def _trigger_cilium_reconcile() -> None:
+    """Fire a non-blocking Cilium policy reconcile after an org write.
+
+    Fire-and-forget: `CiliumPolicyReconciler.reconcile()` never raises (it
+    degrades to a `ReconcileStatus` internally and logs), so this can only
+    ever affect Cilium CRDs, never the calling request's response. Keeps org
+    create/update CEC churn scoped to just the org that changed rather than
+    reconciling on every key CRUD (spec §12.1 change note).
+    """
+    try:
+        reconciler = CiliumPolicyReconciler(db)
+        asyncio.create_task(asyncio.to_thread(reconciler.reconcile))
+    except RuntimeError:
+        # No running event loop in this context (e.g. some test harnesses) — skip.
+        pass
 
 
 @api_v1_bp.route("/organizations", methods=["GET"])
 @require_auth
 async def list_organizations():
-    """List organizations"""
+    """List organizations."""
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
@@ -56,7 +74,7 @@ async def list_organizations():
 @api_v1_bp.route("/organizations/<int:org_id>", methods=["GET"])
 @require_auth
 async def get_organization(org_id):
-    """Get organization details"""
+    """Get organization details."""
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
 
@@ -95,9 +113,9 @@ async def get_organization(org_id):
 
 @api_v1_bp.route("/organizations", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ORG_CREATE)
 async def create_organization():
-    """Create a new organization (admin only)"""
+    """Create a new organization (admin only)."""
     data = await request.get_json()
 
     if not data:
@@ -107,7 +125,9 @@ async def create_organization():
         return jsonify({"error": "name is required"}), 400
 
     # Check for existing organization
-    existing = await asyncio.to_thread(lambda: db(db.organizations.name == data["name"]).select().first())
+    existing = await asyncio.to_thread(
+        lambda: db(db.organizations.name == data["name"]).select().first()
+    )
     if existing:
         return jsonify({"error": "Organization name already exists"}), 409
 
@@ -125,15 +145,18 @@ async def create_organization():
         return new_org_id
 
     org_id = await asyncio.to_thread(_insert)
+    _trigger_cilium_reconcile()
 
-    return jsonify({"id": org_id, "name": data["name"], "message": "Organization created successfully"}), 201
+    return jsonify(
+        {"id": org_id, "name": data["name"], "message": "Organization created successfully"}
+    ), 201
 
 
 @api_v1_bp.route("/organizations/<int:org_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ORG_ADMIN_UPDATE)
 async def update_organization(org_id):
-    """Update organization (admin only)"""
+    """Update organization (admin only)."""
     data = await request.get_json()
 
     if not data:
@@ -149,7 +172,11 @@ async def update_organization(org_id):
     if "name" in data:
         # Check name uniqueness
         existing = await asyncio.to_thread(
-            lambda: db((db.organizations.name == data["name"]) & (db.organizations.id != org_id)).select().first()
+            lambda: (
+                db((db.organizations.name == data["name"]) & (db.organizations.id != org_id))
+                .select()
+                .first()
+            )
         )
         if existing:
             return jsonify({"error": "Organization name already exists"}), 409
@@ -177,15 +204,16 @@ async def update_organization(org_id):
             db.commit()
 
         await asyncio.to_thread(_update)
+        _trigger_cilium_reconcile()
 
     return jsonify({"message": "Organization updated successfully"})
 
 
 @api_v1_bp.route("/organizations/<int:org_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.ORG_DELETE)
 async def delete_organization(org_id):
-    """Delete organization (admin only)"""
+    """Delete organization (admin only)."""
     org = await asyncio.to_thread(lambda: db(db.organizations.id == org_id).select().first())
 
     if not org:
@@ -198,7 +226,9 @@ async def delete_organization(org_id):
     # Check for users
     user_count = await asyncio.to_thread(lambda: db(db.users.organization_id == org_id).count())
     if user_count > 0:
-        return jsonify({"error": "Cannot delete organization with users", "user_count": user_count}), 400
+        return jsonify(
+            {"error": "Cannot delete organization with users", "user_count": user_count}
+        ), 400
 
     # Soft delete by disabling
     def _disable():
@@ -213,7 +243,7 @@ async def delete_organization(org_id):
 @api_v1_bp.route("/organizations/<int:org_id>/usage", methods=["GET"])
 @require_auth
 async def get_organization_usage(org_id):
-    """Get organization usage statistics"""
+    """Get organization usage statistics."""
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
 
@@ -242,8 +272,12 @@ async def get_organization_usage(org_id):
     month_start = today.replace(day=1)
 
     def _fetch_usage():
-        daily = db((db.token_usage.organization_id == org_id) & (db.token_usage.date == today)).select()
-        monthly = db((db.token_usage.organization_id == org_id) & (db.token_usage.date >= month_start)).select()
+        daily = db(
+            (db.token_usage.organization_id == org_id) & (db.token_usage.date == today)
+        ).select()
+        monthly = db(
+            (db.token_usage.organization_id == org_id) & (db.token_usage.date >= month_start)
+        ).select()
         return daily, monthly
 
     daily_usage, monthly_usage = await asyncio.to_thread(_fetch_usage)
@@ -260,12 +294,16 @@ async def get_organization_usage(org_id):
                 "daily": {
                     "tokens": daily_tokens,
                     "quota": org.token_quota_daily,
-                    "percentage": (daily_tokens / org.token_quota_daily * 100) if org.token_quota_daily else 0,
+                    "percentage": (daily_tokens / org.token_quota_daily * 100)
+                    if org.token_quota_daily
+                    else 0,
                 },
                 "monthly": {
                     "tokens": monthly_tokens,
                     "quota": org.token_quota_monthly,
-                    "percentage": (monthly_tokens / org.token_quota_monthly * 100) if org.token_quota_monthly else 0,
+                    "percentage": (monthly_tokens / org.token_quota_monthly * 100)
+                    if org.token_quota_monthly
+                    else 0,
                     "cost_usd": monthly_cost,
                 },
             },

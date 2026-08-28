@@ -1,5 +1,4 @@
-"""
-Crypto module - Cryptographic utilities.
+"""Crypto module - Cryptographic utilities.
 
 Provides:
 - tokens: Secure token generation

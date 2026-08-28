@@ -7,8 +7,9 @@ license tier, client platform, and GPU capabilities.
 import logging
 from typing import Any
 
-from penguincode_cli.server.models.config_store import ConfigStore
 from quart import Blueprint, jsonify, request
+
+from penguincode_cli.server.models.config_store import ConfigStore
 
 logger = logging.getLogger(__name__)
 

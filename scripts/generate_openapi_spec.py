@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Generate openapi/v1.yaml for the WaddleAI Management API.
+
+Boots the Quart app with a mocked DB/cache (the same technique
+tests/unit/management/conftest.py uses) so this runs in CI without a live
+database, then writes the full quart-schema-derived OpenAPI document --
+every registered route, the actual source of truth this repo publishes --
+to openapi/v1.yaml. See services/management/app/api/v1/openapi.py for the
+public/full split served at runtime; this script always generates the
+full document, since the committed spec is reviewed by humans with repo
+access, not served to anonymous callers.
+
+Usage:
+    python3 scripts/generate_openapi_spec.py [--output PATH]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MANAGEMENT_ROOT = REPO_ROOT / "services" / "management"
+
+
+def _build_app():
+    """Create the management Quart app with DB/cache init replaced by mocks."""
+    sys.path.insert(0, str(MANAGEMENT_ROOT))
+    sys.path.insert(0, str(REPO_ROOT))
+
+    mock_db = MagicMock()
+
+    def _noop_init_extensions(app) -> None:
+        import services.management.app.extensions as ext_mod
+
+        ext_mod.db = mock_db
+        ext_mod.redis_client = MagicMock()
+
+    with patch("services.management.app.init_extensions", side_effect=_noop_init_extensions):
+        from services.management.app import create_app
+        from services.management.app.config import TestingConfig
+
+        return create_app(TestingConfig)
+
+
+_UNDOCUMENTED_RESPONSE = {
+    "description": (
+        "Response schema not yet annotated with @validate_response -- see "
+        "docs/APP_STANDARDS.md OpenAPI coverage notes. The endpoint itself is real "
+        "and reachable; only its documented shape is pending."
+    ),
+}
+
+
+def _fill_undocumented_responses(schema: dict) -> tuple[dict, int]:
+    """Give every operation with no `responses` a placeholder, honestly labeled.
+
+    quart-schema's auto-discovery lists every registered route (see
+    `_build_openapi_schema` in quart_schema.extension), but only fills in
+    `responses` for routes carrying a `@validate_response` decorator --
+    everywhere else it's `{}`, which is not valid OpenAPI 3.x (every
+    operation requires at least one response). Rather than fabricate a
+    schema quart-schema never asserted, mark the gap explicitly so the
+    document stays spec-valid without overclaiming coverage.
+    """
+    filled = 0
+    for path_item in schema.get("paths", {}).values():
+        for method, operation in path_item.items():
+            if method not in {"get", "post", "put", "patch", "delete", "options", "head", "trace"}:
+                continue
+            if not operation.get("responses"):
+                operation["responses"] = {"200": _UNDOCUMENTED_RESPONSE}
+                filled += 1
+    return schema, filled
+
+
+def _sort_unordered_collections(schema: dict) -> None:
+    """Sort every set-derived list in `schema` so output is byte-reproducible.
+
+    quart-schema accumulates an operation's tags in a set (see the
+    normalization note at the call site). Sets have no order, and Python
+    randomizes their iteration per process via PYTHONHASHSEED, so a route
+    carrying two tags -- e.g. @tag(["Providers"]) plus @tag(["Credentials"])
+    -- serialized as ["Providers", "Credentials"] on one run and the reverse
+    on the next. The committed spec was therefore drifting against itself:
+    CI's regenerate-and-diff gate would fail at random, and no amount of
+    re-committing the file could fix it. Sorting makes the artifact a
+    function of the annotations alone.
+    """
+    for path_item in (schema.get("paths") or {}).values():
+        if not isinstance(path_item, dict):
+            continue
+        for operation in path_item.values():
+            if isinstance(operation, dict) and isinstance(operation.get("tags"), list):
+                operation["tags"].sort()
+    if isinstance(schema.get("tags"), list):
+        schema["tags"].sort(key=lambda t: t.get("name", "") if isinstance(t, dict) else str(t))
+
+
+def main() -> int:
+    """Build the app, render its OpenAPI schema, and write it as YAML."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=REPO_ROOT / "openapi" / "v1.yaml",
+        help="Where to write the generated spec (default: openapi/v1.yaml)",
+    )
+    args = parser.parse_args()
+
+    import yaml
+
+    app = _build_app()
+    from services.management.app.api.v1.openapi import build_full_schema
+
+    schema = build_full_schema(app)
+    # Normalize defaultdict/set/etc. (from quart-schema's internal builder) to
+    # plain dict/list so the YAML dumper never hits an unregistered type.
+    schema = json.loads(app.json.dumps(schema))
+    schema, undocumented_count = _fill_undocumented_responses(schema)
+    _sort_unordered_collections(schema)
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w") as fh:
+        fh.write("# Generated by scripts/generate_openapi_spec.py -- do not hand-edit.\n")
+        fh.write(
+            "# Source of truth is the quart-schema annotations in "
+            "services/management/app/api/v1/*.py.\n"
+        )
+        yaml.safe_dump(schema, fh, sort_keys=False, default_flow_style=False, allow_unicode=True)
+
+    total_operations = sum(
+        1
+        for path_item in schema.get("paths", {}).values()
+        for method in path_item
+        if method in {"get", "post", "put", "patch", "delete"}
+    )
+    print(
+        f"Wrote OpenAPI spec ({len(schema.get('paths', {}))} paths, "
+        f"{total_operations} operations, {total_operations - undocumented_count} with a "
+        f"documented response schema) to {args.output}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

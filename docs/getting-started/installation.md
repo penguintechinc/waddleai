@@ -1,452 +1,151 @@
 # Installation Guide
 
-This guide walks you through installing and setting up WaddleAI in various environments.
+WaddleAI has three deployable services — **proxy** (OpenAI-compatible data plane, port 8080 + gRPC 50051), **management** (Flask/Quart control plane, port 8001), and **webui** (port 8080 in-container, static React shell) — plus PostgreSQL and Valkey. Kubernetes via Helm is the only supported deployment path; Docker Compose is deprecated across the project and this repo does not ship a `docker-compose.yml`.
 
-## System Requirements
+## Prerequisites
 
-- Python 3.13+
-- PostgreSQL 13+ (recommended) or SQLite for development
-- Redis (optional, for caching and rate limiting)
-- 4GB+ RAM for production deployment
-- Linux/macOS/Windows
+- Python 3.13 (services and tooling; hash-pinned lockfiles require it)
+- PostgreSQL 14+ with the `pgvector` extension (memory/RAG vector storage) — SQLite works for quick local experiments but is not the supported production database
+- Valkey (Redis-protocol cache) — used for routing/session cache and rate limiting
+- Node.js 24.x — only if you're building/running the webui outside its container
+- `kubectl` + Helm v4, and a local cluster (MicroK8s on Linux, Docker Desktop Kubernetes on macOS/Windows) if you want the full stack running in Kubernetes
+- `git`, `uv` (for `make venv`)
 
-## Quick Start (Development)
+## Option A: Kubernetes with Helm (recommended)
 
-### 1. Clone the Repository
+The Helm chart at `k8s/helm/waddleai` is the only supported deployment path for every environment (alpha, beta, production). Full walkthrough, values-file reference, and ingress/TLS setup: [Kubernetes Deployment](../deployment/kubernetes.md).
+
+Quick path for a local alpha cluster (MicroK8s or Docker Desktop Kubernetes, `local-alpha` kubectl context):
 
 ```bash
-git clone https://github.com/your-org/waddleai.git
+git clone https://github.com/penguintechinc/waddleai.git
 cd waddleai
+./scripts/deploy-alpha.sh   # builds proxy/management/webui images, loads them into the
+                             # cluster's local image store, then:
+                             # helm upgrade --install waddleai k8s/helm/waddleai \
+                             #   --kube-context local-alpha --namespace waddleai \
+                             #   --create-namespace --values k8s/helm/waddleai/values-alpha.yaml
 ```
 
-### 2. Set up Python Environment
+`./scripts/deploy-beta.sh` deploys the same chart with `values-beta.yaml` to the shared beta cluster (CI-built on merge to `main` — `ghcr.io/penguintechinc/waddleai/{proxy,management,webui}:beta-<epoch64>` images — never build beta/prod images locally). There is no `values-production.yaml` in this repo yet; production deployments start from `values.yaml` with an operator-supplied overlay — see [Kubernetes Deployment](../deployment/kubernetes.md) for the current guidance and the full five-tier release pipeline.
+
+## Option B: Local development
+
+For running the Python services directly against your own Postgres/Valkey — full detail, troubleshooting, and the local-Kubernetes alternative live in [docs/DEVELOPMENT.md](../DEVELOPMENT.md). Summary:
 
 ```bash
-# Create virtual environment
-python3.13 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+git clone https://github.com/penguintechinc/waddleai.git
+cd waddleai
 
-# Install dependencies
-pip install -r requirements.txt
+# make venv is the only supported local setup: uv-managed .venv (Python 3.13)
+# installed from the hash-pinned requirements*.txt lockfiles. A bare host
+# python3 is not supported here even if 3.13 is on PATH — dependency
+# resolution and CI both go through this venv.
+make venv
 ```
 
-### 3. Initialize Database
+Start Postgres (with pgvector) and Valkey as standalone containers — there is no Compose file:
 
 ```bash
-# Set database URL (SQLite for development)
-export DATABASE_URL=sqlite://waddleai.db
+docker run -d --name waddleai-postgres \
+  -e POSTGRES_DB=waddleai -e POSTGRES_USER=waddleai -e POSTGRES_PASSWORD=waddleai-dev \
+  -p 5432:5432 pgvector/pgvector:pg16
 
-# Initialize database and create admin user
-cd shared/database
-python models.py
+docker run -d --name waddleai-valkey -p 6379:6379 valkey/valkey:8-bookworm
 ```
 
-This will create an admin user and display the API key. **Save this API key!**
-
-### 4. Configure Environment
-
-Create `.env` file in the project root:
+Run each service from the repo root with `.venv` active (`--reload` restarts on save; `make dev` currently shells out to `docker-compose up`, which does not work in this repo since no `docker-compose.yml` exists — use the commands below instead):
 
 ```bash
-# Database
-DATABASE_URL=sqlite://waddleai.db
-
-# Security
-JWT_SECRET=your-jwt-secret-key-change-in-production
-SECURITY_POLICY=balanced
-
-# Servers
-PROXY_HOST=0.0.0.0
-PROXY_PORT=8000
-MGMT_HOST=0.0.0.0
-MGMT_PORT=8001
-
-# External Services (optional)
-OPENAI_API_KEY=sk-your-openai-key
-ANTHROPIC_API_KEY=your-anthropic-key
-OLLAMA_URL=http://localhost:11434
+# Management API (port 8001) — start first, the proxy talks to it at startup
+export PYTHONPATH="$(pwd):$(pwd)/services/management"
+export DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai
+export JWT_SECRET=$(openssl rand -hex 32)
+cd services/management && .venv/bin/hypercorn asgi:app --bind 0.0.0.0:8001 --reload
 ```
-
-### 5. Start the Servers
 
 ```bash
-# Terminal 1: Start Proxy Server
-cd proxy/apps/proxy_server
-python main.py
-
-# Terminal 2: Start Management Server
-cd management/apps/management_server
-python main.py
+# Proxy (port 8080, gRPC 50051)
+export PYTHONPATH="$(pwd):$(pwd)/proxy"
+export DATABASE_URL=postgresql://waddleai:waddleai-dev@localhost:5432/waddleai
+cd proxy && ../.venv/bin/hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080 --reload
 ```
-
-### 6. Verify Installation
 
 ```bash
-# Check proxy server health
-curl http://localhost:8000/healthz
-
-# Check management server health
-curl http://localhost:8001/healthz
-
-# Test OpenAI-compatible API
-curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer wa-your-api-key-from-step-3"
-```
-
-## Production Installation
-
-### Docker Compose (Recommended)
-
-1. Create `docker-compose.yml`:
-
-```yaml
-version: '3.8'
-
-services:
-  waddleai-proxy:
-    build: 
-      context: .
-      dockerfile: proxy/Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://waddleai:password@postgres:5432/waddleai
-      - MANAGEMENT_SERVER_URL=http://waddleai-mgmt:8001
-      - JWT_SECRET=${JWT_SECRET}
-      - SECURITY_POLICY=balanced
-    depends_on:
-      postgres:
-        condition: service_healthy
-      waddleai-mgmt:
-        condition: service_started
-    restart: unless-stopped
-
-  waddleai-mgmt:
-    build:
-      context: .
-      dockerfile: management/Dockerfile
-    ports:
-      - "8001:8001"
-    environment:
-      - DATABASE_URL=postgresql://waddleai:password@postgres:5432/waddleai
-      - JWT_SECRET=${JWT_SECRET}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=waddleai
-      - POSTGRES_USER=waddleai
-      - POSTGRES_PASSWORD=password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U waddleai"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-
-volumes:
-  postgres_data:
-```
-
-2. Create environment file:
-
-```bash
-# .env
-JWT_SECRET=$(openssl rand -hex 32)
-POSTGRES_PASSWORD=$(openssl rand -hex 16)
-```
-
-3. Start the stack:
-
-```bash
-docker-compose up -d
-```
-
-### Kubernetes Deployment
-
-1. Apply the manifests:
-
-```bash
-kubectl apply -f deployment/kubernetes/
-```
-
-2. Configure ingress and TLS:
-
-```yaml
-# ingress.yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: waddleai-ingress
-spec:
-  tls:
-  - hosts:
-    - api.waddleai.com
-    - mgmt.waddleai.com
-    secretName: waddleai-tls
-  rules:
-  - host: api.waddleai.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: waddleai-proxy
-            port:
-              number: 8000
-  - host: mgmt.waddleai.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: waddleai-mgmt
-            port:
-              number: 8001
+# Web UI (port 3000, proxies /api/* to localhost:8001) — optional for API-only use
+cd services/webui && npm ci && npm run dev
 ```
 
 ## Configuration
 
-### Database Setup
+Every service reads environment variables directly — there is no `.env.example` in this repo. Only vars actually read by the code are listed below (checked against `shared/`, `proxy/`, `services/`); anything else you may see in older docs or examples elsewhere is not consumed.
 
-#### PostgreSQL (Recommended)
+| Variable | Required | Default | Read by |
+|---|---|---|---|
+| `DATABASE_URL` | Recommended (postgres) | `sqlite:///waddleai.db` fallback | `shared/database/models.py`, `services/management/app/config.py` |
+| `DB_TYPE`, `DB_USER`, `DB_PASS`, `DB_NAME` | No — alternative to `DATABASE_URL` | `sqlite` / unset | `services/management/app/config.py` |
+| `JWT_SECRET` | **Yes**, production | `""` (insecure) | `services/management/app/config.py`, proxy auth |
+| `FLASK_SECRET_KEY` | No | falls back to `JWT_SECRET` | `services/management/app/config.py` |
+| `ADMIN_INITIAL_PASSWORD` | No | random, un-loggable, if unset | `services/management/app/extensions.py` |
+| `WEBHOOK_SECRET` | Yes, if using webhooks | `""` | `services/management/app/config.py` |
+| `CREDENTIAL_ENCRYPTION_KEY` | Recommended | unset → stored LLM-provider credentials are unencrypted | `shared/security/credential_encryption.py` |
+| `HTTP_PORT` | No | `8080` | `proxy/apps/proxy_server/main.py` |
+| `GRPC_PORT` | No | `50051` | `proxy/apps/proxy_server/main.py` |
+| `MANAGEMENT_SERVER_URL` | No | `http://localhost:8001` | `proxy/apps/proxy_server/main.py` |
+| `REDIS_URL` | No | `redis://localhost:6379/0` | `proxy/apps/proxy_server/main.py` (Valkey, despite the name) |
+| `CACHE_HOST`, `CACHE_PORT`, `CACHE_USER`, `CACHE_PASS` | No | unset | `services/management/app/config.py` (also honors `REDIS_URL`) |
+| `LICENSE_KEY`, `PRODUCT_NAME` | No — required only to unlock licensed tiers | unset | `shared/licensing/python_client.py` |
+| `LICENSE_SERVER_URL` | No | `https://license.penguintech.io` | `shared/licensing/python_client.py`, `proxy/apps/proxy_server/main.py` |
+| `NER_SPACY_MODEL` | No | `en_core_web_lg` (~425MB installed) | `shared/security/ner_filter.py`, `shared/security/content_filter.py` |
+| `WADDLEAI_NER_ALLOW_DOWNLOAD` | No | unset → NER PII tier disabled if the pinned model isn't already installed | `shared/security/ner_filter.py` |
+| `SECURITY_POLICY` | No | `balanced` (`strict`/`balanced`/`permissive`) | `proxy/apps/proxy_server/main.py` |
+| `CORS_ORIGINS` | No | `*` | `services/management/app/config.py` |
+| `LOG_LEVEL` | No | `INFO` | multiple |
 
-```bash
-# Install PostgreSQL
-sudo apt-get install postgresql postgresql-contrib
+Set `NER_SPACY_MODEL=en_core_web_md` for a much smaller image (~32MB) at some cost in PII-entity detection accuracy — the model itself is still a hash-pinned wheel pull at build time, this only changes which one.
 
-# Create database and user
-sudo -u postgres psql
-CREATE DATABASE waddleai;
-CREATE USER waddleai WITH PASSWORD 'secure_password';
-GRANT ALL PRIVILEGES ON DATABASE waddleai TO waddleai;
-\q
+## First run
 
-# Set connection URL
-export DATABASE_URL="postgresql://waddleai:secure_password@localhost:5432/waddleai"
-```
+WaddleAI never prints an admin API key to logs. On first startup with an empty database, the management service creates a `default` organization and an `admin` user (`services/management/app/extensions.py`):
 
-#### SQLite (Development Only)
+- If `ADMIN_INITIAL_PASSWORD` was set, that's the admin password. Otherwise a random password is generated and **not logged anywhere** — set `ADMIN_INITIAL_PASSWORD` explicitly before first boot if you need to know it.
+- An admin virtual key is created and stored only as a bcrypt hash; the plaintext value is never printed or recoverable. Don't rely on it — create your own key instead:
 
-```bash
-export DATABASE_URL="sqlite://waddleai.db"
-```
-
-### LLM Provider Configuration
-
-#### OpenAI
-
-```bash
-export OPENAI_API_KEY="sk-your-openai-api-key"
-```
-
-Then add connection link via management interface or API.
-
-#### Anthropic
-
-```bash
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
-```
-
-#### Ollama (Local)
+1. Log in to the webui (or `POST /api/v1/auth/login` with the admin username/password) to get a JWT.
+2. Create a virtual key for yourself: `POST /api/v1/keys` with that JWT as a bearer token. The response's `api_key` field is shown exactly once — save it immediately.
 
 ```bash
-# Install Ollama
-curl -fsSL https://ollama.ai/install.sh | sh
-
-# Pull models
-ollama pull llama2
-ollama pull mistral
-
-# Configure WaddleAI connection
-export OLLAMA_URL="http://localhost:11434"
-```
-
-### Security Configuration
-
-#### JWT Secrets
-
-```bash
-# Generate secure JWT secret
-export JWT_SECRET=$(openssl rand -hex 32)
-```
-
-#### Security Policies
-
-Available policies: `strict`, `balanced`, `permissive`
-
-```bash
-export SECURITY_POLICY=balanced
-```
-
-#### TLS Configuration
-
-For production, configure TLS termination at load balancer or use Caddy:
-
-```bash
-# Caddyfile
-api.waddleai.com {
-    reverse_proxy localhost:8000
-}
-
-mgmt.waddleai.com {
-    reverse_proxy localhost:8001
-}
-```
-
-## Post-Installation Setup
-
-### 1. Create Organizations
-
-```bash
-curl -X POST http://localhost:8001/orgs \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -s -X POST http://localhost:8001/api/v1/keys \
+  -H "Authorization: Bearer $ADMIN_JWT" \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "Default Organization",
-    "description": "Default organization for users",
-    "token_quota_monthly": 1000000,
-    "token_quota_daily": 100000
-  }'
+  -d '{"name": "my-first-key", "tpm_limit": 10000, "rpm_limit": 60}'
 ```
 
-### 2. Create Users
+## Verify
 
 ```bash
-curl -X POST http://localhost:8001/users \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "user1",
-    "email": "user1@example.com",
-    "password": "secure_password",
-    "role": "user",
-    "organization_id": 1
-  }'
-```
+# Proxy
+curl http://localhost:8080/healthz
+curl http://localhost:8080/readyz     # 200 once the database dependency is healthy
 
-### 3. Configure LLM Connections
-
-```bash
-curl -X POST http://localhost:8001/config/links \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "OpenAI GPT-4",
-    "provider": "openai",
-    "endpoint_url": "https://api.openai.com/v1",
-    "api_key": "sk-your-openai-key",
-    "model_list": ["gpt-4", "gpt-3.5-turbo"],
-    "enabled": true
-  }'
-```
-
-### 4. Set up Monitoring
-
-```bash
-# Add Prometheus scraping config
-- job_name: 'waddleai'
-  static_configs:
-  - targets: ['localhost:8000', 'localhost:8001']
-  metrics_path: /metrics
-```
-
-## Verification
-
-### Health Checks
-
-```bash
-# Proxy server
-curl http://localhost:8000/healthz
-curl http://localhost:8000/api/status
-
-# Management server
+# Management
 curl http://localhost:8001/healthz
-curl http://localhost:8001/api/health
-```
+curl http://localhost:8001/readyz
 
-### API Tests
+export WADDLEAI_API_KEY="<your-waddleai-key>"
 
-```bash
-# List models
-curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer $API_KEY"
-
-# Chat completion
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $API_KEY" \
   -d '{
-    "model": "gpt-3.5-turbo",
+    "model": "gpt-4o",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-### Management Interface
+## Next steps
 
-Visit `http://localhost:8001` and log in with admin credentials.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Database Connection Failed**
-   ```bash
-   # Check database is running
-   pg_isready -h localhost -p 5432
-   
-   # Verify credentials
-   psql $DATABASE_URL -c "SELECT 1;"
-   ```
-
-2. **Permission Denied**
-   ```bash
-   # Check file permissions
-   chmod +x proxy/apps/proxy_server/main.py
-   chmod +x management/apps/management_server/main.py
-   ```
-
-3. **Port Already in Use**
-   ```bash
-   # Find process using port
-   lsof -i :8000
-   
-   # Kill process or use different port
-   export PROXY_PORT=8080
-   ```
-
-### Logs
-
-```bash
-# Check application logs
-tail -f proxy/logs/proxy.log
-tail -f management/logs/management.log
-
-# Check system logs
-journalctl -u waddleai-proxy
-journalctl -u waddleai-mgmt
-```
-
-## Next Steps
-
-- [Configure LLM providers](../integrations/)
-- [Set up user management](../administration/user-management.md)
-- [Configure security policies](../administration/security-policies.md)
-- [Set up monitoring](../administration/monitoring.md)
-
----
-
-Need help? Check the [troubleshooting guide](../troubleshooting/common-issues.md) or review the logs for error details.
+- [Local Development Guide](../DEVELOPMENT.md) — full local workflow, Alembic migrations, hot-reload
+- [Kubernetes Deployment](../deployment/kubernetes.md) — Helm chart, values files, ingress/TLS
+- [Connect Claude Code](../integrations/claude-code.md)
+- [OpenCode integration](../integrations/opencode.md)

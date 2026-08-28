@@ -54,8 +54,8 @@ The extension enables developers to:
 ### Option 2: Manual Installation (Development)
 1. Clone the repository:
    ```bash
-   git clone https://github.com/waddleai/vscode-extension.git
-   cd vscode-extension/waddleai-copilot
+   git clone https://github.com/penguintechinc/waddleai.git
+   cd waddleai/vscode-extension/waddleai-copilot
    ```
 
 2. Install dependencies:
@@ -91,7 +91,7 @@ The extension enables developers to:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `waddleai.apiEndpoint` | `http://localhost:8000` | WaddleAI proxy server URL |
+| `waddleai.apiEndpoint` | `http://localhost:8000` | WaddleAI proxy server URL — the extension's built-in default (`8000`) does not match the proxy's actual default port (`8080`); set this explicitly |
 | `waddleai.apiKey` | `""` | Your WaddleAI API key |
 | `waddleai.defaultModel` | `"gpt-4"` | Default model for chat completions |
 | `waddleai.enableMemory` | `true` | Enable conversation memory |
@@ -156,7 +156,7 @@ Access via Command Palette (`Ctrl+Shift+P`):
 | **WaddleAI: Select Model** | Choose from available models |
 | **WaddleAI: Test Connection** | Verify connection to WaddleAI proxy |
 | **WaddleAI: Show Token Usage** | View detailed usage statistics |
-| **WaddleAI: Clear Conversation Memory** | Reset conversation history |
+| **WaddleAI: Start New Conversation** | Reset the extension's session id so the next turn starts a fresh memory scope |
 
 ## Context Integration
 
@@ -167,7 +167,7 @@ The extension automatically provides rich context to improve responses:
 - **Project structure** - File organization and patterns
 - **Currently open files** - Files you're working with
 
-### File Context  
+### File Context
 - **Active file path** - Current file being edited
 - **Programming language** - Enables language-specific suggestions
 - **Selected code** - Specific code segments you're asking about
@@ -204,31 +204,26 @@ The usage dashboard shows:
 - **Time-based usage trends**
 
 ### Usage Monitoring
-- **Real-time updates** - Live usage tracking during conversations
-- **Quota warnings** - Alerts when approaching limits
-- **Usage optimization tips** - Suggestions for efficient token usage
-- **Export capabilities** - CSV export for detailed analysis
+- **Point-in-time snapshot** - "WaddleAI: Show Token Usage" fetches `/api/usage` (rolling 30-day
+  totals) and `/api/quota` (current daily/monthly limits) and renders them in a webview; it does
+  not poll or update live during a conversation
+- **Model breakdown** - Per-model input/output token totals for the last 30 days
 
 ### Sample Usage Data
+The webview's data comes from combining `/api/usage` and `/api/quota`:
 ```json
 {
-  "total_tokens": 15450,
+  "total_waddleai_tokens": 15450,
+  "total_llm_input_tokens": 9200,
+  "total_llm_output_tokens": 6250,
   "total_requests": 127,
-  "daily_quota": {
-    "used": 1250,
-    "limit": 10000,
-    "percentage": 12.5
+  "average_daily": 515,
+  "llm_breakdown": {
+    "gpt-4": { "input": 6000, "output": 2500 },
+    "claude-3-sonnet": { "input": 3200, "output": 3750 }
   },
-  "monthly_quota": {
-    "used": 15450,
-    "limit": 200000,
-    "percentage": 7.7
-  },
-  "model_breakdown": {
-    "gpt-4": 8500,
-    "claude-3-sonnet": 4200,
-    "gpt-3.5-turbo": 2750
-  }
+  "daily": { "used": 1250, "limit": 10000, "remaining": 8750, "ok": true },
+  "monthly": { "used": 15450, "limit": 200000, "remaining": 184550, "ok": true }
 }
 ```
 
@@ -241,7 +236,7 @@ The extension provides comprehensive error handling with actionable solutions:
 - **Solution**: Button to open "WaddleAI: Set API Key" command
 - **Cause**: Invalid or expired API key
 
-### Connection Errors  
+### Connection Errors
 **Error**: "WaddleAI service unavailable. Please try again later."
 - **Solution**: Check WaddleAI proxy server status
 - **Cause**: Network issues or server downtime
@@ -285,7 +280,7 @@ The extension provides comprehensive error handling with actionable solutions:
 
 #### Enable Debug Logging
 1. Open VS Code Settings
-2. Search for "Log Level"  
+2. Search for "Log Level"
 3. Set to "Debug" for detailed logging
 4. Check Output panel → "WaddleAI" channel
 
@@ -308,8 +303,8 @@ type %APPDATA%\Code\logs\*\exthost*\output_logging_*\1-WaddleAI.log
 
 ### Building from Source
 ```bash
-git clone https://github.com/waddleai/vscode-extension.git
-cd vscode-extension/waddleai-copilot
+git clone https://github.com/penguintechinc/waddleai.git
+cd waddleai/vscode-extension/waddleai-copilot
 npm install
 npm run compile
 npm run package  # Requires Node.js 20+
@@ -327,7 +322,7 @@ npm run typecheck
 waddleai-copilot/
 ├── src/
 │   ├── extension.ts          # Main extension entry point
-│   ├── chatParticipant.ts   # Chat participant implementation  
+│   ├── chatParticipant.ts   # Chat participant implementation
 │   ├── waddleaiClient.ts    # WaddleAI API client
 │   ├── authProvider.ts      # Authentication provider
 │   └── types/               # TypeScript type definitions
@@ -344,15 +339,15 @@ graph TD
     B --> C[WaddleAI Client]
     C --> D[WaddleAI Proxy Server]
     D --> E[Multiple LLM Providers]
-    
+
     B --> F[Context Builder]
     F --> G[Workspace Info]
-    F --> H[Active File]  
+    F --> H[Active File]
     F --> I[Selected Code]
-    
+
     B --> J[Authentication Provider]
     J --> K[VS Code Secret Storage]
-    
+
     C --> L[Usage Tracker]
     L --> M[Token Analytics]
 ```
@@ -363,8 +358,10 @@ graph TD
 The extension uses WaddleAI's OpenAI-compatible API:
 
 ```typescript
-// Stream chat completion
-const stream = await client.streamChatCompletion(
+// Chat completion -- the proxy always returns one JSON envelope for
+// /v1/chat/completions today, so the extension requests stream: false
+// rather than parsing a text/event-stream response the server never sends.
+const response = await client.chatCompletion(
   messages,
   model,
   {
@@ -375,14 +372,14 @@ const stream = await client.streamChatCompletion(
   }
 );
 
-// Process streaming response
-for await (const chunk of stream) {
-  const content = chunk.choices?.[0]?.delta?.content;
-  if (content) {
-    // Display in VS Code chat
-    chatStream.markdown(content);
-  }
+const content = response.choices?.[0]?.message?.content;
+if (content) {
+  // Display in VS Code chat
+  chatStream.markdown(content);
 }
+
+// Additive cache/routing metadata (usage.waddleai), when present, is
+// rendered as a short footer -- see WaddleAIChatParticipant.renderUsageFooter.
 ```
 
 ### Context Building
@@ -400,7 +397,7 @@ const context = [
 
 ### Data Privacy
 - **Local Processing**: Context building happens locally in VS Code
-- **Secure Storage**: API keys stored in VS Code's encrypted credential store  
+- **Secure Storage**: API keys stored in VS Code's encrypted credential store
 - **No Data Logging**: Extension doesn't log sensitive code or conversations
 - **Configurable Security**: Security scanning can be enabled/disabled
 
@@ -458,7 +455,7 @@ The extension is open source. Contributions welcome:
 - **Enterprise Support**: Available for enterprise customers
 
 ### Resources
-- **Extension Source**: https://github.com/waddleai/vscode-extension
+- **Extension Source**: https://github.com/penguintechinc/waddleai
 - **WaddleAI Documentation**: https://docs.waddleai.com
 - **VS Code Extension API**: https://code.visualstudio.com/api
 - **OpenAI API Compatibility**: https://docs.openai.com/api

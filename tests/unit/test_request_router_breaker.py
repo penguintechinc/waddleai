@@ -27,11 +27,15 @@ def _router_with(provider: str, stats: ProviderStats) -> LLMRequestRouter:
 
 
 class TestBreakerRecovery:
+    """Closed -> open -> half-open -> closed cycle for provider circuit breaking."""
+
     def test_provider_available_when_healthy(self):
+        """A provider with no recorded failures is always offered."""
         router = _router_with("openai", ProviderStats())
         assert "openai" in router._get_available_providers("gpt-4")
 
     def test_provider_ejected_at_failure_threshold(self):
+        """A provider at the consecutive-failure threshold is excluded, not just deprioritized."""
         stats = ProviderStats(consecutive_failures=3, last_failure=datetime.utcnow())
         router = _router_with("openai", stats)
         assert router._get_available_providers("gpt-4") == []
@@ -64,6 +68,7 @@ class TestBreakerRecovery:
         assert second == [], "probe already in flight; second caller must be refused"
 
     def test_success_closes_breaker_and_clears_probe(self):
+        """A successful half-open probe resets the failure count and re-admits the provider."""
         stats = ProviderStats(
             consecutive_failures=5,
             last_failure=datetime.utcnow() - timedelta(minutes=10),
@@ -78,6 +83,7 @@ class TestBreakerRecovery:
         assert "openai" in router._get_available_providers("gpt-4")
 
     def test_failed_probe_reopens_breaker(self):
+        """A failed half-open probe re-trips the breaker and restarts the cooldown."""
         stats = ProviderStats(
             consecutive_failures=5,
             last_failure=datetime.utcnow() - timedelta(minutes=10),
@@ -94,6 +100,7 @@ class TestBreakerRecovery:
 
 @pytest.mark.parametrize("failures", [0, 1, 2])
 def test_below_threshold_stays_available(failures):
+    """Any failure count under the threshold (0, 1, 2) leaves the provider available."""
     stats = ProviderStats(consecutive_failures=failures, last_success=datetime.utcnow())
     router = _router_with("openai", stats)
     assert "openai" in router._get_available_providers("gpt-4")

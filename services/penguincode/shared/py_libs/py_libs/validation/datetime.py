@@ -1,5 +1,4 @@
-"""
-DateTime validators - PyDAL-style validators for date/time inputs.
+"""DateTime validators - PyDAL-style validators for date/time inputs.
 
 Provides:
 - IsDate: Validates date strings
@@ -22,8 +21,7 @@ DateTimeInput = Union[str, datetime]
 
 
 class IsDate(Validator[DateInput, date]):
-    """
-    Validates that a value is or can be parsed as a date.
+    """Validates that a value is or can be parsed as a date.
 
     Args:
         format: Expected date format (strptime format string)
@@ -36,6 +34,7 @@ class IsDate(Validator[DateInput, date]):
 
         validator = IsDate(format="%d/%m/%Y")
         result = validator("15/01/2024")  # Valid
+
     """
 
     def __init__(self, format: str = "%Y-%m-%d", error_message: str | None = None) -> None:
@@ -67,8 +66,7 @@ class IsDate(Validator[DateInput, date]):
 
 
 class IsDateTime(Validator[DateTimeInput, datetime]):
-    """
-    Validates that a value is or can be parsed as a datetime.
+    """Validates that a value is or can be parsed as a datetime.
 
     Args:
         format: Expected datetime format (strptime format string)
@@ -81,6 +79,7 @@ class IsDateTime(Validator[DateTimeInput, datetime]):
 
         validator = IsDateTime(format="%Y-%m-%d %H:%M")
         result = validator("2024-01-15 14:30")     # Valid
+
     """
 
     def __init__(
@@ -113,8 +112,7 @@ class IsDateTime(Validator[DateTimeInput, datetime]):
 
 
 class IsTime(Validator[TimeInput, time]):
-    """
-    Validates that a value is or can be parsed as a time.
+    """Validates that a value is or can be parsed as a time.
 
     Args:
         format: Expected time format (strptime format string)
@@ -127,6 +125,7 @@ class IsTime(Validator[TimeInput, time]):
 
         validator = IsTime(format="%H:%M")
         result = validator("14:30")     # Valid
+
     """
 
     def __init__(self, format: str = "%H:%M:%S", error_message: str | None = None) -> None:
@@ -158,8 +157,7 @@ class IsTime(Validator[TimeInput, time]):
 
 
 class IsDateInRange(Validator[DateInput, date]):
-    """
-    Validates that a date is within a specified range.
+    """Validates that a date is within a specified range.
 
     Args:
         min_date: Minimum date (inclusive), or None for no minimum
@@ -175,6 +173,7 @@ class IsDateInRange(Validator[DateInput, date]):
         )
         result = validator("2024-06-15")  # Valid
         result = validator("2023-12-31")  # Invalid (before min)
+
     """
 
     def __init__(

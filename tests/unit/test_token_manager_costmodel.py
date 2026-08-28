@@ -1,6 +1,6 @@
-"""
-Test suite for Token Manager cost model (ported from AILB)
-Tests token conversion, cost calculation, and conversion rate management
+"""Test suite for Token Manager cost model (ported from AILB).
+
+Tests token conversion, cost calculation, and conversion rate management.
 """
 
 from unittest.mock import MagicMock
@@ -11,11 +11,11 @@ from shared.utils.token_manager import ConversionRate, TokenManager
 
 
 class TestTokenConversion:
-    """Test token conversion to WaddleAI tokens"""
+    """Test token conversion to WaddleAI tokens."""
 
     @pytest.fixture
     def mock_db(self) -> MagicMock:
-        """Create a mock database"""
+        """Create a mock database."""
         db = MagicMock()
         db.token_conversion_rates = MagicMock()
         db.return_value = MagicMock()
@@ -23,7 +23,7 @@ class TestTokenConversion:
         return db
 
     def test_calculate_waddleai_tokens_gpt4(self, mock_db):
-        """Test conversion for GPT-4 model"""
+        """Test conversion for GPT-4 model."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4": ConversionRate(
@@ -45,7 +45,7 @@ class TestTokenConversion:
         assert waddleai_tokens == expected
 
     def test_calculate_waddleai_tokens_claude(self, mock_db):
-        """Test conversion for Claude model"""
+        """Test conversion for Claude model."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "anthropic:claude-3-opus": ConversionRate(
@@ -66,7 +66,7 @@ class TestTokenConversion:
         assert waddleai_tokens == expected
 
     def test_calculate_waddleai_tokens_unknown_model(self, mock_db):
-        """Test conversion for unknown model uses default"""
+        """Test conversion for unknown model uses default."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {}
 
@@ -80,7 +80,7 @@ class TestTokenConversion:
         assert waddleai_tokens == expected
 
     def test_calculate_waddleai_tokens_zero_input(self, mock_db):
-        """Test conversion with zero input tokens"""
+        """Test conversion with zero input tokens."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4": ConversionRate(
@@ -101,7 +101,7 @@ class TestTokenConversion:
         assert waddleai_tokens == expected
 
     def test_calculate_waddleai_tokens_zero_output(self, mock_db):
-        """Test conversion with zero output tokens"""
+        """Test conversion with zero output tokens."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4": ConversionRate(
@@ -123,11 +123,11 @@ class TestTokenConversion:
 
 
 class TestCostCalculation:
-    """Test cost calculation"""
+    """Test cost calculation."""
 
     @pytest.fixture
     def mock_db(self) -> MagicMock:
-        """Create a mock database"""
+        """Create a mock database."""
         db = MagicMock()
         db.token_conversion_rates = MagicMock()
         db.return_value = MagicMock()
@@ -135,7 +135,7 @@ class TestCostCalculation:
         return db
 
     def test_calculate_cost_returns_tuple(self, mock_db):
-        """Test that calculate_cost returns tuple of WaddleAI and USD costs"""
+        """Test that calculate_cost returns tuple of WaddleAI and USD costs."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4": ConversionRate(
@@ -155,7 +155,7 @@ class TestCostCalculation:
         assert usd_cost > 0
 
     def test_calculate_cost_gpt4(self, mock_db):
-        """Test cost calculation for GPT-4"""
+        """Test cost calculation for GPT-4."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4": ConversionRate(
@@ -175,7 +175,7 @@ class TestCostCalculation:
         assert usd_cost == 100 * 0.003
 
     def test_calculate_cost_different_models(self, mock_db):
-        """Test cost calculation differs by model"""
+        """Test cost calculation differs by model."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "anthropic:claude-3-opus": ConversionRate(
@@ -194,15 +194,19 @@ class TestCostCalculation:
             ),
         }
 
-        waddleai_cost_opus, usd_cost_opus = manager.calculate_cost(100, "anthropic", "claude-3-opus")
-        waddleai_cost_sonnet, usd_cost_sonnet = manager.calculate_cost(100, "anthropic", "claude-3-sonnet")
+        waddleai_cost_opus, usd_cost_opus = manager.calculate_cost(
+            100, "anthropic", "claude-3-opus"
+        )
+        waddleai_cost_sonnet, usd_cost_sonnet = manager.calculate_cost(
+            100, "anthropic", "claude-3-sonnet"
+        )
 
         # Same WaddleAI tokens, different USD costs
         assert waddleai_cost_opus == waddleai_cost_sonnet
         assert usd_cost_opus != usd_cost_sonnet  # Different rates
 
     def test_calculate_cost_unknown_model(self, mock_db):
-        """Test cost calculation for unknown model"""
+        """Test cost calculation for unknown model."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {}
 
@@ -214,7 +218,7 @@ class TestCostCalculation:
         assert usd_cost == 100 * 0.001
 
     def test_calculate_cost_zero_tokens(self, mock_db):
-        """Test cost calculation for zero tokens"""
+        """Test cost calculation for zero tokens."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4": ConversionRate(
@@ -233,11 +237,11 @@ class TestCostCalculation:
 
 
 class TestConversionRates:
-    """Test conversion rate management"""
+    """Test conversion rate management."""
 
     @pytest.fixture
     def mock_db(self) -> MagicMock:
-        """Create a mock database"""
+        """Create a mock database."""
         db = MagicMock()
         db.token_conversion_rates = MagicMock()
         db.return_value = MagicMock()
@@ -245,7 +249,7 @@ class TestConversionRates:
         return db
 
     def test_conversion_rate_to_dict(self):
-        """Test ConversionRate.to_dict()"""
+        """Test ConversionRate.to_dict()."""
         rate = ConversionRate(
             provider="openai",
             model="gpt-4",
@@ -267,19 +271,21 @@ class TestConversionRates:
         assert rate_dict["input_rate"] == 10.0
 
     def test_default_conversion_rates_exist(self, mock_db):
-        """Test that DEFAULT_CONVERSION_RATES is available"""
+        """Test that DEFAULT_CONVERSION_RATES is available."""
         manager = TokenManager(mock_db)
 
         # Check that DEFAULT_CONVERSION_RATES is available and has expected models
-        assert hasattr(TokenManager, "DEFAULT_CONVERSION_RATES") or hasattr(manager, "DEFAULT_CONVERSION_RATES")
+        assert hasattr(TokenManager, "DEFAULT_CONVERSION_RATES") or hasattr(
+            manager, "DEFAULT_CONVERSION_RATES"
+        )
 
 
 class TestEdgeCases:
-    """Test edge cases and boundary conditions"""
+    """Test edge cases and boundary conditions."""
 
     @pytest.fixture
     def mock_db(self) -> MagicMock:
-        """Create a mock database"""
+        """Create a mock database."""
         db = MagicMock()
         db.token_conversion_rates = MagicMock()
         db.return_value = MagicMock()
@@ -287,7 +293,7 @@ class TestEdgeCases:
         return db
 
     def test_very_large_token_count(self, mock_db):
-        """Test handling of very large token counts"""
+        """Test handling of very large token counts."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4": ConversionRate(
@@ -306,7 +312,7 @@ class TestEdgeCases:
         assert usd_cost > 0
 
     def test_negative_tokens_handled(self, mock_db):
-        """Test that negative tokens don't break calculation"""
+        """Test that negative tokens don't break calculation."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {}
 
@@ -317,7 +323,7 @@ class TestEdgeCases:
         assert waddleai_tokens >= 1  # At least min value
 
     def test_fractional_rates_calculation(self, mock_db):
-        """Test calculation with fractional conversion rates"""
+        """Test calculation with fractional conversion rates."""
         manager = TokenManager(mock_db)
         manager.conversion_rates = {
             "openai:gpt-4o": ConversionRate(

@@ -1,0 +1,19 @@
+# CodeQL scope. Mirrors the exclusions every other scanner in this repo uses
+# (ruff via pyproject/pre-commit, bandit, gitleaks, shellcheck, hadolint).
+#
+# Without this, CodeQL analysed vendored upstream code and reported 19 of its
+# 24 high-severity alerts against services/penguincode -- code this repo does
+# not maintain -- which drowned the 5 first-party alerts that actually need
+# attention and made the check unactionable.
+#
+# This narrows WHERE CodeQL looks. It does not dismiss or downgrade any alert
+# in first-party code.
+name: "WaddleAI CodeQL config"
+
+paths-ignore:
+  - services/penguincode      # vendored upstream, not maintained here
+  - "**/node_modules"
+  - .venv
+  - .worktrees                # nested checkout of this same repo
+  - "**/*_pb2.py"             # generated protobuf
+  - "**/*_pb2_grpc.py"

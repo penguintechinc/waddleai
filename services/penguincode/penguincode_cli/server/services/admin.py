@@ -8,8 +8,9 @@ import functools
 import logging
 
 import jwt as pyjwt
-from penguincode_cli.server.models.config_store import ConfigStore
 from quart import Blueprint, jsonify, request
+
+from penguincode_cli.server.models.config_store import ConfigStore
 
 logger = logging.getLogger(__name__)
 

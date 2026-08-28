@@ -36,7 +36,7 @@ This guide covers configuring WaddleAI to connect to Anthropic's Claude API, inc
 | Name | Anthropic Production |
 | Provider | anthropic |
 | Endpoint URL | https://api.anthropic.com/v1 |
-| API Key | sk-ant-your-api-key-here |
+| API Key | <your-anthropic-key> |
 | Enabled | ✓ |
 
 **Model List:**
@@ -54,13 +54,13 @@ claude-instant-1.2
 
 ```bash
 curl -X POST https://your-waddleai-mgmt.com/api/connection_links \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Authorization: Bearer <your-admin-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Anthropic Production",
     "provider": "anthropic",
     "endpoint_url": "https://api.anthropic.com/v1",
-    "api_key": "sk-ant-your-api-key-here",
+    "api_key": "<your-anthropic-key>",
     "model_list": [
       "claude-3-opus-20240229",
       "claude-3-sonnet-20240229",
@@ -199,17 +199,12 @@ Claude is accessible through WaddleAI's OpenAI-compatible endpoint:
 ```python
 import openai
 
-client = openai.OpenAI(
-    api_key="wa-your-api-key",
-    base_url="https://your-waddleai-proxy.com/v1"
-)
+client = openai.OpenAI(api_key="<your-waddleai-key>", base_url="https://your-waddleai-proxy.com/v1")
 
 response = client.chat.completions.create(
     model="claude-3-sonnet-20240229",
-    messages=[
-        {"role": "user", "content": "Explain quantum computing"}
-    ],
-    max_tokens=1000
+    messages=[{"role": "user", "content": "Explain quantum computing"}],
+    max_tokens=1000,
 )
 
 print(response.choices[0].message.content)
@@ -217,9 +212,15 @@ print(response.choices[0].message.content)
 
 ### Direct API Call
 
+Set your key first:
+
+```bash
+export WADDLEAI_API_KEY="wa-..."   # from the WaddleAI WebUI: Virtual Keys
+```
+
 ```bash
 curl https://your-waddleai-proxy.com/v1/chat/completions \
-  -H "Authorization: Bearer wa-your-api-key" \
+  -H "Authorization: Bearer $WADDLEAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "claude-3-sonnet-20240229",
@@ -240,15 +241,15 @@ response = client.chat.completions.create(
     messages=[
         {
             "role": "system",
-            "content": "You are an expert Python developer specializing in clean, efficient code following PEP 8 standards."
+            "content": "You are an expert Python developer specializing in clean, efficient code following PEP 8 standards.",
         },
         {
             "role": "user",
-            "content": "Write a function to calculate fibonacci numbers with memoization"
-        }
+            "content": "Write a function to calculate fibonacci numbers with memoization",
+        },
     ],
     max_tokens=1500,
-    temperature=0.7
+    temperature=0.7,
 )
 ```
 
@@ -320,24 +321,20 @@ print(f"Estimated tokens: {estimated_tokens}")
 # Claude 3 pricing (approximate)
 CLAUDE_PRICING = {
     "claude-3-opus-20240229": {
-        "input": 15.00 / 1_000_000,   # per token
-        "output": 75.00 / 1_000_000
+        "input": 15.00 / 1_000_000,  # per token
+        "output": 75.00 / 1_000_000,
     },
-    "claude-3-sonnet-20240229": {
-        "input": 3.00 / 1_000_000,
-        "output": 15.00 / 1_000_000
-    },
-    "claude-3-haiku-20240307": {
-        "input": 0.25 / 1_000_000,
-        "output": 1.25 / 1_000_000
-    }
+    "claude-3-sonnet-20240229": {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    "claude-3-haiku-20240307": {"input": 0.25 / 1_000_000, "output": 1.25 / 1_000_000},
 }
+
 
 def calculate_cost(model, input_tokens, output_tokens):
     pricing = CLAUDE_PRICING[model]
     input_cost = input_tokens * pricing["input"]
     output_cost = output_tokens * pricing["output"]
     return input_cost + output_cost
+
 
 # Example
 cost = calculate_cost("claude-3-sonnet-20240229", 1000, 500)
@@ -359,8 +356,8 @@ requests.post(
         "provider": "anthropic",
         "monthly_limit_usd": 5000,
         "alert_threshold_percent": 80,
-        "alert_email": "finance@company.com"
-    }
+        "alert_email": "finance@company.com",
+    },
 )
 ```
 
@@ -403,10 +400,7 @@ Route requests to Anthropic Claude models based on these rules:
 requests.post(
     "https://mgmt.waddleai.com/api/routing/instructions",
     headers={"Authorization": f"Bearer {admin_token}"},
-    json={
-        "instructions": routing_instructions,
-        "routing_llm": "llama3.2:1b"
-    }
+    json={"instructions": routing_instructions, "routing_llm": "llama3.2:1b"},
 )
 ```
 
@@ -419,8 +413,7 @@ import requests
 
 # Get usage stats filtered by Anthropic
 usage = requests.get(
-    "https://mgmt.waddleai.com/api/usage?days=30",
-    headers={"Authorization": f"Bearer {token}"}
+    "https://mgmt.waddleai.com/api/usage?days=30", headers={"Authorization": f"Bearer {token}"}
 ).json()
 
 anthropic_usage = usage["provider_usage"].get("anthropic", {})
@@ -492,6 +485,7 @@ curl https://api.anthropic.com/v1/messages \
 # Truncate messages to fit context
 MAX_CONTEXT_TOKENS = 180000  # Leave room for response
 
+
 def truncate_messages(messages, max_tokens):
     total_tokens = sum(len(m["content"]) / 4 for m in messages)
     if total_tokens > max_tokens:
@@ -500,6 +494,7 @@ def truncate_messages(messages, max_tokens):
             removed = messages.pop(0)
             total_tokens -= len(removed["content"]) / 4
     return messages
+
 
 messages = truncate_messages(messages, MAX_CONTEXT_TOKENS)
 ```
@@ -561,23 +556,17 @@ Adjust temperature based on use case:
 ```python
 # Creative writing (high variation)
 response = client.chat.completions.create(
-    model="claude-3-sonnet-20240229",
-    temperature=0.9,
-    messages=[...]
+    model="claude-3-sonnet-20240229", temperature=0.9, messages=[...]
 )
 
 # Code generation (low variation, deterministic)
 response = client.chat.completions.create(
-    model="claude-3-sonnet-20240229",
-    temperature=0.2,
-    messages=[...]
+    model="claude-3-sonnet-20240229", temperature=0.2, messages=[...]
 )
 
 # Balanced (default)
 response = client.chat.completions.create(
-    model="claude-3-sonnet-20240229",
-    temperature=0.7,
-    messages=[...]
+    model="claude-3-sonnet-20240229", temperature=0.7, messages=[...]
 )
 ```
 
@@ -587,16 +576,12 @@ response = client.chat.completions.create(
 import openai
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10)
-)
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def call_claude(messages):
     try:
         response = client.chat.completions.create(
-            model="claude-3-sonnet-20240229",
-            messages=messages,
-            max_tokens=1000
+            model="claude-3-sonnet-20240229", messages=messages, max_tokens=1000
         )
         return response.choices[0].message.content
     except openai.RateLimitError:
@@ -619,7 +604,7 @@ def call_claude(messages):
 # rotate-anthropic-key.sh
 
 # Generate new key in Anthropic console first
-NEW_KEY="sk-ant-new-key-here"
+NEW_KEY="<your-new-anthropic-key>"
 
 # Update in WaddleAI
 curl -X PATCH https://mgmt.waddleai.com/api/connection_links/anthropic \

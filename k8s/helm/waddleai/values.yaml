@@ -24,6 +24,7 @@ management:
   image:
     repository: waddleai/management
     tag: latest
+    # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
   service:
@@ -63,13 +64,22 @@ management:
     DB_TYPE: postgres
     FLASK_ENV: production
     ENABLE_OLLAMA_MANAGEMENT: "true"
-    ENABLE_USAGE_WEBHOOKS: "true"
     ENABLE_GEMINI: "true"
     ENABLE_BEDROCK: "true"
     ENABLE_AZURE_OPENAI: "true"
     ENABLE_COHERE: "true"
     OLLAMA_MANAGEMENT_MODE: both
     LOG_LEVEL: INFO
+    # shared/licensing/python_client.py's own default if unset — templated
+    # explicitly so it's visible/overridable per environment.
+    LICENSE_SERVER_URL: "https://license.penguintech.io"
+    # shared/security/ner_filter.py default. The owner's chosen model is the
+    # "lg" (large) variant, not the smaller "sm"/"md" spaCy models.
+    NER_SPACY_MODEL: "en_core_web_lg"
+    # Never let the image pull a model at runtime by default — bake it into
+    # the image ahead of time instead (see docs/deployment/kubernetes.md
+    # Troubleshooting). Flip to "true" only for a deliberate one-off.
+    WADDLEAI_NER_ALLOW_DOWNLOAD: "false"
 
   # Secret env vars (from k8s secrets)
   secretEnv:
@@ -88,6 +98,23 @@ management:
     - name: POSTGRES_PASSWORD
       secretName: waddleai-secrets
       key: postgres-password
+    # Bootstrap admin password (services/management/app/config.py,
+    # services/management/app/extensions.py). Empty by default — see
+    # secrets.adminInitialPassword / templates/secret.yaml.
+    - name: ADMIN_INITIAL_PASSWORD
+      secretName: waddleai-secrets
+      key: admin-initial-password
+    # shared/licensing/python_client.py, services/management/app/api/v1/
+    # fleet.py, services/management/app/services/content_filter_deps.py.
+    # Empty by default = community tier.
+    - name: LICENSE_KEY
+      secretName: waddleai-secrets
+      key: license-key
+    # shared/security/credential_encryption.py. GENERATE ONCE, NEVER
+    # ROTATE — see waddleai.credentialEncryptionKey (_helpers.tpl).
+    - name: CREDENTIAL_ENCRYPTION_KEY
+      secretName: waddleai-secrets
+      key: credential-encryption-key
 
 # AIProxy Service (data plane — /v1/chat/completions, /v1/messages, /v1/models, /mem0/*)
 # Plain Quart + hypercorn app; Cilium handles networking at the cluster level (no XDP/NET_ADMIN needed).
@@ -139,6 +166,11 @@ proxy:
     LOG_LEVEL: INFO
     HTTP_PORT: "8080"
     GRPC_PORT: "50051"
+    # See management.env above for the same three keys — proxy reads them
+    # too (proxy/apps/proxy_server/main.py, shared/security/ner_filter.py).
+    LICENSE_SERVER_URL: "https://license.penguintech.io"
+    NER_SPACY_MODEL: "en_core_web_lg"
+    WADDLEAI_NER_ALLOW_DOWNLOAD: "false"
 
   # Secret env vars (from k8s secrets) — mirrors management's DATABASE_URL source
   secretEnv:
@@ -148,6 +180,12 @@ proxy:
     - name: PROXY_GRPC_AUTH_TOKEN
       secretName: waddleai-secrets
       key: proxy-grpc-auth-token
+    # shared/licensing/python_client.py — same community-tier-by-default
+    # key as management.secretEnv's LICENSE_KEY above. proxy does NOT read
+    # CREDENTIAL_ENCRYPTION_KEY or ADMIN_INITIAL_PASSWORD (management-only).
+    - name: LICENSE_KEY
+      secretName: waddleai-secrets
+      key: license-key
 
   # gRPC NetworkPolicy configuration (fail-closed: defaults to deny all)
   grpc:
@@ -157,7 +195,7 @@ proxy:
       # Default: empty list (all ingress denied until explicitly configured)
       # Example:
       #   - matchLabels:
-      #       app: marchproxy
+      #       app: waddleai-proxy
       allowedPodSelectors: []
 
 # WebUI Service
@@ -167,6 +205,7 @@ webui:
   image:
     repository: waddleai/webui
     tag: latest
+    # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
   service:
@@ -376,6 +415,8 @@ securityContext:
   readOnlyRootFilesystem: false
   runAsNonRoot: true
   runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
 
 # Node selector
 nodeSelector: {}
@@ -398,6 +439,92 @@ networkPolicy:
     - Ingress
     - Egress
 
+# Cilium integration (platform spec §12) — Management renders and upserts
+# CiliumEnvoyConfig (per-org edge rate limiting) and CiliumNetworkPolicy
+# (default-deny + explicit topology flows) via services/management/app/
+# services/cilium_policy.py. Every CRD-emitting template below is guarded by
+# both cilium.enabled AND a `.Capabilities.APIVersions.Has "cilium.io/v2"`
+# check, so a non-Cilium cluster (e.g. plain kind/MicroK8s in alpha) skips
+# these resources cleanly instead of failing `helm install` (§12.3). The
+# reconciler itself is additionally gated at runtime by the
+# `waddleai.native_rate_limit` PostHog flag (default OFF) — the master switch
+# below only controls whether the *chart* ships the RBAC/bootstrap objects
+# that let the reconciler operate at all.
+cilium:
+  enabled: true # master switch for all Cilium integration
+  rbac:
+    create: true # ClusterRole/Binding granting the Management SA cilium.io CRD access
+  networkPolicy:
+    enabled: true # bootstrap default-deny + topology-flow CiliumNetworkPolicy
+  rateLimit:
+    enabled: true # reconciler manages the per-org CiliumEnvoyConfig (also needs the native_rate_limit flag ON)
+  # Selector labels + serving ports consumed by the Python reconciler (via the
+  # CILIUM_TOPOLOGY env var, JSON-encoded by the waddleai.cilium.topology
+  # helper) AND by the bootstrap CiliumNetworkPolicy template below — single
+  # source of truth so the two never drift.
+  topology:
+    gatewayName: shared
+    gatewayNamespace: gateway
+    aiproxyPort: 8080
+    postgresPort: 5432
+    valkeyPort: 6379
+    fleetPorts: [8080, 11434] # llamacpp (8080) + ollama (11434)
+    fleetComponentKey: app.kubernetes.io/component
+    fleetComponents: [ollama, llamacpp]
+    selectors:
+      gateway: { "app.kubernetes.io/name": cilium-gateway }
+      aiproxy: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": proxy }
+      management: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": management }
+      postgres: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": postgres }
+      valkey: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": valkey }
+
+# External / bare-metal fleet node access control (spec §10.3, Task 15).
+# Ollama/llama.cpp have no native auth, and CiliumNetworkPolicy only governs
+# in-cluster traffic — a bare-metal GPU box outside the cluster needs a
+# different mechanism for the AIProxy to authenticate to it. Q#4: mTLS via
+# cert-manager in beta/prod, a shared-token sidecar in alpha/dev. Disabled by
+# default (opt-in — most deployments have no external nodes); the mode
+# default below is env-appropriate the moment an operator flips enabled:true,
+# without further config. See templates/fleet-external-mtls.yaml.
+fleet:
+  external:
+    enabled: false
+    mode: mtls # mtls (beta/prod default) | token (alpha/dev — overridden in values-alpha.yaml)
+
+    # Informational: the external endpoints this applies to. Used for the
+    # CNP egress allowlist (toCIDR) and, in token mode, the nginx sidecar's
+    # per-node routing config. Each entry needs host+port; name is a
+    # DNS-label-safe identifier used in resource/route naming.
+    # nodes:
+    #   - name: bare-metal-01
+    #     host: 10.20.30.40
+    #     port: 11434
+    nodes: []
+
+    mtls:
+      # Pre-provisioned in-cluster issuer (NOT created by this chart, same
+      # convention as the letsencrypt-* ClusterIssuers referenced elsewhere
+      # in this values file) — must support "client auth" usage, which
+      # public ACME issuers do not, so this has to be an internal/private CA.
+      issuerRef:
+        name: waddleai-fleet-ca
+        kind: ClusterIssuer
+      clientCertDuration: "2160h" # 90d
+      renewBefore: "360h" # 15d
+
+    token:
+      secretName: waddleai-fleet-external-token
+      secretKey: token
+      sidecarPort: 8443
+      image:
+        # No nginx:*-bookworm-slim variant is published — stable-bookworm is
+        # the leanest official bookworm tag available (verified via
+        # `docker buildx imagetools inspect nginx:stable-bookworm`).
+        repository: nginx
+        tag: "stable-bookworm"
+        digest: "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609"
+        pullPolicy: IfNotPresent
+
 # Secret management
 # Set manage: false to skip chart-managed secret (use externally created secret instead)
 secrets:
@@ -406,20 +533,93 @@ secrets:
   jwtSecret: "changeme-jwt-secret-min-32-characters-required"
   flaskSecretKey: "changeme-flask-secret-key"
   webhookSecret: "changeme-webhook-secret"
+  # Only consumed when fleet.external.enabled + mode: token (see
+  # templates/fleet-external-mtls.yaml + proxy-deployment.yaml's token-proxy
+  # sidecar) — present unconditionally here, same convention as the other
+  # secret.yaml keys above.
+  fleetExternalToken: "changeme-fleet-external-shared-token"
+  # Pre-shared bearer for the proxy's internal gRPC server (proxy.secretEnv's
+  # PROXY_GRPC_AUTH_TOKEN, validated by GrpcAuthInterceptor in
+  # proxy/apps/proxy_server/grpc_server.py). Left empty on purpose:
+  # templates/secret.yaml auto-generates a 64-char random value when this is
+  # unset (kept stable across `helm upgrade` via `lookup` — see
+  # waddleai.proxyGrpcAuthToken in _helpers.tpl), so a fresh install never
+  # hits CreateContainerConfigError. Set explicitly to pin/rotate it (e.g.
+  # beta/prod supplying a value from External Secrets Operator), or set
+  # secrets.manage: false and provide the whole waddleai-secrets Secret
+  # externally, including this key.
+  proxyGrpcAuthToken: ""
+  # Bootstrap admin password (management, ADMIN_INITIAL_PASSWORD). Empty by
+  # design — NOT auto-generated like the keys above. Leaving it unset lets
+  # services/management/app/extensions.py's own fail-closed random-password
+  # path run instead (see templates/secret.yaml). Set explicitly via
+  # --set-string secrets.adminInitialPassword=... before first install.
+  adminInitialPassword: ""
+  # License key (management + proxy, LICENSE_KEY). Empty by default =
+  # community tier — see templates/secret.yaml.
+  licenseKey: ""
+  # Credential encryption key (management only, CREDENTIAL_ENCRYPTION_KEY).
+  # Left empty so templates/secret.yaml generates-and-keeps-stable via
+  # waddleai.credentialEncryptionKey (_helpers.tpl) — NEVER set this to a
+  # fresh value after go-live; rotating it bricks every stored credential.
+  # Set explicitly only to pin/restore a known value (e.g. disaster
+  # recovery, or External Secrets Operator supplying it in beta/prod).
+  credentialEncryptionKey: ""
 
-# Ollama GPU Inference Engine
-# Deployed as DaemonSet on nodes labeled gpu=true (e.g. svr01, svr02)
-# Models are shared via a ReadWriteMany PVC — pulled once, served from all GPU nodes
+# Alembic database migration Job (templates/migration-job.yaml) — runs
+# `alembic upgrade head` from the management image as a pre-install,
+# pre-upgrade Helm hook, ahead of the management Deployment's own rollout.
+# See services/management/app/extensions.py for why this is still needed
+# even with migrations.enabled: init_extensions() only creates the legacy
+# PyDAL bootstrap schema + default data (idempotent, safe on every pod
+# start); the newer SQLAlchemy-model tables (content filter, memory scope,
+# fleet, integrations, security v2 — services/management/alembic/versions/)
+# are Alembic-only and are never created by application startup code.
+migrations:
+  enabled: true
+  activeDeadlineSeconds: 300
+  backoffLimit: 3
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# Ollama GPU Inference Engine (spec §10.2)
+# Deployed as a DaemonSet on nodes labeled gpu=true by default (mode:
+# daemonset), or as a fixed-replica Deployment across the same node label
+# for mixed-GPU clusters (mode: pool — see ollama.pool below and
+# templates/ollama-deployment.yaml). Models are shared via a ReadWriteMany
+# PVC — pulled once, served from all GPU nodes.
 ollama:
   enabled: false
+
+  # daemonset (default) | pool — see templates/ollama-daemonset.yaml vs
+  # templates/ollama-deployment.yaml. Exactly one of the two renders.
+  mode: daemonset
+
+  # Only consumed when mode: pool.
+  pool:
+    replicaCount: 2
+    strategy: RollingUpdate
+
+  # ghcr.io/penguintechinc/waddleai/ollama — hardened image (images/ollama/,
+  # plan Task 13): digest-pinned upstream binary re-hosted on a minimal,
+  # non-root, (on the `hardened` tag) shell-less Debian runtime. Two tags
+  # published: "hardened" (this default — no shell, used everywhere the
+  # chart deploys Ollama) and "debug" (adds a shell for manual `kubectl exec`
+  # troubleshooting only; never referenced by any template).
+  # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta (PenguinTech-owned image)
   image:
-    repository: ollama/ollama
-    tag: "0.7.1"
-    digest: "sha256:de659b95818c5ea17dc287a2e4f147f81e202d84f1dc4ad3f256c53fb81e8dd0"
+    repository: ghcr.io/penguintechinc/waddleai/ollama
+    tag: "hardened"
     pullPolicy: IfNotPresent
 
+  # NOT configurable — see templates/ollama-service.yaml. Field kept for
+  # visibility only; the template hardcodes ClusterIP (spec §10.3).
   service:
-    type: ClusterIP
     port: 11434
     targetPort: 11434
 
@@ -503,8 +703,9 @@ llamacpp:
     digest: "sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
     pullPolicy: IfNotPresent
 
+  # type is NOT configurable — see templates/llamacpp-service.yaml, which
+  # hardcodes ClusterIP (spec §10.3). Field kept for visibility only.
   service:
-    type: ClusterIP
     port: 8080
     targetPort: 8080
 
@@ -620,3 +821,122 @@ intel-gpu-plugin:
   namespace: kube-system
   nodeSelector: {}
   sharedDevNum: 1
+
+# ---------------------------------------------------------------------------
+# Tetragon runtime-security TracingPolicies + Kubernetes admission policies
+# (platform spec §12.2). ON by default, each protection class independently
+# switchable via its own values toggle. Every CRD-emitting template below is
+# guarded by BOTH its values toggle AND a live capability check
+# (`.Capabilities.APIVersions.Has`), mirroring the cilium-reconciler branch's
+# pattern above (cilium-network-policy.yaml), so a cluster without
+# Tetragon/the VAP feature-gate still renders every other template cleanly
+# and simply skips these objects (§12.3) instead of failing `helm install`.
+# `forceRender: true` bypasses the live capability check — only meant for
+# offline `helm template` golden-file rendering (CI), never set in a real
+# values-*.yaml that gets `helm install`ed against a live cluster.
+tetragon:
+  enabled: true
+  forceRender: false
+  exec:
+    # ENFORCED allowlist of each targeted component's own runtime binaries —
+    # not observe-only (house security mandate: an allowlist that only logs
+    # is the failure mode this policy exists to prevent). One
+    # TracingPolicyNamespaced per component so the allowlist stays scoped to
+    # that pod's actual process inventory (a Python service's allowed
+    # binaries are not ollama's) rather than one policy loose enough to
+    # cover everyone and therefore covering no one. `mode: enforce` kills
+    # any exec outside `allowedExecs`; `mode: observe` logs only.
+    enabled: true
+    components:
+      # AIProxy — this repo's own image (proxy/Dockerfile). System-wide pip
+      # install puts console-script binaries under /usr/local/bin; full
+      # binary inventory known. Enforced by default — spec §12.2 names
+      # AIProxy explicitly as the primary exec-guard target.
+      proxy:
+        enabled: true
+        mode: enforce
+        allowedExecs:
+          - /usr/local/bin/python3
+          - /usr/local/bin/hypercorn
+      # Management — this repo's own image (services/management/Dockerfile),
+      # installed into a venv at /opt/venv.
+      management:
+        enabled: true
+        mode: enforce
+        allowedExecs:
+          - /opt/venv/bin/python3
+          - /opt/venv/bin/hypercorn
+      # Ollama — third-party vendor image (ollama/ollama). Binary path is
+      # believed stable (/bin/ollama) but not verified against a live
+      # cluster by this branch, and the model-pull initContainer execs
+      # /bin/sh (the pod selector matches the whole pod, not per-container).
+      # Default observe until confirmed in kind/beta; flip to enforce once
+      # validated.
+      ollama:
+        enabled: true
+        mode: observe
+        allowedExecs:
+          - /bin/ollama
+          - /bin/sh
+      # llama.cpp server — third-party vendor image; same caveat as ollama
+      # (curl-based model-download initContainer shares the pod).
+      llamacpp:
+        enabled: true
+        mode: observe
+        allowedExecs:
+          - /llama-server
+          - /bin/sh
+          - /usr/bin/curl
+  egress:
+    # Observe/flag AIProxy egress + unexpected file-write activity (spec
+    # §12.2). FQDN allow-listing to provider endpoints is the
+    # cilium-reconciler CNP's job (§12.1) — this policy observes and logs
+    # only; it does not duplicate that allow-list, and does not yet
+    # implement CIDR-scoped hard blocking (tracked follow-up, not silently
+    # dropped).
+    enabled: true
+    flagUnexpectedFileWrites: true
+
+# Kubernetes admission policies enforcing pod-security baseline on WaddleAI
+# workloads (spec §12.2): ValidatingAdmissionPolicy core, Kyverno optional
+# (additive-only per house rule — never the default posture). Each CEL check
+# individually toggled. `validationActions` defaults to `Warn`
+# (non-blocking) chart-wide: an implementation-time audit found
+# postgres/valkey containers ship with no container-level `securityContext`
+# at all today (only pod-level), and several containers still set
+# `readOnlyRootFilesystem: false` — defaulting straight to `Deny` would
+# reject those pods on every `helm install`. `Warn` surfaces every violation
+# (visible on `kubectl apply`/`helm install` output) with zero blast radius;
+# flip to `Deny` once the flagged workloads are hardened (tracked follow-up,
+# not silently dropped).
+admissionPolicies:
+  enabled: true
+  forceRender: false
+  failurePolicy: Fail
+  validationActions: [Warn]
+  validatingAdmissionPolicy:
+    enabled: true
+    enforceNonRoot: true              # already compliant: podSecurityContext.runAsNonRoot=true chart-wide
+    enforceReadOnlyRootFs: false      # webui/management/postgres/valkey/ollama set false today; enable once hardened
+    enforceDropAllCaps: true          # flags postgres/valkey (no container securityContext yet) under Warn
+    enforceNoPrivilegeEscalation: true
+    enforceDigestPinnedImages: false  # alpha/beta intentionally use mutable tags (house pinning rule); enable in a prod values file
+  kyverno:
+    enabled: false   # optional alternative engine; only renders if opted in AND its CRDs are present
+
+# Pod Security Admission namespace labels (spec §12.2 "restricted" baseline).
+# `audit`/`warn` default to `restricted` everywhere (non-blocking, surfaces
+# every violation via the API audit log / kubectl warnings). `enforce`
+# defaults to `baseline` here (this chart's own containers — proxy,
+# management, webui, postgres, valkey, plus the wait-for-postgres/valkey
+# initContainers — are now `seccompProfile: RuntimeDefault` +
+# drop-ALL-capabilities compliant, but `restricted` is only actually
+# reachable in environments free of third-party subchart / hostPath gaps).
+# values-alpha.yaml overrides to `restricted` (no ollama hostPath, no
+# gpu-operator/node-feature-discovery there). See values-beta.yaml for why
+# beta stays lower.
+podSecurityAdmission:
+  enabled: true
+  enforce: baseline
+  audit: restricted
+  warn: restricted

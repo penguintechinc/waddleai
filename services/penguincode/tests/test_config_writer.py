@@ -7,7 +7,13 @@ OpenCode configuration files.
 import json
 
 import pytest
-from penguincode_cli.client.config_writer import write_agent_prompts, write_agents_md, write_opencode_json, write_skills
+
+from penguincode_cli.client.config_writer import (
+    write_agent_prompts,
+    write_agents_md,
+    write_opencode_json,
+    write_skills,
+)
 
 
 @pytest.fixture

@@ -1,6 +1,4 @@
-"""
-WaddleAI Management API v1 - Ollama Deployment Management Endpoints
-"""
+"""WaddleAI Management API v1 - Ollama Deployment Management Endpoints."""
 
 import asyncio
 from datetime import datetime
@@ -8,16 +6,18 @@ from datetime import datetime
 import yaml
 from quart import Response, current_app, jsonify, request
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
 
 
 @api_v1_bp.route("/ollama/deployments", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def list_ollama_deployments():
-    """List all Ollama deployments"""
+    """List all Ollama deployments."""
     if not current_app.config.get("ENABLE_OLLAMA_MANAGEMENT", True):
         return jsonify({"error": "Ollama management is disabled"}), 403
 
@@ -39,7 +39,9 @@ async def list_ollama_deployments():
                 "health_status": deployment.health_status,
                 "model_count": model_count,
                 "auto_start": deployment.auto_start,
-                "last_health_check": deployment.last_health_check.isoformat() if deployment.last_health_check else None,
+                "last_health_check": deployment.last_health_check.isoformat()
+                if deployment.last_health_check
+                else None,
                 "created_at": deployment.created_at.isoformat() if deployment.created_at else None,
             }
         )
@@ -49,9 +51,9 @@ async def list_ollama_deployments():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def get_ollama_deployment(deployment_id):
-    """Get Ollama deployment details"""
+    """Get Ollama deployment details."""
 
     def _fetch():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -77,7 +79,9 @@ async def get_ollama_deployment(deployment_id):
             "status": deployment.status,
             "health_status": deployment.health_status,
             "auto_start": deployment.auto_start,
-            "last_health_check": deployment.last_health_check.isoformat() if deployment.last_health_check else None,
+            "last_health_check": deployment.last_health_check.isoformat()
+            if deployment.last_health_check
+            else None,
             "created_at": deployment.created_at.isoformat() if deployment.created_at else None,
             "models": [
                 {
@@ -95,9 +99,9 @@ async def get_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def create_ollama_deployment():
-    """Create a new Ollama deployment"""
+    """Create a new Ollama deployment."""
     data = await request.get_json()
 
     if not data:
@@ -158,9 +162,9 @@ async def create_ollama_deployment():
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["PUT"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def update_ollama_deployment(deployment_id):
-    """Update Ollama deployment"""
+    """Update Ollama deployment."""
     data = await request.get_json()
 
     if not data:
@@ -176,7 +180,10 @@ async def update_ollama_deployment(deployment_id):
 
         if "name" in data:
             existing = (
-                db((db.ollama_deployments.name == data["name"]) & (db.ollama_deployments.id != deployment_id))
+                db(
+                    (db.ollama_deployments.name == data["name"])
+                    & (db.ollama_deployments.id != deployment_id)
+                )
                 .select()
                 .first()
             )
@@ -204,9 +211,13 @@ async def update_ollama_deployment(deployment_id):
                 updated = db(db.ollama_deployments.id == deployment_id).select().first()
                 if updated.deployment_type == "docker":
                     docker_compose_config = generate_docker_compose_config(
-                        name=updated.name, gpu_config=updated.gpu_config, resource_limits=updated.resource_limits
+                        name=updated.name,
+                        gpu_config=updated.gpu_config,
+                        resource_limits=updated.resource_limits,
                     )
-                    db(db.ollama_deployments.id == deployment_id).update(docker_compose_config=docker_compose_config)
+                    db(db.ollama_deployments.id == deployment_id).update(
+                        docker_compose_config=docker_compose_config
+                    )
 
             db.commit()
 
@@ -224,9 +235,9 @@ async def update_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def delete_ollama_deployment(deployment_id):
-    """Delete Ollama deployment"""
+    """Delete Ollama deployment."""
 
     def _delete():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -253,12 +264,14 @@ async def delete_ollama_deployment(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/start", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def start_ollama_deployment(deployment_id):
-    """Start Ollama deployment (orchestrated mode only)"""
+    """Start Ollama deployment (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
     if mode == "manual":
-        return jsonify({"error": "Orchestrated mode is disabled. Use docker-compose export instead."}), 400
+        return jsonify(
+            {"error": "Orchestrated mode is disabled. Use docker-compose export instead."}
+        ), 400
 
     def _start():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -283,14 +296,20 @@ async def start_ollama_deployment(deployment_id):
     if result == "invalid_type":
         return jsonify({"error": "Only docker deployments can be started via API"}), 400
 
-    return jsonify({"deployment_id": deployment_id, "status": "running", "message": "Deployment started successfully"})
+    return jsonify(
+        {
+            "deployment_id": deployment_id,
+            "status": "running",
+            "message": "Deployment started successfully",
+        }
+    )
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/stop", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def stop_ollama_deployment(deployment_id):
-    """Stop Ollama deployment (orchestrated mode only)"""
+    """Stop Ollama deployment (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
     if mode == "manual":
         return jsonify({"error": "Orchestrated mode is disabled"}), 400
@@ -312,14 +331,20 @@ async def stop_ollama_deployment(deployment_id):
     if result == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
 
-    return jsonify({"deployment_id": deployment_id, "status": "stopped", "message": "Deployment stopped successfully"})
+    return jsonify(
+        {
+            "deployment_id": deployment_id,
+            "status": "stopped",
+            "message": "Deployment stopped successfully",
+        }
+    )
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/restart", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def restart_ollama_deployment(deployment_id):
-    """Restart Ollama deployment (orchestrated mode only)"""
+    """Restart Ollama deployment (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
     if mode == "manual":
         return jsonify({"error": "Orchestrated mode is disabled"}), 400
@@ -342,15 +367,19 @@ async def restart_ollama_deployment(deployment_id):
         return jsonify({"error": "Deployment not found"}), 404
 
     return jsonify(
-        {"deployment_id": deployment_id, "status": "running", "message": "Deployment restarted successfully"}
+        {
+            "deployment_id": deployment_id,
+            "status": "running",
+            "message": "Deployment restarted successfully",
+        }
     )
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/health", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def check_ollama_health(deployment_id):
-    """Health check for Ollama deployment"""
+    """Health check for Ollama deployment."""
     from ...services.ollama_manager import OllamaDeploymentManager
 
     def _check():
@@ -381,29 +410,37 @@ async def check_ollama_health(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/logs", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def get_ollama_logs(deployment_id):
-    """Get Ollama deployment logs (orchestrated mode only)"""
+    """Get Ollama deployment logs (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
     if mode == "manual":
         return jsonify({"error": "Orchestrated mode is disabled"}), 400
 
     lines = request.args.get("lines", 100, type=int)
 
-    deployment = await asyncio.to_thread(lambda: db(db.ollama_deployments.id == deployment_id).select().first())
+    deployment = await asyncio.to_thread(
+        lambda: db(db.ollama_deployments.id == deployment_id).select().first()
+    )
 
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
     # TODO: Implement Docker API to get logs
-    return jsonify({"deployment_id": deployment_id, "lines": lines, "logs": "Log retrieval not yet implemented"})
+    return jsonify(
+        {
+            "deployment_id": deployment_id,
+            "lines": lines,
+            "logs": "Log retrieval not yet implemented",
+        }
+    )
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models/pull", methods=["POST"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def pull_ollama_model(deployment_id):
-    """Pull a model to Ollama deployment"""
+    """Pull a model to Ollama deployment."""
     from ...services.ollama_manager import OllamaDeploymentManager
 
     def _check_deployment():
@@ -443,9 +480,9 @@ async def pull_ollama_model(deployment_id):
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models/<model_name>", methods=["DELETE"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def remove_ollama_model(deployment_id, model_name):
-    """Remove a model from Ollama deployment"""
+    """Remove a model from Ollama deployment."""
 
     def _remove():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -454,7 +491,10 @@ async def remove_ollama_model(deployment_id, model_name):
             return "deployment_not_found"
 
         model = (
-            db((db.ollama_models.deployment_id == deployment_id) & (db.ollama_models.model_name == model_name))
+            db(
+                (db.ollama_models.deployment_id == deployment_id)
+                & (db.ollama_models.model_name == model_name)
+            )
             .select()
             .first()
         )
@@ -475,15 +515,23 @@ async def remove_ollama_model(deployment_id, model_name):
     if result == "model_not_found":
         return jsonify({"error": "Model not found"}), 404
 
-    return jsonify({"deployment_id": deployment_id, "model": model_name, "message": "Model removed successfully"})
+    return jsonify(
+        {
+            "deployment_id": deployment_id,
+            "model": model_name,
+            "message": "Model removed successfully",
+        }
+    )
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/docker-compose", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_docker_compose(deployment_id):
-    """Export docker-compose.yml for Ollama deployment"""
-    deployment = await asyncio.to_thread(lambda: db(db.ollama_deployments.id == deployment_id).select().first())
+    """Export docker-compose.yml for Ollama deployment."""
+    deployment = await asyncio.to_thread(
+        lambda: db(db.ollama_deployments.id == deployment_id).select().first()
+    )
 
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
@@ -501,13 +549,15 @@ async def export_docker_compose(deployment_id):
     return Response(
         compose_yaml,
         mimetype="text/yaml",
-        headers={"Content-Disposition": f"attachment; filename=ollama-{deployment.name}-compose.yml"},
+        headers={
+            "Content-Disposition": f"attachment; filename=ollama-{deployment.name}-compose.yml"
+        },
     )
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/k8s-manifest", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_k8s_manifest(deployment_id):
     """Export Kubernetes manifest for Ollama deployment.
 
@@ -549,7 +599,7 @@ async def export_k8s_manifest(deployment_id):
 
 
 def generate_docker_compose_config(name: str, gpu_config: dict, resource_limits: dict) -> dict:
-    """Generate docker-compose configuration for Ollama"""
+    """Generate docker-compose configuration for Ollama."""
     gpu_count = gpu_config.get("count", 0)
     port = 11434  # Default Ollama port
 
@@ -574,7 +624,11 @@ def generate_docker_compose_config(name: str, gpu_config: dict, resource_limits:
             "resources": {
                 "reservations": {
                     "devices": [
-                        {"driver": gpu_config.get("driver", "nvidia"), "count": gpu_count, "capabilities": ["gpu"]}
+                        {
+                            "driver": gpu_config.get("driver", "nvidia"),
+                            "count": gpu_count,
+                            "capabilities": ["gpu"],
+                        }
                     ]
                 }
             }
@@ -584,7 +638,7 @@ def generate_docker_compose_config(name: str, gpu_config: dict, resource_limits:
 
 
 def generate_k8s_manifest(name: str, gpu_config: dict, resource_limits: dict) -> list:
-    """Generate Kubernetes manifests for Ollama"""
+    """Generate Kubernetes manifests for Ollama."""
     gpu_count = gpu_config.get("count", 0)
 
     deployment = {
@@ -611,7 +665,12 @@ def generate_k8s_manifest(name: str, gpu_config: dict, resource_limits: dict) ->
                             },
                         }
                     ],
-                    "volumes": [{"name": "ollama-data", "persistentVolumeClaim": {"claimName": f"ollama-{name}-pvc"}}],
+                    "volumes": [
+                        {
+                            "name": "ollama-data",
+                            "persistentVolumeClaim": {"claimName": f"ollama-{name}-pvc"},
+                        }
+                    ],
                 },
             },
         },
@@ -619,13 +678,18 @@ def generate_k8s_manifest(name: str, gpu_config: dict, resource_limits: dict) ->
 
     # Add GPU resources
     if gpu_count > 0:
-        deployment["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] = gpu_count
+        deployment["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"][
+            "nvidia.com/gpu"
+        ] = gpu_count
 
     service = {
         "apiVersion": "v1",
         "kind": "Service",
         "metadata": {"name": f"ollama-{name}", "namespace": "waddleai"},
-        "spec": {"selector": {"app": f"ollama-{name}"}, "ports": [{"port": 11434, "targetPort": 11434}]},
+        "spec": {
+            "selector": {"app": f"ollama-{name}"},
+            "ports": [{"port": 11434, "targetPort": 11434}],
+        },
     }
 
     pvc = {
@@ -640,10 +704,9 @@ def generate_k8s_manifest(name: str, gpu_config: dict, resource_limits: dict) ->
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/metallb-service", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_metallb_service(deployment_id):
-    """
-    Export MetalLB-compatible LoadBalancer Service for Ollama deployment.
+    """Export MetalLB-compatible LoadBalancer Service for Ollama deployment.
 
     Returns a single LoadBalancer Service with model annotations.
     """
@@ -669,16 +732,17 @@ async def export_metallb_service(deployment_id):
     return Response(
         service_yaml,
         mimetype="text/yaml",
-        headers={"Content-Disposition": f"attachment; filename=ollama-{deployment.name}-metallb.yml"},
+        headers={
+            "Content-Disposition": f"attachment; filename=ollama-{deployment.name}-metallb.yml"
+        },
     )
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/metallb-model-services", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_metallb_model_services(deployment_id):
-    """
-    Export individual MetalLB Services for each model on deployment.
+    """Export individual MetalLB Services for each model on deployment.
 
     This creates separate LoadBalancer IPs for each model, enabling
     direct model-to-IP routing:
@@ -704,19 +768,19 @@ async def export_metallb_model_services(deployment_id):
     if not services_yaml:
         return jsonify({"error": "No models assigned to deployment"}), 400
 
+    filename = f"ollama-{deployment.name}-models-metallb.yml"
     return Response(
         services_yaml,
         mimetype="text/yaml",
-        headers={"Content-Disposition": f"attachment; filename=ollama-{deployment.name}-models-metallb.yml"},
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
 @api_v1_bp.route("/ollama/export/metallb-all", methods=["GET"])
 @require_auth
-@require_role("admin")
+@require_scope(Permission.OLLAMA_ADMIN)
 async def export_all_metallb_services():
-    """
-    Export MetalLB configuration for all Ollama deployments.
+    """Export MetalLB configuration for all Ollama deployments.
 
     Returns complete YAML with model-specific LoadBalancer Services
     for all active deployments.

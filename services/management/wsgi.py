@@ -1,6 +1,4 @@
-"""
-WaddleAI Management Service - WSGI Entry Point
-"""
+"""WaddleAI Management Service - WSGI Entry Point."""
 
 import os
 
@@ -25,4 +23,8 @@ else:
 
 if __name__ == "__main__":
     # Development server only
-    app.run(host="0.0.0.0", port=8001, debug=(config_name == "development"))
+    app.run(
+        host="0.0.0.0",  # noqa: S104 # nosec B104 -- dev-server branch only; container listen address, reachability governed by Service + CiliumNetworkPolicy
+        port=8001,
+        debug=(config_name == "development"),
+    )

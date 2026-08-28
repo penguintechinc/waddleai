@@ -1,35 +1,78 @@
-[tool.black]
-line-length = 120
-exclude = '''
-/(
-    \.git
-  | \.venv
-  | venv
-  | __pycache__
-  | node_modules
-  | grpc_proto
-  | grpc/proto
-  | .*_pb2\.py
-  | .*_pb2_grpc\.py
-)/
-'''
-
-[tool.isort]
-profile = "black"
-line_length = 120
-skip_glob = [
-    "*/.venv/*",
-    "*/venv/*",
-    "*/__pycache__/*",
-    "*/node_modules/*",
-    "*/grpc_proto/*",
-    "*/grpc/proto/*",
+[tool.ruff]
+target-version = "py313"
+# Exclusions below apply even when files are passed explicitly on the command
+# line, which is how pre-commit invokes ruff. Without this, `make lint` and the
+# commit hook disagreed: the gate skipped vendored services/penguincode while
+# the hook still linted it, so a clean gate could not produce a clean commit.
+force-exclude = true
+line-length = 100
+extend-exclude = [
+    "grpc_proto",
+    "grpc/proto",
     "*_pb2.py",
     "*_pb2_grpc.py",
+    # Vendored upstream, not maintained here. Excluded from every scan
+    # (bandit, gitleaks, shellcheck, hadolint) for the same reason; ruff was
+    # the odd one out, so `make lint` reported 283 errors from code this repo
+    # does not own while first-party code was already clean.
+    "services/penguincode",
+    # Build artifacts and nested checkouts, not source.
+    ".venv",
+    ".worktrees",
 ]
 
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "D", "UP", "B", "ASYNC", "S"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+# Carried forward from the removed .flake8 per-file-ignores: legitimate
+# sys.path manipulation before imports in entry points, and re-export
+# wildcard imports in package __init__ files.
+[tool.ruff.lint.per-file-ignores]
+# ruff's isort rule wants a blank line between the two first-party import
+# groups nested inside this file's `try:` block, and `ruff format` deletes it
+# again on the very next pass -- the two rules fight indefinitely, so no commit
+# can satisfy both. The imports are correctly grouped and sorted; only the
+# separating blank line is contested.
+"tests/unit/test_request_router.py" = ["I001"]
+"services/management/apps/*/main.py" = ["E402"]
+"proxy/apps/*/main.py" = ["E402"]
+"examples/*.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+"**/scripts/*.py" = ["E402"]
+"services/management/alembic/env.py" = ["E402"]
+"services/management/app/api/v1/__init__.py" = ["F401", "E402"]
+"services/management/app/__init__.py" = ["F401"]
+"services/penguincode/penguincode_cli/agents/base.py" = ["E402"]
+"tests/conftest.py" = ["E402"]
+"**/grpc_proto/*/__init__.py" = ["F401", "F403"]
+"**/grpc/proto/*/__init__.py" = ["F401", "F403"]
+# S101 (flake8-bandit "use of assert") exists because `assert` is stripped under
+# `python -O`, which makes it unsafe to enforce invariants in production code.
+# In a test suite asserting IS the contract, so the rule only ever fires as
+# noise — it accounted for 113 of the 180 findings on the first new test file
+# added after ruff was adopted, effectively blocking new tests. Scoped to tests
+# only; production code still gets the full S ruleset. Docstring (D) rules are
+# deliberately NOT exempted here — they are mandatory per PEP 257.
+"tests/**/*.py" = ["S101"]
+
+# explicit_package_bases resolves module names from the invocation cwd
+# (mypy_path unset -> defaults to ".") instead of mypy's implicit walk-up
+# algorithm. Without it, "proxy/apps/proxy_server/..." (no __init__.py in
+# proxy/ or proxy/apps/) is resolved to two different module names depending
+# on whether mypy reaches the file by direct path scan or by following an
+# import statement, and mypy refuses to run at all
+# ("Source file found twice under different module names"). Same run
+# previously failed harder on services/penguincode/server/app.py vs
+# services/management/app/__init__.py ("Duplicate module named 'app'") --
+# that one is excluded outright below since penguincode is vendored upstream
+# code (see the matching ruff/bandit exclusions) with its own module
+# namespace, not a config knob to reconcile against first-party code.
 [tool.mypy]
 ignore_missing_imports = true
+explicit_package_bases = true
 exclude = [
     ".venv",
     "venv",
@@ -37,4 +80,9 @@ exclude = [
     "grpc/proto",
     ".*_pb2\\.py",
     ".*_pb2_grpc\\.py",
+    # Vendored upstream, not maintained here -- see the matching ruff
+    # extend-exclude comment above and the bandit --exclude in the Makefile.
+    "^services/penguincode/",
+    "^\\.worktrees/",
+    "node_modules",
 ]

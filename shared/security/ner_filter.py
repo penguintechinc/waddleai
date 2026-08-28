@@ -1,12 +1,13 @@
-"""
-NER-based PII entity detection.
+"""NER-based PII entity detection.
 
 Primary backend: Microsoft Presidio + spaCy (install presidio-analyzer + a spaCy model).
 Fallback backend: HuggingFace transformers NER pipeline (uses existing torch/transformers deps).
 If neither is available, the NER tier is skipped and a warning is logged once.
 """
 
+import importlib.util
 import logging
+import os
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ ENTITY_CONFIG: dict[str, tuple[str, float]] = {
     "IP_ADDRESS": ("log", 0.80),
     "URL": ("log", 0.55),
     # GDPR special categories — log, auditor decides block vs allow
-    "NRP": ("log", 0.72),      # Nationality / Religion / Political group
+    "NRP": ("log", 0.72),  # Nationality / Religion / Political group
     "DATE_TIME": ("log", 0.55),
     "ORG": ("log", 0.50),
 }
@@ -69,20 +70,54 @@ _HF_LABEL_MAP: dict[str, str] = {
 }
 
 
+# Per-worker-process cache for the ProcessPoolExecutor path (§3.5). Each
+# worker process gets its own NERFilter instance, lazily built on first use
+# (spaCy/Presidio model load is slow -- happens once per worker, not once
+# per request).
+_worker_filter: "NERFilter | None" = None
+
+
+def ner_analyze(text: str, language: str = "en") -> list[dict]:
+    """Module-level, picklable NER worker for `ProcessPoolExecutor` (§3.5).
+
+    Tier-3 NER must never run on the event loop -- this function is the
+    submission target for `content_filter.py`'s shared process pool. Returns
+    plain dicts (not `NEREntity`) so the call contract has zero surprises
+    crossing the process boundary; results are reconstructed by the caller.
+    """
+    import os
+
+    global _worker_filter
+    if _worker_filter is None:
+        spacy_model = os.getenv("NER_SPACY_MODEL", "en_core_web_lg")
+        _worker_filter = NERFilter(spacy_model=spacy_model)
+
+    entities = _worker_filter.analyze(text, language=language)
+    return [
+        {
+            "entity_type": e.entity_type,
+            "text": e.text,
+            "start": e.start,
+            "end": e.end,
+            "score": e.score,
+        }
+        for e in entities
+    ]
+
+
 @dataclass(slots=True)
 class NEREntity:
     """Single entity detected by NER model."""
 
-    entity_type: str   # Normalized entity type key from ENTITY_CONFIG
-    text: str          # Matched text span
-    start: int         # Character start offset in source text
-    end: int           # Character end offset in source text
-    score: float       # Raw model confidence (0.0–1.0)
+    entity_type: str  # Normalized entity type key from ENTITY_CONFIG
+    text: str  # Matched text span
+    start: int  # Character start offset in source text
+    end: int  # Character end offset in source text
+    score: float  # Raw model confidence (0.0–1.0)
 
 
 class NERFilter:
-    """
-    PII entity detection using NER models.
+    """PII entity detection using NER models.
 
     Initialized once at startup (model load is slow).
     The analyze() method is synchronous and CPU-bound — callers should wrap
@@ -91,6 +126,7 @@ class NERFilter:
     """
 
     def __init__(self, spacy_model: str = "en_core_web_lg") -> None:
+        """Select and lazily init the best available NER backend (Presidio, then transformers)."""
         self._analyzer = None
         self._hf_ner = None
         self._available = False
@@ -109,6 +145,28 @@ class NERFilter:
             )
 
     def _init_presidio(self, spacy_model: str) -> None:
+        # Check the model is already importable BEFORE building the engine.
+        # NlpEngineProvider.create_engine() will try to fetch a missing spaCy
+        # model (en_core_web_lg is ~600MB) rather than failing fast, so on a
+        # machine without it this turns into a long download -- or an
+        # indefinite stall where egress is blocked. CI never installs a spaCy
+        # model (it is in no requirements file and there is no `spacy
+        # download` step), which is exactly how the unit-test job came to hang
+        # at the first test constructing a ContentFilter.
+        #
+        # Absent model => fall through to the documented degradation (regex +
+        # custom-rule tiers) without a network call. Install the model
+        # deliberately to enable this backend:
+        #     python -m spacy download en_core_web_lg
+        if importlib.util.find_spec(spacy_model) is None:
+            logger.warning(
+                "spaCy model %r is not installed; skipping the Presidio backend rather "
+                "than triggering a model download. Run `python -m spacy download %s` to "
+                "enable it.",
+                spacy_model,
+                spacy_model,
+            )
+            return
         try:
             from presidio_analyzer import AnalyzerEngine
             from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -126,15 +184,40 @@ class NERFilter:
             self._available = True
             self._mode = "presidio"
             logger.info(f"NER filter initialized: Presidio + spaCy ({spacy_model})")
-        except Exception as e:
-            logger.warning(
-                f"Presidio NER init failed ({e}). "
-                "Trying transformers fallback."
-            )
+        except (Exception, SystemExit) as e:
+            # SystemExit is deliberate and load-bearing, not defensive padding.
+            # spaCy loads models through wasabi, which calls sys.exit() rather
+            # than raising when a model is not installed. SystemExit derives
+            # from BaseException, so a bare `except Exception` does NOT catch
+            # it: the interpreter dies instead of falling through to the
+            # documented "NER tier will be skipped" degradation below. spaCy
+            # models are not pip-installable alongside the spacy package, so a
+            # missing en_core_web_lg is the normal state of any environment
+            # that has not explicitly run `python -m spacy download` -- which
+            # made this an unhandled startup crash, not an edge case.
+            logger.warning(f"Presidio NER init failed ({e}). Trying transformers fallback.")
             if _TRANSFORMERS_NER_AVAILABLE:
                 self._init_transformers()
 
     def _init_transformers(self) -> None:
+        # hf_pipeline() fetches dslim/bert-base-NER from the HuggingFace Hub on
+        # first use. That is a network call with no timeout, and it does not
+        # fail fast when egress is blocked -- it stalls. CI's unit-test job hit
+        # this deterministically: the first test constructing a ContentFilter
+        # hung until the runner was cancelled, always at the same point.
+        #
+        # Downloading a model is now opt-in. Unset (the default) means: use
+        # Presidio + spaCy if a model is installed, otherwise disable the NER
+        # tier and keep the regex and custom-rule tiers running. That is the
+        # already-documented degradation path, reached without a network call.
+        # Deployments that want the transformers backend set
+        # WADDLEAI_NER_ALLOW_DOWNLOAD=1 and pre-warm the model.
+        if os.getenv("WADDLEAI_NER_ALLOW_DOWNLOAD") != "1":
+            logger.warning(
+                "Transformers NER backend needs a model download; skipping because "
+                "WADDLEAI_NER_ALLOW_DOWNLOAD is not set. NER tier disabled."
+            )
+            return
         try:
             from transformers import pipeline as hf_pipeline
 
@@ -145,13 +228,9 @@ class NERFilter:
             )
             self._available = True
             self._mode = "transformers"
-            logger.info(
-                "NER filter initialized: HuggingFace transformers (dslim/bert-base-NER)"
-            )
+            logger.info("NER filter initialized: HuggingFace transformers (dslim/bert-base-NER)")
         except Exception as e:
-            logger.warning(
-                f"Transformers NER init failed ({e}). NER tier disabled."
-            )
+            logger.warning(f"Transformers NER init failed ({e}). NER tier disabled.")
 
     @property
     def available(self) -> bool:
@@ -164,8 +243,7 @@ class NERFilter:
         return self._mode
 
     def analyze(self, text: str, language: str = "en") -> list[NEREntity]:
-        """
-        Run NER on text and return detected entities.
+        """Run NER on text and return detected entities.
 
         Synchronous and CPU-bound — wrap in run_in_executor when calling
         from async context.
@@ -176,6 +254,7 @@ class NERFilter:
 
         Returns:
             List of NEREntity objects, empty list if NER unavailable or on error
+
         """
         if not self._available:
             return []

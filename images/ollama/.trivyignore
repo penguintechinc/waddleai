@@ -1,0 +1,126 @@
+# Trivy ignore list for ghcr.io/penguintechinc/waddleai/ollama (hardened + debug).
+#
+# Two independent, unrelated categories of finding are ignored here. Do NOT
+# blanket-carry this file forward on a version/base bump without re-running
+# `trivy image --severity HIGH,CRITICAL ghcr.io/penguintechinc/waddleai/ollama:hardened`
+# (no --ignorefile) to see the live list first.
+#
+# --- 1. Go module CVEs baked into the vendored upstream binary ---------------
+# `gobinary`-class findings against usr/bin/ollama's embedded Go module build
+# info (golang.org/x/*, stdlib, github.com/buger/jsonparser) — from
+# ollama/ollama:0.32.13's own build, not introduced by this Dockerfile.
+# Fixing these needs either a newer upstream release built with patched Go
+# modules, or a from-source rebuild with a current Go toolchain — the latter
+# is explicitly out of scope for spec §10.2 ("digest-pinned upstream base",
+# not a from-source rebuild).
+CVE-2026-25679
+CVE-2026-25681
+CVE-2026-27136
+CVE-2026-27137
+CVE-2026-27145
+CVE-2026-32280
+CVE-2026-32281
+CVE-2026-32283
+CVE-2026-32285
+CVE-2026-33810
+CVE-2026-33811
+CVE-2026-33814
+CVE-2026-39820
+CVE-2026-39821
+CVE-2026-39822
+CVE-2026-39828
+CVE-2026-39829
+CVE-2026-39830
+CVE-2026-39831
+CVE-2026-39832
+CVE-2026-39835
+CVE-2026-39836
+CVE-2026-42499
+CVE-2026-42504
+CVE-2026-42508
+CVE-2026-46595
+CVE-2026-46597
+CVE-2026-46600
+CVE-2026-46602
+CVE-2026-56852
+
+# Added 2026-08-22 -- same root cause as the block above (still
+# ollama/ollama:0.32.13's vendored `stdlib`/`golang.org/x/mod` build info),
+# newly published/scored since this file was last refreshed. Review by
+# 2026-11-22 or at the next ollama upstream version bump, whichever comes
+# first -- re-run `trivy image --severity HIGH,CRITICAL
+# ghcr.io/penguintechinc/waddleai/ollama:hardened` (no --ignorefile) to see
+# whether a newer 0.32.x/0.33.x release has picked up patched Go modules.
+CVE-2026-33818
+CVE-2026-56853
+CVE-2026-56858
+CVE-2026-56859
+CVE-2026-56860
+CVE-2026-56862
+CVE-2026-56864
+CVE-2026-56865
+
+# --- 2. debian:trixie-slim baseline package CVEs, no fix published yet -------
+# `debian`-class findings against packages already present in the *bare*
+# debian:trixie-slim base (perl-base, util-linux, login, gzip, ncurses,
+# libacl1, etc.) — every one carries Trivy status "affected" or
+# "fix_deferred" with FixedVersion: None, meaning Debian security has not
+# shipped a patched package yet; there is no version of this Dockerfile that
+# can resolve them today.
+#
+# Confirmed NOT a trixie-specific regression: `trivy image debian:bookworm-slim`
+# (the base every other image in this repo — proxy/Dockerfile,
+# services/management/Dockerfile — is built on) carries the identical
+# perl-base/util-linux/CVE-2026-53615 set as of the same scan date, so
+# switching this image's runtime-base to trixie (required for glibc 2.39
+# compat with ollama 0.32.13 — see the Dockerfile's top-of-file comment) did
+# not introduce this exposure; it was already latent in the org's bookworm
+# baseline and simply hadn't been scanned with an intact dpkg database
+# before (see git history on this file — an earlier draft of the `hardened`
+# stage deleted /var/lib/dpkg, which silently blinded Trivy's OS scanner
+# into reporting a false "0 packages" clean result instead of actually being
+# clean; that bug is fixed and this list reflects the real, dpkg-db-intact
+# scan). Worth a follow-up ticket against proxy/management/webui's Trivy job
+# (currently SARIF-only, non-blocking) to confirm whether they carry the same
+# baseline set.
+CVE-2026-53615
+CVE-2026-41992
+CVE-2026-54369
+CVE-2025-69720
+CVE-2026-13221
+CVE-2026-42496
+CVE-2026-57433
+CVE-2026-8376
+CVE-2026-42497
+CVE-2026-48962
+CVE-2026-57432
+CVE-2026-9538
+
+# Added 2026-08-22 -- libssl3t64/openssl CVE-2026-14456 (OpenSSL QUIC server
+# unbounded memory growth, HIGH). Trivy status "fix_deferred": Debian
+# security has explicitly deferred shipping a patch -- Candidate == Installed
+# (3.5.6-1~deb13u2) on both trixie/main and trixie-security as of this build,
+# confirmed via `apt-cache policy libssl3t64 openssl` against this exact base
+# digest, so no version of this Dockerfile can resolve it today. Contrast with
+# the util-linux family (CVE-2026-53612/-53613/-53614), which surfaced in the
+# same scan but DOES have a published fix on trixie-security -- those are
+# pinned explicitly in the Dockerfile instead of ignored here. Review by
+# 2026-11-22 or whenever `apt-cache policy libssl3t64` shows a newer
+# candidate, whichever comes first.
+CVE-2026-14456
+
+# Added 2026-08-27 -- libsqlite3-0 CVE-2026-11822/-11824 (SQLite FTS5
+# crafted-data arbitrary code execution + heap buffer overflow, both HIGH).
+# Newly published/scored since the 08-22 refresh above (Trivy DB pulled
+# 2026-08-27 for this scan, vs 08-22 when the rest of this file was
+# calibrated) -- this is DB drift, not a regression introduced by any change
+# to the Dockerfile. Trivy status "affected", FixedVersion: None for both
+# (confirmed via `trivy image --format json`); `apt-cache policy
+# libsqlite3-0` against this exact runtime-base shows Candidate == Installed
+# (3.46.1-7+deb13u1) on both trixie/main and trixie-security, so Debian
+# security has not shipped a patched package yet -- no version of this
+# Dockerfile can resolve this today. Review by 2026-11-27 or whenever
+# `apt-cache policy libsqlite3-0` shows a newer candidate, whichever comes
+# first.
+CVE-2026-11822
+CVE-2026-11824

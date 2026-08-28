@@ -114,3 +114,58 @@ ingress:
 # Pod Disruption Budget - Disabled for Alpha
 podDisruptionBudget:
   enabled: false
+
+# Cilium integration - Alpha
+# Local K8s (MicroK8s/Docker Desktop) frequently has no Cilium CNI installed
+# at all. Leave the reconciler + RBAC + bootstrap-CNP toggle ON regardless --
+# the `.Capabilities.APIVersions.Has "cilium.io/v2"` guard on the CNP
+# template and the reconciler's own cilium_capabilities() check both degrade
+# cleanly when the CRDs are absent (§12.3), so this is safe to leave on and
+# exercises the same code path alpha would run in beta/prod.
+cilium:
+  enabled: true
+  rbac:
+    create: true
+  networkPolicy:
+    enabled: true
+  rateLimit:
+    enabled: true
+  topology:
+    gatewayNamespace: gateway
+
+# External fleet node auth mode - Alpha (spec §10.3, Q#4, Task 15).
+# fleet.external.enabled stays false (opt-in, inherited from values.yaml) —
+# this only sets which mode applies *if* an operator turns it on, since
+# alpha/dev environments typically lack a private CA for cert-manager
+# client-auth issuance. Set fleet.external.enabled=true + populate
+# fleet.external.nodes to actually use it.
+fleet:
+  external:
+    mode: token
+
+# Tetragon + admission policies - Alpha
+# Dev-friendly: AIProxy/Management exec allowlists relaxed to observe (no
+# enforced kills while iterating locally) and admission failurePolicy
+# relaxed to Ignore. Local MicroK8s frequently lacks the Tetragon/VAP CRDs
+# entirely — the capability guard in each template already no-ops cleanly
+# there; these overrides just make the alpha experience non-disruptive on
+# clusters that DO have the CRDs.
+tetragon:
+  exec:
+    components:
+      proxy:
+        mode: observe
+      management:
+        mode: observe
+
+admissionPolicies:
+  failurePolicy: Ignore
+
+# Pod Security Admission - Alpha
+# Alpha never enables ollama (no hostPath volume) or the GPU-operator
+# subcharts (no node-feature-discovery hostPaths), and this chart's own
+# containers are now seccompProfile/drop-ALL-capabilities compliant (see
+# values.yaml comment) — `restricted` is fully reachable here. `audit`/
+# `warn` were already `restricted`; this raises `enforce` to match.
+podSecurityAdmission:
+  enforce: restricted

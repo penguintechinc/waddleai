@@ -1,13 +1,11 @@
-"""
-WaddleAI Management Server Configuration
-"""
+"""WaddleAI Management Server Configuration."""
 
 import os
 from datetime import timedelta
 
 
 def _build_database_url() -> str:
-    """Build DATABASE_URL from environment variables"""
+    """Build DATABASE_URL from environment variables."""
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return database_url
@@ -49,7 +47,7 @@ def _build_database_url() -> str:
 
 
 class Config:
-    """Base configuration"""
+    """Base configuration."""
 
     # Flask settings
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", ""))
@@ -74,9 +72,9 @@ class Config:
 
     # Flask-Security-Too settings
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "")
-    SECURITY_PASSWORD_HASH = "bcrypt"
-    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"
-    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"
+    SECURITY_PASSWORD_HASH = "bcrypt"  # nosec B105 # noqa: S105 -- hashing ALGORITHM name, not a password
+    SECURITY_TOKEN_AUTHENTICATION_HEADER = "Authorization"  # nosec B105 # noqa: S105 -- HTTP header name, not a credential
+    SECURITY_TOKEN_AUTHENTICATION_KEY = "auth_token"  # nosec B105 # noqa: S105 -- session key NAME, not a token value
     SECURITY_TRACKABLE = True
     SECURITY_SEND_REGISTER_EMAIL = False
     SECURITY_REGISTERABLE = False
@@ -87,28 +85,20 @@ class Config:
     SESSION_TYPE = "redis"
     PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
 
-    # MarchProxy AILB Integration
-    MARCHPROXY_AILB_HOST = os.getenv("MARCHPROXY_AILB_HOST", "localhost")
-    MARCHPROXY_AILB_GRPC_PORT = int(os.getenv("MARCHPROXY_AILB_GRPC_PORT", "50051"))
-    MARCHPROXY_AILB_HTTP_PORT = int(os.getenv("MARCHPROXY_AILB_HTTP_PORT", "8080"))
-    MARCHPROXY_AILB_TLS_ENABLED = os.getenv("MARCHPROXY_AILB_TLS_ENABLED", "false").lower() == "true"
-    MARCHPROXY_AILB_TLS_CERT_PATH = os.getenv("MARCHPROXY_AILB_TLS_CERT_PATH", "")
-    MARCHPROXY_AILB_TLS_KEY_PATH = os.getenv("MARCHPROXY_AILB_TLS_KEY_PATH", "")
-
     # Webhook settings
     WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-    WEBHOOK_CALLBACK_URL = os.getenv("WEBHOOK_CALLBACK_URL", "http://localhost:8001/api/v1/webhooks/ailb/usage")
 
     # Admin initial password (sourced from env; handled per-config-class)
     ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "")
 
     # Ollama Management
-    OLLAMA_MANAGEMENT_MODE = os.getenv("OLLAMA_MANAGEMENT_MODE", "both")  # manual, orchestrated, both
+    OLLAMA_MANAGEMENT_MODE = os.getenv(
+        "OLLAMA_MANAGEMENT_MODE", "both"
+    )  # manual, orchestrated, both
     DOCKER_HOST = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
 
     # Feature flags
     ENABLE_OLLAMA_MANAGEMENT = os.getenv("ENABLE_OLLAMA_MANAGEMENT", "true").lower() == "true"
-    ENABLE_USAGE_WEBHOOKS = os.getenv("ENABLE_USAGE_WEBHOOKS", "true").lower() == "true"
 
     # Enterprise provider flags
     ENABLE_GEMINI = os.getenv("ENABLE_GEMINI", "true").lower() == "true"
@@ -124,7 +114,7 @@ class Config:
 
 
 class DevelopmentConfig(Config):
-    """Development configuration"""
+    """Development configuration."""
 
     import secrets
 
@@ -132,7 +122,9 @@ class DevelopmentConfig(Config):
     LOG_LEVEL = "DEBUG"
 
     # Development: use deterministic defaults if env vars not set
-    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "dev-secret-key-min-32-chars"))
+    SECRET_KEY = os.getenv(
+        "FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "dev-secret-key-min-32-chars")
+    )
     JWT_SECRET_KEY = os.getenv("JWT_SECRET", "dev-jwt-secret-key-32-chars-minimum!")
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "dev-password-salt")
     WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-webhook-secret")
@@ -140,7 +132,7 @@ class DevelopmentConfig(Config):
 
 
 class ProductionConfig(Config):
-    """Production configuration"""
+    """Production configuration."""
 
     DEBUG = False
     LOG_LEVEL = "INFO"
@@ -160,7 +152,7 @@ class ProductionConfig(Config):
 
 
 class TestingConfig(Config):
-    """Testing configuration"""
+    """Testing configuration."""
 
     import secrets
 
@@ -170,10 +162,21 @@ class TestingConfig(Config):
     # SQLAlchemy URL, raises ArgumentError). Also now honors DATABASE_URL env var
     # (e.g. set by the contract-snapshot harness) like the base Config does.
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///test_waddleai.db")
-    REDIS_URL = "redis://localhost:6379/1"
+    # Bug fix: this was a hardcoded "redis://localhost:6379/1" that silently
+    # ignored the REDIS_URL env var, unlike DATABASE_URL above (and unlike the
+    # base Config, which does honor it). In any FLASK_ENV=testing deployment
+    # where redis isn't reachable at localhost:6379 (e.g. a docker-compose
+    # harness where redis is a separate "redis" service), init_cache()'s
+    # connection attempt fails, _ext.redis_client stays None, and /readyz's
+    # `if _ext.redis_client:` guard silently reports checks["redis"]=False
+    # forever -- a permanent 503 with no schema/migration involvement at all
+    # (regression: gh-150).
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 
     # Testing: use deterministic defaults to bootstrap tests
-    SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "test-secret-key-min-32-chars-!!!!"))
+    SECRET_KEY = os.getenv(
+        "FLASK_SECRET_KEY", os.getenv("JWT_SECRET", "test-secret-key-min-32-chars-!!!!")
+    )
     JWT_SECRET_KEY = os.getenv("JWT_SECRET", "test-jwt-secret-key-32-chars-minimum!!!")
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "test-password-salt")
     WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "test-webhook-secret")

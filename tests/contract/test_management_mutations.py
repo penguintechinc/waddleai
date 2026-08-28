@@ -1,14 +1,12 @@
-"""
-Regression tests for validation-ordering fixes in the management service's
-Flask -> Quart migration (branch chore/consolidate-quart-k8s).
+"""Regression tests for validation-ordering fixes in the management service's Quart migration.
 
-The async conversion hoisted pure-Python field validation ahead of DB
-existence/conflict checks that ran FIRST in the pre-migration (Flask)
-originals (commit 44cc384). When a request trips two failure conditions at
-once, the wrong status/body was returned. These are targeted assertion
-tests (not snapshots) -- the GET-only contract snapshots in
-test_management_contract.py do not exercise these dual-fault POST/PUT/PATCH
-paths.
+Branch chore/consolidate-quart-k8s: the async conversion hoisted
+pure-Python field validation ahead of DB existence/conflict checks that ran
+FIRST in the pre-migration (Flask) originals (commit 44cc384). When a
+request trips two failure conditions at once, the wrong status/body was
+returned. These are targeted assertion tests (not snapshots) -- the
+GET-only contract snapshots in test_management_contract.py do not exercise
+these dual-fault POST/PUT/PATCH paths.
 
 Uses the same session-scoped `management_url` fixture and login pattern as
 test_management_contract.py.
@@ -19,7 +17,7 @@ import uuid
 import httpx
 
 
-def _login(base, username="admin", password="admin123"):
+def _login(base, username="admin", password="admin123"):  # noqa: S107 -- seeded contract-test admin credential, not a production default
     r = httpx.post(f"{base}/api/v1/auth/login", json={"username": username, "password": password})
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
@@ -36,6 +34,7 @@ def _unique_name(prefix):
 
 
 def test_create_provider_name_conflict_beats_api_key_required(management_url):
+    """Regression: name-conflict (409) wins over the missing-api_key (400) check."""
     headers = _login(management_url)
     name = _unique_name("regression-provider")
 
@@ -72,6 +71,7 @@ def test_create_provider_name_conflict_beats_api_key_required(management_url):
 
 
 def test_create_provider_credential_provider_not_found_beats_weight_validation(management_url):
+    """Regression: provider-not-found (404) wins over the out-of-range weight (400) check."""
     headers = _login(management_url)
 
     # Dual fault: provider 999999 does not exist AND weight (99999) is out of
@@ -86,6 +86,7 @@ def test_create_provider_credential_provider_not_found_beats_weight_validation(m
 
 
 def test_create_provider_credential_label_conflict_beats_weight_validation(management_url):
+    """Regression: label-conflict (409) wins over the out-of-range weight (400) check."""
     headers = _login(management_url)
     provider_name = _unique_name("regression-cred-provider")
 
@@ -133,6 +134,7 @@ def test_create_provider_credential_label_conflict_beats_weight_validation(manag
 
 
 def test_update_provider_credential_provider_not_found_beats_weight_validation(management_url):
+    """Regression: PATCH provider-not-found (404) wins over the out-of-range weight (400) check."""
     headers = _login(management_url)
 
     # Dual fault: provider 999999 does not exist AND weight (99999) is out of
@@ -154,6 +156,7 @@ def test_update_provider_credential_provider_not_found_beats_weight_validation(m
 
 
 def test_pull_ollama_model_deployment_not_found_beats_body_validation(management_url):
+    """Regression: deployment-not-found (404) wins over the missing-body (400) check."""
     headers = _login(management_url)
 
     # Dual fault: deployment 999999 does not exist AND no body is sent
@@ -176,6 +179,7 @@ def test_pull_ollama_model_deployment_not_found_beats_body_validation(management
 
 
 def test_update_llamacpp_deployment_not_found_beats_body_parse(management_url):
+    """Regression: deployment-not-found (404) wins over Quart's non-JSON body-parse 400."""
     headers = _login(management_url)
 
     # Dual fault: deployment 999999 does not exist AND the request body is

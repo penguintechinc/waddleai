@@ -1,0 +1,101 @@
+{{/*
+ValidatingAdmissionPolicy — digest-pinned images on WaddleAI workloads
+(spec §12.2). Off by default in this chart's values (house dependency-
+pinning rule: PenguinTech images may use mutable tags in alpha/beta, SHA256
+digest is mandatory in prod only) — wire a future prod values file with
+admissionPolicies.validatingAdmissionPolicy.enforceDigestPinnedImages: true.
+
+Guarded by BOTH the values toggle AND a live capability check, mirroring
+cilium-network-policy.yaml's pattern, so clusters without the VAP
+feature-gate render every other template cleanly and simply skip this
+object.
+*/}}
+{{- if and .Values.admissionPolicies.enabled .Values.admissionPolicies.validatingAdmissionPolicy.enabled .Values.admissionPolicies.validatingAdmissionPolicy.enforceDigestPinnedImages (or .Values.admissionPolicies.forceRender (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy")) -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "waddleai.fullname" . }}-image-digest
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  failurePolicy: {{ .Values.admissionPolicies.failurePolicy }}
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: "object.spec.containers.all(c, c.image.contains('@sha256:'))"
+      message: "WaddleAI container images must be pinned by SHA256 digest (image@sha256:<digest>)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "waddleai.fullname" . }}-image-digest-binding
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "waddleai.fullname" . }}-image-digest
+  validationActions: {{ .Values.admissionPolicies.validationActions | toJson }}
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [{{ .Values.namespace | quote }}]
+    objectSelector:
+      matchLabels:
+        {{- include "waddleai.selectorLabels" . | nindent 8 }}
+{{- end }}
+{{/*
+Optional Kyverno ClusterPolicy alternative — additive only, per house rule
+never the default posture (devops-kubernetes.md Cluster Security Baseline).
+Renders only when explicitly opted in (admissionPolicies.kyverno.enabled)
+AND Kyverno's own CRDs are present on the cluster (or forceRender for
+offline golden renders).
+*/}}
+{{- if and .Values.admissionPolicies.enabled .Values.admissionPolicies.kyverno.enabled (or .Values.admissionPolicies.forceRender (.Capabilities.APIVersions.Has "kyverno.io/v1/ClusterPolicy")) }}
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: {{ include "waddleai.fullname" . }}-digest-nonroot
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  validationFailureAction: {{ if has "Deny" .Values.admissionPolicies.validationActions }}Enforce{{ else }}Audit{{ end }}
+  background: false
+  rules:
+    - name: require-digest-pinned-images
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: [{{ .Values.namespace | quote }}]
+              selector:
+                matchLabels:
+                  {{- include "waddleai.selectorLabels" . | nindent 18 }}
+      validate:
+        message: "WaddleAI container images must be pinned by SHA256 digest"
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"
+    - name: require-non-root
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: [{{ .Values.namespace | quote }}]
+              selector:
+                matchLabels:
+                  {{- include "waddleai.selectorLabels" . | nindent 18 }}
+      validate:
+        message: "WaddleAI containers must run as non-root"
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+{{- end }}

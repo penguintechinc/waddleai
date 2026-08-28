@@ -1,5 +1,4 @@
-"""
-Tests for real stage implementations in ProxyPipeline.
+"""Tests for real stage implementations in ProxyPipeline.
 
 Covers:
 - AuthStage: user/tenant validation
@@ -10,8 +9,8 @@ Covers:
 - MeterStage: usage recording + reconciliation
 """
 
-
-from unittest.mock import AsyncMock, Mock, patch
+import inspect
+from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
@@ -24,17 +23,18 @@ from proxy.apps.proxy_server.pipeline import (
     SecurityOutStage,
     TokenBudgetStage,
 )
-from shared.security.content_filter import FilterResult, FilterViolation
+from shared.security.content_filter import ContentFilter, FilterResult, FilterViolation
 from shared.security.prompt_security import Action, Severity, ThreatDetection, ThreatType
 from shared.utils.llm_connectors import (
     ProviderClientError,
     ProviderError,
     ProviderRateLimitError,
     ProviderServerError,
+    ProviderTimeoutError,
     StreamChunk,
 )
 from shared.utils.metering import MeteringEvent
-from shared.utils.token_limiter import GateDecision, KeyLimits
+from shared.utils.token_limiter import GateDecision
 
 
 @pytest.mark.asyncio
@@ -100,7 +100,9 @@ class TestTokenBudgetStageImplementation:
         )
 
         user = Mock(id=1, tenant_id="org1", vkey_id=42)
-        ctx = PipelineContext(user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}])
+        ctx = PipelineContext(
+            user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+        )
         result = await stage(ctx)
 
         assert result.blocked is False
@@ -136,7 +138,9 @@ class TestTokenBudgetStageImplementation:
         """TokenBudgetStage should block on monthly token limit."""
         token_limiter = Mock()
         token_limiter.reserve = AsyncMock(
-            return_value=GateDecision(allowed=False, reason="monthly_tokens_exceeded", reservation_id=None)
+            return_value=GateDecision(
+                allowed=False, reason="monthly_tokens_exceeded", reservation_id=None
+            )
         )
         features = Mock(is_feature_enabled=Mock(return_value=True))
 
@@ -168,11 +172,41 @@ class TestTokenBudgetStageImplementation:
         )
 
         user = Mock(id=1, tenant_id="org1", vkey_id=42, limits=None)
-        ctx = PipelineContext(user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}])
+        ctx = PipelineContext(
+            user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+        )
         result = await stage(ctx)
 
         # Stage should allow through (no limits configured)
         assert result.status_code == 200
+
+    async def test_token_budget_stage_skips_when_user_has_no_vkey_id(self):
+        """TokenBudgetStage should skip budget checks entirely when ctx.user has no vkey_id.
+
+        Uses a plain object (not Mock) so hasattr() genuinely returns False --
+        a bare Mock auto-creates any attribute and would make this vacuous.
+        """
+
+        class _UserNoVkey:
+            id = 1
+            tenant_id = "org1"
+
+        token_limiter = Mock()
+        token_limiter.reserve = AsyncMock()
+        features = Mock(is_feature_enabled=Mock(return_value=True))
+
+        stage = TokenBudgetStage(
+            name="token_budget",
+            token_limiter=token_limiter,
+            features=features,
+            flag=None,
+        )
+        ctx = PipelineContext(user=_UserNoVkey(), body={}, model="gpt-4")
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        assert result.status_code == 200
+        token_limiter.reserve.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -223,7 +257,9 @@ class TestSecurityInStageImplementation:
     async def test_security_in_stage_sanitizes_input(self):
         """SecurityInStage should sanitize PII after passing security scan."""
         scanner = Mock()
-        scanner.scan_messages = Mock(return_value=([], [{"role": "user", "content": "normal prompt"}]))
+        scanner.scan_messages = Mock(
+            return_value=([], [{"role": "user", "content": "normal prompt"}])
+        )
         scanner.should_block = Mock(return_value=False)
 
         content_filter = Mock()
@@ -267,7 +303,15 @@ class TestSecurityInStageImplementation:
             return_value=FilterResult(
                 allowed=False,
                 action="block",
-                violations=[FilterViolation(rule_name="ssn", rule_type="builtin_pii", matched_text="123-45-6789", action="block", confidence=0.95)],
+                violations=[
+                    FilterViolation(
+                        rule_name="ssn",
+                        rule_type="builtin_pii",
+                        matched_text="123-45-6789",
+                        action="block",
+                        confidence=0.95,
+                    )
+                ],
                 filtered_text="",
                 auditor_used=False,
             )
@@ -290,6 +334,75 @@ class TestSecurityInStageImplementation:
 
         assert result.blocked is True
         assert result.status_code == 400
+
+    async def test_security_in_stage_returns_early_on_empty_messages(self):
+        """SecurityInStage should no-op (no scan, no filter) when ctx.messages is empty."""
+        scanner = Mock()
+        scanner.scan_messages = Mock()
+        content_filter = Mock()
+        content_filter.filter_input = AsyncMock()
+
+        stage = SecurityInStage(
+            name="security_in",
+            scanner=scanner,
+            content_filter=content_filter,
+            flag=None,
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, messages=[])
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        scanner.scan_messages.assert_not_called()
+        content_filter.filter_input.assert_not_called()
+
+    async def test_security_in_stage_sets_pii_detected_on_redacted_violation(self):
+        """A redacted-but-allowed violation must still flag ctx.pii_detected.
+
+        RoutingStage's sensitivity clamp (§7.3) reads this even when the
+        request was never blocked.
+        """
+        scanner = Mock()
+        scanner.scan_messages = Mock(return_value=([], [{"role": "user", "content": "normal"}]))
+        scanner.should_block = Mock(return_value=False)
+
+        content_filter = Mock()
+        content_filter.filter_input = AsyncMock(
+            return_value=FilterResult(
+                allowed=True,
+                action="redact",
+                violations=[
+                    FilterViolation(
+                        rule_name="email",
+                        rule_type="builtin_pii",
+                        matched_text="test@example.com",
+                        action="redact",
+                        confidence=0.90,
+                    )
+                ],
+                filtered_text="Contact: [REDACTED]",
+                auditor_used=False,
+            )
+        )
+
+        stage = SecurityInStage(
+            name="security_in",
+            scanner=scanner,
+            content_filter=content_filter,
+            flag=None,
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={},
+            messages=[{"role": "user", "content": "Contact: test@example.com"}],
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        assert result.pii_detected is True
 
 
 @pytest.mark.asyncio
@@ -441,6 +554,185 @@ class TestDispatchStageImplementation:
         assert result.blocked is True
         assert result.status_code in (502, 503)
 
+    async def test_dispatch_stage_blocks_on_empty_messages(self):
+        """DispatchStage should block with no_messages when ctx.messages is empty (no cache hit)."""
+        router = Mock()
+        stage = DispatchStage(name="dispatch", router=router, connectors={}, flag=None)
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, model="gpt-4", messages=[])
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 400
+        assert result.block_reason == "no_messages"
+        router.select_provider.assert_not_called()
+
+    async def test_dispatch_stage_blocks_when_no_connector_for_provider(self):
+        """DispatchStage should block if the selected provider has no wired connector."""
+        router = Mock()
+        router.select_provider = Mock(return_value=("mystery_provider", "gpt-4o"))
+
+        stage = DispatchStage(
+            name="dispatch", router=router, connectors={"openai": Mock()}, flag=None
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 500
+        assert result.block_reason == "no_connector"
+
+    async def test_dispatch_stage_streaming_without_final_usage_chunk(self):
+        """Streaming with no done+usage chunk must leave ctx.usage/finish_reason untouched."""
+
+        async def stream_chunks(*args, **kwargs):
+            yield StreamChunk(delta="partial", usage=None, done=False)
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+
+        connector = Mock()
+        connector.stream_chat_completion = stream_chunks
+
+        stage = DispatchStage(
+            name="dispatch", router=router, connectors={"openai": connector}, flag=None
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        assert result.response_text == "partial"
+        assert result.usage is None
+        assert result.finish_reason is None
+
+    async def test_dispatch_stage_maps_rate_limit_error_to_429(self):
+        """DispatchStage should map ProviderRateLimitError to 429."""
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+
+        connector = Mock()
+        connector.chat_completion = AsyncMock(
+            side_effect=ProviderRateLimitError(
+                provider="openai", model="gpt-4o", message="rate limited", status_code=429
+            )
+        )
+
+        stage = DispatchStage(
+            name="dispatch", router=router, connectors={"openai": connector}, flag=None
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 429
+        assert result.block_reason == "provider_error_429"
+
+    async def test_dispatch_stage_maps_timeout_error_to_504(self):
+        """DispatchStage should map ProviderTimeoutError to 504."""
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+
+        connector = Mock()
+        connector.chat_completion = AsyncMock(
+            side_effect=ProviderTimeoutError(
+                provider="openai", model="gpt-4o", message="timed out", status_code=None
+            )
+        )
+
+        stage = DispatchStage(
+            name="dispatch", router=router, connectors={"openai": connector}, flag=None
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 504
+        assert result.block_reason == "provider_error_None"
+
+    async def test_dispatch_stage_maps_generic_provider_error_to_its_status_code(self):
+        """DispatchStage should map a bare ProviderError to its own status_code."""
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+
+        connector = Mock()
+        connector.chat_completion = AsyncMock(
+            side_effect=ProviderError(
+                provider="openai", model="gpt-4o", message="weird", status_code=418
+            )
+        )
+
+        stage = DispatchStage(
+            name="dispatch", router=router, connectors={"openai": connector}, flag=None
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 418
+        assert result.block_reason == "provider_error"
+
+    async def test_dispatch_stage_maps_unexpected_error_to_500(self):
+        """DispatchStage should map any unexpected exception to dispatch_error/500."""
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+
+        connector = Mock()
+        connector.chat_completion = AsyncMock(side_effect=RuntimeError("totally unexpected"))
+
+        stage = DispatchStage(
+            name="dispatch", router=router, connectors={"openai": connector}, flag=None
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 500
+        assert result.block_reason == "dispatch_error"
+
 
 @pytest.mark.asyncio
 class TestSecurityOutStageImplementation:
@@ -483,7 +775,15 @@ class TestSecurityOutStageImplementation:
             return_value=FilterResult(
                 allowed=True,
                 action="redact",
-                violations=[FilterViolation(rule_name="email", rule_type="builtin_pii", matched_text="test@example.com", action="redact", confidence=0.90)],
+                violations=[
+                    FilterViolation(
+                        rule_name="email",
+                        rule_type="builtin_pii",
+                        matched_text="test@example.com",
+                        action="redact",
+                        confidence=0.90,
+                    )
+                ],
                 filtered_text="Contact: [REDACTED]",
                 auditor_used=False,
             )
@@ -514,7 +814,13 @@ class TestSecurityOutStageImplementation:
                 allowed=False,
                 action="block",
                 violations=[
-                    FilterViolation(rule_name="api_key_openai", rule_type="builtin_pii", matched_text="sk-...", action="block", confidence=0.99)
+                    FilterViolation(
+                        rule_name="api_key_openai",
+                        rule_type="builtin_pii",
+                        matched_text="sk-...",
+                        action="block",
+                        confidence=0.99,
+                    )
                 ],
                 filtered_text="",
                 auditor_used=False,
@@ -537,6 +843,208 @@ class TestSecurityOutStageImplementation:
 
         assert result.blocked is True
         assert result.status_code == 400
+
+    async def test_security_out_stage_returns_early_on_empty_response(self):
+        """SecurityOutStage should no-op when ctx.response_text is empty."""
+        content_filter = Mock()
+        content_filter.filter_output = AsyncMock()
+
+        stage = SecurityOutStage(
+            name="security_out",
+            content_filter=content_filter,
+            flag=None,
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, response_text="")
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        content_filter.filter_output.assert_not_called()
+
+    async def test_security_out_stage_fails_open_on_generic_exception(self):
+        """A generic runtime error from filter_output must fail OPEN, not block.
+
+        Distinct from the TypeError/AttributeError fail-CLOSED contract tested
+        below -- this covers a genuine transient error (e.g. network/DB).
+        """
+        content_filter = Mock()
+        content_filter.filter_output = AsyncMock(side_effect=RuntimeError("db unreachable"))
+
+        stage = SecurityOutStage(
+            name="security_out",
+            content_filter=content_filter,
+            flag=None,
+        )
+
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, response_text="original response")
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        assert result.response_text == "original response"
+
+
+@pytest.mark.asyncio
+class TestSecurityOutStageContentFilterContract:
+    """Regression tests for the SecurityOutStage/ContentFilter.filter_output signature drift bug.
+
+    See fix/output-filter-fails-open. The stage called
+    `filter_output(text=..., user_id=..., org_id=..., ip=None)`
+    but the real `ContentFilter.filter_output` took no `ip` kwarg. Every call
+    raised TypeError, which a bare `except Exception` ("fail open: don't block
+    the response on filter errors") swallowed identically to a genuine filter
+    timeout -- so the output PII filter never actually ran, for any response,
+    and the only trace was an error log line.
+
+    These tests use `create_autospec(ContentFilter, instance=True)` rather
+    than a bare `Mock()` specifically because a bare Mock accepts any kwargs
+    and would not have caught this bug (see the pre-existing tests above,
+    which all use `Mock()` and passed throughout the incident). An autospec'd
+    mock enforces the *real* method signature via `inspect.signature(...).bind()`,
+    just like the real object would.
+    """
+
+    async def test_filter_output_actually_invoked_and_redaction_applied(self):
+        """Old bug: filter_output never ran, so redaction never landed.
+
+        With the real call signature enforced (autospec), this only passes
+        if the stage calls filter_output with kwargs it actually accepts
+        AND applies the returned filtered_text to ctx.response_text.
+        """
+        content_filter = create_autospec(ContentFilter, instance=True)
+        content_filter.filter_output.return_value = FilterResult(
+            allowed=True,
+            action="redact",
+            violations=[
+                FilterViolation(
+                    rule_name="email",
+                    rule_type="builtin_pii",
+                    matched_text="test@example.com",
+                    action="redact",
+                    confidence=0.90,
+                )
+            ],
+            filtered_text="Contact: [REDACTED]",
+            auditor_used=False,
+        )
+
+        stage = SecurityOutStage(name="security_out", content_filter=content_filter, flag=None)
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, response_text="Contact: test@example.com")
+
+        result = await stage(ctx)
+
+        content_filter.filter_output.assert_awaited_once()
+        assert result.blocked is False
+        assert result.response_text == "Contact: [REDACTED]"
+        assert result.status_code == 200
+        assert result.block_reason is None
+
+    async def test_filter_output_denial_blocks_response(self):
+        """Old bug: a `allowed=False` verdict never reached ctx.blocked.
+
+        With the real signature enforced, this only passes if the stage's
+        call succeeds AND the denial is actually applied to ctx.
+        """
+        content_filter = create_autospec(ContentFilter, instance=True)
+        content_filter.filter_output.return_value = FilterResult(
+            allowed=False,
+            action="block",
+            violations=[
+                FilterViolation(
+                    rule_name="api_key_openai",
+                    rule_type="builtin_pii",
+                    matched_text="sk-...",
+                    action="block",
+                    confidence=0.99,
+                )
+            ],
+            filtered_text="",
+            auditor_used=False,
+        )
+
+        stage = SecurityOutStage(name="security_out", content_filter=content_filter, flag=None)
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, response_text="Your API key is sk-1234567890")
+
+        result = await stage(ctx)
+
+        content_filter.filter_output.assert_awaited_once()
+        assert result.blocked is True
+        assert result.status_code == 400
+        assert result.block_reason == "response_blocked_pii"
+
+    async def test_signature_mismatch_does_not_pass_content_through_unfiltered(self):
+        """A signature-mismatched filter must not silently pass content through.
+
+        Reproduces the exact bug: a filter object whose `filter_output` has
+        the old (pre-fix) signature -- no `ip` parameter -- so the stage's
+        real call raises TypeError, exactly as the real ContentFilter did
+        before shared/security/content_filter.py was fixed. The response
+        must not silently reach the caller unfiltered (the pre-fix
+        behavior); it must fail loudly/closed instead.
+        """
+
+        class OldSignatureFilter:
+            """Stand-in for the pre-fix ContentFilter.filter_output (no `ip`)."""
+
+            async def filter_output(
+                self,
+                text: str,
+                user_id: int | None = None,
+                org_id: int | None = None,
+            ) -> FilterResult:
+                return FilterResult(
+                    allowed=True,
+                    action="allow",
+                    violations=[],
+                    filtered_text="SHOULD NOT BE REACHED",
+                    auditor_used=False,
+                )
+
+        stage = SecurityOutStage(
+            name="security_out",
+            content_filter=OldSignatureFilter(),  # type: ignore[arg-type]
+            flag=None,
+        )
+        user = Mock(id=1, tenant_id="org1")
+        original_text = "Contact: test@example.com"
+        ctx = PipelineContext(user=user, body={}, response_text=original_text)
+
+        result = await stage(ctx)
+
+        # Must NOT silently pass the original, unfiltered content through
+        # as a 200 (the old fail-open bug). Must fail loudly/closed instead.
+        assert result.response_text == original_text
+        assert result.blocked is True
+        assert result.status_code == 500
+        assert result.block_reason == "output_filter_defect"
+
+
+def test_filter_output_signature_pinned_to_stage_call_site():
+    """Pins ContentFilter.filter_output's signature against the stage's call site.
+
+    If either side drifts again (a renamed/removed/added required
+    parameter), this fails immediately via inspect.signature(...).bind()
+    instead of silently disabling output filtering behind a fail-open
+    except block.
+
+    Not part of TestSecurityOutStageContentFilterContract (sync, not
+    async) -- that class carries a blanket @pytest.mark.asyncio for its
+    coroutine tests, which pytest-asyncio (mode=auto) warns about on sync
+    methods.
+    """
+    stage_call_kwargs = {
+        "text": "sample response text",
+        "user_id": 1,
+        "org_id": 2,
+        "ip": None,
+    }
+    sig = inspect.signature(ContentFilter.filter_output)
+    # bind() raises TypeError on any drift (missing/renamed/extra kwarg);
+    # `self` is unbound on the class-level signature.
+    sig.bind(Mock(), **stage_call_kwargs)
 
 
 @pytest.mark.asyncio
@@ -601,7 +1109,7 @@ class TestMeterStageImplementation:
             provider="openai",
             reservation_id="resv-123",
         )
-        result = await stage(ctx)
+        result = await stage(ctx)  # noqa: F841 -- awaited for side effects on ctx/mocks, not its return
 
         # Reconcile should be called with actual usage
         token_limiter.reconcile.assert_called_once()
@@ -636,7 +1144,7 @@ class TestMeterStageImplementation:
             block_reason="rate_limit",
             reservation_id="resv-123",
         )
-        result = await stage(ctx)
+        result = await stage(ctx)  # noqa: F841 -- awaited for side effects on ctx/mocks, not its return
 
         # Should still record usage (metering happens even for blocked requests)
         metering_buffer.record.assert_called_once()
@@ -669,3 +1177,31 @@ class TestMeterStageImplementation:
 
         # Should not crash; metering buffer handles None usage gracefully
         assert result.blocked is False
+
+    async def test_meter_stage_skips_when_no_vkey_id(self):
+        """MeterStage should skip metering entirely when ctx.user has no vkey_id."""
+        metering_buffer = Mock()
+        metering_buffer.record = Mock()
+
+        token_limiter = Mock()
+        token_limiter.reconcile = AsyncMock()
+
+        stage = MeterStage(
+            name="meter",
+            metering_buffer=metering_buffer,
+            token_limiter=token_limiter,
+            flag=None,
+        )
+
+        user = Mock(id=1, tenant_id="org1", vkey_id=None)
+        ctx = PipelineContext(
+            user=user,
+            body={},
+            model="gpt-4o",
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        metering_buffer.record.assert_not_called()
+        token_limiter.reconcile.assert_not_called()

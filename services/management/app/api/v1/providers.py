@@ -1,23 +1,277 @@
-"""
-WaddleAI Management API v1 - AI Provider Management Endpoints
-"""
+"""WaddleAI Management API v1 - AI Provider Management Endpoints."""
 
 import asyncio
-import hashlib
-import json
+from dataclasses import dataclass
 from datetime import datetime
 
-from quart import current_app, jsonify, request
+from quart import current_app, jsonify
+from quart_schema import security_scheme, tag, validate_request, validate_response
+
+from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
-from .auth import require_auth, require_role
+from .auth import require_auth, require_scope
+
+_BEARER_AUTH = [{"bearerAuth": []}]
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models.
+#
+# Request models make every field Optional (matching the handlers' own
+# dict .get()/`"x" in data` checks), so the handlers' existing
+# presence/value validation -- and its exact status codes and messages --
+# stays the only gate. See auth.py for the same rationale, applied first.
+# `api_key` is accepted on write but is never present on any response
+# model below -- only `api_key_masked` (provider_credentials) or nothing
+# at all (ai_providers) ever goes out, matching `_mask_key()`.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ProviderTypeSummary:
+    """One supported provider type, as returned by GET /providers/types."""
+
+    type: str
+    name: str
+    default_models: list[str]
+    requires_api_key: bool
+    default_endpoint: str | None
+
+
+@dataclass(slots=True)
+class ProviderTypesResponse:
+    """Response body for GET /api/v1/providers/types."""
+
+    provider_types: list[ProviderTypeSummary]
+
+
+@dataclass(slots=True)
+class ProviderSummary:
+    """Provider summary row -- never includes api_key or extra_config."""
+
+    id: int
+    name: str
+    provider_type: str
+    endpoint_url: str
+    model_list: list[str] | None
+    rate_limits: dict | None
+    enabled: bool
+    priority: int | None
+    ailb_sync_enabled: bool
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class ProviderListResponse:
+    """Response body for GET /api/v1/providers."""
+
+    providers: list[ProviderSummary]
+    total: int
+
+
+@dataclass(slots=True)
+class ProviderDetailResponse:
+    """Response body for GET /api/v1/providers/<id>. Never includes api_key."""
+
+    id: int
+    name: str
+    provider_type: str
+    endpoint_url: str
+    model_list: list[str] | None
+    rate_limits: dict | None
+    enabled: bool
+    priority: int | None
+    extra_config: dict | None
+    tls_config: dict | None
+    ailb_sync_enabled: bool
+    ailb_route_config: dict | None
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class CreateProviderRequest:
+    """Request body for POST /api/v1/providers."""
+
+    name: str | None = None
+    provider_type: str | None = None
+    endpoint_url: str | None = None
+    api_key: str | None = None
+    model_list: list[str] | None = None
+    rate_limits: dict | None = None
+    enabled: bool | None = None
+    priority: int | None = None
+    extra_config: dict | None = None
+    tls_config: dict | None = None
+    ailb_sync_enabled: bool | None = None
+
+
+@dataclass(slots=True)
+class MessageResponse:
+    """Generic `{"message": str}` envelope used by several provider endpoints."""
+
+    message: str
+
+
+@dataclass(slots=True)
+class CreateProviderResponse:
+    """Response body for a successful POST /api/v1/providers."""
+
+    id: int
+    name: str
+    provider_type: str
+    message: str
+
+
+@dataclass(slots=True)
+class UpdateProviderRequest:
+    """Request body for PUT /api/v1/providers/<id>. Every field is a partial update."""
+
+    name: str | None = None
+    endpoint_url: str | None = None
+    api_key: str | None = None
+    model_list: list[str] | None = None
+    rate_limits: dict | None = None
+    enabled: bool | None = None
+    priority: int | None = None
+    extra_config: dict | None = None
+    tls_config: dict | None = None
+    ailb_sync_enabled: bool | None = None
+    ailb_route_config: dict | None = None
+
+
+@dataclass(slots=True)
+class TestProviderResponse:
+    """Response body for POST /api/v1/providers/<id>/test."""
+
+    provider_id: int
+    provider_type: str
+    endpoint_url: str
+    status: str
+    latency_ms: int
+    message: str
+
+
+@dataclass(slots=True)
+class ProviderModelsResponse:
+    """Response body for GET /api/v1/providers/<id>/models."""
+
+    provider_id: int
+    provider_type: str
+    models: list[str]
+
+
+@dataclass(slots=True)
+class ProviderCredential:
+    """A single provider credential -- api_key is NEVER returned, only its mask."""
+
+    id: int
+    provider_id: int
+    label: str
+    api_key_masked: str
+    org_id: str | None
+    account_meta: dict | None
+    weight: int
+    enabled: bool
+    request_count: int | None
+    token_count: int | None
+    last_used_at: str | None
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class ListCredentialsMeta:
+    """`meta` block for the list-credentials response."""
+
+    provider_id: int
+    total: int
+    timestamp: str
+
+
+@dataclass(slots=True)
+class ListProviderCredentialsResponse:
+    """Response body for GET /api/v1/providers/<id>/credentials."""
+
+    status: str
+    data: list[ProviderCredential]
+    meta: ListCredentialsMeta
+
+
+@dataclass(slots=True)
+class CreateProviderCredentialRequest:
+    """Request body for POST /api/v1/providers/<id>/credentials."""
+
+    label: str | None = None
+    api_key: str | None = None
+    org_id: str | None = None
+    account_meta: dict | None = None
+    weight: int | None = None
+    enabled: bool | None = None
+
+
+@dataclass(slots=True)
+class CredentialActionMeta:
+    """`meta` block for a single-credential mutation response.
+
+    `action` is only ever set on create/delete -- update's meta carries just
+    a timestamp, so it stays Optional rather than forcing a fabricated value.
+    """
+
+    timestamp: str
+    action: str | None = None
+
+
+@dataclass(slots=True)
+class ProviderCredentialResponse:
+    """Response body shared by create/update of a single provider credential."""
+
+    status: str
+    data: ProviderCredential
+    meta: CredentialActionMeta
+
+
+@dataclass(slots=True)
+class UpdateProviderCredentialRequest:
+    """Request body for PATCH /api/v1/providers/<id>/credentials/<cred_id>."""
+
+    label: str | None = None
+    weight: int | None = None
+    enabled: bool | None = None
+    org_id: str | None = None
+    account_meta: dict | None = None
+    api_key: str | None = None
+
+
+@dataclass(slots=True)
+class DeletedCredentialData:
+    """`data` block for a successful credential deletion."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class DeleteProviderCredentialResponse:
+    """Response body for DELETE /api/v1/providers/<id>/credentials/<cred_id>."""
+
+    status: str
+    data: DeletedCredentialData
+    meta: CredentialActionMeta
+
 
 # Supported provider types
 SUPPORTED_PROVIDERS = {
     "openai": {
         "name": "OpenAI / ChatGPT",
-        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1-preview", "o1-mini"],
+        "models": [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-4",
+            "gpt-3.5-turbo",
+            "o1-preview",
+            "o1-mini",
+        ],
         "requires_api_key": True,
         "default_endpoint": "https://api.openai.com/v1",
     },
@@ -71,9 +325,12 @@ SUPPORTED_PROVIDERS = {
 
 
 @api_v1_bp.route("/providers/types", methods=["GET"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
+@validate_response(ProviderTypesResponse, 200)
 async def list_provider_types():
-    """List supported provider types"""
+    """List supported provider types."""
     result = []
     for provider_type, info in SUPPORTED_PROVIDERS.items():
         # Check if enterprise provider is enabled
@@ -81,7 +338,9 @@ async def list_provider_types():
             continue
         if provider_type == "bedrock" and not current_app.config.get("ENABLE_BEDROCK", True):
             continue
-        if provider_type == "azure_openai" and not current_app.config.get("ENABLE_AZURE_OPENAI", True):
+        if provider_type == "azure_openai" and not current_app.config.get(
+            "ENABLE_AZURE_OPENAI", True
+        ):
             continue
         if provider_type == "cohere" and not current_app.config.get("ENABLE_COHERE", True):
             continue
@@ -96,23 +355,25 @@ async def list_provider_types():
             }
         )
 
-    return jsonify({"provider_types": result})
+    return {"provider_types": result}
 
 
 @api_v1_bp.route("/providers", methods=["GET"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(ProviderListResponse, 200)
 async def list_providers():
-    """List all configured AI providers"""
+    """List all configured AI providers."""
 
     def _fetch():
-        providers = db(db.ai_providers.id > 0).select()
-        return [(provider, db(db.marchproxy_ailb_sync.provider_id == provider.id).select().first()) for provider in providers]
+        return db(db.ai_providers.id > 0).select()
 
-    providers_with_sync = await asyncio.to_thread(_fetch)
+    providers = await asyncio.to_thread(_fetch)
 
     result = []
-    for provider, sync in providers_with_sync:
+    for provider in providers:
         result.append(
             {
                 "id": provider.id,
@@ -124,78 +385,69 @@ async def list_providers():
                 "enabled": provider.enabled,
                 "priority": provider.priority,
                 "ailb_sync_enabled": provider.ailb_sync_enabled,
-                "sync_status": sync.sync_status if sync else "not_synced",
-                "last_synced": sync.last_synced.isoformat() if sync and sync.last_synced else None,
                 "created_at": provider.created_at.isoformat() if provider.created_at else None,
             }
         )
 
-    return jsonify({"providers": result, "total": len(result)})
+    return {"providers": result, "total": len(result)}
 
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["GET"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(ProviderDetailResponse, 200)
 async def get_provider(provider_id):
-    """Get provider details"""
+    """Get provider details."""
 
     def _fetch():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-        if not provider:
-            return None, None
-        sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
-        return provider, sync
+        return db(db.ai_providers.id == provider_id).select().first()
 
-    provider, sync = await asyncio.to_thread(_fetch)
+    provider = await asyncio.to_thread(_fetch)
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
 
-    return jsonify(
-        {
-            "id": provider.id,
-            "name": provider.name,
-            "provider_type": provider.provider_type,
-            "endpoint_url": provider.endpoint_url,
-            "model_list": provider.model_list,
-            "rate_limits": provider.rate_limits,
-            "enabled": provider.enabled,
-            "priority": provider.priority,
-            "extra_config": provider.extra_config,
-            "tls_config": provider.tls_config,
-            "ailb_sync_enabled": provider.ailb_sync_enabled,
-            "ailb_route_config": provider.ailb_route_config,
-            "sync_status": {
-                "status": sync.sync_status if sync else "not_synced",
-                "ailb_route_id": sync.ailb_route_id if sync else None,
-                "last_synced": sync.last_synced.isoformat() if sync and sync.last_synced else None,
-                "sync_error": sync.sync_error if sync else None,
-            },
-            "created_at": provider.created_at.isoformat() if provider.created_at else None,
-        }
-    )
+    return {
+        "id": provider.id,
+        "name": provider.name,
+        "provider_type": provider.provider_type,
+        "endpoint_url": provider.endpoint_url,
+        "model_list": provider.model_list,
+        "rate_limits": provider.rate_limits,
+        "enabled": provider.enabled,
+        "priority": provider.priority,
+        "extra_config": provider.extra_config,
+        "tls_config": provider.tls_config,
+        "ailb_sync_enabled": provider.ailb_sync_enabled,
+        "ailb_route_config": provider.ailb_route_config,
+        "created_at": provider.created_at.isoformat() if provider.created_at else None,
+    }
 
 
 @api_v1_bp.route("/providers", methods=["POST"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
-async def create_provider():
-    """Create a new AI provider"""
-    data = await request.get_json()
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(CreateProviderResponse, 201)
+@validate_request(CreateProviderRequest)
+async def create_provider(data: CreateProviderRequest):
+    """Create a new AI provider."""
+    for field_name, value in (
+        ("name", data.name),
+        ("provider_type", data.provider_type),
+        ("endpoint_url", data.endpoint_url),
+    ):
+        if value is None:
+            return jsonify({"error": f"{field_name} is required"}), 400
 
-    if not data:
-        return jsonify({"error": "Request body required"}), 400
-
-    required_fields = ["name", "provider_type", "endpoint_url"]
-    for field in required_fields:
-        if field not in data:
-            return jsonify({"error": f"{field} is required"}), 400
-
-    provider_type = data["provider_type"]
+    provider_type = data.provider_type
     if provider_type not in SUPPORTED_PROVIDERS:
         return jsonify({"error": f"Unsupported provider type: {provider_type}"}), 400
 
-    provider_name = data["name"]
+    provider_name = data.name
 
     def _check_existing():
         return db(db.ai_providers.name == provider_name).select().first()
@@ -205,31 +457,25 @@ async def create_provider():
         return jsonify({"error": "Provider name already exists"}), 409
 
     provider_info = SUPPORTED_PROVIDERS[provider_type]
-    if provider_info["requires_api_key"] and not data.get("api_key"):
+    if provider_info["requires_api_key"] and not data.api_key:
         return jsonify({"error": f"{provider_type} requires an API key"}), 400
-
-    config_hash = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
     def _create():
         provider_id = db.ai_providers.insert(
-            name=data["name"],
+            name=data.name,
             provider_type=provider_type,
-            endpoint_url=data["endpoint_url"],
-            api_key=data.get("api_key"),
-            model_list=data.get("model_list", provider_info["models"]),
-            rate_limits=data.get("rate_limits", {}),
-            enabled=data.get("enabled", True),
-            priority=data.get("priority", 100),
-            extra_config=data.get("extra_config", {}),
-            tls_config=data.get("tls_config", {}),
-            ailb_sync_enabled=data.get("ailb_sync_enabled", True),
+            endpoint_url=data.endpoint_url,
+            api_key=data.api_key,
+            model_list=data.model_list if data.model_list is not None else provider_info["models"],
+            rate_limits=data.rate_limits if data.rate_limits is not None else {},
+            enabled=data.enabled if data.enabled is not None else True,
+            priority=data.priority if data.priority is not None else 100,
+            extra_config=data.extra_config if data.extra_config is not None else {},
+            tls_config=data.tls_config if data.tls_config is not None else {},
+            ailb_sync_enabled=data.ailb_sync_enabled
+            if data.ailb_sync_enabled is not None
+            else True,
             created_at=datetime.utcnow(),
-        )
-        db.commit()
-
-        # Create sync record
-        db.marchproxy_ailb_sync.insert(
-            provider_id=provider_id, sync_status="pending", config_hash=config_hash, created_at=datetime.utcnow()
         )
         db.commit()
 
@@ -237,29 +483,23 @@ async def create_provider():
 
     provider_id = await asyncio.to_thread(_create)
 
-    return (
-        jsonify(
-            {
-                "id": provider_id,
-                "name": data["name"],
-                "provider_type": provider_type,
-                "sync_status": "pending",
-                "message": "Provider created successfully. Use /sync endpoint to push to AILB.",
-            }
-        ),
-        201,
-    )
+    return {
+        "id": provider_id,
+        "name": data.name,
+        "provider_type": provider_type,
+        "message": "Provider created successfully.",
+    }, 201
 
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["PUT"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
-async def update_provider(provider_id):
-    """Update provider configuration"""
-    data = await request.get_json()
-
-    if not data:
-        return jsonify({"error": "Request body required"}), 400
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(MessageResponse, 200)
+@validate_request(UpdateProviderRequest)
+async def update_provider(provider_id, data: UpdateProviderRequest):
+    """Update provider configuration."""
 
     def _update():
         provider = db(db.ai_providers.id == provider_id).select().first()
@@ -269,49 +509,48 @@ async def update_provider(provider_id):
 
         update_fields = {}
 
-        if "name" in data:
+        if data.name is not None:
             existing = (
-                db((db.ai_providers.name == data["name"]) & (db.ai_providers.id != provider_id)).select().first()
+                db((db.ai_providers.name == data.name) & (db.ai_providers.id != provider_id))
+                .select()
+                .first()
             )
             if existing:
                 return "name_conflict"
-            update_fields["name"] = data["name"]
+            update_fields["name"] = data.name
 
-        if "endpoint_url" in data:
-            update_fields["endpoint_url"] = data["endpoint_url"]
+        if data.endpoint_url is not None:
+            update_fields["endpoint_url"] = data.endpoint_url
 
-        if "api_key" in data:
-            update_fields["api_key"] = data["api_key"]
+        if data.api_key is not None:
+            update_fields["api_key"] = data.api_key
 
-        if "model_list" in data:
-            update_fields["model_list"] = data["model_list"]
+        if data.model_list is not None:
+            update_fields["model_list"] = data.model_list
 
-        if "rate_limits" in data:
-            update_fields["rate_limits"] = data["rate_limits"]
+        if data.rate_limits is not None:
+            update_fields["rate_limits"] = data.rate_limits
 
-        if "enabled" in data:
-            update_fields["enabled"] = data["enabled"]
+        if data.enabled is not None:
+            update_fields["enabled"] = data.enabled
 
-        if "priority" in data:
-            update_fields["priority"] = data["priority"]
+        if data.priority is not None:
+            update_fields["priority"] = data.priority
 
-        if "extra_config" in data:
-            update_fields["extra_config"] = data["extra_config"]
+        if data.extra_config is not None:
+            update_fields["extra_config"] = data.extra_config
 
-        if "tls_config" in data:
-            update_fields["tls_config"] = data["tls_config"]
+        if data.tls_config is not None:
+            update_fields["tls_config"] = data.tls_config
 
-        if "ailb_sync_enabled" in data:
-            update_fields["ailb_sync_enabled"] = data["ailb_sync_enabled"]
+        if data.ailb_sync_enabled is not None:
+            update_fields["ailb_sync_enabled"] = data.ailb_sync_enabled
 
-        if "ailb_route_config" in data:
-            update_fields["ailb_route_config"] = data["ailb_route_config"]
+        if data.ailb_route_config is not None:
+            update_fields["ailb_route_config"] = data.ailb_route_config
 
         if update_fields:
             db(db.ai_providers.id == provider_id).update(**update_fields)
-
-            # Update sync status to pending
-            db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="pending")
             db.commit()
 
         return "ok"
@@ -323,23 +562,23 @@ async def update_provider(provider_id):
     if result == "name_conflict":
         return jsonify({"error": "Provider name already exists"}), 409
 
-    return jsonify({"message": "Provider updated successfully. Re-sync required."})
+    return {"message": "Provider updated successfully."}
 
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["DELETE"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(MessageResponse, 200)
 async def delete_provider(provider_id):
-    """Delete provider"""
+    """Delete provider."""
 
     def _delete():
         provider = db(db.ai_providers.id == provider_id).select().first()
 
         if not provider:
             return False
-
-        # Mark sync as deleted
-        db(db.marchproxy_ailb_sync.provider_id == provider_id).update(sync_status="deleted")
 
         # Soft delete by disabling
         db(db.ai_providers.id == provider_id).update(enabled=False)
@@ -352,116 +591,56 @@ async def delete_provider(provider_id):
     if not found:
         return jsonify({"error": "Provider not found"}), 404
 
-    return jsonify({"message": "Provider disabled successfully. Remove from AILB manually or via sync."})
+    return {"message": "Provider disabled successfully."}
 
 
 @api_v1_bp.route("/providers/<int:provider_id>/test", methods=["POST"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(TestProviderResponse, 200)
 async def test_provider(provider_id):
-    """Test provider connectivity"""
-    provider = await asyncio.to_thread(lambda: db(db.ai_providers.id == provider_id).select().first())
+    """Test provider connectivity."""
+    provider = await asyncio.to_thread(
+        lambda: db(db.ai_providers.id == provider_id).select().first()
+    )
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
 
     # TODO: Implement actual connectivity test based on provider type
     # For now, return a mock response
-    return jsonify(
-        {
-            "provider_id": provider_id,
-            "provider_type": provider.provider_type,
-            "endpoint_url": provider.endpoint_url,
-            "status": "connected",
-            "latency_ms": 150,
-            "message": "Connection test successful",
-        }
-    )
-
-
-@api_v1_bp.route("/providers/<int:provider_id>/sync", methods=["POST"])
-@require_auth
-@require_role("admin")
-async def sync_provider(provider_id):
-    """Sync provider to MarchProxy AILB"""
-
-    def _sync():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-
-        if not provider:
-            return "not_found"
-
-        if not provider.ailb_sync_enabled:
-            return "sync_disabled"
-
-        # TODO: Implement actual gRPC call to AILB
-        # For now, simulate sync
-
-        # Update sync status
-        db(db.marchproxy_ailb_sync.provider_id == provider_id).update(
-            sync_status="synced", last_synced=datetime.utcnow(), sync_error=None
-        )
-        db.commit()
-
-        return "ok"
-
-    result = await asyncio.to_thread(_sync)
-
-    if result == "not_found":
-        return jsonify({"error": "Provider not found"}), 404
-    if result == "sync_disabled":
-        return jsonify({"error": "AILB sync is disabled for this provider"}), 400
-
-    return jsonify(
-        {"provider_id": provider_id, "sync_status": "synced", "message": "Provider synced to AILB successfully"}
-    )
-
-
-@api_v1_bp.route("/providers/<int:provider_id>/sync-status", methods=["GET"])
-@require_auth
-@require_role("admin")
-async def get_sync_status(provider_id):
-    """Get provider sync status"""
-
-    def _fetch():
-        provider = db(db.ai_providers.id == provider_id).select().first()
-        if not provider:
-            return None, None
-        sync = db(db.marchproxy_ailb_sync.provider_id == provider_id).select().first()
-        return provider, sync
-
-    provider, sync = await asyncio.to_thread(_fetch)
-
-    if not provider:
-        return jsonify({"error": "Provider not found"}), 404
-
-    return jsonify(
-        {
-            "provider_id": provider_id,
-            "provider_name": provider.name,
-            "ailb_sync_enabled": provider.ailb_sync_enabled,
-            "sync_status": sync.sync_status if sync else "not_synced",
-            "ailb_route_id": sync.ailb_route_id if sync else None,
-            "last_synced": sync.last_synced.isoformat() if sync and sync.last_synced else None,
-            "sync_error": sync.sync_error if sync else None,
-            "config_hash": sync.config_hash if sync else None,
-        }
-    )
+    return {
+        "provider_id": provider_id,
+        "provider_type": provider.provider_type,
+        "endpoint_url": provider.endpoint_url,
+        "status": "connected",
+        "latency_ms": 150,
+        "message": "Connection test successful",
+    }
 
 
 @api_v1_bp.route("/providers/<int:provider_id>/models", methods=["GET"])
+@tag(["Providers"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
+@validate_response(ProviderModelsResponse, 200)
 async def get_provider_models(provider_id):
-    """Get available models for a provider"""
-    provider = await asyncio.to_thread(lambda: db(db.ai_providers.id == provider_id).select().first())
+    """Get available models for a provider."""
+    provider = await asyncio.to_thread(
+        lambda: db(db.ai_providers.id == provider_id).select().first()
+    )
 
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
 
     # Return configured models or default models for the provider type
-    models = provider.model_list or SUPPORTED_PROVIDERS.get(provider.provider_type, {}).get("models", [])
+    models = provider.model_list or SUPPORTED_PROVIDERS.get(provider.provider_type, {}).get(
+        "models", []
+    )
 
-    return jsonify({"provider_id": provider_id, "provider_type": provider.provider_type, "models": models})
+    return {"provider_id": provider_id, "provider_type": provider.provider_type, "models": models}
 
 
 # ---------------------------------------------------------------------------
@@ -499,8 +678,11 @@ def _credential_to_dict(cred) -> dict:
 
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials", methods=["GET"])
+@tag(["Providers", "Credentials"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(ListProviderCredentialsResponse, 200)
 async def list_provider_credentials(provider_id: int):
     """List all credentials for a provider. API keys are never returned in plaintext."""
 
@@ -508,30 +690,34 @@ async def list_provider_credentials(provider_id: int):
         provider = db(db.ai_providers.id == provider_id).select().first()
         if not provider:
             return None
-        return db(db.provider_credentials.provider_id == provider_id).select(orderby=db.provider_credentials.id)
+        return db(db.provider_credentials.provider_id == provider_id).select(
+            orderby=db.provider_credentials.id
+        )
 
     creds = await asyncio.to_thread(_fetch)
 
     if creds is None:
         return jsonify({"status": "error", "error": "Provider not found"}), 404
 
-    return jsonify(
-        {
-            "status": "success",
-            "data": [_credential_to_dict(c) for c in creds],
-            "meta": {
-                "provider_id": provider_id,
-                "total": len(creds),
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            },
-        }
-    )
+    return {
+        "status": "success",
+        "data": [_credential_to_dict(c) for c in creds],
+        "meta": {
+            "provider_id": provider_id,
+            "total": len(creds),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        },
+    }
 
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials", methods=["POST"])
+@tag(["Providers", "Credentials"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
-async def create_provider_credential(provider_id: int):
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(ProviderCredentialResponse, 201)
+@validate_request(CreateProviderCredentialRequest)
+async def create_provider_credential(provider_id: int, data: CreateProviderCredentialRequest):
     """Add a credential to a provider's pool."""
     from shared.security.credential_encryption import encrypt_credential
 
@@ -542,35 +728,36 @@ async def create_provider_credential(provider_id: int):
     if not provider:
         return jsonify({"status": "error", "error": "Provider not found"}), 404
 
-    data = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    label = data.get("label", "").strip()
+    label = (data.label or "").strip()
     if not label:
         return jsonify({"status": "error", "error": "label is required"}), 400
     if len(label) > 255:
         return jsonify({"status": "error", "error": "label must be <= 255 characters"}), 400
 
-    api_key_plain = data.get("api_key", "").strip()
+    api_key_plain = (data.api_key or "").strip()
     if not api_key_plain:
         provider_info = SUPPORTED_PROVIDERS.get(provider.provider_type, {})
         if provider_info.get("requires_api_key", True):
-            return jsonify({"status": "error", "error": "api_key is required for this provider type"}), 400
+            return jsonify(
+                {"status": "error", "error": "api_key is required for this provider type"}
+            ), 400
 
     encrypted_key = encrypt_credential(api_key_plain) if api_key_plain else None
 
     def _create():
         # Check label uniqueness within this provider
         existing = (
-            db((db.provider_credentials.provider_id == provider_id) & (db.provider_credentials.label == label))
+            db(
+                (db.provider_credentials.provider_id == provider_id)
+                & (db.provider_credentials.label == label)
+            )
             .select()
             .first()
         )
         if existing:
             return ("label_conflict", None)
 
-        weight = data.get("weight", 100)
+        weight = data.weight if data.weight is not None else 100
         if not isinstance(weight, int) or weight < 1 or weight > 10000:
             return ("invalid_weight", None)
 
@@ -578,10 +765,10 @@ async def create_provider_credential(provider_id: int):
             provider_id=provider_id,
             label=label,
             api_key=encrypted_key,
-            org_id=data.get("org_id"),
-            account_meta=data.get("account_meta"),
+            org_id=data.org_id,
+            account_meta=data.account_meta,
             weight=weight,
-            enabled=data.get("enabled", True),
+            enabled=data.enabled if data.enabled is not None else True,
             request_count=0,
             token_count=0,
             created_at=datetime.utcnow(),
@@ -594,32 +781,40 @@ async def create_provider_credential(provider_id: int):
 
     if status == "label_conflict":
         return (
-            jsonify({"status": "error", "error": f"Credential with label '{label}' already exists for this provider"}),
+            jsonify(
+                {
+                    "status": "error",
+                    "error": f"Credential with label '{label}' already exists for this provider",
+                }
+            ),
             409,
         )
     if status == "invalid_weight":
-        return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
+        return jsonify(
+            {"status": "error", "error": "weight must be an integer between 1 and 10000"}
+        ), 400
 
     new_cred = payload
-    return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _credential_to_dict(new_cred),
-                "meta": {
-                    "action": "created",
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                },
-            }
-        ),
-        201,
-    )
+    return {
+        "status": "success",
+        "data": _credential_to_dict(new_cred),
+        "meta": {
+            "action": "created",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        },
+    }, 201
 
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials/<int:cred_id>", methods=["PATCH"])
+@tag(["Providers", "Credentials"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
-async def update_provider_credential(provider_id: int, cred_id: int):
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(ProviderCredentialResponse, 200)
+@validate_request(UpdateProviderCredentialRequest)
+async def update_provider_credential(
+    provider_id: int, cred_id: int, data: UpdateProviderCredentialRequest
+):
     """Update label, weight, enabled, org_id, account_meta, or rotate the api_key."""
     from shared.security.credential_encryption import encrypt_credential
 
@@ -629,7 +824,10 @@ async def update_provider_credential(provider_id: int, cred_id: int):
             return "provider_not_found"
 
         cred = (
-            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
+            db(
+                (db.provider_credentials.id == cred_id)
+                & (db.provider_credentials.provider_id == provider_id)
+            )
             .select()
             .first()
         )
@@ -644,30 +842,30 @@ async def update_provider_credential(provider_id: int, cred_id: int):
     if existence == "cred_not_found":
         return jsonify({"status": "error", "error": "Credential not found"}), 404
 
-    data = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    if "label" in data:
-        label = data["label"].strip()
+    if data.label is not None:
+        label = data.label.strip()
         if not label or len(label) > 255:
             return jsonify({"status": "error", "error": "label must be 1-255 characters"}), 400
 
-    if "weight" in data:
-        weight = data["weight"]
+    if data.weight is not None:
+        weight = data.weight
         if not isinstance(weight, int) or weight < 1 or weight > 10000:
-            return jsonify({"status": "error", "error": "weight must be an integer between 1 and 10000"}), 400
+            return jsonify(
+                {"status": "error", "error": "weight must be an integer between 1 and 10000"}
+            ), 400
 
-    if "api_key" in data:
-        new_key = data["api_key"].strip()
+    if data.api_key is not None:
+        new_key = data.api_key.strip()
         if not new_key:
-            return jsonify({"status": "error", "error": "api_key cannot be empty when provided"}), 400
+            return jsonify(
+                {"status": "error", "error": "api_key cannot be empty when provided"}
+            ), 400
         encrypted_new_key = encrypt_credential(new_key)
 
     def _update():
         update_fields: dict = {}
 
-        if "label" in data:
+        if data.label is not None:
             # Check uniqueness (exclude self)
             conflict = (
                 db(
@@ -682,19 +880,19 @@ async def update_provider_credential(provider_id: int, cred_id: int):
                 return "label_conflict"
             update_fields["label"] = label
 
-        if "weight" in data:
+        if data.weight is not None:
             update_fields["weight"] = weight
 
-        if "enabled" in data:
-            update_fields["enabled"] = bool(data["enabled"])
+        if data.enabled is not None:
+            update_fields["enabled"] = bool(data.enabled)
 
-        if "org_id" in data:
-            update_fields["org_id"] = data["org_id"]
+        if data.org_id is not None:
+            update_fields["org_id"] = data.org_id
 
-        if "account_meta" in data:
-            update_fields["account_meta"] = data["account_meta"]
+        if data.account_meta is not None:
+            update_fields["account_meta"] = data.account_meta
 
-        if "api_key" in data:
+        if data.api_key is not None:
             update_fields["api_key"] = encrypted_new_key
 
         if not update_fields:
@@ -713,18 +911,19 @@ async def update_provider_credential(provider_id: int, cred_id: int):
         return jsonify({"status": "error", "error": "No valid fields to update"}), 400
 
     updated = result
-    return jsonify(
-        {
-            "status": "success",
-            "data": _credential_to_dict(updated),
-            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": _credential_to_dict(updated),
+        "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+    }
 
 
 @api_v1_bp.route("/providers/<int:provider_id>/credentials/<int:cred_id>", methods=["DELETE"])
+@tag(["Providers", "Credentials"])
+@security_scheme(_BEARER_AUTH)
 @require_auth
-@require_role("admin")
+@require_scope(Permission.PROVIDER_ADMIN)
+@validate_response(DeleteProviderCredentialResponse, 200)
 async def delete_provider_credential(provider_id: int, cred_id: int):
     """Remove a credential from the pool. Requires at least one other credential to remain."""
 
@@ -734,7 +933,10 @@ async def delete_provider_credential(provider_id: int, cred_id: int):
             return "provider_not_found"
 
         cred = (
-            db((db.provider_credentials.id == cred_id) & (db.provider_credentials.provider_id == provider_id))
+            db(
+                (db.provider_credentials.id == cred_id)
+                & (db.provider_credentials.provider_id == provider_id)
+            )
             .select()
             .first()
         )
@@ -768,13 +970,11 @@ async def delete_provider_credential(provider_id: int, cred_id: int):
             409,
         )
 
-    return jsonify(
-        {
-            "status": "success",
-            "data": {"id": cred_id},
-            "meta": {
-                "action": "deleted",
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            },
-        }
-    )
+    return {
+        "status": "success",
+        "data": {"id": cred_id},
+        "meta": {
+            "action": "deleted",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        },
+    }

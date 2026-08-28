@@ -1,13 +1,12 @@
-"""
-gRPC authentication interceptor tests — fail-closed bearer token validation.
+"""gRPC authentication interceptor tests — fail-closed bearer token validation.
 
 Regression test: security review 2026-07-26 — gRPC missing auth (fail-closed)
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 import grpc
 from grpc import ServicerContext
@@ -32,12 +31,13 @@ class AuthInterceptor(grpc.ServerInterceptor):
     are rejected with UNAUTHENTICATED.
     """
 
-    def __init__(self, configured_token: Optional[str]) -> None:
+    def __init__(self, configured_token: str | None) -> None:
         """Initialize with configured secret token.
 
         Args:
             configured_token: Pre-shared Bearer token. If None or empty,
                 all calls are rejected.
+
         """
         self.configured_token = configured_token
 
@@ -57,7 +57,9 @@ class AuthInterceptor(grpc.ServerInterceptor):
 
         # Validate format: "Bearer <token>"
         if not auth_header.startswith("Bearer "):
-            return self._abort(grpc.StatusCode.UNAUTHENTICATED, "Missing or invalid authorization header")
+            return self._abort(
+                grpc.StatusCode.UNAUTHENTICATED, "Missing or invalid authorization header"
+            )
 
         # Extract token and validate with constant-time comparison
         provided_token = auth_header[7:]  # Strip "Bearer "

@@ -1,0 +1,40 @@
+{{- if and .Values.cilium.enabled .Values.cilium.rbac.create -}}
+# Least-privilege ClusterRole for the Cilium policy reconciler
+# (services/management/app/services/cilium_policy.py), bound to the
+# Management ServiceAccount. Scoped to exactly what the reconciler needs:
+# read/write on the two Cilium CRD types it upserts, and read-only on
+# CustomResourceDefinitions for CRD capability detection (§12.1, §12.3).
+# No wildcard verbs, no wildcard resources, no cluster-admin.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "waddleai.fullname" . }}-cilium-reconciler
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["cilium.io"]
+    resources:
+      - ciliumnetworkpolicies
+      - ciliumenvoyconfigs
+      - ciliumclusterwidenetworkpolicies
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources:
+      - customresourcedefinitions
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "waddleai.fullname" . }}-cilium-reconciler
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "waddleai.fullname" . }}-cilium-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "waddleai.serviceAccountName" . }}
+    namespace: {{ .Values.namespace }}
+{{- end }}

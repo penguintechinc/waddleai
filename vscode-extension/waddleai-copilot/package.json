@@ -2,7 +2,7 @@
   "name": "waddleai-copilot",
   "displayName": "WaddleAI Chat Participant",
   "description": "Use WaddleAI's enterprise AI proxy as a chat participant in VS Code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "waddleai",
   "engines": {
     "vscode": "^1.85.0"
@@ -95,7 +95,7 @@
       },
       {
         "command": "waddleai.clearMemory",
-        "title": "WaddleAI: Clear Conversation Memory"
+        "title": "WaddleAI: Start New Conversation"
       }
     ],
     "menus": {
@@ -129,18 +129,18 @@
     "publish": "vsce publish"
   },
   "devDependencies": {
-    "@types/node": "20.x",
-    "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^6.15.0",
-    "@typescript-eslint/parser": "^6.15.0",
-    "@vscode/test-electron": "^2.3.8",
-    "@vscode/vsce": "^2.32.0",
-    "eslint": "^8.56.0",
-    "typescript": "^5.3.3"
+    "@types/node": "20.19.13",
+    "@types/vscode": "1.103.0",
+    "@typescript-eslint/eslint-plugin": "8.67.0",
+    "@typescript-eslint/parser": "8.67.0",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.9.2",
+    "eslint": "8.57.1",
+    "typescript": "5.9.2"
   },
   "dependencies": {
-    "axios": "^1.6.2",
-    "openai": "^4.24.1"
+    "axios": "1.19.0",
+    "openai": "4.104.0"
   },
   "repository": {
     "type": "git",

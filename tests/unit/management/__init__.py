@@ -1,1 +1,1 @@
-"""Unit tests for WaddleAI Management Service"""
+"""Unit tests for WaddleAI Management Service."""

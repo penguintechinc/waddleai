@@ -8,7 +8,12 @@ metadata:
     {{- include "waddleai.labels" . | nindent 4 }}
     app.kubernetes.io/component: ollama
 spec:
-  type: {{ .Values.ollama.service.type }}
+  # ClusterIP is not configurable (spec §10.3): Ollama has no native auth, so
+  # the AIProxy-only CiliumNetworkPolicy (waddleai-allow-fleet-ingress in
+  # cilium-network-policy.yaml) is the entire access-control story. A
+  # NodePort/LoadBalancer would bypass that policy's in-cluster-only
+  # assumption entirely.
+  type: ClusterIP
   ports:
     - port: {{ .Values.ollama.service.port }}
       targetPort: {{ .Values.ollama.service.targetPort }}

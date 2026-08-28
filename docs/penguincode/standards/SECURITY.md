@@ -78,11 +78,11 @@ These belong in `.gitignore` and should be managed by your CI/CD system or secre
 **Bad code:**
 ```bash
 # DON'T DO THIS! The token lives in your shell history forever.
-curl -H "Authorization: Bearer ghp_abc123XYZ" https://api.github.com/user
-my-tool --api-key "sk-live-abc123" --action deploy
+curl -H "Authorization: Bearer <your-github-token>" https://api.github.com/user
+my-tool --api-key "<your-api-key>" --action deploy
 
 # Also bad: literal value in an export ends up in history too
-export MY_TOKEN="sk-live-abc123"
+export MY_TOKEN="<your-api-key>"
 ```
 
 **How we protect:** Read tokens from environment variables, files, or stdin — never type or interpolate literal values on the command line.

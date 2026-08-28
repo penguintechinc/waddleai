@@ -5,6 +5,7 @@ import time
 
 import grpc
 import jwt
+
 from penguincode_cli.config.settings import AuthConfig
 from penguincode_cli.proto import (
     AuthRequest,

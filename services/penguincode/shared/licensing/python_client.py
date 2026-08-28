@@ -9,7 +9,7 @@ import logging
 import os
 import time
 from functools import wraps
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import requests
 
@@ -37,7 +37,7 @@ class PenguinTechLicenseClient:
         self,
         license_key: str,
         product: str,
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
         timeout: int = 30,
     ):
         """
@@ -93,7 +93,7 @@ class PenguinTechLicenseClient:
 
         return cls(license_key, product, base_url, timeout)
 
-    def validate(self) -> Dict[str, Any]:
+    def validate(self) -> dict[str, Any]:
         """
         Validate license and get server ID for keepalives.
 
@@ -164,7 +164,7 @@ class PenguinTechLicenseClient:
             logger.error(f"Feature check failed for {feature}: {e}")
             return False
 
-    def keepalive(self, usage_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def keepalive(self, usage_data: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Send keepalive with optional usage statistics.
 
@@ -197,7 +197,7 @@ class PenguinTechLicenseClient:
         except requests.RequestException as e:
             raise LicenseValidationError(f"Keepalive request failed: {e}")
 
-    def get_all_features(self) -> Dict[str, bool]:
+    def get_all_features(self) -> dict[str, bool]:
         """
         Get all available features from cache or validation.
 
@@ -212,7 +212,7 @@ class PenguinTechLicenseClient:
 
         return self._feature_cache.copy()
 
-    def _update_feature_cache(self, features: List[Dict[str, Any]]) -> None:
+    def _update_feature_cache(self, features: list[dict[str, Any]]) -> None:
         """Update the feature cache with new feature data."""
         self._feature_cache = {}
         for feature in features:
@@ -252,10 +252,10 @@ class PenguinTechLicenseClient:
 
 
 # Global client instance for convenience
-_global_client: Optional[PenguinTechLicenseClient] = None
+_global_client: PenguinTechLicenseClient | None = None
 
 
-def get_client() -> Optional[PenguinTechLicenseClient]:
+def get_client() -> PenguinTechLicenseClient | None:
     """Get the global license client instance."""
     global _global_client
     if _global_client is None:
@@ -263,7 +263,7 @@ def get_client() -> Optional[PenguinTechLicenseClient]:
     return _global_client
 
 
-def requires_feature(feature_name: str, client: Optional[PenguinTechLicenseClient] = None):
+def requires_feature(feature_name: str, client: PenguinTechLicenseClient | None = None):
     """
     Decorator to gate functionality behind license features.
 
@@ -293,7 +293,7 @@ def requires_feature(feature_name: str, client: Optional[PenguinTechLicenseClien
     return decorator
 
 
-def initialize_licensing(license_key: str = None, product: str = None) -> Dict[str, Any]:
+def initialize_licensing(license_key: str = None, product: str = None) -> dict[str, Any]:
     """
     Initialize licensing system and validate license.
 
@@ -338,7 +338,7 @@ def check_feature(feature: str) -> bool:
     return client.check_feature(feature)
 
 
-def send_keepalive(usage_data: Dict[str, Any] = None) -> bool:
+def send_keepalive(usage_data: dict[str, Any] = None) -> bool:
     """Send keepalive using the global client."""
     client = get_client()
     if not client:

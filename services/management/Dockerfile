@@ -18,7 +18,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Python dependencies
 COPY services/management/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip && \
+# pip itself is pinned: `--upgrade pip` pulls whatever is newest at build
+# time, which is an unpinned dependency in the image that installs every other
+# dependency. The application requirements are hash-pinned below.
+RUN pip install --no-cache-dir "pip==26.2.1" && \
     pip install --no-cache-dir -r /tmp/requirements.txt
 
 
@@ -49,6 +52,13 @@ WORKDIR /app
 COPY shared/ /app/shared/
 COPY services/management/app/ /app/app/
 COPY services/management/asgi.py /app/
+
+# Copy Alembic migration assets so `alembic upgrade head` can run from this
+# image (used by the K8s migration Job). env.py resolves imports relative to
+# the parent of alembic.ini's script_location, so alembic.ini and alembic/
+# must sit alongside app/ at /app.
+COPY services/management/alembic.ini /app/alembic.ini
+COPY services/management/alembic/ /app/alembic/
 
 # Create necessary directories
 RUN mkdir -p /app/config/marchproxy /app/logs /app/databases && \

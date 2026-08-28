@@ -1,15 +1,20 @@
-"""
-penguin-aaa integration for WaddleAI
-Provides OIDC token issuance, validation, and scope-based authorization
+"""penguin-aaa integration for WaddleAI.
+
+Provides OIDC token issuance, validation, and scope-based authorization.
 """
 
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import List
 
 import jwt as _jwt
-from penguin_aaa.authn import Claims, OIDCProvider, OIDCProviderConfig, OIDCRelyingParty, OIDCRPConfig
+from penguin_aaa.authn import (
+    Claims,
+    OIDCProvider,
+    OIDCProviderConfig,
+    OIDCRelyingParty,
+    OIDCRPConfig,
+)
 from penguin_aaa.authz.rbac import RBACEnforcer
 from penguin_aaa.authz.rbac import Role as AAARole
 from penguin_aaa.crypto.keystore import FileKeyStore, MemoryKeyStore
@@ -78,6 +83,7 @@ class LocalOIDCRelyingParty:
     """
 
     def __init__(self, provider: OIDCProvider) -> None:
+        """Bind this relying party to the process-local self-issuing *provider*."""
         self._provider = provider
 
     async def verify_token(self, raw_token: str) -> dict:
@@ -112,7 +118,7 @@ def build_rbac_enforcer() -> RBACEnforcer:
 
 def user_context_to_claims(user_context: UserContext) -> Claims:
     """Convert WaddleAI UserContext to penguin-aaa Claims."""
-    scopes: List[str] = []
+    scopes: list[str] = []
     if isinstance(user_context.permissions, set):
         scopes = [p.value if hasattr(p, "value") else str(p) for p in user_context.permissions]
     elif isinstance(user_context.permissions, list):
@@ -152,7 +158,9 @@ def claims_to_user_context(claims: Claims) -> UserContext:
 
     raw_api_key_id = claims.ext.get("api_key_id") if claims.ext else None
     api_key_id = (
-        int(raw_api_key_id) if raw_api_key_id is not None and str(raw_api_key_id).isdigit() else None
+        int(raw_api_key_id)
+        if raw_api_key_id is not None and str(raw_api_key_id).isdigit()
+        else None
     )
 
     return UserContext(
@@ -172,7 +180,7 @@ def user_context_to_claims_dict(uc: UserContext) -> dict:
     This dict carries the full context and is safe for AuditMiddleware
     (which reads scope["state"]["claims"] as a plain dict and calls .get()).
     """
-    scopes: List[str] = []
+    scopes: list[str] = []
     if isinstance(uc.permissions, set):
         scopes = [p.value if hasattr(p, "value") else str(p) for p in uc.permissions]
     elif isinstance(uc.permissions, list):
@@ -209,7 +217,9 @@ def claims_dict_to_user_context(d: dict) -> UserContext:
 
     raw_api_key_id = d.get("api_key_id")
     api_key_id = (
-        int(raw_api_key_id) if raw_api_key_id is not None and str(raw_api_key_id).isdigit() else None
+        int(raw_api_key_id)
+        if raw_api_key_id is not None and str(raw_api_key_id).isdigit()
+        else None
     )
 
     return UserContext(
@@ -247,9 +257,9 @@ def verify_token(token: str, provider: OIDCProvider) -> UserContext:
             issuer=issuer,
         )
     except _jwt.ExpiredSignatureError:
-        raise AuthenticationError("Token has expired")
+        raise AuthenticationError("Token has expired")  # noqa: B904 -- re-raise without chaining is existing control flow, out of scope for this pass
     except _jwt.InvalidTokenError as exc:
-        raise AuthenticationError(f"Invalid token: {exc}")
+        raise AuthenticationError(f"Invalid token: {exc}")  # noqa: B904 -- re-raise without chaining is existing control flow, out of scope for this pass
 
     claims = Claims(
         sub=payload["sub"],

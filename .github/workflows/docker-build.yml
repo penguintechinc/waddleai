@@ -2,11 +2,25 @@ name: Build and Push Multi-Architecture Docker Images
 
 on:
   push:
-    branches: [ main, 'v*' ]
+    branches: [ main, 'release/**', 'v*' ]
     paths:
       - 'proxy/**'
       - 'services/**'
       - 'shared/**'
+      - 'images/**'
+      - 'openapi/**'
+      - '.spectral.yaml'
+      - 'scripts/generate_openapi_spec.py'
+      - 'tests/**'
+      # pyproject.toml/requirements.txt/Makefile/.pre-commit-config.yaml are
+      # test & tooling config, not application code, but a PR touching only
+      # one of them (e.g. a pytest.ini marker, a dependency bump, a new make
+      # target) previously matched none of the globs above and ran no tests
+      # and no builds at all.
+      - 'pyproject.toml'
+      - 'requirements.txt'
+      - 'Makefile'
+      - '.pre-commit-config.yaml'
       - '.version'
       - '.github/workflows/docker-build.yml'
     tags: [ 'v*' ]
@@ -20,15 +34,158 @@ on:
       - 'proxy/**'
       - 'services/**'
       - 'shared/**'
+      - 'images/**'
+      - 'openapi/**'
+      - '.spectral.yaml'
+      - 'scripts/generate_openapi_spec.py'
+      - 'tests/**'
+      # pyproject.toml/requirements.txt/Makefile/.pre-commit-config.yaml are
+      # test & tooling config, not application code, but a PR touching only
+      # one of them (e.g. a pytest.ini marker, a dependency bump, a new make
+      # target) previously matched none of the globs above and ran no tests
+      # and no builds at all.
+      - 'pyproject.toml'
+      - 'requirements.txt'
+      - 'Makefile'
+      - '.pre-commit-config.yaml'
       - '.version'
       - '.github/workflows/docker-build.yml'
+  release:
+    # Five-tier model (devops.md CI/CD Tag Naming): a pre-release maps to the
+    # gamma tier, a full release to prod. `release` events don't support
+    # `paths:` filtering, so these always run regardless of what changed --
+    # acceptable, a release/pre-release is a deliberate, infrequent action.
+    # Deliberately NOT `published` -- that type fires for pre-releases too,
+    # which would let a gamma pre-release slip through the prod path.
+    types: [ prereleased, released ]
+
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME_PROXY: ${{ github.repository }}/proxy
   IMAGE_NAME_MANAGEMENT: ${{ github.repository }}/management
+  IMAGE_NAME_OLLAMA: ${{ github.repository }}/ollama
 
 jobs:
+  # Single source of truth for the five-tier model (devops.md CI/CD Tag
+  # Naming): every other job reads tier/tag_prefix/push/epoch64/semver from
+  # here instead of re-deriving them from github.ref. This also fixes a
+  # latent bug -- build-platform, merge-manifests, and build-ollama-image
+  # each used to generate their own independent `date +%s` epoch64, so the
+  # per-arch tags merge-manifests tried to merge were never the ones
+  # build-platform had actually pushed.
+  determine-tier:
+    name: Determine release tier
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      tag_prefix: ${{ steps.tier.outputs.tag_prefix }}
+      push: ${{ steps.tier.outputs.push }}
+      epoch64: ${{ steps.tier.outputs.epoch64 }}
+      semver: ${{ steps.tier.outputs.semver }}
+      version_changed: ${{ steps.tier.outputs.version_changed }}
+      release_tag: ${{ steps.tier.outputs.release_tag }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        fetch-depth: 0
+        # This job only reads .version and diffs git history -- never pushes
+        # -- so the checkout token doesn't need to persist (avoids a new
+        # zizmor artipacked finding the rest of this file already carries).
+        persist-credentials: false
+
+    - name: Determine tier, tag prefix, push flag, epoch and version
+      id: tier
+      # Values reach the script through env, not ${{ }} interpolation --
+      # matches the pattern already established below in merge-manifests'
+      # "Determine manifest tags" step (template injection / SC2193).
+      env:
+        REF: ${{ github.ref }}
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_ACTION: ${{ github.event.action }}
+        RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+        EPOCH64=$(date +%s)
+
+        if [ -f .version ]; then
+          VERSION=$(tr -d '[:space:]' < .version)
+          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
+          if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
+            VERSION_CHANGED=true
+          else
+            VERSION_CHANGED=false
+          fi
+        else
+          SEMVER=0.0.0
+          VERSION_CHANGED=false
+        fi
+
+        # release_tag is only meaningful for the prod tier (release: released)
+        # -- the exact tag name off the GitHub Release, e.g. "v1.2.3".
+        if [ -n "$RELEASE_TAG_NAME" ]; then
+          RELEASE_TAG="$RELEASE_TAG_NAME"
+        else
+          RELEASE_TAG="$REF_NAME"
+        fi
+
+        # Five-tier decision -- the ONLY place branch/event -> tier mapping
+        # happens in this workflow.
+        if [ "$EVENT_NAME" = "release" ] && [ "$EVENT_ACTION" = "released" ]; then
+          TIER=prod; TAG_PREFIX="prod"; PUSH=true
+        elif [ "$EVENT_NAME" = "release" ] && [ "$EVENT_ACTION" = "prereleased" ]; then
+          TIER=gamma; TAG_PREFIX="gamma"; PUSH=true
+        elif [ "$REF" = "refs/heads/main" ]; then
+          TIER=beta; TAG_PREFIX="beta"; PUSH=true
+        elif [[ "$REF" == refs/tags/v* ]]; then
+          # Raw `git push --tags` (no GitHub Release object). Kept building
+          # for compile-test/security-scan coverage, deliberately NOT treated
+          # as prod -- prod is gated on the release:released event only. See
+          # the "release" job below for the pre-existing tag->GH-Release path.
+          TIER=alpha; TAG_PREFIX="alpha"; PUSH=true
+        elif [[ "$REF" == refs/heads/release/v* || "$REF" == refs/heads/v* ]]; then
+          TIER=alpha; TAG_PREFIX="alpha"; PUSH=true
+        else
+          # feature/ fix/ chore/ hotfix/ docs/ refactor/ branches, and any
+          # other non-release branch: pre-alpha -- build only, never push.
+          TIER=prealpha; TAG_PREFIX="prealpha"; PUSH=false
+        fi
+
+        {
+          echo "epoch64=$EPOCH64"
+          echo "semver=$SEMVER"
+          echo "version_changed=$VERSION_CHANGED"
+          echo "release_tag=$RELEASE_TAG"
+          echo "tier=$TIER"
+          echo "tag_prefix=$TAG_PREFIX"
+          echo "push=$PUSH"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Fail-closed prod version gate
+      # Runs before any prod image push. Accepts v1.2.3, 1.2.3, or
+      # 1.2.3.<epoch64>; unparseable or missing -> exit 1; major < 1 -> exit 1
+      # (this repo is v0.2.0, so this correctly refuses every prod build
+      # until v1.0.0 is tagged).
+      if: steps.tier.outputs.tier == 'prod'
+      env:
+        RAW_TAG: ${{ steps.tier.outputs.release_tag }}
+      run: |
+        set -euo pipefail
+        if [[ "$RAW_TAG" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]]; then
+          MAJOR="${BASH_REMATCH[1]}"
+        else
+          echo "::error::prod release tag '$RAW_TAG' does not match v{Major}.{Minor}.{Patch}[.{build}] -- refusing to build a prod image"
+          exit 1
+        fi
+        if [ "$MAJOR" -lt 1 ]; then
+          echo "::error::prod release tag '$RAW_TAG' has major version $MAJOR < 1 -- fail-closed, refusing to build a prod image"
+          exit 1
+        fi
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -38,29 +195,31 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Generate epoch64 timestamp
       id: timestamp
       run: |
         EPOCH64=$(date +%s)
-        echo "epoch64=$EPOCH64" >> $GITHUB_OUTPUT
+        echo "epoch64=$EPOCH64" >> "$GITHUB_OUTPUT"
 
     - name: Check version file
       id: version
       run: |
         if [ -f .version ]; then
-          VERSION=$(cat .version | tr -d '[:space:]')
+          VERSION=$(tr -d '[:space:]' < .version)
           SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
-          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
 
           if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
         else
-          echo "semver=0.0.0" >> $GITHUB_OUTPUT
-          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "semver=0.0.0" >> "$GITHUB_OUTPUT"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Set up Python ${{ matrix.python-version }}
@@ -75,6 +234,7 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
+        lookup-only: true
 
     - name: Install dependencies
       run: |
@@ -85,7 +245,19 @@ jobs:
 
     - name: Run unit tests
       run: |
-        python -m pytest tests/unit/ -v --cov=shared --cov-report=xml --cov-report=html
+        # --cov sources come from pytest.ini's addopts (shared,
+        # services/management/app, proxy) so CI measures the identical
+        # surface as `make test-unit` locally -- previously this step's
+        # explicit --cov=shared silently narrowed the *reported* subset
+        # Codecov saw, even though pytest.ini's addopts always contributed
+        # extra --cov/--cov-report values on top of it (pytest-cov
+        # accumulates repeated options, it doesn't let a later flag replace
+        # an earlier one). No --cov-report=html here: Codecov consumes
+        # coverage.xml, nothing in CI reads the HTML render, and pytest.ini
+        # no longer defaults to html (moved to `make test-unit` for local
+        # dev only) so generating both never holds a second copy of the
+        # coverage data in memory while torch/transformers are resident.
+        python -m pytest tests/unit/ -q --cov-report=xml
       env:
         PYTHONPATH: ${{ github.workspace }}
 
@@ -116,13 +288,25 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Node.js
       uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
       with:
         node-version: '24'
-        cache: npm
-        cache-dependency-path: services/webui/package-lock.json
+        # zizmor cache-poisoning: this workflow's push/tag/release triggers feed
+        # build-platform's webui image build, so a poisoned npm cache restored on
+        # those refs could smuggle tampered node_modules into the pushed image.
+        # A ref-conditional package-manager-cache was tried first but zizmor's
+        # audit is static (can't evaluate the ${{ }} expression) and still flags
+        # `cache: npm` as "enables caching explicitly" regardless -- disabling
+        # outright is what actually clears the finding. package-manager-cache
+        # alone isn't enough: it only suppresses *auto-detected* caching, not an
+        # explicit `cache:` input, so that input has to come out too. Costs npm
+        # ci speed on every run, not just privileged ones; revisit if that
+        # becomes a problem.
+        package-manager-cache: false
 
     - name: Install dependencies
       run: npm ci
@@ -140,8 +324,200 @@ jobs:
     - name: Build
       run: npm run build
 
+  # Regenerates openapi/v1.yaml from the quart-schema annotations and fails
+  # if the committed file has drifted, then lints it with spectral. No
+  # `|| true` anywhere in this job -- both the drift check and the lint step
+  # are real gates (see backend.md OpenAPI: "spec update mandatory in every
+  # API PR", and the repo's documented history of || true-masked checks in
+  # the `test` job's bandit step, which this job does not repeat).
+  openapi-lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      with:
+        python-version: '3.13'
+
+    - name: Install management service dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r services/management/requirements.txt
+
+    - name: Regenerate spec and fail on drift
+      run: |
+        python scripts/generate_openapi_spec.py --output /tmp/v1.yaml
+        diff -u openapi/v1.yaml /tmp/v1.yaml || {
+          echo "::error::openapi/v1.yaml is out of date -- run 'make generate-openapi' and commit the result.";
+          exit 1;
+        }
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+      with:
+        node-version: '24'
+        # v6 auto-enables npm caching from the repo-root package.json even
+        # without a `cache:` input (zizmor cache-poisoning). This job only
+        # `npm install -g`s a single pinned tool -- no lockfile install to
+        # speed up -- so there is no benefit to weigh against disabling it.
+        package-manager-cache: false
+
+    - name: Install spectral (exact-pinned)
+      run: npm install -g @stoplight/spectral-cli@6.16.3
+
+    - name: Lint OpenAPI spec
+      run: spectral lint openapi/v1.yaml --fail-severity=error
+
+  # tests/contract/ was never run in CI -- only tests/unit/ was (see the `test`
+  # job above). It golden-snapshots the proxy's and management's real HTTP
+  # surface by launching both services as real hypercorn subprocesses against an
+  # isolated sqlite DB (WADDLEAI_STUB_UPSTREAM=1) -- no external infra
+  # (postgres/redis/live LLM) required, so it runs as a normal blocking gate.
+  #
+  # 2 of the 80 tests are xfail-marked in-file (not deselected/skipped here):
+  # shared/utils/health_checks.py:100 calls db.executesql(), a PyDAL API
+  # penguin_dal does not implement, so /readyz always 503s. Tracked in gh-130.
+  # The six .update_record() xfails that used to sit alongside them are gone --
+  # that API no longer appears anywhere in shared/, so the markers were removed
+  # rather than left to mask a future auth regression. Per gh-130 the same
+  # applies to these two once executesql() is addressed.
+  test-contract:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      with:
+        python-version: '3.13'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+        lookup-only: true
+
+    # proxy/requirements.txt is installed here (unlike the `test` job above)
+    # because this suite launches the real proxy service as a subprocess
+    # (hypercorn/quart/etc.), not just imports of `shared`.
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r proxy/requirements.txt
+        pip install -r services/management/requirements.txt
+        pip install pytest pytest-asyncio pytest-cov
+
+    - name: Run contract tests
+      run: python -m pytest tests/contract/ -v --no-cov
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+
+  # tests/integration/ was never run in CI either. Unlike tests/contract/, it
+  # legitimately needs external infra for some flows (a live Ollama server,
+  # Qdrant, an Anthropic API key) -- but every test that needs one is already
+  # gated behind an `{service}_available` session fixture (tests/integration/
+  # conftest.py) that probes the service and skips cleanly if it's
+  # unreachable. Deliberately NOT standing up Ollama/Qdrant containers here:
+  # this runs the subset that doesn't need live infra (verified locally:
+  # 53 passed, 27 skipped, 0 failed with no such services reachable) rather
+  # than paying for infra this repo doesn't otherwise stand up in CI.
+  test-integration:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      with:
+        python-version: '3.13'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+        lookup-only: true
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r proxy/requirements.txt
+        pip install -r services/management/requirements.txt
+        pip install pytest pytest-asyncio pytest-cov
+
+    - name: Run integration tests (subset not requiring live external services)
+      run: python -m pytest tests/integration/ -v --no-cov
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+
+  # tests/e2e/ currently holds only the pre-existing Playwright JS suite
+  # (tests/e2e/tests/*.spec.js -- beta-only, driven through the internal LB
+  # per testing.md, deliberately not run from a generic PR) plus scaffolding.
+  # The real pytest e2e suite lives on feature/e2e-suite, not yet merged, and
+  # will land as tests/e2e/conftest.py + tests/e2e/test_*.py. `pytest
+  # tests/e2e/` exits 5 ("no tests collected") on an empty tree, which is a
+  # hard failure by default -- so this step tolerates exit 5 specifically
+  # (nothing to run yet) while still failing on a real failure (1), collection
+  # error (2), or usage error (4). Once feature/e2e-suite merges, this job
+  # starts gating for real with no further workflow change needed.
+  test-e2e:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      with:
+        python-version: '3.13'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+        lookup-only: true
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r proxy/requirements.txt
+        pip install -r services/management/requirements.txt
+        pip install pytest pytest-asyncio pytest-cov
+
+    - name: Run e2e tests
+      # No exit-5 tolerance: feature/e2e-suite has landed, so "no tests
+      # collected" now means the suite went missing, which must fail loudly
+      # rather than report a green gate over nothing.
+      run: python -m pytest tests/e2e/ -v --no-cov
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+
   build-platform:
-    needs: test
+    needs: [determine-tier, test, test-webui, openapi-lint, test-contract, test-integration, test-e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -150,7 +526,17 @@ jobs:
       fail-fast: false
       matrix:
         platform: [linux/amd64, linux/arm64]
-        service: [proxy, management]
+        # webui MUST stay in this base list, not live only in `include` below.
+        # `include` entries whose keys don't already appear in the matrix
+        # (webui previously had no `platform:` key) create one standalone
+        # combination instead of merging into the platform x service cross
+        # product -- so webui built once, with `matrix.platform` unset, and
+        # never produced the `-amd64`/`-arm64` tags merge-manifests (and
+        # security-scan) already expect for it. Putting webui here first
+        # expands it across both platforms; the `include` entry below then
+        # merges context/dockerfile onto each of those two combinations,
+        # exactly as it already does for `management`.
+        service: [proxy, management, webui]
         include:
           - service: webui
             context: ./services/webui
@@ -167,30 +553,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
-
-    - name: Generate epoch64 timestamp
-      id: timestamp
-      run: |
-        EPOCH64=$(date +%s)
-        echo "epoch64=$EPOCH64" >> $GITHUB_OUTPUT
-
-    - name: Check version file
-      id: version
-      run: |
-        if [ -f .version ]; then
-          VERSION=$(cat .version | tr -d '[:space:]')
-          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
-          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
-
-          if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-        else
-          echo "semver=0.0.0" >> $GITHUB_OUTPUT
-          echo "changed=false" >> $GITHUB_OUTPUT
-        fi
+        persist-credentials: false
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
@@ -199,7 +562,7 @@ jobs:
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
 
     - name: Log in to Container Registry
-      if: github.event_name != 'pull_request'
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
       with:
         registry: ${{ env.REGISTRY }}
@@ -211,7 +574,7 @@ jobs:
       run: |
         ARCH=${{ matrix.platform }}
         SUFFIX=${ARCH#linux/}
-        echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
+        echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
 
     - name: Extract metadata for Docker
       id: meta
@@ -219,11 +582,11 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
         tags: |
-          type=raw,value=${{ steps.version.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed == 'true' }}
-          type=raw,value=${{ steps.version.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed == 'true' }}
-          type=raw,value=beta-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
-          type=raw,value=gamma-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ github.ref == 'refs/heads/main' && steps.version.outputs.changed != 'true' }}
-          type=raw,value=alpha-${{ steps.timestamp.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/v') && steps.version.outputs.changed != 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-alpha,enable=${{ needs.determine-tier.outputs.tier == 'alpha' && needs.determine-tier.outputs.version_changed == 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ needs.determine-tier.outputs.tier == 'beta' && needs.determine-tier.outputs.version_changed == 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ needs.determine-tier.outputs.tier == 'gamma' }}
+          type=raw,value=${{ needs.determine-tier.outputs.tag_prefix }}-${{ needs.determine-tier.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier != 'prod' }}
+          type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
           type=sha,prefix=ci-${{ steps.arch.outputs.suffix }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
 
     - name: Build and push Docker image for ${{ matrix.platform }}
@@ -232,7 +595,7 @@ jobs:
         context: ${{ matrix.context || '.' }}
         file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
         platforms: ${{ matrix.platform }}
-        push: ${{ github.event_name != 'pull_request' }}
+        push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha,scope=${{ matrix.service }}-${{ steps.arch.outputs.suffix }}
@@ -242,12 +605,14 @@ jobs:
           VCS_REF=${{ github.sha }}
 
   merge-manifests:
-    needs: build-platform
+    needs: [determine-tier, build-platform]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    if: github.event_name != 'pull_request'
+    # Nothing to merge when build-platform didn't push (pre-alpha branches) --
+    # the per-arch source tags below were never uploaded to the registry.
+    if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -258,30 +623,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
-
-    - name: Generate epoch64 timestamp
-      id: timestamp
-      run: |
-        EPOCH64=$(date +%s)
-        echo "epoch64=$EPOCH64" >> $GITHUB_OUTPUT
-
-    - name: Check version file
-      id: version
-      run: |
-        if [ -f .version ]; then
-          VERSION=$(cat .version | tr -d '[:space:]')
-          SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
-          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
-
-          if git diff --name-only HEAD^ HEAD 2>/dev/null | grep -q "^.version$"; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-        else
-          echo "semver=0.0.0" >> $GITHUB_OUTPUT
-          echo "changed=false" >> $GITHUB_OUTPUT
-        fi
+        persist-credentials: false
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -295,29 +637,171 @@ jobs:
 
     - name: Determine manifest tags
       id: tags
+      # Values reach the script through env, not ${{ }} interpolation. Two
+      # reasons: expanding a template directly into a shell body is the
+      # template-injection pattern actionlint/zizmor flag, and shellcheck
+      # cannot parse ${{ }} so it reported every [[ ... == ref/... ]] here as
+      # a comparison that "can never be equal" (SC2193).
+      env:
+        IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+        TIER: ${{ needs.determine-tier.outputs.tier }}
+        TAG_PREFIX: ${{ needs.determine-tier.outputs.tag_prefix }}
+        SEMVER: ${{ needs.determine-tier.outputs.semver }}
+        VERSION_CHANGED: ${{ needs.determine-tier.outputs.version_changed }}
+        EPOCH64: ${{ needs.determine-tier.outputs.epoch64 }}
+        RELEASE_TAG: ${{ needs.determine-tier.outputs.release_tag }}
       run: |
-        TAGS=""
-        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-          TAG="${{ github.ref_name }}"
-          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${TAG} --tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:latest"
-        elif [[ "${{ github.ref }}" == refs/heads/v* && "${{ steps.version.outputs.changed }}" == "true" ]]; then
-          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:v${{ steps.version.outputs.semver }}-beta --tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}"
-        elif [[ "${{ github.ref }}" == refs/heads/v* ]]; then
-          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}"
-        elif [[ "${{ github.ref }}" == refs/heads/main && "${{ steps.version.outputs.changed }}" == "true" ]]; then
-          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:v${{ steps.version.outputs.semver }}-gamma --tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:gamma-${{ steps.timestamp.outputs.epoch64 }}"
-        elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
-          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:gamma-${{ steps.timestamp.outputs.epoch64 }}"
-        else
-          TAGS="--tag ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:alpha-${{ steps.timestamp.outputs.epoch64 }}"
-        fi
-        echo "tags=$TAGS" >> $GITHUB_OUTPUT
+        set -euo pipefail
+        case "$TIER" in
+          prod)
+            TAGS="--tag ${IMAGE}:${RELEASE_TAG} --tag ${IMAGE}:latest"
+            SOURCE_TAG="${RELEASE_TAG}"
+            ;;
+          gamma)
+            TAGS="--tag ${IMAGE}:v${SEMVER}-gamma --tag ${IMAGE}:gamma-${EPOCH64}"
+            SOURCE_TAG="gamma-${EPOCH64}"
+            ;;
+          beta)
+            if [[ "$VERSION_CHANGED" == "true" ]]; then
+              TAGS="--tag ${IMAGE}:v${SEMVER}-beta --tag ${IMAGE}:beta-${EPOCH64}"
+            else
+              TAGS="--tag ${IMAGE}:beta-${EPOCH64}"
+            fi
+            SOURCE_TAG="beta-${EPOCH64}"
+            ;;
+          alpha)
+            if [[ "$VERSION_CHANGED" == "true" ]]; then
+              TAGS="--tag ${IMAGE}:v${SEMVER}-alpha --tag ${IMAGE}:alpha-${EPOCH64}"
+            else
+              TAGS="--tag ${IMAGE}:alpha-${EPOCH64}"
+            fi
+            SOURCE_TAG="alpha-${EPOCH64}"
+            ;;
+          *)
+            echo "::error::merge-manifests reached with unexpected/prealpha tier '$TIER' -- should have been skipped by the job-level push guard"
+            exit 1
+            ;;
+        esac
+        echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+        echo "source_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
 
     - name: Create and push manifest
+      # steps.tags.outputs.tags is a deliberately unquoted "--tag X --tag Y"
+      # pair-string that has to word-split into separate imagetools args --
+      # read -ra does that explicitly into an array instead of relying on
+      # unquoted expansion, so every use below can be quoted (shellcheck
+      # SC2086) without breaking that split.
       run: |
-        docker buildx imagetools create ${{ steps.tags.outputs.tags }} \
-          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-amd64 \
-          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:beta-${{ steps.timestamp.outputs.epoch64 }}-arm64
+        read -ra TAG_ARGS <<< "$STEPS_TAGS_OUTPUTS_TAGS"
+        docker buildx imagetools create "${TAG_ARGS[@]}" \
+          "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-amd64" \
+          "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-arm64"
+      env:
+        REGISTRY_IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+        STEPS_TAGS_OUTPUTS_TAGS: ${{ steps.tags.outputs.tags }}
+        STEPS_TAGS_OUTPUTS_SOURCE_TAG: ${{ steps.tags.outputs.source_tag }}
+
+  # Hardened Ollama fleet image (spec §10.2, plan Task 13). Separate from the
+  # build-platform/merge-manifests pair above: only two tags exist (hardened,
+  # debug — no per-arch intermediate tags to merge), so a single multi-arch
+  # `docker/build-push-action` push per target is simpler, and the Trivy gate
+  # here is a hard block (exit-code 1), unlike the SARIF-only, non-blocking
+  # security-scan job below — Task 13 explicitly calls for a blocking gate.
+  build-ollama-image:
+    needs: [determine-tier, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [hardened, debug]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Fixed floating tag (hardened/debug — matches spec §10.2's two named
+    # tags exactly, consumed as-is by ollama.image.tag in values.yaml) plus
+    # one immutable per-run tag the Trivy step below scans, so the gate
+    # checks the exact digest just built rather than racing a floating tag.
+    # The version-suffixed tag now fires on the prod tier only (release:
+    # released), not on a raw tag push -- see determine-tier's tag-push note.
+    - name: Extract metadata for Docker
+      id: meta
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}
+        tags: |
+          type=raw,value=${{ matrix.target }}
+          type=raw,value=${{ matrix.target }}-v${{ needs.determine-tier.outputs.semver }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
+          type=sha,prefix=ci-${{ matrix.target }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
+
+    - name: Build and push ${{ matrix.target }} (multi-arch)
+      id: build
+      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7
+      with:
+        context: ./images/ollama
+        file: ./images/ollama/Dockerfile
+        target: ${{ matrix.target }}
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha,scope=ollama-${{ matrix.target }}
+        cache-to: type=gha,scope=ollama-${{ matrix.target }},mode=max
+
+    # Blocking gate (Task 13: "block on Trivy findings") — scans the exact
+    # digest just pushed, ignoring only the documented, justified entries in
+    # images/ollama/.trivyignore (upstream-embedded Go module CVEs + Debian
+    # baseline CVEs with no published fix). Anything else fails the job.
+    # Gated on push=='true' too -- Trivy pulls the image back from the
+    # registry by digest, which doesn't exist there for a pre-alpha,
+    # build-only run.
+    - name: Trivy vulnerability gate
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}@${{ steps.build.outputs.digest }}
+        format: 'table'
+        severity: 'HIGH,CRITICAL'
+        exit-code: '1'
+        trivyignores: 'images/ollama/.trivyignore'
+        version: 'v0.69.3'
+
+    - name: Trivy scan for GitHub Security tab (SARIF, non-blocking)
+      if: always() && github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}@${{ steps.build.outputs.digest }}
+        format: 'sarif'
+        output: 'trivy-results-ollama-${{ matrix.target }}.sarif'
+        version: 'v0.69.3'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      if: always() && github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
+      with:
+        sarif_file: 'trivy-results-ollama-${{ matrix.target }}.sarif'
 
   security-scan:
     needs: merge-manifests
@@ -349,10 +833,15 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
 
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Log in to Container Registry
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
@@ -368,7 +857,11 @@ jobs:
           proxy:
             image: ${{ env.REGISTRY }}/${{ github.repository }}/proxy:ci-amd64-${{ github.sha }}
             ports:
-              - "8000:8000"
+              # host 8000 -> container 8080: the app listens on 8080
+              # (proxy/Dockerfile EXPOSE/CMD/HEALTHCHECK, k8s values.yaml
+              # proxy.service.port/targetPort) -- host side stays 8000 so
+              # the curls below don't need to change.
+              - "8000:8080"
             environment:
               - DATABASE_URL=postgresql://test:test@db:5432/waddleai_test
               - LOG_LEVEL=DEBUG
@@ -419,21 +912,63 @@ jobs:
         sleep 45
 
     - name: Test management health endpoints
+      # On a non-200, print the response body before failing -- /readyz's
+      # body is {"ready": bool, "checks": {"database": bool, "redis": bool}},
+      # which names the exact failing dependency instead of leaving a bare
+      # `curl: (22)` to re-diagnose from scratch next time.
       run: |
-        curl -f http://localhost:8001/healthz
-        curl -f http://localhost:8001/livez
-        curl -f http://localhost:8001/readyz
-        curl -f http://localhost:8001/metrics
+        check() {
+          url="$1"
+          body=$(curl -s -w '\n%{http_code}' "$url")
+          code=$(echo "$body" | tail -n1)
+          resp=$(echo "$body" | sed '$d')
+          if [ "$code" != "200" ]; then
+            echo "FAIL $url -> HTTP $code"
+            echo "$resp"
+            exit 1
+          fi
+          echo "OK $url -> HTTP $code"
+        }
+        check http://localhost:8001/healthz
+        check http://localhost:8001/livez
+        check http://localhost:8001/readyz
+        check http://localhost:8001/metrics
 
     - name: Test proxy health endpoint
+      # Bounded readiness wait, not a gate-weakening: a 4-worker hypercorn
+      # proxy takes measurably longer to accept connections than the
+      # single-process management server, so a single immediate curl (the
+      # previous behavior) raced the container's own startup. Retries up to
+      # 30x2s = 60s, succeeds on the first 200, and still fails the job hard
+      # on timeout -- with `docker compose ps`/`logs` dumped first so the
+      # next run shows *why* the proxy never came up instead of a bare
+      # `curl: (7) Connection refused`.
       run: |
-        curl -f http://localhost:8000/healthz || curl -f http://localhost:8000/health
+        set -uo pipefail
+        ready=""
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:8000/healthz -o /dev/null; then
+            echo "OK http://localhost:8000/healthz -> HTTP 200 (attempt $i/30)"
+            ready=1
+            break
+          fi
+          sleep 2
+        done
+        if [ -z "$ready" ]; then
+          echo "FAIL proxy /healthz never returned 200 after 30 attempts (60s)"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
+          exit 1
+        fi
 
     - name: Test OpenAI-compatible API endpoint
       run: |
+        set -uo pipefail
         response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/chat/completions)
         if [ "$response" != "401" ]; then
           echo "Expected 401 response, got $response"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
           exit 1
         fi
 
@@ -445,33 +980,49 @@ jobs:
   release:
     needs: [test, security-scan, integration-test]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # github.ref for a `release` event is also refs/tags/<tag>, so this must
+    # be scoped to push events specifically -- otherwise the new release:
+    # [prereleased, released] triggers added above would make this job try
+    # to create a second, duplicate GitHub Release on top of the one that
+    # already exists (the one whose event just fired this workflow run).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Generate changelog
       id: changelog
-      run: |
-        echo "## What's Changed" > CHANGELOG.md
-        git log --pretty=format:"* %s (%h)" $(git describe --tags --abbrev=0 HEAD^)..HEAD >> CHANGELOG.md
-        echo "" >> CHANGELOG.md
-        echo "" >> CHANGELOG.md
-        echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$(git describe --tags --abbrev=0 HEAD^)...${GITHUB_REF_NAME}" >> CHANGELOG.md
-
-    - name: Create Release
-      uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e  # v1.1.4
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref_name }}
-        release_name: WaddleAI ${{ github.ref_name }}
-        body_path: CHANGELOG.md
-        draft: false
-        prerelease: false
+        REPO: ${{ github.repository }}
+      run: |
+        PREV_TAG="$(git describe --tags --abbrev=0 HEAD^)"
+        {
+          echo "## What's Changed"
+          git log --pretty=format:"* %s (%h)" "${PREV_TAG}"..HEAD
+          echo ""
+          echo ""
+          echo "**Full Changelog**: https://github.com/${REPO}/compare/${PREV_TAG}...${GITHUB_REF_NAME}"
+        } > CHANGELOG.md
+
+    # actions/create-release (v1.1.4) is archived upstream (zizmor
+    # archived-uses) -- replaced with the `gh` CLI, already the mechanism
+    # version-release.yml uses for its pre-releases. Same target semantics:
+    # tag already exists at this commit (release event triggered this job),
+    # not draft, not a prerelease.
+    - name: Create Release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG_NAME: ${{ github.ref_name }}
+      run: |
+        gh release create "$TAG_NAME" \
+          --title "WaddleAI $TAG_NAME" \
+          --notes-file CHANGELOG.md
 
   cleanup:
     needs: [test, security-scan, integration-test]

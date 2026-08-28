@@ -15,11 +15,13 @@ from shared.agents.security_agent import _TOOL_SENSITIVITY, SecurityAgent, Secur
 
 @pytest.fixture
 def mock_db() -> Mock:
+    """Stand in for the DAL so SecurityAgent tests never touch a real database."""
     return Mock()
 
 
 @pytest.fixture
 def mock_embedding_manager() -> Mock:
+    """Stand in for the embedding manager so SecurityAgent tests never load a real model."""
     return Mock()
 
 

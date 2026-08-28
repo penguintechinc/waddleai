@@ -75,7 +75,7 @@ Migration promise: pointing an existing tool at WaddleAI is a one-line config ch
 
 ### 1.4 Open + commercial, together by design
 
-WaddleAI treats commercial ecosystems as first-class escalation targets, not competitors. The canonical flow: a request classified as trivial runs on a local gemma3/granite/mistral model at near-zero cost; a request classified as hard routes to Claude or Codex-class models with the org's key — with WaddleAI's cache having already stripped every redundant token, its memory layer having supplied local context, and its response always reporting which model actually served it (`waddleai.routed_from`; never silent substitution).
+WaddleAI treats commercial ecosystems as first-class escalation targets, not competitors. The canonical flow: a request classified as trivial runs on a local gemma4/granite/mistral model at near-zero cost; a request classified as hard routes to Claude or Codex-class models with the org's key — with WaddleAI's cache having already stripped every redundant token, its memory layer having supplied local context, and its response always reporting which model actually served it (`waddleai.routed_from`; never silent substitution).
 
 ### 1.5 Non-goals (v0.2–v0.6)
 
@@ -100,18 +100,61 @@ New-dependency review gate: license check is part of PR review; `pip-licenses` a
 
 ### 2.2 Supply-chain origin policy
 
-**No models or libraries of Chinese origin** (e.g., Qwen, DeepSeek, GLM/ChatGLM, Yi, Kimi, MiniMax — and library equivalents), consistent with the existing PRC supply-chain rule. EU/NORAM-origin components are fine (Mistral, HuggingFace, IBM, Google, Meta, Microsoft, Nomic). Enforced by the model registry (§2.3): registry entries carry `origin` and `license` fields; the deny-list is checked at model registration and at fleet `place_model` time.
+**No models or libraries of Chinese origin** (e.g., Qwen, DeepSeek, GLM/ChatGLM, Yi, Kimi, MiniMax, **CogVideoX** (Zhipu AI / 智谱 / Z.ai, Beijing — the same organization as GLM/ChatGLM already named above, so this is the existing rule applied, not a new exception), **Kolors** (Kuaishou) — and library equivalents), consistent with the existing PRC supply-chain rule. EU/NORAM-origin components are fine (Mistral, HuggingFace, IBM, Google, Meta, Microsoft, Nomic). Enforced by the model registry (§2.3): registry entries carry `origin` and `license` fields; the deny-list is checked at model registration and at fleet `place_model` time.
+
+**Treated as PRC-origin**: **Open-Sora** (HPC-AI Tech) — parent entity HPC AI Technology Pte Ltd is Singapore-domiciled, but R&D/staffing runs through Beijing via 北京潞晨科技 (Beijing Luchen Technology) with PRC state-fund backing, so it's treated as PRC-origin under this policy despite the Singapore incorporation. Separately, its code LICENSE reportedly appends the Tencent Hunyuan Community License, which bars use in the EU/UK/South Korea — **that clause detail is unconfirmed against a primary source** and needs verification before it's relied on. That is a *licence* constraint, not an origin one, and the acknowledged-risk exception below does **not** cure it.
+
+#### 2.2a Acknowledged-risk exception (PRC-origin generative models)
+
+A deliberate exception to the rule above, **bounded by model role rather than by a model whitelist**. PRC-origin models are admissible for **generative media only — image, video, music, and speech generation** — once a global administrator opts the deployment in and accepts the risk warning. Current instances: **Kolors** (Kuaishou, image) and **Open-Sora** (HPC-AI Tech, video); the exception admits future generative-media models of the same class on the same terms, without needing this list edited.
+
+The rationale is that generative media is where the non-PRC open-weights field is thinnest, and the residual risk is one an informed operator can knowingly carry — *provided* the model can only ever produce content that the guardrails downstream still inspect.
+
+**The bound is the role, and it is hard.** Every PRC-origin model remains denied outright for **text and reasoning models, embeddings, and every classifier or internal utility role** — `security-audit`, `routing-classifier`, `embeddings`, `summarize`, `docs-fetch`. No acknowledgement unlocks those; §2.2's deny-list is unweakened there.
+
+**Scope: this repository only.** This exception is local to WaddleAI, whose product surface is generative media. It does **not** amend the org-wide PenguinTech supply-chain rule, which continues to apply unchanged to every other repository. Nothing here should be read across into another project, and it is recorded in `.claude/security.local.md` as a repo-local addendum precisely so it cannot be mistaken for a standards change.
+
+Mechanically this is the same shape as §2.3's non-commercial class — off by default, per-model, recorded acceptance — because the mechanism is sound; only the risk being accepted differs.
+
+- **Never deployed by default, never seeded.** Not a default, not a dual-default alternative, and absent from any seeded registry row.
+- **Global-admin-gated.** Enabling requires a user holding `Role.ADMIN` (`shared/auth/rbac.py`), which is cross-org by construction — `check_permission` short-circuits with "Admin has access to everything" before any org scoping is applied. A **Resource Manager MUST NOT be able to accept this**, even for an org they legitimately manage, and neither may a Reporter or ordinary user, whatever model-configuration rights they hold.
+  Two reasons. First, accepting a supply-chain risk is a different act from configuring a model, so the permission check belongs on the acceptance itself, not on the model edit that follows it. Second, and decisive in multi-tenant deployments: **the risk is not org-scoped.** Model weights execute on shared fleet infrastructure (§10.1) — a backdoored model runs in a pod on the same cluster, with that pod's network and storage reach, regardless of which org's request invoked it. An org-scoped admin approving it would be accepting risk on every other tenant's behalf. The blast radius is the deployment, so the approval has to sit at deployment scope.
+- **Per-model risk acceptance**, recording operator identity, timestamp, model, and the version of the risk text accepted, audited to `security_logs` per §9.7. The text must state plainly that the model originates from the PRC and that its training data and weights may contain deliberately poisoned or backdoored content that inspection cannot reliably rule out. Accepting Kolors must not enable Open-Sora.
+- **Generation roles only — never a classifier or utility role.** These models MUST NOT be assignable to `security-audit`, `routing-classifier`, `embeddings`, `summarize`, or any other §7.1 internal-function row. The asymmetry is the point: a poisoned *generation* model produces bad output that §8.3a's guardrails still inspect, whereas a poisoned *classifier* silently fails open and takes the safety layer down with it. The registry MUST reject the assignment rather than warn.
+- **Output is not exempt from anything.** Generated media routes through the §8.3a per-modality guardrails exactly as any other model's output does (§16).
+- The registry enforcement point in §2.2 gains an explicit *acknowledged-exception* branch. It must be an affirmative, logged code path — not a hole in the deny-list, and not an `origin` field quietly set to something other than PRC.
 
 ### 2.3 Model weights — dual-default pattern
 
-Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Community) **only for runtime-pulled models, never vendored into images**, and every Gemma/Llama default MUST have an Apache-2.0 alternative selectable in config ("dual-default pattern"):
+Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Community) **only for runtime-pulled models, never vendored into images**, and every Gemma-ToU/Llama-Community default MUST have an Apache-2.0 alternative selectable in config ("dual-default pattern"). **Gemma 4 ships under Apache-2.0** — Google's own Gemma 4 terms page routes to the Apache-2.0 license, and the custom Gemma Terms of Use now cover only Gemma 1–3 and their variants (ShieldGemma included — see below). The routing classifier's default therefore moved to Gemma 4 (`gemma4:e2b` — note: **no `2b` tag exists**, only `e2b`/`e4b`/`12b`/`26b`/`31b`/`cloud`), and the dual-default rationale no longer applies to that role: an already-Apache default doesn't need a second Apache alternative to satisfy the license policy. This is a licensing-policy consequence, not a cosmetic rename.
 
 | Role | Default | License | Apache-2.0 alternative | Also selectable |
 |---|---|---|---|---|
-| Routing classifier | `gemma3:1b` | Gemma ToU | `granite3.3:2b` (IBM) | `phi4-mini` (MIT), `smollm2:1.7b` (Apache-2.0) |
-| Security auditor / intent classifier | `shieldgemma:2b` | Gemma ToU | `granite-guardian3:2b` (IBM) | `granite-guardian3:8b` |
+| Routing classifier | `gemma4:e2b` | Apache-2.0 | — (already Apache; dual-default requirement no longer applies) | `phi4-mini` (MIT), `smollm2:1.7b` (Apache-2.0) |
+| Security auditor / intent classifier (text) | `shieldgemma:2b` | Gemma ToU | `granite3-guardian:2b` (IBM, size-matched) | `granite4.1-guardian` (IBM, 8B) |
 | Embeddings | `nomic-embed-text` | Apache-2.0 | — (already Apache) | `mxbai-embed-large` (Apache-2.0) |
-| Local generation tiers | org-configured | — | Mistral family (Apache-2.0) | Gemma 3, Llama 3.x (flagged licenses) |
+| Local generation tiers | org-configured | — | Mistral family (Apache-2.0) | `gemma4` family (Apache-2.0 — no longer flagged), Gemma 3, Llama 3.x (flagged licenses) |
+
+**ShieldGemma remains Gemma ToU** — it is Gemma-2-based (Google ships no Gemma-4 generation of ShieldGemma), so the security auditor keeps the dual-default requirement and its Apache-2.0 alternatives are refreshed to `granite3-guardian:2b`/`granite4.1-guardian`. §8.3a extends this single text-tier row into a full per-modality classifier registry (text/image/audio).
+
+**Licence admissibility test.** Because §2.2's deny-list is checked mechanically at model registration and again at fleet `place_model` time, "non-OSI-but-commercial" needs an explicit, checkable test rather than a case-by-case call. Four axes — all four must pass:
+
+| Axis | Rule |
+|---|---|
+| Commercial use | MUST be permitted outright — no revenue threshold, no separately negotiated licence. This is what excludes **SD3.5** (Stability Community License — free under $1M/yr revenue, then a paid Enterprise licence) and **FLUX.1 [dev]** (non-commercial): both would impose licensing obligations on WaddleAI's *customers*, not just on WaddleAI |
+| Copyleft reach | Ordinary copyleft is **acceptable** — `GPL-2.0+`, `GPL-3.0`, `MPL-2.0`, matching what §2.1 already permits for code. What is forbidden is copyleft that reaches the deploying application over a network boundary: **`AGPL`, `SSPL`**. A GPL-2.0 video model is admissible; an AGPL one is not |
+| Acceptable-use restrictions | PERMITTED — OpenRAIL-style field-of-use limits bind operator conduct, not our code. This is what admits **SDXL** (CreativeML OpenRAIL++-M) |
+| Redistribution | Runtime-pulled only, never vendored into images (unchanged from the rule above) |
+
+The Apache-2.0 dual-default alternative is required **wherever one exists that clears §2.2** — as of this pass, one exists for every modality specified so far (see §16.1), so no exemption from the dual-default requirement is currently in use.
+
+**Third licence class — non-commercial weights (CC-BY-NC and similar).** The carve-out above covers Gemma ToU / Llama Community, both of which permit commercial use with conditions — the carve-out's operative word is *commercial*. It does **not** cover licences that forbid commercial use outright. Non-commercial weights get their own, stricter rule instead of falling under the carve-out:
+
+- **Free tier only** — hard-disabled in Professional and Enterprise. **This inverts the usual licence-gate direction**: every other tier gate asks "does this tier unlock X?"; this one asks "does this tier forbid X?" — a deny, not an allow. Implement it as an explicit deny, not as an accidental omission.
+- Rationale: the Free tier is defined by **scale** (≤5 nodes, ≤3 models, §2.4), **not** by commercial status — a funded startup on the Free tier generating music for its product still breaches CC-BY-NC even though it never crosses a node/model cap. The acknowledgement below is what shifts this from shipping a violation to the operator affirming the term.
+- **Off by default.** Enabling requires an **explicit, recorded acknowledgement by a user holding `Role.ADMIN`** — never a Resource Manager, Reporter, or ordinary user, regardless of what model-config rights they otherwise hold — affirming the deployment is non-commercial, audited to `security_logs` under §9.7's rules. The record captures **admin identity, timestamp, model, and the licence identifier *and version* accepted** — not a bare boolean. "Someone acknowledged" is only defensible if the deployment can later show *who*, and *what* they accepted; licence texts get restated.
+- The acknowledgement is **per model, not per deployment**: accepting MusicGen's terms must not silently enable AudioLDM 2.
+- UI/API label these models **"non-commercial use only"** prominently wherever they are selectable.
 
 Every model reference in code/config/Helm resolves through a **model registry** (DB-backed, seeded by migration) recording: name, role, license, origin, min VRAM, Ollama tag. No hardcoded model strings outside the registry seed. Weights are pinned by Ollama tag + recorded digest at pull time (logged for reproducibility; Ollama tags are mutable, so the registry stores the resolved digest).
 
@@ -235,6 +278,7 @@ Proxy reads config from Postgres with Valkey-cached hot paths (policy resolution
 ### 3.6 Security posture (cross-cutting)
 
 - Known AI-specific risks tracked from prior audit and addressed in-spec: **output guardrails** (stage 8), **indirect prompt injection via memory** (retrieved context is provenance-tagged and scanned by stage-3 filters before injection, §9), **semantic-cache poisoning** (semantic cache is org-scoped, opt-in, and entries are keyed to post-filter content, §6).
+- **Known limitation, current release: image content bypasses security filtering entirely.** `/v1/messages`'s Claude-content-array handling (`_extract_text_from_claude_messages` in `proxy/apps/proxy_server/main.py`) collects only `type == "text"` items, and `ContentFilter.filter_input(text: str)` (`shared/security/content_filter.py`) takes a plain string — an `image` content part is never passed to tiers 1–4, so it reaches the provider having passed zero safety checks. No `image_url`/`input_audio` handling exists anywhere in `proxy/` or `shared/`, and tiers 1–3 (regex, org rules, NER) are inherently text-only regardless of wiring. §8.3a's image/audio registry rows are the path to closing this, gated on a serving path for a non-Ollama-hosted model (image) and an undesigned transcribe-then-scan approach (audio) — not closed today.
 - Org boundary is the hard isolation wall for cache/memory/CodeRAG; tenant claim boundary above it at Enterprise.
 - Fleet pods are unauthenticated by nature (Ollama) → reachable only from proxy pods via CNP; never exposed via Service type other than ClusterIP.
 - Everything rootless, digest-pinned, Debian bookworm per house container standards; Tetragon policies (optional) block exec/unexpected egress in proxy and fleet pods.
@@ -411,16 +455,28 @@ One DB-driven engine (`shared/routing/engine.py`), in-process in the AIProxy (pi
 
 Two co-equal decision surfaces, composed with org policy:
 
-1. **Tool-type model assignments (the admin's steering wheel).** A `model_assignments` table (evolves the existing `routing_matrix`) maps each tool type to a default model and optional escalation model — e.g., `research → gemma3:4b`, `command-run → claude-haiku ⤴ claude-sonnet`, `code-gen → local code model ⤴ claude-sonnet`. **WaddleAI's internal functions are pre-declared rows in the same table** (`security-audit → shieldgemma:2b`, `routing-classifier → gemma3:1b`, `embeddings → nomic-embed-text`, `docs-fetch/summarize`) — one WebUI screen ("Model Assignments") configures the whole deployment's model-per-job matrix; the §2.3 dual-default pattern is its seed data. Scopes: global defaults overridable per org.
+1. **Tool-type model assignments (the admin's steering wheel).** A `model_assignments` table (evolves the existing `routing_matrix`) maps each tool type to a default model and optional escalation model — e.g., `research → gemma4:e4b`, `command-run → claude-haiku ⤴ claude-sonnet`, `code-gen → local code model ⤴ claude-sonnet`. **WaddleAI's internal functions are pre-declared rows in the same table** (`security-audit → shieldgemma:2b`, `routing-classifier → gemma4:e2b`, `embeddings → nomic-embed-text`, `docs-fetch/summarize`) — one WebUI screen ("Model Assignments") configures the whole deployment's model-per-job matrix; the §2.3 dual-default pattern (and its §8.3a per-modality extension for the security auditor) is its seed data. Scopes: global defaults overridable per org.
 2. **Capability matching (co-equal — it can veto).** Every request derives a requirements vector (min context from token count, `needs_tools`, `needs_vision`, structured-output, complexity when classified); every registry model carries offers (`capability_score 1–5`, `supports_tools/vision`, `context_window`, cost, `location: local|commercial`, live fleet state). If the assigned model **fails a hard requirement** (images to a text-only model, context overflow), capability matching **vetoes and re-routes** to the best qualified candidate rather than failing the request — the veto is logged in the decision trace and surfaced to the admin (assignment misconfiguration warning, also checked at save time). Capability matching alone also decides tool types with no assignment row and arbitrates escalation.
 
 Org **policy filters and sorts** on top of both: allow-lists and tier caps filter; mode (`local_only | local_first | commercial_only | cost | latency`) sorts the qualified candidates — the sorted list *is* the fallback chain, so failover never lands on a model that couldn't serve the request.
 
-**Tool-type determination** (cheapest first): explicit — `X-WaddleAI-Tool-Type` header, the invoked MCP tool implies it, or a `model: "waddleai/<tool-type>"` alias; else stage-1 heuristics (tool names present, endpoint, modality); else the stage-2 classifier, whose *primary* output is now `tool_type` (plus `{complexity: 1-5, domain, needs_reasoning}`), cached in Valkey by prefix hash. Classifier models per §2.3 dual-default: `gemma3:1b` default, `granite3.3:2b` Apache alternative, `phi4-mini`/`smollm2:1.7b` selectable.
+**Tool-type determination** (cheapest first): explicit — `X-WaddleAI-Tool-Type` header, the invoked MCP tool implies it, or a `model: "waddleai/<tool-type>"` alias; else stage-1 heuristics (tool names present, endpoint, modality); else the stage-2 classifier, whose *primary* output is now `tool_type` (plus `{complexity: 1-5, domain, needs_reasoning}`), cached in Valkey by prefix hash. Classifier model per §2.3: `gemma4:e2b` default (Apache-2.0 — no dual-default alternative required), `phi4-mini`/`smollm2:1.7b` selectable.
 
 ### 7.2 Decision cascade (cheapest first)
 
 - **Stage 0 — explicit model.** Client named a concrete model → resolve through `model_aliases`, honor exactly, subject to org allow-lists and the capability veto. **Admin-controlled aliasing**: alias rules (`gpt-4o` → local `mistral-large`; `claude-*` → policy X) are the migration lever that localizes existing tools without touching client config. Redirects always visible in `waddleai.routed_from`.
+
+  **Provider-qualified model strings.** A client may pin the provider as well as the model, in the plain `model` field: `anthropic:claude-opus-5-1m`, `bedrock:claude-opus-5-1m`, `ollama:gemma4:e2b`. This is deliberately *not* a header — it works through the standard OpenAI/Anthropic `model` field, so every SDK and every tool that cannot set custom headers gets it for free.
+
+  Pinning matters because model identity does not determine provider: the same Claude model is reachable via Anthropic direct, AWS Bedrock and GCP Vertex, with different data residency, contractual terms, quota pools and pricing. Naming only the model leaves that choice to the router.
+
+  **Parsing rule — a prefix is a provider only if it exactly matches a registered provider name** (`openai`, `anthropic`, `ollama`, `llamacpp`, `gemini`, `bedrock`, `azure_openai`, `cohere`, `xai`); split on the **first** colon only. Otherwise the entire string is the model name. This disambiguation is required, not cosmetic: Ollama tags contain colons natively, so a naive split would parse bare `gemma4:e2b` as provider `gemma4`, model `e2b`. Under this rule `gemma4:e2b` stays a model (no provider named `gemma4`) while `ollama:gemma4:e2b` splits correctly. Model names therefore MUST NOT collide with provider names; on collision the provider interpretation wins and registration of such a model is rejected.
+
+  **Order of resolution**: strip the provider prefix first (it is syntax), then resolve the remainder through `model_aliases`. If an alias resolves to a model the pinned provider does not serve, **fail fast** with the §5.3 typed error — do not silently honour one and drop the other.
+
+  **A provider pin disables substitution.** `provider_failover` (§7.3) MUST NOT substitute another provider when the pinned one is unavailable; the request fails with the taxonomy error instead. Pinning is most often done for data-residency, contractual or quota reasons, and silently serving from a different provider would fail open on precisely the constraint the pin expressed. The capability veto and org allow-lists still apply — a pin cannot reach a provider the org is not permitted to use, and cannot override a hard capability mismatch.
+
+  `waddleai.routed_from` records the pin, so a served response always shows whether the provider was chosen or demanded.
 - **Stage 1 — heuristics** (<1ms, no LLM): `routing_rules_v2(priority, match jsonb, action jsonb)` — determines tool type / route from cheap signals; target ~70% of `auto` requests.
 - **Stage 2 — classifier** (only when heuristics punt): structured JSON → assignment lookup → capability check.
 
@@ -465,7 +521,7 @@ Within the chosen route, the merged AILB router logic (§5.2) picks the concrete
 
 ### 7.7 Acceptance
 
-Assignment CRUD + save-time capability validation warnings; capability-veto tests (image request against text-only assignment → re-routed + trace records veto); heuristic rule-table property tests; classifier recorded-output fixture set (stub Ollama in unit tests; real `gemma3:1b` nightly/GPU CI); escalation state machine covering all four triggers + idle_reset boundaries + per-row escalation_model precedence; sensitivity clamp test (PII-flagged request never dispatches commercial under `local_only`); budget-pressure threshold tests incl. toggle-off; chaos test (provider unhealthy mid-conversation → failover, no client-visible error); availability-failover tests (explicit-model request with provider down: `off` fails fast with the taxonomy error, `same_class` serves from `fallback_models` with `routed_from` cause `provider_unavailable`; a 4xx never substitutes; no substitution after first streamed byte; `local_only` sensitivity clamp beats `provider_failover`); alias redirect visible in `routed_from`; `usage` additive-only vs contract snapshots; flag-off = legacy routing byte-identical.
+Assignment CRUD + save-time capability validation warnings; capability-veto tests (image request against text-only assignment → re-routed + trace records veto); heuristic rule-table property tests; classifier recorded-output fixture set (stub Ollama in unit tests; real `gemma4:e2b` nightly/GPU CI); escalation state machine covering all four triggers + idle_reset boundaries + per-row escalation_model precedence; sensitivity clamp test (PII-flagged request never dispatches commercial under `local_only`); budget-pressure threshold tests incl. toggle-off; chaos test (provider unhealthy mid-conversation → failover, no client-visible error); availability-failover tests (explicit-model request with provider down: `off` fails fast with the taxonomy error, `same_class` serves from `fallback_models` with `routed_from` cause `provider_unavailable`; a 4xx never substitutes; no substitution after first streamed byte; `local_only` sensitivity clamp beats `provider_failover`); alias redirect visible in `routed_from`; `usage` additive-only vs contract snapshots; flag-off = legacy routing byte-identical.
 
 ## 8. Phase 3 — Security Layer v2
 
@@ -475,7 +531,7 @@ Extends the existing 4-tier content filter (`shared/security/content_filter.py`)
 
 New `security_policies` table with resolution chain **global → org → model → tool/function** (most-specific wins; full chain ships in the first cut per Q#6 — tool scope keys on `tools[].function.name` and namespaced MCP tool names like `elder.*`):
 
-`security_policies(id, scope_type enum(global|org|model|tool), scope_ref, tier1_enabled, tier2_enabled, tier3_enabled, tier4_enabled, tier4_model, intent_classifier_enabled, intent_categories jsonb, direction enum(input|output|both), block_action enum(block|redact|flag), fail_mode enum(open|closed|degrade), auditor_timeout_ms, latency_budget_ms)`
+`security_policies(id, scope_type enum(global|org|model|tool), scope_ref, tier1_enabled, tier2_enabled, tier3_enabled, tier4_enabled, tier4_model, intent_classifier_enabled, intent_categories jsonb, direction enum(input|output|both), block_action enum(block|redact|flag), fail_mode enum(open|closed|degrade), on_unclassifiable enum(reject|degrade), auditor_timeout_ms, latency_budget_ms)`
 
 Resolution results are Valkey-cached, invalidated on policy write. Existing per-org `content_filter_config`/`content_filter_rules` data-migrate into the new model (custom rules remain tier 2).
 
@@ -485,7 +541,19 @@ Tiers per resolved policy: **1** builtin regex PII/PCI (~23 patterns), **2** org
 
 ### 8.3 Request-intent classifier ("open-source Auto Mode-lite")
 
-A pre-dispatch classifier distinct from content filtering: a guard model evaluates the request for **security/legal concern categories** — malware generation, exploit development, credential harvesting, plus org-configurable legal categories — and returns per-category verdicts → block/flag per policy. Implementation reuses the tier-4 Ollama call path with structured category output. Scope: **last user message + system-prompt hash**, escalating to a full-context scan when flagged. Guard models are **assignment rows in §7.1's Model Assignments** (`security-audit` tool type): default `shieldgemma:2b` (existing formatter), selectable `granite-guardian3:2b|8b` (Apache-2.0) via a new `_build_granite_guardian_messages` formatter honoring Granite Guardian's prompt template and Yes/No token semantics.
+A pre-dispatch classifier distinct from content filtering: a guard model evaluates the request for **security/legal concern categories** — malware generation, exploit development, credential harvesting, plus org-configurable legal categories — and returns per-category verdicts → block/flag per policy. Implementation reuses the tier-4 Ollama call path with structured category output. Scope: **last user message + system-prompt hash**, escalating to a full-context scan when flagged. Guard models are **assignment rows in §7.1's Model Assignments** (`security-audit` tool type) — the **text tier** of the §8.3a per-modality classifier registry: default `shieldgemma:2b` (existing formatter), selectable `granite3-guardian:2b` (IBM, Apache-2.0, size-matched) or `granite4.1-guardian` (IBM, Apache-2.0, 8B) via a new `_build_granite_guardian_messages` formatter honoring Granite Guardian's prompt template and Yes/No token semantics.
+
+### 8.3a Per-modality classifier registry
+
+§8.3's single `security-audit` assignment covers text only, but content reaching the pipeline is not text-only — Claude Code's `/v1/messages` content arrays carry `image` parts, and vision/audio-capable providers accept more. The security auditor is therefore a **registry of one guard model per modality**, not one guard model overall:
+
+| Modality | Default | Apache-2.0 alternative | Status |
+|---|---|---|---|
+| Text | `shieldgemma:2b` | `granite3-guardian:2b` (size-matched), `granite4.1-guardian` (8B) | Production — wired into pipeline stages 3/8 |
+| Image | `shieldgemma-2-4b-it` | — (Gemma ToU; no Apache-2.0 image-safety alternative identified yet) | **Needs a serving path** — ShieldGemma 2 is image-only, Gemma-3-based, and **not distributed on Ollama** (confirmed 404); the fleet backend (§10.1) would need a non-Ollama serving path (e.g. vLLM/HF Transformers/TGI) before this tier is usable |
+| Audio | none available | — | **Unverified** — no dedicated audio-safety guard model identified; the likely approach is transcribe-then-scan (Whisper → the text tier above), not yet designed or tested |
+
+Each `security_policies` scope (§8.1) carries a required **`on_unclassifiable`** field, `enum(reject|degrade)`, **default `reject`**. Reasoning: §8.2's tier-4 `fail_mode` default of `degrade` means "the tiers-1–3 verdict stands" — sound when tiers 1–3 (regex, custom rules, NER) actually inspected the content. But tiers 1–3 are **text-only**; for a modality with no registry entry (audio today) or a registered-but-unserved entry (image, until §10.1 gains a serving path), those tiers produce no verdict at all — so `degrade` silently collapses to `allow` on content nothing has inspected. Refusing content the deployment cannot classify is the safe default; `on_unclassifiable: degrade` is available as an explicit per-scope opt-in for operators who knowingly want passthrough.
 
 ### 8.4 Output guardrails (stage 8)
 
@@ -621,6 +689,8 @@ Flag: `waddleai.fleet_v2`.
 - **EXO** — `type: exo, mode: external` API-only plugin; GPLv3 boundary — no EXO code in-repo, network calls only.
 - **Vertex AI / Bedrock** (Professional-gated at backend creation): `VertexAIFleetBackend` via `google-cloud-aiplatform`, `BedrockFleetBackend` via `boto3` (both Apache-2.0). Per Q#9 the admin chooses `management_scope` per backend: `register_and_route` (route/health/meter existing endpoints) or `full_lifecycle` (deploy/scale/undeploy — with **mandatory idle-teardown cost controls**: configurable idle window → automatic endpoint teardown, redeploy-on-demand, every action audit-logged). Cloud credentials per-org via the provider-credential pattern; cloud endpoints count as managed nodes for Pro metering (§2.4).
 
+**Open gap, not yet designed**: the `InferenceFleetBackend` interface above is shaped for text-LLM serving (token streaming, request/response, context-length-driven placement) and does not fit diffusion/generative backends (§16), which need a **second interface shape**: no token streaming; long-running asynchronous jobs rather than request/response; artifacts (images, video, audio files) requiring storage, retention, and serving policy; placement driven by VRAM and job duration rather than context length; and queue/concurrency semantics closer to a batch scheduler than a request router. This needs its own scoping pass — no interface signature, schema, migration, or delivery wave is defined here.
+
 ### 10.2 Hardened Ollama image
 
 `ghcr.io/penguintechinc/waddleai/ollama` — digest-pinned upstream base, non-root UID, `readOnlyRootFilesystem: true` (writable mounts only for the model store PVC and tmp emptyDir), `allowPrivilegeEscalation: false`, all capabilities dropped, seccomp `RuntimeDefault`; model pulls in an initContainer running the same binary. Two tags: **`hardened`** (minimal, no shell) and **`debug`** (adds shell for `kubectl exec` troubleshooting). Trivy scan gate in CI; the Helm `ollama-daemonset.yaml` and GPU plugin subcharts (nvidia gpu-operator, amd-rocm, intel) update to consume it.
@@ -672,9 +742,66 @@ WaddleAI also *consumes* external MCP servers (e.g., the Elder MCP server): admi
 - **Identity mode per endpoint**: *shared account* (one org-wide credential) or *per-user identity* — the user links by logging in via WebUI/CLI and completing the OAuth2 authorization-code flow against the external server; WaddleAI stores the per-user+endpoint token (encrypted at rest, external-KMS envelope at Enterprise) and refreshes it, so calls carry the real caller's identity and the external system applies its own permissions. Unlinked users get a link-your-account URL in the tool result; unattributed keys fall back to the shared account if configured, else the tool is withheld.
 - **Policy chokepoint**: external tool calls traverse the §8 per-tool security policies (block/flag/audit) — WaddleAI governs third-party MCP tools, not just models.
 
-### 11.5 Acceptance
+### 11.5 MCP assistants — user and admin endpoints
+
+Two **in-cluster** Streamable-HTTP MCP endpoints on the AIProxy, extending §11.1's `/mcp` mount. Not laptop-resident binaries.
+
+**These are servers, not an embedded library, and not the code-writing agent.** PenguinCode (the local code agent) is a *consumer* of them, alongside the `penguin` desktop client and any MCP-capable agent (Claude Code, Cursor, OpenCode). All three connect over the protocol, so there is one implementation and no FFI, PyO3, or Go↔Rust bindings to keep in sync — the implementation language stays a private detail. PenguinCode already ships a generic MCP client (`MCPClient`/`HTTPMCPClient`/`MCPToolManager` with local-over-org name precedence), so it consumes these by config rather than by code.
+
+Hosting them server-side rather than on the client also removes three problems: no laptop-resident process becomes a writer into shared org memory; no duplicate OAuth sessions when the code agent and desktop agent both run; and the `waddleai-mcp` Rust binary (§11.2) stays a **transport adapter** for clients that cannot speak HTTP MCP, rather than acquiring business logic it is specified not to hold.
+
+#### Two endpoints, not one tool set filtered by role
+
+| Endpoint | Audience | Gate |
+|---|---|---|
+| `/mcp` | End users | Authenticated `wa-` key / OAuth2 session |
+| `/mcp/admin` | Administrators | `Role.ADMIN` (`shared/auth/rbac.py`) |
+
+Separate mounts, one deployment. **The reason is tool-list disclosure**: MCP clients enumerate available tools on connect, so admin tools that appear-then-fail would advertise the entire management surface to every user. A user's client must never see them listed. This is the same reasoning as the house rule against serving the full OpenAPI document unauthenticated.
+
+#### Scope by tool schema, not by runtime authorization
+
+**User tools take no subject parameter at all.** `usage_summary()` means "mine" — the subject is the authenticated key, and there is no field an agent could populate with someone else's ID. Admin tools take an explicit `user_id` / `org_id`, because company-wide is their purpose.
+
+This is deliberate defence in depth, not stylistic: #55 fixed **IDOR and privilege-escalation** findings in this exact management API, and re-exposing those endpoints through MCP with an LLM-populatable `user_id` would reintroduce the same class of bug through a new door. A parameter that does not exist cannot be abused.
+
+#### `/mcp` — user tools
+
+`list_models` (returns each model's **exact pinnable provider-qualified string** per §7.2, so the pin syntax is discoverable rather than folklore), `get_routing_policy`, `usage_summary` (self only), `memory_search`, `memory_add`, `set_preference`.
+
+**`set_preference` is weight-only.** A stated preference ("prefer Opus for code generation", "use this model for video generation") contributes to the routing score; it never pins and never overrides policy. It is subordinate to org allow-lists, tier caps, the `local_only` sensitivity clamp and budget pressure (§7.3) — otherwise any user could route themselves onto the most expensive model by asserting a preference, spending the org's money by request.
+
+Preferences are **structured tool calls only, never inferred from conversation text.** Memory is user-writable and §3.6 already records indirect prompt injection via memory as a known risk; if free text could establish a routing preference, a poisoned document could plant one. Preference writes therefore carry their own trust tier under §9.7, below server-side writes, and expire — a preference stated during one debugging session should not steer routing months later. Any preference that influenced a decision appears in `waddleai.routed_from` and the §7.4 trace, so a surprising route stays explainable.
+
+#### `/mcp/admin` — administrator tools
+
+Split by consequence.
+
+**Read** — the common case, safe and frequent: usage by user, org, model and provider; cost attribution over a period (`token_usage.cost_estimate_usd`); quota status; and provider budget headroom. Budget queries target §7.3's **plan budgets**, which attach to `provider_credentials`, are window-based rather than cumulative, and correct remaining headroom from provider rate-limit/usage response headers — that is what answers "where is our Anthropic budget this month" properly, as opposed to the cumulative approximation `/usage/by-provider` gives today.
+
+**Write** — deliberate changes: add and remove models; add and remove destinations (providers and endpoints); quota changes; provider configuration.
+
+#### Carve-out — risk acknowledgements are NOT MCP tools
+
+**Neither endpoint exposes the §2.2a PRC-origin acknowledgement or the §2.3 non-commercial licence acknowledgement.** These require deliberate UI.
+
+An LLM agent must not be able to accept, on an administrator's behalf, that a model's weights may be deliberately poisoned or that a licence forbids the commercial use the deployment is engaged in. Those acceptances are the entire basis on which those exceptions are permitted at all; routing them through a conversational agent that can be argued into things would hollow them out. Adding a model is a configuration act and belongs here; accepting a supply-chain risk is a legal and security act and does not.
+
+#### Admin outputs are business-sensitive
+
+Per-user cost attribution and vendor spend positions are sensitive company data, and **an MCP tool's output lands in the calling agent's context** — so an admin working from a commercially-hosted agent sends "what each user cost us" and "how much Anthropic budget remains" to whichever provider serves that session, possibly the very vendor being queried. This is the default path, not an edge case.
+
+Therefore: admin responses carry a sensitivity marking so §7.3's `local_only` clamp applies (admin analytics route to a local model unless the org opts out), and per-user figures return **UUIDs by default**, resolving to names only on explicit request, consistent with the PII-tokenisation rule in §9.7.
+
+#### Authentication
+
+OAuth2 with **periodic re-authentication**, not a single login at setup — token in OS keychain per the client standards, refreshed ahead of expiry, and re-authentication forced on a configured cadence. On expiry, **write tools fail before read tools**: a stale session must not be able to change models, destinations or quotas.
+
+### 11.6 Acceptance
 
 MCP v2 exercised via the official `mcp` client SDK over both transports; OpenCode + Claude Code config templates actually connect and complete a turn (beta checklist, scripted where possible); external-MCP gateway integration test against a fixture MCP server covering header + OAuth2 (client-credentials and auth-code) and both identity modes; namespaced tool collision handling; per-tool security policy applied to an external tool call.
+
+For §11.5: a non-admin key connecting to `/mcp` sees **no admin tool in the listing** (not merely a denial on call); user tool schemas contain no subject parameter (asserted against the emitted JSON Schema, so the guarantee cannot regress silently); `set_preference` loses to an org allow-list, a tier cap and a `local_only` clamp in three separate tests; neither endpoint exposes an acknowledgement tool; admin usage responses return UUIDs unless names are explicitly requested; and an expired session fails a write tool while a read tool still succeeds.
 
 ## 12. Kubernetes & Cilium Integration
 
@@ -718,6 +845,7 @@ Baseline: Alembic migrations `001`–`006` exist (baseline, provider_credentials
 | 012 | §9 | `knowledge` | `code_repos`, `code_chunks`, `docs_cache_pages`, `docs_sources` (per-source license table, §2.5) (all pgvector); extend `rag_documents`/`memory_embeddings` with the remaining §9.7 scope/trust/version/status/provenance columns (`memory_embeddings.scope_type`/`author_user_id` already shipped in 006 — extend, don't re-add) |
 | 013 | §10 | `fleet` | `fleet_backends`; extend `ollama_deployments`/`llamacpp_deployments` for the backend interface + `management_scope` |
 | 014 | §11 | `integrations` | `mcp_endpoints`, `mcp_user_links` (per-user external-MCP tokens, encrypted) |
+| 015 | §18 | `hooks` | `hook_rules`, `hook_denylist_entries`, `hook_configs`, `hook_telemetry_events` (agent-hooks evaluation, §18.7) |
 
 All migrations land within the `release/v0.2.X` line (one per feature branch, §14.1). **Numbers here express intended dependency order, not fixed Alembic revisions**: parallel feature branches (notably 009a/009b, and 010+ which branch off 008/009) get their final `down_revision` set to the actual head **at merge time** — each plan rebases onto the then-current head. This is the normal Alembic-DAG-resolved-at-merge model; do not treat the integers as pre-committed. Applied sequentially at release.
 
@@ -757,6 +885,7 @@ All migrations land within the `release/v0.2.X` line (one per feature branch, §
 | `feature/knowledge-layer` | §9 CodeRAG, docs cache, PDF/MD ingest, hybrid delivery, migration 012 | pipeline, embedding cache |
 | `feature/inference-fleet-v2` | §10 fleet interface, hardened Ollama, cloud targets, migration 013 | routing |
 | `feature/mcp-v2-integrations` | §11 MCP server/gateway, CLI, apparatus docs, migration 014 | knowledge, routing |
+| `feature/agent-hooks` | §18 agent-hooks evaluation engine (tier1 denylist, admin `hook_rules`, opt-in Tier-2 §8 reuse), migration 015 | security-v2 |
 | `chore/tetragon-admission-policies` | §12 optional Tetragon + admission policy values | cilium-reconciler |
 
 Deferred to a later release (explicitly out of v0.2.x): `task_detect` de-escalation (§7.3), PenguinCode convergence, VS Code extension refresh (§11.3, cuttable). Every feature ships behind its PostHog flag defaulted OFF (§14.5), flipped on after beta validation, flag removed once stable. Licensed sub-features additionally gate on the license client (§14.6).
@@ -798,7 +927,7 @@ if features.enabled("smart_routing", distinct_id=org_id):   # waddleai.smart_rou
 
 - **`features.enabled(key, distinct_id)`** (thin `shared/licensing/features.py` helper) = PostHog `feature_enabled("waddleai.{key}", distinct_id)` **AND**, for licensed features, `LicenseClient.check_feature(key)` (§14.6). Fail-safe **OFF** on any error (graceful degradation). Centralizes the client, the `waddleai.` prefix, and the default-OFF behavior so no caller hand-rolls it.
 - **Env**: `POSTHOG_KEY`, `POSTHOG_HOST=https://license.penguintech.io` (same host as the license server). Key convention `waddleai.{feature}` (server builds `flag_key = f"{product}.{name}"`).
-- Flag keys (one per feature branch, §14.1): `waddleai.native_rate_limit`, `waddleai.response_cache`, `waddleai.proxy_memory`, `waddleai.smart_routing`, `waddleai.security_v2`, `waddleai.coderag`, `waddleai.docs_cache`, `waddleai.knowledge_ingest`, `waddleai.fleet_v2`, `waddleai.mcp_v2` — plus the finer admin toggles inside features (per-tier security scopes, cache modes) that also resolve through Penguin Licensing.
+- Flag keys (one per feature branch, §14.1): `waddleai.native_rate_limit`, `waddleai.response_cache`, `waddleai.proxy_memory`, `waddleai.smart_routing`, `waddleai.security_v2`, `waddleai.coderag`, `waddleai.docs_cache`, `waddleai.knowledge_ingest`, `waddleai.fleet_v2`, `waddleai.mcp_v2`, `waddleai.agent_hooks` — plus the finer admin toggles inside features (per-tier security scopes, cache modes, §18's per-org `remote_eval_enabled`/`capture_raw_payloads`) that also resolve through Penguin Licensing.
 - All default **OFF** at launch; flipped on in Penguin Licensing after beta validation; the flag is removed once the feature is stable (flags are not permanent config — tier entitlement in §14.6 remains the durable gate).
 
 ### 14.6 License entitlement & metering (penguin-licensing)
@@ -874,9 +1003,283 @@ Net-new schema (chargeback tags G5, SCIM mappings G1, secrets-backend config G2,
 
 ---
 
+## 16. Generative Media — Roadmap (Not Yet Scoped)
+
+Product intent, not yet a specified feature: image, audio, music, and video **generation** should become a first-class WaddleAI capability — on par with code generation today — rather than opaque passthrough to whatever provider a client happens to call.
+
+**Product-surface reference (UI/UX only): [`anil-matcha/open-generative-ai`](https://github.com/anil-matcha/open-generative-ai)** (26k GitHub stars, MIT). Its per-modality studio decomposition (Image, Video, Audio, Lip Sync, Workflows), model catalogue presentation, and generation-queue UX are useful reference points for what a generative-media surface can look like. It is **not** an architecture or model-sourcing reference: the project is a thin front end over **MuAPI**, a commercial hosted generation API ("no servers, workers, or model hosting to run yourself," a $49/mo white-label tier), whose own headline feature is **no content filters**. A thin client over a paid third-party API with filtering deliberately absent is the inverse of what WaddleAI is — a self-hosted deployment with a mandatory security layer (§8) — so nothing about MuAPI's model sourcing, hosting, or (lack of) safety posture transfers here.
+
+**The differentiator**: WaddleAI would do generative media **with** the safety layer intact. Output generated by the platform needs the same scrutiny as content a user uploads — an image WaddleAI *generates* is not exempt from the §8.3a per-modality classifier registry just because the platform produced it rather than received it. Whatever generation backends WaddleAI eventually fronts, their output would route through the same image/audio guardrail tiers §8.3a defines (once those tiers have a serving path), not a separate unfiltered path.
+
+**Security-first constraints — binding on any future scoping pass.** "With the safety layer" means more than filtering the artifact after the fact; the following are design constraints, not nice-to-haves:
+
+| Constraint | Why |
+|---|---|
+| **Generation prompts are screened pre-dispatch** by §8.3's request-intent classifier, not only post-hoc by §8.3a and §8.4's output guardrails | The prompt is itself the policy surface. A request for sexual imagery of minors, non-consensual intimate imagery, or a deepfake of an identifiable person must be refused *before* a backend is invoked — filtering the returned artifact means the platform generated it first. §8.3's concern categories extend with generation-specific ones |
+| **Generated artifacts carry machine-readable provenance** (C2PA-style content credentials or equivalent) | Attribution of synthetic media is a live regulatory obligation, not a courtesy. §15's EU AI Act readiness item covers the transparency duties for AI-generated content; the exact obligation and its scope need legal confirmation, but designing artifacts as unmarked-by-default would be the wrong starting point |
+| **Likeness and identity controls** are a first-class policy category, org-configurable per §8.1 scopes | Deepfake generation is the highest-severity abuse case for this feature and the one most likely to create legal exposure for a deployment operator |
+| **Generation events are audited** to `security_logs` under the same PII-tokenization rules as every other event (§9.7) | An operator must be able to answer "who generated this, when, under which policy" — for incident response and for regulatory response |
+| **No unfiltered mode.** There is no configuration that disables §8.3a guardrails on a generation path | This is the explicit anti-feature. It is the one capability the MuAPI-class reference above sells as its headline, and shipping it would forfeit the only reason an enterprise would put this platform in front of a generation backend |
+
+### 16.1 Per-modality model candidates (research findings, not a locked selection)
+
+Gathered against the §2.2 origin policy and the §2.3 licence admissibility test, to inform the eventual scoping pass — not yet wired into the model registry. Licences and origins below were verified directly against model cards unless flagged otherwise.
+
+**Image**
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| FLUX.1 [schnell] | Black Forest Labs (Germany) | Apache-2.0 — model card: "Released under the apache-2.0 licence… personal, scientific, and commercial purposes" | Default candidate |
+| SANA 1.6B | NVIDIA + MIT Han Lab (US) | Apache-2.0 | Default candidate |
+| AuraFlow | Fal.ai (US) | Apache-2.0 | Default candidate |
+| SD3.5 | Stability AI (UK) | Stability Community License — free <$1M/yr revenue, then paid Enterprise | Selectable, not default — fails the §2.3 commercial-use axis |
+| SDXL 1.0 | Stability AI (UK) | CreativeML OpenRAIL++-M — acceptable-use restrictions | Selectable, not default — admitted under the §2.3 acceptable-use-restrictions axis |
+| FLUX.1 [dev] | Black Forest Labs (Germany) | Non-commercial | Selectable, not default — fails the §2.3 commercial-use axis |
+| Kolors | Kuaishou (PRC) | Apache-2.0 weights (origin, not licence, is the constraint) | **§2.2a acknowledged-risk exception** — admin opt-in only, off by default, generation role only |
+
+**Video**
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| Mochi 1 | Genmo (US) | Apache-2.0 — model card: "releasing the model under a permissive Apache 2.0 license" | Default candidate |
+| Allegro | Rhymes.AI (US) | Apache-2.0 — model card: "This repo is released under the Apache 2.0 License" | Default candidate |
+| LTX-2 | Lightricks (Israel) | Custom "LTX-Video Open Weights License", non-OSI | Selectable pending legal review. **Clause specifics UNVERIFIED** — the model card links the licence rather than displaying it. Research reports a $10M/yr revenue gate, liquidated double-damages, a ban on building competing products, and viral terms forcing derivatives to stay restrictive; the competing-products clause is a direct risk for an AI platform vendor. Do not admit as a default until the primary licence text is read |
+| Wan, HunyuanVideo, CogVideoX | PRC | — | Excluded — §2.2 origin deny-list |
+| Open-Sora | HPC-AI Tech (Singapore parent, Beijing R&D) | Weights Apache-2.0; **code LICENSE reportedly appends the Tencent Hunyuan Community License barring EU/UK/South Korea use — unverified** | **§2.2a acknowledged-risk exception** — admin opt-in only, off by default, generation role only. The Hunyuan clause is a *licence* constraint the exception does **not** cure; confirm against the primary LICENSE before enabling in those markets |
+
+Hosted passthrough for video (not self-hostable, not scoped here) is where Google **Veo** belongs — Veo is a video model, not a music one; see the Music passthrough note below.
+
+**Speech**
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| Moshi | Kyutai (France) | CC-BY 4.0 — attribution only, commercial use permitted | Default in **all** tiers — does not carry the non-commercial label or the §2.3 tier gate |
+
+**Music**
+
+**No qualifying self-hostable model exists** — every self-hostable candidate fails the §2.3 commercial-use axis:
+
+| Model | Origin | Licence | Status |
+|---|---|---|---|
+| MusicGen / AudioCraft | Meta (US) | CC-BY-NC weights (note: AudioCraft *code* is MIT, so training a model on separately-licensed data is a legitimate path) | Free-tier-only, non-commercial-labelled per the §2.3 third licence class |
+| AudioLDM 2 | University of Surrey (UK) | CC-BY-NC-SA | Free-tier-only, non-commercial-labelled per the §2.3 third licence class |
+| Stable Audio | Stability AI | Revenue-gated | Fails the §2.3 commercial-use axis — excluded |
+
+Commercial music generation is therefore **passthrough only**, to hosted providers — Google **Lyria**, Suno, Udio, ElevenLabs. (Google **Veo** is *video*, not music, and does not belong in this list — see the video passthrough note above.)
+
+**Confidence caveat**: the specific 2026 version numbers gathered in research (LTX-2.5, FLUX.2, Cosmos 3, Stable Audio 3.0) are low-confidence single-source and need primary-source confirmation before procurement; the corporate origins and base licence families above are well-corroborated.
+
+**Not yet scoped**: model selection (local vs. hosted, OSI/non-PRC constraints per §2.1/§2.2 apply the same as everywhere else), fleet-backend integration (§10.1), storage/serving of generated artifacts, licensing-tier placement (§2.4), and delivery timing are all open — §16.1's candidates inform this future pass but do not lock it in. This section exists to record product direction and the safety-layer non-negotiables above it — a full spec pass (data model, migration, acceptance criteria, release wave) is required before this becomes buildable work.
+
+---
+
+## 17. Local-Only Profile — On-Device Memory & Caching (Optional)
+
+Flag: `waddleai.local_only_profile`. Off by default. An optional deployment profile for the OSS-developer/homelab persona (§1.2): memory and caching run entirely on the operator's machine, nothing leaves the host. Reference setup: **mem0 + Ollama** (`gemma4:e2b` default chat model, `llama3.1:1b` an accepted alternative — no Gemma 3 anywhere, no PRC-origin models, per §2.2/§2.3) **+ `nomic-embed-text`/`mxbai-embed-large` embeddings + Qdrant in a Docker container the operator runs themselves.**
+
+### 17.1 Vector-store interface
+
+`shared/vectorstore/base.py` — abstract `VectorStoreBackend`: `ensure_collection(spec)`, `upsert(collection, points)`, `search(collection, query_vector, top_k, min_score, filters)`, `delete(collection, ids)`, `delete_collection(collection)`, `health()`. Modeled directly on §10.1's `InferenceFleetBackend` pattern — registry + `@register` decorator (`shared/vectorstore/registry.py`), a cross-backend conformance suite both implementations satisfy (`tests/conformance/test_vectorstore_conformance.py`). `CollectionSpec(name, dimensions, embedder_id, distance)`: a collection reopened with a mismatched `dimensions` **or** a different `embedder_id` is refused (`VectorCollectionMismatchError`), not silently accepted — the concrete guard against WaddleAI's two independent embedding paths (`nomic-embed-text`, 768-dim, Ollama — the embedder behind memory/RAG/semantic-cache, §6.2/§9.4) and `all-MiniLM-L6-v2`, 384-dim, in-process SentenceTransformer, `rag_integration.py`'s alternate backend) ever sharing a collection.
+
+- **`PgvectorVectorStore`** (default): new `local_vector_collections`/`local_vector_points` tables (migration 015), JSON-serialized vectors + Python cosine ranking — the same portability tradeoff `response_cache_entries.prompt_embedding_json` already makes (§6.2), so this backend is byte-identical on SQLite (tests) and PostgreSQL (production) with no dialect branch. Net-new and additive only: it does not touch, wrap, or alter the existing `PgvectorMemoryStore` / `PgvectorRAGStore` / `SemanticCache` runtime paths (§6.2/§9.4) in any way.
+- **`QdrantVectorStore`** (local-only profile): a user-run Qdrant container — WaddleAI never starts, stops, or reconfigures it. Dimensions are checked against Qdrant's own `vectors_config.size` (server-authoritative, survives restarts); `embedder_id` is persisted via a reserved sentinel point, since Qdrant has no native collection-metadata field to hold it.
+
+### 17.2 Profile selection & fail-honest reachability
+
+`shared/vectorstore/factory.py::create_vector_store_backend(db, config, feature_flag_enabled)` is the seam — the profile selects a backend; call sites never branch on backend type. **Flag off (default)**: returns `PgvectorVectorStore(db)`; `shared.vectorstore.qdrant_backend` (and `qdrant-client`) is never imported. **Flag on**: builds `QdrantVectorStore` from `LocalProfileConfig`, then probes Qdrant (`get_collections()`) and Ollama (`GET /api/tags`) before returning it — either being unreachable raises `LocalProfileUnavailableError`, **never a silent fallback to the cluster path**, which would defeat the profile's privacy guarantee without the operator noticing. Docker/Ollama lifecycle stays the operator's responsibility throughout; WaddleAI only detects and reports.
+
+### 17.3 Config
+
+`LocalProfileConfig` (`shared/vectorstore/factory.py`) — every value env-overridable, no literals scattered through call sites:
+
+| Field | Env var | Default |
+|---|---|---|
+| Qdrant URL | `WADDLEAI_LOCAL_QDRANT_URL` | `http://localhost:6333` |
+| Qdrant API key | `WADDLEAI_LOCAL_QDRANT_API_KEY` | unset |
+| Collection prefix | `WADDLEAI_LOCAL_COLLECTION_PREFIX` | `waddleai_local` |
+| Ollama host | `OLLAMA_HOST` | `http://localhost:11434` |
+| Embedding model | `WADDLEAI_LOCAL_EMBEDDING_MODEL` | `nomic-embed-text` (768-dim) |
+| Chat model | `WADDLEAI_LOCAL_CHAT_MODEL` | `gemma4:e2b` |
+
+### 17.4 Acceptance
+
+Cross-backend conformance suite (pgvector + Qdrant, both against fakes — `FakeDAL` from §10.5's suite, `FakeAsyncQdrantClient`) covering idempotent `ensure_collection`, dimensions- and embedder-mismatch refusal, upsert/search/delete/delete_collection round trips, `min_score`/`top_k`; a unit test asserting flag-off uses the pgvector path and constructs no Qdrant client; a live Qdrant+Ollama integration pass (`tests/integration/test_vectorstore_local_profile.py`, auto-skipped when either is unreachable) that embeds real text via `nomic-embed-text` and proves the 768-vs-384 mismatch is refused for real, not only against a fake.
+
+## 18. Agent Hooks — Developer-Ecosystem Lifecycle Integration
+
+Server-side evaluation for hooks fired by developer-agent tooling (Claude Code/Cortex, Google Antigravity/AGY CLI, VS Code) -- `PreToolUse`/`PostToolUse`/session/notification events. **Hooks fire synchronously inside the agent's loop**, so latency is a correctness concern, not a nicety: a naive round trip per tool call is unacceptable as a default, and the design below is shaped around that constraint at every layer. Per-ecosystem client adapters are out of scope here (built against this section as a fixed contract); this section is the server side only.
+
+**Desktop-companion split (load-bearing architectural boundary).** A Rust module in the `penguin` desktop client (per `client.md`'s desktop-consolidation rule -- one modular desktop app, not one per product) is the component that actually installs and manages the per-ecosystem hook shims, caches the Tier-1 denylist for the offline fail-closed path (§18.2), and stores any credentials in platform secure storage (Keychain/Keystore/Credential Manager). It deliberately holds **no policy logic** of its own -- every `allow`/`deny`/`ask` decision comes from `POST /api/v1/hooks/evaluate` on this server, never from logic embedded in the desktop companion. This is why hook and proxy decisions cannot drift in either direction: there is exactly one place policy is evaluated, and the desktop companion is a thin installer/cache/transport layer in front of it, not a second decision-maker.
+
+### 18.1 Contract
+
+`POST /api/v1/hooks/evaluate` -- request:
+
+```json
+{"hook_version":"1","ecosystem":"claude-code|cortex|antigravity|vscode",
+ "event":"pre_tool_use|post_tool_use|session_start|notification",
+ "session_id":"str","tool_name":"str","tool_input":{},
+ "workspace_path":"str|null","occurred_at":"RFC3339"}
+```
+
+Response:
+
+```json
+{"decision":"allow|deny|ask","reason":"str","rule_id":"str|null","evaluated_in_ms":int}
+```
+
+`POST /api/v1/hooks/telemetry` -- `post_tool_use`/`session_start`/`notification` events that need no decision; fire-and-forget, must never block the agent. `GET /api/v1/hooks/policy` -- the canonical Tier-1 denylist for adapters to sync and cache locally. All three are authenticated the same as every other endpoint (JWT/API-key -> `g.user["organization_id"]`, never a client-supplied org) and deliberately return the **flat** shapes above, not the house `{"status","data","meta"}` envelope -- adapters are coded against this exact contract, and wrapping it would break interop. Admin CRUD for the tables below (§18.3/§18.4) uses the house envelope as normal.
+
+**Upstream delivery is stdin, not argv.** Both Claude Code and Antigravity deliver the hook payload to the invoked shim on **stdin** (JSON on a single call, not command-line arguments) -- this is the upstream contract, not an implementation choice, and the adapter/desktop-companion side must read it that way. A payload passed as an argv element would leak absolute file paths and full command lines into shell history and `ps` output, on top of simply not matching what the ecosystems actually do. This is upstream-of-WaddleAI (the shim's own stdin read, before it ever constructs the `POST /api/v1/hooks/evaluate` body above) but is recorded here since it is the reason the request/response shapes above are deliberately flat, self-contained JSON rather than anything resembling CLI-flag-shaped data.
+
+### 18.2 Evaluation chain
+
+Four tiers, evaluated in order, short-circuiting as soon as one produces a decision (`shared/security/hooks_engine.py`):
+
+| Tier | What | Fail mode |
+|---|---|---|
+| 1. Canonical denylist | Builtin seed (`.env*`, `.git/**`, `*.pem`, `*.key`, `id_rsa*`/`id_ed25519*`, `credentials.json`, `~/.ssh/**`, `~/.aws/**`, lockfiles) ∪ admin-added entries, matched against the flattened `tool_input` text | **Fails closed**, both sides: adapters enforce this list **offline** (zero network cost) and keep enforcing their last-synced copy if WaddleAI is unreachable; the server also checks it unconditionally, before Tier 2/3 even load, as defense in depth |
+| 2. Admin `hook_rules` | Declarative matcher (ecosystem/event/tool_name/pattern) -> `allow`\|`deny`\|`ask`, authored by an admin (§18.3) | A match is authoritative -- skips Tier 3 entirely |
+| 3. Remote policy evaluation | Opt-in (`hook_configs.remote_eval_enabled`, default OFF), org-scoped, calls the **existing** §8 `SecurityPolicyEngine`/`ContentFilter` against the flattened `tool_input` text -- never a bespoke reimplementation, so hook and proxy security decisions cannot drift | Explicit per-org config choice, defaulted **open** -- see below |
+| 4. Default | Nothing matched, Tier 3 off/allowed | `allow` |
+
+**Tier 3 fail-mode default: `open` (fail available), and why.** `remote_eval_fail_mode` governs what happens when Tier 3 cannot produce a verdict (timeout, bounded independently at `remote_eval_timeout_ms` -- default 200ms, deliberately tighter than the resolved security policy's own `auditor_timeout_ms`, which is tuned for the proxy's chat-completion budget, not this interactive path -- or exception). It defaults to **open**: Tier 3 is opt-in and layered on top of a Tier-1 floor that already fails closed independently of any network round trip, and hooks fire on *every* tool call in an interactive dev loop -- a management-service blip failing closed here means an entire org's tool calls grind to a halt simultaneously. This mirrors the §8.2 `SecurityPolicyEngine`'s own `degrade` default for an unreachable tier-4 auditor, for the identical reason, with even more force given the call volume. It is a *default*, not a mandate -- `remote_eval_fail_mode` is a per-org field precisely so a regulated-environment org can flip it to `closed` and accept the availability cost. Fail-open and fail-closed events are counted on **separate** metrics and always logged at WARNING (§18.6), so a shift in the ratio is directly observable and alertable, not a silent degradation.
+
+Tier-3 §8 content-filter actions map onto hook decisions: `allow`->`allow`, `flag`/`redact`->`ask` (a tool call can't be partially redacted the way a chat message can), `block`->`deny`.
+
+### 18.3 Admin-authored declarative hooks
+
+**A custom hook is a `hook_rules` row the server evaluates, never shippable/executable code.** An admin-authored hook that executes arbitrary commands on every developer's machine is remote code execution as a feature, and a compromised or careless tenant admin becomes an RCE vector against every engineer in that org -- that path is not implemented. Instead:
+
+- **Matcher**: `ecosystem`, `event`, `tool_name_pattern` (glob), `match_pattern` (glob against the flattened `tool_input` text) -- any unset field matches anything.
+- **Decision**: `allow`\|`deny`\|`ask`, plus a human-readable `reason` surfaced to the developer.
+- **Enabled flag, `priority`** (tie-break only, never changes which decision wins -- see §18.4), and `created_by` for audit.
+
+All authored logic lives server-side -- versioned, auditable, instantly revocable. A bad rule is a row update, not a script already resident on fifty laptops.
+
+**Escape hatch for genuinely executable hooks: not built, tracked as future work only.** If a real need for admin-pushed executable automation emerges, it requires (at minimum) global-admin-only authorship, signed payloads, per-workspace developer opt-in, and never auto-execution without visible confirmation -- plus a full audit trail. None of that exists today; shipping the declarative version now and this list later, rather than a half-guarded exec path, is the deliberate choice.
+
+### 18.4 Scoping -- a hard boundary
+
+`hook_rules`/`hook_denylist_entries`/`hook_configs` all use the same two-level `scope_type` (`global`\|`org`)/`scope_ref` shape `security_policies` uses for its chain (§8.1), collapsed to two levels since the matcher fields themselves carry the granularity a model/tool scope would otherwise add. Roles map onto the existing `admin` (platform-wide) / `resource_manager` (org-scoped) split already established by `security_policies.py`'s bypass-grants precedent (§8.9) -- no new role vocabulary:
+
+- **`admin`** (global admin) is platform-wide and may author `scope_type='global'` rows.
+- **`resource_manager`** (tenant admin) is **force-scoped to their own org on every write**, regardless of what the request body asks for -- an explicit `scope_type='global'` or a different org's `scope_ref` in the body is silently overridden, never honored. Reads: global rows visible read-only (transparency into why something is denied), any other org's rows never visible. This mirrors the §2.2a precedent already in the spec: a tenant admin must not be able to take on risk for the whole deployment.
+
+**Precedence between global and tenant `hook_rules`: max severity wins across every matched rule, global or tenant alike** (`hooks_rules.combine_hook_rule_matches`, severity `deny(2) > ask(1) > allow(0)`). This is deliberately symmetric with `policy_engine.combine()`'s monotonic composition (§8.5: an LLM verdict can only raise severity, never lower it) generalized from two inputs to N matched rules: a global `deny` unconditionally outranks a tenant `allow` (2 > 0 regardless of scope), while a tenant `deny` still tightens a global `allow` the other direction (2 > 0 again) -- a tenant can restrict further than the deployment-wide floor but never loosen below it. Ties at equal severity are broken by lowest `priority`, then lowest `id`, purely to pick which single rule's `reason`/`rule_id` is surfaced -- never changing which decision wins.
+
+**An admin rule cannot weaken the Tier-1 denylist**, structurally rather than by runtime special case: Tier 1 (§18.2) is evaluated first and alone, returning `deny` before `hook_rules` are even loaded on a match. A `hook_rules` row explicitly `allow`-ing `.env` is simply never reached. The builtin seed list is a hardcoded constant (`hooks_denylist.BUILTIN_DENYLIST_PATTERNS`), not a DB row at all -- `hook_denylist_entries` can only ever *add* restrictions (additive-only API, no update/replace endpoint), since there is no row representing a builtin pattern to delete or weaken.
+
+### 18.5 Telemetry privacy
+
+`tool_input` is command lines and absolute file paths -- sensitive, often PII-adjacent. `POST /api/v1/hooks/telemetry` persists via a background task (never awaited by the request handler, so the response never waits on the write) into `hook_telemetry_events`: `tool_input_hash` (sha256) is **always** populated; `tool_input_raw` is populated **only** when the resolved `hook_configs.capture_raw_payloads` is `True` for that org -- default OFF, resolved through the same global->org chain as everything else in this section. Never in a Prometheus metric label, regardless of the opt-in state (unbounded cardinality *and* a leak).
+
+### 18.6 Metrics
+
+Emitted via the existing `shared/utils/metrics.py::WaddleAIMetrics` pattern (`get_management_metrics()`):
+
+| Metric | Labels | Purpose |
+|---|---|---|
+| `waddleai_hook_invocations_total` | ecosystem, event, decision | Volume + decision mix |
+| `waddleai_hook_evaluation_duration_seconds` | ecosystem, event | Histogram -- hooks sit on the critical path, so p50/p95/p99 of server-side evaluation is the number that matters |
+| `waddleai_hook_timeouts_total` | tier | Tier-3 (and future-tier) timeout count |
+| `waddleai_hook_fail_mode_total` | mode (`fail_open`\|`fail_closed`) | Counted **separately** -- a spike in fail-open is a silent security degradation and must be independently alertable |
+| `waddleai_hook_tool_calls_total` | ecosystem, tool_name, organization | Per-org tool-call volume for efficiency/cache-hit-potential analysis |
+| `waddleai_hook_rule_evaluations_total` | rule_id, scope | Every `hook_rules` match, whether or not it won -- an admin can see whether a rule they authored is actually firing |
+| `waddleai_hook_rule_decisions_total` | rule_id, scope, decision | Only the rule that actually decided the outcome -- distinguishes "firing but never winning" from "blocking everyone" |
+
+### 18.7 Data model
+
+`015_hooks` (chains off `014_integrations`): `hook_rules`, `hook_denylist_entries` (admin *additions* only, builtin list is code, not rows), `hook_configs` (global->org nullable-means-inherit, same convention as `security_policies`), `hook_telemetry_events` (`tool_input_hash` always, `tool_input_raw` opt-in only). Feature-flagged `waddleai.agent_hooks`, default OFF -- flag-off means `/evaluate` always returns `allow` before any body parsing, zero behavior change for an adapter regardless of what it sends (Tier 1 stays enforced client-side by the adapter's own offline copy either way).
+
+### 18.8 Acceptance
+
+A denylisted path is refused end-to-end (adapter-side offline AND server-side defense-in-depth); a `hook_rules` `allow` targeting a denylisted pattern does not weaken the denial; Tier-3 fail-mode behaves as configured in both directions (`open` allows on timeout/error, `closed` denies) with the correct fail-mode metric incremented; a tenant admin cannot read, write, or affect another tenant's `hook_rules`/`hook_denylist_entries`/`hook_configs` (list-scoping, and write-scoping even under an explicit cross-org request body); `tool_input` is never persisted raw when the org's `capture_raw_payloads` opt-in is off; flag-off proof (`/evaluate` allows unconditionally, no behavior change).
+
+---
+
+## 19. Product Positioning — The Control Plane for AI (2026-08-21)
+
+Owner direction, recorded because §1-18 describe capabilities without saying what the
+product *is*, and the README had drifted into selling it as a budget alternative to
+frontier models. It is not that.
+
+**WaddleAI is to AI what Terraform and Mist.io were to cloud management**: one control
+plane over heterogeneous providers, with consistent access control, policy and cost
+visibility. It does not replace models. It sits in front of them.
+
+Three goals, in priority order. Every feature in this spec should trace to one:
+
+1. **Cross-cloud management of models, and of who may reach them.** One endpoint in front
+   of OpenAI, Anthropic, Gemini, xAI, Bedrock, Ollama and llama.cpp. Add a provider once;
+   every key, quota and policy already applies. Move a workload between a commercial API
+   and your own GPUs without the caller noticing.
+
+2. **Security controls that apply to commercial and open engines alike.** Policy belongs
+   to the platform, not to whichever vendor serves the request — PII detection/redaction,
+   prompt-injection scanning, output guardrails, audit. Emphasis on the outbound
+   direction: what leaves the building. A prompt routed to a commercial provider is
+   scanned and redacted under the same rules as one served locally.
+
+3. **Efficiency without degrading the calling harness.** Response + semantic caching,
+   just-in-time RAG, MCP lazy-loading, and fitness-for-purpose routing. The hard
+   constraint: Claude Code, Cursor and Antigravity must behave exactly as they would
+   talking to the provider directly — same API shape, streaming and tool calls.
+   Efficiency that costs capability is just a cheaper bad answer.
+
+   Canonical framing: *Bob should not be asking a frontier model what the weather is, and
+   a coding agent should not re-process the entire codebase every session.*
+
+**Open-first is a default, not a limit.** Open models, open embeddings and self-hosting
+remain the default posture; routing to commercial providers is a first-class path and the
+controls above apply identically either way. README language implying WaddleAI is for
+people who cannot afford frontier models has been removed.
+
+### 19.1 PII detection is licence-gated — but only tier 3
+
+PII detection and prevention is a licensed feature (customer requirement, 2026-08-21).
+Gated with flag `waddleai.pii_ner` AND entitlement `pii_ner_detection`; both must pass.
+
+**Only the NER tier is gated.** Tiers 1 and 2 — the 23 built-in patterns and the org's own
+custom rules — are never gated. Gating the whole content filter on a licence check would
+turn a licence-server outage into a PII leak: prompts would reach commercial providers
+unredacted precisely when the platform could not verify itself. The licence buys what
+regex cannot do — person names, locations and organisations matched by meaning.
+
+Verified behaviour: with the licence server unreachable, SSN/credit-card/email are still
+detected and redacted; with a licence, `ner:PERSON` and `ner:ORGANIZATION` are added.
+
+`en_core_web_lg` is now a hash-pinned dependency. It had been declared NOWHERE — not in a
+requirements file, Dockerfile or doc — so the NER tier never ran in any built image, and
+Presidio's `create_engine()` attempted a ~600MB runtime download instead of failing fast.
+
+### 19.2 Credential reference injection (design drafted, not built)
+
+See `docs/superpowers/specs/2026-08-21-credential-reference-injection-design.md`.
+
+An agent holds a *reference*, never a credential. An MCP tool mints
+`proxytoken:<opaque>` gated by the MCP session's own authenticated identity; the proxy
+redeems it at egress after confirming the redeeming identity matches the minting one.
+Backends in preference order: skauswatch, HashiCorp Vault, then GCP/Azure/AWS.
+
+Governing hazard: **substitution must never touch the prompt path**, or the real
+credential is delivered to the model provider — the inverse of the goal.
+
+### 19.3 SPIFFE/SPIRE is docs-only today
+
+Every service must be SPIFFE-*ready* (accepting mTLS/X.509-SVID as a first-class identity)
+whether or not SPIRE is deployed. There is currently no implementation in `shared/`,
+`proxy/`, `services/` or `k8s/`. Either a lightweight intra-product issuer or the full
+SPIRE deployment managed by skauswatch. This should land before or with §19.2: the proxy
+authenticating to a secret backend is itself a service-to-service call, and a static token
+there would protect the credential broker with exactly the kind of long-lived secret it
+exists to remove.
+
+---
+
 ## Status
 
-**Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review). All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
+**§19 records product positioning and the 2026-08-21 direction (licence-gated PII, credential reference injection, SPIFFE readiness); §19.2 and §19.3 are drafted, not built.** **Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**; **§17 (local-only profile) complete**, migration 015; **§18 (Agent Hooks) complete**, migration 016. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
 
 ---
 

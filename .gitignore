@@ -20,8 +20,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -96,6 +96,14 @@ coverage
 # directory only, not coverage.py's `.coverage` data file.
 .coverage
 .coverage.*
+htmlcov/
+coverage.xml
+
+# Stray top-level management/ dir (distinct from services/management/).
+# MUST stay anchored with a leading slash: a bare `management/` matches at every
+# depth, which silently blackholed every NEW file under services/management/,
+# tests/unit/management/ and services/management/alembic/versions/.
+/management/
 
 # nyc test coverage
 .nyc_output
@@ -213,3 +221,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 k8s/helm/waddleai/values-secrets-*.yaml
+
+# Rust build artifacts (Cargo.lock IS committed -- binary crate, per house
+# rule -- only the compiled output is ignored)
+target/
+
+# mypy incremental cache -- build artifact, never committed
+.mypy_cache/

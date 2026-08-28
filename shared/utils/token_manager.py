@@ -1,6 +1,6 @@
-"""
-WaddleAI Dual Token System
-Manages both WaddleAI tokens (normalized) and raw LLM tokens with conversion rates
+"""WaddleAI Dual Token System.
+
+Manages both WaddleAI tokens (normalized) and raw LLM tokens with conversion rates.
 """
 
 import json
@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import tiktoken
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class TokenType(Enum):
-    """Types of tokens"""
+    """Types of tokens."""
 
     WADDLEAI = "waddleai"
     LLM_INPUT = "llm_input"
@@ -25,19 +25,19 @@ class TokenType(Enum):
 
 @dataclass
 class TokenUsage:
-    """Token usage record"""
+    """Token usage record."""
 
     waddleai_tokens: int
     llm_tokens_input: int
     llm_tokens_output: int
-    llm_tokens_breakdown: Dict[str, Dict[str, int]]  # {"model": {"input": x, "output": y}}
+    llm_tokens_breakdown: dict[str, dict[str, int]]  # {"model": {"input": x, "output": y}}
     cost_estimate_waddleai: float
     cost_estimate_usd: float
 
 
 @dataclass
 class ConversionRate:
-    """Token conversion rate configuration"""
+    """Token conversion rate configuration."""
 
     provider: str
     model: str
@@ -47,7 +47,7 @@ class ConversionRate:
 
 
 class TokenManager:
-    """Manages token counting, conversion, and quota enforcement"""
+    """Manages token counting, conversion, and quota enforcement."""
 
     # Default conversion rates for common models (seed data for token_conversion_rates table)
     DEFAULT_CONVERSION_RATES = {
@@ -57,15 +57,22 @@ class TokenManager:
         "openai:gpt-4o-mini": ConversionRate("openai", "gpt-4o-mini", 10.0, 10.0, 0.00015),
         "openai:gpt-3.5-turbo": ConversionRate("openai", "gpt-3.5-turbo", 10.0, 10.0, 0.0002),
         "anthropic:claude-3-opus": ConversionRate("anthropic", "claude-3-opus", 10.0, 20.0, 0.0075),
-        "anthropic:claude-3-sonnet": ConversionRate("anthropic", "claude-3-sonnet", 10.0, 20.0, 0.0015),
-        "anthropic:claude-3-haiku": ConversionRate("anthropic", "claude-3-haiku", 10.0, 10.0, 0.00025),
-        "anthropic:claude-3.5-sonnet": ConversionRate("anthropic", "claude-3.5-sonnet", 10.0, 20.0, 0.003),
+        "anthropic:claude-3-sonnet": ConversionRate(
+            "anthropic", "claude-3-sonnet", 10.0, 20.0, 0.0015
+        ),
+        "anthropic:claude-3-haiku": ConversionRate(
+            "anthropic", "claude-3-haiku", 10.0, 10.0, 0.00025
+        ),
+        "anthropic:claude-3.5-sonnet": ConversionRate(
+            "anthropic", "claude-3.5-sonnet", 10.0, 20.0, 0.003
+        ),
         "ollama:llama2": ConversionRate("ollama", "llama2", 10.0, 10.0, 0.0),
         "ollama:mistral": ConversionRate("ollama", "mistral", 10.0, 10.0, 0.0),
         "ollama:codellama": ConversionRate("ollama", "codellama", 10.0, 10.0, 0.0),
     }
 
     def __init__(self, db):
+        """Bind the DAL handle, load conversion rates, and build per-provider token encoders."""
         self.db = db
         self._load_conversion_rates()
 
@@ -81,7 +88,7 @@ class TokenManager:
         self.default_encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
     def _load_conversion_rates(self):
-        """Load token conversion rates from database, fallback to defaults if empty"""
+        """Load token conversion rates from database, fallback to defaults if empty."""
         self.conversion_rates = {}
 
         rates = self.db(self.db.token_conversion_rates.enabled == True).select()  # noqa: E712
@@ -99,8 +106,10 @@ class TokenManager:
             # Fallback to defaults when DB table is empty
             self.conversion_rates = dict(self.DEFAULT_CONVERSION_RATES)
 
-    def count_tokens(self, text: str, provider: str = "openai", model: str = "gpt-3.5-turbo") -> int:
-        """Count tokens in text using appropriate encoder"""
+    def count_tokens(
+        self, text: str, provider: str = "openai", model: str = "gpt-3.5-turbo"
+    ) -> int:
+        """Count tokens in text using appropriate encoder."""
         try:
             # Use provider-specific encoder if available
             if provider in self.encoders and model in self.encoders[provider]:
@@ -114,8 +123,10 @@ class TokenManager:
             # Fallback: rough estimation (4 chars = 1 token)
             return len(text) // 4
 
-    def calculate_waddleai_tokens(self, input_tokens: int, output_tokens: int, provider: str, model: str) -> int:
-        """Convert LLM tokens to WaddleAI tokens using conversion rates"""
+    def calculate_waddleai_tokens(
+        self, input_tokens: int, output_tokens: int, provider: str, model: str
+    ) -> int:
+        """Convert LLM tokens to WaddleAI tokens using conversion rates."""
         rate_key = f"{provider}:{model}"
 
         if rate_key not in self.conversion_rates:
@@ -131,8 +142,10 @@ class TokenManager:
 
         return waddleai_input + waddleai_output
 
-    def calculate_cost(self, waddleai_tokens: int, provider: str, model: str) -> Tuple[float, float]:
-        """Calculate cost in WaddleAI tokens and USD"""
+    def calculate_cost(
+        self, waddleai_tokens: int, provider: str, model: str
+    ) -> tuple[float, float]:
+        """Calculate cost in WaddleAI tokens and USD."""
         rate_key = f"{provider}:{model}"
 
         cost_waddleai = float(waddleai_tokens)  # 1:1 for WaddleAI tokens
@@ -154,8 +167,8 @@ class TokenManager:
         api_key_id: int,
         user_id: int,
         organization_id: int,
-        actual_input_tokens: Optional[int] = None,
-        actual_output_tokens: Optional[int] = None,
+        actual_input_tokens: int | None = None,
+        actual_output_tokens: int | None = None,
     ) -> TokenUsage:
         """Process token usage for a request.
 
@@ -165,11 +178,12 @@ class TokenManager:
         this falls back to local tiktoken estimation only when a caller omits
         them.
         """
-
         # Count LLM tokens: prefer the provider-reported counts when given,
         # else fall back to local estimation.
         input_tokens = (
-            actual_input_tokens if actual_input_tokens is not None else self.count_tokens(input_text, provider, model)
+            actual_input_tokens
+            if actual_input_tokens is not None
+            else self.count_tokens(input_text, provider, model)
         )
         output_tokens = (
             actual_output_tokens
@@ -178,7 +192,9 @@ class TokenManager:
         )
 
         # Convert to WaddleAI tokens
-        waddleai_tokens = self.calculate_waddleai_tokens(input_tokens, output_tokens, provider, model)
+        waddleai_tokens = self.calculate_waddleai_tokens(
+            input_tokens, output_tokens, provider, model
+        )
 
         # Calculate costs
         cost_waddleai, cost_usd = self.calculate_cost(waddleai_tokens, provider, model)
@@ -202,14 +218,22 @@ class TokenManager:
         return usage
 
     def _update_usage_records(
-        self, usage: TokenUsage, api_key_id: int, user_id: int, organization_id: int, provider: str, model: str
+        self,
+        usage: TokenUsage,
+        api_key_id: int,
+        user_id: int,
+        organization_id: int,
+        provider: str,
+        model: str,
     ):
-        """Update usage records in database"""
+        """Update usage records in database."""
         today = date.today()
 
         # Update daily usage record
         existing = (
-            self.db((self.db.token_usage.api_key_id == api_key_id) & (self.db.token_usage.date == today))
+            self.db(
+                (self.db.token_usage.api_key_id == api_key_id) & (self.db.token_usage.date == today)
+            )
             .select()
             .first()
         )
@@ -229,7 +253,15 @@ class TokenManager:
                 else:
                     existing_breakdown[model_key] = tokens
 
-            existing.update_record(
+            # regression: bug found writing tests/e2e/test_response_cache_e2e.py --
+            # penguin_dal's Row (penguin_dal/query.py) has no update_record()
+            # method (that's classic PyDAL API); the correct penguin_dal
+            # update is db(condition).update(**kwargs). This previously
+            # raised AttributeError on the *second* request in the same day
+            # for the same api_key, caught by the route handler's broad
+            # except and reported as a 500 -- token usage silently stopped
+            # accumulating past the first request/key/day in production.
+            self.db(self.db.token_usage.id == existing.id).update(
                 waddleai_tokens=new_waddleai,
                 tokens_input_total=new_input,
                 tokens_output_total=new_output,
@@ -255,7 +287,7 @@ class TokenManager:
         self._update_usage_cache(usage, api_key_id, organization_id)
 
     def _update_usage_cache(self, usage: TokenUsage, api_key_id: int, organization_id: int):
-        """Update real-time usage cache for quota enforcement"""
+        """Update real-time usage cache for quota enforcement."""
         now = datetime.utcnow()
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         month_start = today.replace(day=1)
@@ -275,7 +307,9 @@ class TokenManager:
             new_waddleai = daily_cache.waddleai_tokens_used + usage.waddleai_tokens
 
             # Update LLM token breakdown
-            llm_tokens = json.loads(daily_cache.llm_tokens_used) if daily_cache.llm_tokens_used else {}
+            llm_tokens = (
+                json.loads(daily_cache.llm_tokens_used) if daily_cache.llm_tokens_used else {}
+            )
             for model_key, tokens in usage.llm_tokens_breakdown.items():
                 if model_key in llm_tokens:
                     llm_tokens[model_key]["input"] += tokens["input"]
@@ -283,7 +317,9 @@ class TokenManager:
                 else:
                     llm_tokens[model_key] = tokens
 
-            daily_cache.update_record(
+            # regression: see the identical fix above -- update_record() is
+            # not a penguin_dal Row method.
+            self.db(self.db.usage_cache.id == daily_cache.id).update(
                 waddleai_tokens_used=new_waddleai,
                 llm_tokens_used=json.dumps(llm_tokens),
                 requests_made=daily_cache.requests_made + 1,
@@ -315,7 +351,9 @@ class TokenManager:
             new_waddleai = monthly_cache.waddleai_tokens_used + usage.waddleai_tokens
 
             # Update LLM token breakdown
-            llm_tokens = json.loads(monthly_cache.llm_tokens_used) if monthly_cache.llm_tokens_used else {}
+            llm_tokens = (
+                json.loads(monthly_cache.llm_tokens_used) if monthly_cache.llm_tokens_used else {}
+            )
             for model_key, tokens in usage.llm_tokens_breakdown.items():
                 if model_key in llm_tokens:
                     llm_tokens[model_key]["input"] += tokens["input"]
@@ -323,7 +361,9 @@ class TokenManager:
                 else:
                     llm_tokens[model_key] = tokens
 
-            monthly_cache.update_record(
+            # regression: see the identical fix above -- update_record() is
+            # not a penguin_dal Row method.
+            self.db(self.db.usage_cache.id == monthly_cache.id).update(
                 waddleai_tokens_used=new_waddleai,
                 llm_tokens_used=json.dumps(llm_tokens),
                 requests_made=monthly_cache.requests_made + 1,
@@ -340,8 +380,8 @@ class TokenManager:
                 requests_made=1,
             )
 
-    def check_quota(self, api_key_id: int) -> Tuple[bool, Dict[str, Any]]:
-        """Check if API key is within quota limits"""
+    def check_quota(self, api_key_id: int) -> tuple[bool, dict[str, Any]]:
+        """Check if API key is within quota limits."""
         # Get API key and user info
         api_key = self.db(self.db.api_keys.id == api_key_id).select().first()
         if not api_key:
@@ -388,7 +428,12 @@ class TokenManager:
         monthly_ok = monthly_used < monthly_limit
 
         quota_info = {
-            "daily": {"used": daily_used, "limit": daily_limit, "remaining": daily_limit - daily_used, "ok": daily_ok},
+            "daily": {
+                "used": daily_used,
+                "limit": daily_limit,
+                "remaining": daily_limit - daily_used,
+                "ok": daily_ok,
+            },
             "monthly": {
                 "used": monthly_used,
                 "limit": monthly_limit,
@@ -401,13 +446,12 @@ class TokenManager:
 
     def get_usage_stats(
         self,
-        api_key_id: Optional[int] = None,
-        user_id: Optional[int] = None,
-        organization_id: Optional[int] = None,
+        api_key_id: int | None = None,
+        user_id: int | None = None,
+        organization_id: int | None = None,
         days: int = 30,
-    ) -> Dict[str, Any]:
-        """Get detailed usage statistics"""
-
+    ) -> dict[str, Any]:
+        """Get detailed usage statistics."""
         since = datetime.utcnow().date() - timedelta(days=days)
 
         conditions = [self.db.token_usage.date >= since]
@@ -467,5 +511,5 @@ class TokenManager:
 
 
 def create_token_manager(db) -> TokenManager:
-    """Factory function to create token manager"""
+    """Factory function to create token manager."""
     return TokenManager(db)
