@@ -13,7 +13,7 @@ WaddleAI is a comprehensive AI proxy and management system that provides OpenAI-
 - **Token Management** - Quota enforcement and usage tracking
 - **Multi-Tenant** - Organization-based isolation
 - **Monitoring** - Prometheus metrics and health checks
-- **Memory Integration** - Conversation memory with mem0/ChromaDB
+- **Memory Integration** - Conversation memory with pgvector/mem0
 - **OpenWebUI Integration** - Modern web interface for testing and development
 
 ## Architecture

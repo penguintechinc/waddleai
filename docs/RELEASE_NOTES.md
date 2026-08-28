@@ -1,5 +1,13 @@
 # WaddleAI Release Notes
 
+## Unreleased
+
+### Security
+
+- **Dropped the chromadb memory/RAG backend** (`ChromaDBMemoryStore` in `shared/utils/memory_integration.py`, `ChromaDBRAGStore` in `shared/utils/rag_integration.py`, and the `chromadb` dependency itself). PYSEC-2026-311 is a pre-authentication code injection vulnerability in chromadb's server component with no fixed release in any version >=1.0.0; it had been carried as an accepted `pip-audit` exception. pgvector (the default) and qdrant already cover the same ground, so the backend was removed instead of the exception being carried forward.
+- `create_memory_manager(backend="chromadb")` and `create_rag_manager(backend="chromadb")` now fail fast with a `ValueError` naming `pgvector`/`mem0`/`qdrant` as replacements, instead of silently falling back to a different backend. `create_memory_manager(backend="mem0")` without `mem0ai` installed now raises `ImportError` rather than silently falling back to the removed ChromaDB store.
+- **Migration:** if you were running with `backend="chromadb"`, switch to `backend="pgvector"` (default) or `backend="mem0"`. There is no automated migration tool -- re-index/re-populate memory and RAG documents from source data after switching backends.
+
 ## v0.2.0 — 2026-08-10
 
 > Merged to `main` as a squash of the `release/v0.2.X` branch. Not tagged and not deployed.

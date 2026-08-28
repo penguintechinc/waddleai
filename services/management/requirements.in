@@ -117,11 +117,12 @@ python-dotenv>=1.0.0
 structlog>=24.1.0
 
 # Kubernetes control-plane (Cilium reconciler). Declared as a floor, not an
-# exact pin: proxy/requirements.in does not declare kubernetes at all -- it
-# arrives transitively via chromadb -- so an exact pin here fought the shared
-# resolution once this file began inheriting the root lockfile. The resolver
-# unifies all three on one version; the floor only guards against going below
-# the API surface the reconciler needs.
+# exact pin: proxy/requirements.in does not declare kubernetes at all, and
+# nothing else in the shared resolution pulls it in transitively either
+# (chromadb, which used to, was removed for PYSEC-2026-311) -- so an exact
+# pin here would fight the shared resolution once this file began inheriting
+# the root lockfile. The resolver unifies all three on one version; the floor
+# only guards against going below the API surface the reconciler needs.
 kubernetes>=35.0.0
 
 # Schema migrations — Alembic is the sole schema authority for this service.

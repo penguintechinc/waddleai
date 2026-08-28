@@ -1,6 +1,11 @@
 """RAG (Retrieval-Augmented Generation) Integration for WaddleAI.
 
 Provides knowledge base management with multiple vector store backends.
+
+The chromadb backend was removed: PYSEC-2026-311 is a pre-authentication
+code injection in chromadb's server component with no fixed release in any
+version >=1.0.0. ``create_rag_manager(backend="chromadb")`` now fails
+fast -- see its docstring for the replacement backends.
 """
 
 import asyncio
@@ -55,15 +60,6 @@ try:
     HAS_QDRANT = True
 except ImportError:
     HAS_QDRANT = False
-
-# ChromaDB import (optional)
-try:
-    import chromadb
-    from chromadb.config import Settings
-
-    HAS_CHROMADB = True
-except ImportError:
-    HAS_CHROMADB = False
 
 logger = logging.getLogger(__name__)
 
@@ -577,235 +573,6 @@ class QdrantRAGStore(RAGStore):
             return {"collection": collection, "document_count": 0, "backend": "qdrant"}
 
 
-class ChromaDBRAGStore(RAGStore):
-    """ChromaDB-based RAG storage (separate from conversation memory)."""
-
-    def __init__(
-        self,
-        persist_directory: str = "./chroma_rag_data",
-        host: str | None = None,
-        port: int | None = None,
-    ):
-        """Store ChromaDB connection info and eagerly load the sentence-transformer encoder."""
-        if not HAS_CHROMADB:
-            raise ImportError("chromadb package not installed. Install with: pip install chromadb")
-
-        self.persist_directory = persist_directory
-        self.host = host
-        self.port = port
-        self.client = None
-        self.encoder = None
-
-        # Initialize embedding model
-        self._init_encoder()
-
-    def _init_encoder(self):
-        """Initialize sentence transformer for embeddings."""
-        try:
-            self.encoder = _sentence_transformer("all-MiniLM-L6-v2")
-            logger.info("Initialized SentenceTransformer encoder")
-        except Exception as e:
-            logger.error(f"Failed to initialize encoder: {e}")
-            self.encoder = None
-
-    async def initialize(self):
-        """Initialize ChromaDB client."""
-        try:
-            if self.host and self.port:
-                # HTTP client
-                self.client = chromadb.HttpClient(host=self.host, port=self.port)
-            else:
-                # Persistent client
-                self.client = chromadb.PersistentClient(
-                    path=self.persist_directory,
-                    settings=Settings(anonymized_telemetry=False, allow_reset=True),
-                )
-
-            logger.info("Initialized ChromaDB RAG store")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}")
-            raise
-
-    def _generate_embedding(self, text: str) -> list[float] | None:
-        """Generate embedding for text."""
-        if not self.encoder:
-            return None
-
-        try:
-            embedding = self.encoder.encode(text, convert_to_tensor=False)
-            return embedding.tolist()
-        except Exception as e:
-            logger.error(f"Failed to generate embedding: {e}")
-            return None
-
-    async def add_documents(self, documents: list[Document], collection: str = "default") -> bool:
-        """Add documents to ChromaDB."""
-        try:
-            if not self.client:
-                await self.initialize()
-
-            # Get or create collection
-            try:
-                chroma_collection = self.client.get_collection(name=collection)
-            except Exception:
-                chroma_collection = self.client.create_collection(
-                    name=collection, metadata={"description": "WaddleAI RAG knowledge base"}
-                )
-
-            ids = []
-            contents = []
-            metadatas = []
-            embeddings = []
-
-            for doc in documents:
-                # Generate embedding if not provided
-                if doc.embedding is None:
-                    doc.embedding = self._generate_embedding(doc.content)
-
-                if doc.embedding is None:
-                    logger.warning(f"Skipping document {doc.id} - no embedding")
-                    continue
-
-                ids.append(doc.id)
-                contents.append(doc.content)
-                metadatas.append(doc.metadata)
-                embeddings.append(doc.embedding)
-
-            # Add to collection
-            if ids:
-                chroma_collection.add(
-                    ids=ids, documents=contents, metadatas=metadatas, embeddings=embeddings
-                )
-                logger.info(f"Added {len(ids)} documents to ChromaDB collection '{collection}'")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to add documents to ChromaDB: {e}")
-            return False
-
-    async def search(
-        self,
-        query: str,
-        collection: str = "default",
-        limit: int = 5,
-        min_score: float = 0.7,
-        filters: dict[str, Any] | None = None,
-    ) -> list[SearchResult]:
-        """Search in ChromaDB."""
-        try:
-            if not self.client:
-                await self.initialize()
-
-            # Get collection
-            try:
-                chroma_collection = self.client.get_collection(name=collection)
-            except Exception:
-                logger.warning(f"Collection '{collection}' not found")
-                return []
-
-            # Generate query embedding
-            query_embedding = self._generate_embedding(query)
-            if not query_embedding:
-                return []
-
-            # Build where clause from filters
-            where_clause = filters if filters else None
-
-            # Search
-            search_results = chroma_collection.query(
-                query_embeddings=[query_embedding],
-                n_results=limit,
-                where=where_clause,
-                include=["documents", "metadatas", "distances"],
-            )
-
-            # Convert to SearchResult objects
-            results = []
-            if search_results and search_results["documents"]:
-                for i in range(len(search_results["documents"][0])):
-                    distance = (
-                        search_results["distances"][0][i]
-                        if search_results.get("distances")
-                        else 0.0
-                    )
-                    score = 1.0 - distance  # Convert distance to score
-
-                    if score < min_score:
-                        continue
-
-                    doc = Document(
-                        id=search_results["ids"][0][i],
-                        content=search_results["documents"][0][i],
-                        metadata=search_results["metadatas"][0][i],
-                        collection=collection,
-                    )
-
-                    results.append(SearchResult(document=doc, score=score, distance=distance))
-
-            return results
-
-        except Exception as e:
-            logger.error(f"Failed to search in ChromaDB: {e}")
-            return []
-
-    async def delete_document(self, document_id: str, collection: str = "default") -> bool:
-        """Delete document from ChromaDB."""
-        try:
-            if not self.client:
-                await self.initialize()
-
-            chroma_collection = self.client.get_collection(name=collection)
-            chroma_collection.delete(ids=[document_id])
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to delete document: {e}")
-            return False
-
-    async def delete_collection(self, collection: str) -> bool:
-        """Delete collection from ChromaDB."""
-        try:
-            if not self.client:
-                await self.initialize()
-
-            self.client.delete_collection(name=collection)
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to delete collection: {e}")
-            return False
-
-    async def list_collections(self) -> list[str]:
-        """List all collections in ChromaDB."""
-        try:
-            if not self.client:
-                await self.initialize()
-
-            collections = self.client.list_collections()
-            return [c.name for c in collections]
-
-        except Exception as e:
-            logger.error(f"Failed to list collections: {e}")
-            return []
-
-    async def get_collection_stats(self, collection: str) -> dict[str, Any]:
-        """Get statistics for a collection."""
-        try:
-            if not self.client:
-                await self.initialize()
-
-            chroma_collection = self.client.get_collection(name=collection)
-            count = chroma_collection.count()
-
-            return {"collection": collection, "document_count": count, "backend": "chromadb"}
-
-        except Exception as e:
-            logger.error(f"Failed to get collection stats: {e}")
-            return {"collection": collection, "document_count": 0, "backend": "chromadb"}
-
-
 def chunk_text(text: str, chunk_size: int = 512, chunk_overlap: int = 50) -> list[str]:
     """Split text into overlapping chunks.
 
@@ -933,13 +700,21 @@ def create_rag_manager(
     """Factory function to create RAG manager.
 
     Args:
-        backend: RAG backend ("pgvector", "supabase", "qdrant", or "chromadb")
+        backend: RAG backend ("pgvector", "supabase", or "qdrant")
         write_db: Primary DAL connection (required for pgvector; also used as
                   the ``db`` arg passed to RAGManager for legacy backends)
         replica_pool: ReadReplicaPool for pgvector read scaling (optional)
         embedding_manager: EmbeddingManager instance (pgvector only); a default
                            instance is created automatically if not provided
         **kwargs: Backend-specific configuration
+
+    Raises:
+        ValueError: For an unrecognized backend, including "chromadb" -- that
+            backend was removed (PYSEC-2026-311, pre-auth code injection in
+            chromadb's server component with no fixed release); use
+            "pgvector" (default) or "qdrant" instead. A config value that
+            still says "chromadb" must fail loudly here rather than silently
+            resolving to a different backend and moving someone's data store.
 
     Returns:
         RAGManager instance
@@ -979,17 +754,13 @@ def create_rag_manager(
             prefer_grpc=kwargs.get("prefer_grpc", False),
         )
     elif backend == "chromadb":
-        if not HAS_CHROMADB:
-            raise ImportError("chromadb package not installed. Install with: pip install chromadb")
-        rag_store = ChromaDBRAGStore(
-            persist_directory=kwargs.get("persist_directory", "./chroma_rag_data"),
-            host=kwargs.get("host"),
-            port=kwargs.get("port"),
+        raise ValueError(
+            "The chromadb RAG backend was removed (PYSEC-2026-311, "
+            "pre-authentication code injection in chromadb's server component, "
+            "no fixed release available). Use 'pgvector' (default) or 'qdrant' instead."
         )
     else:
-        raise ValueError(
-            f"Unknown RAG backend: {backend}. Use 'pgvector', 'supabase', 'qdrant', or 'chromadb'"
-        )
+        raise ValueError(f"Unknown RAG backend: {backend}. Use 'pgvector', 'supabase', or 'qdrant'")
 
     return RAGManager(db, rag_store)
 
