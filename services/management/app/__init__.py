@@ -239,6 +239,7 @@ def register_blueprints(app):
         hook_rules,  # noqa: F401 -- registers admin CRUD routes onto hooks_bp
     )
     from .api.v1.hooks import hooks_bp
+    from .api.v1.model_access_policies import model_access_policies_bp
     from .api.v1.model_aliases import model_aliases_bp
     from .api.v1.openapi import openapi_bp
     from .api.v1.routing_assignments import routing_assignments_bp
@@ -254,6 +255,7 @@ def register_blueprints(app):
     app.register_blueprint(routing_policies_bp)
     app.register_blueprint(routing_rules_bp)
     app.register_blueprint(model_aliases_bp)
+    app.register_blueprint(model_access_policies_bp)
     app.register_blueprint(routing_decisions_bp)
     app.register_blueprint(routing_dry_run_bp)
     app.register_blueprint(security_policies_bp)

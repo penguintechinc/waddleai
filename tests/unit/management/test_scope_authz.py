@@ -78,6 +78,9 @@ _B_TIER_SCOPES = {
     Permission.SECURITY_BYPASS_GRANT_WRITE.value,
     Permission.USAGE_READ_BY_USER.value,
     Permission.USER_MANAGE.value,
+    # Not part of the OIDC-scope migration (new feature, model-access-policy
+    # design spec §8) but enumerated by the same generic route scan below.
+    Permission.MODEL_ACCESS_POLICY_WRITE.value,
 }
 
 # The complete set of migrated route scopes -- the route enumeration below
@@ -101,11 +104,15 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.ROUTING_DRY_RUN_ADMIN.value,
     Permission.ROUTING_POLICY_DELETE.value,
     Permission.SECURITY_POLICY_ADMIN.value,
+    Permission.MODEL_ACCESS_POLICY_DELETE.value,
 }
 
-_EXPECTED_ROUTE_COUNT = 110  # audited require_role call sites, both migration waves:
+_EXPECTED_ROUTE_COUNT = 113  # audited require_role call sites, both migration waves,
+#   +3 net-new (not a require_role migration):
 #   94 from the original OIDC migration, +16 from branches cut before it landed
-#   (6 fleet, 9 hook_rules, 1 hook_metrics).
+#   (6 fleet, 9 hook_rules, 1 hook_metrics), +3 from the model-access-policy
+#   CRUD blueprint (POST/PUT -> MODEL_ACCESS_POLICY_WRITE, DELETE ->
+#   MODEL_ACCESS_POLICY_DELETE; GET/GET-by-id are require_auth only).
 
 
 def _concrete_path(rule_str: str) -> str:
