@@ -2,6 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
+from services.management.app.api.v1.llamacpp import (
+    _validate_model_filename,
+    _validate_model_url,
+)
 from tests.unit.management.conftest import make_select_result
 
 
@@ -376,3 +380,161 @@ class TestExportManifest:
                 "/api/v1/llamacpp/deployments/1/export/k8s", headers=auth_headers
             )
         assert resp.content_type == "application/x-yaml"
+
+
+class TestValidateModelUrl:
+    """Tests for `_validate_model_url` (regression: gaps left by security review 2026-07-26).
+
+    regression: gh-146 follow-up — plaintext http, embedded control chars.
+    """
+
+    def test_https_accepted(self):
+        """A well-formed https URL with a netloc is accepted."""
+        assert _validate_model_url("https://example.com/llama.gguf") is True
+
+    def test_http_rejected(self):
+        """Plaintext http is rejected — a model downloaded unencrypted is MITM-swappable."""
+        assert _validate_model_url("http://example.com/llama.gguf") is False
+
+    def test_scheme_relative_rejected(self):
+        """A URL with no scheme (and thus no netloc via `//`) is rejected."""
+        assert _validate_model_url("example.com/llama.gguf") is False
+
+    def test_ftp_scheme_rejected(self):
+        """A non-https scheme is rejected outright."""
+        assert _validate_model_url("ftp://example.com/llama.gguf") is False
+
+    def test_https_without_netloc_rejected(self):
+        """A https URL with no host (e.g. `https:///path`) is rejected."""
+        assert _validate_model_url("https:///llama.gguf") is False
+
+    def test_embedded_newline_rejected(self):
+        r"""A literal embedded `\n` is rejected — argument/header injection risk downstream."""
+        assert _validate_model_url("https://example.com/llama.gguf\nEvil-Header: 1") is False
+
+    def test_embedded_carriage_return_rejected(self):
+        r"""A literal embedded `\r` is rejected alongside `\n`."""
+        assert _validate_model_url("https://example.com/\rllama.gguf") is False
+
+    def test_percent_encoded_newline_rejected(self):
+        """A percent-encoded `%0a` is rejected even though it is not a literal control char."""
+        assert _validate_model_url("https://example.com/llama.gguf%0aEvil") is False
+
+    def test_percent_encoded_carriage_return_rejected(self):
+        """A percent-encoded `%0d` is rejected, case-insensitively."""
+        assert _validate_model_url("https://example.com/llama.gguf%0DEvil") is False
+
+    def test_null_byte_rejected(self):
+        """An embedded null byte is rejected."""
+        assert _validate_model_url("https://example.com/llama.gguf\x00.exe") is False
+
+    def test_tab_rejected(self):
+        """An embedded tab character is rejected."""
+        assert _validate_model_url("https://example.com/\tllama.gguf") is False
+
+    def test_shell_metacharacter_still_rejected(self):
+        """Existing shell-metacharacter protection (Vuln D) is not weakened by the rewrite."""
+        assert _validate_model_url("https://example.com/$(whoami).gguf") is False
+
+    def test_empty_rejected(self):
+        """An empty string is rejected."""
+        assert _validate_model_url("") is False
+
+    def test_https_with_port_and_query_accepted(self):
+        """A https URL with a non-default port and query string is still accepted."""
+        assert _validate_model_url("https://cdn.example.com:8443/models/llama.gguf?v=2") is True
+
+
+class TestValidateModelFilename:
+    """Tests for `_validate_model_filename` (regression: gaps left by security review 2026-07-26).
+
+    regression: gh-146 follow-up — bare `..` path traversal.
+    """
+
+    def test_normal_filename_accepted(self):
+        """A plain alphanumeric filename with a `.gguf` suffix is accepted."""
+        assert _validate_model_filename("llama-3.2-3b-instruct.Q4_K_M.gguf") is True
+
+    def test_bare_double_dot_rejected(self):
+        """A bare `..` (no slash) is rejected — it still resolves to the parent directory."""
+        assert _validate_model_filename("..") is False
+
+    def test_bare_single_dot_rejected(self):
+        """A bare `.` is rejected — it resolves to the current directory, not a file."""
+        assert _validate_model_filename(".") is False
+
+    def test_all_dots_rejected(self):
+        """A filename consisting only of dots (e.g. `...`) carries no real filename value."""
+        assert _validate_model_filename("...") is False
+
+    def test_path_separator_slash_rejected(self):
+        """An embedded forward slash (traversal or absolute path) is rejected."""
+        assert _validate_model_filename("../etc/passwd") is False
+
+    def test_absolute_path_rejected(self):
+        """A leading `/` (absolute path) is rejected."""
+        assert _validate_model_filename("/etc/passwd") is False
+
+    def test_dotdot_slash_encoded_rejected(self):
+        """A literal (non-decoded) `..%2f` is rejected — `%` is outside the allowlist."""
+        assert _validate_model_filename("..%2fetc%2fpasswd") is False
+
+    def test_backslash_traversal_rejected(self):
+        r"""A Windows-style `..\` traversal is rejected."""
+        assert _validate_model_filename("..\\windows\\system32") is False
+
+    def test_tilde_rejected(self):
+        """A leading `~` (home-directory expansion) is rejected."""
+        assert _validate_model_filename("~/llama.gguf") is False
+
+    def test_unicode_dot_lookalike_rejected(self):
+        """A Unicode one-dot-leader lookalike for `..` is rejected (outside the ASCII allowlist)."""
+        assert _validate_model_filename("․․") is False
+
+    def test_null_byte_rejected(self):
+        """An embedded null byte is rejected."""
+        assert _validate_model_filename("llama.gguf\x00.sh") is False
+
+    def test_embedded_newline_rejected(self):
+        """An embedded newline is rejected."""
+        assert _validate_model_filename("llama.gguf\nEvil") is False
+
+    def test_embedded_carriage_return_rejected(self):
+        """An embedded carriage return is rejected."""
+        assert _validate_model_filename("llama.gguf\rEvil") is False
+
+    def test_overlong_filename_rejected(self):
+        """A filename longer than 255 characters is rejected."""
+        assert _validate_model_filename("a" * 256 + ".gguf") is False
+
+    def test_max_length_filename_accepted(self):
+        """A filename at exactly the 255-character cap is still accepted."""
+        assert _validate_model_filename("a" * 250 + ".gguf") is True
+
+    def test_empty_rejected(self):
+        """An empty string is rejected."""
+        assert _validate_model_filename("") is False
+
+
+class TestCreateDeploymentValidatorGaps:
+    """End-to-end coverage of the validator gaps through the create-deployment route."""
+
+    async def test_create_rejects_http_model_url(self, client, auth_headers):
+        """A plaintext http model_url is rejected with 400 at the API layer."""
+        payload = {
+            "name": "llama-3b",
+            "model_name": "llama-3.2-3b-instruct",
+            "model_url": "http://example.com/llama.gguf",
+        }
+        resp = await client.post("/api/v1/llamacpp/deployments", headers=auth_headers, json=payload)
+        assert resp.status_code == 400
+
+    async def test_create_rejects_bare_dotdot_filename(self, client, auth_headers):
+        """A bare `..` model_filename is rejected with 400 at the API layer."""
+        payload = {
+            "name": "llama-3b",
+            "model_name": "llama-3.2-3b-instruct",
+            "model_filename": "..",
+        }
+        resp = await client.post("/api/v1/llamacpp/deployments", headers=auth_headers, json=payload)
+        assert resp.status_code == 400

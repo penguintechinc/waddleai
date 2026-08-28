@@ -58,8 +58,21 @@ convention = "google"
 # deliberately NOT exempted here — they are mandatory per PEP 257.
 "tests/**/*.py" = ["S101"]
 
+# explicit_package_bases resolves module names from the invocation cwd
+# (mypy_path unset -> defaults to ".") instead of mypy's implicit walk-up
+# algorithm. Without it, "proxy/apps/proxy_server/..." (no __init__.py in
+# proxy/ or proxy/apps/) is resolved to two different module names depending
+# on whether mypy reaches the file by direct path scan or by following an
+# import statement, and mypy refuses to run at all
+# ("Source file found twice under different module names"). Same run
+# previously failed harder on services/penguincode/server/app.py vs
+# services/management/app/__init__.py ("Duplicate module named 'app'") --
+# that one is excluded outright below since penguincode is vendored upstream
+# code (see the matching ruff/bandit exclusions) with its own module
+# namespace, not a config knob to reconcile against first-party code.
 [tool.mypy]
 ignore_missing_imports = true
+explicit_package_bases = true
 exclude = [
     ".venv",
     "venv",
@@ -67,4 +80,9 @@ exclude = [
     "grpc/proto",
     ".*_pb2\\.py",
     ".*_pb2_grpc\\.py",
+    # Vendored upstream, not maintained here -- see the matching ruff
+    # extend-exclude comment above and the bandit --exclude in the Makefile.
+    "^services/penguincode/",
+    "^\\.worktrees/",
+    "node_modules",
 ]

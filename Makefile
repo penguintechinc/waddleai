@@ -71,7 +71,7 @@ docker-push:
 lint: ## Lint everything. Fails on error -- no `|| true`, no silent skips.
 	@echo "=== Linting ==="
 	@fail=0; \
-	for t in ruff shellcheck hadolint; do \
+	for t in ruff shellcheck hadolint mypy; do \
 	  command -v $$t >/dev/null 2>&1 || { echo "!! MISSING TOOL: $$t -- cannot verify, counting as FAILURE"; fail=1; }; \
 	done; \
 	if command -v ruff >/dev/null 2>&1; then \
@@ -96,8 +96,8 @@ lint: ## Lint everything. Fails on error -- no `|| true`, no silent skips.
 	      | xargs -r -I{} dirname {} | xargs -r -I{} sh -c 'cd {} && golangci-lint run' || fail=1; \
 	  fi; \
 	else echo "-- golangci-lint -- (no go.mod outside vendor; skipped legitimately)"; fi; \
-	echo "-- mypy -- (advisory: not yet a gate, see .TODO)"; \
-	if command -v mypy >/dev/null 2>&1; then $(PY) -m mypy $(LINT_PATHS) --ignore-missing-imports 2>&1 | tail -3 || true; fi; \
+	echo "-- mypy -- (gated: fails on any error not already in mypy-baseline.txt)"; \
+	PY=$(PY) bash scripts/mypy-gate.sh || fail=1; \
 	[ $$fail -eq 0 ] || { echo "=== LINT FAILED ==="; exit 1; }; \
 	echo "=== lint clean ==="
 

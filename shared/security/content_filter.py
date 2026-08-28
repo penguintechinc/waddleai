@@ -17,6 +17,8 @@ from typing import Any, TypedDict
 import aiohttp
 from prometheus_client import Counter
 
+from shared.licensing.gate_cache import LicenseGateCacheEntry
+
 # NER filter — optional; graceful degradation if presidio/transformers unavailable
 try:
     from shared.security.ner_filter import ENTITY_CONFIG as NER_ENTITY_CONFIG
@@ -164,17 +166,13 @@ class FilterResult:
     ner_backend: str = "none"
 
 
-@dataclass(slots=True)
-class _NerTierGateState:
-    """Cached result of the NER-tier flag+licence gate for one org.
-
-    ``checked_at`` is a ``time.monotonic()`` timestamp; used to expire the
-    entry after ``_NER_TIER_CACHE_TTL`` seconds so ContentFilter._ner_tier_enabled
-    doesn't hit PostHog/the licence server on every prompt.
-    """
-
-    enabled: bool
-    checked_at: float
+# Cached result of the NER-tier flag+licence gate for one org, expired after
+# _NER_TIER_CACHE_TTL seconds so _ner_tier_enabled doesn't hit PostHog/the
+# licence server on every prompt. Shared shape with UsageTracker's
+# equivalent premium-tier cache (shared/licensing/gate_cache.py) -- both
+# call sites need the identical "was this entitled, and when did we last
+# check" record, just with different fail-open/fail-closed policies.
+_NerTierGateState = LicenseGateCacheEntry
 
 
 class ContentFilter:

@@ -8,6 +8,8 @@ org-scoped free-tier/premium-quota checks, that folded `source=ailb_import`
 rows are counted like any other row, and the record/insert path.
 """
 
+import time
+
 import pytest
 
 pytest.importorskip("sentence_transformers")
@@ -136,38 +138,43 @@ def test_usage_tracker_with_license(mock_db: MagicMock) -> None:
 # ------------------------------------------------------------------
 
 
-def test_has_premium_no_client(mock_db: MagicMock) -> None:
+@pytest.mark.asyncio
+async def test_has_premium_no_client(mock_db: MagicMock) -> None:
     """No license client means no premium features."""
     tracker = UsageTracker(mock_db)
-    assert tracker._has_premium() is False
+    assert await tracker._has_premium() is False
 
 
-def test_has_premium_with_feature(mock_db: MagicMock) -> None:
+@pytest.mark.asyncio
+async def test_has_premium_with_feature(mock_db: MagicMock) -> None:
     """License client reporting the feature returns True."""
     mock_license = MagicMock()
     mock_license.check_feature = MagicMock(return_value=True)
     tracker = UsageTracker(mock_db, license_client=mock_license)
-    assert tracker._has_premium() is True
+    assert await tracker._has_premium() is True
     mock_license.check_feature.assert_called_with("premium_usage_tracking")
 
 
-def test_has_premium_without_feature(mock_db: MagicMock) -> None:
+@pytest.mark.asyncio
+async def test_has_premium_without_feature(mock_db: MagicMock) -> None:
     """License client missing the feature returns False."""
     mock_license = MagicMock()
     mock_license.check_feature = MagicMock(return_value=False)
     tracker = UsageTracker(mock_db, license_client=mock_license)
-    assert tracker._has_premium() is False
+    assert await tracker._has_premium() is False
 
 
-def test_has_premium_license_error(mock_db: MagicMock) -> None:
-    """License client exception should fail safe (return False)."""
+@pytest.mark.asyncio
+async def test_has_premium_license_error(mock_db: MagicMock) -> None:
+    """License client exception should fail safe (return False) when nothing is cached yet."""
     mock_license = MagicMock()
     mock_license.check_feature = MagicMock(side_effect=RuntimeError("timeout"))
     tracker = UsageTracker(mock_db, license_client=mock_license)
-    assert tracker._has_premium() is False
+    assert await tracker._has_premium() is False
 
 
-def test_has_premium_with_fake_client_exposing_only_real_methods(mock_db: MagicMock) -> None:
+@pytest.mark.asyncio
+async def test_has_premium_with_fake_client_exposing_only_real_methods(mock_db: MagicMock) -> None:
     """Regression: `_has_premium` must call the real API method (`check_feature`).
 
     `_FakeLicenseClient` implements only `penguin_licensing.LicenseClient`'s
@@ -177,11 +184,14 @@ def test_has_premium_with_fake_client_exposing_only_real_methods(mock_db: MagicM
     """
     fake_license = _FakeLicenseClient(feature_enabled=True)
     tracker = UsageTracker(mock_db, license_client=fake_license)
-    assert tracker._has_premium() is True
+    assert await tracker._has_premium() is True
     assert fake_license.checked_features == ["premium_usage_tracking"]
 
 
-def test_has_premium_spec_restricted_mock_rejects_wrong_method_name(mock_db: MagicMock) -> None:
+@pytest.mark.asyncio
+async def test_has_premium_spec_restricted_mock_rejects_wrong_method_name(
+    mock_db: MagicMock,
+) -> None:
     """Same regression, using `spec=penguin_licensing.LicenseClient` instead of a hand-written fake.
 
     A `spec`'d mock only permits attribute access for methods that actually
@@ -192,9 +202,85 @@ def test_has_premium_spec_restricted_mock_rejects_wrong_method_name(mock_db: Mag
     mock_license.check_feature.return_value = True
 
     tracker = UsageTracker(mock_db, license_client=mock_license)
-    assert tracker._has_premium() is True
+    assert await tracker._has_premium() is True
     mock_license.check_feature.assert_called_once_with("premium_usage_tracking")
     assert not hasattr(mock_license, "has_feature")
+
+
+# ------------------------------------------------------------------
+# _has_premium: TTL cache + last-known fallback
+# (mirrors ContentFilter._ner_tier_enabled's caching contract)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_has_premium_repeated_call_within_ttl_hits_cache_not_the_checker(
+    mock_db: MagicMock,
+) -> None:
+    """A second call inside the TTL window does not re-invoke the entitlement checker."""
+    mock_license = MagicMock()
+    mock_license.check_feature = MagicMock(return_value=True)
+    tracker = UsageTracker(mock_db, license_client=mock_license)
+
+    assert await tracker._has_premium() is True
+
+    def _boom() -> bool:
+        raise AssertionError("entitlement checker should not run again within the TTL")
+
+    tracker._check_premium_entitlement = _boom  # type: ignore[method-assign]
+
+    assert await tracker._has_premium() is True
+
+
+@pytest.mark.asyncio
+async def test_has_premium_cache_expiry_after_ttl_re_checks(
+    mock_db: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the TTL elapses, the gate re-checks and can pick up a revoked entitlement."""
+    mock_license = MagicMock()
+    mock_license.check_feature = MagicMock(return_value=True)
+    tracker = UsageTracker(mock_db, license_client=mock_license)
+
+    assert await tracker._has_premium() is True
+
+    mock_license.check_feature = MagicMock(return_value=False)
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + 60.0 + 1)
+
+    assert await tracker._has_premium() is False
+
+
+@pytest.mark.asyncio
+async def test_has_premium_checker_error_falls_back_to_cached_value(
+    mock_db: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checker failure after a successful prior check reuses the last-known value."""
+    mock_license = MagicMock()
+    mock_license.check_feature = MagicMock(return_value=True)
+    tracker = UsageTracker(mock_db, license_client=mock_license)
+
+    assert await tracker._has_premium() is True
+
+    def _boom() -> bool:
+        raise RuntimeError("license server unreachable")
+
+    tracker._check_premium_entitlement = _boom  # type: ignore[method-assign]
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + 60.0 + 1)
+
+    assert await tracker._has_premium() is True  # falls back to last-known
+
+
+@pytest.mark.asyncio
+async def test_has_premium_checker_error_with_no_prior_check_fails_closed(
+    mock_db: MagicMock,
+) -> None:
+    """A checker failure with nothing cached yet defaults to not-premium, never premium."""
+    mock_license = MagicMock()
+    mock_license.check_feature = MagicMock(side_effect=RuntimeError("license server unreachable"))
+    tracker = UsageTracker(mock_db, license_client=mock_license)
+
+    assert await tracker._has_premium() is False
 
 
 # ------------------------------------------------------------------
