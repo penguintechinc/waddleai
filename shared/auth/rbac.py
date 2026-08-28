@@ -112,6 +112,15 @@ class Permission(Enum):
     ROUTING_POLICY_DELETE = "routing_policy:delete"
     SECURITY_POLICY_ADMIN = "security_policy:admin"
 
+    # ------------------------------------------------------------------
+    # Model access policy CRUD (model-access-policy design spec §8) --
+    # NOT part of the OIDC-scope migration above (new feature, minted
+    # fresh), but enumerated by the same `test_scope_authz.py` regression
+    # guard, so it lives in `_B_TIER_SCOPES`/`_MIGRATED_SCOPES` there too.
+    # ------------------------------------------------------------------
+    MODEL_ACCESS_POLICY_WRITE = "model_access_policy:write"  # admin + resource_manager
+    MODEL_ACCESS_POLICY_DELETE = "model_access_policy:delete"  # admin only
+
 
 @dataclass
 class UserContext:
@@ -185,6 +194,8 @@ ROLE_PERMISSIONS = {
         Permission.ROUTING_DRY_RUN_ADMIN,
         Permission.ROUTING_POLICY_DELETE,
         Permission.SECURITY_POLICY_ADMIN,
+        Permission.MODEL_ACCESS_POLICY_WRITE,
+        Permission.MODEL_ACCESS_POLICY_DELETE,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,
@@ -215,6 +226,7 @@ ROLE_PERMISSIONS = {
         Permission.SECURITY_BYPASS_GRANT_WRITE,
         Permission.USAGE_READ_BY_USER,
         Permission.USER_MANAGE,
+        Permission.MODEL_ACCESS_POLICY_WRITE,
     },
     Role.REPORTER: {
         Permission.SYSTEM_HEALTH,

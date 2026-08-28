@@ -3506,6 +3506,59 @@ paths:
       responses:
         '200': *id001
       summary: Create or update RAG injection config for an organization.
+  /api/v1/routing/access-policies/:
+    get:
+      description: ''
+      operationId: get_list_access_policies
+      parameters: []
+      responses:
+        '200': *id001
+      summary: List visible model_access_policies rows, optionally filtered by scope_type.
+    post:
+      description: ''
+      operationId: post_create_access_policy
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Create a model_access_policies row.
+  /api/v1/routing/access-policies/{policy_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_access_policy
+      parameters:
+      - in: path
+        name: policy_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Delete a model_access_policies row by ID (admin only).
+    get:
+      description: ''
+      operationId: get_get_access_policy
+      parameters:
+      - in: path
+        name: policy_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Get a single model_access_policies row by ID (org-visibility scoped).
+    put:
+      description: ''
+      operationId: put_update_access_policy
+      parameters:
+      - in: path
+        name: policy_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Update a model_access_policies row. scope_type/scope_ref are immutable
+        after creation.
   /api/v1/routing/aliases/:
     get:
       description: ''
