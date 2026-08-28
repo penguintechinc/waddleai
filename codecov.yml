@@ -1,0 +1,32 @@
+# Codecov project config. Coverage gate mirrors the 90% floor already
+# enforced locally by .coveragerc's [report] fail_under -- this makes the
+# same threshold visible as a PR status check and badge, it doesn't add a
+# new bar. `ignore` mirrors .coveragerc's [run] omit list so Codecov's
+# reported percentage matches what `make test-unit` / CI already measure,
+# rather than drifting from a second, hand-maintained exclusion list.
+coverage:
+  status:
+    project:
+      default:
+        target: 90%
+        threshold: 0.5%
+    patch:
+      default:
+        target: 90%
+
+comment: false
+
+ignore:
+  - "**/tests/**"
+  - "**/test_*"
+  - "**/__pycache__/**"
+  - "**/migrations/**"
+  - "**/alembic/**"
+  - "**/conftest.py"
+  - "**/wsgi.py"
+  - "**/proto/**"
+  - "**/*_pb2.py"
+  - "**/*_pb2_grpc.py"
+  - "shared/py_libs/**"
+  - "services/management/app/grpc/proto/**"
+  - "shared/utils/rag_integration.py"

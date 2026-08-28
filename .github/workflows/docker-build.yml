@@ -188,6 +188,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # checkout only, no push
     strategy:
       matrix:
         python-version: [3.13]
@@ -269,10 +271,25 @@ jobs:
         bandit -r proxy services/management shared -ll -f json -o bandit-results.json || true
         bandit -r proxy services/management shared -lll
 
+    # OIDC (use_oidc) was tried first but Codecov rejected every upload with
+    # "Repository not found" -- OIDC auth only verifies identity for a repo
+    # Codecov already knows about, it doesn't register a new one. This repo
+    # was never registered on Codecov by any method, so OIDC could never
+    # succeed here regardless of config. Using the org's existing Global
+    # Upload Token instead: it authenticates AND auto-registers the repo on
+    # first upload, which is exactly what's needed. fail_ci_if_error stays
+    # true on purpose -- a rejected upload must fail the job loudly, not be
+    # silently swallowed like it was before (and still is, in every sibling
+    # repo's workflow). disable_search stops the action from also picking up
+    # services/penguincode/coverage.json (an unrelated stray file) alongside
+    # coverage.xml.
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
       with:
-        file: ./coverage.xml
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: true
+        disable_search: true
+        files: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
 
