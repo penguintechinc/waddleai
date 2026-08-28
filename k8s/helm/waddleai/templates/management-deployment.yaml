@@ -74,6 +74,10 @@ spec:
               value: "6379"
             - name: REDIS_URL
               value: "redis://{{ include "waddleai.fullname" . }}-valkey:6379/0"
+            {{- with include "waddleai.publicHost" . }}
+            - name: WADDLEAI_PUBLIC_HOST
+              value: {{ . | quote }}
+            {{- end }}
             {{- range .Values.management.secretEnv }}
             - name: {{ .name }}
               valueFrom:
