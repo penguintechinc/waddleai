@@ -858,6 +858,37 @@ class ModelAlias(Base):
     )
 
 
+class ModelAccessPolicy(Base):
+    """Per-tenant model-access block rule (model-access-policy design spec §3.3).
+
+    Every row is a deny/block rule keyed by ``scope_type``/``scope_ref``
+    (``global``/``org``/``user``/``key``, same polymorphic-scope convention
+    as ``CacheConfig``/``hook_rules``) plus a ``model_pattern`` (exact id or
+    glob). ``action`` governs what a match does: ``reject`` (default) blocks
+    the request outright; ``reroute`` serves ``fallback_model`` instead. See
+    ``shared.security.model_access.ModelAccessPolicyResolver`` for the
+    narrowest-scope-wins resolution logic and
+    ``services.management.app.api.v1.model_access_policies`` for the CRUD
+    surface. Proxy-side enforcement is a separate follow-up branch.
+    """
+
+    __tablename__ = "model_access_policies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope_type = Column(String(10), nullable=False)  # 'global' | 'org' | 'user' | 'key'
+    scope_ref = Column(String(255), nullable=True)  # NULL only for scope_type='global'
+    model_pattern = Column(String(255), nullable=False)
+    action = Column(String(10), nullable=False, default="reject", server_default="reject")
+    fallback_model = Column(String(255), nullable=True)
+    reason = Column(Text, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_map_scope", "scope_type", "scope_ref", "enabled"),)
+
+
 class RoutingRuleV2(Base):
     """Stage-1 heuristic routing rules (§7.2): cheap, deterministic, no LLM.
 
