@@ -257,7 +257,7 @@ jobs:
         # no longer defaults to html (moved to `make test-unit` for local
         # dev only) so generating both never holds a second copy of the
         # coverage data in memory while torch/transformers are resident.
-        python -m pytest tests/unit/ -q --cov-report=xml
+        scripts/check_collected_floor.sh python3 tests/unit/ -q --cov-report=xml
       env:
         PYTHONPATH: ${{ github.workspace }}
 
