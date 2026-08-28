@@ -1,6 +1,8 @@
 # Memory Systems Integration
 
-WaddleAI uses mem0 and ChromaDB to provide persistent conversation memory, semantic search, and intelligent context retention across sessions.
+WaddleAI uses mem0 and pgvector (PostgreSQL's vector extension) to provide persistent conversation memory, semantic search, and intelligent context retention across sessions.
+
+> **Note:** WaddleAI previously supported a ChromaDB memory backend. It was removed (PYSEC-2026-311, a pre-authentication code injection vulnerability in chromadb's server component with no fixed release) -- pgvector and mem0 already cover the same ground. If you were running with `backend="chromadb"`, switch to `backend="pgvector"` (the default) or `backend="mem0"`; there is no automated migration tool, so re-index/re-populate memory from source data after switching.
 
 ## Overview
 
@@ -28,8 +30,8 @@ WaddleAI's memory system automatically:
       ┌────────┴────────┐
       ▼                 ▼
 ┌──────────┐      ┌──────────┐
-│   mem0   │      │ ChromaDB │
-│ (Python) │◄────►│ (Vector) │
+│   mem0   │      │ pgvector │
+│ (Python) │◄────►│(PostgreSQL)│
 └──────────┘      └──────────┘
       │
       └─► Semantic embeddings
@@ -39,30 +41,14 @@ WaddleAI's memory system automatically:
 
 ## Configuration
 
-### Docker Compose Setup
+### Vector Storage
 
-ChromaDB is included in WaddleAI's Docker Compose:
+pgvector runs as a PostgreSQL extension on the same database WaddleAI already
+depends on -- there is no separate memory container to deploy, unlike the
+former ChromaDB backend. Enable the extension once per database:
 
-```yaml
-services:
-  chromadb:
-    image: chromadb/chroma:latest
-    container_name: waddleai-chromadb
-    ports:
-      - "8003:8000"
-    environment:
-      - IS_PERSISTENT=TRUE
-      - ANONYMIZED_TELEMETRY=FALSE
-    volumes:
-      - chromadb-data:/chroma/chroma
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-volumes:
-  chromadb-data:
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
 ### Environment Variables
@@ -70,12 +56,8 @@ volumes:
 Configure memory systems in `.env.dev`:
 
 ```bash
-# ChromaDB connection
-CHROMADB_URL=http://chromadb:8000
-
-# mem0 configuration
+# mem0 configuration (optional; defaults to the pgvector backend)
 MEM0_ENABLED=true
-CHROMADB_PERSIST=true
 
 # Conversation retention (days)
 CONVERSATION_RETENTION_DAYS=90
@@ -113,7 +95,7 @@ conversation_entry = {
     "metadata": {...}
 }
 
-# Stored in mem0/ChromaDB
+# Stored in mem0/pgvector
 memory_integration.store_conversation(conversation_entry)
 ```
 
@@ -209,7 +191,7 @@ The management portal provides a rich search interface:
 The Memory Config page shows:
 
 - Total conversations stored
-- Storage size in ChromaDB
+- Storage size in pgvector
 - Most common request types
 - Popular models by conversation count
 - Average routing accuracy
@@ -458,46 +440,42 @@ anonymized = await memory.anonymize_conversations(
 
 ### Encryption at Rest
 
-ChromaDB data is stored in Docker volumes. For encryption:
-
-```bash
-# Use encrypted Docker volumes
-docker volume create --driver local \
-  --opt type=tmpfs \
-  --opt device=tmpfs \
-  --opt o=size=10g,uid=1000,encrypted \
-  chromadb-data-encrypted
-```
+pgvector memory rows live in the same PostgreSQL database as the rest of
+WaddleAI's data, so they inherit standard PostgreSQL at-rest encryption
+(volume-level or TDE) -- no separate encrypted volume to provision, unlike
+the former ChromaDB backend. See the platform's storage encryption baseline
+for configuration details.
 
 ## Troubleshooting
 
-### ChromaDB Connection Issues
+### pgvector Connection Issues
 
 ```bash
-# Check ChromaDB is running
-curl http://localhost:8003/api/v1/heartbeat
+# Check WaddleAI's database connection (pgvector shares the primary DB)
+docker exec waddleai-proxy pg_isready -h postgres -p 5432
 
-# Check WaddleAI can connect
-docker exec waddleai-proxy curl http://chromadb:8000/api/v1/heartbeat
+# Confirm the pgvector extension is installed
+docker exec -it waddleai-postgres psql -U waddleai -c "\dx vector"
 
-# View ChromaDB logs
-docker logs waddleai-chromadb
+# View PostgreSQL logs
+docker logs waddleai-postgres
 ```
 
 ### Slow Search Performance
 
 1. **Check embedding model**: Verify `EMBEDDING_MODEL` is available
-2. **Monitor ChromaDB memory**: Large datasets may need more RAM
+2. **Monitor PostgreSQL resources**: Large memory tables may need more RAM/IOPS
 3. **Optimize query limits**: Use smaller `limit` values for faster results
-4. **Add indexes**: ChromaDB automatically indexes, but check collection size
+4. **Add indexes**: Ensure an IVFFlat/HNSW index exists on the memory embedding column
 
 ### Storage Growth
 
 Monitor and manage storage:
 
 ```bash
-# Check storage size
-docker exec waddleai-chromadb du -sh /chroma/chroma
+# Check memory table size
+docker exec -it waddleai-postgres psql -U waddleai -c \
+  "SELECT pg_size_pretty(pg_total_relation_size('memory_embeddings'));"
 
 # Trigger cleanup
 curl -X POST http://localhost:8001/api/memory/cleanup \
@@ -518,7 +496,7 @@ curl -X POST http://localhost:8001/api/memory/cleanup \
 
 ## See Also
 
-- [ChromaDB Documentation](https://docs.trychroma.com)
+- [pgvector Documentation](https://github.com/pgvector/pgvector)
 - [mem0 Documentation](https://docs.mem0.ai)
 - [Analytics Dashboard](../administration/monitoring.md)
 - [Privacy Configuration](../administration/security-policies.md)

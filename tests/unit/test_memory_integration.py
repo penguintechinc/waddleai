@@ -1,18 +1,22 @@
 """Unit tests for shared.utils.memory_integration.
 
-Covers the three MemoryStore backends (Mem0MemoryStore, ChromaDBMemoryStore,
-PgvectorMemoryStore), the WaddleAIMemoryManager orchestration layer,
-create_memory_manager's backend dispatch, and ReadReplicaPool. Scope-specific
-(personal vs org) behaviour already has dedicated coverage in
-tests/unit/test_memory_scope_pgvector.py and
-tests/unit/test_memory_scope_metadata_backends.py -- this file focuses on
+Covers the two MemoryStore backends (Mem0MemoryStore, PgvectorMemoryStore),
+the WaddleAIMemoryManager orchestration layer, create_memory_manager's
+backend dispatch, and ReadReplicaPool. Scope-specific (personal vs org)
+behaviour already has dedicated coverage in
+tests/unit/test_memory_scope_pgvector.py -- this file focuses on
 init/lazy-init, error handling, boundary filters, and the manager/factory
 layers that those files don't touch.
 
 All backends are exercised through small hand-written fakes (FakeDB,
-FakeEmbedder, FakeMem0Client, FakeChromaCollection, FakeChromaClient,
-FakeMemoryStore) rather than spec-less Mock(), and no test ever calls a real
-mem0/ChromaDB/Postgres backend or downloads a model.
+FakeEmbedder, FakeMem0Client, FakeMemoryStore) rather than spec-less Mock(),
+and no test ever calls a real mem0/Postgres backend or downloads a model.
+
+The ChromaDB backend was removed (PYSEC-2026-311, pre-auth code injection in
+chromadb's server component with no fixed release) -- see
+test_chromadb_backend_removed_fails_fast and
+test_mem0_backend_unavailable_fails_fast_instead_of_silent_fallback below for
+its replacement fail-fast contract.
 """
 
 import json
@@ -24,7 +28,6 @@ from unittest.mock import patch
 import pytest
 
 from shared.utils.memory_integration import (
-    ChromaDBMemoryStore,
     ConversationContext,
     Mem0MemoryStore,
     MemoryEntry,
@@ -473,485 +476,6 @@ class TestMem0MemoryStoreLazyInitOnReadAndDelete:
         ok = await store.delete_memory("m1")
         assert called["initialize"] is True
         assert ok is True
-
-
-# ---------------------------------------------------------------------------
-# ChromaDBMemoryStore
-# ---------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class FakeChromaCollection:
-    """Stand-in for a chromadb Collection: records calls, returns queued results."""
-
-    add_calls: list = field(default_factory=list)
-    query_result: dict | None = None
-    get_result: dict | None = None
-    delete_calls: list = field(default_factory=list)
-    add_raises: Exception | None = None
-    query_raises: Exception | None = None
-    get_raises: Exception | None = None
-    delete_raises: Exception | None = None
-    last_query_kwargs: dict = field(default_factory=dict)
-    last_get_kwargs: dict = field(default_factory=dict)
-
-    def add(self, ids, documents, metadatas, embeddings=None) -> None:
-        """Record the call args, or raise the configured exception."""
-        if self.add_raises:
-            raise self.add_raises
-        self.add_calls.append(
-            {"ids": ids, "documents": documents, "metadatas": metadatas, "embeddings": embeddings}
-        )
-
-    def query(self, **kwargs) -> dict:
-        """Return the queued query result, or raise the configured exception."""
-        if self.query_raises:
-            raise self.query_raises
-        self.last_query_kwargs = kwargs
-        if self.query_result is not None:
-            return self.query_result
-        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-
-    def get(self, **kwargs) -> dict:
-        """Return the queued get result, or raise the configured exception."""
-        if self.get_raises:
-            raise self.get_raises
-        self.last_get_kwargs = kwargs
-        if self.get_result is not None:
-            return self.get_result
-        return {"ids": [], "documents": [], "metadatas": []}
-
-    def delete(self, ids) -> None:
-        """Record the deleted ids, or raise the configured exception."""
-        if self.delete_raises:
-            raise self.delete_raises
-        self.delete_calls.append(ids)
-
-
-@dataclass(slots=True)
-class FakeChromaClient:
-    """Stand-in for a chromadb PersistentClient: get/create collection dispatch."""
-
-    existing_collection: Any = None
-    created_collection: Any = None
-    get_raises: bool = True
-
-    def get_collection(self, name: str):
-        """Return the pre-loaded collection, or raise when none/get_raises is set."""
-        if self.get_raises or self.existing_collection is None:
-            raise RuntimeError("collection not found")
-        return self.existing_collection
-
-    def create_collection(self, name: str, metadata: dict | None = None):
-        """Return the collection to hand back for a freshly created one."""
-        return self.created_collection
-
-
-def _chroma_store(
-    collection: FakeChromaCollection | None = None, encoder: Any = None
-) -> ChromaDBMemoryStore:
-    """Build a ChromaDBMemoryStore with a fake collection and no real model load."""
-    with patch("shared.utils.memory_integration._sentence_transformer"):
-        store = ChromaDBMemoryStore(persist_directory="/unused", collection_name="test")
-    store.encoder = encoder
-    store.collection = collection if collection is not None else FakeChromaCollection()
-    return store
-
-
-class TestChromaDBMemoryStoreInit:
-    """Encoder construction and initialize()."""
-
-    def test_encoder_init_failure_sets_encoder_none(self):
-        """A broken sentence-transformer load leaves encoder=None instead of raising."""
-        with patch(
-            "shared.utils.memory_integration._sentence_transformer",
-            side_effect=RuntimeError("no gpu"),
-        ):
-            store = ChromaDBMemoryStore(persist_directory="/unused")
-        assert store.encoder is None
-
-    async def test_initialize_loads_existing_collection(self):
-        """initialize() reuses an existing collection via get_collection when present."""
-        collection = FakeChromaCollection()
-        fake_client = FakeChromaClient(existing_collection=collection, get_raises=False)
-        with patch("shared.utils.memory_integration._sentence_transformer"):
-            store = ChromaDBMemoryStore(persist_directory="/unused")
-        with patch(
-            "shared.utils.memory_integration.chromadb.PersistentClient", return_value=fake_client
-        ):
-            await store.initialize()
-        assert store.collection is collection
-
-    async def test_initialize_creates_collection_when_missing(self):
-        """initialize() falls back to create_collection when get_collection raises."""
-        collection = FakeChromaCollection()
-        fake_client = FakeChromaClient(created_collection=collection)
-        with patch("shared.utils.memory_integration._sentence_transformer"):
-            store = ChromaDBMemoryStore(persist_directory="/unused")
-        with patch(
-            "shared.utils.memory_integration.chromadb.PersistentClient", return_value=fake_client
-        ):
-            await store.initialize()
-        assert store.collection is collection
-
-    async def test_initialize_failure_propagates(self):
-        """A PersistentClient construction failure is logged and re-raised."""
-        with patch("shared.utils.memory_integration._sentence_transformer"):
-            store = ChromaDBMemoryStore(persist_directory="/unused")
-        with patch(
-            "shared.utils.memory_integration.chromadb.PersistentClient",
-            side_effect=RuntimeError("disk full"),
-        ):
-            with pytest.raises(RuntimeError, match="disk full"):
-                await store.initialize()
-
-
-class TestChromaDBMemoryStoreGenerateEmbedding:
-    """_generate_embedding boundary/error branches."""
-
-    def test_returns_none_without_encoder(self):
-        """No encoder configured means embeddings are never generated."""
-        store = _chroma_store(encoder=None)
-        assert store._generate_embedding("hello") is None
-
-    def test_exception_returns_none(self):
-        """An encoder that raises is caught and treated as 'no embedding available'."""
-
-        class BrokenEncoder:
-            def encode(self, text, convert_to_tensor=False):
-                raise RuntimeError("model crashed")
-
-        store = _chroma_store(encoder=BrokenEncoder())
-        assert store._generate_embedding("hello") is None
-
-    def test_converts_tensor_like_result_via_tolist(self):
-        """A tensor-like encode() result is converted via .tolist()."""
-
-        class TensorLike:
-            def tolist(self):
-                return [0.5, 0.6]
-
-        class FakeEncoder:
-            def encode(self, text, convert_to_tensor=False):
-                return TensorLike()
-
-        store = _chroma_store(encoder=FakeEncoder())
-        assert store._generate_embedding("hello") == [0.5, 0.6]
-
-
-class TestChromaDBMemoryStoreStoreMemory:
-    """store_memory error handling."""
-
-    async def test_exception_returns_false(self):
-        """A collection.add() failure is caught and reported as a failed store."""
-        collection = FakeChromaCollection(add_raises=RuntimeError("disk full"))
-        store = _chroma_store(collection=collection, encoder=None)
-        ok = await store.store_memory(_memory_entry())
-        assert ok is False
-
-    async def test_preexisting_embedding_is_not_regenerated(self):
-        """An entry that already carries an embedding skips _generate_embedding entirely."""
-        collection = FakeChromaCollection()
-
-        class ExplodingEncoder:
-            def encode(self, text, convert_to_tensor=False):
-                raise AssertionError("should not be called when embedding is pre-populated")
-
-        store = _chroma_store(collection=collection, encoder=ExplodingEncoder())
-        entry = _memory_entry()
-        entry.embedding = [0.9, 0.8, 0.7]
-        ok = await store.store_memory(entry)
-        assert ok is True
-        assert collection.add_calls[0]["embeddings"] == [[0.9, 0.8, 0.7]]
-
-
-class TestChromaDBMemoryStoreSearchMemories:
-    """search_memories boundary/error branches not covered by the scope-isolation suite."""
-
-    async def test_uses_query_texts_when_no_embedding_available(self):
-        """No encoder means query_embedding is None, so search falls back to query_texts."""
-        collection = FakeChromaCollection(
-            query_result={
-                "ids": [["m1"]],
-                "documents": [["hello world"]],
-                "metadatas": [
-                    [
-                        {
-                            "user_id": 5,
-                            "organization_id": 3,
-                            "session_id": "s1",
-                            "created_at": datetime.utcnow().isoformat(),
-                            "scope": "user",
-                            "author_user_id": 5,
-                        }
-                    ]
-                ],
-                "distances": [[0.1]],
-            }
-        )
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.search_memories(
-            "hello", user_id=5, organization_id=3, min_relevance=0.5, scope="user"
-        )
-        assert "query_texts" in collection.last_query_kwargs
-        assert "query_embeddings" not in collection.last_query_kwargs
-        assert entries[0].content == "hello world"
-
-    async def test_session_id_filter_uses_and_operator_for_multi_key_where(self):
-        """A session_id filter combined with user_id/org_id wraps the where clause in $and."""
-        collection = FakeChromaCollection(
-            query_result={
-                "ids": [["m1"]],
-                "documents": [["x"]],
-                "metadatas": [
-                    [
-                        {
-                            "user_id": 5,
-                            "organization_id": 3,
-                            "session_id": "s9",
-                            "created_at": datetime.utcnow().isoformat(),
-                            "scope": "user",
-                            "author_user_id": 5,
-                        }
-                    ]
-                ],
-                "distances": [[0.1]],
-            }
-        )
-        store = _chroma_store(collection=collection, encoder=None)
-        await store.search_memories(
-            "q", user_id=5, organization_id=3, session_id="s9", min_relevance=0.0
-        )
-        where = collection.last_query_kwargs["where"]
-        assert where == {"$and": [{"user_id": 5}, {"organization_id": 3}, {"session_id": "s9"}]}
-
-    async def test_empty_results_returns_empty_list(self):
-        """An empty documents batch converts to an empty entry list."""
-        collection = FakeChromaCollection(
-            query_result={"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-        )
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.search_memories("q", user_id=5, organization_id=3)
-        assert entries == []
-
-    async def test_missing_documents_key_short_circuits(self):
-        """A falsy 'documents' value short-circuits _to_entries before any indexing."""
-        collection = FakeChromaCollection(query_result={"documents": None})
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.search_memories("q", user_id=5, organization_id=3)
-        assert entries == []
-
-    async def test_exception_returns_empty_list(self):
-        """A collection.query() failure is caught and returns [] rather than raising."""
-        collection = FakeChromaCollection(query_raises=RuntimeError("boom"))
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.search_memories("q", user_id=5, organization_id=3)
-        assert entries == []
-
-    async def test_low_relevance_result_is_filtered_out(self):
-        """A result below min_relevance is excluded from the converted entries."""
-        collection = FakeChromaCollection(
-            query_result={
-                "ids": [["m1"]],
-                "documents": [["low match"]],
-                "metadatas": [
-                    [
-                        {
-                            "user_id": 5,
-                            "organization_id": 3,
-                            "session_id": "s1",
-                            "created_at": datetime.utcnow().isoformat(),
-                            "scope": "user",
-                            "author_user_id": 5,
-                        }
-                    ]
-                ],
-                "distances": [[0.9]],  # relevance_score = 1 - 0.9 = 0.1
-            }
-        )
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.search_memories("q", user_id=5, organization_id=3, min_relevance=0.7)
-        assert entries == []
-
-
-class TestChromaDBMemoryStoreLazyInitOnReadAndWrite:
-    """store/search/get_recent/delete/cleanup all lazy-initialize the collection."""
-
-    async def test_store_memory_lazy_initializes(self):
-        """store_memory() calls initialize() first when self.collection is still None."""
-        store = _chroma_store(encoder=None)
-        store.collection = None
-        called = {"initialize": False}
-
-        async def fake_initialize():
-            called["initialize"] = True
-            store.collection = FakeChromaCollection()
-
-        store.initialize = fake_initialize
-        ok = await store.store_memory(_memory_entry())
-        assert called["initialize"] is True
-        assert ok is True
-
-    async def test_search_memories_lazy_initializes(self):
-        """search_memories() calls initialize() first when self.collection is still None."""
-        store = _chroma_store(encoder=None)
-        store.collection = None
-        called = {"initialize": False}
-
-        async def fake_initialize():
-            called["initialize"] = True
-            store.collection = FakeChromaCollection()
-
-        store.initialize = fake_initialize
-        entries = await store.search_memories("q", user_id=5, organization_id=3)
-        assert called["initialize"] is True
-        assert entries == []
-
-    async def test_get_recent_memories_lazy_initializes(self):
-        """get_recent_memories() calls initialize() first when self.collection is still None."""
-        store = _chroma_store(encoder=None)
-        store.collection = None
-        called = {"initialize": False}
-
-        async def fake_initialize():
-            called["initialize"] = True
-            store.collection = FakeChromaCollection()
-
-        store.initialize = fake_initialize
-        entries = await store.get_recent_memories(user_id=5, organization_id=3)
-        assert called["initialize"] is True
-        assert entries == []
-
-    async def test_delete_memory_lazy_initializes(self):
-        """delete_memory() calls initialize() first when self.collection is still None."""
-        store = _chroma_store(encoder=None)
-        store.collection = None
-        called = {"initialize": False}
-
-        async def fake_initialize():
-            called["initialize"] = True
-            store.collection = FakeChromaCollection()
-
-        store.initialize = fake_initialize
-        ok = await store.delete_memory("m1")
-        assert called["initialize"] is True
-        assert ok is True
-
-    async def test_cleanup_old_memories_lazy_initializes(self):
-        """cleanup_old_memories() calls initialize() first when self.collection is still None."""
-        store = _chroma_store(encoder=None)
-        store.collection = None
-        called = {"initialize": False}
-
-        async def fake_initialize():
-            called["initialize"] = True
-            store.collection = FakeChromaCollection()
-
-        store.initialize = fake_initialize
-        count = await store.cleanup_old_memories(days=90)
-        assert called["initialize"] is True
-        assert count == 0
-
-
-class TestChromaDBMemoryStoreGetRecentMemories:
-    """get_recent_memories time-window filtering and error handling."""
-
-    async def test_filters_by_time_window_and_uses_session_filter(self):
-        """Only the row inside the recency cutoff is returned; session_id reaches the where."""
-        now = datetime.utcnow()
-        old = now - timedelta(hours=48)
-        collection = FakeChromaCollection(
-            get_result={
-                "ids": ["m1", "m2"],
-                "documents": ["recent", "old"],
-                "metadatas": [
-                    {
-                        "user_id": 5,
-                        "organization_id": 3,
-                        "session_id": "s1",
-                        "created_at": now.isoformat(),
-                    },
-                    {
-                        "user_id": 5,
-                        "organization_id": 3,
-                        "session_id": "s1",
-                        "created_at": old.isoformat(),
-                    },
-                ],
-            }
-        )
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.get_recent_memories(
-            user_id=5, organization_id=3, session_id="s1", hours=24
-        )
-        assert [e.content for e in entries] == ["recent"]
-        assert collection.last_get_kwargs["where"]["session_id"] == "s1"
-
-    async def test_no_results_returns_empty_list(self):
-        """An empty get() result converts to an empty entry list."""
-        collection = FakeChromaCollection(get_result={"ids": [], "documents": [], "metadatas": []})
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.get_recent_memories(user_id=5, organization_id=3)
-        assert entries == []
-
-    async def test_exception_returns_empty_list(self):
-        """A collection.get() failure is caught and returns [] rather than raising."""
-        collection = FakeChromaCollection(get_raises=RuntimeError("boom"))
-        store = _chroma_store(collection=collection, encoder=None)
-        entries = await store.get_recent_memories(user_id=5, organization_id=3)
-        assert entries == []
-
-
-class TestChromaDBMemoryStoreDeleteAndCleanup:
-    """delete_memory and cleanup_old_memories."""
-
-    async def test_delete_memory_success(self):
-        """delete_memory forwards the id to collection.delete and returns True."""
-        collection = FakeChromaCollection()
-        store = _chroma_store(collection=collection, encoder=None)
-        ok = await store.delete_memory("m1")
-        assert ok is True
-        assert collection.delete_calls == [["m1"]]
-
-    async def test_delete_memory_exception_returns_false(self):
-        """A collection.delete() failure is caught and returns False rather than raising."""
-        collection = FakeChromaCollection(delete_raises=RuntimeError("boom"))
-        store = _chroma_store(collection=collection, encoder=None)
-        ok = await store.delete_memory("m1")
-        assert ok is False
-
-    async def test_cleanup_deletes_old_entries_and_returns_count(self):
-        """Entries older than the cutoff are deleted; the returned count matches."""
-        now = datetime.utcnow()
-        old = now - timedelta(days=100)
-        collection = FakeChromaCollection(
-            get_result={
-                "ids": ["m1", "m2"],
-                "metadatas": [{"created_at": old.isoformat()}, {"created_at": now.isoformat()}],
-            }
-        )
-        store = _chroma_store(collection=collection, encoder=None)
-        count = await store.cleanup_old_memories(days=90)
-        assert count == 1
-        assert collection.delete_calls == [["m1"]]
-
-    async def test_cleanup_with_no_old_entries_skips_delete_call(self):
-        """When nothing is older than the cutoff, delete() is never called."""
-        now = datetime.utcnow()
-        collection = FakeChromaCollection(
-            get_result={"ids": ["m1"], "metadatas": [{"created_at": now.isoformat()}]}
-        )
-        store = _chroma_store(collection=collection, encoder=None)
-        count = await store.cleanup_old_memories(days=90)
-        assert count == 0
-        assert collection.delete_calls == []
-
-    async def test_cleanup_exception_returns_zero(self):
-        """A collection.get() failure during cleanup is caught and returns 0."""
-        collection = FakeChromaCollection(get_raises=RuntimeError("boom"))
-        store = _chroma_store(collection=collection, encoder=None)
-        count = await store.cleanup_old_memories(days=90)
-        assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1738,27 +1262,28 @@ class TestCreateMemoryManager:
             manager = create_memory_manager(db=object(), backend="mem0", api_key="k", org_id="o")
         assert isinstance(manager.memory_store, Mem0MemoryStore)
 
-    def test_mem0_backend_falls_back_to_chromadb_when_unavailable(self, tmp_path):
-        """backend='mem0' without mem0ai installed silently falls back to ChromaDB."""
-        with (
-            patch("shared.utils.memory_integration.HAS_MEM0", False),
-            patch("shared.utils.memory_integration._sentence_transformer"),
-        ):
-            manager = create_memory_manager(
-                db=object(), backend="mem0", persist_directory=str(tmp_path)
-            )
-        assert isinstance(manager.memory_store, ChromaDBMemoryStore)
+    def test_mem0_backend_unavailable_fails_fast_instead_of_silent_fallback(self):
+        """backend='mem0' without mem0ai installed raises, rather than silently switching backend.
 
-    def test_chromadb_backend_uses_custom_collection_name(self, tmp_path):
-        """backend='chromadb' reads collection_name out of the config dict."""
-        with patch("shared.utils.memory_integration._sentence_transformer"):
-            manager = create_memory_manager(
-                db=object(),
-                backend="chromadb",
-                persist_directory=str(tmp_path),
-                config={"collection_name": "custom_memories"},
-            )
-        assert manager.memory_store.collection_name == "custom_memories"
+        Regression guard: this used to fall back to the (now-removed)
+        ChromaDB backend without telling the caller.
+        """
+        with patch("shared.utils.memory_integration.HAS_MEM0", False):
+            with pytest.raises(ImportError, match="mem0ai package not installed"):
+                create_memory_manager(db=object(), backend="mem0")
+
+    def test_chromadb_backend_removed_fails_fast(self):
+        """backend='chromadb' fails fast, naming pgvector/mem0 as replacements.
+
+        regression: PYSEC-2026-311 (chromadb pre-auth code injection, no
+        fixed release) -- a config that still says "chromadb" must error
+        loudly rather than silently resolving to a different backend and
+        moving someone's data store.
+        """
+        with pytest.raises(ValueError, match="chromadb.*removed") as exc_info:
+            create_memory_manager(db=object(), backend="chromadb")
+        assert "pgvector" in str(exc_info.value)
+        assert "mem0" in str(exc_info.value)
 
     def test_unknown_backend_raises_value_error(self):
         """An unrecognized backend name raises ValueError, not a silent no-op."""

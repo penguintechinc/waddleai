@@ -26,19 +26,16 @@ PY := $(shell [ -x $(VENV)/bin/python ] && echo $(VENV)/bin/python || echo pytho
 # convenience hatch -- every entry needs a reason that survives review, and it
 # gets re-checked whenever a fixed release appears.
 #
-#   PYSEC-2026-311 (chromadb, all versions >=1.0.0, NO fixed release exists)
-#     Pre-authentication code injection in chromadb's SERVER component. This
-#     repo never runs that server: there is no chroma k8s manifest and no chroma
-#     image. create_rag_manager() defaults to the pgvector backend, and
-#     shared/vectorstore/ ships only pgvector and qdrant. The one live consumer,
-#     shared/utils/memory_integration.py, uses chromadb.PersistentClient -- an
-#     embedded local-file store with no listening socket and therefore no
-#     pre-auth surface. ChromaDBRAGStore can construct an HttpClient, but only
-#     when host/port are explicitly configured, and then the vulnerable
-#     component belongs to whoever operates that server.
-#     Revisit when chromadb publishes a fix; the right long-term move is to drop
-#     the chromadb backend entirely, since pgvector and qdrant already cover it.
-PIP_AUDIT_IGNORES := --ignore-vuln PYSEC-2026-311
+# No accepted advisories currently. PYSEC-2026-311 (chromadb, all versions
+# >=1.0.0, no fixed release) used to be ignored here; the chromadb backend
+# (shared/utils/memory_integration.py's ChromaDBMemoryStore,
+# shared/utils/rag_integration.py's ChromaDBRAGStore, and the chromadb
+# dependency itself) was removed instead of carrying the exception forward,
+# since pgvector and qdrant already cover the same ground. A config value
+# that still names "chromadb" now fails fast at the create_memory_manager()/
+# create_rag_manager() call site rather than resolving to a vulnerable
+# dependency.
+PIP_AUDIT_IGNORES :=
 
 venv: ## Create .venv (3.13) from the hash-pinned lockfiles -- published deps only
 	@uv venv -p 3.13 $(VENV)

@@ -182,7 +182,6 @@ def test_qdrant_retrieve_point_by_id(
 def test_memory_integration_module_importable() -> None:
     """shared.utils.memory_integration should import without errors."""
     from shared.utils.memory_integration import (  # type: ignore[import]
-        ChromaDBMemoryStore,
         ConversationContext,
         MemoryEntry,
         MemoryStore,
@@ -190,7 +189,6 @@ def test_memory_integration_module_importable() -> None:
 
     assert MemoryEntry is not None
     assert MemoryStore is not None
-    assert ChromaDBMemoryStore is not None
     assert ConversationContext is not None
 
 
