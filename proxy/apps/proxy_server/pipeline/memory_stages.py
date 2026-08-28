@@ -41,12 +41,13 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from proxy.apps.proxy_server.pipeline.stages import PipelineContext, Stage
 from shared.memory.dedup_store import DedupStore
 from shared.memory.provenance import ProvenanceTag, recall
 from shared.memory.scratchpad import ScratchpadStore
 from shared.memory.summarizer import ConversationSummarizer
 from shared.memory.token_len_cache import TokenLenCache
+
+from .stages import PipelineContext, Stage
 
 logger = logging.getLogger(__name__)
 

@@ -29,15 +29,47 @@ def get_db(db_uri=None, migrate=False):
     # files for adopting an already-existing external schema). penguin_dal's
     # define_table() always does CREATE TABLE IF NOT EXISTS, matching the
     # fake_migrate_all=False behavior this call previously requested.
+    #
+    # DAL() defaults to reflect=True, which reflects every table already
+    # present in db_uri's schema into its SQLAlchemy MetaData *before*
+    # define_tables() runs. In production (and any environment where
+    # Alembic/management has already created the schema -- e.g. the
+    # integration-test compose stack, where management's migrations land
+    # before the proxy's first connect) that means "organizations" and
+    # friends are already registered in the MetaData by the time
+    # define_tables() calls db.define_table("organizations", ...), which
+    # tries to register a second SQLAlchemy Table for the same name and
+    # raises sqlalchemy.exc.InvalidRequestError ("... already defined for
+    # this MetaData instance"). define_tables()'s per-table guard (see
+    # below) makes this idempotent: reuse the already-reflected,
+    # Alembic-authoritative Table when present, only fall through to
+    # define_table() to create it from these PyDAL Field defs against a
+    # fresh, empty database (contract-test sqlite, migrate=True).
     db = DAL(db_uri, migrate=migrate)
     define_tables(db)
     return db
 
 
+def _define_table_if_absent(db, name, *fields, **kwargs):
+    """Define a table only if it is not already present in db's MetaData.
+
+    Guards every define_tables() call site against the reflect-then-define
+    collision described in get_db()'s docstring above. None of this
+    module's Field(...) calls pass `requires=` (Python-side validators), so
+    skipping define_table() for an already-reflected table loses no
+    validation behavior -- DB-level constraints from Alembic's schema still
+    apply.
+    """
+    if name in db.tables:
+        return
+    db.define_table(name, *fields, **kwargs)
+
+
 def define_tables(db):
     """Define all database tables."""
     # Organizations for Multi-tenancy
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "organizations",
         Field("name", unique=True, notnull=True),
         Field("description", "text"),
@@ -49,7 +81,8 @@ def define_tables(db):
     )
 
     # Users and Authentication
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "users",
         Field("username", unique=True, notnull=True),
         Field("email", unique=True, notnull=True),
@@ -65,7 +98,8 @@ def define_tables(db):
     )
 
     # API Keys with Usage Limits
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "api_keys",
         Field("key_id", unique=True, notnull=True),
         Field("key_hash", "password", notnull=True),  # Hashed API key
@@ -91,7 +125,8 @@ def define_tables(db):
     # provider_credentials is NOT defined here because the proxy service should be
     # migrated to penguin-dal in a dedicated ticket — at that point this file is removed.
     # See: services/management/app/models_sqlalchemy.py for the canonical schema.
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "connection_links",
         Field("name", unique=True, notnull=True),
         Field("provider", "string", notnull=True),  # ollama, anthropic, openai
@@ -105,7 +140,8 @@ def define_tables(db):
     )
 
     # Ollama Model Registry
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "ollama_models",
         Field("link_id", "reference connection_links", notnull=True),
         Field("model_name", notnull=True),
@@ -118,7 +154,8 @@ def define_tables(db):
     )
 
     # Routing Rules
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "routing_rules",
         Field("name", notnull=True),
         Field("routing_llm_id", "reference connection_links"),
@@ -129,7 +166,8 @@ def define_tables(db):
     )
 
     # Conversation Memory Configurations
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "conversation_memory_configs",
         Field("name", notnull=True),
         Field("provider", "string", default="mem0"),  # mem0, chromadb
@@ -142,7 +180,8 @@ def define_tables(db):
     )
 
     # RAG/Knowledge Base Configurations
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "rag_configs",
         Field("name", notnull=True),
         Field("provider", "string", default="supabase"),  # supabase, qdrant, chromadb
@@ -157,7 +196,8 @@ def define_tables(db):
     )
 
     # Token Conversion Rates (LLM tokens to WaddleAI tokens)
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "token_conversion_rates",
         Field("provider", "string", notnull=True),  # openai, anthropic, ollama
         Field("model", "string", notnull=True),
@@ -169,7 +209,8 @@ def define_tables(db):
     )
 
     # Token Usage Tracking
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "token_usage",
         Field("api_key_id", "reference api_keys", notnull=True),
         Field("user_id", "reference users", notnull=True),
@@ -188,7 +229,8 @@ def define_tables(db):
     )
 
     # Real-time Usage Cache (for quota enforcement)
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "usage_cache",
         Field("api_key_id", "reference api_keys", notnull=True),
         Field("organization_id", "reference organizations", notnull=True),
@@ -201,7 +243,8 @@ def define_tables(db):
     )
 
     # Prompt Security Logs
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "security_logs",
         Field("timestamp", "datetime", default=datetime.utcnow),
         Field("api_key_id", "reference api_keys"),
@@ -217,7 +260,8 @@ def define_tables(db):
     )
 
     # Usage Analytics
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "usage_logs",
         Field("timestamp", "datetime", default=datetime.utcnow),
         Field("api_key_id", "reference api_keys"),
@@ -242,7 +286,8 @@ def define_tables(db):
     )
 
     # Content Filter Rules
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "content_filter_rules",
         Field("name", "string", notnull=True),
         Field("description", "text"),
@@ -261,7 +306,8 @@ def define_tables(db):
     )
 
     # Content Filter Audit Log
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "content_filter_audit_log",
         Field("timestamp", "datetime", default=datetime.utcnow),
         Field("phase", "string", notnull=True),  # 'input', 'output'
@@ -278,7 +324,8 @@ def define_tables(db):
     )
 
     # Content Filter Configuration (key-value store for auditor settings)
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "content_filter_config",
         Field("key", "string", notnull=True),
         Field("value", "text"),
@@ -292,7 +339,8 @@ def define_tables(db):
     # these definitions bind PyDAL field metadata onto the already-created tables
     # (migrate=False in production), matching the existing dual-definition
     # pattern used above for content_filter_* and other post-baseline tables.
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "model_assignments",
         Field("tool_type", "string", notnull=True),
         Field("complexity", "string"),
@@ -310,7 +358,8 @@ def define_tables(db):
         Field("scope_ref", "integer"),
     )
 
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "model_configs",
         Field("model_name", unique=True, notnull=True),
         Field("preferred_providers", "json"),
@@ -322,7 +371,8 @@ def define_tables(db):
         Field("created_at", "datetime", default=datetime.utcnow),
     )
 
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "model_aliases",
         Field("organization_id", "reference organizations"),
         Field("source_model", "string", notnull=True),
@@ -332,7 +382,8 @@ def define_tables(db):
         Field("created_at", "datetime", default=datetime.utcnow),
     )
 
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "routing_rules_v2",
         Field("name", "string", notnull=True),
         Field("priority", "integer", default=100),
@@ -343,7 +394,8 @@ def define_tables(db):
         Field("created_at", "datetime", default=datetime.utcnow),
     )
 
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "routing_policies",
         Field("organization_id", "reference organizations", notnull=True),
         Field("mode", "string", default="local_first"),
@@ -359,7 +411,8 @@ def define_tables(db):
         Field("updated_at", "datetime", default=datetime.utcnow),
     )
 
-    db.define_table(
+    _define_table_if_absent(
+        db,
         "routing_decision_traces",
         Field("request_id", "string", notnull=True),
         Field("organization_id", "reference organizations", notnull=True),
