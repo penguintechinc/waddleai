@@ -6,7 +6,7 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"time"
 )
@@ -170,8 +170,10 @@ func (c *Client) calculateDelay(attempt int) time.Duration {
 	}
 
 	if c.retryConfig.Jitter {
-		// Add jitter: 50-150% of base delay
-		jitterFactor := 0.5 + rand.Float64()
+		// Add jitter: 50-150% of base delay. Non-cryptographic PRNG is
+		// intentional -- this only spreads retry timing, it is not a
+		// security control (token, key, or auth-adjacent value).
+		jitterFactor := 0.5 + rand.Float64() // #nosec G404 -- retry-timing jitter, not security-sensitive
 		delay = time.Duration(float64(delay) * jitterFactor)
 	}
 
@@ -312,7 +314,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		if resp.StatusCode >= 400 {
 			// Read and close body for error responses
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 			c.logger("HTTP %s %s -> %d", req.Method, req.URL.String(), resp.StatusCode)

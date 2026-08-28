@@ -3,6 +3,7 @@ package grpc
 
 import (
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -87,9 +88,20 @@ func NewServer(
 		opt(opts)
 	}
 
+	// MaxConcurrentRPCs is a user-supplied int; grpc.MaxConcurrentStreams
+	// takes a uint32, so clamp out-of-range values instead of letting a
+	// negative or >MaxUint32 input wrap silently on conversion.
+	maxConcurrentStreams := uint32(0)
+	switch {
+	case opts.MaxConcurrentRPCs > math.MaxUint32:
+		maxConcurrentStreams = math.MaxUint32
+	case opts.MaxConcurrentRPCs > 0:
+		maxConcurrentStreams = uint32(opts.MaxConcurrentRPCs)
+	}
+
 	// Build server options
 	serverOpts := []grpc.ServerOption{
-		grpc.MaxConcurrentStreams(uint32(opts.MaxConcurrentRPCs)),
+		grpc.MaxConcurrentStreams(maxConcurrentStreams),
 		grpc.ConnectionTimeout(opts.MaxConnectionIdle),
 		grpc.KeepaliveParams(keepaliveServerParams(opts)),
 	}
