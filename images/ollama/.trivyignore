@@ -44,6 +44,22 @@ CVE-2026-46600
 CVE-2026-46602
 CVE-2026-56852
 
+# Added 2026-08-22 -- same root cause as the block above (still
+# ollama/ollama:0.32.13's vendored `stdlib`/`golang.org/x/mod` build info),
+# newly published/scored since this file was last refreshed. Review by
+# 2026-11-22 or at the next ollama upstream version bump, whichever comes
+# first -- re-run `trivy image --severity HIGH,CRITICAL
+# ghcr.io/penguintechinc/waddleai/ollama:hardened` (no --ignorefile) to see
+# whether a newer 0.32.x/0.33.x release has picked up patched Go modules.
+CVE-2026-33818
+CVE-2026-56853
+CVE-2026-56858
+CVE-2026-56859
+CVE-2026-56860
+CVE-2026-56862
+CVE-2026-56864
+CVE-2026-56865
+
 # --- 2. debian:trixie-slim baseline package CVEs, no fix published yet -------
 # `debian`-class findings against packages already present in the *bare*
 # debian:trixie-slim base (perl-base, util-linux, login, gzip, ncurses,
@@ -79,3 +95,32 @@ CVE-2026-42497
 CVE-2026-48962
 CVE-2026-57432
 CVE-2026-9538
+
+# Added 2026-08-22 -- libssl3t64/openssl CVE-2026-14456 (OpenSSL QUIC server
+# unbounded memory growth, HIGH). Trivy status "fix_deferred": Debian
+# security has explicitly deferred shipping a patch -- Candidate == Installed
+# (3.5.6-1~deb13u2) on both trixie/main and trixie-security as of this build,
+# confirmed via `apt-cache policy libssl3t64 openssl` against this exact base
+# digest, so no version of this Dockerfile can resolve it today. Contrast with
+# the util-linux family (CVE-2026-53612/-53613/-53614), which surfaced in the
+# same scan but DOES have a published fix on trixie-security -- those are
+# pinned explicitly in the Dockerfile instead of ignored here. Review by
+# 2026-11-22 or whenever `apt-cache policy libssl3t64` shows a newer
+# candidate, whichever comes first.
+CVE-2026-14456
+
+# Added 2026-08-27 -- libsqlite3-0 CVE-2026-11822/-11824 (SQLite FTS5
+# crafted-data arbitrary code execution + heap buffer overflow, both HIGH).
+# Newly published/scored since the 08-22 refresh above (Trivy DB pulled
+# 2026-08-27 for this scan, vs 08-22 when the rest of this file was
+# calibrated) -- this is DB drift, not a regression introduced by any change
+# to the Dockerfile. Trivy status "affected", FixedVersion: None for both
+# (confirmed via `trivy image --format json`); `apt-cache policy
+# libsqlite3-0` against this exact runtime-base shows Candidate == Installed
+# (3.46.1-7+deb13u1) on both trixie/main and trixie-security, so Debian
+# security has not shipped a patched package yet -- no version of this
+# Dockerfile can resolve this today. Review by 2026-11-27 or whenever
+# `apt-cache policy libsqlite3-0` shows a newer candidate, whichever comes
+# first.
+CVE-2026-11822
+CVE-2026-11824

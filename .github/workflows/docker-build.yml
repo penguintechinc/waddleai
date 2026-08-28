@@ -495,7 +495,17 @@ jobs:
       fail-fast: false
       matrix:
         platform: [linux/amd64, linux/arm64]
-        service: [proxy, management]
+        # webui MUST stay in this base list, not live only in `include` below.
+        # `include` entries whose keys don't already appear in the matrix
+        # (webui previously had no `platform:` key) create one standalone
+        # combination instead of merging into the platform x service cross
+        # product -- so webui built once, with `matrix.platform` unset, and
+        # never produced the `-amd64`/`-arm64` tags merge-manifests (and
+        # security-scan) already expect for it. Putting webui here first
+        # expands it across both platforms; the `include` entry below then
+        # merges context/dockerfile onto each of those two combinations,
+        # exactly as it already does for `management`.
+        service: [proxy, management, webui]
         include:
           - service: webui
             context: ./services/webui
@@ -801,7 +811,11 @@ jobs:
           proxy:
             image: ${{ env.REGISTRY }}/${{ github.repository }}/proxy:ci-amd64-${{ github.sha }}
             ports:
-              - "8000:8000"
+              # host 8000 -> container 8080: the app listens on 8080
+              # (proxy/Dockerfile EXPOSE/CMD/HEALTHCHECK, k8s values.yaml
+              # proxy.service.port/targetPort) -- host side stays 8000 so
+              # the curls below don't need to change.
+              - "8000:8080"
             environment:
               - DATABASE_URL=postgresql://test:test@db:5432/waddleai_test
               - LOG_LEVEL=DEBUG
@@ -852,21 +866,63 @@ jobs:
         sleep 45
 
     - name: Test management health endpoints
+      # On a non-200, print the response body before failing -- /readyz's
+      # body is {"ready": bool, "checks": {"database": bool, "redis": bool}},
+      # which names the exact failing dependency instead of leaving a bare
+      # `curl: (22)` to re-diagnose from scratch next time.
       run: |
-        curl -f http://localhost:8001/healthz
-        curl -f http://localhost:8001/livez
-        curl -f http://localhost:8001/readyz
-        curl -f http://localhost:8001/metrics
+        check() {
+          url="$1"
+          body=$(curl -s -w '\n%{http_code}' "$url")
+          code=$(echo "$body" | tail -n1)
+          resp=$(echo "$body" | sed '$d')
+          if [ "$code" != "200" ]; then
+            echo "FAIL $url -> HTTP $code"
+            echo "$resp"
+            exit 1
+          fi
+          echo "OK $url -> HTTP $code"
+        }
+        check http://localhost:8001/healthz
+        check http://localhost:8001/livez
+        check http://localhost:8001/readyz
+        check http://localhost:8001/metrics
 
     - name: Test proxy health endpoint
+      # Bounded readiness wait, not a gate-weakening: a 4-worker hypercorn
+      # proxy takes measurably longer to accept connections than the
+      # single-process management server, so a single immediate curl (the
+      # previous behavior) raced the container's own startup. Retries up to
+      # 30x2s = 60s, succeeds on the first 200, and still fails the job hard
+      # on timeout -- with `docker compose ps`/`logs` dumped first so the
+      # next run shows *why* the proxy never came up instead of a bare
+      # `curl: (7) Connection refused`.
       run: |
-        curl -f http://localhost:8000/healthz || curl -f http://localhost:8000/health
+        set -uo pipefail
+        ready=""
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:8000/healthz -o /dev/null; then
+            echo "OK http://localhost:8000/healthz -> HTTP 200 (attempt $i/30)"
+            ready=1
+            break
+          fi
+          sleep 2
+        done
+        if [ -z "$ready" ]; then
+          echo "FAIL proxy /healthz never returned 200 after 30 attempts (60s)"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
+          exit 1
+        fi
 
     - name: Test OpenAI-compatible API endpoint
       run: |
+        set -uo pipefail
         response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/chat/completions)
         if [ "$response" != "401" ]; then
           echo "Expected 401 response, got $response"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
           exit 1
         fi
 

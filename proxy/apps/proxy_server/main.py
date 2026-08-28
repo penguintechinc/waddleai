@@ -28,30 +28,6 @@ from penguin_aaa.middleware import AuditMiddleware, OIDCAuthMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST
 from quart import Quart, Response, abort, jsonify, request
 
-from proxy.apps.proxy_server.grpc_server import ServerComponents, run_grpc_in_thread
-from proxy.apps.proxy_server.mcp_mount import MCPMount
-from proxy.apps.proxy_server.mem0_api import mem0_bp, set_memory_manager
-from proxy.apps.proxy_server.pipeline import (
-    AuthStage,
-    CacheStage,
-    DispatchStage,
-    MeterStage,
-    PipelineContext,
-    ProxyPipeline,
-    RoutingStage,
-    SecurityInStage,
-    SecurityOutStage,
-    TokenBudgetStage,
-)
-from proxy.apps.proxy_server.pipeline.knowledge_stage import (
-    KNOWLEDGE_INJECT_FLAG,
-    KnowledgeInjectStage,
-)
-from proxy.apps.proxy_server.pipeline.memory_stages import (
-    DedupStage,
-    ScratchpadStage,
-    SummarizationStage,
-)
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -83,6 +59,31 @@ from shared.utils.memory_integration import create_memory_manager
 from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
+
+from .grpc_server import ServerComponents, run_grpc_in_thread
+from .mcp_mount import MCPMount
+from .mem0_api import mem0_bp, set_memory_manager
+from .pipeline import (
+    AuthStage,
+    CacheStage,
+    DispatchStage,
+    MeterStage,
+    PipelineContext,
+    ProxyPipeline,
+    RoutingStage,
+    SecurityInStage,
+    SecurityOutStage,
+    TokenBudgetStage,
+)
+from .pipeline.knowledge_stage import (
+    KNOWLEDGE_INJECT_FLAG,
+    KnowledgeInjectStage,
+)
+from .pipeline.memory_stages import (
+    DedupStage,
+    ScratchpadStage,
+    SummarizationStage,
+)
 
 # Configure structured logging
 structlog.configure(

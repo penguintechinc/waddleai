@@ -69,16 +69,25 @@ cd waddleai
 
 ### Install Python Dependencies
 
-The proxy and management services share `shared/`, so tests and most local dev work run out of a single virtual environment at the repo root — this mirrors what CI installs:
+**`make venv` is the only supported way to create the local environment** — it uses
+`uv` to build `.venv` (not `venv`) from the hash-pinned lockfiles
+(`requirements.txt`, `services/management/requirements.txt`,
+`proxy/requirements.txt` — each generated via `uv pip compile --generate-hashes`, never
+edited by hand) and installs the test tooling (`pytest`, `pytest-asyncio`, `pytest-cov`,
+`pip-audit`) on top:
 
 ```bash
-python3.13 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install -r services/management/requirements.txt
+make venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+.venv/bin/python --version   # 3.13.x
 ```
+
+Do not fall back to a bare `python3.13 -m venv` + `pip install` — the host's `python3`
+is frequently a different minor version (this repo requires exactly 3.13) and a plain
+`pip install` skips the hash verification the lockfiles were generated for, so it can
+silently resolve different transitive versions than CI does. If you must build the venv
+by hand for some reason, mirror the Makefile target above exactly (`uv venv -p 3.13
+.venv`, then `uv pip install --python .venv/bin/python -r <each requirements.txt>`).
 
 ### Install Web UI Dependencies
 
@@ -323,8 +332,8 @@ echo "new-package>=1.0.0" >> requirements.in
 # Recompile the pinned, hashed requirements.txt
 uv pip compile requirements.in --generate-hashes --python-version 3.13 -o requirements.txt
 
-# Reinstall in your venv
-pip install -r requirements.txt
+# Reinstall in .venv
+uv pip install --python .venv/bin/python -r requirements.txt
 
 # Verify the import works
 python3 -c "import new_package"
@@ -531,5 +540,5 @@ docker container prune
 
 ---
 
-**Last Updated**: 2026-08-10
+**Last Updated**: 2026-08-21
 **Maintained by**: Penguin Tech Inc
