@@ -7,6 +7,15 @@ import os
 from datetime import date, datetime
 
 from penguin_dal import DAL, Field
+from sqlalchemy import text
+
+# Fixed key for the Postgres session-level advisory lock taken in
+# _define_tables_serialized() below. Any int64 works here -- it has no
+# meaning beyond being a private mutex ID for this one call site, chosen to
+# be unlikely to collide with any other advisory lock this cluster's other
+# services might take (waddleai-proxy-schema-bootstrap, ASCII-summed and
+# truncated to fit a signed 64-bit key).
+_SCHEMA_BOOTSTRAP_LOCK_KEY = 8_711_942_003_501
 
 
 def get_db(db_uri=None, migrate=False):
@@ -46,8 +55,58 @@ def get_db(db_uri=None, migrate=False):
     # define_table() to create it from these PyDAL Field defs against a
     # fresh, empty database (contract-test sqlite, migrate=True).
     db = DAL(db_uri, migrate=migrate)
-    define_tables(db)
+
+    # The proxy is a DB CLIENT, not the schema authority (Alembic/management
+    # owns the schema in every real environment -- see the module docstring
+    # above). But proxy/Dockerfile's CMD runs `hypercorn ... --workers 4`,
+    # spawning 4 independent OS processes that each call get_db() during
+    # their own lifespan startup. On a fresh/empty database every process's
+    # own DAL(reflect=True) call above sees no tables yet, so all 4 race
+    # define_tables() -> SQLAlchemy's create_all(checkfirst=True): the
+    # existence check and the CREATE TABLE are two separate round-trips, not
+    # atomic across processes, so more than one process's check can pass
+    # before any of them commits. Every loser after the first then crashes
+    # hypercorn's lifespan startup with psycopg2.errors.UniqueViolation on
+    # pg_type_typname_nsp_index (confirmed via local repro against a fresh
+    # Postgres 15 container using the exact Dockerfile CMD -- see
+    # .claude/agent-memory/penguintech-dev/proxy_worker_race_startup_bug.md).
+    # A Postgres advisory lock serializes define_tables() across processes
+    # without touching the Dockerfile/entrypoint or the contract-test path:
+    # only postgresql (the dialect that actually has advisory locks and the
+    # only one that runs multi-worker) takes the locked path; sqlite (the
+    # contract-test harness's `--workers 1`, no concurrent siblings) has no
+    # such primitive and no race to guard against, so it keeps calling
+    # define_tables() directly, unchanged from before this fix.
+    if db.engine.dialect.name == "postgresql":
+        _define_tables_serialized(db)
+    else:
+        define_tables(db)
     return db
+
+
+def _define_tables_serialized(db):
+    """Run define_tables() while holding a cluster-wide Postgres advisory lock.
+
+    Only the first of N concurrently-starting proxy worker processes to
+    acquire the lock actually creates any missing tables; the rest block on
+    pg_advisory_lock() until it releases, then run define_tables() -> each
+    define_table() call's create_all(checkfirst=True) does a live catalog
+    check (not a check against this process's own possibly-stale reflected
+    metadata) and correctly no-ops on every table the lock holder already
+    committed -- closing the boot-time race described in get_db()'s
+    docstring above. The lock is released explicitly (not left to the
+    connection-pool checkin, which returns the connection for reuse rather
+    than actually closing the socket, so it would not free a session-level
+    advisory lock).
+    """
+    with db.engine.connect() as conn:
+        conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _SCHEMA_BOOTSTRAP_LOCK_KEY})
+        try:
+            define_tables(db)
+        finally:
+            conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": _SCHEMA_BOOTSTRAP_LOCK_KEY}
+            )
 
 
 def _define_table_if_absent(db, name, *fields, **kwargs):

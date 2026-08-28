@@ -14,11 +14,12 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import hmac
 import threading
 from collections.abc import Callable
 from concurrent import futures
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -99,6 +100,49 @@ class GrpcAuthInterceptor(grpc.ServerInterceptor):
 
 
 # ---------------------------------------------------------------------------
+# api_version routing (house gRPC-versioning contract)
+# ---------------------------------------------------------------------------
+
+#: Only wire-compatible request version this server understands today.
+SUPPORTED_API_VERSIONS: frozenset[str] = frozenset({"v1"})
+
+
+@dataclass(slots=True)
+class ApiVersionRouter:
+    """Method decorator enforcing a supported ``api_version`` on every RPC.
+
+    Every request message on ``WaddleAIService`` carries ``api_version``
+    (proto field 1). Wrapping a servicer method with this router makes the
+    version check the first thing that runs: a known version passes through
+    to the handler unmodified, while a missing or unknown version aborts
+    UNIMPLEMENTED before any component (routing/security/memory/usage) is
+    touched -- callers never silently fall through to a handler built for a
+    different wire shape.
+    """
+
+    supported_versions: frozenset[str] = field(default_factory=lambda: SUPPORTED_API_VERSIONS)
+
+    def __call__(self, handler: Callable[..., Any]) -> Callable[..., Any]:
+        """Return *handler* wrapped with an api_version precondition check."""
+
+        @functools.wraps(handler)
+        def _wrapped(servicer: Any, request: Any, context: grpc.ServicerContext) -> Any:
+            version = request.api_version
+            if version not in self.supported_versions:
+                context.abort(
+                    grpc.StatusCode.UNIMPLEMENTED,
+                    f"api_version {version} not supported",
+                )
+            return handler(servicer, request, context)
+
+        return _wrapped
+
+
+#: Shared instance applied to every unary WaddleAIServiceServicer RPC below.
+require_api_version = ApiVersionRouter()
+
+
+# ---------------------------------------------------------------------------
 # Server components container
 # ---------------------------------------------------------------------------
 
@@ -131,6 +175,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- EvaluateRoute ----------------------------------------------------
 
+    @require_api_version
     def EvaluateRoute(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.RouteRequest,
@@ -169,6 +214,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- EvaluateSecurity -------------------------------------------------
 
+    @require_api_version
     def EvaluateSecurity(  # noqa: N802 -- gRPC servicer method name mandated by proto stub
         self,
         request: waddleai_pb2.SecurityRequest,
@@ -214,6 +260,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- StoreTurn --------------------------------------------------------
 
+    @require_api_version
     def StoreTurn(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.StoreTurnRequest,
@@ -260,6 +307,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- GetContext -------------------------------------------------------
 
+    @require_api_version
     def GetContext(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.GetContextRequest,
@@ -302,6 +350,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- SearchMemories ---------------------------------------------------
 
+    @require_api_version
     def SearchMemories(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.SearchMemoriesRequest,
@@ -342,6 +391,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 
     # ---- ReportUsage ------------------------------------------------------
 
+    @require_api_version
     def ReportUsage(  # noqa: N802 -- gRPC servicer method name mandated by generated proto stub
         self,
         request: waddleai_pb2.UsageReport,

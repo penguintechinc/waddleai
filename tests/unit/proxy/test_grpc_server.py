@@ -30,11 +30,14 @@ if PROXY_SERVER_DIR not in sys.path:
     sys.path.insert(0, PROXY_SERVER_DIR)
 
 from proxy.apps.proxy_server.grpc_server import (  # noqa: E402
+    SUPPORTED_API_VERSIONS,
+    ApiVersionRouter,
     GrpcAuthInterceptor,
     ServerComponents,
     WaddleAIServiceServicer,
     _memory_entries_to_proto,
     _safe_int,
+    require_api_version,
     run_grpc_in_thread,
     start_grpc_server,
     waddleai_pb2,
@@ -325,7 +328,9 @@ class TestEvaluateRoute:
         servicer = WaddleAIServiceServicer(ServerComponents())
         ctx = FakeServicerContext()
 
-        response = servicer.EvaluateRoute(waddleai_pb2.RouteRequest(prompt="hi"), ctx)
+        response = servicer.EvaluateRoute(
+            waddleai_pb2.RouteRequest(api_version="v1", prompt="hi"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.UNAVAILABLE
         assert response.recommended_model == ""
@@ -343,7 +348,9 @@ class TestEvaluateRoute:
         )
         servicer = WaddleAIServiceServicer(ServerComponents(routing_agent=agent))
         ctx = FakeServicerContext()
-        request = waddleai_pb2.RouteRequest(prompt="explain quantum computing", tool_type="general")
+        request = waddleai_pb2.RouteRequest(
+            api_version="v1", prompt="explain quantum computing", tool_type="general"
+        )
 
         response = servicer.EvaluateRoute(request, ctx)
 
@@ -358,7 +365,9 @@ class TestEvaluateRoute:
         servicer = WaddleAIServiceServicer(ServerComponents(routing_agent=agent))
         ctx = FakeServicerContext()
 
-        response = servicer.EvaluateRoute(waddleai_pb2.RouteRequest(prompt="x"), ctx)
+        response = servicer.EvaluateRoute(
+            waddleai_pb2.RouteRequest(api_version="v1", prompt="x"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.INTERNAL
         assert "engine down" in ctx.details
@@ -378,7 +387,9 @@ class TestEvaluateSecurity:
         servicer = WaddleAIServiceServicer(ServerComponents())
         ctx = FakeServicerContext()
 
-        response = servicer.EvaluateSecurity(waddleai_pb2.SecurityRequest(raw_command="ls"), ctx)
+        response = servicer.EvaluateSecurity(
+            waddleai_pb2.SecurityRequest(api_version="v1", raw_command="ls"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.UNAVAILABLE
         assert response.safe is False
@@ -397,7 +408,9 @@ class TestEvaluateSecurity:
         )
         servicer = WaddleAIServiceServicer(ServerComponents(security_agent=agent))
         ctx = FakeServicerContext()
-        request = waddleai_pb2.SecurityRequest(raw_command="rm -rf /", tool_type="bash")
+        request = waddleai_pb2.SecurityRequest(
+            api_version="v1", raw_command="rm -rf /", tool_type="bash"
+        )
 
         response = servicer.EvaluateSecurity(request, ctx)
 
@@ -422,7 +435,7 @@ class TestEvaluateSecurity:
         ctx = FakeServicerContext()
 
         response = servicer.EvaluateSecurity(
-            waddleai_pb2.SecurityRequest(raw_command="echo hi"), ctx
+            waddleai_pb2.SecurityRequest(api_version="v1", raw_command="echo hi"), ctx
         )
 
         assert response.threat_type == ""
@@ -443,7 +456,7 @@ class TestEvaluateSecurity:
         ctx = FakeServicerContext()
 
         servicer.EvaluateSecurity(
-            waddleai_pb2.SecurityRequest(raw_command="cmd", user_id="42"), ctx
+            waddleai_pb2.SecurityRequest(api_version="v1", raw_command="cmd", user_id="42"), ctx
         )
 
         assert agent.calls[0]["user_id"] == 42
@@ -464,7 +477,8 @@ class TestEvaluateSecurity:
         ctx = FakeServicerContext()
 
         servicer.EvaluateSecurity(
-            waddleai_pb2.SecurityRequest(raw_command="cmd", user_id="not-an-int"), ctx
+            waddleai_pb2.SecurityRequest(api_version="v1", raw_command="cmd", user_id="not-an-int"),
+            ctx,
         )
 
         assert agent.calls[0]["user_id"] is None
@@ -475,7 +489,9 @@ class TestEvaluateSecurity:
         servicer = WaddleAIServiceServicer(ServerComponents(security_agent=agent))
         ctx = FakeServicerContext()
 
-        response = servicer.EvaluateSecurity(waddleai_pb2.SecurityRequest(raw_command="x"), ctx)
+        response = servicer.EvaluateSecurity(
+            waddleai_pb2.SecurityRequest(api_version="v1", raw_command="x"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.INTERNAL
         assert "scanner unavailable" in ctx.details
@@ -495,7 +511,9 @@ class TestStoreTurn:
         servicer = WaddleAIServiceServicer(ServerComponents())
         ctx = FakeServicerContext()
 
-        response = servicer.StoreTurn(waddleai_pb2.StoreTurnRequest(user_message="hi"), ctx)
+        response = servicer.StoreTurn(
+            waddleai_pb2.StoreTurnRequest(api_version="v1", user_message="hi"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.UNAVAILABLE
         assert response.success is False
@@ -506,6 +524,7 @@ class TestStoreTurn:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
         request = waddleai_pb2.StoreTurnRequest(
+            api_version="v1",
             session_id="sess-1",
             user_id="7",
             user_message="hello",
@@ -530,7 +549,9 @@ class TestStoreTurn:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        servicer.StoreTurn(waddleai_pb2.StoreTurnRequest(session_id="", user_message="hi"), ctx)
+        servicer.StoreTurn(
+            waddleai_pb2.StoreTurnRequest(api_version="v1", session_id="", user_message="hi"), ctx
+        )
 
         assert mgr.store_turn_calls[0]["session_id"] is None
 
@@ -539,7 +560,7 @@ class TestStoreTurn:
         mgr = FakeMemoryManager(store_turn_result=True)
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
-        request = waddleai_pb2.StoreTurnRequest(user_message="hi", model="gpt-4")
+        request = waddleai_pb2.StoreTurnRequest(api_version="v1", user_message="hi", model="gpt-4")
         request.metadata["model"] = "already-set"
 
         servicer.StoreTurn(request, ctx)
@@ -552,7 +573,9 @@ class TestStoreTurn:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        response = servicer.StoreTurn(waddleai_pb2.StoreTurnRequest(user_message="hi"), ctx)
+        response = servicer.StoreTurn(
+            waddleai_pb2.StoreTurnRequest(api_version="v1", user_message="hi"), ctx
+        )
 
         assert response.success is False
         assert ctx.code is None
@@ -563,7 +586,9 @@ class TestStoreTurn:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        response = servicer.StoreTurn(waddleai_pb2.StoreTurnRequest(user_message="hi"), ctx)
+        response = servicer.StoreTurn(
+            waddleai_pb2.StoreTurnRequest(api_version="v1", user_message="hi"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.INTERNAL
         assert "db unavailable" in ctx.details
@@ -583,7 +608,9 @@ class TestGetContext:
         servicer = WaddleAIServiceServicer(ServerComponents())
         ctx = FakeServicerContext()
 
-        response = servicer.GetContext(waddleai_pb2.GetContextRequest(session_id="s"), ctx)
+        response = servicer.GetContext(
+            waddleai_pb2.GetContextRequest(api_version="v1", session_id="s"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.UNAVAILABLE
         assert list(response.memories) == []
@@ -603,7 +630,9 @@ class TestGetContext:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        response = servicer.GetContext(waddleai_pb2.GetContextRequest(session_id="sess-1"), ctx)
+        response = servicer.GetContext(
+            waddleai_pb2.GetContextRequest(api_version="v1", session_id="sess-1"), ctx
+        )
 
         assert list(response.memories) == []
         assert response.summary == ""
@@ -622,7 +651,7 @@ class TestGetContext:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        servicer.GetContext(waddleai_pb2.GetContextRequest(limit=0), ctx)
+        servicer.GetContext(waddleai_pb2.GetContextRequest(api_version="v1", limit=0), ctx)
 
         assert mgr.context_calls[0]["context_limit"] == 5
 
@@ -640,7 +669,7 @@ class TestGetContext:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        servicer.GetContext(waddleai_pb2.GetContextRequest(limit=3), ctx)
+        servicer.GetContext(waddleai_pb2.GetContextRequest(api_version="v1", limit=3), ctx)
 
         assert mgr.context_calls[0]["context_limit"] == 3
 
@@ -650,7 +679,7 @@ class TestGetContext:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        response = servicer.GetContext(waddleai_pb2.GetContextRequest(), ctx)
+        response = servicer.GetContext(waddleai_pb2.GetContextRequest(api_version="v1"), ctx)
 
         assert ctx.code == grpc.StatusCode.INTERNAL
         assert "vector store down" in ctx.details
@@ -670,7 +699,9 @@ class TestSearchMemories:
         servicer = WaddleAIServiceServicer(ServerComponents())
         ctx = FakeServicerContext()
 
-        response = servicer.SearchMemories(waddleai_pb2.SearchMemoriesRequest(query="q"), ctx)
+        response = servicer.SearchMemories(
+            waddleai_pb2.SearchMemoriesRequest(api_version="v1", query="q"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.UNAVAILABLE
         assert list(response.results) == []
@@ -693,7 +724,10 @@ class TestSearchMemories:
         ctx = FakeServicerContext()
 
         response = servicer.SearchMemories(
-            waddleai_pb2.SearchMemoriesRequest(query="billing question", user_id="1"), ctx
+            waddleai_pb2.SearchMemoriesRequest(
+                api_version="v1", query="billing question", user_id="1"
+            ),
+            ctx,
         )
 
         results = list(response.results)
@@ -709,7 +743,9 @@ class TestSearchMemories:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        servicer.SearchMemories(waddleai_pb2.SearchMemoriesRequest(query="q"), ctx)
+        servicer.SearchMemories(
+            waddleai_pb2.SearchMemoriesRequest(api_version="v1", query="q"), ctx
+        )
 
         assert store.calls[0]["limit"] == 10
         assert store.calls[0]["min_relevance"] == pytest.approx(0.7)
@@ -722,7 +758,10 @@ class TestSearchMemories:
         ctx = FakeServicerContext()
 
         servicer.SearchMemories(
-            waddleai_pb2.SearchMemoriesRequest(query="q", limit=25, threshold=0.4), ctx
+            waddleai_pb2.SearchMemoriesRequest(
+                api_version="v1", query="q", limit=25, threshold=0.4
+            ),
+            ctx,
         )
 
         assert store.calls[0]["limit"] == 25
@@ -735,7 +774,9 @@ class TestSearchMemories:
         servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=mgr))
         ctx = FakeServicerContext()
 
-        response = servicer.SearchMemories(waddleai_pb2.SearchMemoriesRequest(query="q"), ctx)
+        response = servicer.SearchMemories(
+            waddleai_pb2.SearchMemoriesRequest(api_version="v1", query="q"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.INTERNAL
         assert "index corrupt" in ctx.details
@@ -755,7 +796,9 @@ class TestReportUsage:
         servicer = WaddleAIServiceServicer(ServerComponents())
         ctx = FakeServicerContext()
 
-        response = servicer.ReportUsage(waddleai_pb2.UsageReport(user_id="u1"), ctx)
+        response = servicer.ReportUsage(
+            waddleai_pb2.UsageReport(api_version="v1", user_id="u1"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.UNAVAILABLE
         assert response.accepted is False
@@ -769,6 +812,7 @@ class TestReportUsage:
         servicer = WaddleAIServiceServicer(ServerComponents(usage_tracker=tracker))
         ctx = FakeServicerContext()
         request = waddleai_pb2.UsageReport(
+            api_version="v1",
             user_id="u1",
             model="gpt-4",
             input_tokens=100,
@@ -798,7 +842,9 @@ class TestReportUsage:
         servicer = WaddleAIServiceServicer(ServerComponents(usage_tracker=tracker))
         ctx = FakeServicerContext()
 
-        servicer.ReportUsage(waddleai_pb2.UsageReport(user_id="u1", latency_ms=0), ctx)
+        servicer.ReportUsage(
+            waddleai_pb2.UsageReport(api_version="v1", user_id="u1", latency_ms=0), ctx
+        )
 
         assert tracker.calls[0].latency_ms is None
 
@@ -810,7 +856,7 @@ class TestReportUsage:
         servicer = WaddleAIServiceServicer(ServerComponents(usage_tracker=tracker))
         ctx = FakeServicerContext()
 
-        servicer.ReportUsage(waddleai_pb2.UsageReport(user_id="u1"), ctx)
+        servicer.ReportUsage(waddleai_pb2.UsageReport(api_version="v1", user_id="u1"), ctx)
 
         report = tracker.calls[0]
         assert report.api_key_id is None
@@ -825,7 +871,9 @@ class TestReportUsage:
         servicer = WaddleAIServiceServicer(ServerComponents(usage_tracker=tracker))
         ctx = FakeServicerContext()
 
-        response = servicer.ReportUsage(waddleai_pb2.UsageReport(user_id="u1"), ctx)
+        response = servicer.ReportUsage(
+            waddleai_pb2.UsageReport(api_version="v1", user_id="u1"), ctx
+        )
 
         assert response.accepted is False
         assert response.quota_exceeded is True
@@ -836,7 +884,9 @@ class TestReportUsage:
         servicer = WaddleAIServiceServicer(ServerComponents(usage_tracker=tracker))
         ctx = FakeServicerContext()
 
-        response = servicer.ReportUsage(waddleai_pb2.UsageReport(user_id="u1"), ctx)
+        response = servicer.ReportUsage(
+            waddleai_pb2.UsageReport(api_version="v1", user_id="u1"), ctx
+        )
 
         assert ctx.code == grpc.StatusCode.INTERNAL
         assert response.accepted is False
@@ -1024,3 +1074,119 @@ class TestServerLifecycle:
             assert grpc_thread.daemon is True
         finally:
             server.stop(grace=None)
+
+
+# ---------------------------------------------------------------------------
+# api_version routing (house gRPC-versioning contract)
+# ---------------------------------------------------------------------------
+
+_VERSIONED_METHODS: list[tuple[str, type]] = [
+    ("EvaluateRoute", waddleai_pb2.RouteRequest),
+    ("EvaluateSecurity", waddleai_pb2.SecurityRequest),
+    ("StoreTurn", waddleai_pb2.StoreTurnRequest),
+    ("GetContext", waddleai_pb2.GetContextRequest),
+    ("SearchMemories", waddleai_pb2.SearchMemoriesRequest),
+    ("ReportUsage", waddleai_pb2.UsageReport),
+]
+
+
+class TestApiVersionRouting:
+    """Every RPC rejects a missing/unknown api_version.
+
+    Verifies this happens before any configured component
+    (routing/security/memory/usage) is touched.
+    """
+
+    @pytest.mark.parametrize(("method_name", "request_cls"), _VERSIONED_METHODS)
+    def test_missing_api_version_aborts_unimplemented(
+        self, method_name: str, request_cls: type
+    ) -> None:
+        """Default (unset) api_version -> UNIMPLEMENTED naming the empty value."""
+        servicer = WaddleAIServiceServicer(ServerComponents())
+        ctx = FakeServicerContext()
+        method = getattr(servicer, method_name)
+
+        with pytest.raises(AbortedError) as exc_info:
+            method(request_cls(), ctx)
+
+        assert exc_info.value.code == grpc.StatusCode.UNIMPLEMENTED
+        assert exc_info.value.details == "api_version  not supported"
+        assert ctx.code == grpc.StatusCode.UNIMPLEMENTED
+
+    @pytest.mark.parametrize(("method_name", "request_cls"), _VERSIONED_METHODS)
+    def test_unknown_api_version_aborts_unimplemented(
+        self, method_name: str, request_cls: type
+    ) -> None:
+        """An unrecognised api_version (e.g. 'v2') -> UNIMPLEMENTED naming the value."""
+        servicer = WaddleAIServiceServicer(ServerComponents())
+        ctx = FakeServicerContext()
+        method = getattr(servicer, method_name)
+
+        with pytest.raises(AbortedError) as exc_info:
+            method(request_cls(api_version="v2"), ctx)
+
+        assert exc_info.value.code == grpc.StatusCode.UNIMPLEMENTED
+        assert exc_info.value.details == "api_version v2 not supported"
+
+    @pytest.mark.parametrize(("method_name", "request_cls"), _VERSIONED_METHODS)
+    def test_supported_version_reaches_component_unavailable_path(
+        self, method_name: str, request_cls: type
+    ) -> None:
+        """A supported version reaches the normal UNAVAILABLE handling.
+
+        With no configured component, the version check never masks the
+        real not-configured behaviour.
+        """
+        servicer = WaddleAIServiceServicer(ServerComponents())
+        ctx = FakeServicerContext()
+        method = getattr(servicer, method_name)
+
+        method(request_cls(api_version="v1"), ctx)
+
+        assert ctx.code == grpc.StatusCode.UNAVAILABLE
+
+    def test_default_supported_versions_is_v1_only(self) -> None:
+        """The module-level SUPPORTED_API_VERSIONS constant is exactly {'v1'}."""
+        assert SUPPORTED_API_VERSIONS == frozenset({"v1"})
+
+    def test_require_api_version_singleton_uses_default_versions(self) -> None:
+        """The shared `require_api_version` instance is built from the default set."""
+        assert require_api_version.supported_versions == SUPPORTED_API_VERSIONS
+
+    def test_router_call_wraps_arbitrary_handler_and_preserves_metadata(self) -> None:
+        """ApiVersionRouter is a generic decorator.
+
+        `__name__`/`__doc__` survive wrapping, and a supported version calls
+        through to the wrapped handler unchanged.
+        """
+        router = ApiVersionRouter(supported_versions=frozenset({"v9"}))
+
+        def handler(self: Any, request: Any, context: Any) -> str:
+            """Original docstring."""
+            return "handled"
+
+        wrapped = router(handler)
+
+        assert wrapped.__name__ == "handler"
+        assert wrapped.__doc__ == "Original docstring."
+        assert wrapped(
+            None, waddleai_pb2.RouteRequest(api_version="v9"), FakeServicerContext()
+        ) == ("handled")
+
+    def test_router_call_rejects_version_outside_custom_set(self) -> None:
+        """A router built with a non-default supported_versions set still aborts.
+
+        UNIMPLEMENTED is raised for any version not in that custom set.
+        """
+        router = ApiVersionRouter(supported_versions=frozenset({"v9"}))
+        ctx = FakeServicerContext()
+
+        def handler(self: Any, request: Any, context: Any) -> str:
+            return "unreachable"
+
+        wrapped = router(handler)
+
+        with pytest.raises(AbortedError) as exc_info:
+            wrapped(None, waddleai_pb2.RouteRequest(api_version="v1"), ctx)
+
+        assert exc_info.value.details == "api_version v1 not supported"
