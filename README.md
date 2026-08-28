@@ -1,5 +1,7 @@
 <div align="center">
 
+[![codecov](https://codecov.io/gh/penguintechinc/waddleai/branch/release%2Fv0.2.X/graph/badge.svg)](https://codecov.io/gh/penguintechinc/waddleai)
+[![CI](https://github.com/penguintechinc/waddleai/actions/workflows/docker-build.yml/badge.svg?branch=release%2Fv0.2.X)](https://github.com/penguintechinc/waddleai/actions/workflows/docker-build.yml)
 [![License](https://img.shields.io/badge/License-Limited%20AGPL--3.0-blue.svg)](LICENSE.md)
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Arch-blue.svg)](https://www.docker.com/)

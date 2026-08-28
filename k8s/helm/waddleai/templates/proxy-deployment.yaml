@@ -87,6 +87,10 @@ spec:
               value: "redis://{{ include "waddleai.fullname" . }}-valkey:6379/0"
             - name: MANAGEMENT_SERVER_URL
               value: "http://{{ include "waddleai.fullname" . }}-management:{{ .Values.management.service.port }}"
+            {{- with include "waddleai.publicHost" . }}
+            - name: WADDLEAI_PUBLIC_HOST
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.ollama.enabled }}
             - name: OLLAMA_BASE_URL
               value: "http://{{ include "waddleai.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"

@@ -17,6 +17,8 @@ from typing import Any, TypedDict
 import aiohttp
 from prometheus_client import Counter
 
+from shared.licensing.gate_cache import LicenseGateCacheEntry
+
 # NER filter — optional; graceful degradation if presidio/transformers unavailable
 try:
     from shared.security.ner_filter import ENTITY_CONFIG as NER_ENTITY_CONFIG
@@ -164,17 +166,13 @@ class FilterResult:
     ner_backend: str = "none"
 
 
-@dataclass(slots=True)
-class _NerTierGateState:
-    """Cached result of the NER-tier flag+licence gate for one org.
-
-    ``checked_at`` is a ``time.monotonic()`` timestamp; used to expire the
-    entry after ``_NER_TIER_CACHE_TTL`` seconds so ContentFilter._ner_tier_enabled
-    doesn't hit PostHog/the licence server on every prompt.
-    """
-
-    enabled: bool
-    checked_at: float
+# Cached result of the NER-tier flag+licence gate for one org, expired after
+# _NER_TIER_CACHE_TTL seconds so _ner_tier_enabled doesn't hit PostHog/the
+# licence server on every prompt. Shared shape with UsageTracker's
+# equivalent premium-tier cache (shared/licensing/gate_cache.py) -- both
+# call sites need the identical "was this entitled, and when did we last
+# check" record, just with different fail-open/fail-closed policies.
+_NerTierGateState = LicenseGateCacheEntry
 
 
 class ContentFilter:
@@ -889,14 +887,31 @@ class ContentFilter:
                 else:
                     conditions.append(self.db.content_filter_config.organization_id == None)  # noqa: E711 -- penguin-dal query expression, not a bool comparison
 
-                query = self.db(conditions[0])
+                # regression: mirrors the `_load_custom_rules` fix -- penguin_dal's
+                # QuerySet (penguin_dal/query.py) has no __call__, so `db(q1)`
+                # cannot be chained again as `query(q2)` (previously
+                # `query = db(q1); query = query(q2)` raised TypeError on every
+                # call, silently caught below, so a configured custom prompt
+                # was never applied). Combine conditions with `&` before the
+                # single db() call instead.
+                combined_condition = conditions[0]
                 for condition in conditions[1:]:
-                    query = query(condition)
+                    combined_condition = combined_condition & condition
 
                 # Order by org_id DESC to prioritize org-specific over global
-                rows = query.select(orderby=~self.db.content_filter_config.organization_id)
+                rows = self.db(combined_condition).select(
+                    orderby=~self.db.content_filter_config.organization_id
+                )
                 if rows:
-                    custom_body = rows[0].value
+                    row_value = rows[0].value
+                    if row_value:
+                        custom_body = row_value
+                    else:
+                        logger.warning(
+                            "Custom auditor prompt row found (org_id=%s) but its "
+                            "value is empty; falling back to default body",
+                            org_id,
+                        )
         except Exception as e:
             logger.warning(f"Failed to load custom auditor prompt: {e}")
 

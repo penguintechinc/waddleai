@@ -27,11 +27,14 @@ def get_content_filter_license_client() -> Any:
     if _license_client is None:
         from penguin_licensing import LicenseClient
 
+        from shared.licensing.domain_bypass import apply_deployment_host
+
         _license_client = LicenseClient(
             license_key=os.environ.get("LICENSE_KEY", ""),
             product="waddleai",
             base_url=os.environ.get("LICENSE_SERVER_URL", "https://license.penguintech.io"),
         )
+        apply_deployment_host(_license_client)
     return _license_client
 
 

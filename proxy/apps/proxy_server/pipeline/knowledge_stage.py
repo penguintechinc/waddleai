@@ -21,9 +21,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from proxy.apps.proxy_server.pipeline.stages import PipelineContext, Stage
 from shared.knowledge.retriever import DEFAULT_TOKEN_BUDGET, KnowledgeRetriever
 from shared.knowledge.scoping import ScopeKey
+
+from .stages import PipelineContext, Stage
 
 logger = logging.getLogger(__name__)
 

@@ -198,6 +198,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Generate epoch64 timestamp
       id: timestamp
@@ -235,6 +237,7 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
+        lookup-only: true
 
     - name: Install dependencies
       run: |
@@ -298,13 +301,25 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Node.js
       uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
       with:
         node-version: '24'
-        cache: npm
-        cache-dependency-path: services/webui/package-lock.json
+        # zizmor cache-poisoning: this workflow's push/tag/release triggers feed
+        # build-platform's webui image build, so a poisoned npm cache restored on
+        # those refs could smuggle tampered node_modules into the pushed image.
+        # A ref-conditional package-manager-cache was tried first but zizmor's
+        # audit is static (can't evaluate the ${{ }} expression) and still flags
+        # `cache: npm` as "enables caching explicitly" regardless -- disabling
+        # outright is what actually clears the finding. package-manager-cache
+        # alone isn't enough: it only suppresses *auto-detected* caching, not an
+        # explicit `cache:` input, so that input has to come out too. Costs npm
+        # ci speed on every run, not just privileged ones; revisit if that
+        # becomes a problem.
+        package-manager-cache: false
 
     - name: Install dependencies
       run: npm ci
@@ -333,6 +348,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Python 3.13
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -357,6 +374,11 @@ jobs:
       uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
       with:
         node-version: '24'
+        # v6 auto-enables npm caching from the repo-root package.json even
+        # without a `cache:` input (zizmor cache-poisoning). This job only
+        # `npm install -g`s a single pinned tool -- no lockfile install to
+        # speed up -- so there is no benefit to weigh against disabling it.
+        package-manager-cache: false
 
     - name: Install spectral (exact-pinned)
       run: npm install -g @stoplight/spectral-cli@6.16.3
@@ -382,6 +404,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Python 3.13
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -395,6 +419,7 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
+        lookup-only: true
 
     # proxy/requirements.txt is installed here (unlike the `test` job above)
     # because this suite launches the real proxy service as a subprocess
@@ -426,6 +451,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Python 3.13
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -439,6 +466,7 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
+        lookup-only: true
 
     - name: Install dependencies
       run: |
@@ -468,6 +496,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Python 3.13
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
@@ -481,6 +511,7 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
+        lookup-only: true
 
     - name: Install dependencies
       run: |
@@ -508,7 +539,17 @@ jobs:
       fail-fast: false
       matrix:
         platform: [linux/amd64, linux/arm64]
-        service: [proxy, management]
+        # webui MUST stay in this base list, not live only in `include` below.
+        # `include` entries whose keys don't already appear in the matrix
+        # (webui previously had no `platform:` key) create one standalone
+        # combination instead of merging into the platform x service cross
+        # product -- so webui built once, with `matrix.platform` unset, and
+        # never produced the `-amd64`/`-arm64` tags merge-manifests (and
+        # security-scan) already expect for it. Putting webui here first
+        # expands it across both platforms; the `include` entry below then
+        # merges context/dockerfile onto each of those two combinations,
+        # exactly as it already does for `management`.
+        service: [proxy, management, webui]
         include:
           - service: webui
             context: ./services/webui
@@ -525,6 +566,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
@@ -594,6 +636,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -656,10 +699,20 @@ jobs:
         echo "source_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
 
     - name: Create and push manifest
+      # steps.tags.outputs.tags is a deliberately unquoted "--tag X --tag Y"
+      # pair-string that has to word-split into separate imagetools args --
+      # read -ra does that explicitly into an array instead of relying on
+      # unquoted expansion, so every use below can be quoted (shellcheck
+      # SC2086) without breaking that split.
       run: |
-        docker buildx imagetools create ${{ steps.tags.outputs.tags }} \
-          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ steps.tags.outputs.source_tag }}-amd64 \
-          ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ steps.tags.outputs.source_tag }}-arm64
+        read -ra TAG_ARGS <<< "$STEPS_TAGS_OUTPUTS_TAGS"
+        docker buildx imagetools create "${TAG_ARGS[@]}" \
+          "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-amd64" \
+          "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-arm64"
+      env:
+        REGISTRY_IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+        STEPS_TAGS_OUTPUTS_TAGS: ${{ steps.tags.outputs.tags }}
+        STEPS_TAGS_OUTPUTS_SOURCE_TAG: ${{ steps.tags.outputs.source_tag }}
 
   # Hardened Ollama fleet image (spec §10.2, plan Task 13). Separate from the
   # build-platform/merge-manifests pair above: only two tags exist (hardened,
@@ -684,6 +737,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
@@ -799,6 +853,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Log in to Container Registry
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
@@ -814,7 +870,11 @@ jobs:
           proxy:
             image: ${{ env.REGISTRY }}/${{ github.repository }}/proxy:ci-amd64-${{ github.sha }}
             ports:
-              - "8000:8000"
+              # host 8000 -> container 8080: the app listens on 8080
+              # (proxy/Dockerfile EXPOSE/CMD/HEALTHCHECK, k8s values.yaml
+              # proxy.service.port/targetPort) -- host side stays 8000 so
+              # the curls below don't need to change.
+              - "8000:8080"
             environment:
               - DATABASE_URL=postgresql://test:test@db:5432/waddleai_test
               - LOG_LEVEL=DEBUG
@@ -865,21 +925,63 @@ jobs:
         sleep 45
 
     - name: Test management health endpoints
+      # On a non-200, print the response body before failing -- /readyz's
+      # body is {"ready": bool, "checks": {"database": bool, "redis": bool}},
+      # which names the exact failing dependency instead of leaving a bare
+      # `curl: (22)` to re-diagnose from scratch next time.
       run: |
-        curl -f http://localhost:8001/healthz
-        curl -f http://localhost:8001/livez
-        curl -f http://localhost:8001/readyz
-        curl -f http://localhost:8001/metrics
+        check() {
+          url="$1"
+          body=$(curl -s -w '\n%{http_code}' "$url")
+          code=$(echo "$body" | tail -n1)
+          resp=$(echo "$body" | sed '$d')
+          if [ "$code" != "200" ]; then
+            echo "FAIL $url -> HTTP $code"
+            echo "$resp"
+            exit 1
+          fi
+          echo "OK $url -> HTTP $code"
+        }
+        check http://localhost:8001/healthz
+        check http://localhost:8001/livez
+        check http://localhost:8001/readyz
+        check http://localhost:8001/metrics
 
     - name: Test proxy health endpoint
+      # Bounded readiness wait, not a gate-weakening: a 4-worker hypercorn
+      # proxy takes measurably longer to accept connections than the
+      # single-process management server, so a single immediate curl (the
+      # previous behavior) raced the container's own startup. Retries up to
+      # 30x2s = 60s, succeeds on the first 200, and still fails the job hard
+      # on timeout -- with `docker compose ps`/`logs` dumped first so the
+      # next run shows *why* the proxy never came up instead of a bare
+      # `curl: (7) Connection refused`.
       run: |
-        curl -f http://localhost:8000/healthz || curl -f http://localhost:8000/health
+        set -uo pipefail
+        ready=""
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:8000/healthz -o /dev/null; then
+            echo "OK http://localhost:8000/healthz -> HTTP 200 (attempt $i/30)"
+            ready=1
+            break
+          fi
+          sleep 2
+        done
+        if [ -z "$ready" ]; then
+          echo "FAIL proxy /healthz never returned 200 after 30 attempts (60s)"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
+          exit 1
+        fi
 
     - name: Test OpenAI-compatible API endpoint
       run: |
+        set -uo pipefail
         response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/chat/completions)
         if [ "$response" != "401" ]; then
           echo "Expected 401 response, got $response"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
           exit 1
         fi
 
@@ -905,6 +1007,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Generate changelog
       id: changelog
@@ -920,16 +1023,19 @@ jobs:
           echo "**Full Changelog**: https://github.com/${REPO}/compare/${PREV_TAG}...${GITHUB_REF_NAME}"
         } > CHANGELOG.md
 
+    # actions/create-release (v1.1.4) is archived upstream (zizmor
+    # archived-uses) -- replaced with the `gh` CLI, already the mechanism
+    # version-release.yml uses for its pre-releases. Same target semantics:
+    # tag already exists at this commit (release event triggered this job),
+    # not draft, not a prerelease.
     - name: Create Release
-      uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e  # v1.1.4
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref_name }}
-        release_name: WaddleAI ${{ github.ref_name }}
-        body_path: CHANGELOG.md
-        draft: false
-        prerelease: false
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG_NAME: ${{ github.ref_name }}
+      run: |
+        gh release create "$TAG_NAME" \
+          --title "WaddleAI $TAG_NAME" \
+          --notes-file CHANGELOG.md
 
   cleanup:
     needs: [test, security-scan, integration-test]

@@ -20,9 +20,12 @@ here -- there is no ``source`` filter, so they count toward both checks.
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+
+from shared.licensing.gate_cache import LicenseGateCacheEntry
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,15 @@ class UsageAck:
 
 _FREE_TIER_MAX_USERS = 1
 
+# premium_usage_tracking is a deployment-wide licence entitlement, not
+# per-org, so a single cached result covers every org -- unlike
+# ContentFilter's NER-tier gate, which also folds in a per-org PostHog flag.
+# The check itself is a blocking HTTP round trip (penguin_licensing.
+# LicenseClient.check_feature), so it's cached for this TTL rather than
+# paid on every recorded usage report.
+_PREMIUM_TIER_CACHE_TTL = 60.0
+_PREMIUM_TIER_FEATURE = "premium_usage_tracking"
+
 
 # ---------------------------------------------------------------------------
 # UsageTracker
@@ -86,6 +98,7 @@ class UsageTracker:
         """
         self._db = db
         self._license_client = license_client
+        self._premium_cache: LicenseGateCacheEntry | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,7 +107,10 @@ class UsageTracker:
     async def record_usage(self, report: UsageReport) -> UsageAck:
         """Persist a usage record and check quotas.
 
-        DB access is synchronous (penguin-dal/PyDAL) so the actual work
+        The premium-tier licence gate is resolved first (``_has_premium`` --
+        async, TTL-cached), so a cache hit costs nothing beyond a dict
+        lookup and only a cache miss dispatches a thread. DB access is
+        synchronous (penguin-dal/PyDAL) so that part of the work always
         runs in a thread via ``asyncio.to_thread`` to avoid blocking the
         event loop.
 
@@ -105,13 +121,14 @@ class UsageTracker:
             A :class:`UsageAck` indicating whether the record was accepted.
 
         """
-        return await asyncio.to_thread(self._record_usage_sync, report)
+        is_premium = await self._has_premium()
+        return await asyncio.to_thread(self._record_usage_sync, report, is_premium)
 
     # ------------------------------------------------------------------
     # Synchronous core (runs off the event loop via asyncio.to_thread)
     # ------------------------------------------------------------------
 
-    def _record_usage_sync(self, report: UsageReport) -> UsageAck:
+    def _record_usage_sync(self, report: UsageReport, is_premium: bool) -> UsageAck:
         user_id, organization_id = self._resolve_identity(report.user_id)
 
         if user_id is None or organization_id is None:
@@ -127,8 +144,6 @@ class UsageTracker:
                 quota_exceeded=False,
                 message="Unable to resolve organization for usage report.",
             )
-
-        is_premium = self._has_premium()
 
         if not is_premium:
             exceeded, msg = self._check_free_tier_user_cap(organization_id, user_id)
@@ -225,19 +240,58 @@ class UsageTracker:
     # License helpers
     # ------------------------------------------------------------------
 
-    def _has_premium(self) -> bool:
+    async def _has_premium(self) -> bool:
         """Return True when the premium_usage_tracking feature is licensed.
 
-        ``penguin_licensing.LicenseClient`` exposes ``check_feature`` /
-        ``check_tier`` only -- there is no ``has_feature`` method.
+        Mirrors ``ContentFilter._ner_tier_enabled``'s cache + last-known
+        fallback pattern (``shared.licensing.gate_cache.LicenseGateCacheEntry``):
+        the actual check is a blocking HTTP round trip (``penguin_licensing.
+        LicenseClient.check_feature`` -- there is no ``has_feature`` method),
+        so it runs off the event loop via ``asyncio.to_thread`` and is cached
+        for ``_PREMIUM_TIER_CACHE_TTL`` seconds -- otherwise every recorded
+        usage report would pay for a licence-server round trip.
+
+        Unlike the NER-tier gate, the safe failure direction here is the
+        *stricter* one: on a checker failure with nothing cached yet, this
+        returns False (free-tier caps apply) rather than True -- granting
+        unearned premium quota on an error would be the wrong default for a
+        quota check, the opposite of content_filter's PII-detection gate. A
+        checker failure *after* a successful prior check still serves the
+        last-known value rather than snapping every transient licence-server
+        hiccup straight to the free-tier cap.
         """
         if self._license_client is None:
             return False
+
+        now = time.monotonic()
+        cached = self._premium_cache
+        if cached is not None and now - cached.checked_at < _PREMIUM_TIER_CACHE_TTL:
+            return cached.enabled
+
         try:
-            return bool(self._license_client.check_feature("premium_usage_tracking"))
+            enabled = await asyncio.to_thread(self._check_premium_entitlement)
         except Exception as exc:
-            logger.warning("License check failed: %s", exc)
-            return False
+            fallback = cached.enabled if cached is not None else False
+            if cached is not None:
+                fallback_desc = f"cached value ({fallback})"
+            else:
+                fallback_desc = "not-premium (never checked)"
+            logger.warning(
+                "Premium usage-tracking licence check failed; falling back to %s: %s",
+                fallback_desc,
+                exc,
+            )
+            return fallback
+
+        self._premium_cache = LicenseGateCacheEntry(enabled=enabled, checked_at=now)
+        return enabled
+
+    def _check_premium_entitlement(self) -> bool:
+        """Synchronous licence check -- call only via ``asyncio.to_thread`` from ``_has_premium``.
+
+        Callers must check ``self._license_client is not None`` first.
+        """
+        return bool(self._license_client.check_feature(_PREMIUM_TIER_FEATURE))
 
     # ------------------------------------------------------------------
     # Quota checks (organization-scoped)
