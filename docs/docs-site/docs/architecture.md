@@ -59,7 +59,7 @@ WaddleAI is a sophisticated LLM proxy server with intelligent routing, memory in
      │              │              │              │
      ▼              ▼              ▼              ▼
 ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐
-│ Redis   │  │ PostgreSQL│  │ ChromaDB │  │ LLM Providers│
+│ Redis   │  │ PostgreSQL│  │ pgvector │  │ LLM Providers│
 │ Cache   │  │ Database  │  │ (mem0)   │  │ ● OpenAI     │
 │         │  │           │  │          │  │ ● Anthropic  │
 │ Routing │  │ Users     │  │ Memory   │  │ ● Ollama     │
@@ -129,7 +129,7 @@ Analysis query → GPT-4
 Simple chat → Ollama (local, fast)
 ```
 
-### 4. Memory Integration (mem0 + ChromaDB)
+### 4. Memory Integration (mem0 + pgvector)
 
 **Purpose**: Context retention and conversation history
 
@@ -174,7 +174,7 @@ Simple chat → Ollama (local, fast)
    - Use routing LLM if needed
 7. **Provider Request** → Send to selected LLM
 8. **Response Processing** → Token counting, logging
-9. **Memory Storage** → Save to ChromaDB (if enabled)
+9. **Memory Storage** → Save to pgvector (if enabled)
 10. **Client Response** → Return to client
 
 ### Token Tracking Flow
@@ -211,7 +211,7 @@ WaddleAI's LLM proxy architecture introduces threat vectors beyond traditional w
 
 | Threat | Component at Risk | Status |
 |--------|------------------|--------|
-| **Indirect Prompt Injection** | mem0/ChromaDB memory injection | Requires hardening |
+| **Indirect Prompt Injection** | mem0/pgvector memory injection | Requires hardening |
 | **Semantic Cache Poisoning** | Redis routing cache | Requires hardening |
 | **Insecure Output Handling** | All LLM response paths | Requires output guardrail layer |
 
@@ -234,7 +234,7 @@ WaddleAI's LLM proxy architecture introduces threat vectors beyond traditional w
 docker-compose -f docker-compose.env.yml up
 ```
 
-**Includes**: All services, PostgreSQL, Redis, ChromaDB, Prometheus, Grafana
+**Includes**: All services, PostgreSQL, Redis, Prometheus, Grafana
 
 ### 2. Production (Kubernetes)
 
@@ -296,7 +296,7 @@ docker-compose -f docker-compose.env.yml up
 | **Management Portal** | py4web, Tailwind CSS, Alpine.js |
 | **Database** | PostgreSQL + PyDAL |
 | **Cache** | Redis |
-| **Memory** | ChromaDB + mem0 |
+| **Memory** | pgvector + mem0 |
 | **Acceleration** | XDP/eBPF, AF_XDP |
 | **Monitoring** | Prometheus, Grafana |
 | **Documentation** | MkDocs Material |

@@ -323,7 +323,7 @@ Enable conversation memory:
 }
 ```
 
-WaddleAI stores conversations in ChromaDB.
+WaddleAI stores conversations in pgvector.
 
 ### Security Scanning
 

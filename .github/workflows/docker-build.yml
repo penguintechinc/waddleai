@@ -257,7 +257,7 @@ jobs:
         # no longer defaults to html (moved to `make test-unit` for local
         # dev only) so generating both never holds a second copy of the
         # coverage data in memory while torch/transformers are resident.
-        python -m pytest tests/unit/ -q --cov-report=xml
+        scripts/check_collected_floor.sh python3 tests/unit/ -q --cov-report=xml
       env:
         PYTHONPATH: ${{ github.workspace }}
 
@@ -691,11 +691,37 @@ jobs:
       # read -ra does that explicitly into an array instead of relying on
       # unquoted expansion, so every use below can be quoted (shellcheck
       # SC2086) without breaking that split.
+      #
+      # Retry with backoff: observed on release/v0.2.X (runs 33210502668,
+      # 33210988359) that imagetools create intermittently fails with
+      # "httpReadSeeker: failed open: ... not found" on a blob that was
+      # just pushed by build-platform moments earlier in a different job --
+      # the failing arch flips between runs (amd64 in one, arm64 in the
+      # next), which rules out a real missing-image/tag-mismatch bug and
+      # points at GHCR read-after-write propagation lag between the
+      # build-platform push and this job's immediate copy. build-platform
+      # itself reports success and the arch tag exists moments later, so a
+      # bounded retry (not `|| true` -- this still fails the job hard if
+      # every attempt is exhausted) is the correct fix rather than
+      # papering over it or adding a `needs` that's already present.
       run: |
+        set -euo pipefail
         read -ra TAG_ARGS <<< "$STEPS_TAGS_OUTPUTS_TAGS"
-        docker buildx imagetools create "${TAG_ARGS[@]}" \
-          "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-amd64" \
-          "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-arm64"
+        max_attempts=5
+        delay=5
+        for attempt in $(seq 1 "$max_attempts"); do
+          if docker buildx imagetools create "${TAG_ARGS[@]}" \
+            "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-amd64" \
+            "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-arm64"; then
+            echo "imagetools create succeeded on attempt ${attempt}/${max_attempts}"
+            exit 0
+          fi
+          echo "::warning::imagetools create failed on attempt ${attempt}/${max_attempts} (likely GHCR blob-propagation race) -- retrying in ${delay}s"
+          sleep "$delay"
+          delay=$((delay * 2))
+        done
+        echo "::error::imagetools create failed after ${max_attempts} attempts"
+        exit 1
       env:
         REGISTRY_IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
         STEPS_TAGS_OUTPUTS_TAGS: ${{ steps.tags.outputs.tags }}
@@ -829,7 +855,15 @@ jobs:
         sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
 
   integration-test:
-    needs: merge-manifests
+    # Deliberately build-platform, not merge-manifests: this job's compose
+    # heredoc below pulls the per-arch ci-amd64-<sha> tags that build-platform
+    # pushes directly -- it never touches the multi-arch manifest that
+    # merge-manifests produces. needs: merge-manifests was a false
+    # dependency that let an unrelated manifest-merge failure (see the retry
+    # added on that job) skip this job on every recent release build, so
+    # integration-test had never actually run/validated on release despite
+    # the images it needs being ready.
+    needs: build-platform
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     continue-on-error: true

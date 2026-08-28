@@ -42,7 +42,9 @@ tiktoken>=0.5.2
 transformers>=5.5.0
 torch>=2.13.0
 # Memory and Vector Databases
-chromadb>=0.4.20
+# chromadb removed: PYSEC-2026-311, pre-auth code injection in its server
+# component with no fixed release. pgvector (shared/vectorstore/) and qdrant
+# already cover the same ground; see Makefile's pip-audit section.
 mem0ai>=0.1.0
 sentence-transformers>=2.2.2
 numpy>=1.24.0
@@ -53,6 +55,13 @@ qdrant-client>=1.7.0
 prometheus-client>=0.19.0
 structlog>=23.2.0
 psutil>=5.9.8
+# OpenTelemetry tracing (shared/observability/tracing.py -- gen_ai.* spans on
+# the proxy dispatch path). Previously undeclared: it arrived transitively
+# via chromadb, so dropping that dependency without this direct pin would
+# have silently broken proxy/apps/proxy_server/pipeline/stages.py's tracing.
+opentelemetry-api>=1.44.0
+opentelemetry-sdk>=1.44.0
+opentelemetry-exporter-otlp-proto-grpc>=1.44.0
 # Database and Storage
 psycopg2-binary>=2.9.9
 pgvector>=0.3.0
