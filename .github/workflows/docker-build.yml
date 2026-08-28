@@ -889,14 +889,40 @@ jobs:
         check http://localhost:8001/metrics
 
     - name: Test proxy health endpoint
+      # Bounded readiness wait, not a gate-weakening: a 4-worker hypercorn
+      # proxy takes measurably longer to accept connections than the
+      # single-process management server, so a single immediate curl (the
+      # previous behavior) raced the container's own startup. Retries up to
+      # 30x2s = 60s, succeeds on the first 200, and still fails the job hard
+      # on timeout -- with `docker compose ps`/`logs` dumped first so the
+      # next run shows *why* the proxy never came up instead of a bare
+      # `curl: (7) Connection refused`.
       run: |
-        curl -f http://localhost:8000/healthz || curl -f http://localhost:8000/health
+        set -uo pipefail
+        ready=""
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:8000/healthz -o /dev/null; then
+            echo "OK http://localhost:8000/healthz -> HTTP 200 (attempt $i/30)"
+            ready=1
+            break
+          fi
+          sleep 2
+        done
+        if [ -z "$ready" ]; then
+          echo "FAIL proxy /healthz never returned 200 after 30 attempts (60s)"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
+          exit 1
+        fi
 
     - name: Test OpenAI-compatible API endpoint
       run: |
+        set -uo pipefail
         response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/chat/completions)
         if [ "$response" != "401" ]; then
           echo "Expected 401 response, got $response"
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs --tail=100 proxy
           exit 1
         fi
 
