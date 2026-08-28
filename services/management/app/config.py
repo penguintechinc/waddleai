@@ -162,7 +162,16 @@ class TestingConfig(Config):
     # SQLAlchemy URL, raises ArgumentError). Also now honors DATABASE_URL env var
     # (e.g. set by the contract-snapshot harness) like the base Config does.
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///test_waddleai.db")
-    REDIS_URL = "redis://localhost:6379/1"
+    # Bug fix: this was a hardcoded "redis://localhost:6379/1" that silently
+    # ignored the REDIS_URL env var, unlike DATABASE_URL above (and unlike the
+    # base Config, which does honor it). In any FLASK_ENV=testing deployment
+    # where redis isn't reachable at localhost:6379 (e.g. a docker-compose
+    # harness where redis is a separate "redis" service), init_cache()'s
+    # connection attempt fails, _ext.redis_client stays None, and /readyz's
+    # `if _ext.redis_client:` guard silently reports checks["redis"]=False
+    # forever -- a permanent 503 with no schema/migration involvement at all
+    # (regression: gh-150).
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 
     # Testing: use deterministic defaults to bootstrap tests
     SECRET_KEY = os.getenv(

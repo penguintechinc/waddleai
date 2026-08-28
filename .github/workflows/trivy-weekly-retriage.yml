@@ -1,0 +1,264 @@
+name: Weekly Trivy Re-Triage (Ollama Fleet)
+
+# The ollama image Trivy gate in docker-build.yml (build-ollama-image) is a
+# recurring time-bomb: images/ollama/.trivyignore entries are calibrated
+# against Trivy's vuln DB on the day they're added and go stale as the DB
+# updates underneath them -- this exact thing broke the release build twice
+# in one week (entries calibrated 2026-08-22 were stale by 2026-08-27). This
+# workflow re-scans the same images on a schedule so a freshly-published CVE,
+# or a suppression entry past its documented review-by date, is caught by a
+# cron and files a GitHub issue -- not discovered by a blocked release merge.
+#
+# Deliberately REPORT-only, never a gate: the real blocking gate stays in
+# docker-build.yml's build-ollama-image job. Findings here open/update a
+# GitHub issue and the workflow run stays green. The workflow run only fails
+# when Trivy itself fails to produce a real scan (image pull error, DB fetch
+# error, zero images scanned) -- see the "scan" job below.
+#
+# Scans the PUBLISHED floating hardened/debug tags
+# (ghcr.io/penguintechinc/waddleai/ollama:hardened|debug) rather than
+# rebuilding them: build-ollama-image's build is multi-arch (QEMU-emulated
+# arm64) against a large ML base image, too heavy to repeat weekly just to
+# re-run a vulnerability scan. Re-scanning what's already shipped is exactly
+# the "early warning on the exact bits in beta" this workflow exists for.
+on:
+  schedule:
+    # Monday 06:00 UTC -- low-traffic window, ahead of codeql.yml's Monday
+    # 08:00 UTC weekly re-scan so the two don't contend for runners.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_OLLAMA: ${{ github.repository }}/ollama
+  # Pinned to the exact same action ref and CLI version as the blocking gate
+  # in docker-build.yml's build-ollama-image job -- this cron must scan with
+  # identical tooling to the gate it's an early warning for, or a "clean"
+  # result here would mean nothing.
+  TRIVY_ACTION_REF: ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+  TRIVY_CLI_VERSION: v0.69.3
+  TRIVYIGNORE_PATH: images/ollama/.trivyignore
+
+jobs:
+  # One leg per published tag. fail-fast: false so a real problem with one
+  # target (e.g. debug image pull failure) doesn't hide the other target's
+  # results -- both legs' outcomes are needed for the "scanned N images"
+  # denominator downstream.
+  scan:
+    name: Trivy scan (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [hardened, debug]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve published image ref
+        id: image
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          REPO: ${{ env.IMAGE_NAME_OLLAMA }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          echo "ref=${REGISTRY}/${REPO}:${TARGET}" >> "$GITHUB_OUTPUT"
+
+      # Real-error detector. exit-code 0 override means a finding never fails
+      # this step -- only a genuine Trivy execution failure (image not found,
+      # vuln DB fetch failure, malformed ignorefile) does. Per Verification
+      # Integrity, this is the gate that must be able to fail -- it is never
+      # wrapped in continue-on-error or `|| true`.
+      - name: Trivy JSON scan (report data; does not gate on findings)
+        id: trivy-json
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: 'json'
+          output: 'trivy-${{ matrix.target }}.json'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          trivyignores: ${{ env.TRIVYIGNORE_PATH }}
+          version: ${{ env.TRIVY_CLI_VERSION }}
+
+      # Same command/severity/ignorefile/exit-code as the blocking gate in
+      # docker-build.yml build-ollama-image, verbatim -- continue-on-error
+      # because this cron's job is to REPORT, never to gate (the real gate
+      # stays in docker-build.yml). Kept purely for a human-readable table
+      # log matching the gate exactly; findings are parsed from the JSON
+      # step above, not from this one.
+      - name: Trivy gate-replica scan (matches docker-build.yml exactly; non-blocking here)
+        id: trivy-gate-replica
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: 'table'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+          trivyignores: ${{ env.TRIVYIGNORE_PATH }}
+          version: ${{ env.TRIVY_CLI_VERSION }}
+
+      # Zero-items-examined is a failure, not a pass (Verification Integrity):
+      # a valid Trivy JSON report always carries ArtifactName even at 0
+      # vulnerabilities, so a missing/empty/malformed file means the scan
+      # never really ran (e.g. trivy-json silently produced nothing) and this
+      # leg must fail hard rather than report a silent "0 findings".
+      - name: Verify the scan actually produced a result
+        id: counts
+        env:
+          TARGET: ${{ matrix.target }}
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          FILE="trivy-${TARGET}.json"
+          if [ ! -s "$FILE" ]; then
+            echo "::error::$FILE is missing or empty -- Trivy did not produce a result for $TARGET (zero images scanned is a failure, not a pass)"
+            exit 1
+          fi
+          if ! jq -e '.ArtifactName' "$FILE" >/dev/null 2>&1; then
+            echo "::error::$FILE does not look like a valid Trivy report (missing ArtifactName) -- treating as a scan failure"
+            exit 1
+          fi
+          COUNT=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$FILE")
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Scanned $TARGET ($IMAGE_REF): $COUNT HIGH/CRITICAL finding(s) after $TRIVYIGNORE_PATH"
+
+      - name: Upload scan result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-${{ matrix.target }}
+          path: trivy-${{ matrix.target }}.json
+          retention-days: 14
+          if-no-files-found: error
+
+  # Gated on `needs: scan` succeeding (no `if: always()`): if either matrix
+  # leg above failed -- real Trivy error or zero-scanned -- this job never
+  # runs and the workflow run itself reports failure, satisfying "fail the
+  # cron job if Trivy itself errors or scans zero images". A clean run with
+  # findings still exits 0 here; findings are reported via issue, not by
+  # failing the job.
+  retriage-report:
+    name: Report findings and expiring suppressions
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download scan results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          pattern: trivy-*
+
+      - name: Check images/ollama/.trivyignore for expired review-by dates
+        id: review
+        run: |
+          set -euo pipefail
+          set +e
+          ./scripts/check-trivyignore-review-dates.sh "$TRIVYIGNORE_PATH" > review-dates.log
+          rc=$?
+          set -e
+          cat review-dates.log
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::check-trivyignore-review-dates.sh failed to run (usage/file error) -- treating as a scan failure, not a clean report"
+            exit 1
+          fi
+          # rc is 0 (nothing expired) or 2 (one or more expired) -- both are
+          # legitimate report outcomes, not job failures.
+          expired=$(grep -oP '^review-by-dates-expired=\K[0-9]+' review-dates.log)
+          echo "expired=$expired" >> "$GITHUB_OUTPUT"
+
+      - name: Build findings table and issue body
+        id: build
+        run: |
+          set -euo pipefail
+          TABLE="build/findings-table.md"
+          mkdir -p build
+          {
+            echo "| Image | CVE | Severity | Package | Installed | Fixed |"
+            echo "|---|---|---|---|---|---|"
+          } > "$TABLE"
+
+          total=0
+          for f in artifacts/trivy-*/trivy-*.json; do
+            target=$(basename "$(dirname "$f")" | sed 's/^trivy-//')
+            n=$(jq -r --arg t "$target" '
+              (.Results[]? // empty) as $r
+              | ($r.Vulnerabilities // [])[]
+              | [$t, .VulnerabilityID, .Severity, .PkgName, .InstalledVersion, (.FixedVersion // "none")]
+              | @tsv
+            ' "$f" | tee -a "build/findings.tsv" | wc -l)
+            total=$((total + n))
+          done
+
+          if [ -s "build/findings.tsv" ]; then
+            awk -F'\t' '{printf "| %s | %s | %s | %s | %s | %s |\n", $1,$2,$3,$4,$5,$6}' "build/findings.tsv" >> "$TABLE"
+          else
+            echo "| _none_ | | | | | |" >> "$TABLE"
+          fi
+
+          echo "total_findings=$total" >> "$GITHUB_OUTPUT"
+          echo "Findings across both targets: $total"
+
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TOTAL_FINDINGS: ${{ steps.build.outputs.total_findings }}
+          EXPIRED_COUNT: ${{ steps.review.outputs.expired }}
+        run: |
+          set -euo pipefail
+          TODAY=$(date -u +%Y-%m-%d)
+          MARKER="<!-- trivy-weekly-retriage-issue: images/ollama -->"
+
+          EXISTING=$(gh issue list --repo "$REPO" --state open --search "$MARKER in:body" --json number --jq '.[0].number // empty')
+
+          if [ "$TOTAL_FINDINGS" -eq 0 ] && [ "$EXPIRED_COUNT" -eq 0 ]; then
+            echo "Clean run: 0 new HIGH/CRITICAL findings, 0 expired review-by suppressions."
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$REPO" --body "Clean re-scan on $TODAY (run: $RUN_URL) -- 0 new HIGH/CRITICAL findings, 0 expired review-by suppressions. Closing."
+              gh issue close "$EXISTING" --repo "$REPO"
+            fi
+            exit 0
+          fi
+
+          TITLE="Trivy: $TOTAL_FINDINGS new/expiring findings on ollama (hardened+debug) ($TODAY)"
+
+          {
+            echo "$MARKER"
+            echo ""
+            echo "Weekly early-warning re-triage of the ollama fleet images -- report only, does not block anything. Run: $RUN_URL"
+            echo ""
+            echo "## New HIGH/CRITICAL findings (not covered by any current images/ollama/.trivyignore entry): $TOTAL_FINDINGS"
+            echo ""
+            cat build/findings-table.md
+            echo ""
+            echo "## Expired images/ollama/.trivyignore review-by suppressions: $EXPIRED_COUNT"
+            echo ""
+            echo '```'
+            cat review-dates.log
+            echo '```'
+            echo ""
+            echo "Next step: for each new finding, either patch/update the base or add a justified entry to \`images/ollama/.trivyignore\` with a \`Review by\` date. For each expired suppression, re-run \`trivy image --severity HIGH,CRITICAL ghcr.io/penguintechinc/waddleai/ollama:hardened\` (no --ignorefile) and refresh the entry's review-by date or drop it if the CVE has a fix now."
+          } > build/issue-body.md
+
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --repo "$REPO" --title "$TITLE" --body-file build/issue-body.md
+            gh issue comment "$EXISTING" --repo "$REPO" --body "Updated by re-scan on $TODAY (run: $RUN_URL)."
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body-file build/issue-body.md --label security --label component:ci
+          fi

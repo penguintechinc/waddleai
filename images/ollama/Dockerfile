@@ -50,12 +50,32 @@ FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3
 # own list because Ubuntu's full (non-slim) base ships them by default.
 # Versions pinned to the current trixie candidates for this exact base
 # digest (`apt-cache policy` against the pinned image above) per house rule.
+#
+# bsdutils..util-linux below are NOT new dependencies — they are already part
+# of debian:trixie-slim's base rootfs at 2.41-5, which carries CVE-2026-53612/
+# -53613/-53614 (util-linux TOCTOU/SUID mount(8) bypass, Trivy: HIGH, status
+# "fixed"). Unlike the CVEs in .trivyignore, a patched version
+# (2.41.5-0+deb13u1, "login" is 1:4.16.0-2+really2.41.5-0+deb13u1) is already
+# published on trixie-security (confirmed via `apt-cache policy` against this
+# exact base digest — trixie-security is enabled by default, no extra source
+# needed), so this pins an explicit upgrade at build time rather than
+# ignoring the finding. Package list matches exactly what Trivy reported
+# against the bare base image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates=20250419 \
         libvulkan1=1.4.309.0-1 \
         libopenblas0=0.3.29+ds-3 \
         libstdc++6=14.2.0-19 \
         libgomp1=14.2.0-19 \
+        bsdutils=1:2.41.5-0+deb13u1 \
+        libblkid1=2.41.5-0+deb13u1 \
+        liblastlog2-2=2.41.5-0+deb13u1 \
+        libmount1=2.41.5-0+deb13u1 \
+        libsmartcols1=2.41.5-0+deb13u1 \
+        libuuid1=2.41.5-0+deb13u1 \
+        login=1:4.16.0-2+really2.41.5-0+deb13u1 \
+        mount=2.41.5-0+deb13u1 \
+        util-linux=2.41.5-0+deb13u1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user, UID/GID 1000 (regular range, not --system — 1000 is above

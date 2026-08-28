@@ -459,6 +459,26 @@ support). So:
 {{- end }}
 
 {{/*
+This deployment's public hostname, resolved from whichever ingress
+mechanism is active. httproute.host wins when the Gateway API HTTPRoute
+path is enabled (beta/prod); otherwise the first ingress.hosts[].host
+when the classic Ingress path is enabled (alpha). Neither may be set for
+a bare `helm template`/dry run with both disabled, hence the possible
+empty result -- consumers only wire it in when non-empty (see `with`
+usage at each call site). Feeds WADDLEAI_PUBLIC_HOST (management, proxy
+Deployments), the sole input to penguin_licensing's domain-based licence
+bypass (shared/licensing/domain_bypass.py) -- never invented
+independently of the host this chart already routes external traffic to.
+*/}}
+{{- define "waddleai.publicHost" -}}
+{{- if .Values.httproute.host -}}
+{{- .Values.httproute.host -}}
+{{- else if and .Values.ingress.enabled .Values.ingress.hosts -}}
+{{- (first .Values.ingress.hosts).host -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Shared DATABASE_URL secretKeyRef snippet — used by both the management
 Deployment (via management.secretEnv, rendered generically below) and the
 Alembic migration Job (templates/migration-job.yaml), so the Job reads the
