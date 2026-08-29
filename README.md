@@ -25,13 +25,24 @@ It does not replace your models. It sits in front of them.
  ╚══╝╚══╝ ╚═╝  ╚═╝╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝
 ```
 
-**The problem it solves**: once more than one person is using AI, you have a fleet —
-several providers, several models, several teams, and no single place to say who may use
-what, what may leave the building, or what it costs. WaddleAI is that place.
+## Why WaddleAI
+
+Once more than one person is using AI, you have a fleet — several providers, several
+models, several teams, and no single place to say who may use what, what may leave the
+building, or what it costs. WaddleAI is that place: one control plane that manages access,
+enforces security, and cuts cost across every provider you use, commercial or self-hosted.
+
+- **Cross-cloud control** — one endpoint in front of every provider; move a workload
+  between a commercial API and your own GPUs without the calling application noticing.
+- **Platform-owned security** — PII redaction, prompt-injection scanning, and audit
+  logging run in the proxy itself, identically across every provider, including what
+  leaves your building.
+- **Efficiency without degrading the harness** — caching, JIT RAG, and lazy MCP loading
+  cut cost without Claude Code, Cursor, or any calling app ever noticing a difference.
 
 ---
 
-## 🎯 What WaddleAI Is For
+## What WaddleAI Does
 
 Three goals. Everything in this repo serves one of them.
 
