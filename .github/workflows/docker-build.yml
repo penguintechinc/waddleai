@@ -589,6 +589,21 @@ jobs:
           type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
           type=sha,prefix=ci-${{ steps.arch.outputs.suffix }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
 
+    # provenance/sbom explicitly disabled -- root cause of the release-branch
+    # "manifest unknown" (integration-test pull) / "content ... not found"
+    # (merge-manifests imagetools create) failures: build-push-action v7's
+    # default provenance=true makes buildx attach a second "unknown/unknown"
+    # attestation manifest to the pushed index (docker/build-push-action#851,
+    # #764, #900; docker/buildx community discussion #45969). imagetools
+    # create then tries to copy that attestation manifest's blobs too, and a
+    # plain `docker pull`/`compose pull` of the tag can likewise resolve to
+    # the broken index -- both match exactly what CI showed: build-platform
+    # (proxy) reports success, but the very next pull/merge 404s on a blob,
+    # a different digest missing each retry (not simple read-after-write
+    # lag, which converges on the *same* digest). The proxy image is the
+    # one that surfaces it (multi-GB torch+spaCy layers stress the extra
+    # attestation write most), but the bug applies to every service pushed
+    # through this step, so it's disabled here for all of them.
     - name: Build and push Docker image for ${{ matrix.platform }}
       uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
       with:
@@ -596,6 +611,8 @@ jobs:
         file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
         platforms: ${{ matrix.platform }}
         push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
+        provenance: false
+        sbom: false
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha,scope=${{ matrix.service }}-${{ steps.arch.outputs.suffix }}
@@ -782,6 +799,8 @@ jobs:
           type=raw,value=${{ matrix.target }}-v${{ needs.determine-tier.outputs.semver }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
           type=sha,prefix=ci-${{ matrix.target }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
 
+    # provenance/sbom disabled for the same reason as build-platform above --
+    # same build-push-action version, same attestation-manifest bug class.
     - name: Build and push ${{ matrix.target }} (multi-arch)
       id: build
       uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
@@ -791,6 +810,8 @@ jobs:
         target: ${{ matrix.target }}
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
+        provenance: false
+        sbom: false
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha,scope=ollama-${{ matrix.target }}
@@ -940,8 +961,31 @@ jobs:
               retries: 10
         EOF
 
+    # Pull separated from `up` with a bounded retry/backoff, mirroring
+    # merge-manifests' imagetools retry (same file, same GHCR-availability
+    # failure class -- see the provenance/sbom note on the build-platform
+    # push step above, which is the actual root cause). This is
+    # defense-in-depth for any remaining transient registry lag, not a
+    # substitute for that fix -- still fails the job hard (no `|| true`)
+    # once attempts are exhausted.
     - name: Start services
       run: |
+        set -euo pipefail
+        max_attempts=5
+        delay=5
+        for attempt in $(seq 1 "$max_attempts"); do
+          if docker compose -f docker-compose.test.yml pull; then
+            echo "docker compose pull succeeded on attempt ${attempt}/${max_attempts}"
+            break
+          fi
+          if [ "$attempt" -eq "$max_attempts" ]; then
+            echo "::error::docker compose pull failed after ${max_attempts} attempts"
+            exit 1
+          fi
+          echo "::warning::docker compose pull failed on attempt ${attempt}/${max_attempts} -- retrying in ${delay}s"
+          sleep "$delay"
+          delay=$((delay * 2))
+        done
         docker compose -f docker-compose.test.yml up -d
         sleep 45
 

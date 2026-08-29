@@ -30,8 +30,8 @@ jobs:
             echo "should_release=false" >> "$GITHUB_OUTPUT"
           else
             VERSION=$(tr -d '[:space:]' < .version)
-            # Extract semantic version (strip build timestamp if present)
-            SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3)
+            # Extract semantic version (strip build timestamp if present, strip leading v)
+            SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
             echo "version=$SEMVER" >> "$GITHUB_OUTPUT"
             echo "full_version=$VERSION" >> "$GITHUB_OUTPUT"
 
