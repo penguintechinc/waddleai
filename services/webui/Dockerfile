@@ -23,6 +23,17 @@ RUN npm run build
 # Production stage
 FROM nginx:stable-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609
 
+# Upgrade base-image packages carrying fixed HIGH/CRITICAL CVEs not yet baked
+# into this digest's build (confirmed via `trivy image` against the built
+# image). Bounded to this digest's already-configured bookworm/bookworm-
+# security suite (no new packages, no suite change) -- not a version string
+# pin because trivy's advisory-DB "fixed version" strings lag the live apt
+# archive (observed mismatch: trivy reported libssl3/openssl fixed at
+# 3.0.19-1~deb12u2, the archive's actual candidate was already 3.0.20-1~deb12u2),
+# so hardcoding trivy's version string is brittle -- `upgrade` always resolves
+# to the current in-suite candidate for the packages already installed.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 

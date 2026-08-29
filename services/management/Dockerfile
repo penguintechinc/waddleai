@@ -2,7 +2,7 @@
 # Flask + Flask-Security-Too based management platform
 # Multi-stage build for minimal image size
 
-FROM python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb AS builder
+FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir "pip==26.2.1" && \
 
 
 # Final stage
-FROM python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

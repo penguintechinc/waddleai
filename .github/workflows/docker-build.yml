@@ -223,12 +223,12 @@ jobs:
         fi
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: ${{ matrix.python-version }}
 
     - name: Cache pip dependencies
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -339,7 +339,7 @@ jobs:
         persist-credentials: false
 
     - name: Set up Python 3.13
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: '3.13'
 
@@ -395,12 +395,12 @@ jobs:
         persist-credentials: false
 
     - name: Set up Python 3.13
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: '3.13'
 
     - name: Cache pip dependencies
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -442,12 +442,12 @@ jobs:
         persist-credentials: false
 
     - name: Set up Python 3.13
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: '3.13'
 
     - name: Cache pip dependencies
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -487,12 +487,12 @@ jobs:
         persist-credentials: false
 
     - name: Set up Python 3.13
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: '3.13'
 
     - name: Cache pip dependencies
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -556,7 +556,7 @@ jobs:
         persist-credentials: false
 
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
+      uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -605,7 +605,7 @@ jobs:
     # attestation write most), but the bug applies to every service pushed
     # through this step, so it's disabled here for all of them.
     - name: Build and push Docker image for ${{ matrix.platform }}
-      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
       with:
         context: ${{ matrix.context || '.' }}
         file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
@@ -770,7 +770,7 @@ jobs:
         persist-credentials: false
 
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
+      uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -803,7 +803,7 @@ jobs:
     # same build-push-action version, same attestation-manifest bug class.
     - name: Build and push ${{ matrix.target }} (multi-arch)
       id: build
-      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
       with:
         context: ./images/ollama
         file: ./images/ollama/Dockerfile
@@ -846,7 +846,7 @@ jobs:
 
     - name: Upload Trivy scan results to GitHub Security tab
       if: always() && github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
-      uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
+      uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
       with:
         sarif_file: 'trivy-results-ollama-${{ matrix.target }}.sarif'
 
@@ -870,7 +870,7 @@ jobs:
         version: 'v0.69.3'
 
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
+      uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
       if: github.event_name != 'pull_request'
       with:
         sarif_file: 'trivy-results-${{ matrix.service }}.sarif'

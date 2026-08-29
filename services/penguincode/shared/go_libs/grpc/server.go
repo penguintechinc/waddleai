@@ -2,8 +2,8 @@
 package grpc
 
 import (
-	"context"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -87,9 +88,20 @@ func NewServer(
 		opt(opts)
 	}
 
+	// MaxConcurrentRPCs is a user-supplied int; grpc.MaxConcurrentStreams
+	// takes a uint32, so clamp out-of-range values instead of letting a
+	// negative or >MaxUint32 input wrap silently on conversion.
+	maxConcurrentStreams := uint32(0)
+	switch {
+	case opts.MaxConcurrentRPCs > math.MaxUint32:
+		maxConcurrentStreams = math.MaxUint32
+	case opts.MaxConcurrentRPCs > 0:
+		maxConcurrentStreams = uint32(opts.MaxConcurrentRPCs)
+	}
+
 	// Build server options
 	serverOpts := []grpc.ServerOption{
-		grpc.MaxConcurrentStreams(uint32(opts.MaxConcurrentRPCs)),
+		grpc.MaxConcurrentStreams(maxConcurrentStreams),
 		grpc.ConnectionTimeout(opts.MaxConnectionIdle),
 		grpc.KeepaliveParams(keepaliveServerParams(opts)),
 	}
@@ -176,8 +188,8 @@ func StartServerWithGracefulShutdown(server *grpc.Server, opts *ServerOptions) e
 }
 
 // keepaliveServerParams returns keepalive parameters for the server.
-func keepaliveServerParams(opts *ServerOptions) grpc.KeepaliveParams {
-	return grpc.KeepaliveParams{
+func keepaliveServerParams(opts *ServerOptions) keepalive.ServerParameters {
+	return keepalive.ServerParameters{
 		Time:    opts.KeepaliveTime,
 		Timeout: opts.KeepaliveTimeout,
 	}
