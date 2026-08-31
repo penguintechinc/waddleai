@@ -144,7 +144,14 @@ def test_downgrade_drops_model_access_policies_table(scratch_db) -> None:
 
 
 def test_alembic_chain_still_single_head_after_018() -> None:
-    """Adding 018 keeps a single resolvable head, no divergent branches."""
+    """Adding 018 keeps a single resolvable head, no divergent branches.
+
+    Does not pin the exact head revision id -- later migrations (e.g. 019)
+    chain off 018 and become the new head; that specific-head assertion
+    lives in the newest migration's own test file
+    (``test_migration_019.py::test_alembic_chain_still_single_head_after_019``).
+    This test only guards against 018 having introduced a branch.
+    """
     from alembic.script import ScriptDirectory
 
     cfg = _alembic_config("sqlite://")
@@ -152,4 +159,3 @@ def test_alembic_chain_still_single_head_after_018() -> None:
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "018_model_access_policies"
