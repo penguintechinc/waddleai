@@ -86,10 +86,12 @@ class _StubCodeSearchBackend:
     def __init__(self, chunks: list[CodeChunkRecord]) -> None:
         self.chunks = {c.id: c for c in chunks}
 
-    async def vector_search(self, query_embedding: list[float], top_k: int) -> list[str]:
+    async def vector_search(
+        self, query_embedding: list[float], scope: ScopeKey, top_k: int
+    ) -> list[str]:
         return list(self.chunks.keys())[:top_k]
 
-    async def fts_search(self, query_text: str, top_k: int) -> list[str]:
+    async def fts_search(self, query_text: str, scope: ScopeKey, top_k: int) -> list[str]:
         matches = [c.id for c in self.chunks.values() if query_text.lower() in c.content.lower()]
         return matches[:top_k] or list(self.chunks.keys())[:top_k]
 
@@ -99,7 +101,9 @@ class _StubCodeSearchBackend:
                 return chunk
         return None
 
-    async def fetch_records(self, chunk_ids: list[str]) -> dict[str, CodeChunkRecord]:
+    async def fetch_records(
+        self, chunk_ids: list[str], scope: ScopeKey
+    ) -> dict[str, CodeChunkRecord]:
         return {cid: self.chunks[cid] for cid in chunk_ids if cid in self.chunks}
 
 

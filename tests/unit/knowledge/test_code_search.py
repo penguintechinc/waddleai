@@ -65,7 +65,9 @@ class _StubBackend:
         self.fts_search = AsyncMock(return_value=fts_ranked)
         self.symbol_exact = AsyncMock(return_value=exact)
 
-    async def fetch_records(self, chunk_ids: list[str]) -> dict[str, CodeChunkRecord]:
+    async def fetch_records(
+        self, chunk_ids: list[str], scope: ScopeKey
+    ) -> dict[str, CodeChunkRecord]:
         return {cid: self.records[cid] for cid in chunk_ids if cid in self.records}
 
 
@@ -197,6 +199,60 @@ class TestOrgIsolation:
         results = await search_code("query", caller, backend, embed_db=None)
 
         assert {r.chunk_id for r in results} == {"a-chunk"}
+
+
+class TestRepoIsolation:
+    """(f) Repo isolation (security): repo-1's caller never receives repo-2's chunks, same org."""
+
+    @pytest.mark.asyncio
+    async def test_other_repo_chunk_excluded_even_if_top_ranked(self) -> None:
+        """A semantically-closer chunk from a different repo in the same org is dropped."""
+        own_repo_chunk = _chunk(id="own", repo="repo-1", content="repo 1 code")
+        other_repo_chunk = _chunk(id="other", repo="repo-2", content="repo 2 code")
+        backend = _StubBackend(
+            vector_ranked=["other", "own"],  # other-repo chunk ranks HIGHER
+            fts_ranked=["other", "own"],
+            records={"own": own_repo_chunk, "other": other_repo_chunk},
+        )
+        caller = ScopeKey(org="org-a", repo="repo-1", branch="main")
+
+        results = await search_code("code", caller, backend, embed_db=None)
+
+        chunk_ids = {r.chunk_id for r in results}
+        assert chunk_ids == {"own"}
+
+
+class TestBackendReceivesCallerScope:
+    """(g) The orchestration threads the caller's scope into every backend call.
+
+    A real SQL backend can only push org/repo/branch into its WHERE clause if
+    search_code() actually hands it the scope -- this proves the plumbing,
+    independent of any specific backend implementation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fetch_records_receives_the_caller_scope(self) -> None:
+        """fetch_records is called with (chunk_ids, caller) -- not chunk_ids alone."""
+        chunk = _chunk(id="a", symbol="alpha")
+        backend = _StubBackend(
+            vector_ranked=["a"],
+            fts_ranked=["a"],
+            records={"a": chunk},
+        )
+        caller = ScopeKey(org="org-a", repo="repo-1", branch="main")
+
+        received_scopes: list[object] = []
+        original_fetch_records = backend.fetch_records
+
+        async def _spy_fetch_records(chunk_ids, scope):
+            received_scopes.append(scope)
+            return await original_fetch_records(chunk_ids, scope)
+
+        backend.fetch_records = _spy_fetch_records
+
+        await search_code("query", caller, backend, embed_db=None)
+
+        assert received_scopes == [caller]
 
 
 class TestActiveStatusOnly:
