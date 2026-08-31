@@ -231,8 +231,14 @@ class TestBackendReceivesCallerScope:
     """
 
     @pytest.mark.asyncio
-    async def test_fetch_records_receives_the_caller_scope(self) -> None:
-        """fetch_records is called with (chunk_ids, caller) -- not chunk_ids alone."""
+    async def test_every_backend_call_receives_the_caller_scope(self) -> None:
+        """vector_search, fts_search, and fetch_records each receive (..., caller, ...).
+
+        vector_search/fts_search are AsyncMock (set up by _StubBackend), so their
+        received args are asserted via call_args directly; fetch_records is a plain
+        async method, so it's spied the same way it was before this test grew to
+        cover all three calls.
+        """
         chunk = _chunk(id="a", symbol="alpha")
         backend = _StubBackend(
             vector_ranked=["a"],
@@ -253,6 +259,8 @@ class TestBackendReceivesCallerScope:
         await search_code("query", caller, backend, embed_db=None)
 
         assert received_scopes == [caller]
+        assert backend.vector_search.call_args.args[1] == caller
+        assert backend.fts_search.call_args.args[1] == caller
 
 
 class TestActiveStatusOnly:
