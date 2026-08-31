@@ -61,7 +61,7 @@ redis>=5.0.0
 pydantic>=2.5.0
 python-multipart>=0.0.31
 python-dotenv>=1.0.0
-click>=8.3.3
+click>=8.5.0
 # HTTP Requests
 requests>=2.31.0
 httpx>=0.26.0
