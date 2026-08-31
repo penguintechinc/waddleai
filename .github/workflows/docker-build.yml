@@ -799,7 +799,7 @@ jobs:
 
     - name: Upload Trivy scan results to GitHub Security tab
       if: always() && github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
-      uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
+      uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4
       with:
         sarif_file: 'trivy-results-ollama-${{ matrix.target }}.sarif'
 
@@ -823,7 +823,7 @@ jobs:
         version: 'v0.69.3'
 
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4
+      uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4
       if: github.event_name != 'pull_request'
       with:
         sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
