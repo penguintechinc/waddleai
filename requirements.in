@@ -43,7 +43,7 @@ transformers>=5.5.0
 torch>=2.13.0
 # Memory and Vector Databases
 chromadb>=0.4.20
-mem0ai>=0.1.0
+mem0ai>=2.0.19
 sentence-transformers>=2.2.2
 numpy>=1.24.0
 # RAG Vector Stores
