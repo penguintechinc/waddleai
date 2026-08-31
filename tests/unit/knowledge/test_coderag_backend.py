@@ -16,8 +16,13 @@ from typing import Any
 
 import pytest
 
-from shared.knowledge.coderag_backend import PgCodeSearchBackend
-from shared.knowledge.scoping import ScopeKey, TrustTier
+from shared.knowledge.code_search import SearchResult
+from shared.knowledge.coderag_backend import (
+    CodeKnowledgeSourceAdapter,
+    PgCodeSearchBackend,
+    build_code_knowledge_sources,
+)
+from shared.knowledge.scoping import ScopedRecord, ScopeKey, ScopeType, TrustTier
 
 
 class FakeDB:
@@ -226,3 +231,52 @@ async def test_fetch_records_empty_ids_never_queries() -> None:
 
     assert records == {}
     assert db.calls == []
+
+
+def _search_result(record_id: str) -> SearchResult:
+    """Build a minimal SearchResult wrapping a repo-scoped ScopedRecord."""
+    record = ScopedRecord(
+        id=record_id,
+        content="def handler(): ...",
+        scope_type=ScopeType.REPO,
+        scope_ref="waddleai",
+        trust_tier=TrustTier.DERIVED,
+        author_user_id=None,
+        org="7",
+        repo="waddleai",
+        branch="main",
+    )
+    return SearchResult(
+        chunk_id=record_id,
+        path="handler.py",
+        symbol="handler",
+        kind="function",
+        content="def handler(): ...",
+        score=0.9,
+        record=record,
+    )
+
+
+@pytest.mark.asyncio
+async def test_code_knowledge_source_adapter_delegates_to_search_code(monkeypatch) -> None:
+    """CodeKnowledgeSourceAdapter.search() returns the underlying records, unwrapped."""
+    adapter = CodeKnowledgeSourceAdapter(db=FakeDB())
+
+    async def _fake_search_code(query, caller, backend, top_k, *, embed_db=None):
+        return [_search_result("chunk-1")]
+
+    monkeypatch.setattr("shared.knowledge.coderag_backend.retriever_search_code", _fake_search_code)
+
+    caller = ScopeKey(org="7", repo="waddleai", branch="main")
+    records = await adapter.search("handler", caller, top_k=5)
+
+    assert len(records) == 1
+    assert records[0].id == "chunk-1"
+
+
+def test_build_code_knowledge_sources_returns_code_key_only() -> None:
+    """build_code_knowledge_sources() wires only 'code' -- docs/uploaded/memory land separately."""
+    sources = build_code_knowledge_sources(FakeDB())
+
+    assert set(sources) == {"code"}
+    assert isinstance(sources["code"], CodeKnowledgeSourceAdapter)

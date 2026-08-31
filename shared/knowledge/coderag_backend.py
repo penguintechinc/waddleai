@@ -16,10 +16,13 @@ already proven in shared/utils/memory_integration.py::PgvectorMemoryStore.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import Any
 
 from shared.knowledge.code_search import CodeChunkRecord
-from shared.knowledge.scoping import ScopeKey, ScopeType, TrustTier
+from shared.knowledge.retriever import KnowledgeSourceBackend
+from shared.knowledge.retriever import search_code as retriever_search_code
+from shared.knowledge.scoping import ScopedRecord, ScopeKey, ScopeType, TrustTier
 
 _RECORD_COLUMNS = (
     "c.id, c.path, c.symbol, c.kind, c.content, c.branch_ref, "
@@ -182,4 +185,36 @@ class PgCodeSearchBackend:
         return {str(row[0]): _row_to_record(row) for row in rows}
 
 
-__all__ = ["PgCodeSearchBackend"]
+@dataclass(slots=True)
+class CodeKnowledgeSourceAdapter:
+    """Adapts PgCodeSearchBackend to KnowledgeSourceBackend for KnowledgeRetriever's "code" source.
+
+    Used by the proxy's KnowledgeInjectStage (auto-inject path for plain,
+    non-MCP-capable clients) -- the MCP pull-path tools use
+    shared.mcp.knowledge_adapter.CodeRagKnowledgeService instead, which
+    wraps the same PgCodeSearchBackend for the KnowledgeService Protocol.
+    """
+
+    db: object
+    backend: PgCodeSearchBackend = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Bind the underlying PgCodeSearchBackend to this adapter's db handle."""
+        self.backend = PgCodeSearchBackend(self.db)
+
+    async def search(self, query: str, caller: ScopeKey, top_k: int) -> list[ScopedRecord]:
+        """Hybrid CodeRAG search, unwrapped to the ScopedRecord list KnowledgeRetriever expects."""
+        results = await retriever_search_code(query, caller, self.backend, top_k, embed_db=self.db)
+        return [r.record for r in results]
+
+
+def build_code_knowledge_sources(db: object) -> dict[str, KnowledgeSourceBackend]:
+    """Real KnowledgeRetriever.sources wiring for CodeRAG (§9.1) -- replaces sources={}."""
+    return {"code": CodeKnowledgeSourceAdapter(db)}
+
+
+__all__ = [
+    "PgCodeSearchBackend",
+    "CodeKnowledgeSourceAdapter",
+    "build_code_knowledge_sources",
+]
