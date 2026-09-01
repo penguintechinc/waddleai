@@ -881,6 +881,145 @@ paths:
         '200': *id001
       summary: Report Cilium CRD capabilities + the most recent reconcile outcome
         (admin only).
+  /api/v1/code-repos:
+    get:
+      description: ''
+      operationId: get_list_code_repos
+      parameters: []
+      responses:
+        '200': *id001
+      summary: List CodeRAG-registered repos for the caller's org.
+    post:
+      description: ''
+      operationId: post_create_code_repo
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Register a repo for CodeRAG indexing; returns its one-time webhook_secret.
+  /api/v1/code-repos/reindex-all:
+    post:
+      description: '
+
+        Deliberately does NOT call ``CodeRagWorker.run_scheduled()`` -- that
+
+        method sweeps every org''s ``code_repos`` with no org filter (it is the
+
+        genuine system/cron-authed entrypoint, invoked outside the HTTP API),
+
+        so calling it from a per-org ``CODE_REPO_WRITE``-scoped route would let
+
+        any org''s resource_manager trigger a cross-tenant re-index of every
+
+        other org''s repos. This route instead fetches only the caller''s org''s
+
+        repo ids (from the validated JWT, same IDOR pattern as every other
+
+        route in this module) and calls ``CodeRagWorker.index()`` once per id.'
+      operationId: post_reindex_all_code_repos
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Re-index every non-disabled repo in the caller's org -- org-scoped,
+        never another org's.
+  /api/v1/code-repos/{repo_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_code_repo
+      parameters:
+      - in: path
+        name: repo_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: 'Delete a repo registration, org-scoped (IDOR-safe: 404 outside the
+        caller''s org).'
+    get:
+      description: ''
+      operationId: get_get_code_repo
+      parameters:
+      - in: path
+        name: repo_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: 'Fetch a single repo, org-scoped (IDOR-safe: 404 outside the caller''s
+        org).'
+  /api/v1/code-repos/{repo_id}/reindex:
+    post:
+      description: '
+
+        The org-ownership check happens here, before ``CodeRagWorker`` is ever
+
+        constructed -- ``CodeRagWorker.index()`` looks a repo up by id alone
+
+        with no org filter (it also serves the cron/webhook triggers, which
+
+        have no caller org to check), so this route is the IDOR guard for the
+
+        manual-trigger path: a repo id outside the caller''s org must never
+
+        reach the worker at all.'
+      operationId: post_reindex_code_repo
+      parameters:
+      - in: path
+        name: repo_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Manually trigger (re)indexing for one repo, org-scoped.
+  /api/v1/code-repos/{repo_id}/webhook:
+    post:
+      description: '
+
+        Per-repo path -- deliberately NOT resolved by ``source_url`` -- because
+
+        ``source_url`` is not unique across orgs (only ``(org_id, name)`` is).
+
+        A ``source_url``-based ``.first()`` lookup would silently match an
+
+        arbitrary org''s registration whenever two tenants register the same
+
+        clone URL: it would verify against the wrong org''s secret and leave
+
+        every *other* org sharing that URL with a permanently, silently dead
+
+        push-triggered reindex (a 401 with no indication why). Identifying the
+
+        repo by path param removes the ambiguity entirely -- each org''s push
+
+        provider is configured with that org''s own webhook URL.
+
+
+        Deliberately not behind ``require_auth``/``require_scope`` -- external
+
+        Git hosts cannot carry a WaddleAI JWT. Every failure path (malformed
+
+        body, unknown repo, missing secret, undecryptable secret, bad
+
+        signature) rejects; there is no path that reaches ``worker.index()``
+
+        without a verified signature. The flag check happens AFTER signature
+
+        verification so an unauthenticated caller can''t use this endpoint to
+
+        probe an org''s flag state.'
+      operationId: post_code_repo_webhook
+      parameters:
+      - in: path
+        name: repo_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: 'GitHub/Gitea push webhook for one specific repo: HMAC-verified, then
+        re-index.'
   /api/v1/docs:
     get:
       description: ''

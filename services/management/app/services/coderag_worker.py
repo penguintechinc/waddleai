@@ -149,18 +149,6 @@ class CodeRagWorker:
             files_deleted=deleted,
         )
 
-    def handle_webhook(self, payload: dict) -> tuple[int, str] | None:
-        """Resolve a push-webhook payload (GitHub/Gitea shape) to ``(repo_id, branch)``."""
-        clone_url = (payload.get("repository") or {}).get("clone_url")
-        ref = payload.get("ref", "")
-        branch = ref.rsplit("/", 1)[-1] if ref else None
-        if not clone_url:
-            return None
-        repo_row = self._fetch_repo_by_source_url(clone_url)
-        if repo_row is None:
-            return None
-        return repo_row["id"], branch or "main"
-
     async def run_scheduled(self) -> list[IndexResult]:
         """Supercronic entrypoint: re-index every non-disabled registered repo."""
         repo_ids = await asyncio.to_thread(self._fetch_all_repo_ids)
@@ -170,12 +158,6 @@ class CodeRagWorker:
 
     def _fetch_repo(self, repo_id: int) -> dict | None:
         row = self.db(self.db.code_repos.id == repo_id).select().first()
-        if row is None:
-            return None
-        return {"id": row.id, "org_id": row.org_id, "source_url": row.source_url}
-
-    def _fetch_repo_by_source_url(self, source_url: str) -> dict | None:
-        row = self.db(self.db.code_repos.source_url == source_url).select().first()
         if row is None:
             return None
         return {"id": row.id, "org_id": row.org_id, "source_url": row.source_url}

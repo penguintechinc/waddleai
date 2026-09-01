@@ -69,6 +69,7 @@ _B_TIER_SCOPES = {
     Permission.HOOK_RULE_ADMIN.value,
     Permission.HOOK_METRICS_READ.value,
     Permission.KNOWLEDGE_WRITE.value,
+    Permission.CODE_REPO_WRITE.value,
     Permission.MODEL_ALIAS_WRITE.value,
     Permission.QUOTA_LIST.value,
     Permission.QUOTA_UPDATE.value,
@@ -107,12 +108,15 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.MODEL_ACCESS_POLICY_DELETE.value,
 }
 
-_EXPECTED_ROUTE_COUNT = 113  # audited require_role call sites, both migration waves,
+_EXPECTED_ROUTE_COUNT = 117  # audited require_role call sites, both migration waves,
 #   +3 net-new (not a require_role migration):
 #   94 from the original OIDC migration, +16 from branches cut before it landed
 #   (6 fleet, 9 hook_rules, 1 hook_metrics), +3 from the model-access-policy
 #   CRUD blueprint (POST/PUT -> MODEL_ACCESS_POLICY_WRITE, DELETE ->
-#   MODEL_ACCESS_POLICY_DELETE; GET/GET-by-id are require_auth only).
+#   MODEL_ACCESS_POLICY_DELETE; GET/GET-by-id are require_auth only),
+#   +4 from §9.1 code_repos.py (POST /code-repos, DELETE /code-repos/<id>,
+#   POST .../reindex, POST .../reindex-all -> CODE_REPO_WRITE; GET routes
+#   and the HMAC-verified webhook route are unscoped, matching knowledge.py).
 
 
 def _concrete_path(rule_str: str) -> str:

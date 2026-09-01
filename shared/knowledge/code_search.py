@@ -49,23 +49,30 @@ class CodeSearchBackend(Protocol):
     """The DB-facing seam ``search_code`` calls through.
 
     Swap for a real pgvector+FTS implementation in production, a stub in
-    tests.
+    tests. Every method takes the caller's ``ScopeKey`` so a real
+    implementation can push org/repo/branch scoping into its SQL WHERE
+    clause -- ``scoping.filter_visible`` in ``search_code()`` below is
+    defense-in-depth, never the sole isolation boundary.
     """
 
-    async def vector_search(self, query_embedding: list[float], top_k: int) -> list[str]:
-        """Return chunk_ids ranked by cosine similarity, best first."""
+    async def vector_search(
+        self, query_embedding: list[float], scope: ScopeKey, top_k: int
+    ) -> list[str]:
+        """Return chunk_ids ranked by cosine similarity, best first, scoped to ``scope``."""
         ...
 
-    async def fts_search(self, query_text: str, top_k: int) -> list[str]:
-        """Return chunk_ids ranked by Postgres ``ts_rank``, best first."""
+    async def fts_search(self, query_text: str, scope: ScopeKey, top_k: int) -> list[str]:
+        """Return chunk_ids ranked by Postgres ``ts_rank``, best first, scoped to ``scope``."""
         ...
 
     async def symbol_exact(self, query_text: str, scope: ScopeKey) -> CodeChunkRecord | None:
-        """Return a record whose symbol exactly matches ``query_text``, if any."""
+        """Return a record whose symbol exactly matches ``query_text``, scoped to ``scope``."""
         ...
 
-    async def fetch_records(self, chunk_ids: list[str]) -> dict[str, CodeChunkRecord]:
-        """Resolve chunk_ids to their full CodeChunkRecord (content, scope, status)."""
+    async def fetch_records(
+        self, chunk_ids: list[str], scope: ScopeKey
+    ) -> dict[str, CodeChunkRecord]:
+        """Resolve chunk_ids to their full CodeChunkRecord, scoped to ``scope``."""
         ...
 
 
@@ -109,13 +116,13 @@ async def search_code(
     exact = await backend.symbol_exact(query, caller)
 
     query_embedding = await embed_cached(query, db=embed_db)
-    vector_ranked = await backend.vector_search(query_embedding, top_k=top_k * 2)
-    fts_ranked = await backend.fts_search(query, top_k=top_k * 2)
+    vector_ranked = await backend.vector_search(query_embedding, caller, top_k=top_k * 2)
+    fts_ranked = await backend.fts_search(query, caller, top_k=top_k * 2)
 
     fused_scores = reciprocal_rank_fusion([vector_ranked, fts_ranked])
     candidate_ids = [cid for cid in fused_scores if not exact or cid != exact.id]
 
-    records = await backend.fetch_records(candidate_ids)
+    records = await backend.fetch_records(candidate_ids, caller)
 
     results: list[SearchResult] = []
     if exact is not None:

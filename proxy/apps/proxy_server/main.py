@@ -61,7 +61,7 @@ from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
 
 from .grpc_server import ServerComponents, run_grpc_in_thread
-from .mcp_mount import MCPMount
+from .mcp_mount import MCPMount, McpServiceFactory
 from .mem0_api import mem0_bp, set_memory_manager
 from .pipeline import (
     AuthStage,
@@ -810,18 +810,19 @@ class ProxyServer:
         dedup_store = DedupStore(self.memory_valkey)
         self.proxy_memory_config_resolver = config_resolver
 
-        # KnowledgeRetriever (§9.5): no concrete KnowledgeSourceBackend
-        # implementations (code/docs/uploaded/memory) exist in this repo yet --
-        # only the CodeSearchBackend protocol and the mcp-v2-facing pull-path
-        # functions in shared.knowledge.retriever. `sources={}` wires the stage
-        # in as a real, flag-gated pipeline member (ready to activate the moment
-        # a backend lands) while remaining a documented no-op today: __call__
-        # still resolves per-key/per-source flags, but retrieve() has nothing
-        # to query and returns no blocks.
+        # KnowledgeRetriever (§9.5): "code" is wired to the real
+        # PgCodeSearchBackend-backed adapter (§9.1 core-completion);
+        # docs/uploaded/memory sources remain unwired (separate subsystems,
+        # out of this plan's scope) -- __call__ still resolves per-key/
+        # per-source flags for all four, so those three stay documented
+        # no-ops until their own backends land.
+        from shared.knowledge.coderag_backend import build_code_knowledge_sources
         from shared.knowledge.retriever import KnowledgeRetriever
 
         self.knowledge_retriever = KnowledgeRetriever(
-            sources={}, scanner=self.security_scanner, content_filter=self.content_filter
+            sources=build_code_knowledge_sources(self.db),
+            scanner=self.security_scanner,
+            content_filter=self.content_filter,
         )
 
         # RoutingStage (§7) is stage 5 per its own docstring, landing after any
@@ -996,8 +997,15 @@ async def on_startup():
     # of the OIDC/audit chain above -- see mcp_mount.py module docstring.
     # Neither path is in _PUBLIC_PATHS; unauthenticated/non-admin callers
     # never reach a FastMCP app, so no tool list is ever advertised to them.
+    from shared.mcp.knowledge_adapter import CodeRagKnowledgeService
+
     app.asgi_app = MCPMount(
-        app.asgi_app, rbac=proxy_server.rbac, oidc_provider=proxy_server.oidc_provider
+        app.asgi_app,
+        rbac=proxy_server.rbac,
+        oidc_provider=proxy_server.oidc_provider,
+        service_factory=McpServiceFactory(
+            knowledge_factory=lambda: CodeRagKnowledgeService(proxy_server.db)
+        ),
     )
     logger.info("MCP /mcp and /mcp/admin mounted (flag-gated: waddleai.mcp_v2)")
 

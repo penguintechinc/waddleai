@@ -86,6 +86,7 @@ class Permission(Enum):
     HOOK_RULE_ADMIN = "hook_rule:admin"
     HOOK_METRICS_READ = "hook_metrics:read"
     KNOWLEDGE_WRITE = "knowledge:write"
+    CODE_REPO_WRITE = "code_repo:write"
     MODEL_ALIAS_WRITE = "model_alias:write"
     QUOTA_LIST = "quota:list"
     ROUTING_ASSIGNMENT_WRITE = "routing_assignment:write"
@@ -171,6 +172,7 @@ ROLE_PERMISSIONS = {
         Permission.HOOK_RULE_ADMIN,
         Permission.HOOK_METRICS_READ,
         Permission.KNOWLEDGE_WRITE,
+        Permission.CODE_REPO_WRITE,
         Permission.MODEL_ALIAS_WRITE,
         Permission.QUOTA_LIST,
         Permission.ROUTING_ASSIGNMENT_WRITE,
@@ -218,6 +220,7 @@ ROLE_PERMISSIONS = {
         Permission.HOOK_RULE_ADMIN,
         Permission.HOOK_METRICS_READ,
         Permission.KNOWLEDGE_WRITE,
+        Permission.CODE_REPO_WRITE,
         Permission.MODEL_ALIAS_WRITE,
         Permission.QUOTA_LIST,
         Permission.ROUTING_ASSIGNMENT_WRITE,

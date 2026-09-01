@@ -655,6 +655,7 @@ class CodeRepo(Base):
     name = Column(String(255), nullable=False)
     source_url = Column(String(1024), nullable=False)
     credentials_ref = Column(String(255), nullable=True)  # provider-credential pattern
+    webhook_secret = Column(String(512), nullable=True)  # Fernet-encrypted, enc: prefix
     index_status = Column(String(50), nullable=False, default="pending", server_default="pending")
     last_commit = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
