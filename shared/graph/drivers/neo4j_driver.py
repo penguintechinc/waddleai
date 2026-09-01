@@ -31,7 +31,7 @@ _DIR_ARROWS: dict[str, tuple[str, str]] = {
     "both": ("-", "-"),
 }
 
-_SAFE_PROPERTY_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_PROPERTY_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
 def _check_label(label: str) -> str:
@@ -97,19 +97,24 @@ def compile_upsert_node(
 def compile_upsert_edge(
     scope: TenantScope, edge_type: str, src_key: str, dst_key: str, properties: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
-    """Compile a MERGE for a directed, allowlisted edge, requiring its source in-scope.
+    """Compile a MERGE for a directed, allowlisted edge, requiring both endpoints in-scope.
 
     ``src_key``/``dst_key`` and every property value are ``$``-params; only
-    the allowlisted ``edge_type`` is interpolated. The source node must
-    match the caller's tenant scope, so an edge can never be written from
-    another tenant's node into this one.
+    the allowlisted ``edge_type`` is interpolated. This module is the
+    designated query-layer enforcement point, so it never trusts the
+    caller to have derived ``dst_key`` safely: both the source and
+    destination nodes must match the caller's tenant scope (reusing the
+    same ``$org_id``/``$repo_id``/``$branch_ref`` params for both), so a
+    cross-tenant ``dst_key`` fails the MATCH and no edge is created
+    (fail-safe -- never a cross-tenant write).
     """
     _check_edge(edge_type)
     where_source, scope_params = _scope_where("s", scope)
+    where_dest, _ = _scope_where("d", scope)
     props = {**properties, **scope.scope_props()}
     cypher = (
         "MATCH (s {key: $src_key}), (d {key: $dst_key}) "
-        f"WHERE {where_source} "
+        f"WHERE {where_source} AND {where_dest} "
         f"MERGE (s)-[r:{edge_type}]->(d) "
         "SET r += $props"
     )

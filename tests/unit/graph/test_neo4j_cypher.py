@@ -42,14 +42,38 @@ def test_unknown_edge_type_rejected() -> None:
         nd.compile_upsert_edge(SCOPE, "OWNS", "a", "b", {})
 
 
-def test_upsert_edge_scopes_source_node() -> None:
-    """The source node's tenant predicate is mandatory in the MATCH/WHERE."""
-    cypher, params = nd.compile_upsert_edge(SCOPE, "CALLS", "src", "dst", {"weight": 1})
+def test_upsert_edge_scopes_both_endpoints() -> None:
+    """Both the source AND destination node predicates are mandatory in the MATCH/WHERE.
+
+    A `dst_key` belonging to another tenant must fail the MATCH -- this
+    module is the designated query-layer enforcement point and never
+    trusts the caller to have derived `dst_key` safely.
+    """
+    cypher, params = nd.compile_upsert_edge(
+        SCOPE, "CALLS", "src-in-scope", "dst-other-tenant", {"weight": 1}
+    )
     assert "s.org_id = $org_id" in cypher and "s.repo_id = $repo_id" in cypher
     assert "s.branch_ref = $branch_ref" in cypher
-    assert params["src_key"] == "src" and params["dst_key"] == "dst"
+    assert "d.org_id = $org_id" in cypher and "d.repo_id = $repo_id" in cypher
+    assert "d.branch_ref = $branch_ref" in cypher
+    assert params["src_key"] == "src-in-scope" and params["dst_key"] == "dst-other-tenant"
     assert params["org_id"] == "7"
     assert params["props"]["weight"] == 1 and params["props"]["org_id"] == "7"
+
+
+def test_upsert_node_properties_cannot_override_tenant_scope() -> None:
+    """A hostile `properties["org_id"]` loses -- compiled props always carry the real scope."""
+    hostile_properties = {"org_id": "999", "repo_id": "666", "name": "Foo"}
+    _, params = nd.compile_upsert_node(SCOPE, "Class", SCOPE.node_key("Foo"), hostile_properties)
+    assert params["props"]["org_id"] == "7" and params["props"]["repo_id"] == "42"
+    assert params["props"]["name"] == "Foo"
+
+
+def test_upsert_edge_properties_cannot_override_tenant_scope() -> None:
+    """A hostile `properties["org_id"]` loses on the edge write path too."""
+    hostile_properties = {"org_id": "999", "repo_id": "666"}
+    _, params = nd.compile_upsert_edge(SCOPE, "CALLS", "src", "dst", hostile_properties)
+    assert params["props"]["org_id"] == "7" and params["props"]["repo_id"] == "42"
 
 
 def test_query_where_includes_scope_predicates() -> None:
@@ -97,6 +121,12 @@ def test_query_accepts_safe_property_key() -> None:
     cypher, params = nd.compile_query(SCOPE, GraphQuery(where={"file_path": "a/b.py"}))
     assert "n.file_path = $w0" in cypher
     assert params["w0"] == "a/b.py"
+
+
+def test_query_rejects_property_key_with_trailing_newline() -> None:
+    r"""A key ending in a newline is rejected -- Python's `$` matches before `\n`, `\Z` does not."""
+    with pytest.raises(GraphScopeError):
+        nd.compile_query(SCOPE, GraphQuery(where={"name\n": "x"}))
 
 
 def test_query_applies_limit() -> None:
