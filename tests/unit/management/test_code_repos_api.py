@@ -228,6 +228,20 @@ class TestDeleteCodeRepoIDORSafe:
         resp = await client.delete("/api/v1/code-repos/1", headers=user_auth_headers)
         assert resp.status_code == 403
 
+    async def test_delete_returns_404_when_flag_off(
+        self, client, rm_auth_headers, app_mock_db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flag-gated: delete is unreachable with the flag off, even for an existing repo."""
+        monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "0")
+        app_mock_db.return_value.select.return_value = make_select_result(
+            [_repo_row(id=1, org_id=1)]
+        )
+
+        resp = await client.delete("/api/v1/code-repos/1", headers=rm_auth_headers)
+
+        assert resp.status_code == 404
+        app_mock_db.return_value.delete.assert_not_called()
+
     async def test_delete_outside_org_returns_404(
         self, client, rm_auth_headers, app_mock_db
     ) -> None:
@@ -259,6 +273,30 @@ class TestReindexCodeRepo:
         """A caller without CODE_REPO_WRITE is refused (403)."""
         resp = await client.post("/api/v1/code-repos/1/reindex", headers=user_auth_headers, json={})
         assert resp.status_code == 403
+
+    async def test_reindex_returns_404_when_flag_off(
+        self, client, rm_auth_headers, app_mock_db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flag off -> 404 for contract consistency with every sibling route (never a 200 skip)."""
+        monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "0")
+        app_mock_db.return_value.select.return_value = make_select_result(
+            [_repo_row(id=1, org_id=1)]
+        )
+        called = False
+
+        def _fail_if_called(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("create_coderag_worker must not be called with the flag off")
+
+        monkeypatch.setattr(
+            "services.management.app.api.v1.code_repos.create_coderag_worker", _fail_if_called
+        )
+
+        resp = await client.post("/api/v1/code-repos/1/reindex", headers=rm_auth_headers, json={})
+
+        assert resp.status_code == 404
+        assert called is False
 
     async def test_reindex_outside_org_returns_404_never_triggers_worker(
         self, client, rm_auth_headers, app_mock_db, monkeypatch: pytest.MonkeyPatch
@@ -316,7 +354,7 @@ class TestReindexCodeRepo:
 
 
 class TestReindexAll:
-    """POST /api/v1/code-repos/reindex-all: scope-gated cron entrypoint."""
+    """POST /api/v1/code-repos/reindex-all: scope-gated, org-scoped bulk reindex, not cross-org."""
 
     async def test_reindex_all_requires_code_repo_write_scope(
         self, client, user_auth_headers
@@ -327,14 +365,97 @@ class TestReindexAll:
         )
         assert resp.status_code == 403
 
-    async def test_reindex_all_triggers_worker(
+    async def test_reindex_all_returns_404_when_flag_off(
         self, client, rm_auth_headers, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A scope-holding caller triggers the cron entrypoint and gets its summary back."""
+        """Flag off -> 404 for contract consistency with every sibling route (never a 200 skip)."""
+        monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "0")
+        called = False
+
+        def _fail_if_called(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("create_coderag_worker must not be called with the flag off")
+
+        monkeypatch.setattr(
+            "services.management.app.api.v1.code_repos.create_coderag_worker", _fail_if_called
+        )
+
+        resp = await client.post("/api/v1/code-repos/reindex-all", headers=rm_auth_headers, json={})
+
+        assert resp.status_code == 404
+        assert called is False
+
+    def test_reindex_all_never_calls_unscoped_run_scheduled(self) -> None:
+        """Static regression guard: this route must never invoke CodeRagWorker.run_scheduled().
+
+        run_scheduled() has no org filter -- it's the genuine cross-tenant
+        cron sweep (reserved for a system/cron-authed internal path, not
+        this per-org CODE_REPO_WRITE-scoped route). Parses the module's AST
+        and asserts no ``Call`` node's attribute is ``run_scheduled`` --
+        immune to the name merely appearing in a docstring/comment (as it
+        does here, explaining why it's avoided), unlike a plain text/grep
+        check. Proven via AST rather than the mock DB, which cannot
+        distinguish an org-filtered query from an unfiltered one -- a hard
+        source-level guard closes that gap regardless of mock fidelity.
+        """
+        import ast
+        import inspect
+
+        from services.management.app.api.v1 import code_repos
+
+        tree = ast.parse(inspect.getsource(code_repos))
+        call_attrs = [
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        ]
+        assert "run_scheduled" not in call_attrs
+
+    async def test_reindex_all_indexes_only_the_callers_org_repos(
+        self, client, rm_auth_headers, app_mock_db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only repo ids from the org-filtered query are indexed -- never a system-wide sweep."""
+        app_mock_db.return_value.select.return_value = make_select_result(
+            [_repo_row(id=1, org_id=1), _repo_row(id=2, org_id=1)]
+        )
+        indexed_repo_ids: list[int] = []
+
+        class _FakeResult:
+            def __init__(self, repo_id: int) -> None:
+                self.repo_id = repo_id
+                self.branch_ref = "main"
+                self.index_status = "indexed"
+                self.error = None
 
         class _FakeWorker:
-            async def run_scheduled(self):
-                return []
+            # Deliberately has no run_scheduled() -- calling it would raise
+            # AttributeError, failing this test loudly (belt-and-suspenders
+            # alongside the static guard above).
+            async def index(self, repo_id, branch=None, trigger="manual"):
+                indexed_repo_ids.append(repo_id)
+                return _FakeResult(repo_id)
+
+        monkeypatch.setattr(
+            "services.management.app.api.v1.code_repos.create_coderag_worker",
+            lambda *a, **k: _FakeWorker(),
+        )
+
+        resp = await client.post("/api/v1/code-repos/reindex-all", headers=rm_auth_headers, json={})
+
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["indexed"] == 2
+        assert sorted(indexed_repo_ids) == [1, 2]
+
+    async def test_reindex_all_handles_empty_org_without_touching_worker_index(
+        self, client, rm_auth_headers, app_mock_db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A caller whose org has no repos gets an empty summary, not an error."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        class _FakeWorker:
+            pass  # index()/run_scheduled() must never be called -- no repo ids to index
 
         monkeypatch.setattr(
             "services.management.app.api.v1.code_repos.create_coderag_worker",

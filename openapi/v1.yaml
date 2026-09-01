@@ -898,13 +898,29 @@ paths:
       summary: Register a repo for CodeRAG indexing; returns its one-time webhook_secret.
   /api/v1/code-repos/reindex-all:
     post:
-      description: ''
+      description: '
+
+        Deliberately does NOT call ``CodeRagWorker.run_scheduled()`` -- that
+
+        method sweeps every org''s ``code_repos`` with no org filter (it is the
+
+        genuine system/cron-authed entrypoint, invoked outside the HTTP API),
+
+        so calling it from a per-org ``CODE_REPO_WRITE``-scoped route would let
+
+        any org''s resource_manager trigger a cross-tenant re-index of every
+
+        other org''s repos. This route instead fetches only the caller''s org''s
+
+        repo ids (from the validated JWT, same IDOR pattern as every other
+
+        route in this module) and calls ``CodeRagWorker.index()`` once per id.'
       operationId: post_reindex_all_code_repos
       parameters: []
       responses:
         '200': *id001
-      summary: 'Cron entrypoint: re-index every non-disabled repo, across all orgs
-        (flag-gated per repo).'
+      summary: Re-index every non-disabled repo in the caller's org -- org-scoped,
+        never another org's.
   /api/v1/code-repos/webhook:
     post:
       description: '

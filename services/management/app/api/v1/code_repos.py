@@ -178,6 +178,8 @@ async def get_code_repo(repo_id: int) -> tuple[Any, int]:
 async def delete_code_repo(repo_id: int) -> tuple[Any, int]:
     """Delete a repo registration, org-scoped (IDOR-safe: 404 outside the caller's org)."""
     org_id = g.user.get("organization_id")
+    if not _coderag_enabled(org_id):
+        return jsonify({"error": "coderag feature disabled"}), 404
 
     def _delete() -> bool:
         query = (db.code_repos.id == repo_id) & (db.code_repos.org_id == org_id)
@@ -208,6 +210,8 @@ async def reindex_code_repo(repo_id: int) -> tuple[Any, int]:
     reach the worker at all.
     """
     org_id = g.user.get("organization_id")
+    if not _coderag_enabled(org_id):
+        return jsonify({"error": "coderag feature disabled"}), 404
 
     def _fetch() -> Any:
         query = (db.code_repos.id == repo_id) & (db.code_repos.org_id == org_id)
@@ -240,9 +244,28 @@ async def reindex_code_repo(repo_id: int) -> tuple[Any, int]:
 @require_auth
 @require_scope(Permission.CODE_REPO_WRITE)
 async def reindex_all_code_repos() -> tuple[Any, int]:
-    """Cron entrypoint: re-index every non-disabled repo, across all orgs (flag-gated per repo)."""
+    """Re-index every non-disabled repo in the caller's org -- org-scoped, never another org's.
+
+    Deliberately does NOT call ``CodeRagWorker.run_scheduled()`` -- that
+    method sweeps every org's ``code_repos`` with no org filter (it is the
+    genuine system/cron-authed entrypoint, invoked outside the HTTP API),
+    so calling it from a per-org ``CODE_REPO_WRITE``-scoped route would let
+    any org's resource_manager trigger a cross-tenant re-index of every
+    other org's repos. This route instead fetches only the caller's org's
+    repo ids (from the validated JWT, same IDOR pattern as every other
+    route in this module) and calls ``CodeRagWorker.index()`` once per id.
+    """
+    org_id = g.user.get("organization_id")
+    if not _coderag_enabled(org_id):
+        return jsonify({"error": "coderag feature disabled"}), 404
+
+    def _fetch_repo_ids() -> list[int]:
+        query = (db.code_repos.org_id == org_id) & (db.code_repos.index_status != "disabled")
+        return [r.id for r in db(query).select()]
+
+    repo_ids = await asyncio.to_thread(_fetch_repo_ids)
     worker = create_coderag_worker(db)
-    results = await worker.run_scheduled()
+    results = [await worker.index(repo_id, trigger="manual") for repo_id in repo_ids]
     return (
         jsonify(
             {
