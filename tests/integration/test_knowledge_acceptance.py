@@ -453,12 +453,14 @@ class TestOrgIsolationAcrossStores:
 
 
 class TestCodeSearchBackendSQLScoping:
-    """(8) The real CodeSearchBackend scopes its SQL, not just the Python filter (§9.1/§9.7).
+    """(9) The real CodeSearchBackend scopes its SQL, not just the Python filter (§9.1/§9.7).
 
     Closes the audit gap: prior to this plan, isolation was a post-fetch
     scoping.is_visible() filter only -- an unscoped top-K query could starve
     the target repo's chunks out of the candidate set before Python ever
-    saw them. This proves the WHERE clause itself carries org_id.
+    saw them. This proves the WHERE clause itself carries org_id, and --
+    once the repo-resolution short-circuit is satisfied -- that the actual
+    scoped search query also carries repo_id/branch_ref, not just org_id.
     """
 
     @pytest.mark.asyncio
@@ -485,6 +487,46 @@ class TestCodeSearchBackendSQLScoping:
         resolve_sql, resolve_params = db.calls[0]
         assert "org_id = %s" in resolve_sql
         assert resolve_params[0] == 42
+
+    @pytest.mark.asyncio
+    async def test_vector_search_sql_carries_repo_and_branch_predicate(self) -> None:
+        """Once the repo resolves, the *actual* scoped search query carries repo_id + branch_ref.
+
+        The prior test alone stops at the repo-resolution short-circuit --
+        with an empty result set there, PgCodeSearchBackend._resolve_scope
+        never proceeds to build/issue the real candidate-search query, so
+        the repo/branch predicate was never observed at this acceptance
+        boundary (only proven at the unit layer, in Task 4's
+        test_vector_search_where_clause_scopes_by_org_and_repo). This test
+        makes the fake resolve the repo (mirroring a real code_repos row),
+        so the second, actual search query gets built and captured too.
+        """
+        from shared.knowledge.coderag_backend import PgCodeSearchBackend
+        from shared.knowledge.scoping import ScopeKey
+
+        class _CapturingDB:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple]] = []
+
+            def executesql(self, sql: str, params) -> list:
+                self.calls.append((sql, tuple(params)))
+                if "FROM code_repos WHERE" in sql:
+                    return [(7,)]  # resolves scope.repo "waddleai" -> repo_id 7
+                return []  # the actual candidate-search query -- no chunks, irrelevant here
+
+        db = _CapturingDB()
+        backend = PgCodeSearchBackend(db)
+        scope = ScopeKey(org="42", repo="waddleai", branch="main")
+
+        await backend.vector_search([0.0] * 768, scope, top_k=10)
+
+        assert len(db.calls) == 2  # resolution query, then the real scoped search query
+        search_sql, search_params = db.calls[1]
+        assert "c.repo_id = %s" in search_sql
+        assert "c.branch_ref = %s" in search_sql
+        assert search_params[0] == 42  # org_id
+        assert search_params[1] == 7  # repo_id, resolved above
+        assert search_params[2] == "main"  # branch_ref
 
 
 class TestFlagOffAllSourcesNoOp:
@@ -522,7 +564,7 @@ class TestFlagOffAllSourcesNoOp:
 
 
 class TestCodeRagFlagOnEndToEndSmoke:
-    """(9) With the flag on and a real backend, search_code resolves instead of raising."""
+    """(10) With the flag on and a real backend, search_code resolves instead of raising."""
 
     @pytest.mark.asyncio
     async def test_search_code_resolves_via_the_real_adapter(self, monkeypatch) -> None:
