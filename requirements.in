@@ -102,3 +102,5 @@ mcp>=1.28.1,<2.0
 # Performance
 ujson>=5.13.0
 orjson>=3.9.10
+# Graph platform (interim backend -- confined behind shared/graph/drivers/)
+neo4j==5.28.1
