@@ -13,6 +13,7 @@ wrong reason (graph platform Phase 1 plan, Task 3).
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from shared.graph.types import GraphEdge, GraphNode, GraphPath, GraphQuery, GraphRecord, TenantScope
@@ -27,6 +28,7 @@ def _matches(properties: dict[str, Any], where: dict[str, Any]) -> bool:
     return all(properties.get(key) == value for key, value in where.items())
 
 
+@dataclass(slots=True)
 class InMemoryGraphStore:
     """Dict-backed `GraphStore` used as the isolation oracle in unit tests.
 
@@ -34,12 +36,11 @@ class InMemoryGraphStore:
     (`query`, `traverse`) and write-scoped op (`delete_scope`) filters by the
     tenant's own `scope_props()`, never trusting a caller-supplied predicate
     alone, so tests built on this fake genuinely exercise tenant isolation.
+    Not frozen -- `delete_scope` reassigns `self._nodes` wholesale.
     """
 
-    def __init__(self) -> None:
-        """Start with an empty node/edge registry."""
-        self._nodes: dict[str, GraphNode] = {}
-        self._edges: list[GraphEdge] = []
+    _nodes: dict[str, GraphNode] = field(default_factory=dict)
+    _edges: list[GraphEdge] = field(default_factory=list)
 
     async def upsert_node(
         self, tenant: TenantScope, label: str, key: str, properties: dict[str, Any]
