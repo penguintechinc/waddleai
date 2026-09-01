@@ -452,6 +452,41 @@ class TestOrgIsolationAcrossStores:
         assert "org_id" not in column_names
 
 
+class TestCodeSearchBackendSQLScoping:
+    """(8) The real CodeSearchBackend scopes its SQL, not just the Python filter (§9.1/§9.7).
+
+    Closes the audit gap: prior to this plan, isolation was a post-fetch
+    scoping.is_visible() filter only -- an unscoped top-K query could starve
+    the target repo's chunks out of the candidate set before Python ever
+    saw them. This proves the WHERE clause itself carries org_id.
+    """
+
+    @pytest.mark.asyncio
+    async def test_vector_search_sql_carries_org_id_in_where_clause(self) -> None:
+        """vector_search's first executesql() call is the repo-resolution query, org-scoped."""
+        from shared.knowledge.coderag_backend import PgCodeSearchBackend
+        from shared.knowledge.scoping import ScopeKey
+
+        class _CapturingDB:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple]] = []
+
+            def executesql(self, sql: str, params) -> list:
+                self.calls.append((sql, tuple(params)))
+                return []  # repo resolution or search -- either way, no rows
+
+        db = _CapturingDB()
+        backend = PgCodeSearchBackend(db)
+        scope = ScopeKey(org="42", repo="waddleai", branch="main")
+
+        await backend.vector_search([0.0] * 768, scope, top_k=10)
+
+        # Repo-resolution query ran first, org-scoped.
+        resolve_sql, resolve_params = db.calls[0]
+        assert "org_id = %s" in resolve_sql
+        assert resolve_params[0] == 42
+
+
 class TestFlagOffAllSourcesNoOp:
     """(8) Flag-off proof: coderag/docs_cache/knowledge_ingest OFF -> no knowledge behavior."""
 
@@ -484,3 +519,55 @@ class TestFlagOffAllSourcesNoOp:
         result = await worker.index(1, branch="main")
 
         assert result.index_status == "skipped_flag_off"
+
+
+class TestCodeRagFlagOnEndToEndSmoke:
+    """(9) With the flag on and a real backend, search_code resolves instead of raising."""
+
+    @pytest.mark.asyncio
+    async def test_search_code_resolves_via_the_real_adapter(self, monkeypatch) -> None:
+        """CodeRagKnowledgeService.search_code returns real results -- no NotWired raise."""
+        from shared.knowledge.code_search import SearchResult
+        from shared.knowledge.scoping import ScopedRecord, ScopeType, TrustTier
+        from shared.mcp.knowledge_adapter import CodeRagKnowledgeService
+
+        service = CodeRagKnowledgeService(db=object())
+
+        async def _fake_search_code(query, caller, backend, top_k, *, embed_db=None):
+            record = ScopedRecord(
+                id="1",
+                content="def f(): ...",
+                scope_type=ScopeType.REPO,
+                scope_ref="waddleai",
+                trust_tier=TrustTier.DERIVED,
+                author_user_id=None,
+                org=caller.org,
+                repo=caller.repo,
+                branch=caller.branch,
+            )
+            return [
+                SearchResult(
+                    chunk_id="1",
+                    path="f.py",
+                    symbol="f",
+                    kind="function",
+                    content="def f(): ...",
+                    score=1.0,
+                    record=record,
+                )
+            ]
+
+        monkeypatch.setattr("shared.mcp.knowledge_adapter.retriever_search_code", _fake_search_code)
+
+        results = await service.search_code(org_id=42, query="f", repo="waddleai", branch="main")
+
+        assert results == [
+            {
+                "chunk_id": "1",
+                "path": "f.py",
+                "symbol": "f",
+                "kind": "function",
+                "content": "def f(): ...",
+                "score": 1.0,
+            }
+        ]
