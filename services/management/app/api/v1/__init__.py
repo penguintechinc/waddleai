@@ -32,4 +32,5 @@ from . import (  # noqa: I001 -- append-only order, see comment above
     webhooks,
     integrations,
     fleet,
+    code_repos,
 )
