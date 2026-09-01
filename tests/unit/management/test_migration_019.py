@@ -117,7 +117,14 @@ def test_downgrade_drops_webhook_secret_column(scratch_db) -> None:
 
 
 def test_alembic_chain_still_single_head_after_019() -> None:
-    """Adding 019 keeps a single resolvable head, no divergent branches."""
+    """Adding 019 keeps a single resolvable head, no divergent branches.
+
+    Does not pin the exact head revision id -- later migrations (e.g. 020)
+    chain off 019 and become the new head; that specific-head assertion
+    lives in the newest migration's own test file
+    (``test_migration_020.py::test_alembic_chain_still_single_head_after_020``).
+    This test only guards against 019 having introduced a branch.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -131,4 +138,3 @@ def test_alembic_chain_still_single_head_after_019() -> None:
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "019_code_repos_webhook_secret"
