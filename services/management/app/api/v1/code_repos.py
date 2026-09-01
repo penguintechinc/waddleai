@@ -285,15 +285,38 @@ async def reindex_all_code_repos() -> tuple[Any, int]:
     )
 
 
-@api_v1_bp.route("/code-repos/webhook", methods=["POST"])
-async def code_repo_webhook() -> tuple[Any, int]:
-    """GitHub/Gitea push webhook: HMAC-verified against the repo's stored secret, then re-index.
+def _extract_branch(payload: dict[str, Any]) -> str | None:
+    """Extract the target branch from a push-webhook payload's ``ref`` (e.g. ``refs/heads/main``).
+
+    Returns ``None`` when absent -- ``CodeRagWorker.index()`` already
+    defaults a missing branch to ``"main"``, so callers pass this straight
+    through rather than duplicating that fallback here.
+    """
+    ref = payload.get("ref", "")
+    return ref.rsplit("/", 1)[-1] if ref else None
+
+
+@api_v1_bp.route("/code-repos/<int:repo_id>/webhook", methods=["POST"])
+async def code_repo_webhook(repo_id: int) -> tuple[Any, int]:
+    """GitHub/Gitea push webhook for one specific repo: HMAC-verified, then re-index.
+
+    Per-repo path -- deliberately NOT resolved by ``source_url`` -- because
+    ``source_url`` is not unique across orgs (only ``(org_id, name)`` is).
+    A ``source_url``-based ``.first()`` lookup would silently match an
+    arbitrary org's registration whenever two tenants register the same
+    clone URL: it would verify against the wrong org's secret and leave
+    every *other* org sharing that URL with a permanently, silently dead
+    push-triggered reindex (a 401 with no indication why). Identifying the
+    repo by path param removes the ambiguity entirely -- each org's push
+    provider is configured with that org's own webhook URL.
 
     Deliberately not behind ``require_auth``/``require_scope`` -- external
     Git hosts cannot carry a WaddleAI JWT. Every failure path (malformed
     body, unknown repo, missing secret, undecryptable secret, bad
     signature) rejects; there is no path that reaches ``worker.index()``
-    without a verified signature.
+    without a verified signature. The flag check happens AFTER signature
+    verification so an unauthenticated caller can't use this endpoint to
+    probe an org's flag state.
     """
     raw_body = await request.get_data()
     if isinstance(raw_body, str):  # pragma: no cover -- as_text=False always returns bytes
@@ -303,12 +326,8 @@ async def code_repo_webhook() -> tuple[Any, int]:
     except json.JSONDecodeError:
         return jsonify({"error": "invalid JSON payload"}), 400
 
-    clone_url = (payload.get("repository") or {}).get("clone_url")
-    if not clone_url:
-        return jsonify({"error": "missing repository.clone_url"}), 400
-
     def _fetch() -> Any:
-        return db(db.code_repos.source_url == clone_url).select().first()
+        return db(db.code_repos.id == repo_id).select().first()
 
     row = await asyncio.to_thread(_fetch)
     if row is None:
@@ -329,12 +348,8 @@ async def code_repo_webhook() -> tuple[Any, int]:
     if not _coderag_enabled(row.org_id):
         return jsonify({"error": "coderag feature disabled"}), 404
 
+    branch = _extract_branch(payload)
     worker = create_coderag_worker(db)
-    resolved = worker.handle_webhook(payload)
-    if resolved is None:
-        return jsonify({"error": "unrecognized payload"}), 400
-    repo_id, branch = resolved
+    await worker.index(repo_id, branch=branch, trigger="webhook")
 
-    await worker.index(repo_id, branch, trigger="webhook")
-
-    return jsonify({"status": "accepted", "repo_id": repo_id, "branch": branch}), 202
+    return jsonify({"status": "accepted", "repo_id": repo_id, "branch": branch or "main"}), 202

@@ -921,25 +921,6 @@ paths:
         '200': *id001
       summary: Re-index every non-disabled repo in the caller's org -- org-scoped,
         never another org's.
-  /api/v1/code-repos/webhook:
-    post:
-      description: '
-
-        Deliberately not behind ``require_auth``/``require_scope`` -- external
-
-        Git hosts cannot carry a WaddleAI JWT. Every failure path (malformed
-
-        body, unknown repo, missing secret, undecryptable secret, bad
-
-        signature) rejects; there is no path that reaches ``worker.index()``
-
-        without a verified signature.'
-      operationId: post_code_repo_webhook
-      parameters: []
-      responses:
-        '200': *id001
-      summary: 'GitHub/Gitea push webhook: HMAC-verified against the repo''s stored
-        secret, then re-index.'
   /api/v1/code-repos/{repo_id}:
     delete:
       description: ''
@@ -992,6 +973,53 @@ paths:
       responses:
         '200': *id001
       summary: Manually trigger (re)indexing for one repo, org-scoped.
+  /api/v1/code-repos/{repo_id}/webhook:
+    post:
+      description: '
+
+        Per-repo path -- deliberately NOT resolved by ``source_url`` -- because
+
+        ``source_url`` is not unique across orgs (only ``(org_id, name)`` is).
+
+        A ``source_url``-based ``.first()`` lookup would silently match an
+
+        arbitrary org''s registration whenever two tenants register the same
+
+        clone URL: it would verify against the wrong org''s secret and leave
+
+        every *other* org sharing that URL with a permanently, silently dead
+
+        push-triggered reindex (a 401 with no indication why). Identifying the
+
+        repo by path param removes the ambiguity entirely -- each org''s push
+
+        provider is configured with that org''s own webhook URL.
+
+
+        Deliberately not behind ``require_auth``/``require_scope`` -- external
+
+        Git hosts cannot carry a WaddleAI JWT. Every failure path (malformed
+
+        body, unknown repo, missing secret, undecryptable secret, bad
+
+        signature) rejects; there is no path that reaches ``worker.index()``
+
+        without a verified signature. The flag check happens AFTER signature
+
+        verification so an unauthenticated caller can''t use this endpoint to
+
+        probe an org''s flag state.'
+      operationId: post_code_repo_webhook
+      parameters:
+      - in: path
+        name: repo_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: 'GitHub/Gitea push webhook for one specific repo: HMAC-verified, then
+        re-index.'
   /api/v1/docs:
     get:
       description: ''

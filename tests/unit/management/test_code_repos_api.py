@@ -470,7 +470,7 @@ class TestReindexAll:
 
 
 class TestWebhook:
-    """POST /api/v1/code-repos/webhook: HMAC-verified, fails closed, never scope-gated."""
+    """POST /api/v1/code-repos/<id>/webhook: HMAC-verified per repo_id, fails closed, unscoped."""
 
     def _sign(self, secret: str, body: bytes) -> str:
         digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -481,18 +481,13 @@ class TestWebhook:
         row = _repo_row(
             id=1,
             org_id=7,
-            source_url="https://github.com/penguintechinc/waddleai.git",
             webhook_secret="whs_test_not_the_real_secret",  # noqa: S106 -- test fixture, not a real secret
         )
         app_mock_db.return_value.select.return_value = make_select_result([row])
-        payload = {
-            "repository": {"clone_url": "https://github.com/penguintechinc/waddleai.git"},
-            "ref": "refs/heads/main",
-        }
-        body = json.dumps(payload).encode()
+        body = json.dumps({"ref": "refs/heads/main"}).encode()
 
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
+            "/api/v1/code-repos/1/webhook",
             data=body,
             headers={"X-Hub-Signature-256": "sha256=wrong", "Content-Type": "application/json"},
         )
@@ -500,16 +495,12 @@ class TestWebhook:
         assert resp.status_code == 401
 
     async def test_webhook_unknown_repo_returns_404(self, client, app_mock_db) -> None:
-        """An unregistered clone_url is rejected (404), never falls through to signature checks."""
+        """A repo_id with no matching registration is rejected (404), before any signature check."""
         app_mock_db.return_value.select.return_value = make_select_result([])
-        payload = {
-            "repository": {"clone_url": "https://example.com/unknown.git"},
-            "ref": "refs/heads/main",
-        }
 
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
-            data=json.dumps(payload).encode(),
+            "/api/v1/code-repos/999/webhook",
+            data=json.dumps({"ref": "refs/heads/main"}).encode(),
             headers={"Content-Type": "application/json"},
         )
 
@@ -519,14 +510,10 @@ class TestWebhook:
         """A repo with no webhook_secret configured must reject every signature, never accept."""
         row = _repo_row(webhook_secret=None)
         app_mock_db.return_value.select.return_value = make_select_result([row])
-        payload = {
-            "repository": {"clone_url": "https://github.com/penguintechinc/waddleai.git"},
-            "ref": "refs/heads/main",
-        }
-        body = json.dumps(payload).encode()
+        body = json.dumps({"ref": "refs/heads/main"}).encode()
 
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
+            "/api/v1/code-repos/1/webhook",
             data=body,
             headers={"X-Hub-Signature-256": "sha256=anything", "Content-Type": "application/json"},
         )
@@ -545,14 +532,10 @@ class TestWebhook:
 
         monkeypatch.setattr("services.management.app.api.v1.code_repos.decrypt_credential", _raise)
 
-        payload = {
-            "repository": {"clone_url": "https://github.com/penguintechinc/waddleai.git"},
-            "ref": "refs/heads/main",
-        }
-        body = json.dumps(payload).encode()
+        body = json.dumps({"ref": "refs/heads/main"}).encode()
 
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
+            "/api/v1/code-repos/1/webhook",
             data=body,
             headers={"X-Hub-Signature-256": "sha256=anything", "Content-Type": "application/json"},
         )
@@ -562,7 +545,7 @@ class TestWebhook:
     async def test_webhook_valid_signature_accepted(
         self, client, app_mock_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A correctly-signed payload for a known repo is accepted (202) and triggers indexing."""
+        """A correctly-signed payload for the path's repo_id is accepted (202) and indexes it."""
         secret = "the-real-plaintext-secret"  # noqa: S105 -- test fixture
         row = _repo_row(id=1, org_id=1, webhook_secret=f"enc:{secret}")
         app_mock_db.return_value.select.return_value = make_select_result([row])
@@ -573,16 +556,8 @@ class TestWebhook:
         triggered: list[tuple[int, str | None]] = []
 
         class _FakeWorker:
-            def handle_webhook(self, payload):
-                return 1, "main"
-
             async def index(self, repo_id, branch=None, trigger="manual"):
                 triggered.append((repo_id, branch))
-
-                class _R:
-                    pass
-
-                return _R()
 
         monkeypatch.setattr(
             "services.management.app.api.v1.code_repos.create_coderag_worker",
@@ -597,27 +572,59 @@ class TestWebhook:
         signature = self._sign(secret, body)
 
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
+            "/api/v1/code-repos/1/webhook",
             data=body,
             headers={"X-Hub-Signature-256": signature, "Content-Type": "application/json"},
         )
 
         assert resp.status_code == 202
+        resp_body = await resp.get_json()
+        assert resp_body["repo_id"] == 1
+        assert resp_body["branch"] == "main"
+        assert triggered == [(1, "main")]
+
+    async def test_webhook_no_repository_or_ref_still_indexes_default_branch(
+        self, client, app_mock_db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """repository.clone_url is no longer required -- repo identity comes from the path."""
+        secret = "the-real-plaintext-secret"  # noqa: S105 -- test fixture
+        row = _repo_row(id=1, org_id=1, webhook_secret=f"enc:{secret}")
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+        monkeypatch.setattr(
+            "services.management.app.api.v1.code_repos.decrypt_credential", lambda *_a, **_k: secret
+        )
+
+        triggered: list[tuple[int, str | None]] = []
+
+        class _FakeWorker:
+            async def index(self, repo_id, branch=None, trigger="manual"):
+                triggered.append((repo_id, branch))
+
+        monkeypatch.setattr(
+            "services.management.app.api.v1.code_repos.create_coderag_worker",
+            lambda *a, **k: _FakeWorker(),
+        )
+
+        body = json.dumps({}).encode()  # no repository key, no ref -- both optional now
+        signature = self._sign(secret, body)
+
+        resp = await client.post(
+            "/api/v1/code-repos/1/webhook",
+            data=body,
+            headers={"X-Hub-Signature-256": signature, "Content-Type": "application/json"},
+        )
+
+        assert resp.status_code == 202
+        resp_body = await resp.get_json()
+        assert resp_body["branch"] == "main"
+        # branch=None passed to worker.index() -- index() applies its own None -> "main" fallback.
+        assert triggered == [(1, None)]
 
     async def test_webhook_malformed_json_returns_400(self, client) -> None:
         """A non-JSON body never reaches the DB lookup or signature check -- 400."""
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
+            "/api/v1/code-repos/1/webhook",
             data=b"not json{{{",
-            headers={"Content-Type": "application/json"},
-        )
-        assert resp.status_code == 400
-
-    async def test_webhook_missing_repository_key_returns_400(self, client) -> None:
-        """A payload with no `repository` key at all never reaches the DB lookup -- 400."""
-        resp = await client.post(
-            "/api/v1/code-repos/webhook",
-            data=json.dumps({"ref": "refs/heads/main"}).encode(),
             headers={"Content-Type": "application/json"},
         )
         assert resp.status_code == 400
@@ -634,67 +641,129 @@ class TestWebhook:
         )
         monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "0")
 
-        payload = {
-            "repository": {"clone_url": "https://github.com/penguintechinc/waddleai.git"},
-            "ref": "refs/heads/main",
-        }
-        body = json.dumps(payload).encode()
+        body = json.dumps({"ref": "refs/heads/main"}).encode()
         signature = self._sign(secret, body)
 
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
+            "/api/v1/code-repos/1/webhook",
             data=body,
             headers={"X-Hub-Signature-256": signature, "Content-Type": "application/json"},
         )
 
         assert resp.status_code == 404
 
-    async def test_webhook_unrecognized_payload_returns_400(
+    async def test_webhook_requires_no_auth_header(self, client, app_mock_db) -> None:
+        """The webhook route is reachable with no Authorization header (HMAC-verified, not JWT)."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/code-repos/999/webhook",
+            data=json.dumps({"ref": "refs/heads/main"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        # Reaches route logic (404 for unknown repo id), not blocked at 401 for missing auth.
+        assert resp.status_code == 404
+
+
+class TestWebhookMultiOrgSameSourceURL:
+    """Regression: two orgs registering the same source_url must never cross-verify or cross-index.
+
+    Prior to the per-repo-path fix, the webhook route resolved the target
+    repo by ``db.code_repos.source_url == clone_url`` with ``.first()`` --
+    but ``source_url`` is not unique across orgs (only ``(org_id, name)``
+    is). Two tenants registering the same clone URL meant the webhook
+    always matched one arbitrary (first-registering) org's row, verified
+    against that org's secret, and silently 401'd every other org sharing
+    the URL -- their push-triggered reindexing never fired, with no signal
+    why. Identifying the repo by path param (``/code-repos/<id>/webhook``)
+    removes the ambiguity: each org configures its push provider with its
+    own webhook URL, so there is no shared resolution step left to collide.
+    """
+
+    def _sign(self, secret: str, body: bytes) -> str:
+        digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return f"sha256={digest}"
+
+    async def test_webhook_to_org_b_path_verifies_against_org_b_secret_and_indexes_org_b(
         self, client, app_mock_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A verified signature whose payload the worker can't resolve to (repo, branch) -- 400."""
-        secret = "the-real-plaintext-secret"  # noqa: S105 -- test fixture
-        row = _repo_row(id=1, org_id=1, webhook_secret=f"enc:{secret}")
-        app_mock_db.return_value.select.return_value = make_select_result([row])
+        """Same clone URL registered by both orgs; org B's webhook path indexes org B's repo id."""
+        shared_url = "https://github.com/penguintechinc/waddleai.git"
+        secret_b = "org-b-secret"  # noqa: S105 -- test fixture
+        row_b = _repo_row(id=2, org_id=2, source_url=shared_url, webhook_secret=f"enc:{secret_b}")
+        # The route now fetches strictly by db.code_repos.id == repo_id (the
+        # path param) -- returning org B's row here stands in for "id=2
+        # resolves to org B's registration" regardless of org A also having
+        # registered the identical shared_url under a different id. That
+        # source_url collision is exactly the ambiguity the fix removes.
+        app_mock_db.return_value.select.return_value = make_select_result([row_b])
         monkeypatch.setattr(
-            "services.management.app.api.v1.code_repos.decrypt_credential", lambda *_a, **_k: secret
+            "services.management.app.api.v1.code_repos.decrypt_credential",
+            lambda *_a, **_k: secret_b,
         )
 
+        indexed: list[int] = []
+
         class _FakeWorker:
-            def handle_webhook(self, payload):
-                return None
+            async def index(self, repo_id, branch=None, trigger="manual"):
+                indexed.append(repo_id)
 
         monkeypatch.setattr(
             "services.management.app.api.v1.code_repos.create_coderag_worker",
             lambda *a, **k: _FakeWorker(),
         )
 
-        payload = {
-            "repository": {"clone_url": "https://github.com/penguintechinc/waddleai.git"},
-            "ref": "refs/heads/main",
-        }
+        payload = {"repository": {"clone_url": shared_url}, "ref": "refs/heads/main"}
         body = json.dumps(payload).encode()
-        signature = self._sign(secret, body)
+        signature = self._sign(secret_b, body)
 
         resp = await client.post(
-            "/api/v1/code-repos/webhook",
+            "/api/v1/code-repos/2/webhook",
             data=body,
             headers={"X-Hub-Signature-256": signature, "Content-Type": "application/json"},
         )
 
-        assert resp.status_code == 400
+        assert resp.status_code == 202
+        resp_body = await resp.get_json()
+        assert resp_body["repo_id"] == 2
+        assert indexed == [2]  # never org A's id, even though both share source_url
 
-    async def test_webhook_requires_no_auth_header(self, client, app_mock_db) -> None:
-        """The webhook route is reachable with no Authorization header (HMAC-verified, not JWT)."""
-        app_mock_db.return_value.select.return_value = make_select_result([])
-        payload = {
-            "repository": {"clone_url": "https://example.com/unknown.git"},
-            "ref": "refs/heads/main",
-        }
-        resp = await client.post(
-            "/api/v1/code-repos/webhook",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+    async def test_webhook_org_a_secret_against_org_b_path_fails_closed(
+        self, client, app_mock_db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Signing with org A's secret against org B's repo id never verifies -- 401, no index."""
+        shared_url = "https://github.com/penguintechinc/waddleai.git"
+        secret_a = "org-a-secret"  # noqa: S105 -- test fixture
+        secret_b = "org-b-secret"  # noqa: S105 -- test fixture
+        row_b = _repo_row(id=2, org_id=2, source_url=shared_url, webhook_secret=f"enc:{secret_b}")
+        app_mock_db.return_value.select.return_value = make_select_result([row_b])
+        # Org B's row always decrypts to org B's own secret -- there is no
+        # code path where a caller's chosen signing key changes what the
+        # server decrypts for a given repo_id.
+        monkeypatch.setattr(
+            "services.management.app.api.v1.code_repos.decrypt_credential",
+            lambda *_a, **_k: secret_b,
         )
-        # Reaches route logic (404 for unknown repo), not blocked at 401 for missing auth.
-        assert resp.status_code == 404
+
+        indexed: list[int] = []
+
+        class _FakeWorker:
+            async def index(self, repo_id, branch=None, trigger="manual"):
+                indexed.append(repo_id)
+
+        monkeypatch.setattr(
+            "services.management.app.api.v1.code_repos.create_coderag_worker",
+            lambda *a, **k: _FakeWorker(),
+        )
+
+        payload = {"repository": {"clone_url": shared_url}, "ref": "refs/heads/main"}
+        body = json.dumps(payload).encode()
+        signature = self._sign(secret_a, body)  # signed with the WRONG org's secret
+
+        resp = await client.post(
+            "/api/v1/code-repos/2/webhook",
+            data=body,
+            headers={"X-Hub-Signature-256": signature, "Content-Type": "application/json"},
+        )
+
+        assert resp.status_code == 401
+        assert indexed == []
