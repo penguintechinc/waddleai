@@ -1131,6 +1131,22 @@ paths:
         '200': *id001
       summary: Health-check a registered backend through the ``InferenceFleetBackend``
         interface.
+  /api/v1/graph/call-graph:
+    get:
+      description: ''
+      operationId: get_call_graph_route
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Call-graph traversal from a symbol, org-scoped from the validated JWT.
+  /api/v1/graph/class-hierarchy:
+    get:
+      description: ''
+      operationId: get_class_hierarchy_route
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Class-hierarchy (EXTENDS/IMPLEMENTS) traversal from a symbol, org-scoped.
   /api/v1/hooks/configs:
     get:
       description: ''
