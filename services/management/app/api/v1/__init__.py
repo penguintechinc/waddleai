@@ -33,4 +33,5 @@ from . import (  # noqa: I001 -- append-only order, see comment above
     integrations,
     fleet,
     code_repos,
+    graph,
 )
