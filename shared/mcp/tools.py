@@ -120,6 +120,25 @@ class KnowledgeService(Protocol):
         """Fetch a package's docs on demand, populating the cache."""
         ...
 
+    async def get_call_graph(
+        self,
+        *,
+        org_id: int,
+        repo: str,
+        branch: str | None,
+        symbol: str,
+        direction: str,
+        depth: int,
+    ) -> list[dict[str, Any]]:
+        """Call-graph paths from a symbol, org-scoped (spec Section 4a)."""
+        ...
+
+    async def get_class_hierarchy(
+        self, *, org_id: int, repo: str, branch: str | None, symbol: str, direction: str
+    ) -> list[dict[str, Any]]:
+        """Inheritance paths from a symbol, org-scoped (spec Section 4a)."""
+        ...
+
 
 @runtime_checkable
 class MemoryService(Protocol):
@@ -313,6 +332,53 @@ class WaddleAITools:
             ecosystem=ecosystem, package=package, version=version
         )
         return _tag_provenance(result, source="fetch_docs")
+
+    async def get_call_graph(
+        self,
+        repo: str,
+        symbol: str,
+        branch: str | None = None,
+        direction: str = "out",
+        depth: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Call-graph traversal, scoped to the caller's org (spec Section 4a).
+
+        Subject-free like every other method on this class -- ``repo`` is a
+        repo *name*, not an id, and the graph adapter is responsible for
+        resolving it against ``ctx.org_id`` (never a caller-supplied org),
+        so a repo name from another org degrades to an empty result rather
+        than crossing a tenant boundary.
+        """
+        self._require_enabled()
+        return await self._knowledge.get_call_graph(
+            org_id=self._ctx.org_id,
+            repo=repo,
+            branch=branch,
+            symbol=symbol,
+            direction=direction,
+            depth=depth,
+        )
+
+    async def get_class_hierarchy(
+        self,
+        repo: str,
+        symbol: str,
+        branch: str | None = None,
+        direction: str = "out",
+    ) -> list[dict[str, Any]]:
+        """Class-hierarchy traversal, scoped to the caller's org (spec Section 4a).
+
+        See ``get_call_graph`` for the org-scoping/IDOR contract this
+        mirrors.
+        """
+        self._require_enabled()
+        return await self._knowledge.get_class_hierarchy(
+            org_id=self._ctx.org_id,
+            repo=repo,
+            branch=branch,
+            symbol=symbol,
+            direction=direction,
+        )
 
     async def memory_add(self, content: str, scope: str = "session") -> str:
         """Write a memory for the caller.

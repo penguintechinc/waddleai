@@ -59,6 +59,25 @@ class NotWiredKnowledgeService:
         """Not wired yet -- see module docstring."""
         _unavailable("KnowledgeService.fetch_docs")
 
+    async def get_call_graph(
+        self,
+        *,
+        org_id: int,
+        repo: str,
+        branch: str | None,
+        symbol: str,
+        direction: str,
+        depth: int,
+    ) -> list[dict[str, Any]]:
+        """Not wired yet -- see module docstring."""
+        _unavailable("KnowledgeService.get_call_graph")
+
+    async def get_class_hierarchy(
+        self, *, org_id: int, repo: str, branch: str | None, symbol: str, direction: str
+    ) -> list[dict[str, Any]]:
+        """Not wired yet -- see module docstring."""
+        _unavailable("KnowledgeService.get_class_hierarchy")
+
 
 class NotWiredMemoryService:
     """Placeholder ``MemoryService`` -- see module docstring."""
