@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from shared.graph.types import GraphUnavailableError
@@ -39,12 +39,16 @@ class ResolvedInstance:
     """A ready graph instance's connection triple.
 
     Credentials are resolved server-side from env, never accepted from or
-    echoed back to the caller.
+    echoed back to the caller. ``password`` is excluded from the dataclass
+    repr (``field(repr=False)``) -- a plaintext Neo4j password must never
+    surface in a traceback, error reporter, or accidental ``log.info(inst)``
+    of this instance; ``bolt_url``/``user`` stay in repr since they carry no
+    secret and are useful for debugging.
     """
 
     bolt_url: str
     user: str
-    password: str
+    password: str = field(repr=False)
 
 
 def _creds() -> tuple[str, str]:

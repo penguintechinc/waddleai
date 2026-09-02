@@ -11,7 +11,12 @@ from typing import Any
 
 import pytest
 
-from shared.graph.resolver import ensure_dev_instance, resolve_instance, resolve_or_dev
+from shared.graph.resolver import (
+    ResolvedInstance,
+    ensure_dev_instance,
+    resolve_instance,
+    resolve_or_dev,
+)
 from shared.graph.types import GraphUnavailableError
 
 
@@ -134,6 +139,28 @@ async def test_bad_org_id_db_error_is_unavailable_not_raw(monkeypatch: pytest.Mo
     with pytest.raises(GraphUnavailableError) as exc_info:
         await resolve_instance(RaisingDB(), org_id="not-a-number")  # type: ignore[arg-type]
     assert isinstance(exc_info.value.__cause__, ValueError)  # original error preserved, not lost
+
+
+def test_password_excluded_from_repr_but_other_fields_stay() -> None:
+    """The plaintext Neo4j password never surfaces in repr(); bolt_url/user still do.
+
+    Merge-blocker fix: ``ResolvedInstance`` is a plain dataclass repr'd by
+    default logging/tracebacks -- a credential leaking into either is a
+    real exposure path (e.g. an unhandled exception's traceback landing in
+    an error reporter). ``bolt_url``/``user`` are intentionally still
+    present so repr() stays useful for debugging.
+    """
+    inst = ResolvedInstance(
+        bolt_url="bolt://neo4j:7687",
+        user="neo4j",
+        password="the-password",  # noqa: S106 -- test fixture value, not a real secret
+    )
+
+    rendered = repr(inst)
+
+    assert "the-password" not in rendered
+    assert "bolt://neo4j:7687" in rendered
+    assert "neo4j" in rendered
 
 
 @pytest.mark.asyncio

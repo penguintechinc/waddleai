@@ -7,27 +7,79 @@ and always pass `ctx.org_id`), and serializes `GraphPath` results into the
 plain-dict shape MCP tool results carry.
 
 MCP tool semantics differ from the REST surface (`services/management/app/
-api/v1/graph.py`): a REST caller sees an explicit 503/404, but an MCP tool
+api/v1/graph.py`) only in *how* a denial is communicated, never in *what*
+gates access: a REST caller sees an explicit 503/404/403, but an MCP tool
 result silently degrades to an empty list on the `waddleai.graph` flag being
-off, an unresolvable repo name (IDOR-safe: an unknown-or-other-org repo name
-degrades exactly like an empty index, never distinguishing the two), or a
-`GraphUnavailableError` from the graph backend -- never a hang, never a
-raised exception reaching the MCP transport. The two-layer entitlement gate
-(license check) stays on the REST surface only; this adapter's one gate is
-the `waddleai.graph` PostHog flag, fail-safe OFF.
+off, the Enterprise `waddleai_graph` license entitlement being absent, an
+unresolvable repo name (IDOR-safe: an unknown-or-other-org repo name
+degrades exactly like an empty index, never distinguishing the two), a
+`GraphUnavailableError` from the graph backend, or *any other* unexpected
+failure -- never a hang, never a raised exception reaching the MCP
+transport. The two-layer gate (flag + entitlement) is mirrored here exactly
+as REST enforces it (same `waddleai_graph` feature key, same
+`penguin_licensing` product/client construction) -- a Professional-tier org
+must not get the Enterprise graph feature just because it reaches this
+adapter instead of REST.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from shared.graph.client import TenantGraphClient
 from shared.graph.types import MAX_GRAPH_DEPTH, GraphPath, GraphUnavailableError, TenantScope
 from shared.utils.feature_flags import is_feature_enabled
 
+logger = logging.getLogger(__name__)
+
 _FLAG_KEY = "waddleai.graph"
+_LICENSE_FEATURE = "waddleai_graph"
 _DEFAULT_BRANCH = "main"
+
+_license_client: Any = None
+
+
+def _get_license_client() -> Any:
+    """Lazily construct the shared ``penguin_licensing.LicenseClient``.
+
+    Mirrors ``services/management/app/api/v1/graph.py``'s
+    ``_get_license_client`` exactly -- same feature key, same
+    ``product="waddleai"`` (the SDK's own default is ``"elder"`` and would
+    silently check entitlements for the wrong product).
+    """
+    global _license_client
+    if _license_client is None:
+        from penguin_licensing import LicenseClient
+
+        _license_client = LicenseClient(
+            license_key=os.environ.get("LICENSE_KEY", ""),
+            product="waddleai",
+            base_url=os.environ.get("LICENSE_SERVER_URL", "https://license.penguintech.io"),
+        )
+    return _license_client
+
+
+async def _entitled() -> bool:
+    """Enterprise ``waddleai_graph`` entitlement check -- fail-closed on any I/O error.
+
+    Mirrors REST's ``_entitled()`` in ``services/management/app/api/v1/
+    graph.py``. MCP's own degrade-to-empty contract applies on top: an
+    unentitled org (or a license-server I/O failure, treated the same as
+    unentitled) gets ``[]``, never an exception.
+    """
+
+    def _check() -> bool:
+        try:
+            return bool(_get_license_client().check_feature(_LICENSE_FEATURE))
+        except Exception as exc:  # pragma: no cover - defensive, license I/O failure
+            logger.warning("mcp graph: entitlement check failed: %s", exc)
+            return False
+
+    return await asyncio.to_thread(_check)
+
 
 # Mirrors `shared.graph.client`'s private `_Direction` alias -- kept in sync
 # here (rather than imported) since that name is module-private. A `str`
@@ -164,12 +216,16 @@ class GraphKnowledgeService:
         """Call-graph traversal (CALLS) from `symbol`, scoped to `org_id`.
 
         Degrades to `[]` -- never a raise, never a hang -- when the
-        `waddleai.graph` flag is off for this org, `repo` doesn't resolve
-        within `org_id`, or the graph backend raises
-        `GraphUnavailableError`. `depth` is silently clamped to
-        `[1, MAX_GRAPH_DEPTH]` -- see `_clamp_depth`.
+        `waddleai.graph` flag is off for this org, the org lacks the
+        Enterprise `waddleai_graph` entitlement, `repo` doesn't resolve
+        within `org_id`, the graph backend raises `GraphUnavailableError`,
+        or any other unexpected failure occurs (matches REST/the worker's
+        broad catch -- see module docstring). `depth` is silently clamped
+        to `[1, MAX_GRAPH_DEPTH]` -- see `_clamp_depth`.
         """
         if not is_feature_enabled(_FLAG_KEY, distinct_id=str(org_id), default=False):
+            return []
+        if not await _entitled():
             return []
         repo_id = await self._repo_id(org_id, repo)
         if repo_id is None:
@@ -186,6 +242,15 @@ class GraphKnowledgeService:
             )
         except GraphUnavailableError:
             return []
+        except Exception as exc:
+            logger.warning(
+                "mcp graph: call-graph failed org=%s repo=%s symbol=%s: %s",
+                org_id,
+                repo,
+                symbol,
+                exc,
+            )
+            return []
         return _serialize(paths)
 
     async def get_class_hierarchy(
@@ -198,6 +263,8 @@ class GraphKnowledgeService:
         """
         if not is_feature_enabled(_FLAG_KEY, distinct_id=str(org_id), default=False):
             return []
+        if not await _entitled():
+            return []
         repo_id = await self._repo_id(org_id, repo)
         if repo_id is None:
             return []
@@ -209,6 +276,15 @@ class GraphKnowledgeService:
                 scope, symbol, direction=_coerce_direction(direction)
             )
         except GraphUnavailableError:
+            return []
+        except Exception as exc:
+            logger.warning(
+                "mcp graph: class-hierarchy failed org=%s repo=%s symbol=%s: %s",
+                org_id,
+                repo,
+                symbol,
+                exc,
+            )
             return []
         return _serialize(paths)
 

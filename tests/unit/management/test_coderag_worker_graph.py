@@ -19,7 +19,7 @@ are duplicated here rather than fought with per-line ``noqa``s.
 from __future__ import annotations
 
 import pathlib
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import patch as mock_patch
 
 import git
@@ -35,6 +35,22 @@ from tests.unit.management.test_coderag_worker import (
     _insert_repo,
     _mock_embed_cached,
 )
+
+
+def _entitled(monkeypatch: pytest.MonkeyPatch, entitled: bool = True) -> None:
+    """Patch the license-entitlement check for one test.
+
+    Mirrors REST's ``test_graph_api.py``/MCP's ``test_graph_adapter.py``
+    ``_entitled`` helpers -- same feature key, same mock shape, so a real
+    ``penguin_licensing.LicenseClient`` network call never happens in a
+    unit test.
+    """
+    mock_client = MagicMock()
+    mock_client.check_feature.return_value = entitled
+    monkeypatch.setattr(
+        "services.management.app.services.coderag_worker._get_graph_license_client",
+        lambda: mock_client,
+    )
 
 
 @pytest.fixture
@@ -190,6 +206,7 @@ class TestIndexGraphEmission:
         """Flag ON: chunk index + graph emission both happen, scoped to the repo's own org."""
         monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "1")
         monkeypatch.setenv("WADDLEAI_FLAG_GRAPH", "1")
+        _entitled(monkeypatch)
         origin_dir, _origin_git_repo = origin_repo
         repo_id = _insert_repo(fake_db, origin_dir)  # org_id=1 (int) on the repo row
         store = InMemoryGraphStore()
@@ -216,6 +233,7 @@ class TestIndexGraphEmission:
         """Deleting a file from the repo removes its nodes from the graph on re-index."""
         monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "1")
         monkeypatch.setenv("WADDLEAI_FLAG_GRAPH", "1")
+        _entitled(monkeypatch)
         origin_dir, origin_git_repo = origin_repo
         repo_id = _insert_repo(fake_db, origin_dir)
         store = InMemoryGraphStore()
@@ -267,6 +285,7 @@ class TestIndexGraphEmission:
         """A GraphUnavailableError is caught + logged; chunk indexing still completes, no raise."""
         monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "1")
         monkeypatch.setenv("WADDLEAI_FLAG_GRAPH", "1")
+        _entitled(monkeypatch)
         origin_dir, origin_git_repo = origin_repo
         repo_id = _insert_repo(fake_db, origin_dir)
         worker = CodeRagWorker(
@@ -290,6 +309,7 @@ class TestIndexGraphEmission:
         """Any other graph-store exception (not just GraphUnavailableError) is caught too."""
         monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "1")
         monkeypatch.setenv("WADDLEAI_FLAG_GRAPH", "1")
+        _entitled(monkeypatch)
         origin_dir, _origin_git_repo = origin_repo
         repo_id = _insert_repo(fake_db, origin_dir)
 
@@ -327,3 +347,31 @@ class TestIndexGraphEmission:
 
         assert result.index_status == "indexed"
         assert result.graph_status == "skipped"
+
+    @pytest.mark.asyncio
+    async def test_flag_on_not_entitled_skips_graph_emission_but_chunks_still_indexed(
+        self, fake_db: _FakeDB, origin_repo, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flag ON but org lacks the Enterprise `waddleai_graph` entitlement -> graph skipped.
+
+        A Professional-tier org with the flag on must not get graph
+        emission just because the worker (rather than REST/MCP) drives it
+        -- chunk indexing must be completely unaffected by the denial.
+        """
+        monkeypatch.setenv("WADDLEAI_FLAG_CODERAG", "1")
+        monkeypatch.setenv("WADDLEAI_FLAG_GRAPH", "1")
+        _entitled(monkeypatch, entitled=False)
+        origin_dir, _origin_git_repo = origin_repo
+        repo_id = _insert_repo(fake_db, origin_dir)
+        gc = FakeGraphClient()
+        worker = CodeRagWorker(fake_db, workdir=str(tmp_path / "work"), graph_client=gc)
+
+        with mock_patch(_EMBED_CACHED_PATH, new=_mock_embed_cached()):
+            result = await worker.index(repo_id, branch="main")
+
+        assert result.index_status == "indexed"
+        assert result.graph_status == "skipped"
+        assert gc.upserts == []
+        assert gc.edges == []
+        assert gc.deletes == []
+        assert len(fake_db.code_chunks._rows) > 0

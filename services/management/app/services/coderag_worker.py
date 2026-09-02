@@ -13,9 +13,15 @@ the flag off, ``index()`` is a no-op: no clone, no writes.
 
 Alongside chunk indexing, ``index()`` also emits the structural graph
 (Task 9/10's ``extract_graph``) for changed files and scrubs it for
-deleted ones, through the tenant-scoped ``TenantGraphClient`` (Task 8),
-gated on its own ``waddleai.graph`` flag (fail-safe OFF). Graph extraction
-is deterministic tree-sitter parsing -- the >=2B minimum-model rule is N/A,
+deleted ones, through the tenant-scoped ``TenantGraphClient`` (Task 8).
+Two-layer gate, mirroring the REST surface
+(``services/management/app/api/v1/graph.py``): the ``waddleai.graph``
+PostHog flag (fail-safe OFF) AND the Enterprise ``waddleai_graph`` license
+entitlement -- a Professional-tier org with the flag on must not get graph
+emission just because it's driven by the worker instead of a REST/MCP
+call. Either gate failing skips graph emission gracefully, exactly like
+the flag-off path: chunk indexing is never affected. Graph extraction is
+deterministic tree-sitter parsing -- the >=2B minimum-model rule is N/A,
 there is no model anywhere in this path. The graph is an additive,
 best-effort index: any graph-store failure (including an unavailable/
 not-ready instance or a bad org id) is caught, logged, and never fails or
@@ -41,6 +47,53 @@ logger = logging.getLogger(__name__)
 
 _FLAG_KEY = "waddleai.coderag"
 _GRAPH_FLAG_KEY = "waddleai.graph"
+_GRAPH_LICENSE_FEATURE = "waddleai_graph"
+
+_graph_license_client: Any = None
+
+
+def _get_graph_license_client() -> Any:
+    """Lazily construct the shared ``penguin_licensing.LicenseClient``.
+
+    Mirrors ``services/management/app/api/v1/graph.py``'s
+    ``_get_license_client`` exactly -- same feature key, same
+    ``product="waddleai"`` (the SDK's own default is ``"elder"`` and would
+    silently check entitlements for the wrong product). Duplicated locally
+    rather than imported from the API-layer module -- this services module
+    must not depend on ``app.api.v1``, matching the existing per-module
+    license-client convention already used by ``fleet.py``,
+    ``model_access_policies.py``, and ``content_filter_deps.py``.
+    """
+    global _graph_license_client
+    if _graph_license_client is None:
+        from penguin_licensing import LicenseClient
+
+        _graph_license_client = LicenseClient(
+            license_key=os.environ.get("LICENSE_KEY", ""),
+            product="waddleai",
+            base_url=os.environ.get("LICENSE_SERVER_URL", "https://license.penguintech.io"),
+        )
+    return _graph_license_client
+
+
+async def _graph_entitled() -> bool:
+    """Enterprise ``waddleai_graph`` entitlement check -- fail-closed on any I/O error.
+
+    Mirrors REST's ``_entitled()`` in ``services/management/app/api/v1/
+    graph.py`` -- same feature key, same fail-closed-on-error semantics.
+    Unlike REST (which maps a failed check to 403), the worker's own
+    best-effort contract applies on top: not entitled skips graph emission
+    gracefully, exactly like the flag-off path.
+    """
+
+    def _check() -> bool:
+        try:
+            return bool(_get_graph_license_client().check_feature(_GRAPH_LICENSE_FEATURE))
+        except Exception as exc:  # pragma: no cover - defensive, license I/O failure
+            logger.warning("coderag graph: entitlement check failed: %s", exc)
+            return False
+
+    return await asyncio.to_thread(_check)
 
 
 @runtime_checkable
@@ -97,7 +150,8 @@ class IndexResult:
 
     ``graph_status`` is independent of ``index_status`` -- chunk indexing
     can succeed (``"indexed"``) while the graph side is ``"skipped"``
-    (flag off), ``"emitted"`` (graph nodes/edges written), ``"unavailable"``
+    (flag off, or org not ``waddleai_graph``-entitled), ``"emitted"``
+    (graph nodes/edges written), ``"unavailable"``
     (the org's graph instance isn't ready -- resolved cleanly, best-effort
     skip), or ``"error"`` (any other graph-store failure, also best-effort
     skip). The graph is a rebuildable index, so none of those graph
@@ -270,7 +324,7 @@ class CodeRagWorker:
                 await asyncio.to_thread(self._insert_chunk, repo_id, branch_ref, draft, vector)
 
         graph_status = "skipped"
-        if self._graph_enabled(repo_row["org_id"]):
+        if self._graph_enabled(repo_row["org_id"]) and await _graph_entitled():
             try:
                 from shared.graph.client import TenantGraphClient
 

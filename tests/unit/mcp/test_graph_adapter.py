@@ -7,13 +7,15 @@ resolved to a repo_id filtered on that same `org_id`, so an unknown-or-
 other-org repo name degrades to an empty list exactly like a nonexistent
 one (IDOR-safe). Unlike the REST surface (`services/management/app/api/v1/
 graph.py`), MCP tool semantics never raise or hang: the `waddleai.graph`
-flag being off, an unresolvable repo, and `GraphUnavailableError` all
-degrade to `[]`.
+flag being off, the `waddleai_graph` Enterprise entitlement being absent, an
+unresolvable repo, `GraphUnavailableError`, and any other unexpected
+failure all degrade to `[]`.
 """
 
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -60,10 +62,20 @@ class FakeTenantGraphClient:
         self,
         paths: list[GraphPath] | None = None,
         raise_unavailable: bool = False,
+        raise_unexpected: bool = False,
     ) -> None:
-        """Configure the fake's canned response or that it should raise GraphUnavailableError."""
+        """Configure the fake's canned response, or that it should raise on every call.
+
+        ``raise_unexpected`` raises a plain ``RuntimeError`` (never
+        ``GraphUnavailableError``) -- simulates a neo4j `AuthError` or any
+        other unanticipated backend failure (e.g. a misconfigured
+        `WADDLEAI_GRAPH_PASSWORD`), proving the adapter's broad catch
+        degrades to `[]` too, not just the narrow `GraphUnavailableError`
+        case.
+        """
         self._paths = paths or []
         self._raise_unavailable = raise_unavailable
+        self._raise_unexpected = raise_unexpected
         self.call_graph_calls: list[dict[str, Any]] = []
         self.class_hierarchy_calls: list[dict[str, Any]] = []
 
@@ -76,6 +88,8 @@ class FakeTenantGraphClient:
         )
         if self._raise_unavailable:
             raise GraphUnavailableError("graph instance not ready")
+        if self._raise_unexpected:
+            raise RuntimeError("neo4j auth error")
         return self._paths
 
     async def class_hierarchy(
@@ -87,6 +101,8 @@ class FakeTenantGraphClient:
         )
         if self._raise_unavailable:
             raise GraphUnavailableError("graph instance not ready")
+        if self._raise_unexpected:
+            raise RuntimeError("neo4j auth error")
         return self._paths
 
 
@@ -99,16 +115,28 @@ def _enable_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WADDLEAI_FLAG_GRAPH", "1")
 
 
+def _entitled(monkeypatch: pytest.MonkeyPatch, entitled: bool = True) -> None:
+    """Patch the license-entitlement check for one test (mirrors REST's `test_graph_api.py`)."""
+    mock_client = MagicMock()
+    mock_client.check_feature.return_value = entitled
+    monkeypatch.setattr(
+        "shared.mcp.graph_adapter._get_license_client",
+        lambda: mock_client,
+    )
+
+
 def _service(
     monkeypatch: pytest.MonkeyPatch,
     *,
     rows: list[tuple[int, str, int]] | None = None,
     client: FakeTenantGraphClient | None = None,
     flag_on: bool = True,
+    entitled: bool = True,
 ) -> tuple[GraphKnowledgeService, _FakeDB, FakeTenantGraphClient]:
-    """Build a `GraphKnowledgeService` wired to fakes; flag on by default."""
+    """Build a `GraphKnowledgeService` wired to fakes; flag on + entitled by default."""
     if flag_on:
         _enable_flag(monkeypatch)
+    _entitled(monkeypatch, entitled)
     db = _FakeDB(rows if rows is not None else _TWO_ORG_ROWS)
     fake_client = client or FakeTenantGraphClient()
     service = GraphKnowledgeService(db, client=fake_client)
@@ -231,6 +259,46 @@ async def test_get_call_graph_flag_off_returns_empty_without_touching_db_or_clie
     assert client.call_graph_calls == []
 
 
+@pytest.mark.asyncio
+async def test_get_call_graph_not_entitled_returns_empty_without_touching_db_or_client(
+    monkeypatch,
+):
+    """Flag on but no Enterprise `waddleai_graph` entitlement -> [] (never REST's 403).
+
+    A Professional-tier org with the flag on must not get the Enterprise
+    graph feature just by reaching the MCP surface instead of REST.
+    """
+    service, db, client = _service(monkeypatch, entitled=False)
+
+    result = await service.get_call_graph(
+        org_id=7, repo="widgets", branch=None, symbol="a", direction="out", depth=3
+    )
+
+    assert result == []
+    assert db.calls == []
+    assert client.call_graph_calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_call_graph_unexpected_error_returns_empty_list_not_a_raise(monkeypatch):
+    """A non-GraphUnavailableError failure (e.g. neo4j AuthError) still degrades to [].
+
+    Before this fix, only `GraphUnavailableError` was caught -- any other
+    exception (a misconfigured `WADDLEAI_GRAPH_PASSWORD` surfacing as a
+    neo4j `AuthError`, for instance) would leak raw to the MCP transport,
+    contradicting this adapter's own degrade-to-[] contract.
+    """
+    service, _db, _client = _service(
+        monkeypatch, client=FakeTenantGraphClient(raise_unexpected=True)
+    )
+
+    result = await service.get_call_graph(
+        org_id=7, repo="widgets", branch=None, symbol="a", direction="out", depth=3
+    )
+
+    assert result == []
+
+
 # ---------------------------------------------------------------------------
 # get_class_hierarchy
 # ---------------------------------------------------------------------------
@@ -311,6 +379,36 @@ async def test_get_class_hierarchy_flag_off_returns_empty_without_touching_db_or
     assert result == []
     assert db.calls == []
     assert client.class_hierarchy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_class_hierarchy_not_entitled_returns_empty_without_touching_db_or_client(
+    monkeypatch,
+):
+    """Flag on but no Enterprise `waddleai_graph` entitlement -> [] (never REST's 403)."""
+    service, db, client = _service(monkeypatch, entitled=False)
+
+    result = await service.get_class_hierarchy(
+        org_id=7, repo="widgets", branch=None, symbol="Base", direction="out"
+    )
+
+    assert result == []
+    assert db.calls == []
+    assert client.class_hierarchy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_class_hierarchy_unexpected_error_returns_empty_list_not_a_raise(monkeypatch):
+    """A non-GraphUnavailableError failure still degrades to [] -- see the call-graph twin test."""
+    service, _db, _client = _service(
+        monkeypatch, client=FakeTenantGraphClient(raise_unexpected=True)
+    )
+
+    result = await service.get_class_hierarchy(
+        org_id=7, repo="widgets", branch=None, symbol="Base", direction="out"
+    )
+
+    assert result == []
 
 
 # ---------------------------------------------------------------------------
