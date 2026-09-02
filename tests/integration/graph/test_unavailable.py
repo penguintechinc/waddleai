@@ -2,8 +2,9 @@
 
 (spec Section 8c)
 
-Two distinct unavailability shapes, both consumer-facing as
-`GraphUnavailableError` (the type `services/management/app/api/v1/graph.py`
+Three distinct unavailability shapes, ALL consumer-facing as
+`GraphUnavailableError` -- and only `GraphUnavailableError`, never a raw
+`neo4j`/DB exception (the type `services/management/app/api/v1/graph.py`
 and the MCP graph adapter map to a clean 503/empty result -- see those
 modules' docstrings):
 
@@ -14,21 +15,31 @@ modules' docstrings):
    in the environment while this proof runs -- demonstrating the rejection
    is a DB-row decision, not an accidental side effect of no server being
    reachable at all.
-2. A `ResolvedInstance` that resolves cleanly but points at an unreachable
-   `bolt_url` (dead port, no listener) -- `create_neo4j_store` +
-   `TenantGraphClient` must surface a clean failure within the driver's own
-   bounded connection/acquisition timeouts (`create_neo4j_store`), not hang
-   the caller. Proven with a real `asyncio.wait_for` cap around the call:
-   the whole point of "never a hang" is a bounded-time assertion, not "it
+2. A `ready` row whose `bolt_url` resolves cleanly but points at an
+   unreachable Neo4j (dead port, no listener) -- `create_neo4j_store` +
+   `TenantGraphClient` must surface `GraphUnavailableError` (NOT a raw
+   `neo4j.exceptions.ServiceUnavailable`) within the driver's own bounded
+   connection/acquisition timeouts (`create_neo4j_store`), never hang the
+   caller. The `neo4j`-exception -> `GraphUnavailableError` translation
+   happens at the vendor-abstraction boundary in `Neo4jGraphStore._run`
+   (`shared/graph/drivers/neo4j_driver.py`) so every consumer downstream of
+   the client gets clean behavior automatically, with no per-consumer catch
+   needed. Proven with a real `asyncio.wait_for` cap around the call: the
+   whole point of "never a hang" is a bounded-time assertion, not "it
    raises eventually".
+3. A malformed/non-numeric `org_id` reaching `resolve_instance` (carry-
+   forward from Task 8's review) -- must fail closed as
+   `GraphUnavailableError`, never leak a raw DB exception; see
+   `tests/unit/graph/test_resolver.py::test_bad_org_id_db_error_is_unavailable_not_raw`
+   for the fast unit-level proof (this module adds the same assertion here
+   for completeness, still without needing live Postgres -- see the
+   module's own `_RaisingDB` fake below).
 
-Also closes a carry-forward from Task 8's review: a malformed/non-numeric
-`org_id` reaching `resolve_instance` must fail closed as
-`GraphUnavailableError`, never leak a raw DB exception -- see
-`tests/unit/graph/test_resolver.py::test_bad_org_id_db_error_is_unavailable_not_raw`
-for the fast unit-level proof (this module adds the same assertion here
-for completeness, still without needing live Postgres -- see the module's
-own `RaisingDB` fake below).
+The driver-level translation itself (shape 2's mechanism, plus the proof
+that a genuine query/logic bug like `CypherSyntaxError` is NOT masked by
+it) is unit-tested in `tests/unit/graph/test_neo4j_store.py` with a fake
+driver -- this module's job is proving it end-to-end against a real
+`neo4j` driver and a real refused TCP connection.
 """
 
 from __future__ import annotations
@@ -143,7 +154,7 @@ async def test_bad_org_id_fails_closed_not_raw_exception() -> None:
 
 
 async def test_unreachable_bolt_fails_within_bounded_timeout() -> None:
-    """A dead bolt_url surfaces a clean failure within a bounded timeout -- never a hang.
+    """A dead bolt_url surfaces `GraphUnavailableError` within a bounded timeout -- never a hang.
 
     Port 9 is `discard` (RFC 863) if anything, but nothing binds a Neo4j
     bolt listener there -- the OS refuses the TCP connection immediately,
@@ -152,6 +163,15 @@ async def test_unreachable_bolt_fails_within_bounded_timeout() -> None:
     `create_neo4j_store`'s driver-level timeouts (`shared/graph/drivers/
     neo4j_driver.py`) were ever removed or misconfigured, this test would
     time out and fail loudly rather than hang the whole suite.
+
+    Asserts `GraphUnavailableError` specifically (not just "some
+    exception") -- `Neo4jGraphStore._run` (`shared/graph/drivers/
+    neo4j_driver.py`) maps the driver's `neo4j.exceptions.ServiceUnavailable`
+    at the vendor-abstraction boundary, so this must never surface as a raw
+    `neo4j` exception to `TenantGraphClient` callers (client -> MCP adapter
+    -> REST -> worker all key off `GraphUnavailableError` alone; a
+    `ready`-but-unreachable instance is otherwise indistinguishable from a
+    real bug at every one of those layers).
     """
 
     async def _dead_resolver(_db: object, _org_id: object) -> ResolvedInstance:
@@ -168,8 +188,9 @@ async def test_unreachable_bolt_fails_within_bounded_timeout() -> None:
     # `TimeoutError` (what a genuine hang produces) IS an `Exception`, so that
     # would silently treat a hang as "the expected failure" and pass -- exactly
     # the gate-that-cannot-fail bug this test exists to avoid. `TimeoutError`
-    # is caught and explicitly failed; any other exception is the expected
-    # driver-connectivity failure.
+    # is caught and explicitly failed; a `GraphUnavailableError` is the
+    # expected driver-connectivity failure; anything else (a raw `neo4j`
+    # exception, or no exception at all) is also an explicit failure.
     start = time.monotonic()
     connectivity_error: BaseException | None = None
     try:
@@ -183,14 +204,20 @@ async def test_unreachable_bolt_fails_within_bounded_timeout() -> None:
             f"unreachable-bolt query hung past the {_UNREACHABLE_BOLT_CAP_SECS}s bound "
             f"(elapsed {elapsed:.3f}s) -- this IS the failure this test exists to catch"
         )
-    except Exception as exc:  # noqa: BLE001 -- any non-timeout failure is the expected driver-connectivity error
+    except GraphUnavailableError as exc:
         connectivity_error = exc
+    except Exception as exc:  # noqa: BLE001 -- surfaced below as an explicit assertion failure, not swallowed
+        pytest.fail(
+            f"unreachable-bolt query leaked a raw {type(exc).__name__} instead of "
+            f"GraphUnavailableError: {exc}"
+        )
 
     elapsed = time.monotonic() - start
     assert connectivity_error is not None, (
-        "expected a connectivity failure against a dead bolt port, got none -- "
+        "expected a GraphUnavailableError against a dead bolt port, got none -- "
         "port 9 unexpectedly accepted a bolt handshake?"
     )
+    assert isinstance(connectivity_error, GraphUnavailableError)
     assert elapsed < _UNREACHABLE_BOLT_CAP_SECS, (
         f"unreachable-bolt query took {elapsed:.3f}s -- did not fail fast"
     )

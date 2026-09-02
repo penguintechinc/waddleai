@@ -29,6 +29,7 @@ import re
 from typing import TYPE_CHECKING, Any, Literal
 
 from neo4j import AsyncGraphDatabase
+from neo4j.exceptions import ServiceUnavailable, SessionExpired
 
 from shared.graph.types import (
     _EDGE_TYPES,
@@ -37,6 +38,7 @@ from shared.graph.types import (
     GraphQuery,
     GraphRecord,
     GraphScopeError,
+    GraphUnavailableError,
     TenantScope,
 )
 
@@ -246,10 +248,32 @@ class Neo4jGraphStore:
         arguments -- the Neo4j driver's own parameterization, never string
         formatting -- so this method cannot introduce an injection path even
         if a `compile_*` function above ever did.
+
+        This is the vendor-abstraction boundary for connectivity failures:
+        `ServiceUnavailable`/`SessionExpired` (and their subclasses, e.g.
+        `ReadServiceUnavailable`) mean the instance can't be reached or used
+        right now -- caught here and re-raised as `GraphUnavailableError`
+        (chain-preserved via `from exc`) so no `neo4j`-specific exception
+        ever escapes this module (spec's vendor-abstraction requirement;
+        also closes the "ready row, but Neo4j is actually unreachable"
+        variant of Task 17's unavailability proof). Deliberately narrow: a
+        real query/logic bug (`CypherSyntaxError`, `ClientError`, ...) or
+        this module's own `GraphScopeError` must still propagate unchanged
+        -- swallowing those under `GraphUnavailableError` would hide actual
+        bugs behind a "just degrade gracefully" response. `AuthError` is
+        deliberately NOT included even though a bad credential also makes
+        the instance unusable: it is a `ClientError`/`Neo4jError` (the
+        server responded), not a `DriverError` connectivity failure, and a
+        misconfigured credential is a loud-failure operator bug, not a
+        transient "instance not ready" condition -- conflating the two
+        would make a credential misconfiguration invisible behind a 503.
         """
-        async with self._driver.session() as session:
-            result = await session.run(cypher, **params)
-            return await result.data()
+        try:
+            async with self._driver.session() as session:
+                result = await session.run(cypher, **params)
+                return await result.data()
+        except (ServiceUnavailable, SessionExpired) as exc:
+            raise GraphUnavailableError(f"neo4j connectivity failure: {exc}") from exc
 
     async def upsert_node(
         self, tenant: TenantScope, label: str, key: str, properties: dict[str, Any]

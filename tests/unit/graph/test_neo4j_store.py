@@ -15,9 +15,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from neo4j.exceptions import CypherSyntaxError, ServiceUnavailable, SessionExpired
 
 from shared.graph.drivers.neo4j_driver import Neo4jGraphStore, create_neo4j_store
-from shared.graph.types import GraphQuery, TenantScope
+from shared.graph.types import GraphQuery, GraphUnavailableError, TenantScope
 
 SCOPE = TenantScope(org_id="7", repo_id="42", branch_ref="main")
 
@@ -35,6 +36,24 @@ def _driver_returning(rows: list[dict[str, Any]]) -> tuple[MagicMock, AsyncMock]
     driver.session = MagicMock(return_value=session_cm)
     driver.close = AsyncMock()
     return driver, session
+
+
+def _driver_raising(exc: Exception) -> MagicMock:
+    """Build a fake async driver whose `session.run()` raises `exc`.
+
+    Mirrors `_driver_returning`'s session/context-manager shape exactly,
+    substituting a `side_effect` for the return value -- proves
+    `Neo4jGraphStore._run`'s exception mapping without a live driver.
+    """
+    session = AsyncMock()
+    session.run = AsyncMock(side_effect=exc)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=None)
+    driver = MagicMock()
+    driver.session = MagicMock(return_value=session_cm)
+    driver.close = AsyncMock()
+    return driver
 
 
 @pytest.mark.asyncio
@@ -127,3 +146,51 @@ async def test_create_neo4j_store_builds_bounded_timeout_driver() -> None:
         assert store._driver is not None
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_service_unavailable_maps_to_graph_unavailable_error() -> None:
+    """A `ServiceUnavailable` from `session.run()` is re-raised as `GraphUnavailableError`.
+
+    The vendor-abstraction boundary this task closes: a `ready` graph
+    instance whose Neo4j is actually unreachable must not leak a raw
+    `neo4j` exception to consumers (client -> MCP adapter -> REST). The
+    original exception is preserved via `from exc` for debugging.
+    """
+    driver = _driver_raising(
+        ServiceUnavailable(  # type: ignore[no-untyped-call]  # neo4j's own __init__ is unannotated
+            "no route to host"
+        )
+    )
+    with pytest.raises(GraphUnavailableError) as exc_info:
+        await Neo4jGraphStore(driver).query(SCOPE, GraphQuery(labels=("Class",)))
+    assert isinstance(exc_info.value.__cause__, ServiceUnavailable)
+
+
+@pytest.mark.asyncio
+async def test_session_expired_maps_to_graph_unavailable_error() -> None:
+    """`SessionExpired` (the other connectivity-class driver error) maps the same way."""
+    driver = _driver_raising(
+        SessionExpired(  # type: ignore[no-untyped-call]  # neo4j's own __init__ is unannotated
+            "session expired"
+        )
+    )
+    with pytest.raises(GraphUnavailableError) as exc_info:
+        await Neo4jGraphStore(driver).query(SCOPE, GraphQuery(labels=("Class",)))
+    assert isinstance(exc_info.value.__cause__, SessionExpired)
+
+
+@pytest.mark.asyncio
+async def test_cypher_syntax_error_is_not_masked() -> None:
+    """A real query/logic bug (`CypherSyntaxError`) propagates unchanged -- NOT swallowed.
+
+    Mutation-style proof that the exception mapping in `Neo4jGraphStore._run`
+    is scoped precisely to connectivity failures: if this ever regressed to
+    a broad `except Exception`, this test would start failing (the error
+    would silently become a `GraphUnavailableError` instead), which is
+    exactly the "hide a real bug behind graceful degradation" failure mode
+    the narrow scoping exists to prevent.
+    """
+    driver = _driver_raising(CypherSyntaxError("Invalid input"))
+    with pytest.raises(CypherSyntaxError):
+        await Neo4jGraphStore(driver).query(SCOPE, GraphQuery(labels=("Class",)))
