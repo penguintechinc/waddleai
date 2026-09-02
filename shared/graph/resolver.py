@@ -62,13 +62,20 @@ async def resolve_instance(db: _SqlDB, org_id: int) -> ResolvedInstance:
     row with status='ready' and a non-empty bolt_url yields an instance;
     everything else (missing row, pending/provisioning/failed/
     deprovisioning/deprovisioned, or a ready row with no bolt_url yet)
-    raises immediately -- a prompt signal, never a hang.
+    raises immediately -- a prompt signal, never a hang. A malformed org_id
+    (e.g. a non-numeric string reaching an integer `org_id` column) fails
+    the same way: the DB driver's own type error is caught and re-raised as
+    GraphUnavailableError, never leaked to the caller as a raw DB exception
+    (carry-forward from Task 8's review).
     """
-    rows = await asyncio.to_thread(
-        db.executesql,
-        "SELECT status, bolt_url FROM graph_instances WHERE org_id = %s LIMIT 1",  # nosec B608 -- fixed literal, org_id bound via executesql params
-        [org_id],
-    )
+    try:
+        rows = await asyncio.to_thread(
+            db.executesql,
+            "SELECT status, bolt_url FROM graph_instances WHERE org_id = %s LIMIT 1",  # nosec B608 -- fixed literal, org_id bound via executesql params
+            [org_id],
+        )
+    except Exception as exc:
+        raise GraphUnavailableError(f"graph instance lookup failed for org {org_id}") from exc
     row = rows[0] if rows else None
     if row is None or row[0] != _READY or not row[1]:
         raise GraphUnavailableError(f"graph instance for org {org_id} is not ready")

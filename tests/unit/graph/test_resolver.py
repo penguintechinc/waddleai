@@ -104,6 +104,38 @@ async def test_no_dev_and_no_row_is_unavailable(monkeypatch: pytest.MonkeyPatch)
         await resolve_or_dev(FakeDB(None), org_id=7)
 
 
+class RaisingDB:
+    """A db stand-in whose `executesql` raises, simulating a real driver's type error.
+
+    Models what a real Postgres `org_id` integer column does when handed a
+    non-numeric value (e.g. `psycopg2.errors.InvalidTextRepresentation:
+    invalid input syntax for type integer: "not-a-number"`) -- FakeDB above
+    doesn't validate types at all, so it can't exercise this path.
+    """
+
+    def executesql(self, sql: str, params: list[Any] | None = None) -> list[tuple]:
+        """Always raise, regardless of the query -- the DB driver rejected the params."""
+        raise ValueError('invalid input syntax for type integer: "not-a-number"')
+
+    def commit(self) -> None:
+        """No-op -- never reached."""
+
+
+@pytest.mark.asyncio
+async def test_bad_org_id_db_error_is_unavailable_not_raw(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-numeric org_id that trips the DB driver's own type check fails closed.
+
+    Carry-forward from Task 8's review: `TenantGraphClient` passes
+    `scope.org_id` (str) straight through without coercion (see
+    `shared/graph/client.py`'s module docstring), so a malformed value can
+    reach `resolve_instance` unfiltered. The lookup must fail closed as
+    `GraphUnavailableError`, never leak the raw DB exception.
+    """
+    with pytest.raises(GraphUnavailableError) as exc_info:
+        await resolve_instance(RaisingDB(), org_id="not-a-number")  # type: ignore[arg-type]
+    assert isinstance(exc_info.value.__cause__, ValueError)  # original error preserved, not lost
+
+
 @pytest.mark.asyncio
 async def test_dev_mode_upsert_is_parameterized(monkeypatch: pytest.MonkeyPatch) -> None:
     """The dev-mode upsert binds org_id/bolt_url as params, never string-formats them in."""
