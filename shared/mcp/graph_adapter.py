@@ -23,7 +23,7 @@ import asyncio
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from shared.graph.client import TenantGraphClient
-from shared.graph.types import GraphPath, GraphUnavailableError, TenantScope
+from shared.graph.types import MAX_GRAPH_DEPTH, GraphPath, GraphUnavailableError, TenantScope
 from shared.utils.feature_flags import is_feature_enabled
 
 _FLAG_KEY = "waddleai.graph"
@@ -54,6 +54,27 @@ def _coerce_direction(direction: str) -> _Direction:
     if direction in _VALID_DIRECTIONS:
         return cast(_Direction, direction)
     return "out"
+
+
+_MIN_GRAPH_DEPTH = 1
+
+
+def _clamp_depth(depth: int) -> int:
+    """Bound an MCP-tool-supplied `depth` to `[1, MAX_GRAPH_DEPTH]`.
+
+    `TenantGraphClient.call_graph` forwards `depth` straight into the
+    driver's `[:REL*1..{depth}]` variable-length Cypher pattern -- an
+    unbounded value there is an expensive-traversal / availability risk,
+    sharper still in Phase-1 dev-mode where every org resolves to one
+    shared Neo4j instance (one org's oversized query can degrade every
+    other tenant). Mirrors the REST route's `_MAX_DEPTH` bound
+    (`services/management/app/api/v1/graph.py`), sourced from the same
+    `shared.graph.types.MAX_GRAPH_DEPTH` constant so the two surfaces
+    can't drift apart. Unlike the REST route, this silently clamps rather
+    than erroring -- MCP tool semantics degrade gracefully on a cosmetic
+    input mistake rather than failing the call.
+    """
+    return max(_MIN_GRAPH_DEPTH, min(depth, MAX_GRAPH_DEPTH))
 
 
 @runtime_checkable
@@ -145,7 +166,8 @@ class GraphKnowledgeService:
         Degrades to `[]` -- never a raise, never a hang -- when the
         `waddleai.graph` flag is off for this org, `repo` doesn't resolve
         within `org_id`, or the graph backend raises
-        `GraphUnavailableError`.
+        `GraphUnavailableError`. `depth` is silently clamped to
+        `[1, MAX_GRAPH_DEPTH]` -- see `_clamp_depth`.
         """
         if not is_feature_enabled(_FLAG_KEY, distinct_id=str(org_id), default=False):
             return []
@@ -157,7 +179,10 @@ class GraphKnowledgeService:
         )
         try:
             paths = await self._client.call_graph(
-                scope, symbol, direction=_coerce_direction(direction), depth=depth
+                scope,
+                symbol,
+                direction=_coerce_direction(direction),
+                depth=_clamp_depth(depth),
             )
         except GraphUnavailableError:
             return []

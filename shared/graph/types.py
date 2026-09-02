@@ -13,6 +13,16 @@ from typing import Any
 _NODE_LABELS = frozenset({"Module", "Class", "Method", "Function", "Field"})
 _EDGE_TYPES = frozenset({"CALLS", "EXTENDS", "IMPLEMENTS", "CONTAINS", "REFERENCES"})
 
+# Shared upper bound on a traversal's `depth`/`max_depth` -- every consumer
+# (REST `services/management/app/api/v1/graph.py`, MCP
+# `shared/mcp/graph_adapter.py` and `shared/mcp/tools.py`) clamps to this
+# same constant rather than each hand-rolling its own literal, since it
+# ultimately bounds the `[:REL*1..{depth}]` variable-length Cypher pattern
+# `shared/graph/drivers/neo4j_driver.py` builds -- an unbounded value there
+# is an expensive-traversal / availability risk, sharper still in Phase-1
+# dev-mode where every org resolves to one shared Neo4j instance.
+MAX_GRAPH_DEPTH = 10
+
 
 class GraphUnavailableError(RuntimeError):
     """The org's graph instance is not ready/reachable.

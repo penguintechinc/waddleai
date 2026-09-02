@@ -39,6 +39,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from shared.graph.types import MAX_GRAPH_DEPTH
 from shared.utils.feature_flags import is_feature_enabled
 
 MCP_V2_FLAG = "waddleai.mcp_v2"
@@ -347,16 +348,22 @@ class WaddleAITools:
         repo *name*, not an id, and the graph adapter is responsible for
         resolving it against ``ctx.org_id`` (never a caller-supplied org),
         so a repo name from another org degrades to an empty result rather
-        than crossing a tenant boundary.
+        than crossing a tenant boundary. ``depth`` is clamped to
+        ``[1, MAX_GRAPH_DEPTH]`` here too -- the same defense-in-depth
+        reasoning as ``set_preference``'s weight clamp: this method should
+        never forward an unbounded traversal depth to *any*
+        ``KnowledgeService`` implementation, not only the real
+        ``GraphKnowledgeService`` adapter (which clamps again on its own).
         """
         self._require_enabled()
+        clamped_depth = max(1, min(depth, MAX_GRAPH_DEPTH))
         return await self._knowledge.get_call_graph(
             org_id=self._ctx.org_id,
             repo=repo,
             branch=branch,
             symbol=symbol,
             direction=direction,
-            depth=depth,
+            depth=clamped_depth,
         )
 
     async def get_class_hierarchy(

@@ -27,7 +27,7 @@ from typing import Any, Literal, Protocol, cast
 from quart import g, jsonify, request
 
 from shared.graph.client import TenantGraphClient
-from shared.graph.types import GraphPath, GraphUnavailableError, TenantScope
+from shared.graph.types import MAX_GRAPH_DEPTH, GraphPath, GraphUnavailableError, TenantScope
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
@@ -49,7 +49,9 @@ _Direction = Literal["in", "out", "both"]
 
 _VALID_DIRECTIONS = frozenset({"in", "out", "both"})
 _DEFAULT_DEPTH = 3
-_MAX_DEPTH = 10
+# Shared with the MCP graph adapter (shared/graph/types.py) so the two
+# surfaces can't drift apart on the traversal-depth cost bound.
+_MAX_DEPTH = MAX_GRAPH_DEPTH
 
 _license_client: Any = None
 

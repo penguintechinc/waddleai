@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from shared.graph.types import GraphPath, GraphUnavailableError, TenantScope
+from shared.graph.types import MAX_GRAPH_DEPTH, GraphPath, GraphUnavailableError, TenantScope
 from shared.mcp.graph_adapter import GraphKnowledgeService
 
 # ---------------------------------------------------------------------------
@@ -338,3 +338,64 @@ async def test_default_tenant_graph_client_constructed_when_none_injected():
     service = GraphKnowledgeService(_FakeDB([]))
 
     assert isinstance(service._client, TenantGraphClient)  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Depth clamping (fix round 1: unbounded `depth` -> expensive Cypher traversal)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_call_graph_clamps_a_very_large_depth_to_max_graph_depth(monkeypatch):
+    """A caller-supplied depth far above MAX_GRAPH_DEPTH is clamped, never forwarded raw.
+
+    Asserts the *forwarded* depth is bounded, not just that the call
+    doesn't raise -- an unclamped depth reaching TenantGraphClient.call_graph
+    drives an expensive [:REL*1..{depth}] Cypher traversal, sharper in
+    Phase-1 dev-mode where every org shares one Neo4j instance.
+    """
+    service, _db, client = _service(monkeypatch)
+
+    await service.get_call_graph(
+        org_id=7, repo="widgets", branch=None, symbol="a", direction="out", depth=1_000_000
+    )
+
+    assert client.call_graph_calls[0]["depth"] == MAX_GRAPH_DEPTH
+    assert client.call_graph_calls[0]["depth"] <= MAX_GRAPH_DEPTH
+
+
+@pytest.mark.asyncio
+async def test_get_call_graph_clamp_is_silent_not_an_error(monkeypatch):
+    """An oversized depth degrades gracefully (clamped result), never raises."""
+    service, _db, client = _service(monkeypatch, client=FakeTenantGraphClient(paths=[]))
+
+    result = await service.get_call_graph(
+        org_id=7, repo="widgets", branch=None, symbol="a", direction="out", depth=999
+    )
+
+    assert result == []
+    assert client.call_graph_calls[0]["depth"] == MAX_GRAPH_DEPTH
+
+
+@pytest.mark.asyncio
+async def test_get_call_graph_clamps_a_non_positive_depth_up_to_the_minimum(monkeypatch):
+    """A zero/negative depth is clamped up to 1, not forwarded as-is."""
+    service, _db, client = _service(monkeypatch)
+
+    await service.get_call_graph(
+        org_id=7, repo="widgets", branch=None, symbol="a", direction="out", depth=0
+    )
+
+    assert client.call_graph_calls[0]["depth"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_call_graph_leaves_an_in_range_depth_unchanged(monkeypatch):
+    """A depth already within [1, MAX_GRAPH_DEPTH] passes through unmodified."""
+    service, _db, client = _service(monkeypatch)
+
+    await service.get_call_graph(
+        org_id=7, repo="widgets", branch=None, symbol="a", direction="out", depth=5
+    )
+
+    assert client.call_graph_calls[0]["depth"] == 5

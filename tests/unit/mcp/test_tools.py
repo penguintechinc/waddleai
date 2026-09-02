@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from shared.graph.types import MAX_GRAPH_DEPTH
 from shared.mcp.tools import (
     ADMIN_READ_MAX_AGE_SECONDS,
     ADMIN_WRITE_MAX_AGE_SECONDS,
@@ -111,7 +112,7 @@ class TestWaddleAIToolsHappyPath:
     async def test_get_call_graph_forwards_explicit_branch_direction_depth(
         self, user_tools, collaborators
     ):
-        """Explicit branch/direction/depth pass through unchanged."""
+        """Explicit branch/direction/depth pass through unchanged (depth within bounds)."""
         collaborators["knowledge"].get_call_graph.return_value = []
         await user_tools.get_call_graph(
             "widgets", "handler", branch="dev", direction="both", depth=5
@@ -119,6 +120,30 @@ class TestWaddleAIToolsHappyPath:
         collaborators["knowledge"].get_call_graph.assert_awaited_once_with(
             org_id=1, repo="widgets", branch="dev", symbol="handler", direction="both", depth=5
         )
+
+    async def test_get_call_graph_clamps_a_very_large_depth_before_delegating(
+        self, user_tools, collaborators
+    ):
+        """A very large caller-supplied depth is clamped before the collaborator call.
+
+        Defense-in-depth alongside GraphKnowledgeService's own clamp: this
+        method should never forward an unbounded depth to *any*
+        KnowledgeService implementation.
+        """
+        collaborators["knowledge"].get_call_graph.return_value = []
+        await user_tools.get_call_graph("widgets", "handler", depth=1_000_000)
+        forwarded_depth = collaborators["knowledge"].get_call_graph.await_args.kwargs["depth"]
+        assert forwarded_depth == MAX_GRAPH_DEPTH
+        assert forwarded_depth <= MAX_GRAPH_DEPTH
+
+    async def test_get_call_graph_clamps_a_non_positive_depth_up_to_the_minimum(
+        self, user_tools, collaborators
+    ):
+        """A zero/negative depth is clamped up to 1 before the collaborator call."""
+        collaborators["knowledge"].get_call_graph.return_value = []
+        await user_tools.get_call_graph("widgets", "handler", depth=-5)
+        forwarded_depth = collaborators["knowledge"].get_call_graph.await_args.kwargs["depth"]
+        assert forwarded_depth == 1
 
     async def test_get_class_hierarchy_scopes_to_caller_org_and_defaults(
         self, user_tools, collaborators
