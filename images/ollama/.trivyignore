@@ -13,6 +13,17 @@
 # modules, or a from-source rebuild with a current Go toolchain — the latter
 # is explicitly out of scope for spec §10.2 ("digest-pinned upstream base",
 # not a from-source rebuild).
+#
+# CVE-2026-56854 and CVE-2026-46603 added 2026-09-03. Both are newly
+# published/scored Go module CVEs; empirical verification (2026-09-03) shows:
+#   - x/crypto: ollama 0.33.2 (latest stable) still vendors v0.43.0 (unfixed)
+#   - x/image: ollama 0.33.2 (latest stable) still vendors v0.22.0 (unfixed)
+# NO released Ollama version carries the fixed module versions (0.55.0/0.45.0)
+# yet. Additionally, CVE-2026-56854 (x/crypto/ssh server-side auth callback
+# bypass) is unreachable in this deployment: Ollama uses x/crypto/ssh
+# client-only (registry auth to ollama.com) and runs no SSH daemon.
+# Review by 2026-12-03 or whenever ollama 0.34.x or later is released,
+# whichever comes first.
 CVE-2026-25679
 CVE-2026-25681
 CVE-2026-27136
@@ -42,7 +53,9 @@ CVE-2026-46595
 CVE-2026-46597
 CVE-2026-46600
 CVE-2026-46602
+CVE-2026-46603
 CVE-2026-56852
+CVE-2026-56854
 
 # Added 2026-08-22 -- same root cause as the block above (still
 # ollama/ollama:0.32.13's vendored `stdlib`/`golang.org/x/mod` build info),
@@ -124,3 +137,14 @@ CVE-2026-14456
 # first.
 CVE-2026-11822
 CVE-2026-11824
+
+# Added 2026-09-03 -- libsystemd0/libudev1 CVE-2026-16742 (systemd-homed local
+# privilege escalation via missing home-record signature verification, HIGH).
+# Part of debian:trixie-slim's base rootfs (systemd 257.13-1~deb13u1). Trivy
+# status "affected", FixedVersion: None (confirmed via `trivy image
+# --format json` and `apt-cache policy libsystemd0`); Candidate == Installed
+# on both trixie/main and trixie-security, so Debian security has not shipped
+# a patched package yet -- no version of this Dockerfile can resolve this
+# today. Review by 2026-12-03 or whenever `apt-cache policy libsystemd0`
+# shows a newer candidate, whichever comes first.
+CVE-2026-16742
