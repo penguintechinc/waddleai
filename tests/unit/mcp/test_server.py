@@ -65,7 +65,7 @@ def _flag_on(monkeypatch):
 class TestUserServerToolList:
     """Tool-list contents for the `/mcp` user server."""
 
-    async def test_user_server_exposes_exactly_the_nine_tools_plus_set_preference(self):
+    async def test_user_server_exposes_exactly_user_tool_names(self):
         """The user server's list_tools() equals USER_TOOL_NAMES exactly."""
         names = await _list_tool_names(build_user_server(_user_tools()))
         assert names == USER_TOOL_NAMES

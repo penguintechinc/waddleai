@@ -1,6 +1,7 @@
 .PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-e2e test-functional test-security \
         test-contract smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
-        seed-mock-data clean pre-commit generate-openapi openapi-lint
+        seed-mock-data clean pre-commit generate-openapi openapi-lint \
+        graph-neo4j-up graph-neo4j-down test-graph-integration
 
 # Every python invocation goes through the repo venv when it exists, and only
 # falls back to the interpreter on PATH when it does not.
@@ -36,6 +37,12 @@ PY := $(shell [ -x $(VENV)/bin/python ] && echo $(VENV)/bin/python || echo pytho
 # create_rag_manager() call site rather than resolving to a vulnerable
 # dependency.
 PIP_AUDIT_IGNORES :=
+
+# Task 14 live-Neo4j harness: digest-pinned (dependency-pinning rule), not
+# `neo4j:5-community` bare-tag. Resolved via `docker pull neo4j:5-community
+# && docker inspect --format='{{index .RepoDigests 0}}' neo4j:5-community`;
+# re-pin deliberately, never silently follow the tag.
+NEO4J_IMAGE ?= neo4j:5-community@sha256:037cf5756f0135cbfd66b739b6df7c7c4bb100f9ce11602f6f9538e17e02c74d
 
 venv: ## Create .venv (3.13) from the hash-pinned lockfiles -- published deps only
 	@uv venv -p 3.13 $(VENV)
@@ -140,6 +147,24 @@ test-functional:
 test-contract:
 	@echo "Running contract snapshot tests..."
 	$(PY) -m pytest tests/contract -v --no-cov
+
+graph-neo4j-up: ## Start a real, digest-pinned neo4j:5-community container for tests/integration/graph
+	@NEO4J_IMAGE=$(NEO4J_IMAGE) scripts/graph-neo4j.sh up
+
+graph-neo4j-down: ## Stop/remove the graph-platform Neo4j test container
+	@scripts/graph-neo4j.sh down
+
+# --no-cov: same rationale as test-integration above -- this only exercises
+# shared/graph, not the full shared/+services/management/app tree the
+# pytest.ini cov floor is calibrated for. graph_client (tests/integration/
+# graph/conftest.py) honestly SKIPs -- doesn't fail -- when Neo4j isn't
+# reachable, so this target does not itself bring the container up/down;
+# run `make graph-neo4j-up` first for a real (non-skipped) run.
+test-graph-integration:
+	@echo "Running live-Neo4j graph integration tests..."
+	WADDLEAI_GRAPH_BOLT_URL=bolt://localhost:7687 WADDLEAI_GRAPH_USER=neo4j \
+	  WADDLEAI_GRAPH_PASSWORD=$${WADDLEAI_GRAPH_PASSWORD:-testpassword} \
+	  $(PY) -m pytest tests/integration/graph -v --no-cov
 
 test-security: ## Security scans over FIRST-PARTY code. Fails on findings.
 	@echo "=== Security Scans ==="

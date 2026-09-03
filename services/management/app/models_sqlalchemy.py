@@ -664,6 +664,36 @@ class CodeRepo(Base):
     __table_args__ = (UniqueConstraint("org_id", "name", name="uq_code_repos_org_name"),)
 
 
+GRAPH_INSTANCE_STATUSES = (
+    "pending",
+    "provisioning",
+    "ready",
+    "failed",
+    "deprovisioning",
+    "deprovisioned",
+)
+
+
+class GraphInstance(Base):
+    """Per-org graph-store instance registry (spec Section 2).
+
+    Phase 1 is dev-mode: every org resolves to one shared Neo4j instance
+    rather than a per-tenant StatefulSet, but the resolver (Task 7) still
+    reads this table and only treats ``status='ready'`` as usable.
+    """
+
+    __tablename__ = "graph_instances"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
+    bolt_url = Column(String(512), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("org_id", name="uq_graph_instances_org"),)
+
+
 class CodeChunk(Base):
     """A tree-sitter-chunked slice of a repo file, branch-scoped (§9.1/§9.7)."""
 

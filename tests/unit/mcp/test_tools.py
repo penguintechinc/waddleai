@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from shared.graph.types import MAX_GRAPH_DEPTH
 from shared.mcp.tools import (
     ADMIN_READ_MAX_AGE_SECONDS,
     ADMIN_WRITE_MAX_AGE_SECONDS,
@@ -96,6 +97,64 @@ class TestWaddleAIToolsHappyPath:
             ecosystem="python", package="requests", version="2.31"
         )
         assert result["_provenance"]["source"] == "fetch_docs"
+
+    async def test_get_call_graph_scopes_to_caller_org_and_defaults(
+        self, user_tools, collaborators
+    ):
+        """get_call_graph is subject-free: org comes from ctx, direction/depth default."""
+        collaborators["knowledge"].get_call_graph.return_value = [{"nodes": [], "edges": []}]
+        result = await user_tools.get_call_graph("widgets", "handler")
+        collaborators["knowledge"].get_call_graph.assert_awaited_once_with(
+            org_id=1, repo="widgets", branch=None, symbol="handler", direction="out", depth=3
+        )
+        assert result == [{"nodes": [], "edges": []}]
+
+    async def test_get_call_graph_forwards_explicit_branch_direction_depth(
+        self, user_tools, collaborators
+    ):
+        """Explicit branch/direction/depth pass through unchanged (depth within bounds)."""
+        collaborators["knowledge"].get_call_graph.return_value = []
+        await user_tools.get_call_graph(
+            "widgets", "handler", branch="dev", direction="both", depth=5
+        )
+        collaborators["knowledge"].get_call_graph.assert_awaited_once_with(
+            org_id=1, repo="widgets", branch="dev", symbol="handler", direction="both", depth=5
+        )
+
+    async def test_get_call_graph_clamps_a_very_large_depth_before_delegating(
+        self, user_tools, collaborators
+    ):
+        """A very large caller-supplied depth is clamped before the collaborator call.
+
+        Defense-in-depth alongside GraphKnowledgeService's own clamp: this
+        method should never forward an unbounded depth to *any*
+        KnowledgeService implementation.
+        """
+        collaborators["knowledge"].get_call_graph.return_value = []
+        await user_tools.get_call_graph("widgets", "handler", depth=1_000_000)
+        forwarded_depth = collaborators["knowledge"].get_call_graph.await_args.kwargs["depth"]
+        assert forwarded_depth == MAX_GRAPH_DEPTH
+        assert forwarded_depth <= MAX_GRAPH_DEPTH
+
+    async def test_get_call_graph_clamps_a_non_positive_depth_up_to_the_minimum(
+        self, user_tools, collaborators
+    ):
+        """A zero/negative depth is clamped up to 1 before the collaborator call."""
+        collaborators["knowledge"].get_call_graph.return_value = []
+        await user_tools.get_call_graph("widgets", "handler", depth=-5)
+        forwarded_depth = collaborators["knowledge"].get_call_graph.await_args.kwargs["depth"]
+        assert forwarded_depth == 1
+
+    async def test_get_class_hierarchy_scopes_to_caller_org_and_defaults(
+        self, user_tools, collaborators
+    ):
+        """get_class_hierarchy is subject-free: org comes from ctx, direction defaults."""
+        collaborators["knowledge"].get_class_hierarchy.return_value = [{"nodes": [], "edges": []}]
+        result = await user_tools.get_class_hierarchy("widgets", "Base")
+        collaborators["knowledge"].get_class_hierarchy.assert_awaited_once_with(
+            org_id=1, repo="widgets", branch=None, symbol="Base", direction="out"
+        )
+        assert result == [{"nodes": [], "edges": []}]
 
     async def test_memory_add_defaults_to_session_scope(self, user_tools, collaborators):
         """Memory add defaults to session scope."""
@@ -216,6 +275,8 @@ class TestFlagOff:
             (tools.get_symbol, ("s",), {}),
             (tools.search_docs, ("q",), {}),
             (tools.fetch_docs, ("eco", "pkg"), {}),
+            (tools.get_call_graph, ("repo", "sym"), {}),
+            (tools.get_class_hierarchy, ("repo", "sym"), {}),
             (tools.memory_add, ("c",), {}),
             (tools.memory_search, ("q",), {}),
             (tools.list_models, (), {}),
@@ -279,6 +340,20 @@ class TestOrgIsolation:
         calls = collaborators["memory"].search.await_args_list
         assert calls[0].kwargs["org_id"] == 1 and calls[0].kwargs["user_uuid"] == "user-a"
         assert calls[1].kwargs["org_id"] == 2 and calls[1].kwargs["user_uuid"] == "user-b"
+
+    async def test_get_call_graph_only_ever_queries_callers_org(self, collaborators, monkeypatch):
+        """get_call_graph forwards each caller's own org_id, never a foreign one."""
+        monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
+        collaborators["knowledge"].get_call_graph.return_value = []
+        org_a_tools = WaddleAITools(_ctx(org_id=1), **collaborators)
+        org_b_tools = WaddleAITools(_ctx(org_id=2), **collaborators)
+
+        await org_a_tools.get_call_graph("repo", "sym")
+        await org_b_tools.get_call_graph("repo", "sym")
+
+        calls = collaborators["knowledge"].get_call_graph.await_args_list
+        assert calls[0].kwargs["org_id"] == 1
+        assert calls[1].kwargs["org_id"] == 2
 
 
 @pytest.mark.asyncio
@@ -396,3 +471,7 @@ async def test_stub_adapters_raise_service_unavailable(monkeypatch):
     )
     with pytest.raises(ServiceUnavailableError):
         await tools.search_code("q")
+    with pytest.raises(ServiceUnavailableError):
+        await tools.get_call_graph("repo", "sym")
+    with pytest.raises(ServiceUnavailableError):
+        await tools.get_class_hierarchy("repo", "sym")

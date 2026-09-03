@@ -10,6 +10,22 @@ branches/worktrees never cross-contaminate. Triggers: push webhook
 
 Gated on ``features.enabled("coderag", distinct_id=str(org_id))`` -- with
 the flag off, ``index()`` is a no-op: no clone, no writes.
+
+Alongside chunk indexing, ``index()`` also emits the structural graph
+(Task 9/10's ``extract_graph``) for changed files and scrubs it for
+deleted ones, through the tenant-scoped ``TenantGraphClient`` (Task 8).
+Two-layer gate, mirroring the REST surface
+(``services/management/app/api/v1/graph.py``): the ``waddleai.graph``
+PostHog flag (fail-safe OFF) AND the Enterprise ``waddleai_graph`` license
+entitlement -- a Professional-tier org with the flag on must not get graph
+emission just because it's driven by the worker instead of a REST/MCP
+call. Either gate failing skips graph emission gracefully, exactly like
+the flag-off path: chunk indexing is never affected. Graph extraction is
+deterministic tree-sitter parsing -- the >=2B minimum-model rule is N/A,
+there is no model anywhere in this path. The graph is an additive,
+best-effort index: any graph-store failure (including an unavailable/
+not-ready instance or a bad org id) is caught, logged, and never fails or
+raises out of the chunk indexing pipeline.
 """
 
 from __future__ import annotations
@@ -17,15 +33,100 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pathlib
 import tempfile
 from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
+from shared.graph.types import GraphUnavailableError, TenantScope
 from shared.knowledge.code_chunker import CodeChunkDraft, chunk_code
+from shared.knowledge.code_graph import GraphFragment, extract_graph
 from shared.knowledge.embed import embed_cached
 
 logger = logging.getLogger(__name__)
 
 _FLAG_KEY = "waddleai.coderag"
+_GRAPH_FLAG_KEY = "waddleai.graph"
+_GRAPH_LICENSE_FEATURE = "waddleai_graph"
+
+_graph_license_client: Any = None
+
+
+def _get_graph_license_client() -> Any:
+    """Lazily construct the shared ``penguin_licensing.LicenseClient``.
+
+    Mirrors ``services/management/app/api/v1/graph.py``'s
+    ``_get_license_client`` exactly -- same feature key, same
+    ``product="waddleai"`` (the SDK's own default is ``"elder"`` and would
+    silently check entitlements for the wrong product). Duplicated locally
+    rather than imported from the API-layer module -- this services module
+    must not depend on ``app.api.v1``, matching the existing per-module
+    license-client convention already used by ``fleet.py``,
+    ``model_access_policies.py``, and ``content_filter_deps.py``.
+    """
+    global _graph_license_client
+    if _graph_license_client is None:
+        from penguin_licensing import LicenseClient
+
+        _graph_license_client = LicenseClient(
+            license_key=os.environ.get("LICENSE_KEY", ""),
+            product="waddleai",
+            base_url=os.environ.get("LICENSE_SERVER_URL", "https://license.penguintech.io"),
+        )
+    return _graph_license_client
+
+
+async def _graph_entitled() -> bool:
+    """Enterprise ``waddleai_graph`` entitlement check -- fail-closed on any I/O error.
+
+    Mirrors REST's ``_entitled()`` in ``services/management/app/api/v1/
+    graph.py`` -- same feature key, same fail-closed-on-error semantics.
+    Unlike REST (which maps a failed check to 403), the worker's own
+    best-effort contract applies on top: not entitled skips graph emission
+    gracefully, exactly like the flag-off path.
+    """
+
+    def _check() -> bool:
+        try:
+            return bool(_get_graph_license_client().check_feature(_GRAPH_LICENSE_FEATURE))
+        except Exception as exc:  # pragma: no cover - defensive, license I/O failure
+            logger.warning("coderag graph: entitlement check failed: %s", exc)
+            return False
+
+    return await asyncio.to_thread(_check)
+
+
+@runtime_checkable
+class _GraphClientLike(Protocol):
+    """Structural subset of `TenantGraphClient` the worker actually calls.
+
+    Kept as a Protocol (mirroring `shared.graph.resolver._SqlDB`) rather
+    than importing `TenantGraphClient` at module scope for typing purposes
+    -- an injected test double only needs to satisfy this shape, and mypy
+    --strict gets a real type for `graph_client` instead of `object`.
+    """
+
+    async def upsert_node(
+        self, scope: TenantScope, label: str, qualified_name: str, props: dict[str, Any]
+    ) -> None:
+        """Create/update one node under `scope`."""
+        ...
+
+    async def upsert_edge(
+        self,
+        scope: TenantScope,
+        edge_type: str,
+        src_qn: str,
+        dst_qn: str,
+        props: dict[str, Any],
+    ) -> None:
+        """Create/update one directed edge under `scope`."""
+        ...
+
+    async def delete_scope(self, scope: TenantScope, path: str | None = None) -> int:
+        """Delete nodes/edges under `scope`, optionally narrowed to `path`."""
+        ...
+
 
 # Files larger than this are skipped -- avoids embedding huge generated/binary blobs.
 _MAX_FILE_BYTES = 512_000
@@ -45,7 +146,17 @@ def _coderag_enabled(org_id: int) -> bool:
 
 @dataclass(slots=True)
 class IndexResult:
-    """Outcome of one ``CodeRagWorker.index()`` run."""
+    """Outcome of one ``CodeRagWorker.index()`` run.
+
+    ``graph_status`` is independent of ``index_status`` -- chunk indexing
+    can succeed (``"indexed"``) while the graph side is ``"skipped"``
+    (flag off, or org not ``waddleai_graph``-entitled), ``"emitted"``
+    (graph nodes/edges written), ``"unavailable"``
+    (the org's graph instance isn't ready -- resolved cleanly, best-effort
+    skip), or ``"error"`` (any other graph-store failure, also best-effort
+    skip). The graph is a rebuildable index, so none of those graph
+    outcomes ever downgrade ``index_status``.
+    """
 
     repo_id: int
     branch_ref: str
@@ -54,6 +165,7 @@ class IndexResult:
     files_changed: list[str] = field(default_factory=list)
     files_deleted: list[str] = field(default_factory=list)
     error: str | None = None
+    graph_status: str = "skipped"  # skipped | emitted | unavailable | error
 
 
 def diff_paths(
@@ -80,10 +192,82 @@ def diff_paths(
 class CodeRagWorker:
     """Clones/pulls a registered repo and incrementally re-indexes its CodeRAG chunks."""
 
-    def __init__(self, db: object, workdir: str | None = None) -> None:
-        """Bind the worker to a penguin-dal handle and a scratch workdir for clones."""
+    def __init__(
+        self,
+        db: object,
+        workdir: str | None = None,
+        graph_client: _GraphClientLike | None = None,
+    ) -> None:
+        """Bind the worker to a penguin-dal handle and a scratch workdir for clones.
+
+        ``graph_client`` (a ``TenantGraphClient``) is injectable for tests;
+        when ``None`` and the ``waddleai.graph`` flag is on, ``index()``
+        builds one from ``self.db`` on demand.
+        """
         self.db = db
         self.workdir = workdir or tempfile.gettempdir()
+        self.graph_client = graph_client
+
+    def _graph_enabled(self, org_id: int) -> bool:
+        """Fail-safe-OFF check of the ``waddleai.graph`` flag."""
+        try:
+            from shared.utils.feature_flags import is_feature_enabled
+
+            return is_feature_enabled(_GRAPH_FLAG_KEY, distinct_id=str(org_id), default=False)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("graph flag evaluation failed, treating as OFF: %s", exc)
+            return False
+
+    def _extract_file_graph(self, clone_dir: str, path: str) -> GraphFragment | None:
+        """Read one working-tree file and extract its structural graph fragment.
+
+        Mirrors ``_chunk_working_tree``'s skip-on-unreadable behavior -- a
+        file that vanished mid-diff or isn't valid UTF-8 text is skipped
+        (``None``), never raised, so one bad file can't abort the whole
+        incremental graph pass.
+        """
+        full_path = pathlib.Path(clone_dir) / path
+        try:
+            content = full_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        return extract_graph(path, content)
+
+    async def _emit_graph_changes(
+        self,
+        graph_client: _GraphClientLike,
+        scope: TenantScope,
+        clone_dir: str,
+        changed: list[str],
+        deleted: list[str],
+    ) -> None:
+        """Mirror the chunk diff into the graph under ``scope``.
+
+        Deleted paths are scrubbed via ``delete_scope``. Changed paths are
+        scrubbed first (clearing any stale nodes/edges from the prior
+        version of the file) and then re-extracted and re-emitted -- the
+        same delete-then-reinsert shape ``index()`` already uses for
+        chunks, so graph state never lags or diverges from chunk state for
+        a given path.
+        """
+        for path in deleted:
+            await graph_client.delete_scope(scope, path=path)
+        for path in changed:
+            await graph_client.delete_scope(scope, path=path)
+            fragment = await asyncio.to_thread(self._extract_file_graph, clone_dir, path)
+            if fragment is None:
+                continue
+            for node in fragment.nodes:
+                await graph_client.upsert_node(
+                    scope,
+                    node.label,
+                    node.qualified_name,
+                    {"name": node.name, "path": node.path},
+                )
+            for edge in fragment.edges:
+                await graph_client.upsert_edge(
+                    scope, edge.edge_type, edge.src_qn, edge.dst_qn, {"path": edge.path}
+                )
 
     async def index(
         self, repo_id: int, branch: str | None = None, trigger: str = "manual"
@@ -139,6 +323,34 @@ class CodeRagWorker:
                 vector = await embed_cached(draft.content, db=self.db)
                 await asyncio.to_thread(self._insert_chunk, repo_id, branch_ref, draft, vector)
 
+        graph_status = "skipped"
+        if self._graph_enabled(repo_row["org_id"]) and await _graph_entitled():
+            try:
+                from shared.graph.client import TenantGraphClient
+
+                client = self.graph_client or TenantGraphClient(self.db)
+                scope = TenantScope(
+                    org_id=str(repo_row["org_id"]), repo_id=str(repo_id), branch_ref=branch_ref
+                )
+                await self._emit_graph_changes(client, scope, clone_dir, changed, deleted)
+                graph_status = "emitted"
+            except GraphUnavailableError as exc:
+                # Best-effort: the org's graph instance isn't ready/reachable (or
+                # failed to resolve, e.g. a bad org id) -- skip graph emission,
+                # never touch chunk indexing, which has already completed above.
+                logger.warning(
+                    "coderag graph unavailable for repo %s org %s: %s",
+                    repo_id,
+                    repo_row["org_id"],
+                    exc,
+                )
+                graph_status = "unavailable"
+            except Exception as exc:
+                # The graph is a rebuildable index (spec §2) -- any other failure
+                # here must never fail or raise out of the chunk indexing pipeline.
+                logger.error("coderag graph emission failed for repo %s: %s", repo_id, exc)
+                graph_status = "error"
+
         await asyncio.to_thread(self._mark_indexed, repo_id, last_commit)
         return IndexResult(
             repo_id=repo_id,
@@ -147,6 +359,7 @@ class CodeRagWorker:
             last_commit=last_commit,
             files_changed=changed,
             files_deleted=deleted,
+            graph_status=graph_status,
         )
 
     async def run_scheduled(self) -> list[IndexResult]:

@@ -53,6 +53,8 @@ USER_TOOL_NAMES: frozenset[str] = frozenset(
         "get_symbol",
         "search_docs",
         "fetch_docs",
+        "get_call_graph",
+        "get_class_hierarchy",
         "memory_add",
         "memory_search",
         "list_models",
@@ -119,6 +121,8 @@ def build_user_server(
     mcp.tool(name="get_symbol")(tools.get_symbol)
     mcp.tool(name="search_docs")(tools.search_docs)
     mcp.tool(name="fetch_docs")(tools.fetch_docs)
+    mcp.tool(name="get_call_graph")(tools.get_call_graph)
+    mcp.tool(name="get_class_hierarchy")(tools.get_class_hierarchy)
     mcp.tool(name="memory_add")(tools.memory_add)
     mcp.tool(name="memory_search")(tools.memory_search)
     mcp.tool(name="list_models")(tools.list_models)
