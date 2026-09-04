@@ -196,6 +196,28 @@ class WaddleAIMetrics:
             ["rule_id", "scope", "decision"],
         )
 
+        # Provider-destination failover metrics (failover spec §5.7)
+        self.destination_attempts_total = Counter(
+            "waddleai_destination_attempts_total",
+            "Destination attempts by provider type and outcome",
+            ["provider_type", "outcome"],
+        )
+        self.destination_failover_total = Counter(
+            "waddleai_destination_failover_total",
+            "Failovers from one destination to the next",
+            ["from_provider", "to_provider", "reason"],
+        )
+        self.destination_breaker_open = Gauge(
+            "waddleai_destination_breaker_open",
+            "Destination breaker state (1=open, 0=closed)",
+            ["destination_id"],
+        )
+        self.destination_gate_denied_total = Counter(
+            "waddleai_destination_gate_denied_total",
+            "Requests that did not use destination failover due to the gate",
+            ["reason"],
+        )
+
         # System info
         self.info = Info("waddleai_info", "WaddleAI service information")
         self.info.info({"service": service_name, "version": "1.0.0", "python_version": "3.13"})
@@ -333,6 +355,26 @@ class WaddleAIMetrics:
     def record_hook_rule_decision(self, rule_id: str, scope: str, decision: str) -> None:
         """Record an admin hook_rule actually deciding an event's outcome."""
         self.hook_rule_decisions_total.labels(rule_id=rule_id, scope=scope, decision=decision).inc()
+
+    def record_destination_attempt(self, provider_type: str, outcome: str) -> None:
+        """Count one destination attempt (outcome: ok|failed|skipped|client_error)."""
+        self.destination_attempts_total.labels(provider_type=provider_type, outcome=outcome).inc()
+
+    def record_destination_failover(
+        self, from_provider: str, to_provider: str, reason: str
+    ) -> None:
+        """Count one failover hop from one destination to the next."""
+        self.destination_failover_total.labels(
+            from_provider=from_provider, to_provider=to_provider, reason=reason
+        ).inc()
+
+    def set_destination_breaker_open(self, destination_id: str, is_open: bool) -> None:
+        """Publish a destination breaker's open/closed state."""
+        self.destination_breaker_open.labels(destination_id=destination_id).set(1 if is_open else 0)
+
+    def record_destination_gate_denied(self, reason: str) -> None:
+        """Count a request that fell back to the existing path (reason: flag_off|not_entitled)."""
+        self.destination_gate_denied_total.labels(reason=reason).inc()
 
     def get_metrics(self) -> str:
         """Get Prometheus metrics in text format."""
