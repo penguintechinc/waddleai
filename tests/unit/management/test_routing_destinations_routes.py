@@ -26,24 +26,51 @@ CREDENTIALS_PATH = "/api/v1/routing/destination-credentials"
 # ---------------------------------------------------------------------------
 
 
-def test_mask_material_bearer():
-    """Bearer material is masked via `_mask_key`, keeping a short prefix/suffix."""
-    assert rd._mask_material("openai", "enc:sk-abcdefghij") == rd._mask_material(
-        "openai", "enc:sk-abcdefghij"
-    )
-    masked = rd._mask_material("openai", "sk-abcdefghij")
+_TEST_ENCRYPTION_KEY = "test-only-encryption-key-not-real"  # noqa: S105 -- test fixture, not real
+
+
+def _set_encryption_key(monkeypatch) -> None:
+    """Set a real CREDENTIAL_ENCRYPTION_KEY so encrypt_credential/decrypt_credential round-trip."""
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY)
+
+
+def _encrypt(plaintext: str) -> str:
+    """Encrypt via the real helper -- realistic 'enc:'-prefixed Fernet ciphertext for fixtures."""
+    from shared.security.credential_encryption import encrypt_credential
+
+    return encrypt_credential(plaintext)
+
+
+def test_mask_material_bearer_decrypts_then_masks_plaintext(monkeypatch):
+    """Bearer material is decrypted first, then masked -- the mask reflects the real key.
+
+    Masking the stored Fernet ciphertext directly (the pre-fix bug) would
+    produce a meaningless mask; this asserts the mask matches _mask_key
+    applied to the PLAINTEXT "sk-abcdefghij", not to the ciphertext.
+    """
+    _set_encryption_key(monkeypatch)
+    stored = _encrypt("sk-abcdefghij")
+    assert stored.startswith("enc:")
+
+    masked = rd._mask_material("openai", stored)
     assert masked.startswith("sk-a") and masked.endswith("ghij") and "****" in masked
+    assert "sk-abcdefghij" not in masked
+    assert stored not in masked
 
 
-def test_mask_material_bedrock_masks_only_access_key_id():
+def test_mask_material_bedrock_masks_only_access_key_id(monkeypatch):
     """Bedrock JSON material: only aws_access_key_id is shown (masked); the secret never leaks."""
+    _set_encryption_key(monkeypatch)
     material = json.dumps(
         {"aws_access_key_id": "AKIAEXAMPLE1234", "aws_secret_access_key": "supersecret"}
     )
-    masked = rd._mask_material("bedrock", material)
+    stored = _encrypt(material)
+    assert stored.startswith("enc:")
+
+    masked = rd._mask_material("bedrock", stored)
+    assert masked == "aws_access_key_id=AKIA****1234"
     assert "supersecret" not in masked  # secret never leaks
-    assert "aws_access_key_id" in masked
-    assert "AKIA" in masked and "****" in masked  # only the access-key id is shown, masked
+    assert "{" not in masked  # never the raw JSON
 
 
 def test_mask_material_empty_returns_empty_string():
@@ -52,9 +79,36 @@ def test_mask_material_empty_returns_empty_string():
     assert rd._mask_material("openai", "") == ""
 
 
-def test_mask_material_bedrock_malformed_json_never_raises():
+def test_mask_material_bedrock_malformed_json_never_raises(monkeypatch):
     """Malformed bedrock JSON masks to a fixed placeholder instead of raising."""
-    assert rd._mask_material("bedrock", "not-json") == "****"
+    _set_encryption_key(monkeypatch)
+    stored = _encrypt("not-json")
+    assert rd._mask_material("bedrock", stored) == "****"
+
+
+def test_mask_material_decrypt_failure_returns_placeholder(monkeypatch):
+    """A value claiming encryption (`enc:` prefix) that fails to decrypt masks to a placeholder.
+
+    Covers a wrong/rotated CREDENTIAL_ENCRYPTION_KEY or corrupt ciphertext --
+    the failure degrades safely instead of raising or leaking ciphertext.
+    """
+    monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+    assert rd._mask_material("openai", "enc:not-a-real-fernet-token") == "****"
+
+
+def test_mask_material_encryption_disabled_plaintext_passthrough(monkeypatch):
+    """With encryption disabled (no key configured), stored material is already plaintext.
+
+    `encrypt_credential` stores plaintext as-is (no `enc:` prefix) when
+    disabled; `_mask_material` must still mask it correctly -- covers the
+    non-encrypted-at-rest deployment mode, not just the encrypted one.
+    """
+    monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+    stored = _encrypt("sk-abcdefghij")  # passthrough: no key configured -> plaintext, unprefixed
+    assert not stored.startswith("enc:")
+
+    masked = rd._mask_material("openai", stored)
+    assert masked.startswith("sk-a") and masked.endswith("ghij") and "****" in masked
 
 
 def test_resolve_org_rejects_cross_org_without_provider_admin():
@@ -109,8 +163,12 @@ def test_validate_material_bearer_requires_non_empty():
 
 
 def test_validate_material_unsupported_provider_type_rejected():
-    """A provider type outside bedrock/_BEARER_TYPES is rejected for BYOK credentials."""
-    assert rd._validate_material("ollama", "anything") is not None
+    """A provider type outside bedrock/_BEARER_TYPES is rejected, message names accepted types."""
+    error = rd._validate_material("ollama", "anything")
+    assert error is not None
+    assert "bedrock" in error
+    for provider_type in rd._BEARER_TYPES:
+        assert provider_type in error
 
 
 # ---------------------------------------------------------------------------
@@ -395,14 +453,23 @@ class TestEnabledCap:
 
 
 class TestCredentialMaskingResponses:
-    """S4: plaintext credential material never appears in a response body."""
+    """S4: plaintext credential material never appears in a response body.
+
+    Fixtures use real `encrypt_credential` output under a monkeypatched
+    CREDENTIAL_ENCRYPTION_KEY so the masking path exercises a genuine
+    decrypt-then-mask round trip -- an unrealistic "enc:" + plaintext
+    fixture would mask ciphertext bytes and hide the pre-fix bug (Fernet
+    ciphertext masked directly is meaningless; see `_mask_material`).
+    """
 
     async def test_list_credentials_never_contains_material(
         self, client, app_mock_db, auth_headers, monkeypatch
     ):
         """The credentials list response never leaks stored key material."""
         _gate_open(monkeypatch)
-        stored = "enc:sk-supersecretvalue"  # noqa: S105 -- test fixture, not a real credential
+        _set_encryption_key(monkeypatch)
+        stored = _encrypt("sk-supersecretvalue")
+        assert stored.startswith("enc:")
         cred = _make_credential_row(cred_id=1, provider_id=1, owner_org_id=1, api_key=stored)
         provider = _make_provider_row(provider_id=1, provider_type="openai")
         result = make_select_result([cred])
@@ -413,16 +480,19 @@ class TestCredentialMaskingResponses:
         assert resp.status_code == 200
         body = await resp.get_data(as_text=True)
         assert "supersecretvalue" not in body
+        data = await resp.get_json()
+        masked = data["credentials"][0]["api_key_masked"]
+        assert masked.startswith("sk-s") and masked.endswith("alue") and "****" in masked
 
     async def test_create_credential_response_never_contains_material(
         self, client, app_mock_db, auth_headers, monkeypatch
     ):
         """The create-credential response never echoes the plaintext material back."""
         _gate_open(monkeypatch)
+        _set_encryption_key(monkeypatch)
         provider = _make_provider_row(provider_id=1, provider_type="openai", enabled=True)
-        created = _make_credential_row(
-            cred_id=9, provider_id=1, owner_org_id=1, api_key="enc:sk-brandnewsecretvalue"
-        )
+        stored = _encrypt("sk-brandnewsecretvalue")
+        created = _make_credential_row(cred_id=9, provider_id=1, owner_org_id=1, api_key=stored)
         app_mock_db.return_value.select.return_value.first.side_effect = [provider, created]
         app_mock_db.provider_credentials.insert.return_value = 9
 
@@ -434,19 +504,23 @@ class TestCredentialMaskingResponses:
         assert resp.status_code == 201
         body = await resp.get_data(as_text=True)
         assert "brandnewsecretvalue" not in body
+        data = await resp.get_json()
+        assert data["api_key_masked"].startswith("sk-b")
+        assert data["api_key_masked"].endswith("alue")
+        assert "****" in data["api_key_masked"]
 
     async def test_create_bedrock_credential_response_never_contains_secret(
         self, client, app_mock_db, auth_headers, monkeypatch
     ):
         """S4: a bedrock secret_access_key is never returned, only the masked access-key id."""
         _gate_open(monkeypatch)
+        _set_encryption_key(monkeypatch)
         provider = _make_provider_row(provider_id=2, provider_type="bedrock", enabled=True)
         material = json.dumps(
             {"aws_access_key_id": "AKIASOMEKEYID123", "aws_secret_access_key": "topsecretvalue"}
         )
-        created = _make_credential_row(
-            cred_id=11, provider_id=2, owner_org_id=1, api_key=f"enc:{material}"
-        )
+        stored = _encrypt(material)
+        created = _make_credential_row(cred_id=11, provider_id=2, owner_org_id=1, api_key=stored)
         app_mock_db.return_value.select.return_value.first.side_effect = [provider, created]
         app_mock_db.provider_credentials.insert.return_value = 11
 
@@ -458,4 +532,25 @@ class TestCredentialMaskingResponses:
         assert resp.status_code == 201
         body = await resp.get_data(as_text=True)
         assert "topsecretvalue" not in body
-        assert "AKIA" in body  # masked access-key id IS shown
+        data = await resp.get_json()
+        assert data["api_key_masked"] == "aws_access_key_id=AKIA****D123"
+        assert "{" not in data["api_key_masked"]  # never the raw JSON
+
+    async def test_list_credentials_encryption_disabled_still_masks(
+        self, client, app_mock_db, auth_headers, monkeypatch
+    ):
+        """Encryption-disabled mode (no key): stored plaintext is still masked, never returned."""
+        _gate_open(monkeypatch)
+        monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+        stored = _encrypt("sk-supersecretvalue")  # passthrough: no key -> unprefixed plaintext
+        assert not stored.startswith("enc:")
+        cred = _make_credential_row(cred_id=2, provider_id=1, owner_org_id=1, api_key=stored)
+        provider = _make_provider_row(provider_id=1, provider_type="openai")
+        result = make_select_result([cred])
+        result.first.return_value = provider
+        app_mock_db.return_value.select.return_value = result
+
+        resp = await client.get(CREDENTIALS_PATH, headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_data(as_text=True)
+        assert "supersecretvalue" not in body

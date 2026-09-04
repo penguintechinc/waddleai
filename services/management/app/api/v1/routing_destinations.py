@@ -117,19 +117,41 @@ def _org_mismatch_response() -> tuple:
     return _err("organization_id does not match token", 403)
 
 
-def _mask_material(provider_type: str, stored: str | None) -> str:
-    """Mask material per provider type (S4) -- bearer via _mask_key, bedrock only the access key."""
+def _mask_material(provider_type: str, stored: str | None, cred_id: int | None = None) -> str:
+    """Decrypt then mask credential material per provider type (S4).
+
+    Management holds the encryption key (same ``decrypt_credential`` helper
+    the proxy uses at dispatch time) -- masking the stored Fernet ciphertext
+    directly would mask meaningless bytes, not the real key. Bearer types
+    mask the plaintext via ``_mask_key``; bedrock parses the plaintext JSON
+    and shows only a masked ``aws_access_key_id``, never the secret or the
+    raw JSON. Any decrypt failure (wrong/missing key, corrupt ciphertext)
+    degrades to a fixed placeholder; only ``cred_id`` is logged, never
+    material.
+    """
     if not stored:
         return ""
+
+    from shared.security.credential_encryption import decrypt_credential
+
+    try:
+        plaintext = decrypt_credential(stored)
+    except Exception as exc:
+        logger.warning(
+            "routing_destinations: credential decrypt failed for masking (cred_id=%s): %s",
+            cred_id,
+            exc,
+        )
+        return "****"
+
     if provider_type == "bedrock":
-        raw = stored[4:] if stored.startswith("enc:") else stored
         try:
-            parsed = json.loads(raw)
+            parsed = json.loads(plaintext)
         except (ValueError, TypeError):
             return "****"
-        akid = parsed.get("aws_access_key_id") or ""
+        akid = parsed.get("aws_access_key_id") if isinstance(parsed, dict) else None
         return f"aws_access_key_id={_mask_key(akid)}" if akid else "****"
-    return _mask_key(stored)
+    return _mask_key(plaintext)
 
 
 def _validate_ownership(cred_row: Any, dest_provider_id: int, org_id: int) -> str | None:
@@ -161,7 +183,8 @@ def _validate_material(provider_type: str, material: str) -> str | None:
         if not material or not material.strip():
             return "material is required"
         return None
-    return f"unsupported provider type for BYOK credentials: {provider_type}"
+    accepted = ", ".join((*sorted(_BEARER_TYPES), "bedrock"))
+    return f"unsupported provider type '{provider_type}'; accepted: {accepted}"
 
 
 def _count_enabled_sync(org_id: int, model: str) -> int:

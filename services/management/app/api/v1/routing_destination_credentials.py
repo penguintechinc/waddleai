@@ -39,7 +39,7 @@ def _credential_to_dict(row: Any, provider_type: str) -> dict[str, Any]:
         "id": row.id,
         "provider_id": row.provider_id,
         "label": row.label,
-        "api_key_masked": _mask_material(provider_type, row.api_key),
+        "api_key_masked": _mask_material(provider_type, row.api_key, row.id),
         "owner_org_id": row.owner_org_id,
         "enabled": row.enabled,
     }
