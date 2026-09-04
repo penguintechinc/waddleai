@@ -129,6 +129,16 @@ Analysis query → GPT-4
 Simple chat → Ollama (local, fast)
 ```
 
+!!! info "Provider Destination Failover (Enterprise)"
+    Beyond routing *which model* to use, an org can also configure *where* a given
+    logical model is served from: an ordered list of destinations, each with its own
+    tenant-owned (BYOK) credential — e.g. your AWS Bedrock account first, your
+    Anthropic Team key as standby. Only retryable failures (timeout / 429 / 5xx) fail
+    over; a 4xx is surfaced to the caller. Enterprise-tier, behind the
+    `waddleai.provider_failover` flag. See
+    [Provider Destination Failover](routing/destination-failover.md) for the full
+    walkthrough.
+
 ### 4. Memory Integration (mem0 + pgvector)
 
 **Purpose**: Context retention and conversation history

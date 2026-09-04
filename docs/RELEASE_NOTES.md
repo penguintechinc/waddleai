@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Provider destination failover (Enterprise, flag-gated).** An org can now serve one
+  logical model from ordered active/standby destinations, each with its own tenant-owned
+  (BYOK) credential — e.g. AWS Bedrock active, Anthropic Team key standby. Only retryable
+  failures (timeout / 429 / 5xx) fail over; 4xx is surfaced. A per-destination circuit
+  breaker (3 failures / 60 s) and a ≤5-destination cap bound worst-case latency. New
+  management routes under `/api/v1/routing/destinations` and
+  `/api/v1/routing/destination-credentials`; `usage.waddleai.destination` reports which
+  destination served each request. Behind the `waddleai.provider_failover` flag +
+  `waddleai_provider_failover` entitlement; when off, behaviour is unchanged.
+
 ### Security
 
 - **Dropped the chromadb memory/RAG backend** (`ChromaDBMemoryStore` in `shared/utils/memory_integration.py`, `ChromaDBRAGStore` in `shared/utils/rag_integration.py`, and the `chromadb` dependency itself). PYSEC-2026-311 is a pre-authentication code injection vulnerability in chromadb's server component with no fixed release in any version >=1.0.0; it had been carried as an accepted `pip-audit` exception. pgvector (the default) and qdrant already cover the same ground, so the backend was removed instead of the exception being carried forward.

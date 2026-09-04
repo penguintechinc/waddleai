@@ -1,5 +1,6 @@
 """Unit tests for LLM connectors system."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import anthropic
@@ -36,8 +37,14 @@ try:
         LLMConnectionManager,
         OllamaConnector,
         OpenAIConnector,
+        ProviderClientError,
+        ProviderRateLimitError,
+        ProviderServerError,
+        ProviderTimeoutError,
         XAIConnector,
+        classify_failure,
         create_llm_connection_manager,
+        is_retryable,
     )
 except ImportError as e:
     pytest.skip(
@@ -2163,6 +2170,34 @@ class TestXAIConnectorDefaults:
         assert result["status"] == "unhealthy"
         assert result["provider"] == "xai"
 
+    @pytest.mark.asyncio
+    async def test_chat_completion_rate_limit_propagates_retry_after(self):
+        """XAI's own 429 handler populates retry_after from the SDK exception's headers.
+
+        xAI is OpenAI-wire, so its (separately hand-rolled) 429 branch must stay in
+        sync with OpenAIConnector's behavior rather than silently diverging.
+        """
+        request = httpx.Request("POST", "https://api.x.ai/v1/chat/completions")
+        response = httpx.Response(429, request=request, headers={"retry-after": "3"})
+        rate_limit_error = openai.RateLimitError("rate limited", response=response, body=None)
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            client = AsyncMock()
+            mock_openai.return_value = client
+            client.chat.completions.create = AsyncMock(side_effect=rate_limit_error)
+
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "xai-key",
+                "model_list": ["grok-1"],
+            }
+            connector = XAIConnector("test-xai", config)
+
+            with pytest.raises(ProviderRateLimitError) as ei:
+                await connector.chat_completion([{"role": "user", "content": "hi"}], "grok-1")
+
+        assert ei.value.retry_after == 3.0
+
 
 class TestAnthropicConnectorErrorMapping:
     """Typed-error mapping and less-common branches for AnthropicConnector."""
@@ -4071,3 +4106,156 @@ class TestBedrockConnectorFinalBranches:
             ]
 
         assert chunks[-1].done is True
+
+
+# --- appended for Task 3: connector fixes + retryable classifier ---
+# Note: `json` and the new shared.utils.llm_connectors names (ProviderClientError,
+# ProviderRateLimitError, ProviderServerError, ProviderTimeoutError, classify_failure,
+# is_retryable) are imported at the top of this file, not re-imported here, to
+# satisfy ruff E402 (module-level imports must precede other statements).
+
+
+def test_is_retryable_matrix():
+    """is_retryable() splits retryable vs non-retryable ProviderError subclasses."""
+    assert is_retryable(ProviderRateLimitError("p", "m", "x")) is True
+    assert is_retryable(ProviderTimeoutError("p", "m", "x")) is True
+    assert is_retryable(ProviderServerError("p", "m", "x")) is True
+    assert is_retryable(ProviderClientError("p", "m", "x", status_code=401)) is False
+    assert is_retryable(ValueError("nope")) is False
+
+
+def test_classify_failure_labels():
+    """classify_failure() maps each ProviderError subclass to a stable metrics label."""
+    assert classify_failure(ProviderRateLimitError("p", "m", "x")) == "rate_limit"
+    assert classify_failure(ProviderTimeoutError("p", "m", "x")) == "timeout"
+    assert classify_failure(ProviderServerError("p", "m", "x")) == "server_error"
+    assert classify_failure(ProviderClientError("p", "m", "x", status_code=403)) == "client_error"
+
+
+def test_anthropic_uses_endpoint_url_as_base_url(monkeypatch):
+    """AnthropicConnector passes base_url=endpoint_url only when endpoint_url is configured."""
+    seen = {}
+
+    class _FakeAsyncAnthropic:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeAsyncAnthropic)
+    AnthropicConnector("a", {"api_key": "sk-x", "endpoint_url": "https://vpc.example/anthropic"})
+    assert seen["base_url"] == "https://vpc.example/anthropic"
+    # default host when endpoint_url is absent -> base_url not forced
+    seen.clear()
+    AnthropicConnector("a", {"api_key": "sk-x"})
+    assert "base_url" not in seen or seen["base_url"] is None
+
+
+def test_bedrock_reads_region_and_credentials_from_config(monkeypatch):
+    """BedrockConnector._get_client() reads aws_region and JSON credential material from config."""
+    captured = {}
+
+    def _fake_client(service, **kwargs):
+        captured["service"] = service
+        captured.update(kwargs)
+        return object()
+
+    import shared.utils.llm_connectors as mod
+
+    fake_boto3 = type("B", (), {"client": staticmethod(_fake_client)})
+    monkeypatch.setattr(mod, "boto3", fake_boto3)
+    material = json.dumps({"aws_access_key_id": "AKIA", "aws_secret_access_key": "sec"})
+    conn = BedrockConnector("b", {"api_key": material, "aws_region": "eu-west-1"})
+    import asyncio
+
+    # asyncio.run() (not get_event_loop()) so this passes regardless of what
+    # pytest-asyncio has already done to the thread's ambient event loop.
+    asyncio.run(conn._get_client())
+    assert captured["service"] == "bedrock-runtime"
+    assert captured["region_name"] == "eu-west-1"
+    assert captured["aws_access_key_id"] == "AKIA"
+    assert captured["aws_secret_access_key"] == "sec"  # noqa: S105 -- fake test credential, not a real secret
+
+
+def test_bedrock_ambient_chain_when_material_empty(monkeypatch):
+    """Empty api_key material means no static AWS keys are passed -> ambient boto3 chain."""
+    captured = {}
+
+    def _fake_client(service, **kwargs):
+        captured.update(kwargs)
+        captured["service"] = service
+        return object()
+
+    import shared.utils.llm_connectors as mod
+
+    monkeypatch.setattr(mod, "boto3", type("B", (), {"client": staticmethod(_fake_client)}))
+    import asyncio
+
+    conn = BedrockConnector("b", {"api_key": "", "aws_region": "us-east-2"})
+    asyncio.run(conn._get_client())
+    assert captured["region_name"] == "us-east-2"
+    assert "aws_access_key_id" not in captured  # ambient chain, no static keys passed
+
+
+def test_provider_rate_limit_error_retry_after_defaults_none():
+    """ProviderRateLimitError.retry_after defaults to None when not supplied."""
+    assert ProviderRateLimitError("p", "m", "x").retry_after is None
+
+
+def test_provider_rate_limit_error_retry_after_can_be_set():
+    """ProviderRateLimitError.retry_after can be set via the optional keyword arg."""
+    assert ProviderRateLimitError("p", "m", "x", retry_after=7.0).retry_after == 7.0
+
+
+def test_retry_after_extracted_from_sdk_exception_headers():
+    """_retry_after_from_headers() parses a numeric Retry-After header off exc.response."""
+    from shared.utils.llm_connectors import _retry_after_from_headers
+
+    class _Resp:
+        headers = {"retry-after": "7"}
+
+    class _FakeSDKError(Exception):
+        response = _Resp()
+
+    assert _retry_after_from_headers(_FakeSDKError("rate limited")) == 7.0
+
+
+def test_retry_after_extraction_ignores_parse_errors_and_missing_header():
+    """_retry_after_from_headers() returns None on unparseable or missing header/response."""
+    from shared.utils.llm_connectors import _retry_after_from_headers
+
+    class _RespBad:
+        headers = {"retry-after": "not-a-number"}
+
+    class _FakeSDKBadHeaderError(Exception):
+        response = _RespBad()
+
+    assert _retry_after_from_headers(_FakeSDKBadHeaderError("x")) is None
+    assert _retry_after_from_headers(ValueError("no response attr")) is None
+
+
+def test_bedrock_throttling_maps_retry_after_from_response_metadata(monkeypatch):
+    """A Bedrock ThrottlingException ClientError maps to ProviderRateLimitError with retry_after."""
+    from botocore.exceptions import ClientError
+
+    class _FakeClient:
+        def converse(self, **kwargs):
+            raise ClientError(
+                {
+                    "Error": {"Code": "ThrottlingException", "Message": "slow down"},
+                    "RetryAfterSeconds": "3",
+                },
+                "Converse",
+            )
+
+    conn = BedrockConnector("b", {"api_key": "", "aws_region": "us-east-2"})
+
+    async def _fake_get_client():
+        return _FakeClient()
+
+    monkeypatch.setattr(conn, "_get_client", _fake_get_client)
+    import asyncio
+
+    with pytest.raises(ProviderRateLimitError) as ei:
+        asyncio.run(conn.chat_completion([{"role": "user", "content": "hi"}], model="m"))
+    assert ei.value.retry_after == 3.0

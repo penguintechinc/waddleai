@@ -45,6 +45,8 @@ nav:
     - Management API: api/management-api.md
     - Authentication: api/authentication.md
     - Examples: api/examples.md
+  - Routing:
+    - Provider Destination Failover: routing/destination-failover.md
   - Administration:
     - User Management: administration/user-management.md
     - AI Security Recommendations: administration/ai-security-recommendations.md

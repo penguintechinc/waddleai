@@ -115,7 +115,15 @@ def test_downgrade_drops_graph_instances_table(scratch_db) -> None:
 
 
 def test_alembic_chain_still_single_head_after_020() -> None:
-    """Adding 020 keeps a single resolvable head, pinned to this migration."""
+    """Adding 020 keeps a single resolvable head, no divergent branches.
+
+    Does not pin the exact head revision id -- later migrations (e.g. 021)
+    chain off 020 and become the new head; that specific-head assertion
+    lives in the newest migration's own test file
+    (``test_migration_021.py::test_alembic_chain_still_single_head_after_021``).
+    This test only guards against 020 having introduced a branch, while
+    still confirming 020 itself remains part of the one resolvable chain.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -129,7 +137,8 @@ def test_alembic_chain_still_single_head_after_020() -> None:
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "020_graph_instances"
+    chain = {rev.revision for rev in script.walk_revisions(base="base", head=heads[0])}
+    assert "020_graph_instances" in chain
 
 
 def test_model_columns() -> None:

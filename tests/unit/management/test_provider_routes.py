@@ -1,7 +1,7 @@
 """Unit tests for AI provider management routes: /api/v1/providers/*."""
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -906,9 +906,10 @@ class TestUpdateProviderCredential:
         assert "sk-brand-new-secret" not in body["data"]["api_key_masked"]
 
         update_kwargs = app_mock_db.return_value.update.call_args.kwargs
-        assert set(update_kwargs) == {"api_key"}
+        assert set(update_kwargs) == {"api_key", "updated_at"}
         assert update_kwargs["api_key"].startswith("enc:")
         assert "sk-brand-new-secret" not in update_kwargs["api_key"]
+        assert isinstance(update_kwargs["updated_at"], datetime)
 
     async def test_update_provider_credential_success_all_optional_fields(
         self, client, app_mock_db: MagicMock, auth_headers: dict
@@ -944,7 +945,9 @@ class TestUpdateProviderCredential:
             "enabled": False,
             "org_id": "acct-99",
             "account_meta": {"region": "eu-west-1"},
+            "updated_at": ANY,
         }
+        assert isinstance(update_kwargs["updated_at"], datetime)
 
 
 # ---------------------------------------------------------------------------

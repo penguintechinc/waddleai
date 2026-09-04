@@ -47,9 +47,10 @@ from typing import Any
 
 from shared.cache.response_cache import RESPONSE_CACHE_FLAG, ResponseCache
 from shared.observability.tracing import get_tracer
-from shared.routing.aliases import explicit_tool_type
+from shared.routing.aliases import explicit_tool_type, split_provider_prefix
 from shared.routing.capability import ModelOffer
 from shared.routing.engine import RoutingEngine, RoutingInput
+from shared.routing.failover import DestinationsExhausted
 from shared.routing.heuristics import HeuristicRule, RequestSignals
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import PromptSecurityScanner
@@ -140,6 +141,19 @@ class PipelineContext:
     # waddleai.security_v2 is enabled; None under v1 (flag-off byte-identical).
     security_degraded: bool = False
     upstream_mapping_id: str | None = None
+    # --- Provider-destination failover (failover spec §5) ---
+    # True when RoutingStage's RouteDecision.clamp_local reshaped the chain
+    # (sensitivity/budget clamp); restricts destinations to local providers.
+    local_only: bool = False
+    # The caller's hard `provider:model` pin (split_provider_prefix on the
+    # originally requested model); restricts destinations to that provider.
+    provider_pin: str | None = None
+    # True once any byte has been flushed to the client -- failover is illegal
+    # after this (first-byte rule §5.4). Buffered dispatch keeps it False today.
+    bytes_flushed: bool = False
+    # The winning destination marker (usage.waddleai.destination §5.7), set by
+    # the DispatchStage failover branch; None on the existing path.
+    destination: dict[str, Any] | None = None
 
 
 class Stage(ABC):
@@ -749,9 +763,12 @@ class RoutingStage(Stage):
             )
             return ctx
 
+        pin_source = ctx.requested_model or ctx.model
+        ctx.provider_pin = split_provider_prefix(pin_source)[0] if pin_source else None
         ctx.model = decision.model
         ctx.fallback_chain = decision.fallback_chain
         ctx.routed_from = decision.routed_from
+        ctx.local_only = getattr(decision, "clamp_local", False)
         return ctx
 
     async def _load_offers(self, org_id: int | None = None) -> list[ModelOffer]:
@@ -815,6 +832,10 @@ class DispatchStage(Stage):
         upstream_filter: Any = None,
         policy_resolver: Any = None,
         features: Any = None,
+        failover_gate: Any = None,
+        destination_resolver: Any = None,
+        failover_dispatcher: Any = None,
+        metrics: Any = None,
     ) -> None:
         """Initialize DispatchStage.
 
@@ -829,6 +850,16 @@ class DispatchStage(Stage):
                 set, gates the security_v2 pre-dispatch redaction/
                 pseudonymize step internally (flag-off = v1 dispatch
                 unchanged, no upstream transform, no Valkey map)
+            failover_gate: Optional failover-spec §5.1 FailoverGate. When
+                this, destination_resolver, and failover_dispatcher are all
+                set, __call__ tries the destination-failover branch first
+                (see _maybe_failover); any one of them None keeps the
+                existing router/connectors dispatch path byte-for-byte
+                unchanged (S10).
+            destination_resolver: Optional failover-spec §5.2 DestinationResolver.
+            failover_dispatcher: Optional failover-spec §5.3 FailoverDispatcher.
+            metrics: Optional WaddleAIMetrics sink; records a gate denial
+                (flag_off/not_entitled) when the failover gate declines.
 
         """
         super().__init__(name, flag)
@@ -837,6 +868,10 @@ class DispatchStage(Stage):
         self.upstream_filter = upstream_filter
         self.policy_resolver = policy_resolver
         self.features = features
+        self.failover_gate = failover_gate
+        self.destination_resolver = destination_resolver
+        self.failover_dispatcher = failover_dispatcher
+        self.metrics = metrics
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
         """Route to provider and dispatch request.
@@ -860,6 +895,9 @@ class DispatchStage(Stage):
             ctx.blocked = True
             ctx.status_code = 400
             ctx.block_reason = "no_messages"
+            return ctx
+
+        if await self._maybe_failover(ctx):
             return ctx
 
         # Select provider and target model via the router's public seam, which
@@ -1010,6 +1048,86 @@ class DispatchStage(Stage):
             ctx.block_reason = "dispatch_error"
 
         return ctx
+
+    async def _maybe_failover(self, ctx: PipelineContext) -> bool:
+        """Try the destination-failover path; return True if it handled the request.
+
+        Inert (returns False immediately) unless failover_gate,
+        destination_resolver, and failover_dispatcher were all supplied at
+        construction (spec §5.1, S10) -- the existing router/connectors path
+        below then runs completely unchanged. When the gate denies (flag off
+        or not entitled) or the resolver returns no destinations, this also
+        falls through to the existing path rather than blocking.
+        """
+        if (
+            self.failover_dispatcher is None
+            or self.failover_gate is None
+            or self.destination_resolver is None
+        ):
+            return False
+        org_raw = getattr(ctx.user, "tenant_id", None) or getattr(ctx.user, "organization_id", None)
+        try:
+            org_id = int(org_raw) if org_raw is not None else 0
+        except (TypeError, ValueError):
+            org_id = 0
+
+        enabled, reason = await self.failover_gate.evaluate(org_id)
+        if not enabled:
+            if self.metrics is not None:
+                self.metrics.record_destination_gate_denied(reason)
+            return False
+
+        requested = ctx.model or "gpt-4"
+        dests = await self.destination_resolver.resolve(
+            org_id, requested, pin=ctx.provider_pin, local_only=ctx.local_only
+        )
+        if not dests:
+            return False
+
+        provider_hint = dests[0].provider_type
+        if (
+            self.upstream_filter is not None
+            and self.features is not None
+            and self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id))
+        ):
+            await self._apply_upstream_filter(ctx, org_id, provider_hint, requested)
+
+        try:
+            outcome = await self.failover_dispatcher.dispatch(ctx, dests, ctx.messages)
+        except ProviderClientError as e:
+            ctx.blocked = True
+            ctx.status_code = e.status_code or 400
+            ctx.block_reason = f"provider_error_{e.status_code}"
+            return True
+        except DestinationsExhausted as e:
+            ctx.blocked = True
+            ctx.status_code = e.status_code()
+            ctx.block_reason = "destinations_exhausted"
+            retry_after = e.retry_after()
+            if ctx.status_code == 429 and retry_after is not None:
+                ctx.usage_meta["retry_after"] = retry_after
+            return True
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error("DispatchStage: failover dispatch error: %s", e, exc_info=True)
+            ctx.blocked = True
+            ctx.status_code = 500
+            ctx.block_reason = "dispatch_error"
+            return True
+
+        ctx.provider = outcome.destination.provider_type
+        ctx.requested_model = requested
+        ctx.model = outcome.destination.provider_model_id or requested
+        ctx.response_text = outcome.text
+        ctx.usage = outcome.usage
+        ctx.finish_reason = outcome.finish_reason
+        if ctx.upstream_mapping_id and self.upstream_filter is not None:
+            ctx.response_text = await self.upstream_filter.depseudonymize(
+                ctx.response_text, ctx.upstream_mapping_id
+            )
+            await self.upstream_filter.cleanup(ctx.upstream_mapping_id)
+            ctx.upstream_mapping_id = None
+        ctx.destination = outcome.marker
+        return True
 
     async def _apply_upstream_filter(
         self, ctx: PipelineContext, org_id: Any, provider: str, target_model: str

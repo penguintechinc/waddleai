@@ -34,4 +34,6 @@ from . import (  # noqa: I001 -- append-only order, see comment above
     fleet,
     code_repos,
     graph,
+    routing_destinations,
+    routing_destination_credentials,
 )

@@ -21,6 +21,14 @@ class SensitivityResult:
 
     candidates: list[ModelOffer]
     redact_before_dispatch: bool = False
+    # True exactly when this call forced local-only candidates (mode ==
+    # "local_only" with PII detected) -- set regardless of whether any
+    # commercial candidate was actually present to drop, so a chain that was
+    # already 100% local still reports the clamp as applied. This is the
+    # explicit signal RoutingEngine's RouteDecision.clamp_local reads
+    # (failover spec §5.1); "ignore" and "redact_then_any" never set it,
+    # since neither forces local.
+    local_only_applied: bool = False
 
 
 def apply_sensitivity(
@@ -57,7 +65,7 @@ def apply_sensitivity(
 
     if mode == "local_only":
         clamped = [c for c in candidates if c.location == "local"]
-        return SensitivityResult(candidates=clamped)
+        return SensitivityResult(candidates=clamped, local_only_applied=True)
 
     # redact_then_any: chain unchanged, but caller must redact before dispatch.
     return SensitivityResult(candidates=list(candidates), redact_before_dispatch=True)

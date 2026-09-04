@@ -27,6 +27,7 @@ _MIRRORED = (
     "getting-started/installation.md",
     "integrations/claude-code.md",
     "integrations/vscode-extension.md",
+    "routing/destination-failover.md",
 )
 
 # Known fork, deliberately not asserted: none currently. Add an entry here

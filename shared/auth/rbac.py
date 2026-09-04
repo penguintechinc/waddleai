@@ -122,6 +122,10 @@ class Permission(Enum):
     MODEL_ACCESS_POLICY_WRITE = "model_access_policy:write"  # admin + resource_manager
     MODEL_ACCESS_POLICY_DELETE = "model_access_policy:delete"  # admin only
 
+    # Model destination CRUD (provider-destination-failover spec §4).
+    MODEL_DESTINATION_WRITE = "model_destination:write"  # admin + resource_manager
+    MODEL_DESTINATION_DELETE = "model_destination:delete"  # admin only
+
 
 @dataclass
 class UserContext:
@@ -198,6 +202,8 @@ ROLE_PERMISSIONS = {
         Permission.SECURITY_POLICY_ADMIN,
         Permission.MODEL_ACCESS_POLICY_WRITE,
         Permission.MODEL_ACCESS_POLICY_DELETE,
+        Permission.MODEL_DESTINATION_WRITE,
+        Permission.MODEL_DESTINATION_DELETE,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,
@@ -230,6 +236,7 @@ ROLE_PERMISSIONS = {
         Permission.USAGE_READ_BY_USER,
         Permission.USER_MANAGE,
         Permission.MODEL_ACCESS_POLICY_WRITE,
+        Permission.MODEL_DESTINATION_WRITE,
     },
     Role.REPORTER: {
         Permission.SYSTEM_HEALTH,

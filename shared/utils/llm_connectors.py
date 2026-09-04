@@ -5,6 +5,7 @@ Handles connections to OpenAI, Anthropic, Gemini, Ollama, and llama.cpp
 """
 
 import asyncio
+import json
 import logging
 import random
 import threading
@@ -61,7 +62,17 @@ class ProviderTimeoutError(ProviderError):
 class ProviderRateLimitError(ProviderError):
     """Rate limit error HTTP 429 (retryable)."""
 
-    pass
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        message: str,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        """Bind the standard ProviderError fields plus an optional Retry-After seconds hint."""
+        super().__init__(provider, model, message, status_code=status_code)
+        self.retry_after = retry_after
 
 
 class ProviderServerError(ProviderError):
@@ -74,6 +85,56 @@ class ProviderClientError(ProviderError):
     """Client error HTTP 4xx, auth, schema (not retryable, not breaker-counted)."""
 
     pass
+
+
+# Retryable = timeout/429/5xx. This is the single source of truth for the
+# retryable/non-retryable split; it mirrors the tuple `_with_retries` already
+# checks inline so both stay in lockstep with the taxonomy in the spec.
+_RETRYABLE = (ProviderRateLimitError, ProviderTimeoutError, ProviderServerError)
+
+
+def is_retryable(exc: BaseException) -> bool:
+    """Return True iff `exc` is a retryable provider failure (timeout/429/5xx)."""
+    return isinstance(exc, _RETRYABLE)
+
+
+def classify_failure(exc: "ProviderError") -> str:
+    """Map a ProviderError to a stable reason label for metrics/attempt records."""
+    if isinstance(exc, ProviderRateLimitError):
+        return "rate_limit"
+    if isinstance(exc, ProviderTimeoutError):
+        return "timeout"
+    if isinstance(exc, ProviderServerError):
+        return "server_error"
+    return "client_error"
+
+
+def _retry_after_from_headers(exc: BaseException) -> float | None:
+    """Best-effort Retry-After (seconds) from an SDK exception's HTTP response headers."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if headers is None:
+        return None
+    value = headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bedrock_retry_after(exc: Any) -> float | None:
+    """Best-effort Retry-After (seconds) from a Bedrock ClientError's response metadata."""
+    raw = exc.response.get("RetryAfterSeconds")
+    if raw is None:
+        raw = exc.response.get("ResponseMetadata", {}).get("HTTPHeaders", {}).get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(slots=True)
@@ -362,6 +423,7 @@ class OpenAIConnector(LLMConnector):
                 model=model,
                 message="OpenAI rate limit",
                 status_code=429,
+                retry_after=_retry_after_from_headers(e),
             ) from e
         except openai.APIStatusError as e:
             status_code = e.status_code
@@ -432,6 +494,7 @@ class OpenAIConnector(LLMConnector):
                 model=model,
                 message="OpenAI rate limit",
                 status_code=429,
+                retry_after=_retry_after_from_headers(e),
             ) from e
         except openai.APIStatusError as e:
             status_code = e.status_code
@@ -575,6 +638,7 @@ class XAIConnector(OpenAIConnector):
                 model=model,
                 message="xAI rate limit",
                 status_code=429,
+                retry_after=_retry_after_from_headers(e),
             ) from e
         except openai.APIStatusError as e:
             status_code = e.status_code
@@ -676,9 +740,16 @@ class AnthropicConnector(LLMConnector):
     """Anthropic Claude API connector."""
 
     def __init__(self, name: str, config: dict[str, Any]):
-        """Create the AsyncAnthropic client and a tiktoken-based token estimator."""
+        """Create the AsyncAnthropic client and a tiktoken-based token estimator.
+
+        Passes `base_url=endpoint_url` only when an endpoint is configured, so
+        connectors without one keep using the SDK's default Anthropic host.
+        """
         super().__init__(name, config)
-        self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
+        if self.endpoint_url:
+            self.client = anthropic.AsyncAnthropic(api_key=self.api_key, base_url=self.endpoint_url)
+        else:
+            self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
 
         # Anthropic doesn't have tokenizers, so we estimate
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
@@ -756,6 +827,7 @@ class AnthropicConnector(LLMConnector):
                 model=model,
                 message="Anthropic rate limit",
                 status_code=429,
+                retry_after=_retry_after_from_headers(e),
             ) from e
         except anthropic.APIStatusError as e:
             status_code = e.status_code
@@ -858,6 +930,7 @@ class AnthropicConnector(LLMConnector):
                 model=model,
                 message="Anthropic rate limit",
                 status_code=429,
+                retry_after=_retry_after_from_headers(e),
             ) from e
         except anthropic.APIStatusError as e:
             status_code = e.status_code
@@ -1681,7 +1754,15 @@ class BedrockConnector(LLMConnector):
     """
 
     def __init__(self, name: str, config: dict[str, Any]):
-        """Defer creating the boto3 bedrock-runtime client until first async use."""
+        """Defer creating the boto3 bedrock-runtime client until first async use.
+
+        Region comes from config `aws_region` (falling back to the deprecated
+        `region` key, then `us-east-1`). Credential material is a JSON object
+        `{"aws_access_key_id","aws_secret_access_key","aws_session_token"?}` in
+        config `api_key`; empty/missing/malformed material means "use the
+        ambient boto3 credential chain" (e.g. an IAM role) instead of static
+        keys. The parsed material is kept on the instance only -- never logged.
+        """
         super().__init__(name, config)
         if boto3 is None:
             logger.warning("boto3 not installed; BedrockConnector will not function")
@@ -1691,12 +1772,37 @@ class BedrockConnector(LLMConnector):
             self.client = None  # Lazily initialized in async context
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
+        self.aws_region = config.get("aws_region") or config.get("region") or "us-east-1"
+        self._aws_creds: dict[str, str] = {}
+        material = config.get("api_key") or ""
+        if material:
+            try:
+                parsed = json.loads(material)
+                for key in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token"):
+                    if parsed.get(key):
+                        self._aws_creds[key] = parsed[key]
+            except (ValueError, TypeError, AttributeError):
+                logger.warning(
+                    "BedrockConnector %s: credential material is not valid JSON; "
+                    "falling back to the ambient AWS credential chain",
+                    name,
+                )
+
     async def _get_client(self):
-        """Get or create boto3 bedrock-runtime client (async-wrapped)."""
+        """Get or create boto3 bedrock-runtime client (async-wrapped).
+
+        Uses static credentials from config when present, otherwise falls back
+        to the ambient boto3 chain (e.g. IAM role). Honours `endpoint_url` for
+        VPC endpoints when configured.
+        """
         if self.client is None and boto3 is not None:
 
             def _create_client():
-                return boto3.client("bedrock-runtime", region_name="us-east-1")
+                kwargs: dict[str, Any] = {"region_name": self.aws_region}
+                if self.endpoint_url:
+                    kwargs["endpoint_url"] = self.endpoint_url
+                kwargs.update(self._aws_creds)
+                return boto3.client("bedrock-runtime", **kwargs)
 
             self.client = await asyncio.to_thread(_create_client)
         return self.client
@@ -1760,6 +1866,20 @@ class BedrockConnector(LLMConnector):
                     from botocore.exceptions import ClientError
 
                     if isinstance(e, ClientError):
+                        code = e.response.get("Error", {}).get("Code", "")
+                        if code in ("ThrottlingException", "ModelNotReadyException"):
+                            raise ProviderRateLimitError(
+                                provider="bedrock",
+                                model=model,
+                                message=code,
+                                status_code=429,
+                                retry_after=_bedrock_retry_after(e),
+                            ) from e
+                        if code in ("ServiceUnavailableException", "InternalServerException"):
+                            raise ProviderServerError(
+                                provider="bedrock", model=model, message=code, status_code=503
+                            ) from e
+
                         status_code = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
                         if status_code:
                             if status_code == 429:
@@ -1768,6 +1888,7 @@ class BedrockConnector(LLMConnector):
                                     model=model,
                                     message="Bedrock rate limit",
                                     status_code=status_code,
+                                    retry_after=_bedrock_retry_after(e),
                                 ) from e
                             elif status_code >= 500:
                                 raise ProviderServerError(
@@ -1918,6 +2039,20 @@ class BedrockConnector(LLMConnector):
                     from botocore.exceptions import ClientError
 
                     if isinstance(e, ClientError):
+                        code = e.response.get("Error", {}).get("Code", "")
+                        if code in ("ThrottlingException", "ModelNotReadyException"):
+                            raise ProviderRateLimitError(
+                                provider="bedrock",
+                                model=model,
+                                message=code,
+                                status_code=429,
+                                retry_after=_bedrock_retry_after(e),
+                            ) from e
+                        if code in ("ServiceUnavailableException", "InternalServerException"):
+                            raise ProviderServerError(
+                                provider="bedrock", model=model, message=code, status_code=503
+                            ) from e
+
                         status_code = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
                         if status_code:
                             if status_code == 429:
@@ -1926,6 +2061,7 @@ class BedrockConnector(LLMConnector):
                                     model=model,
                                     message="Bedrock rate limit",
                                     status_code=status_code,
+                                    retry_after=_bedrock_retry_after(e),
                                 ) from e
                             elif status_code >= 500:
                                 raise ProviderServerError(
@@ -1972,7 +2108,7 @@ class BedrockConnector(LLMConnector):
             return {
                 "status": "healthy",
                 "provider": "bedrock",
-                "endpoint": "bedrock-runtime (us-east-1)",
+                "endpoint": self.endpoint_url or f"bedrock-runtime ({self.aws_region})",
                 "timestamp": datetime.utcnow().isoformat(),
             }
         except Exception as e:
@@ -2069,6 +2205,7 @@ class LLMConnectionManager:
             cred_rows = self.db(
                 (self.db.provider_credentials.provider_id == provider_row.id)
                 & (self.db.provider_credentials.enabled == True)  # noqa: E712
+                & (self.db.provider_credentials.owner_org_id == None)  # noqa: E711 -- BYOK excluded (S3)
             ).select()
 
             if not cred_rows:
