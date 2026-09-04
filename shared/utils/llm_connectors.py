@@ -2205,6 +2205,7 @@ class LLMConnectionManager:
             cred_rows = self.db(
                 (self.db.provider_credentials.provider_id == provider_row.id)
                 & (self.db.provider_credentials.enabled == True)  # noqa: E712
+                & (self.db.provider_credentials.owner_org_id == None)  # noqa: E711 -- BYOK excluded (S3)
             ).select()
 
             if not cred_rows:
