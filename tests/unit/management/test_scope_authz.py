@@ -82,6 +82,9 @@ _B_TIER_SCOPES = {
     # Not part of the OIDC-scope migration (new feature, model-access-policy
     # design spec §8) but enumerated by the same generic route scan below.
     Permission.MODEL_ACCESS_POLICY_WRITE.value,
+    # Not part of the OIDC-scope migration (new feature, provider-destination-failover
+    # spec §4) but enumerated by the same generic route scan below.
+    Permission.MODEL_DESTINATION_WRITE.value,
 }
 
 # The complete set of migrated route scopes -- the route enumeration below
@@ -106,6 +109,7 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.ROUTING_POLICY_DELETE.value,
     Permission.SECURITY_POLICY_ADMIN.value,
     Permission.MODEL_ACCESS_POLICY_DELETE.value,
+    Permission.MODEL_DESTINATION_DELETE.value,
 }
 
 _EXPECTED_ROUTE_COUNT = 117  # audited require_role call sites, both migration waves,
