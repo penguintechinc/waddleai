@@ -297,6 +297,8 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.fleet",
     "services.management.app.api.v1.code_repos",
     "services.management.app.api.v1.graph",
+    "services.management.app.api.v1.routing_destinations",
+    "services.management.app.api.v1.routing_destination_credentials",
 ]
 
 

@@ -112,7 +112,7 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.MODEL_DESTINATION_DELETE.value,
 }
 
-_EXPECTED_ROUTE_COUNT = 117  # audited require_role call sites, both migration waves,
+_EXPECTED_ROUTE_COUNT = 122  # audited require_role call sites, both migration waves,
 #   +3 net-new (not a require_role migration):
 #   94 from the original OIDC migration, +16 from branches cut before it landed
 #   (6 fleet, 9 hook_rules, 1 hook_metrics), +3 from the model-access-policy
@@ -120,7 +120,12 @@ _EXPECTED_ROUTE_COUNT = 117  # audited require_role call sites, both migration w
 #   MODEL_ACCESS_POLICY_DELETE; GET/GET-by-id are require_auth only),
 #   +4 from §9.1 code_repos.py (POST /code-repos, DELETE /code-repos/<id>,
 #   POST .../reindex, POST .../reindex-all -> CODE_REPO_WRITE; GET routes
-#   and the HMAC-verified webhook route are unscoped, matching knowledge.py).
+#   and the HMAC-verified webhook route are unscoped, matching knowledge.py),
+#   +5 from the provider-destination-failover spec §4 CRUD (routing_destinations.py:
+#   POST/PATCH /destinations, DELETE /destinations/<id> -> MODEL_DESTINATION_WRITE
+#   x2 + MODEL_DESTINATION_DELETE; routing_destination_credentials.py: POST
+#   /destination-credentials -> MODEL_DESTINATION_WRITE, DELETE .../<id> ->
+#   MODEL_DESTINATION_DELETE; GET routes on both are require_auth only).
 
 
 def _concrete_path(rule_str: str) -> str:
