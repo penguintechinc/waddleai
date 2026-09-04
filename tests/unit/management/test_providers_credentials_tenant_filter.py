@@ -1,358 +1,306 @@
 """Behavioral tests for platform credential endpoint tenant filtering (S12).
 
-Tests verify that platform credential endpoints (list, create, update, delete)
-exclude tenant-owned (BYOK) credentials by actually executing the PyDAL queries
-against a fake in-memory database, not just asserting substring presence.
+Every test drives the real route handlers (`list_provider_credentials`,
+`create_provider_credential`, `update_provider_credential`,
+`delete_provider_credential`) through the Quart test client, against an
+in-memory PyDAL-style fake DB seeded with a platform row (owner_org_id=None)
+and a sibling BYOK row (owner_org_id=42) on the same provider. A removed
+`owner_org_id == None` filter in `providers.py` changes the HTTP status/body
+these tests assert on -- not a source string.
 """
 
 from __future__ import annotations
 
-import inspect
+from datetime import datetime
+from typing import Any
 
-from app.api.v1 import providers
+import pytest
 
-from tests.unit.routing.conftest import FakeDB
+from services.management.app.api.v1 import providers
+
+PROVIDER_ID = 1
+PLATFORM_CRED_ID = 1
+BYOK_CRED_ID = 2
+BYOK_ORG_ID = 42
+PLATFORM_LABEL = "platform-cred"
+BYOK_LABEL = "byok-cred"
 
 
-class TestCredentialListFiltersOwnerOrgId:
-    """list_provider_credentials filters owner_org_id IS NULL."""
+# ---------------------------------------------------------------------------
+# Local, lenient in-memory PyDAL stand-in.
+#
+# tests/unit/routing/conftest.py already ships a FakeDB, but its _FakeRow
+# raises AttributeError for any column not present on the seeded/inserted
+# dict -- correct for the resolver tests it backs, which assert every
+# accessed field was explicitly set. It's wrong here: the real INSERT in
+# create_provider_credential never sets `last_used_at`, and a genuine PyDAL
+# row still answers that attribute with None (unset column), not
+# AttributeError. Copied locally, per the task brief, rather than changing
+# the shared fixture's semantics for its other consumers.
+# ---------------------------------------------------------------------------
 
-    def test_list_returns_only_platform_rows(self) -> None:
-        """Verify list query filters to platform rows only."""
-        fake_db = FakeDB()
-        provider_id = 1
 
-        # Plant one platform row (owner_org_id=None) and one BYOK row (owner_org_id=42)
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": 1,
-                    "provider_id": provider_id,
-                    "label": "platform-cred",
-                    "owner_org_id": None,  # platform row
-                },
-                {
-                    "id": 2,
-                    "provider_id": provider_id,
-                    "label": "byok-cred",
-                    "owner_org_id": 42,  # tenant-owned
-                },
-            ],
+class _Row(dict):
+    """A dict-backed row exposing attribute access; unset columns read as None."""
+
+    def __getattr__(self, item: str) -> Any:
+        """Return the column value, or None for a column never written (real-row parity)."""
+        return self.get(item)
+
+
+class _SelectResult(list):
+    """A list of matching rows that also supports PyDAL's ``.first()``."""
+
+    def first(self) -> _Row | None:
+        """Return the first matching row, or None when there are no matches."""
+        return self[0] if self else None
+
+
+class _Predicate:
+    """A composable single-table row predicate."""
+
+    def __init__(self, fn: Any, table: str) -> None:
+        """Store the row test function and the table it filters."""
+        self.fn = fn
+        self.table = table
+
+    def __and__(self, other: _Predicate) -> _Predicate:
+        """Conjoin two predicates on the same table into one."""
+        return _Predicate(lambda row: self.fn(row) and other.fn(row), self.table)
+
+
+class _Field:
+    """A PyDAL-style field reference supporting the operators providers.py uses."""
+
+    def __init__(self, table: str, name: str) -> None:
+        """Bind this field reference to its owning table and column name."""
+        self.table = table
+        self.name = name
+
+    def __eq__(self, value: Any) -> _Predicate:  # type: ignore[override]
+        """Build an equality predicate, matching PyDAL's IS/= semantics (value may be None)."""
+        return _Predicate(lambda row: row.get(self.name) == value, self.table)
+
+    def __ne__(self, value: Any) -> _Predicate:  # type: ignore[override]
+        """Build an inequality predicate."""
+        return _Predicate(lambda row: row.get(self.name) != value, self.table)
+
+
+class _QueryResult:
+    """Result of ``db(predicate)`` -- supports select()/update()/delete()."""
+
+    def __init__(self, db: _FakeDB, table: str | None, predicate: _Predicate | None) -> None:
+        """Bind this query to its owning fake DB, table, and predicate."""
+        self._db = db
+        self._table = table
+        self._predicate = predicate
+
+    def _rows(self) -> list[dict]:
+        rows = self._db.tables.setdefault(self._table, [])
+        if self._predicate is None:
+            return rows
+        return [r for r in rows if self._predicate.fn(r)]
+
+    def select(self, orderby: Any = None) -> _SelectResult:
+        """Return matching rows as attribute-accessible fake rows."""
+        return _SelectResult(_Row(r) for r in self._rows())
+
+    def update(self, **kwargs: Any) -> int:
+        """Update matching rows in place; returns the count updated."""
+        matched = self._rows()
+        for row in matched:
+            row.update(kwargs)
+        return len(matched)
+
+    def delete(self) -> int:
+        """Delete matching rows; returns the count deleted."""
+        matched = self._rows()
+        table_rows = self._db.tables[self._table]
+        for row in matched:
+            table_rows.remove(row)
+        return len(matched)
+
+
+class _Table:
+    """A PyDAL-style table accessor: field lookup + insert."""
+
+    def __init__(self, db: _FakeDB, name: str) -> None:
+        """Bind this table accessor to its owning fake DB and table name."""
+        self._db = db
+        self._name = name
+
+    def __getattr__(self, field: str) -> _Field:
+        """Return a field reference for `field` on this table."""
+        return _Field(self._name, field)
+
+    def insert(self, **kwargs: Any) -> int:
+        """Insert a new row, auto-assigning id; returns the new id."""
+        rows = self._db.tables.setdefault(self._name, [])
+        new_id = kwargs.get("id") or (max((r["id"] for r in rows), default=0) + 1)
+        rows.append({"id": new_id, **kwargs})
+        return new_id
+
+
+class _FakeDB:
+    """Minimal in-memory PyDAL stand-in, monkeypatched in place of ``providers.db``."""
+
+    def __init__(self) -> None:
+        """Initialize empty table storage and the commit-call counter."""
+        self.tables: dict[str, list[dict]] = {}
+        self.commit_calls = 0
+
+    def __getattr__(self, table_name: str) -> _Table:
+        """Return the table accessor for `table_name`, creating empty storage if needed."""
+        self.tables.setdefault(table_name, [])
+        return _Table(self, table_name)
+
+    def __call__(self, predicate: _Predicate | None = None) -> _QueryResult:
+        """Emulate ``db(query)``, inferring the target table from the predicate."""
+        table = predicate.table if predicate is not None else None
+        return _QueryResult(self, table, predicate)
+
+    def commit(self) -> None:
+        """No-op commit, tracked for call-count assertions."""
+        self.commit_calls += 1
+
+    def seed(self, table_name: str, rows: list[dict]) -> None:
+        """Directly populate a table with rows (test setup convenience)."""
+        self.tables.setdefault(table_name, []).extend(rows)
+
+
+def _credential_row(cred_id: int, *, owner_org_id: int | None, label: str) -> dict:
+    """Build a provider_credentials row with every column `_credential_to_dict` reads."""
+    return {
+        "id": cred_id,
+        "provider_id": PROVIDER_ID,
+        "label": label,
+        "api_key": None,
+        "org_id": None,
+        "account_meta": None,
+        "weight": 100,
+        "enabled": True,
+        "request_count": 0,
+        "token_count": 0,
+        "last_used_at": None,
+        "created_at": datetime(2025, 1, 1, 12, 0, 0),
+        "owner_org_id": owner_org_id,
+    }
+
+
+@pytest.fixture
+def s12_db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
+    """Swap `providers.db` for a FakeDB seeded with one platform + one BYOK credential.
+
+    Both credentials share PROVIDER_ID so every S12 filter (list/create/
+    update/delete) is exercised against a genuine sibling BYOK row, never an
+    absent one. `providers.db` is patched directly (not the shared
+    `app_mock_db`/`flask_app` MagicMock) because that mock never evaluates
+    query predicates -- it can't distinguish a filtered query from an
+    unfiltered one, which is exactly the bug class this file guards against.
+    """
+    fake = _FakeDB()
+    fake.seed("ai_providers", [{"id": PROVIDER_ID, "provider_type": "ollama"}])
+    fake.seed(
+        "provider_credentials",
+        [
+            _credential_row(PLATFORM_CRED_ID, owner_org_id=None, label=PLATFORM_LABEL),
+            _credential_row(BYOK_CRED_ID, owner_org_id=BYOK_ORG_ID, label=BYOK_LABEL),
+        ],
+    )
+    monkeypatch.setattr(providers, "db", fake)
+    return fake
+
+
+class TestListExcludesByok:
+    """GET /providers/<id>/credentials returns only the platform row (S12)."""
+
+    async def test_list_returns_only_platform_row(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """The BYOK sibling row is never present in the list response."""
+        resp = await client.get(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials", headers=auth_headers
         )
-
-        # Execute the query that list_provider_credentials uses
-        result = fake_db(
-            (fake_db.provider_credentials.provider_id == provider_id)
-            & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-        ).select(orderby=fake_db.provider_credentials.id)
-
-        # Assert: only the platform row is returned
-        assert len(result) == 1
-        assert result[0]["id"] == 1
-        assert result[0]["label"] == "platform-cred"
-        assert result[0]["owner_org_id"] is None
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["meta"]["total"] == 1
+        assert [c["id"] for c in body["data"]] == [PLATFORM_CRED_ID]
 
 
-class TestCredentialUpdateFiltersOwnerOrgId:
-    """update_provider_credential filters owner_org_id IS NULL on existence check."""
+class TestUpdateExcludesByok:
+    """PATCH /providers/<id>/credentials/<cred_id> stays scoped to platform rows (S12)."""
 
-    def test_update_byok_credential_not_found(self) -> None:
-        """Verify update existence check excludes BYOK rows."""
-        fake_db = FakeDB()
-        provider_id = 1
-        byok_cred_id = 2
-
-        # Plant one platform row and one BYOK row
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": 1,
-                    "provider_id": provider_id,
-                    "label": "platform-cred",
-                    "owner_org_id": None,
-                },
-                {
-                    "id": byok_cred_id,
-                    "provider_id": provider_id,
-                    "label": "byok-cred",
-                    "owner_org_id": 42,
-                },
-            ],
+    async def test_update_byok_credential_not_found(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """A BYOK cred_id resolves to 404 -- its existence never leaks through this route."""
+        resp = await client.patch(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials/{BYOK_CRED_ID}",
+            headers=auth_headers,
+            json={"weight": 50},
         )
+        assert resp.status_code == 404
 
-        # Execute the existence check that _check_existence uses
-        cred = (
-            fake_db(
-                (fake_db.provider_credentials.id == byok_cred_id)
-                & (fake_db.provider_credentials.provider_id == provider_id)
-                & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-            )
-            .select()
-            .first()
+    async def test_rename_platform_credential_to_byok_label_succeeds(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """Renaming the platform row to the BYOK row's label must not false-409 (S12)."""
+        resp = await client.patch(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials/{PLATFORM_CRED_ID}",
+            headers=auth_headers,
+            json={"label": BYOK_LABEL},
         )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["data"]["label"] == BYOK_LABEL
 
-        # Assert: BYOK row is NOT found (resolves to 404)
-        assert cred is None
 
-    def test_update_platform_credential_found(self) -> None:
-        """Verify update existence check finds platform rows."""
-        fake_db = FakeDB()
-        provider_id = 1
-        platform_cred_id = 1
+class TestCreateExcludesByok:
+    """POST /providers/<id>/credentials label-uniqueness check excludes BYOK rows (S12)."""
 
-        # Plant one platform row and one BYOK row
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": platform_cred_id,
-                    "provider_id": provider_id,
-                    "label": "platform-cred",
-                    "owner_org_id": None,
-                },
-                {
-                    "id": 2,
-                    "provider_id": provider_id,
-                    "label": "byok-cred",
-                    "owner_org_id": 42,
-                },
-            ],
+    async def test_create_with_label_matching_byok_succeeds(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """A new platform credential may reuse a label already used by a BYOK row."""
+        resp = await client.post(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials",
+            headers=auth_headers,
+            json={"label": BYOK_LABEL},
         )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert body["data"]["label"] == BYOK_LABEL
 
-        # Execute the existence check
-        cred = (
-            fake_db(
-                (fake_db.provider_credentials.id == platform_cred_id)
-                & (fake_db.provider_credentials.provider_id == provider_id)
-                & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-            )
-            .select()
-            .first()
+    async def test_create_with_label_matching_platform_still_conflicts(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """Sanity check: the platform-row collision path is untouched by the BYOK exclusion."""
+        resp = await client.post(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials",
+            headers=auth_headers,
+            json={"label": PLATFORM_LABEL},
         )
+        assert resp.status_code == 409
 
-        # Assert: platform row IS found
-        assert cred is not None
-        assert cred["id"] == platform_cred_id
 
-    def test_update_label_conflict_check_excludes_byok(self) -> None:
-        """Verify label-conflict check in update doesn't match against BYOK rows."""
-        fake_db = FakeDB()
-        provider_id = 1
-        platform_cred_id = 1
-        byok_label = "byok-cred"
+class TestDeleteExcludesByok:
+    """DELETE /providers/<id>/credentials/<cred_id> stays scoped to platform rows (S12)."""
 
-        # Plant one platform row and one BYOK row with same label we want to check
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": platform_cred_id,
-                    "provider_id": provider_id,
-                    "label": "platform-cred",
-                    "owner_org_id": None,
-                },
-                {
-                    "id": 2,
-                    "provider_id": provider_id,
-                    "label": byok_label,
-                    "owner_org_id": 42,
-                },
-            ],
+    async def test_delete_byok_credential_not_found(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """A BYOK cred_id resolves to 404, never a mutation."""
+        resp = await client.delete(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials/{BYOK_CRED_ID}", headers=auth_headers
         )
+        assert resp.status_code == 404
 
-        # Execute the label-conflict check (trying to rename platform row to byok's label)
-        conflict = (
-            fake_db(
-                (fake_db.provider_credentials.provider_id == provider_id)
-                & (fake_db.provider_credentials.label == byok_label)
-                & (fake_db.provider_credentials.id != platform_cred_id)
-                & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-            )
-            .select()
-            .first()
+    async def test_delete_last_platform_credential_guard_ignores_byok(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """The 'last credential' guard counts platform rows only, so it still trips."""
+        resp = await client.delete(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials/{PLATFORM_CRED_ID}",
+            headers=auth_headers,
         )
-
-        # Assert: no conflict (BYOK row is excluded, platform has different label)
-        assert conflict is None
-
-
-class TestCredentialCreateFiltersOwnerOrgId:
-    """create_provider_credential label-uniqueness check filters owner_org_id IS NULL."""
-
-    def test_create_with_label_matching_byok_succeeds(self) -> None:
-        """Verify create succeeds when label matches BYOK row (no false 409)."""
-        fake_db = FakeDB()
-        provider_id = 1
-        new_label = "byok-cred"
-
-        # Plant one platform row and one BYOK row with the new label
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": 1,
-                    "provider_id": provider_id,
-                    "label": "platform-cred",
-                    "owner_org_id": None,
-                },
-                {
-                    "id": 2,
-                    "provider_id": provider_id,
-                    "label": new_label,
-                    "owner_org_id": 42,
-                },
-            ],
-        )
-
-        # Execute the label-uniqueness check that create uses
-        existing = (
-            fake_db(
-                (fake_db.provider_credentials.provider_id == provider_id)
-                & (fake_db.provider_credentials.label == new_label)
-                & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-            )
-            .select()
-            .first()
-        )
-
-        # Assert: no conflict (BYOK row is excluded)
-        assert existing is None
-
-    def test_create_with_label_matching_platform_fails(self) -> None:
-        """Verify create fails when label matches platform row (correct 409)."""
-        fake_db = FakeDB()
-        provider_id = 1
-        new_label = "platform-cred"
-
-        # Plant one platform row and one BYOK row
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": 1,
-                    "provider_id": provider_id,
-                    "label": new_label,
-                    "owner_org_id": None,
-                },
-                {
-                    "id": 2,
-                    "provider_id": provider_id,
-                    "label": "byok-cred",
-                    "owner_org_id": 42,
-                },
-            ],
-        )
-
-        # Execute the label-uniqueness check
-        existing = (
-            fake_db(
-                (fake_db.provider_credentials.provider_id == provider_id)
-                & (fake_db.provider_credentials.label == new_label)
-                & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-            )
-            .select()
-            .first()
-        )
-
-        # Assert: conflict IS detected (platform row matches)
-        assert existing is not None
-
-
-class TestCredentialDeleteFiltersOwnerOrgId:
-    """delete_provider_credential filters owner_org_id IS NULL on existence + count."""
-
-    def test_delete_byok_credential_not_found(self) -> None:
-        """Verify delete existence check excludes BYOK rows."""
-        fake_db = FakeDB()
-        provider_id = 1
-        byok_cred_id = 2
-
-        # Plant platform and BYOK rows
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": 1,
-                    "provider_id": provider_id,
-                    "label": "platform-cred",
-                    "owner_org_id": None,
-                },
-                {
-                    "id": byok_cred_id,
-                    "provider_id": provider_id,
-                    "label": "byok-cred",
-                    "owner_org_id": 42,
-                },
-            ],
-        )
-
-        # Execute the existence check that _delete uses
-        cred = (
-            fake_db(
-                (fake_db.provider_credentials.id == byok_cred_id)
-                & (fake_db.provider_credentials.provider_id == provider_id)
-                & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-            )
-            .select()
-            .first()
-        )
-
-        # Assert: BYOK row is NOT found (resolves to 404)
-        assert cred is None
-
-    def test_delete_last_platform_credential_fails_even_with_byok(self) -> None:
-        """Verify delete's 'last credential' guard counts platform rows only."""
-        fake_db = FakeDB()
-        provider_id = 1
-        sole_platform_cred = 1
-
-        # Plant one platform row and one BYOK row
-        fake_db.seed(
-            "provider_credentials",
-            [
-                {
-                    "id": sole_platform_cred,
-                    "provider_id": provider_id,
-                    "label": "platform-cred",
-                    "owner_org_id": None,
-                },
-                {
-                    "id": 2,
-                    "provider_id": provider_id,
-                    "label": "byok-cred",
-                    "owner_org_id": 42,
-                },
-            ],
-        )
-
-        # Execute the total count check that _delete uses (to check if it's the last)
-        total = len(
-            fake_db(
-                (fake_db.provider_credentials.provider_id == provider_id)
-                & (fake_db.provider_credentials.owner_org_id == None)  # noqa: E711
-            ).select()
-        )
-
-        # Assert: total is 1 (only platform row counted), so delete would be rejected
-        assert total == 1
-
-
-class TestCredentialSourceHasFilters:
-    """Verify source code contains owner_org_id filter strings (supplementary check)."""
-
-    def test_list_credentials_query_has_owner_org_id_filter(self) -> None:
-        """Source-level check: list_provider_credentials references owner_org_id."""
-        src = inspect.getsource(providers.list_provider_credentials)
-        assert "owner_org_id" in src
-
-    def test_update_credentials_query_has_owner_org_id_filter(self) -> None:
-        """Source-level check: update_provider_credential references owner_org_id."""
-        src = inspect.getsource(providers.update_provider_credential)
-        assert "owner_org_id" in src
-
-    def test_delete_credentials_query_has_owner_org_id_filter(self) -> None:
-        """Source-level check: delete_provider_credential references owner_org_id."""
-        src = inspect.getsource(providers.delete_provider_credential)
-        assert "owner_org_id" in src
+        assert resp.status_code == 409
