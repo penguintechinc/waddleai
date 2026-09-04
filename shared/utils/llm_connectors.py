@@ -638,6 +638,7 @@ class XAIConnector(OpenAIConnector):
                 model=model,
                 message="xAI rate limit",
                 status_code=429,
+                retry_after=_retry_after_from_headers(e),
             ) from e
         except openai.APIStatusError as e:
             status_code = e.status_code

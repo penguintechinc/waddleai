@@ -2170,6 +2170,34 @@ class TestXAIConnectorDefaults:
         assert result["status"] == "unhealthy"
         assert result["provider"] == "xai"
 
+    @pytest.mark.asyncio
+    async def test_chat_completion_rate_limit_propagates_retry_after(self):
+        """XAI's own 429 handler populates retry_after from the SDK exception's headers.
+
+        xAI is OpenAI-wire, so its (separately hand-rolled) 429 branch must stay in
+        sync with OpenAIConnector's behavior rather than silently diverging.
+        """
+        request = httpx.Request("POST", "https://api.x.ai/v1/chat/completions")
+        response = httpx.Response(429, request=request, headers={"retry-after": "3"})
+        rate_limit_error = openai.RateLimitError("rate limited", response=response, body=None)
+
+        with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_openai:
+            client = AsyncMock()
+            mock_openai.return_value = client
+            client.chat.completions.create = AsyncMock(side_effect=rate_limit_error)
+
+            config = {
+                "endpoint_url": "https://api.x.ai/v1",
+                "api_key": "xai-key",
+                "model_list": ["grok-1"],
+            }
+            connector = XAIConnector("test-xai", config)
+
+            with pytest.raises(ProviderRateLimitError) as ei:
+                await connector.chat_completion([{"role": "user", "content": "hi"}], "grok-1")
+
+        assert ei.value.retry_after == 3.0
+
 
 class TestAnthropicConnectorErrorMapping:
     """Typed-error mapping and less-common branches for AnthropicConnector."""
