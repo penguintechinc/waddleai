@@ -41,10 +41,15 @@ class RouteDecision:
     fallback_chain: list[str] = field(default_factory=list)
     routed_from: dict | None = None
     trace: RouteTrace | None = None
-    # True when the sensitivity clamp OR budget-pressure clamp reshaped the
-    # qualified chain (engine.py's `decide()`, sensitivity-clamp block) --
-    # the exact "must not leave local providers" signal the provider-
-    # destination failover resolver's local_only consumes (failover spec §5.1).
+    # True when the sensitivity clamp OR budget-pressure clamp ACTUALLY
+    # narrowed the qualified chain to local-only providers (engine.py's
+    # `decide()`, sensitivity-clamp block) -- False when that block ran but
+    # was a no-op (org policy "ignore", or "redact_then_any" which keeps the
+    # full chain and only flags redact-before-dispatch). This is the exact
+    # "must not leave local providers" signal the provider-destination
+    # failover resolver's local_only consumes (failover spec §5.1) -- an org
+    # that opted out of PII clamping must never be wrongly restricted to
+    # local destinations.
     clamp_local: bool = False
 
 
@@ -217,13 +222,19 @@ class RoutingEngine:
         clamp_local = pressure.clamp_local
         clamp_reshaped = False
         if pii_flagged or clamp_local:
+            pre_clamp_chain = chain
             sensitivity_result = apply_sensitivity(
                 chain,
                 pii_detected=pii_flagged or clamp_local,
                 org_sensitivity_routing=policy.sensitivity_routing if pii_flagged else "local_only",
             )
             chain = sensitivity_result.candidates
-            clamp_reshaped = True
+            # apply_sensitivity() is a no-op pass-through (chain unchanged)
+            # for org policy "ignore" and "redact_then_any" -- only its
+            # "local_only" branch ever drops candidates. Compare before/after
+            # rather than assuming the block running implies a clamp, so an
+            # org that opted out of PII clamping never gets local_only=True.
+            clamp_reshaped = len(chain) != len(pre_clamp_chain)
 
         final_model, routed_from = self._pick_final(
             chosen_offer, chain, assignment, escalation, policy, veto_reason, alias_routed_from
