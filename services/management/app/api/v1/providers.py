@@ -902,6 +902,11 @@ async def update_provider_credential(
         if not update_fields:
             return "no_fields"
 
+        # PyDAL .update() never fires SQLAlchemy `onupdate` -- the registry keys
+        # connectors on credential_version = updated_at, so a rotated key would
+        # otherwise stay cached until eviction. Bump it explicitly.
+        update_fields["updated_at"] = datetime.utcnow()
+
         db(db.provider_credentials.id == cred_id).update(**update_fields)
         db.commit()
 

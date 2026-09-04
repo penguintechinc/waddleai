@@ -168,6 +168,9 @@ class _FakeDB:
         self.tables.setdefault(table_name, []).extend(rows)
 
 
+_STALE_UPDATED_AT = datetime(2020, 1, 1, 0, 0, 0)
+
+
 def _credential_row(cred_id: int, *, owner_org_id: int | None, label: str) -> dict:
     """Build a provider_credentials row with every column `_credential_to_dict` reads."""
     return {
@@ -183,6 +186,7 @@ def _credential_row(cred_id: int, *, owner_org_id: int | None, label: str) -> di
         "token_count": 0,
         "last_used_at": None,
         "created_at": datetime(2025, 1, 1, 12, 0, 0),
+        "updated_at": _STALE_UPDATED_AT,
         "owner_org_id": owner_org_id,
     }
 
@@ -253,6 +257,46 @@ class TestUpdateExcludesByok:
         assert resp.status_code == 200
         body = await resp.get_json()
         assert body["data"]["label"] == BYOK_LABEL
+
+
+class TestRotationBumpsUpdatedAt:
+    """PATCH always bumps `updated_at`.
+
+    PyDAL's `.update()` never fires SQLAlchemy `onupdate` -- and the connector
+    registry keys on `credential_version = updated_at`, so a stale value
+    would leave a rotated key serving traffic from the old cached connector
+    until eviction.
+    """
+
+    async def test_rotate_api_key_bumps_updated_at(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """Rotating the platform credential's api_key updates its `updated_at`."""
+        resp = await client.patch(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials/{PLATFORM_CRED_ID}",
+            headers=auth_headers,
+            json={"api_key": "sk-rotated-key-value"},
+        )
+        assert resp.status_code == 200
+
+        row = next(r for r in s12_db.tables["provider_credentials"] if r["id"] == PLATFORM_CRED_ID)
+        assert row["updated_at"] is not None
+        assert row["updated_at"] != _STALE_UPDATED_AT
+
+    async def test_any_field_update_bumps_updated_at(
+        self, client: Any, s12_db: _FakeDB, auth_headers: dict
+    ) -> None:
+        """A non-rotation field update (weight) also bumps `updated_at`."""
+        resp = await client.patch(
+            f"/api/v1/providers/{PROVIDER_ID}/credentials/{PLATFORM_CRED_ID}",
+            headers=auth_headers,
+            json={"weight": 250},
+        )
+        assert resp.status_code == 200
+
+        row = next(r for r in s12_db.tables["provider_credentials"] if r["id"] == PLATFORM_CRED_ID)
+        assert row["updated_at"] is not None
+        assert row["updated_at"] != _STALE_UPDATED_AT
 
 
 class TestCreateExcludesByok:
