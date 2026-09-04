@@ -152,7 +152,7 @@ class PipelineContext:
     bytes_flushed: bool = False
     # The winning destination marker (usage.waddleai.destination §5.7), set by
     # the DispatchStage failover branch; None on the existing path.
-    destination: dict | None = None
+    destination: dict[str, Any] | None = None
 
 
 class Stage(ABC):
