@@ -1,15 +1,26 @@
 """The failover dispatcher -- walks an ordered destination list (spec S5.3/S5.4).
 
 Retryable failure (`is_retryable`) advances to the next destination and trips the
-per-destination breaker; a client error (4xx) or any other exception type propagates
-immediately without failing over and without touching the breaker. A breaker-open
-destination (no half-open probe available) or a registry `OwnershipError`/`ValueError`
-(credential/config defect) is skipped without being counted as a failure. One attempt is
-one connector call bounded by `dest.timeout_seconds` (total time for non-streaming,
-time-to-first-chunk for streaming); the same filtered `messages` list is passed to every
-attempt, unmutated, and each attempt opens a fresh stream generator. Failover is legal
-only before the first flushed byte of THIS request (`ctx.bytes_flushed`) -- a retryable
-failure after that point re-raises instead of trying the next destination.
+per-destination breaker; a client error (4xx) propagates immediately without failing
+over and without touching the breaker. A breaker-open destination (no half-open probe
+available) or a registry `OwnershipError`/`ValueError` (credential/config defect) is
+skipped without being counted as a failure. One attempt is one connector call bounded
+by `dest.timeout_seconds` (total time for non-streaming, time-to-first-chunk for
+streaming); the same filtered `messages` list is passed to every attempt, unmutated,
+and each attempt opens a fresh stream generator. Failover is legal only before the
+first flushed byte of THIS request (`ctx.bytes_flushed`) -- a retryable failure after
+that point re-raises instead of trying the next destination.
+
+Exception taxonomy at the connector boundary: `asyncio.TimeoutError` (from the
+`asyncio.wait_for` bound above) becomes `ProviderTimeoutError`; a genuine transport
+failure escaping the connector -- `OSError` (covers `ConnectionError`,
+`ConnectionRefusedError`, socket timeouts), `aiohttp.ClientError`, or
+`httpx.TransportError` when `httpx` is importable -- becomes a retryable
+`ProviderServerError` carrying only `type(exc).__name__`, never the exception's own
+text. Any other `ProviderError` (already typed by the connector) passes through
+unchanged. Every OTHER exception type (`KeyError`, `AttributeError`, `RuntimeError`,
+...) is a bug, not a provider failure, and propagates unchanged out of `dispatch` --
+no failover, no breaker trip, no attempt record beyond what already happened.
 """
 
 from __future__ import annotations
@@ -19,6 +30,8 @@ import contextlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+import aiohttp
 
 from shared.routing.destination_breaker import DestinationBreaker
 from shared.routing.destination_connectors import DestinationConnectorRegistry, OwnershipError
@@ -33,10 +46,22 @@ from shared.utils.llm_connectors import (
 )
 from shared.utils.metrics import WaddleAIMetrics
 
+try:
+    import httpx
+except ImportError:  # pragma: no cover -- httpx is a repo dependency; guarded defensively
+    httpx = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS = 30
 _STATUS_BY_REASON = {"rate_limit": 429, "timeout": 504, "server_error": 502}
+
+# Genuine transport-layer failures only -- anything else (KeyError, AttributeError,
+# RuntimeError, ...) is a bug and must propagate unchanged, never be treated as a
+# retryable provider failure.
+_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (OSError, aiohttp.ClientError)
+if httpx is not None:
+    _TRANSPORT_ERRORS = (*_TRANSPORT_ERRORS, httpx.TransportError)
 
 
 @dataclass(slots=True, frozen=True)
@@ -208,7 +233,7 @@ class FailoverDispatcher:
             raise ProviderTimeoutError(dest.provider_type, target_model, "attempt timeout") from exc
         except ProviderError:
             raise
-        except Exception as exc:  # transport/connection error -> retryable server error
+        except _TRANSPORT_ERRORS as exc:  # genuine transport/connection error -> retryable
             raise ProviderServerError(
                 dest.provider_type, target_model, f"connection error: {type(exc).__name__}"
             ) from exc

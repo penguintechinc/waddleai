@@ -83,6 +83,63 @@ def _ctx(stream=False, bytes_flushed=False):
     return SimpleNamespace(model="m", stream=stream, bytes_flushed=bytes_flushed)
 
 
+class _RecordingStream:
+    """Async iterator over fixed chunks; records whether the caller closed it."""
+
+    def __init__(self, chunks, owner):
+        """Bind the fixed chunk sequence and the owning connector to flag on close."""
+        self._iter = iter(chunks)
+        self._owner = owner
+
+    def __aiter__(self):
+        """Return self -- this object is its own async iterator."""
+        return self
+
+    async def __anext__(self):
+        """Yield the next fixed chunk, or stop the iteration once exhausted."""
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self):
+        """Flag on the owning connector that this stream was explicitly closed."""
+        self._owner.closed = True
+
+
+class _MultiChunkStreamConnector:
+    """Fake connector whose stream yields several fixed chunks, tracking close()."""
+
+    def __init__(self, chunks):
+        """Bind the fixed chunk sequence this connector's stream will yield."""
+        self._chunks = chunks
+        self.closed = False
+
+    def stream_chat_completion(self, messages, model, **kw):
+        """Return a fresh _RecordingStream over the fixed chunks."""
+        return _RecordingStream(self._chunks, self)
+
+
+class _SpyBreaker(DestinationBreaker):
+    """DestinationBreaker subclass that records every record_success/record_failure call."""
+
+    def __init__(self, *args, **kwargs):
+        """Initialise the wrapped breaker plus empty success/failure call logs."""
+        super().__init__(*args, **kwargs)
+        self.success_calls: list[int] = []
+        self.failure_calls: list[int] = []
+
+    def record_success(self, dest_id):
+        """Log the call, then delegate to the real breaker."""
+        self.success_calls.append(dest_id)
+        super().record_success(dest_id)
+
+    def record_failure(self, dest_id):
+        """Log the call, then delegate to the real breaker."""
+        self.failure_calls.append(dest_id)
+        super().record_failure(dest_id)
+
+
 class _FakeMetrics:
     """Records every call so tests can assert on outcome/failover/gauge sequences."""
 
@@ -421,3 +478,70 @@ async def test_all_destinations_skipped_raises_exhausted_with_default_status():
         await FailoverDispatcher(reg, breaker).dispatch(_ctx(), [_dest(1)], ["m"])
     assert ei.value.status_code() == 502
     assert ei.value.retry_after() is None
+
+
+# --- fix round 1: streaming success drain + narrowed transport-error taxonomy ---
+
+
+@pytest.mark.asyncio
+async def test_stream_success_drains_multiple_chunks_and_closes_generator():
+    """A successful multi-chunk stream concatenates text, captures usage, and records success."""
+    chunks = [
+        SimpleNamespace(delta="Hel", usage=None, done=False),
+        SimpleNamespace(delta="lo", usage=None, done=False),
+        SimpleNamespace(delta="!", usage={"finish_reason": "stop", "output_tokens": 5}, done=True),
+    ]
+    connector = _MultiChunkStreamConnector(chunks)
+    reg = _Registry({1: connector})
+    breaker = _SpyBreaker()
+    out = await FailoverDispatcher(reg, breaker).dispatch(_ctx(stream=True), [_dest(1)], ["m"])
+    assert out.text == "Hello!"
+    assert out.usage == {"finish_reason": "stop", "output_tokens": 5}
+    assert out.finish_reason == "stop"
+    assert out.attempts[-1].outcome == "ok"
+    assert breaker.success_calls == [1]
+    assert breaker.failure_calls == []
+    assert connector.closed is True
+
+
+@pytest.mark.asyncio
+async def test_transport_error_is_retryable_and_fails_over():
+    """A raw transport exception (not already a ProviderError) is retryable and fails over."""
+    breaker = _SpyBreaker()
+    reg = _Registry(
+        {
+            1: _Connector(exc=ConnectionRefusedError("connection refused")),
+            2: _Connector(text="from-standby"),
+        }
+    )
+    out = await FailoverDispatcher(reg, breaker).dispatch(_ctx(), [_dest(1), _dest(2)], ["m"])
+    assert out.destination.id == 2
+    assert out.attempts[0].outcome == "failed" and out.attempts[0].reason == "server_error"
+    assert breaker.failure_calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_unknown_exception_propagates_unchanged_no_failover():
+    """A bug (KeyError) from the connector propagates untouched -- no failover, no breaker trip."""
+
+    class _CountingConnector(_Connector):
+        """Wraps _Connector to count chat_completion invocations."""
+
+        def __init__(self, **kw):
+            """Start the call counter at zero."""
+            super().__init__(**kw)
+            self.calls = 0
+
+        async def chat_completion(self, messages, model, **kw):
+            """Increment the call counter, then delegate to the fake behaviour."""
+            self.calls += 1
+            return await super().chat_completion(messages, model, **kw)
+
+    c2 = _CountingConnector(text="should-not-run")
+    breaker = _SpyBreaker()
+    reg = _Registry({1: _Connector(exc=KeyError("boom")), 2: c2})
+    with pytest.raises(KeyError):
+        await FailoverDispatcher(reg, breaker).dispatch(_ctx(), [_dest(1), _dest(2)], ["m"])
+    assert breaker.failure_calls == []
+    assert breaker.success_calls == []
+    assert c2.calls == 0
