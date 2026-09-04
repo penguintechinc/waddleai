@@ -277,6 +277,86 @@ def test_model_destinations_timeout_check_constraint(scratch_db) -> None:
             conn.commit()
 
 
+def test_model_destinations_credential_delete_sets_null(scratch_db) -> None:
+    """Deleting a referenced ``provider_credentials`` row SETs NULL on ``credential_id``."""
+    module = _load_migration_021()
+    with scratch_db.connect() as conn:
+        conn.execute(sa.text("PRAGMA foreign_keys = ON"))
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            module.upgrade()
+        conn.commit()
+
+        conn.execute(
+            sa.text(
+                "INSERT INTO model_destinations "
+                "(organization_id, model, priority, provider_id, credential_id) "
+                "VALUES (1, 'gpt-4o', 0, 1, 1)"
+            )
+        )
+        conn.commit()
+
+        conn.execute(sa.text("DELETE FROM provider_credentials WHERE id = 1"))
+        conn.commit()
+
+        row = conn.execute(
+            sa.text("SELECT credential_id FROM model_destinations WHERE model = 'gpt-4o'")
+        ).one()
+        assert row.credential_id is None
+
+
+def test_model_destinations_provider_delete_restricted(scratch_db) -> None:
+    """Deleting a referenced ``ai_providers`` row is rejected (RESTRICT)."""
+    module = _load_migration_021()
+    with scratch_db.connect() as conn:
+        conn.execute(sa.text("PRAGMA foreign_keys = ON"))
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            module.upgrade()
+        conn.commit()
+
+        conn.execute(
+            sa.text(
+                "INSERT INTO model_destinations "
+                "(organization_id, model, priority, provider_id, credential_id) "
+                "VALUES (1, 'gpt-4o', 0, 1, 1)"
+            )
+        )
+        conn.commit()
+
+        with pytest.raises(sa.exc.IntegrityError):
+            conn.execute(sa.text("DELETE FROM ai_providers WHERE id = 1"))
+            conn.commit()
+
+
+def test_model_destinations_organization_delete_cascades(scratch_db) -> None:
+    """Deleting the owning organization cascades the destination rows."""
+    module = _load_migration_021()
+    with scratch_db.connect() as conn:
+        conn.execute(sa.text("PRAGMA foreign_keys = ON"))
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            module.upgrade()
+        conn.commit()
+
+        conn.execute(
+            sa.text(
+                "INSERT INTO model_destinations "
+                "(organization_id, model, priority, provider_id, credential_id) "
+                "VALUES (1, 'gpt-4o', 0, 1, 1)"
+            )
+        )
+        conn.commit()
+
+        conn.execute(sa.text("DELETE FROM organizations WHERE id = 1"))
+        conn.commit()
+
+        rows = conn.execute(
+            sa.text("SELECT id FROM model_destinations WHERE model = 'gpt-4o'")
+        ).all()
+        assert rows == []
+
+
 def test_downgrade_drops_model_destinations_and_new_columns(scratch_db) -> None:
     """downgrade() drops ``model_destinations`` and restores the pre-021 shape."""
     module = _load_migration_021()
