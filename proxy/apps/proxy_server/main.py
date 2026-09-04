@@ -276,6 +276,13 @@ class ProxyServer:
         self.memory_valkey = None  # §6A proxy memory layers' shared Valkey client
         self.mcp_server = None  # §6A scratchpad MCP tool registry
 
+        # Provider-destination failover (failover spec §5), built in startup()
+        self.destination_resolver = None
+        self.destination_registry = None
+        self.destination_breaker = None
+        self.failover_dispatcher = None
+        self.failover_gate = None
+
         # penguin-aaa components
         self.oidc_provider = None
         self.oidc_rp = None
@@ -314,6 +321,32 @@ class ProxyServer:
             "DATABASE_URL", "postgresql://waddleai:password@localhost:5432/waddleai"
         )
         self.db = get_db(database_url, migrate=_TEST_MODE)
+
+        # Provider-destination failover (failover spec §5) -- constructed once
+        # here, right after self.db is available (the only dependency all
+        # five collaborators share). None of these do I/O at construction
+        # time (FailoverGate's license client is built lazily on first
+        # `.evaluate()`), so this is safe unconditionally in every mode,
+        # including the sqlite-backed contract-test DB. DispatchStage
+        # (_build_pipeline, below) treats every one of these as optional --
+        # wiring them here is what turns the failover branch on; passing
+        # None instead would keep DispatchStage's existing dispatch path
+        # byte-for-byte unchanged (S10).
+        from shared.routing.destination_breaker import DestinationBreaker
+        from shared.routing.destination_connectors import DestinationConnectorRegistry
+        from shared.routing.destinations import DestinationResolver
+        from shared.routing.failover import FailoverDispatcher
+        from shared.routing.failover_gate import FailoverGate
+
+        self.destination_resolver = DestinationResolver(self.db)
+        self.destination_registry = DestinationConnectorRegistry(
+            self.destination_resolver.load_material
+        )
+        self.destination_breaker = DestinationBreaker()
+        self.failover_dispatcher = FailoverDispatcher(
+            self.destination_registry, self.destination_breaker, metrics=self.metrics
+        )
+        self.failover_gate = FailoverGate()
 
         # Initialize components
         self.rbac = RBACManager(self.db)
@@ -883,6 +916,10 @@ class ProxyServer:
                     router=self.request_router,
                     connectors=connectors_dict,
                     flag=None,
+                    failover_gate=self.failover_gate,
+                    destination_resolver=self.destination_resolver,
+                    failover_dispatcher=self.failover_dispatcher,
+                    metrics=self.metrics,
                 ),
                 SecurityOutStage(
                     name="security_out",
@@ -1383,7 +1420,11 @@ async def chat_completions():
         if ctx.blocked:
             status_code = ctx.status_code or 500
             error_msg = ctx.block_reason or "Request blocked"
-            return jsonify({"error": {"message": error_msg, "type": "error"}}), status_code
+            response = jsonify({"error": {"message": error_msg, "type": "error"}})
+            retry_after = ctx.usage_meta.get("retry_after") if status_code == 429 else None
+            if retry_after is not None:
+                response.headers["Retry-After"] = str(int(retry_after))
+            return response, status_code
 
         # Extract model and usage from pipeline context
         response_text = ctx.response_text
@@ -1478,6 +1519,8 @@ async def chat_completions():
         waddleai_usage = _merge_waddleai_usage(
             _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx)), routing_meta
         )
+        destination_meta = {"destination": ctx.destination} if ctx.destination else None
+        waddleai_usage = _merge_waddleai_usage(waddleai_usage, destination_meta)
         if waddleai_usage is not None:
             response_dict["usage"]["waddleai"] = waddleai_usage
 
@@ -1526,10 +1569,12 @@ async def get_routing_stats():
     await get_current_user()  # Authentication check
     try:
         stats = proxy_server.request_router.get_provider_stats()
+        breaker = getattr(proxy_server, "destination_breaker", None)
         return jsonify(
             {
                 "routing_strategy": proxy_server.request_router.default_strategy.value,
                 "provider_stats": stats,
+                "destinations": breaker.snapshot() if breaker is not None else {},
             }
         )
     except Exception as e:
@@ -1715,9 +1760,11 @@ async def claude_messages():
         if ctx.blocked:
             status_code = ctx.status_code or 500
             error_msg = ctx.block_reason or "Request blocked"
-            return jsonify(
-                {"error": {"type": "invalid_request_error", "message": error_msg}}
-            ), status_code
+            response = jsonify({"error": {"type": "invalid_request_error", "message": error_msg}})
+            retry_after = ctx.usage_meta.get("retry_after") if status_code == 429 else None
+            if retry_after is not None:
+                response.headers["Retry-After"] = str(int(retry_after))
+            return response, status_code
 
         # Extract results from pipeline
         response_text = ctx.response_text
@@ -1798,6 +1845,8 @@ async def claude_messages():
         waddleai_usage = _merge_waddleai_usage(
             _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx)), routing_meta
         )
+        destination_meta = {"destination": ctx.destination} if ctx.destination else None
+        waddleai_usage = _merge_waddleai_usage(waddleai_usage, destination_meta)
         if waddleai_usage is not None:
             response_dict["usage"]["waddleai"] = waddleai_usage
 
