@@ -1,10 +1,14 @@
 """Destination resolution for provider failover (spec §5.2).
 
 One parameterized executesql JOIN (model_destinations -> ai_providers ->
-provider_credentials) filtered by org + model + enabled AND the §3.2 ownership
-predicate; ordered by priority; TTL-cached (30 s) keyed (org_id, model). The
-Destination value type NEVER carries the secret; the registry loads material
-on demand via load_material().
+provider_credentials) filtered by org + model + enabled AND the §3.2
+ownership predicate (a destination may reference only a credential owned by
+the same org or the platform pool) AND the matching same-provider predicate
+(a credential must belong to the *same* ai_provider as the destination it is
+attached to -- a same-org credential for a different provider must never
+reach a caller); ordered by priority; TTL-cached (30 s) keyed (org_id,
+model). The Destination value type NEVER carries the secret; the registry
+loads material on demand via load_material().
 
 Deviation from spec §3.2 (documented, orchestrator-adjudicated): reads go via
 parameterized ``db.executesql`` (the ``shared/graph/resolver.py`` precedent),
@@ -16,12 +20,13 @@ columns enter the proxy schema at all) and matches the established
 graph-resolver pattern.
 
 Defense-in-depth (self-review, beyond the SQL predicate): the SQL WHERE
-clause already excludes rows whose credential is owned by another org
-(S2/S8). Because that predicate can only be exercised against a real
-database, ``_resolve_all`` re-checks ownership in Python on every row it
-maps and drops (and logs as a config defect) anything that still violates
-it -- a bug in the SQL, a future refactor that loosens it, or a stub DB in
-tests must never result in a cross-org credential reaching a caller.
+clause already excludes rows whose credential fails ownership or the
+same-provider check (S2/S8). Because that predicate can only be exercised
+against a real database, ``_resolve_all`` re-checks both in Python on every
+row it maps and drops (and logs as a config defect) anything that still
+violates them -- a bug in the SQL, a future refactor that loosens it, or a
+stub DB in tests must never result in a mismatched credential reaching a
+caller.
 """
 
 from __future__ import annotations
@@ -43,12 +48,15 @@ _RESOLVE_SQL = """
 SELECT d.id, d.organization_id, d.model, d.priority, d.provider_id,
        p.provider_type, p.endpoint_url, p.extra_config,
        d.provider_model_id, d.region, d.timeout_seconds,
-       d.credential_id, c.owner_org_id, c.updated_at
+       d.credential_id, c.owner_org_id, c.updated_at, c.provider_id
 FROM model_destinations d
 JOIN ai_providers p ON p.id = d.provider_id AND p.enabled = TRUE
 LEFT JOIN provider_credentials c ON c.id = d.credential_id
 WHERE d.organization_id = %s AND d.model = %s AND d.enabled = TRUE
-  AND (c.id IS NULL OR c.owner_org_id IS NULL OR c.owner_org_id = d.organization_id)
+  AND (c.id IS NULL OR (
+        (c.owner_org_id IS NULL OR c.owner_org_id = d.organization_id)
+        AND c.provider_id = d.provider_id
+      ))
 ORDER BY d.priority ASC
 """  # nosec B608 -- fixed literal, org_id/model bound via executesql params  # noqa: S608
 
@@ -143,8 +151,9 @@ class DestinationResolver:
             return list(self._db.executesql(_RESOLVE_SQL, [org_id, model]))
 
         rows = await asyncio.to_thread(_read)
-        dests = [
-            Destination(
+        mapped: list[tuple[Destination, int | None]] = []
+        for r in rows:
+            dest = Destination(
                 id=r[0],
                 organization_id=r[1],
                 model=r[2],
@@ -159,34 +168,50 @@ class DestinationResolver:
                 owner_org_id=r[12],
                 credential_version=str(r[13]) if r[13] is not None else "",
             )
-            for r in rows
+            mapped.append((dest, r[14]))
+        dests = [
+            dest
+            for dest, credential_provider_id in mapped
+            if self._credential_ok(dest, org_id, credential_provider_id)
         ]
-        dests = [d for d in dests if self._ownership_ok(d, org_id)]
         self._cache[key] = (now, dests)
         return dests
 
     @staticmethod
-    def _ownership_ok(dest: Destination, org_id: int) -> bool:
+    def _credential_ok(dest: Destination, org_id: int, credential_provider_id: int | None) -> bool:
         """S2/S8 defense-in-depth: drop and log any row the SQL predicate should have excluded.
 
         A platform-pool credential (``owner_org_id`` NULL) or no credential at
-        all is always fine. Anything owned by a *different* org must never
-        reach a caller -- this should be unreachable given the SQL WHERE
-        clause, so its occurrence is logged as a config defect rather than
-        silently trusted.
+        all is always fine. Anything owned by a *different* org, or attached
+        to a *different* ai_provider than the destination itself, must never
+        reach a caller -- both should be unreachable given the SQL WHERE
+        clause, so either is logged as a config defect (ids only, never
+        credential material) rather than silently trusted.
         """
-        if dest.owner_org_id is None or dest.owner_org_id == org_id:
+        if dest.credential_id is None:
             return True
-        logger.error(
-            "config defect: destination %d (org %d, model %r) references credential %s "
-            "owned by org %s -- excluded, never used",
-            dest.id,
-            org_id,
-            dest.model,
-            dest.credential_id,
-            dest.owner_org_id,
-        )
-        return False
+        if dest.owner_org_id is not None and dest.owner_org_id != org_id:
+            logger.error(
+                "config defect: destination %d (org %d) references credential %d "
+                "owned by org %d -- excluded, never used",
+                dest.id,
+                org_id,
+                dest.credential_id,
+                dest.owner_org_id,
+            )
+            return False
+        if credential_provider_id is not None and credential_provider_id != dest.provider_id:
+            logger.error(
+                "config defect: destination %d (org %d) references credential %d "
+                "for provider %d, expected provider %d -- excluded, never used",
+                dest.id,
+                org_id,
+                dest.credential_id,
+                credential_provider_id,
+                dest.provider_id,
+            )
+            return False
+        return True
 
     async def load_material(self, credential_id: int) -> CredentialMaterial | None:
         """Load a credential's secret-bearing row for the registry (never cached here)."""

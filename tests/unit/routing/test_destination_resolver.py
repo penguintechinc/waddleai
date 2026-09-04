@@ -2,10 +2,10 @@
 
 Covers: row mapping + timeout default, pin/local_only filtering, region
 fallback to provider extra_config, TTL cache keyed by (org_id, model) with an
-injectable clock, load_material's secret-bearing row, and (self-review
-hardening) a Python-side defense-in-depth guard that excludes and logs any
-row whose credential ownership fails S2 even if it somehow reached this
-layer despite the SQL predicate.
+injectable clock, load_material's secret-bearing row, and (self-review and
+review-round-1 hardening) a Python-side defense-in-depth guard that excludes
+and logs any row whose credential fails S2 ownership OR the same-provider
+match, even if it somehow reached this layer despite the SQL predicate.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from shared.routing.destinations import Destination, DestinationResolver
 # One joined row shape (mirrors the SELECT column order in the impl):
 # (id, organization_id, model, priority, provider_id, provider_type, endpoint_url,
 #  provider_extra_config, provider_model_id, region, timeout_seconds, credential_id,
-#  owner_org_id, updated_at)
+#  owner_org_id, updated_at, credential_provider_id)
 _ROW_FIELDS = (
     "id",
     "organization_id",
@@ -36,11 +36,17 @@ _ROW_FIELDS = (
     "credential_id",
     "owner_org_id",
     "updated_at",
+    "credential_provider_id",
 )
 
 
 def _row(**kw: object) -> tuple:
-    """Build one joined SQL row tuple from defaults, overridden by kw."""
+    """Build one joined SQL row tuple from defaults, overridden by kw.
+
+    ``credential_provider_id`` defaults to the same value as ``provider_id``
+    (the credential belongs to the destination's own provider) so existing
+    callers that don't care about the provider-match predicate stay valid.
+    """
     base = dict(
         id=1,
         organization_id=7,
@@ -58,6 +64,7 @@ def _row(**kw: object) -> tuple:
         updated_at="2026-09-04T00:00:00",
     )
     base.update(kw)
+    base.setdefault("credential_provider_id", base["provider_id"])
     return tuple(base[k] for k in _ROW_FIELDS)
 
 
@@ -188,6 +195,31 @@ async def test_cross_org_credential_excluded_and_logged(
     logged as a config defect rather than silently used.
     """
     db = _FakeDB([_row(id=9, organization_id=7, owner_org_id=99)])
+    with caplog.at_level(logging.ERROR, logger="shared.routing.destinations"):
+        dests = await DestinationResolver(db).resolve(7, "claude-sonnet-4")
+    assert dests == []
+    assert any(
+        "config defect" in record.message and "9" in record.message for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_credential_provider_mismatch_excluded_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """S2 defense-in-depth: a same-org credential for a *different* provider is excluded.
+
+    Ownership alone (same org) is not sufficient -- the credential must also
+    belong to the same ai_provider as the destination it is attached to. A
+    row that reaches this layer with a same-org credential whose
+    ``provider_id`` differs from the destination's own ``provider_id`` (e.g.
+    an OpenAI credential wired into a Bedrock destination) must be excluded
+    and logged as a config defect (ids only, never credential material),
+    exactly like an ownership mismatch.
+    """
+    db = _FakeDB(
+        [_row(id=9, organization_id=7, provider_id=3, owner_org_id=7, credential_provider_id=99)]
+    )
     with caplog.at_level(logging.ERROR, logger="shared.routing.destinations"):
         dests = await DestinationResolver(db).resolve(7, "claude-sonnet-4")
     assert dests == []
