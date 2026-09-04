@@ -174,6 +174,7 @@ async def test_load_material_returns_secret_bearing_row() -> None:
             return [(5, 3, 7, "enc:xxxxx", "2026-09-04T00:00:00")]
 
     mat = await DestinationResolver(_DB()).load_material(5)
+    assert mat is not None
     assert mat.credential_id == 5 and mat.owner_org_id == 7
     assert mat.encrypted_material == "enc:xxxxx"
     assert "enc:xxxxx" not in repr(mat)  # S4 -- secret excluded from repr

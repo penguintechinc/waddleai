@@ -19,25 +19,38 @@ from shared.routing.destination_connectors import DestinationConnectorRegistry, 
 from shared.routing.destinations import CredentialMaterial, Destination
 
 
-def _dest(**kw: object) -> Destination:
-    """Build one Destination from defaults (provider_id=3, credential_id=5), overridden by kw."""
-    base = dict(
-        id=1,
-        organization_id=7,
-        model="m",
-        priority=0,
-        provider_id=3,
-        provider_type="openai",
-        endpoint_url="http://127.0.0.1:9/v1",
-        region=None,
-        provider_model_id=None,
-        timeout_seconds=30,
-        credential_id=5,
-        owner_org_id=7,
-        credential_version="v1",
+def _dest(
+    *,
+    id: int = 1,
+    organization_id: int = 7,
+    model: str = "m",
+    priority: int = 0,
+    provider_id: int = 3,
+    provider_type: str = "openai",
+    endpoint_url: str | None = "http://127.0.0.1:9/v1",
+    region: str | None = None,
+    provider_model_id: str | None = None,
+    timeout_seconds: int = 30,
+    credential_id: int | None = 5,
+    owner_org_id: int | None = 7,
+    credential_version: str = "v1",
+) -> Destination:
+    """Build one Destination from defaults (provider_id=3, credential_id=5), kwargs override."""
+    return Destination(
+        id=id,
+        organization_id=organization_id,
+        model=model,
+        priority=priority,
+        provider_id=provider_id,
+        provider_type=provider_type,
+        endpoint_url=endpoint_url,
+        region=region,
+        provider_model_id=provider_model_id,
+        timeout_seconds=timeout_seconds,
+        credential_id=credential_id,
+        owner_org_id=owner_org_id,
+        credential_version=credential_version,
     )
-    base.update(kw)
-    return Destination(**base)
 
 
 def _loader(material_by_id: dict[int, CredentialMaterial]):

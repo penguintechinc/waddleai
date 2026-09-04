@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from penguin_dal.db import DB
 from quart import g, jsonify, request
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
@@ -32,7 +33,7 @@ from .providers import _mask_key
 
 logger = logging.getLogger(__name__)
 
-_BEARER_AUTH = [{"bearerAuth": []}]
+_BEARER_AUTH: list[dict[str, list[str]]] = [{"bearerAuth": []}]
 MAX_DESTINATIONS_PER_MODEL = 5
 _BEARER_TYPES = frozenset(
     {"openai", "anthropic", "gemini", "xai", "azure_openai", "cohere", "llamacpp"}
@@ -69,6 +70,20 @@ def _get_license_client() -> Any:
     return _license_client
 
 
+def _require_db() -> DB:
+    """Return the initialised DAL handle for use inside a ``to_thread`` closure.
+
+    ``db`` is typed ``DB | None`` at import time (``extensions.py``), but is
+    always non-None by the time a request reaches a route handler --
+    ``init_extensions`` runs before blueprints are registered. Narrows the
+    type for mypy and fails loudly, rather than silently operating on
+    ``None``, if that startup invariant is ever violated.
+    """
+    if db is None:
+        raise RuntimeError("database not initialised")
+    return db
+
+
 async def _gate(org_id: int | None) -> tuple | None:
     """404 when the flag is off, 403 when unentitled, else None. Fail-closed."""
     distinct_id = str(org_id or "server")
@@ -99,9 +114,14 @@ def _resolve_org(
     g_user: dict, requested_org: int | None, has_provider_admin: bool
 ) -> tuple[int | None, int | None]:
     """Resolve the effective org; cross-org needs PROVIDER_ADMIN (else 403). Returns (org, err)."""
-    token_org = g_user.get("organization_id")
-    if requested_org is None or int(requested_org) == int(token_org):
-        return int(token_org), None
+    raw_token_org = g_user.get("organization_id")
+    if raw_token_org is None:
+        # Tenant claim missing from an otherwise-authenticated token (S1) --
+        # never call int(None); surface the same 403 the mismatch path uses.
+        return None, 403
+    token_org = int(raw_token_org)
+    if requested_org is None or int(requested_org) == token_org:
+        return token_org, None
     if has_provider_admin:
         return int(requested_org), None
     return None, 403
@@ -189,10 +209,11 @@ def _validate_material(provider_type: str, material: str) -> str | None:
 
 def _count_enabled_sync(org_id: int, model: str) -> int:
     """Sync core of the enabled-destination count -- safe to call from within a to_thread body."""
-    return db(
-        (db.model_destinations.organization_id == org_id)
-        & (db.model_destinations.model == model)
-        & (db.model_destinations.enabled == True)  # noqa: E712
+    database = _require_db()
+    return database(
+        (database.model_destinations.organization_id == org_id)
+        & (database.model_destinations.model == model)
+        & (database.model_destinations.enabled == True)  # noqa: E712
     ).count()
 
 
@@ -308,15 +329,18 @@ async def list_destinations():
     model_filter = request.args.get("model")
 
     def _fetch():
-        query = db.model_destinations.organization_id == resolved_org
+        database = _require_db()
+        query = database.model_destinations.organization_id == resolved_org
         if model_filter:
-            query &= db.model_destinations.model == model_filter
-        order = (db.model_destinations.model, db.model_destinations.priority)
-        rows = db(query).select(orderby=order)
+            query &= database.model_destinations.model == model_filter
+        order = (database.model_destinations.model, database.model_destinations.priority)
+        rows = database(query).select(orderby=order)
         labels: dict[int, str | None] = {}
         for row in rows:
             if row.credential_id and row.credential_id not in labels:
-                cred = db(db.provider_credentials.id == row.credential_id).select().first()
+                cred = (
+                    database(database.provider_credentials.id == row.credential_id).select().first()
+                )
                 labels[row.credential_id] = cred.label if cred else None
         return rows, labels
 
@@ -360,14 +384,15 @@ async def create_destination(data: CreateDestinationRequest):
     credential_id = data.credential_id
 
     def _create():
-        provider = db(db.ai_providers.id == provider_id).select().first()
+        database = _require_db()
+        provider = database(database.ai_providers.id == provider_id).select().first()
         if not provider:
             return "provider_not_found", None
         if not provider.enabled:
             return "provider_disabled", None
 
         if credential_id is not None:
-            cred = db(db.provider_credentials.id == credential_id).select().first()
+            cred = database(database.provider_credentials.id == credential_id).select().first()
             if not cred:
                 return "credential_not_found", None
             error = _validate_ownership(cred, provider_id, resolved_org)
@@ -375,10 +400,10 @@ async def create_destination(data: CreateDestinationRequest):
                 return "ownership", error
 
         conflict = (
-            db(
-                (db.model_destinations.organization_id == resolved_org)
-                & (db.model_destinations.model == model)
-                & (db.model_destinations.priority == priority)
+            database(
+                (database.model_destinations.organization_id == resolved_org)
+                & (database.model_destinations.model == model)
+                & (database.model_destinations.priority == priority)
             )
             .select()
             .first()
@@ -390,7 +415,7 @@ async def create_destination(data: CreateDestinationRequest):
             return "cap_exceeded", None
 
         now = datetime.utcnow()
-        new_id = db.model_destinations.insert(
+        new_id = database.model_destinations.insert(
             organization_id=resolved_org,
             model=model,
             priority=priority,
@@ -403,8 +428,8 @@ async def create_destination(data: CreateDestinationRequest):
             created_at=now,
             updated_at=now,
         )
-        db.commit()
-        return "ok", db(db.model_destinations.id == new_id).select().first()
+        database.commit()
+        return "ok", database(database.model_destinations.id == new_id).select().first()
 
     outcome, payload = await asyncio.to_thread(_create)
 
@@ -417,10 +442,13 @@ async def create_destination(data: CreateDestinationRequest):
     row = payload
     label = None
     if row.credential_id:
-        cred = await asyncio.to_thread(
-            lambda: db(db.provider_credentials.id == row.credential_id).select().first()
-        )
-        label = cred.label if cred else None
+
+        def _fetch_label() -> str | None:
+            database = _require_db()
+            cred = database(database.provider_credentials.id == row.credential_id).select().first()
+            return cred.label if cred else None
+
+        label = await asyncio.to_thread(_fetch_label)
     return _destination_to_dict(row, label), 201
 
 
@@ -449,10 +477,11 @@ async def update_destination(destination_id: int, data: UpdateDestinationRequest
         return _err("timeout_seconds must be between 1 and 600", 400)
 
     def _update():
+        database = _require_db()
         existing = (
-            db(
-                (db.model_destinations.id == destination_id)
-                & (db.model_destinations.organization_id == resolved_org)
+            database(
+                (database.model_destinations.id == destination_id)
+                & (database.model_destinations.organization_id == resolved_org)
             )
             .select()
             .first()
@@ -463,7 +492,7 @@ async def update_destination(destination_id: int, data: UpdateDestinationRequest
         update_fields: dict[str, Any] = {}
 
         if data.credential_id is not None:
-            cred = db(db.provider_credentials.id == data.credential_id).select().first()
+            cred = database(database.provider_credentials.id == data.credential_id).select().first()
             if not cred:
                 return "credential_not_found", None
             error = _validate_ownership(cred, existing.provider_id, resolved_org)
@@ -473,11 +502,11 @@ async def update_destination(destination_id: int, data: UpdateDestinationRequest
 
         if data.priority is not None and data.priority != existing.priority:
             conflict = (
-                db(
-                    (db.model_destinations.organization_id == resolved_org)
-                    & (db.model_destinations.model == existing.model)
-                    & (db.model_destinations.priority == data.priority)
-                    & (db.model_destinations.id != destination_id)
+                database(
+                    (database.model_destinations.organization_id == resolved_org)
+                    & (database.model_destinations.model == existing.model)
+                    & (database.model_destinations.priority == data.priority)
+                    & (database.model_destinations.id != destination_id)
                 )
                 .select()
                 .first()
@@ -503,9 +532,9 @@ async def update_destination(destination_id: int, data: UpdateDestinationRequest
             return "no_fields", None
 
         update_fields["updated_at"] = datetime.utcnow()
-        db(db.model_destinations.id == destination_id).update(**update_fields)
-        db.commit()
-        return "ok", db(db.model_destinations.id == destination_id).select().first()
+        database(database.model_destinations.id == destination_id).update(**update_fields)
+        database.commit()
+        return "ok", database(database.model_destinations.id == destination_id).select().first()
 
     outcome, result = await asyncio.to_thread(_update)
 
@@ -518,10 +547,13 @@ async def update_destination(destination_id: int, data: UpdateDestinationRequest
     row = result
     label = None
     if row.credential_id:
-        cred = await asyncio.to_thread(
-            lambda: db(db.provider_credentials.id == row.credential_id).select().first()
-        )
-        label = cred.label if cred else None
+
+        def _fetch_label() -> str | None:
+            database = _require_db()
+            cred = database(database.provider_credentials.id == row.credential_id).select().first()
+            return cred.label if cred else None
+
+        label = await asyncio.to_thread(_fetch_label)
     return _destination_to_dict(row, label)
 
 
@@ -544,18 +576,19 @@ async def delete_destination(destination_id: int):
         return _org_mismatch_response()
 
     def _delete():
+        database = _require_db()
         row = (
-            db(
-                (db.model_destinations.id == destination_id)
-                & (db.model_destinations.organization_id == resolved_org)
+            database(
+                (database.model_destinations.id == destination_id)
+                & (database.model_destinations.organization_id == resolved_org)
             )
             .select()
             .first()
         )
         if not row:
             return False
-        db(db.model_destinations.id == destination_id).delete()
-        db.commit()
+        database(database.model_destinations.id == destination_id).delete()
+        database.commit()
         return True
 
     found = await asyncio.to_thread(_delete)

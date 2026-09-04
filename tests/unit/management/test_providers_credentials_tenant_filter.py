@@ -96,6 +96,7 @@ class _QueryResult:
         self._predicate = predicate
 
     def _rows(self) -> list[dict]:
+        assert self._table is not None, "query has no target table (predicate was None)"
         rows = self._db.tables.setdefault(self._table, [])
         if self._predicate is None:
             return rows
@@ -114,6 +115,7 @@ class _QueryResult:
 
     def delete(self) -> int:
         """Delete matching rows; returns the count deleted."""
+        assert self._table is not None, "query has no target table (predicate was None)"
         matched = self._rows()
         table_rows = self._db.tables[self._table]
         for row in matched:
