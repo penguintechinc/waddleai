@@ -75,7 +75,7 @@ curl -X POST https://your-waddleai-mgmt-host:8001/api/v1/routing/destination-cre
   "id": 41,
   "provider_id": 12,
   "label": "Bedrock prod",
-  "api_key_masked": "aws_access_key_id=AKIA****EXAMPLE",
+  "api_key_masked": "aws_access_key_id=AKIA****1234",
   "owner_org_id": 3,
   "enabled": true
 }
