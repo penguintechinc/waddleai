@@ -47,7 +47,7 @@ from typing import Any
 
 from shared.cache.response_cache import RESPONSE_CACHE_FLAG, ResponseCache
 from shared.observability.tracing import get_tracer
-from shared.routing.aliases import explicit_tool_type
+from shared.routing.aliases import explicit_tool_type, split_provider_prefix
 from shared.routing.capability import ModelOffer
 from shared.routing.engine import RoutingEngine, RoutingInput
 from shared.routing.heuristics import HeuristicRule, RequestSignals
@@ -140,6 +140,19 @@ class PipelineContext:
     # waddleai.security_v2 is enabled; None under v1 (flag-off byte-identical).
     security_degraded: bool = False
     upstream_mapping_id: str | None = None
+    # --- Provider-destination failover (failover spec §5) ---
+    # True when RoutingStage's RouteDecision.clamp_local reshaped the chain
+    # (sensitivity/budget clamp); restricts destinations to local providers.
+    local_only: bool = False
+    # The caller's hard `provider:model` pin (split_provider_prefix on the
+    # originally requested model); restricts destinations to that provider.
+    provider_pin: str | None = None
+    # True once any byte has been flushed to the client -- failover is illegal
+    # after this (first-byte rule §5.4). Buffered dispatch keeps it False today.
+    bytes_flushed: bool = False
+    # The winning destination marker (usage.waddleai.destination §5.7), set by
+    # the DispatchStage failover branch; None on the existing path.
+    destination: dict | None = None
 
 
 class Stage(ABC):
@@ -749,9 +762,12 @@ class RoutingStage(Stage):
             )
             return ctx
 
+        pin_source = ctx.requested_model or ctx.model
+        ctx.provider_pin = split_provider_prefix(pin_source)[0] if pin_source else None
         ctx.model = decision.model
         ctx.fallback_chain = decision.fallback_chain
         ctx.routed_from = decision.routed_from
+        ctx.local_only = getattr(decision, "clamp_local", False)
         return ctx
 
     async def _load_offers(self, org_id: int | None = None) -> list[ModelOffer]:

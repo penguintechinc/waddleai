@@ -41,6 +41,11 @@ class RouteDecision:
     fallback_chain: list[str] = field(default_factory=list)
     routed_from: dict | None = None
     trace: RouteTrace | None = None
+    # True when the sensitivity clamp OR budget-pressure clamp reshaped the
+    # qualified chain (engine.py's `decide()`, sensitivity-clamp block) --
+    # the exact "must not leave local providers" signal the provider-
+    # destination failover resolver's local_only consumes (failover spec §5.1).
+    clamp_local: bool = False
 
 
 @dataclass(slots=True)
@@ -210,6 +215,7 @@ class RoutingEngine:
         chain = qualified
         pii_flagged = request.pii_detected
         clamp_local = pressure.clamp_local
+        clamp_reshaped = False
         if pii_flagged or clamp_local:
             sensitivity_result = apply_sensitivity(
                 chain,
@@ -217,6 +223,7 @@ class RoutingEngine:
                 org_sensitivity_routing=policy.sensitivity_routing if pii_flagged else "local_only",
             )
             chain = sensitivity_result.candidates
+            clamp_reshaped = True
 
         final_model, routed_from = self._pick_final(
             chosen_offer, chain, assignment, escalation, policy, veto_reason, alias_routed_from
@@ -229,7 +236,11 @@ class RoutingEngine:
 
         fallback_chain = [o.model_name for o in chain if o.model_name != final_model]
         return RouteDecision(
-            model=final_model, fallback_chain=fallback_chain, routed_from=routed_from, trace=trace
+            model=final_model,
+            fallback_chain=fallback_chain,
+            routed_from=routed_from,
+            trace=trace,
+            clamp_local=clamp_reshaped,
         )
 
     async def _resolve_escalation(
