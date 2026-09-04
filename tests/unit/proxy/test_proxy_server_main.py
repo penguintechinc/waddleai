@@ -536,6 +536,106 @@ class TestChatCompletions:
         )
         assert resp.status_code == 500
 
+    async def test_destination_marker_present_when_ctx_destination_set(
+        self, running_app, monkeypatch
+    ):
+        """usage.waddleai.destination equals ctx.destination when the failover branch set it.
+
+        Fakes ProxyPipeline.run (sibling pattern: monkeypatch a real
+        component's method, drive the request through the real Quart app)
+        so DispatchStage's actual failover machinery need not run -- only
+        the response-builder's merge of ctx.destination into usage.waddleai
+        (main.py) is under test here.
+        """
+        marker = {
+            "id": 1,
+            "priority": 0,
+            "role": "active",
+            "provider": "bedrock",
+            "model": "claude-sonnet-4",
+            "attempts": [],
+        }
+
+        async def fake_run(ctx):
+            ctx.response_text = proxy_main._STUB_COMPLETION_TEXT
+            ctx.usage = {"input_tokens": 1, "output_tokens": 1, "finish_reason": "stop"}
+            ctx.provider = "bedrock"
+            ctx.finish_reason = "stop"
+            ctx.destination = marker
+            return ctx
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        body = await resp.get_json()
+        assert resp.status_code == 200
+        assert body["usage"]["waddleai"]["destination"] == marker
+
+    async def test_destination_marker_absent_when_ctx_destination_none(
+        self, running_app, monkeypatch
+    ):
+        """No `destination` key in usage.waddleai when ctx.destination is None.
+
+        routed_from is set so usage.waddleai is populated anyway (§7.6) --
+        proving `destination` is specifically omitted by the merge, not just
+        that the whole `waddleai` object happens to be absent.
+        """
+
+        async def fake_run(ctx):
+            ctx.response_text = proxy_main._STUB_COMPLETION_TEXT
+            ctx.usage = {"input_tokens": 1, "output_tokens": 1, "finish_reason": "stop"}
+            ctx.provider = "stub"
+            ctx.finish_reason = "stop"
+            ctx.routed_from = {"from": "gpt-3.5-turbo", "to": "gpt-4", "reason": "alias"}
+            return ctx
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        body = await resp.get_json()
+        assert resp.status_code == 200
+        assert "destination" not in body["usage"]["waddleai"]
+
+    async def test_retry_after_header_on_429_present_and_absent(self, running_app, monkeypatch):
+        """A 429 block with usage_meta["retry_after"] emits Retry-After; unset emits no header."""
+
+        async def fake_run_with_retry_after(ctx):
+            ctx.blocked = True
+            ctx.status_code = 429
+            ctx.block_reason = "destinations_exhausted"
+            ctx.usage_meta["retry_after"] = 7
+            return ctx
+
+        async def fake_run_without_retry_after(ctx):
+            ctx.blocked = True
+            ctx.status_code = 429
+            ctx.block_reason = "provider_error_429"
+            return ctx
+
+        client = running_app.test_client()
+        request_kwargs = {
+            "headers": _bearer_headers(),
+            "json": {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        }
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run_with_retry_after)
+        resp = await client.post("/v1/chat/completions", **request_kwargs)
+        assert resp.status_code == 429
+        assert resp.headers.get("Retry-After") == "7"
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run_without_retry_after)
+        resp = await client.post("/v1/chat/completions", **request_kwargs)
+        assert resp.status_code == 429
+        assert "Retry-After" not in resp.headers
+
 
 # ---------------------------------------------------------------------------
 # Small module-level helper functions
@@ -1190,6 +1290,50 @@ class TestRoutingStats:
         resp = await client.get("/api/routing/stats", headers=_bearer_headers())
         assert resp.status_code == 500
 
+    async def test_success_includes_destinations_snapshot_when_configured(
+        self, running_app, monkeypatch
+    ):
+        """`destinations` equals the breaker's snapshot() when failover is wired.
+
+        `proxy_server.destination_breaker` is always constructed in
+        startup() (Task 14). `DestinationBreaker` is a slots dataclass, so
+        its `snapshot` method can't be monkeypatched per-instance --
+        instead the whole `destination_breaker` attribute is swapped for a
+        stub (same pattern as the "not configured" test below), so no
+        state leaks to other tests sharing the module-scoped
+        `running_app`/`proxy_server`.
+        """
+        fake_snapshot = {
+            "dest:7": {
+                "consecutive_failures": 2,
+                "open": False,
+                "last_failure": None,
+                "last_success": None,
+            }
+        }
+
+        class _StubBreaker:
+            def snapshot(self):
+                return fake_snapshot
+
+        monkeypatch.setattr(proxy_main.proxy_server, "destination_breaker", _StubBreaker())
+        client = running_app.test_client()
+        resp = await client.get("/api/routing/stats", headers=_bearer_headers())
+        body = await resp.get_json()
+        assert resp.status_code == 200
+        assert body["destinations"] == fake_snapshot
+
+    async def test_destinations_key_empty_when_failover_not_configured(
+        self, running_app, monkeypatch
+    ):
+        """`destinations` is {} (never an error) when destination_breaker was never constructed."""
+        monkeypatch.setattr(proxy_main.proxy_server, "destination_breaker", None)
+        client = running_app.test_client()
+        resp = await client.get("/api/routing/stats", headers=_bearer_headers())
+        body = await resp.get_json()
+        assert resp.status_code == 200
+        assert body["destinations"] == {}
+
 
 class TestRoutingStrategy:
     """POST /api/routing/strategy (Admin only)."""
@@ -1456,6 +1600,111 @@ class TestClaudeMessages:
         body = await resp.get_json()
         assert resp.status_code == 200
         assert body["usage"]["waddleai"]["cache"] == "miss"
+
+    async def test_destination_marker_present_when_ctx_destination_set(
+        self, running_app, monkeypatch
+    ):
+        """usage.waddleai.destination equals ctx.destination when the failover branch set it.
+
+        Sibling of TestChatCompletions's counterpart of this test -- see its
+        docstring for why ProxyPipeline.run is faked directly.
+        """
+        marker = {
+            "id": 1,
+            "priority": 0,
+            "role": "active",
+            "provider": "bedrock",
+            "model": "claude-sonnet-4",
+            "attempts": [],
+        }
+
+        async def fake_run(ctx):
+            ctx.response_text = proxy_main._STUB_COMPLETION_TEXT
+            ctx.usage = {"input_tokens": 1, "output_tokens": 1, "finish_reason": "stop"}
+            ctx.provider = "bedrock"
+            ctx.finish_reason = "end_turn"
+            ctx.destination = marker
+            return ctx
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        body = await resp.get_json()
+        assert resp.status_code == 200
+        assert body["usage"]["waddleai"]["destination"] == marker
+
+    async def test_destination_marker_absent_when_ctx_destination_none(
+        self, running_app, monkeypatch
+    ):
+        """No `destination` key in usage.waddleai when ctx.destination is None.
+
+        routed_from is set so usage.waddleai is populated anyway (§7.6) --
+        proving `destination` is specifically omitted by the merge.
+        """
+
+        async def fake_run(ctx):
+            ctx.response_text = proxy_main._STUB_COMPLETION_TEXT
+            ctx.usage = {"input_tokens": 1, "output_tokens": 1, "finish_reason": "stop"}
+            ctx.provider = "stub"
+            ctx.finish_reason = "end_turn"
+            ctx.routed_from = {"from": "claude-3-sonnet-20240229", "to": "claude-sonnet-4"}
+            return ctx
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        body = await resp.get_json()
+        assert resp.status_code == 200
+        assert "destination" not in body["usage"]["waddleai"]
+
+    async def test_retry_after_header_on_429_present_and_absent(self, running_app, monkeypatch):
+        """A 429 block with usage_meta["retry_after"] emits Retry-After; unset emits no header."""
+
+        async def fake_run_with_retry_after(ctx):
+            ctx.blocked = True
+            ctx.status_code = 429
+            ctx.block_reason = "destinations_exhausted"
+            ctx.usage_meta["retry_after"] = 7
+            return ctx
+
+        async def fake_run_without_retry_after(ctx):
+            ctx.blocked = True
+            ctx.status_code = 429
+            ctx.block_reason = "provider_error_429"
+            return ctx
+
+        client = running_app.test_client()
+        request_kwargs = {
+            "headers": _bearer_headers(),
+            "json": {
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        }
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run_with_retry_after)
+        resp = await client.post("/v1/messages", **request_kwargs)
+        assert resp.status_code == 429
+        assert resp.headers.get("Retry-After") == "7"
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run_without_retry_after)
+        resp = await client.post("/v1/messages", **request_kwargs)
+        assert resp.status_code == 429
+        assert "Retry-After" not in resp.headers
 
 
 class TestChatCompletionsCacheMetaEnabled:

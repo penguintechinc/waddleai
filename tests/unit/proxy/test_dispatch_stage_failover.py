@@ -17,7 +17,7 @@ import pytest
 from proxy.apps.proxy_server.pipeline.stages import DispatchStage, PipelineContext
 from shared.routing.destinations import Destination
 from shared.routing.failover import DestinationAttempt, DestinationsExhausted, Outcome
-from shared.utils.llm_connectors import ProviderRateLimitError
+from shared.utils.llm_connectors import ProviderClientError, ProviderRateLimitError
 
 
 def _dest():
@@ -286,6 +286,17 @@ async def test_destinations_exhausted_429_sets_usage_meta_retry_after():
     out = await stage(_ctx())
     assert out.blocked is True and out.status_code == 429
     assert out.usage_meta["retry_after"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_provider_client_error_maps_to_its_status_code():
+    """A 4xx ProviderClientError from the dispatcher is not retried -- it maps straight through."""
+    exc = ProviderClientError("openai", "gpt-4", "forbidden", status_code=403)
+    stage = _stage(_Gate(True), _Resolver([_dest()]), _Dispatcher(exc=exc))
+    out = await stage(_ctx())
+    assert out.blocked is True
+    assert out.status_code == 403
+    assert out.block_reason == "provider_error_403"
 
 
 @pytest.mark.asyncio
