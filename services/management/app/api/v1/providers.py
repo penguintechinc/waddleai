@@ -746,11 +746,12 @@ async def create_provider_credential(provider_id: int, data: CreateProviderCrede
     encrypted_key = encrypt_credential(api_key_plain) if api_key_plain else None
 
     def _create():
-        # Check label uniqueness within this provider
+        # Check label uniqueness within this provider (platform pool only)
         existing = (
             db(
                 (db.provider_credentials.provider_id == provider_id)
                 & (db.provider_credentials.label == label)
+                & (db.provider_credentials.owner_org_id == None)  # noqa: E711 -- platform pool only (S12)
             )
             .select()
             .first()
@@ -868,12 +869,13 @@ async def update_provider_credential(
         update_fields: dict = {}
 
         if data.label is not None:
-            # Check uniqueness (exclude self)
+            # Check uniqueness (exclude self, platform pool only)
             conflict = (
                 db(
                     (db.provider_credentials.provider_id == provider_id)
                     & (db.provider_credentials.label == label)
                     & (db.provider_credentials.id != cred_id)
+                    & (db.provider_credentials.owner_org_id == None)  # noqa: E711 -- S12
                 )
                 .select()
                 .first()
