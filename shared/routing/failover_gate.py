@@ -19,11 +19,12 @@ from shared.utils.feature_flags import is_feature_enabled
 
 logger = logging.getLogger(__name__)
 
-_FLAG_KEY = "waddleai.provider_failover"
-_LICENSE_FEATURE = "waddleai_provider_failover"
+FAILOVER_FLAG_KEY = "waddleai.provider_failover"
+FAILOVER_LICENSE_FEATURE = "waddleai_provider_failover"
 
 
 def _default_license_getter() -> Any:
+    """Instantiate the default license client from environment variables."""
     from penguin_licensing import LicenseClient
 
     return LicenseClient(
@@ -60,13 +61,15 @@ class FailoverGate:
         return result
 
     async def _compute(self, org_id: int) -> tuple[bool, str]:
-        if not is_feature_enabled(_FLAG_KEY, distinct_id=str(org_id), default=False):
+        """Evaluate flag and entitlement; never raises (fail-closed on error)."""
+        if not is_feature_enabled(FAILOVER_FLAG_KEY, distinct_id=str(org_id), default=False):
             return (False, "flag_off")
 
         def _check() -> bool:
+            """Check entitlement; return False on any error (fail-closed)."""
             try:
-                return bool(self._license_getter().check_feature(_LICENSE_FEATURE))
-            except Exception as exc:  # pragma: no cover - defensive, license I/O failure
+                return bool(self._license_getter().check_feature(FAILOVER_LICENSE_FEATURE))
+            except Exception as exc:
                 logger.warning("failover_gate: entitlement check failed (fail-closed): %s", exc)
                 return False
 
