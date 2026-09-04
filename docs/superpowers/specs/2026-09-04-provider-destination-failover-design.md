@@ -81,7 +81,7 @@ Every response goes through a `@dataclass(slots=True)` DTO with `@validate_respo
 ## 5. Data plane (proxy, `proxy/apps/proxy_server/pipeline/stages.py` `DispatchStage`)
 
 ### 5.1 Placement in the pipeline
-`RoutingStage` runs first (aliases, access policy, escalation, sensitivity → `ctx.model`, `ctx.fallback_chain`). Two small additions surface signals the engine already computes but never exposes: `RouteDecision.clamp_local: bool` (true when the sensitivity clamp **or** budget-pressure `clamp_local` reshaped the chain, `engine.py:205-219`) is copied to a new `ctx.local_only`, and the caller's `provider:model` hard pin (parsed by `split_provider_prefix`, today consumed only inside the engine, `aliases.py:49-64`) is copied to a new `ctx.provider_pin`. `ctx.preferred_backend` is a cache/session-affinity hint for Ollama/llama.cpp, **not** the pin, and is not consulted here.
+`RoutingStage` runs first (aliases, access policy, escalation, sensitivity → `ctx.model`, `ctx.fallback_chain`). Two small additions surface signals the engine already computes but never exposes: `RouteDecision.clamp_local: bool` (true when the sensitivity clamp **applied** — PII or budget pressure via a local-forcing sensitivity mode, i.e. `SensitivityResult.local_only_applied`; not set by `"ignore"`/`"redact_then_any"`, `engine.py:205-219`) is copied to a new `ctx.local_only`, and the caller's `provider:model` hard pin (parsed by `split_provider_prefix`, today consumed only inside the engine, `aliases.py:49-64`) is copied to a new `ctx.provider_pin`. `ctx.preferred_backend` is a cache/session-affinity hint for Ollama/llama.cpp, **not** the pin, and is not consulted here.
 
 `DispatchStage` gains one branch before its existing `select_provider` path:
 
@@ -167,7 +167,7 @@ Reuses the `ProviderStats` state machine from `request_router.py` (closed → op
 | S6 | Failover only before the first flushed byte | `bytes_flushed` test |
 | S7 | Bounded attempts (≤5) and bounded per-attempt time | API cap + `wait_for` tests |
 | S8 | Cache keys include `org_id`; org A's destinations are never served to org B | resolver cross-org test |
-| S9 | `ctx.provider_pin` and `ctx.local_only` (both written by `RoutingStage` from `RouteDecision`) restrict eligible destinations | RoutingStage + resolver tests |
+| S9 | `ctx.provider_pin` and `ctx.local_only` (both written by `RoutingStage` from `RouteDecision`; `local_only` true iff `SensitivityResult.local_only_applied`) restrict eligible destinations | RoutingStage + resolver tests |
 | S10 | Flag OFF or entitlement absent ⇒ behaviour identical to today, no new SQL on the hot path | gate test |
 | S11 | The security_v2 upstream filter (pseudonymise → de-pseudonymise → cleanup) applies on the failover branch exactly as on the existing branch | DispatchStage test with filter enabled |
 | S12 | Platform credential endpoints never expose or mutate tenant-owned rows | providers route tests |

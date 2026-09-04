@@ -258,6 +258,26 @@ Runs `RoutingEngine.decide()` against the org's real rules/assignments/policy wi
 effects — no request is logged and no model is called — so a policy change can be validated
 before it's live.
 
+### Model destinations and BYOK credentials (Enterprise)
+
+Per-org, per-model active/standby destination lists with tenant-owned (BYOK)
+credentials — see [Provider Destination Failover](../routing/destination-failover.md)
+for the full walkthrough. Behind the `waddleai.provider_failover` flag (404 when off)
+and the `waddleai_provider_failover` entitlement (403 when unentitled), fail-closed on
+any evaluation error. `organization_id` may be overridden only by a caller holding the
+`provider:admin` scope (else 403 on mismatch); a row addressed by id outside the
+resolved org is 404, never a distinguishing error (IDOR-safe).
+
+| Method | Path | Scope | Summary |
+|---|---|---|---|
+| GET | `/api/v1/routing/destinations` | auth | List this org's destinations, optionally filtered by `?model=` — masked credential label only |
+| POST | `/api/v1/routing/destinations` | `model_destination:write` | Create a destination — validates credential ownership, provider enabled, ≤5 enabled per model |
+| PATCH | `/api/v1/routing/destinations/{destination_id}` | `model_destination:write` | Update priority/enabled/provider_model_id/region/timeout_seconds/credential_id |
+| DELETE | `/api/v1/routing/destinations/{destination_id}` | `model_destination:delete` | Delete a destination |
+| GET | `/api/v1/routing/destination-credentials` | auth | List this org's BYOK credentials — `api_key_masked` only, never plaintext |
+| POST | `/api/v1/routing/destination-credentials` | `model_destination:write` | Create a BYOK credential — material validated by provider type, Fernet-encrypted at rest |
+| DELETE | `/api/v1/routing/destination-credentials/{credential_id}` | `model_destination:delete` | Delete a BYOK credential — destinations referencing it get `credential_id = NULL`, not deleted |
+
 ### Security policies
 
 Per-tool/per-model block/flag/audit policy, resolved global → org → model → tool.

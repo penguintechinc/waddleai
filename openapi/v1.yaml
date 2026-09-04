@@ -57,6 +57,98 @@ components:
       - id
       title: DeletedMcpEndpointData
       type: object
+    DestinationCredentialDTO:
+      description: A BYOK provider_credentials row -- api_key_masked only, never plaintext.
+      properties:
+        api_key_masked:
+          title: Api Key Masked
+          type: string
+        enabled:
+          title: Enabled
+          type: boolean
+        id:
+          title: Id
+          type: integer
+        label:
+          title: Label
+          type: string
+        owner_org_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Owner Org Id
+        provider_id:
+          title: Provider Id
+          type: integer
+      required:
+      - id
+      - provider_id
+      - label
+      - api_key_masked
+      - owner_org_id
+      - enabled
+      title: DestinationCredentialDTO
+      type: object
+    DestinationDTO:
+      description: One destination row for API responses -- never a credential secret.
+      properties:
+        credential_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Credential Id
+        credential_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credential Label
+        enabled:
+          title: Enabled
+          type: boolean
+        id:
+          title: Id
+          type: integer
+        model:
+          title: Model
+          type: string
+        organization_id:
+          title: Organization Id
+          type: integer
+        priority:
+          title: Priority
+          type: integer
+        provider_id:
+          title: Provider Id
+          type: integer
+        provider_model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Model Id
+        region:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Region
+        timeout_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Timeout Seconds
+      required:
+      - id
+      - organization_id
+      - model
+      - priority
+      - provider_id
+      - credential_id
+      - credential_label
+      - provider_model_id
+      - region
+      - timeout_seconds
+      - enabled
+      title: DestinationDTO
+      type: object
     KeyDetailUsage:
       description: Aggregate usage embedded in the single-key detail response.
       properties:
@@ -3873,6 +3965,499 @@ paths:
       responses:
         '200': *id001
       summary: Return the full decision trace for one request_id (org-visibility scoped).
+  /api/v1/routing/destination-credentials:
+    get:
+      description: ''
+      operationId: get_list_destination_credentials
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: GET /routing/destination-credentials body.
+                properties:
+                  credentials:
+                    items:
+                      $ref: '#/components/schemas/DestinationCredentialDTO'
+                    title: Credentials
+                    type: array
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - credentials
+                - total
+                title: DestinationCredentialListResponse
+                type: object
+          description: GET /routing/destination-credentials body.
+      security:
+      - bearerAuth: []
+      summary: List this org's BYOK provider_credentials rows -- api_key_masked only
+        (S4).
+      tags:
+      - Destination Credentials
+      - Routing
+    post:
+      description: ''
+      operationId: post_create_destination_credential
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /api/v1/routing/destination-credentials.
+              properties:
+                enabled:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+                  title: Enabled
+                label:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Label
+                material:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Material
+                organization_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Organization Id
+                provider_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Provider Id
+              title: CreateDestinationCredentialRequest
+              type: object
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                description: A BYOK provider_credentials row -- api_key_masked only,
+                  never plaintext.
+                properties:
+                  api_key_masked:
+                    title: Api Key Masked
+                    type: string
+                  enabled:
+                    title: Enabled
+                    type: boolean
+                  id:
+                    title: Id
+                    type: integer
+                  label:
+                    title: Label
+                    type: string
+                  owner_org_id:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Owner Org Id
+                  provider_id:
+                    title: Provider Id
+                    type: integer
+                required:
+                - id
+                - provider_id
+                - label
+                - api_key_masked
+                - owner_org_id
+                - enabled
+                title: DestinationCredentialDTO
+                type: object
+          description: A BYOK provider_credentials row -- api_key_masked only, never
+            plaintext.
+      security:
+      - bearerAuth: []
+      summary: Create a tenant-owned BYOK credential -- Fernet-encrypted, material
+        validated by type.
+      tags:
+      - Destination Credentials
+      - Routing
+  /api/v1/routing/destination-credentials/{credential_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_destination_credential
+      parameters:
+      - in: path
+        name: credential_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for a successful destination-credential
+                  deletion.
+                properties:
+                  deleted:
+                    title: Deleted
+                    type: boolean
+                  id:
+                    title: Id
+                    type: integer
+                required:
+                - id
+                - deleted
+                title: DeletedDestinationCredentialResponse
+                type: object
+          description: Response body for a successful destination-credential deletion.
+      security:
+      - bearerAuth: []
+      summary: Delete a BYOK credential (org-scoped, IDOR-safe 404). Referencing destinations
+        SET NULL.
+      tags:
+      - Destination Credentials
+      - Routing
+  /api/v1/routing/destinations:
+    get:
+      description: ''
+      operationId: get_list_destinations
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: GET /routing/destinations body.
+                properties:
+                  destinations:
+                    items:
+                      $ref: '#/components/schemas/DestinationDTO'
+                    title: Destinations
+                    type: array
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - destinations
+                - total
+                title: DestinationListResponse
+                type: object
+          description: GET /routing/destinations body.
+      security:
+      - bearerAuth: []
+      summary: List this org's model_destinations rows, optionally filtered by ?model=.
+      tags:
+      - Destinations
+      - Routing
+    post:
+      description: ''
+      operationId: post_create_destination
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /api/v1/routing/destinations.
+              properties:
+                credential_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Credential Id
+                enabled:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+                  title: Enabled
+                model:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Model
+                organization_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Organization Id
+                priority:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Priority
+                provider_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Provider Id
+                provider_model_id:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Provider Model Id
+                region:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Region
+                timeout_seconds:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Timeout Seconds
+              title: CreateDestinationRequest
+              type: object
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                description: One destination row for API responses -- never a credential
+                  secret.
+                properties:
+                  credential_id:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Credential Id
+                  credential_label:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Credential Label
+                  enabled:
+                    title: Enabled
+                    type: boolean
+                  id:
+                    title: Id
+                    type: integer
+                  model:
+                    title: Model
+                    type: string
+                  organization_id:
+                    title: Organization Id
+                    type: integer
+                  priority:
+                    title: Priority
+                    type: integer
+                  provider_id:
+                    title: Provider Id
+                    type: integer
+                  provider_model_id:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Provider Model Id
+                  region:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Region
+                  timeout_seconds:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Timeout Seconds
+                required:
+                - id
+                - organization_id
+                - model
+                - priority
+                - provider_id
+                - credential_id
+                - credential_label
+                - provider_model_id
+                - region
+                - timeout_seconds
+                - enabled
+                title: DestinationDTO
+                type: object
+          description: One destination row for API responses -- never a credential
+            secret.
+      security:
+      - bearerAuth: []
+      summary: 'Create a model_destinations row (spec §3.2: ownership, <=5 enabled,
+        provider enabled).'
+      tags:
+      - Destinations
+      - Routing
+  /api/v1/routing/destinations/{destination_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_destination
+      parameters:
+      - in: path
+        name: destination_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for a successful destination deletion.
+                properties:
+                  deleted:
+                    title: Deleted
+                    type: boolean
+                  id:
+                    title: Id
+                    type: integer
+                required:
+                - id
+                - deleted
+                title: DeletedDestinationResponse
+                type: object
+          description: Response body for a successful destination deletion.
+      security:
+      - bearerAuth: []
+      summary: Delete a model_destinations row (org-scoped, IDOR-safe 404).
+      tags:
+      - Destinations
+      - Routing
+    patch:
+      description: ''
+      operationId: patch_update_destination
+      parameters:
+      - in: path
+        name: destination_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PATCH /api/v1/routing/destinations/<id>
+                (partial update).
+              properties:
+                credential_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Credential Id
+                enabled:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+                  title: Enabled
+                priority:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Priority
+                provider_model_id:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Provider Model Id
+                region:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Region
+                timeout_seconds:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Timeout Seconds
+              title: UpdateDestinationRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: One destination row for API responses -- never a credential
+                  secret.
+                properties:
+                  credential_id:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Credential Id
+                  credential_label:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Credential Label
+                  enabled:
+                    title: Enabled
+                    type: boolean
+                  id:
+                    title: Id
+                    type: integer
+                  model:
+                    title: Model
+                    type: string
+                  organization_id:
+                    title: Organization Id
+                    type: integer
+                  priority:
+                    title: Priority
+                    type: integer
+                  provider_id:
+                    title: Provider Id
+                    type: integer
+                  provider_model_id:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Provider Model Id
+                  region:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Region
+                  timeout_seconds:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Timeout Seconds
+                required:
+                - id
+                - organization_id
+                - model
+                - priority
+                - provider_id
+                - credential_id
+                - credential_label
+                - provider_model_id
+                - region
+                - timeout_seconds
+                - enabled
+                title: DestinationDTO
+                type: object
+          description: One destination row for API responses -- never a credential
+            secret.
+      security:
+      - bearerAuth: []
+      summary: Update priority/enabled/provider_model_id/region/timeout/credential
+        on a destination.
+      tags:
+      - Destinations
+      - Routing
   /api/v1/routing/dry-run/:
     post:
       description: '

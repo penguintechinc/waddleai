@@ -79,6 +79,8 @@ It works in the plain `model` field rather than a header, so any OpenAI-compatib
 
 > **Status:** specified, not yet implemented. See the platform spec §7.2 Stage 0. Today only the model name is honoured (see `X-Preferred-Model` below); the provider is chosen by the router.
 
+**Effect on destination failover:** independent of the model-substitution behavior above, a `provider:model` pin also restricts [Provider Destination Failover](../routing/destination-failover.md) — only that org's destinations whose provider matches the pin are eligible for the request; if none match, the request falls through to the existing single-destination path rather than an error. A pin can narrow which destination serves the request, but never expands it to a destination the pin excludes.
+
 #### WaddleAI-Specific Headers
 
 | Header | Status | Description |
