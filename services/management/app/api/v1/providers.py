@@ -690,9 +690,10 @@ async def list_provider_credentials(provider_id: int):
         provider = db(db.ai_providers.id == provider_id).select().first()
         if not provider:
             return None
-        return db(db.provider_credentials.provider_id == provider_id).select(
-            orderby=db.provider_credentials.id
-        )
+        return db(
+            (db.provider_credentials.provider_id == provider_id)
+            & (db.provider_credentials.owner_org_id == None)  # noqa: E711 -- platform pool only (S12)
+        ).select(orderby=db.provider_credentials.id)
 
     creds = await asyncio.to_thread(_fetch)
 
@@ -827,6 +828,7 @@ async def update_provider_credential(
             db(
                 (db.provider_credentials.id == cred_id)
                 & (db.provider_credentials.provider_id == provider_id)
+                & (db.provider_credentials.owner_org_id == None)  # noqa: E711 -- S12
             )
             .select()
             .first()
@@ -936,6 +938,7 @@ async def delete_provider_credential(provider_id: int, cred_id: int):
             db(
                 (db.provider_credentials.id == cred_id)
                 & (db.provider_credentials.provider_id == provider_id)
+                & (db.provider_credentials.owner_org_id == None)  # noqa: E711 -- S12
             )
             .select()
             .first()
@@ -944,7 +947,12 @@ async def delete_provider_credential(provider_id: int, cred_id: int):
             return "cred_not_found"
 
         # Safety guard: refuse to delete the last credential
-        total = len(db(db.provider_credentials.provider_id == provider_id).select())
+        total = len(
+            db(
+                (db.provider_credentials.provider_id == provider_id)
+                & (db.provider_credentials.owner_org_id == None)  # noqa: E711 -- S12
+            ).select()
+        )
         if total <= 1:
             return "last_credential"
 
