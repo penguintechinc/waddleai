@@ -35,8 +35,10 @@ def _offer(name, location="local", score=3.0):
 class TestRoutingEngineClampLocalComputation:
     """decide()'s clamp_local computation.
 
-    Reflects whether a clamp source actually narrowed the chain to
-    local-only providers, not merely that the sensitivity block ran.
+    True when the local-only clamp actually APPLIED (apply_sensitivity ran
+    in its local-forcing mode because of PII or budget pressure), regardless
+    of whether any candidate was actually dropped -- not merely that the
+    sensitivity block ran, and not gated on the chain visibly narrowing.
     """
 
     @pytest.mark.asyncio
@@ -143,3 +145,48 @@ class TestRoutingEngineClampLocalComputation:
 
         assert decision.clamp_local is False
         assert "commercial-model" in decision.fallback_chain
+
+    @pytest.mark.asyncio
+    async def test_pii_with_already_all_local_chain_still_sets_clamp_local_true(self, fake_db):
+        """SECURITY regression: the clamp must apply even with nothing to drop.
+
+        A chain that's already 100% local before the clamp runs (no
+        commercial candidate to remove) must still report clamp_local=True
+        under PII + local_only policy -- the failover resolver must not be
+        left thinking it's free to open this request to commercial
+        destinations just because the sensitivity filter was a length no-op.
+        """
+        engine = RoutingEngine(fake_db)
+        offers = [_offer("local-model-a"), _offer("local-model-b")]
+        request = RoutingInput(
+            org_id=6,
+            request_id="req-clamp-f",
+            body=_body(),
+            explicit_tool_type="chat",
+            offers=offers,
+            pii_detected=True,
+        )
+
+        decision = await engine.decide(request)
+
+        assert decision.clamp_local is True
+
+    @pytest.mark.asyncio
+    async def test_budget_pressure_with_already_all_local_chain_still_sets_clamp_local_true(
+        self, fake_db
+    ):
+        """Same all-local-already regression, via the budget-pressure clamp source."""
+        engine = RoutingEngine(fake_db)
+        offers = [_offer("local-model-a"), _offer("local-model-b")]
+        request = RoutingInput(
+            org_id=7,
+            request_id="req-clamp-g",
+            body=_body(),
+            explicit_tool_type="chat",
+            offers=offers,
+            token_consumed_fraction=0.96,
+        )
+
+        decision = await engine.decide(request)
+
+        assert decision.clamp_local is True

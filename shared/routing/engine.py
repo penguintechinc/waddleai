@@ -41,12 +41,15 @@ class RouteDecision:
     fallback_chain: list[str] = field(default_factory=list)
     routed_from: dict | None = None
     trace: RouteTrace | None = None
-    # True when the sensitivity clamp OR budget-pressure clamp ACTUALLY
-    # narrowed the qualified chain to local-only providers (engine.py's
-    # `decide()`, sensitivity-clamp block) -- False when that block ran but
-    # was a no-op (org policy "ignore", or "redact_then_any" which keeps the
-    # full chain and only flags redact-before-dispatch). This is the exact
-    # "must not leave local providers" signal the provider-destination
+    # True when the local-only clamp APPLIED -- i.e. apply_sensitivity() ran
+    # in its local-forcing mode because of PII or budget pressure (see
+    # SensitivityResult.local_only_applied) -- regardless of whether it
+    # actually removed any candidate (a chain that was already 100% local
+    # still reports True, since destinations must still be restricted to
+    # local). False when the sensitivity block ran but in a mode that never
+    # forces local (org policy "ignore", or "redact_then_any" which keeps
+    # the full chain and only flags redact-before-dispatch). This is the
+    # exact "must not leave local providers" signal the provider-destination
     # failover resolver's local_only consumes (failover spec §5.1) -- an org
     # that opted out of PII clamping must never be wrongly restricted to
     # local destinations.
@@ -220,21 +223,21 @@ class RoutingEngine:
         chain = qualified
         pii_flagged = request.pii_detected
         clamp_local = pressure.clamp_local
-        clamp_reshaped = False
+        clamp_applied = False
         if pii_flagged or clamp_local:
-            pre_clamp_chain = chain
             sensitivity_result = apply_sensitivity(
                 chain,
                 pii_detected=pii_flagged or clamp_local,
                 org_sensitivity_routing=policy.sensitivity_routing if pii_flagged else "local_only",
             )
             chain = sensitivity_result.candidates
-            # apply_sensitivity() is a no-op pass-through (chain unchanged)
-            # for org policy "ignore" and "redact_then_any" -- only its
-            # "local_only" branch ever drops candidates. Compare before/after
-            # rather than assuming the block running implies a clamp, so an
-            # org that opted out of PII clamping never gets local_only=True.
-            clamp_reshaped = len(chain) != len(pre_clamp_chain)
+            # local_only_applied is the explicit signal from apply_sensitivity
+            # itself -- True exactly when it ran in its local-forcing mode,
+            # regardless of whether any candidate was actually dropped (a
+            # chain already 100% local must still report the clamp as
+            # applied). "ignore" and "redact_then_any" never set it, since
+            # neither forces local.
+            clamp_applied = sensitivity_result.local_only_applied
 
         final_model, routed_from = self._pick_final(
             chosen_offer, chain, assignment, escalation, policy, veto_reason, alias_routed_from
@@ -251,7 +254,7 @@ class RoutingEngine:
             fallback_chain=fallback_chain,
             routed_from=routed_from,
             trace=trace,
-            clamp_local=clamp_reshaped,
+            clamp_local=clamp_applied,
         )
 
     async def _resolve_escalation(
