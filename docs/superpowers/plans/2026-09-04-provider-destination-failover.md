@@ -43,6 +43,7 @@ Every task's requirements implicitly include this section. Exact values, copied 
 - **Gated-off = byte-for-byte unchanged.** When `failover_enabled(org)` is false the failover branch is not entered, no destination SQL runs, and `DispatchStage`/`main.py` behaviour is identical to today. Regression asserted by S10.
 - **House rules:** `from __future__ import annotations` at the top of every new module; `@dataclass(slots=True)` on every data structure (`frozen=True` where it must not mutate); PEP 257 docstring (first-line summary + 1–2 lines context) on every class/function; async/await throughout; blocking penguin-dal / boto3 calls via `asyncio.to_thread`; `field(repr=False)` on any field that could hold a secret; max **25,000 chars** per code file (the four `shared/routing/` modules stay separate for this reason); no secret in stdout/stderr/logs.
 - **Coverage:** 90% branch (`.coveragerc`, `fail_under=90`) — `shared` and `services/management/app` are already instrumented; `proxy` is instrumented for reporting. Builds fail below. The one genuinely live-only line (a real network bind, if any) carries `# pragma: no cover`; everything else is unit-tested with fakes/in-process stubs.
+- **Focused test runs:** `.venv/bin/pytest <files> --no-cov -q` — `pytest.ini` injects `--cov` with `fail_under=90`, so any partial run exits non-zero on coverage even when all tests pass; read the test summary, not `$?`. The 90% gate runs once per wave via `make test-unit`.
 - **Every commit message ends with these two trailer lines:**
   ```
   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
@@ -163,7 +164,7 @@ class Outcome:
 class DestinationsExhausted(Exception):
     def __init__(self, attempts: tuple[DestinationAttempt, ...], last_error: "ProviderError | None") -> None: ...
     def status_code(self) -> int: ...                       # 429 / 504 / 502 from the last retryable error
-    def retry_after(self) -> str | None: ...
+    def retry_after(self) -> float | None: ...               # last error's retry_after iff it's a ProviderRateLimitError
 
 class FailoverDispatcher:
     def __init__(self, registry: DestinationConnectorRegistry, breaker: DestinationBreaker,
@@ -202,38 +203,76 @@ Tasks in the same wave touch **disjoint file sets** and may run in parallel. Lat
 
 **Files:**
 - Create: `services/management/alembic/versions/021_model_destinations.py`
-- Modify: `services/management/app/models_sqlalchemy.py` (add `owner_org_id` to `ProviderCredential`; add `ModelDestination`)
+- Modify: `services/management/app/models_sqlalchemy.py` (add `owner_org_id` + `updated_at` to `ProviderCredential`; add `ModelDestination`)
 - Test: `tests/unit/management/test_migration_021.py`
 
 **Interfaces:**
-- Produces: `provider_credentials.owner_org_id INTEGER NULL` FK `organizations.id` ON DELETE CASCADE (indexed); table `model_destinations` (columns per spec §3.2). Consumed by Tasks 7 (pool exclusion), 8 (resolver), 12 (routes), 13 (S12 filter).
+- Produces: `provider_credentials.owner_org_id INTEGER NULL` FK `organizations.id` ON DELETE CASCADE (indexed); `provider_credentials.updated_at DATETIME NULL` (server-defaulted, bumped on update); table `model_destinations` (columns per spec §3.2). `provider_credentials.updated_at` is what Task 8's `DestinationResolver.load_material` reads as `CredentialMaterial.updated_at` / `Destination.credential_version`. Consumed by Tasks 7 (pool exclusion), 8 (resolver), 12 (routes), 13 (S12 filter).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/unit/management/test_migration_021.py
+"""Migration 021: owner_org_id + updated_at on provider_credentials, model_destinations.
+
+Import mechanism mirrors ``test_migration_020.py`` -- the module is loaded by path
+(``importlib.util.spec_from_file_location``), never a dotted ``__import__`` of the
+versions package (filenames starting with a digit aren't valid dotted identifiers).
+``owner_org_id``/``updated_at`` existence is asserted on the SQLAlchemy model (the
+schema authority per this migration's own docstring); a live upgrade()/downgrade()
+round-trip against a scratch SQLite DB is not used here because upgrade() adds the
+``owner_org_id`` FK via ``op.create_foreign_key`` outside batch mode, which SQLite's
+ALTER-table support does not implement (see ``test_migration_019.py`` for the batch-mode
+alternative used when a migration's downgrade path needs it).
+"""
 from __future__ import annotations
+
+import importlib.util
+import os
+
 from app.models_sqlalchemy import ModelDestination, ProviderCredential
+
+MIGRATION_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "..",
+    "..",
+    "services",
+    "management",
+    "alembic",
+    "versions",
+    "021_model_destinations.py",
+)
+
+
+def _load_migration_021():
+    """Import ``021_model_destinations.py`` by path (filename isn't an identifier)."""
+    spec = importlib.util.spec_from_file_location("migration_021_model_destinations", MIGRATION_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_migration_chain_and_callables():
-    mod = __import__(
-        "services.management.alembic.versions.021_model_destinations",
-        fromlist=["revision"],
-    )
+    mod = _load_migration_021()
     assert mod.revision == "021_model_destinations"
     assert mod.down_revision == "020_graph_instances"
     assert callable(mod.upgrade) and callable(mod.downgrade)
 
 
-def test_provider_credential_gains_owner_org_id():
+def test_provider_credential_gains_owner_org_id_and_updated_at():
     cols = {c.name for c in ProviderCredential.__table__.columns}
     assert "owner_org_id" in cols
+    assert "updated_at" in cols
     # The pre-existing provider-workspace column is untouched and is a different type.
     assert "org_id" in cols
     owner = ProviderCredential.__table__.columns["owner_org_id"]
     assert owner.nullable is True
     assert str(owner.type).upper().startswith("INTEGER")
+    updated = ProviderCredential.__table__.columns["updated_at"]
+    assert updated.nullable is True
+    assert str(updated.type).upper().startswith("DATETIME")
 
 
 def test_model_destinations_shape():
@@ -253,7 +292,7 @@ def test_model_destinations_shape():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/management/test_migration_021.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_migration_021.py -v --no-cov`
 Expected: FAIL — `ModelDestination` / migration module not found.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -285,10 +324,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add owner_org_id to provider_credentials; create model_destinations."""
+    """Add owner_org_id + updated_at to provider_credentials; create model_destinations."""
     op.add_column(
         "provider_credentials",
         sa.Column("owner_org_id", sa.Integer(), nullable=True),
+    )
+    op.add_column(
+        "provider_credentials",
+        sa.Column("updated_at", sa.DateTime(), nullable=True, server_default=sa.func.now()),
     )
     op.create_foreign_key(
         "fk_provider_credentials_owner_org",
@@ -335,7 +378,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop model_destinations and provider_credentials.owner_org_id."""
+    """Drop model_destinations and provider_credentials.owner_org_id/updated_at."""
     op.drop_index("ix_model_destinations_org_model", "model_destinations")
     op.drop_table("model_destinations")
     op.drop_index("ix_provider_credentials_owner_org_id", "provider_credentials")
@@ -343,9 +386,10 @@ def downgrade() -> None:
         "fk_provider_credentials_owner_org", "provider_credentials", type_="foreignkey"
     )
     op.drop_column("provider_credentials", "owner_org_id")
+    op.drop_column("provider_credentials", "updated_at")
 ```
 
-In `services/management/app/models_sqlalchemy.py` add `owner_org_id` to `ProviderCredential` (next to the existing `org_id`, keeping the sharp distinction documented):
+In `services/management/app/models_sqlalchemy.py` add `owner_org_id` + `updated_at` to `ProviderCredential` (next to the existing `org_id`/`created_at`, keeping the sharp distinction documented). The file imports individual SQLAlchemy names (no `import sqlalchemy as sa`) and already has `from datetime import datetime` — `func` is not yet imported, so add it to the existing `from sqlalchemy import (...)` block (see the import note below) and reference it unqualified, not as `sa.func`:
 ```python
     # Tenant owner (BYOK). NULL = platform pool (existing behaviour, unchanged);
     # non-null = usable ONLY by that org's destinations, never the platform pool.
@@ -353,6 +397,9 @@ In `services/management/app/models_sqlalchemy.py` add `owner_org_id` to `Provide
     owner_org_id = Column(
         Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    # Bumped on every row update; the registry's cache key (`credential_version`,
+    # Tasks 8/9) so a rotated credential yields a fresh connector, not a stale one.
+    updated_at = Column(DateTime, nullable=True, server_default=func.now(), onupdate=datetime.utcnow)
 ```
 and add the new model near `AIProvider`:
 ```python
@@ -396,11 +443,11 @@ class ModelDestination(Base):
         ),
     )
 ```
-Also add the API cap constant near the model: `MAX_DESTINATIONS_PER_MODEL = 5`. Ensure `CheckConstraint`, `UniqueConstraint`, `text` are imported at the top of `models_sqlalchemy.py` (add any that are missing to the existing SQLAlchemy import line).
+Also add the API cap constant near the model: `MAX_DESTINATIONS_PER_MODEL = 5`. Ensure `CheckConstraint`, `UniqueConstraint`, `text`, `func` are imported at the top of `models_sqlalchemy.py` (add any that are missing to the existing SQLAlchemy import line).
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/management/test_migration_021.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_migration_021.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -418,6 +465,7 @@ git commit -m "feat(failover): model_destinations table + provider_credentials.o
 
 **Files:**
 - Modify: `shared/auth/rbac.py` (add scopes + role bundles)
+- Modify: `tests/unit/management/test_scope_authz.py` (keep its fixed scope-tier lists exhaustive)
 - Test: `tests/unit/management/test_rbac_destination_scopes.py`
 
 **Interfaces:**
@@ -450,7 +498,7 @@ def test_delete_is_admin_only():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/management/test_rbac_destination_scopes.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_rbac_destination_scopes.py -v --no-cov`
 Expected: FAIL — `MODEL_DESTINATION_WRITE` not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -467,13 +515,13 @@ In `ROLE_PERMISSIONS`, add both to `Role.ADMIN` (next to `Permission.MODEL_ACCES
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/management/test_rbac_destination_scopes.py tests/unit/management/test_scope_authz.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_rbac_destination_scopes.py tests/unit/management/test_scope_authz.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add shared/auth/rbac.py tests/unit/management/test_rbac_destination_scopes.py
+git add shared/auth/rbac.py tests/unit/management/test_scope_authz.py tests/unit/management/test_rbac_destination_scopes.py
 git commit -m "feat(failover): MODEL_DESTINATION_WRITE/DELETE scopes + role bundles" \
   -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" \
   -m "Claude-Session: https://claude.ai/code/session_013GYHFHJZgh6t5u1v3hTb14"
@@ -484,11 +532,11 @@ git commit -m "feat(failover): MODEL_DESTINATION_WRITE/DELETE scopes + role bund
 ### Task 3: Connector fixes + retryable classifier (security-critical: S4/S5)
 
 **Files:**
-- Modify: `shared/utils/llm_connectors.py` (Bedrock `_get_client` config; Bedrock exception-name mapping; Anthropic `base_url`; module-level `is_retryable`/`classify_failure`)
+- Modify: `shared/utils/llm_connectors.py` (Bedrock `_get_client` config; Bedrock exception-name mapping; Anthropic `base_url`; module-level `is_retryable`/`classify_failure`; `ProviderRateLimitError.retry_after`)
 - Test: `tests/unit/test_llm_connectors.py` (add cases)
 
 **Interfaces:**
-- Produces: `is_retryable(exc) -> bool` and `classify_failure(exc) -> str` (module-level, consumed by Tasks 10, 16); a `BedrockConnector` that reads `aws_region`/`endpoint_url`/AWS keys from `config` and maps Bedrock error codes; an `AnthropicConnector` that honours `base_url=endpoint_url`. Consumed by Task 9 (registry builds these connectors with per-destination config).
+- Produces: `is_retryable(exc) -> bool` and `classify_failure(exc) -> str` (module-level, consumed by Tasks 10, 16); a `BedrockConnector` that reads `aws_region`/`endpoint_url`/AWS keys from `config` and maps Bedrock error codes; an `AnthropicConnector` that honours `base_url=endpoint_url`; `ProviderRateLimitError.retry_after: float | None = None` (optional keyword arg, backward-compatible), populated from the upstream `Retry-After` header on OpenAI/Anthropic SDK 429s and from Bedrock's `ThrottlingException` response metadata. Consumed by Task 9 (registry builds these connectors with per-destination config) and Task 10 (`DestinationsExhausted.retry_after()` reads it off the last error).
 
 **Rule reminders:** the classifier is the single source of truth for the retryable/non-retryable split (Global Constraints taxonomy). Bedrock material is a JSON object `{"aws_access_key_id","aws_secret_access_key","aws_session_token"?}`; an empty material means "ambient AWS chain". Secrets stay inside the connector — never log `config`.
 
@@ -569,12 +617,73 @@ def test_bedrock_ambient_chain_when_material_empty(monkeypatch):
     asyncio.get_event_loop().run_until_complete(conn._get_client())
     assert captured["region_name"] == "us-east-2"
     assert "aws_access_key_id" not in captured   # ambient chain, no static keys passed
+
+
+def test_provider_rate_limit_error_retry_after_defaults_none():
+    assert ProviderRateLimitError("p", "m", "x").retry_after is None
+
+
+def test_provider_rate_limit_error_retry_after_can_be_set():
+    assert ProviderRateLimitError("p", "m", "x", retry_after=7.0).retry_after == 7.0
+
+
+def test_retry_after_extracted_from_sdk_exception_headers():
+    from shared.utils.llm_connectors import _retry_after_from_headers
+
+    class _Resp:
+        headers = {"retry-after": "7"}
+
+    class _FakeSDKError(Exception):
+        response = _Resp()
+
+    assert _retry_after_from_headers(_FakeSDKError("rate limited")) == 7.0
+
+
+def test_retry_after_extraction_ignores_parse_errors_and_missing_header():
+    from shared.utils.llm_connectors import _retry_after_from_headers
+
+    class _RespBad:
+        headers = {"retry-after": "not-a-number"}
+
+    class _FakeSDKErrorBad(Exception):
+        response = _RespBad()
+
+    assert _retry_after_from_headers(_FakeSDKErrorBad("x")) is None
+    assert _retry_after_from_headers(ValueError("no response attr")) is None
+
+
+def test_bedrock_throttling_maps_retry_after_from_response_metadata(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _FakeClient:
+        def converse(self, **kwargs):
+            raise ClientError(
+                {
+                    "Error": {"Code": "ThrottlingException", "Message": "slow down"},
+                    "RetryAfterSeconds": "3",
+                },
+                "Converse",
+            )
+
+    conn = BedrockConnector("b", {"api_key": "", "aws_region": "us-east-2"})
+
+    async def _fake_get_client():
+        return _FakeClient()
+
+    monkeypatch.setattr(conn, "_get_client", _fake_get_client)
+    import asyncio
+
+    with pytest.raises(ProviderRateLimitError) as ei:
+        asyncio.get_event_loop().run_until_complete(
+            conn.chat_completion([{"role": "user", "content": "hi"}], model="m")
+        )
+    assert ei.value.retry_after == 3.0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/test_llm_connectors.py -k "retryable or classify or anthropic_uses or bedrock_reads or bedrock_ambient" -v`
-Expected: FAIL — `classify_failure`/`is_retryable` not defined; Bedrock ignores config; Anthropic ignores `endpoint_url`.
+Run: `.venv/bin/pytest tests/unit/test_llm_connectors.py -k "retryable or classify or anthropic_uses or bedrock_reads or bedrock_ambient or retry_after or bedrock_throttling" -v --no-cov`
+Expected: FAIL — `classify_failure`/`is_retryable` not defined; Bedrock ignores config; Anthropic ignores `endpoint_url`; `ProviderRateLimitError` has no `retry_after`; `_retry_after_from_headers` not defined.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -597,7 +706,52 @@ def classify_failure(exc: "ProviderError") -> str:
     if isinstance(exc, ProviderServerError):
         return "server_error"
     return "client_error"
+
+
+def _retry_after_from_headers(exc: BaseException) -> float | None:
+    """Best-effort Retry-After (seconds) from an SDK exception's HTTP response headers."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if headers is None:
+        return None
+    value = headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 ```
+Give `ProviderRateLimitError` an optional, backward-compatible `retry_after` attribute (existing call sites — positional or keyword, with or without `status_code` — are unaffected since it's appended last with a default):
+```python
+class ProviderRateLimitError(ProviderError):
+    """Rate limit error HTTP 429 (retryable)."""
+
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        message: str,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        """Bind the standard ProviderError fields plus an optional Retry-After seconds hint."""
+        super().__init__(provider, model, message, status_code=status_code)
+        self.retry_after = retry_after
+```
+In `OpenAIConnector.chat_completion`/`stream_chat_completion` and `AnthropicConnector.chat_completion`/`stream_chat_completion`'s `except openai.RateLimitError`/`except anthropic.RateLimitError` 429 handling, pass `retry_after=_retry_after_from_headers(e)` (each site already raises `ProviderRateLimitError(..., status_code=429)`; add the new kwarg, e.g.):
+```python
+        except openai.RateLimitError as e:
+            raise ProviderRateLimitError(
+                provider="openai",
+                model=model,
+                message="OpenAI rate limit",
+                status_code=429,
+                retry_after=_retry_after_from_headers(e),
+            ) from e
+```
+(same pattern for the Anthropic `except anthropic.RateLimitError as e:` sites — `provider="anthropic"`, message text unchanged, just add `retry_after=_retry_after_from_headers(e)`.)
+
 In `AnthropicConnector.__init__`, pass `base_url` when `endpoint_url` is set:
 ```python
         if self.endpoint_url:
@@ -629,12 +783,27 @@ Rewrite `_get_client`'s `_create_client` to use them (fall back to ambient chain
                 kwargs.update(self._aws_creds)
                 return boto3.client("bedrock-runtime", **kwargs)
 ```
-Add Bedrock error-code-name mapping in the `chat_completion`/`stream_chat_completion` `except ClientError` block (before the HTTP-status fallback already present), mapping by `e.response["Error"]["Code"]`:
+Add a Bedrock retry-after helper next to `_retry_after_from_headers` (boto3's `ClientError.response` carries a top-level `RetryAfterSeconds` on some throttling responses, else it's in the response headers):
+```python
+def _bedrock_retry_after(exc: "ClientError") -> float | None:
+    """Best-effort Retry-After (seconds) from a Bedrock ClientError's response metadata."""
+    raw = exc.response.get("RetryAfterSeconds")
+    if raw is None:
+        raw = exc.response.get("ResponseMetadata", {}).get("HTTPHeaders", {}).get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+```
+Add Bedrock error-code-name mapping in the `chat_completion`/`stream_chat_completion` `except ClientError` block (before the HTTP-status fallback already present), mapping by `e.response["Error"]["Code"]`; populate `retry_after` on the `ThrottlingException`/`ModelNotReadyException` branch:
 ```python
                         code = e.response.get("Error", {}).get("Code", "")
                         if code in ("ThrottlingException", "ModelNotReadyException"):
                             raise ProviderRateLimitError(
-                                provider="bedrock", model=model, message=code, status_code=429
+                                provider="bedrock", model=model, message=code, status_code=429,
+                                retry_after=_bedrock_retry_after(e),
                             ) from e
                         if code in ("ServiceUnavailableException", "InternalServerException"):
                             raise ProviderServerError(
@@ -645,7 +814,7 @@ Add Bedrock error-code-name mapping in the `chat_completion`/`stream_chat_comple
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/test_llm_connectors.py -v`
+Run: `.venv/bin/pytest tests/unit/test_llm_connectors.py -v --no-cov`
 Expected: PASS (new cases plus the existing connector suite).
 
 - [ ] **Step 5: Commit**
@@ -724,7 +893,7 @@ def test_snapshot_reports_state():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_destination_breaker.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_destination_breaker.py -v --no-cov`
 Expected: FAIL — module not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -821,7 +990,7 @@ class DestinationBreaker:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_destination_breaker.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_destination_breaker.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -882,7 +1051,7 @@ def test_breaker_gauge_set():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/test_metrics_destinations.py -v`
+Run: `.venv/bin/pytest tests/unit/test_metrics_destinations.py -v --no-cov`
 Expected: FAIL — collectors/methods not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -934,7 +1103,7 @@ Add the four names to the `_shared_collectors` dict that the Borg path rebinds (
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/test_metrics_destinations.py -v`
+Run: `.venv/bin/pytest tests/unit/test_metrics_destinations.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1024,7 +1193,7 @@ async def test_memoised_per_org_within_ttl(monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_failover_gate.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_failover_gate.py -v --no-cov`
 Expected: FAIL — module not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1107,7 +1276,7 @@ class FailoverGate:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_failover_gate.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_failover_gate.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1220,7 +1389,7 @@ def test_byok_credential_is_excluded_from_pool():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v`
+Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v --no-cov`
 Expected: FAIL — the pool query lacks the `owner_org_id IS NULL` predicate, so the BYOK row is admitted (`captured_expr` assertion fails).
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1236,17 +1405,17 @@ In `_select_credential`, add the `owner_org_id IS NULL` predicate to the pool qu
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v`
+Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Mutation-proof the guard (S3)**
 
 Temporarily delete the `& (self.db.provider_credentials.owner_org_id == None)` line, re-run:
 
-Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v`
+Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v --no-cov`
 Expected: **FAIL** — `key == "pool-key"` no longer holds (round-robin now also admits the BYOK row) and/or the `captured_expr` assertion fails. This proves the test actually gates the predicate. **Restore the line** and re-run:
 
-Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v`
+Run: `.venv/bin/pytest tests/unit/test_llm_connectors_pool_exclusion.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -1379,7 +1548,7 @@ async def test_load_material_returns_secret_bearing_row():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_destination_resolver.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_destination_resolver.py -v --no-cov`
 Expected: FAIL — module not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1538,7 +1707,7 @@ class DestinationResolver:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_destination_resolver.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_destination_resolver.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1674,7 +1843,7 @@ async def test_null_credential_id_builds_ambient(monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_destination_connectors.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_destination_connectors.py -v --no-cov`
 Expected: FAIL — module not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1796,7 +1965,7 @@ class DestinationConnectorRegistry:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_destination_connectors.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_destination_connectors.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1926,6 +2095,25 @@ async def test_all_retryable_raises_destinations_exhausted_with_last_status():
 
 
 @pytest.mark.asyncio
+async def test_destinations_exhausted_retry_after_from_rate_limit_error():
+    reg = _Registry({
+        1: _Connector(exc=ProviderServerError("openai", "m", "503", status_code=503)),
+        2: _Connector(exc=ProviderRateLimitError("openai", "m", "429", status_code=429, retry_after=12.5)),
+    })
+    with pytest.raises(DestinationsExhausted) as ei:
+        await FailoverDispatcher(reg, DestinationBreaker()).dispatch(_ctx(), [_dest(1), _dest(2)], ["m"])
+    assert ei.value.retry_after() == 12.5                # last error's retry_after, unit-preserved
+
+
+@pytest.mark.asyncio
+async def test_destinations_exhausted_retry_after_none_for_non_rate_limit():
+    reg = _Registry({1: _Connector(exc=ProviderServerError("openai", "m", "503", status_code=503))})
+    with pytest.raises(DestinationsExhausted) as ei:
+        await FailoverDispatcher(reg, DestinationBreaker()).dispatch(_ctx(), [_dest(1)], ["m"])
+    assert ei.value.retry_after() is None                # last error wasn't a rate limit
+
+
+@pytest.mark.asyncio
 async def test_breaker_open_destination_is_skipped():
     breaker = DestinationBreaker(failure_threshold=1, cooldown_seconds=300)
     breaker.record_failure(1)                            # trip active
@@ -1968,7 +2156,7 @@ async def test_marker_shape_is_secret_free():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_failover_dispatcher.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_failover_dispatcher.py -v --no-cov`
 Expected: FAIL — module not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1994,8 +2182,8 @@ from shared.routing.destination_breaker import DestinationBreaker
 from shared.routing.destination_connectors import DestinationConnectorRegistry, OwnershipError
 from shared.routing.destinations import Destination
 from shared.utils.llm_connectors import (
-    ProviderClientError, ProviderError, ProviderServerError, ProviderTimeoutError,
-    classify_failure, is_retryable,
+    ProviderClientError, ProviderError, ProviderRateLimitError, ProviderServerError,
+    ProviderTimeoutError, classify_failure, is_retryable,
 )
 
 logger = logging.getLogger(__name__)
@@ -2058,9 +2246,11 @@ class DestinationsExhausted(Exception):
             return 502
         return _STATUS_BY_REASON.get(classify_failure(self.last_error), 502)
 
-    def retry_after(self) -> str | None:
-        """The upstream Retry-After header, if the last error carried one."""
-        return getattr(self.last_error, "retry_after", None)
+    def retry_after(self) -> float | None:
+        """The last attempt's Retry-After (seconds), iff that error was a rate limit."""
+        if isinstance(self.last_error, ProviderRateLimitError):
+            return self.last_error.retry_after
+        return None
 
 
 class FailoverDispatcher:
@@ -2167,7 +2357,7 @@ class FailoverDispatcher:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_failover_dispatcher.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_failover_dispatcher.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2260,7 +2450,7 @@ async def test_routing_stage_copies_clamp_local_and_pin(monkeypatch):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_engine_clamp_local.py tests/unit/proxy/test_routing_stage_failover.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_engine_clamp_local.py tests/unit/proxy/test_routing_stage_failover.py -v --no-cov`
 Expected: FAIL — `clamp_local`/new ctx fields not defined; `RoutingStage` doesn't set them.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2321,7 +2511,7 @@ Import `split_provider_prefix` at the top of `stages.py` (`from shared.routing.a
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/bin/pytest tests/unit/routing/test_engine_clamp_local.py tests/unit/proxy/test_routing_stage_failover.py tests/unit/routing/test_engine.py tests/unit/proxy/test_routing_stage.py -v`
+Run: `.venv/bin/pytest tests/unit/routing/test_engine_clamp_local.py tests/unit/proxy/test_routing_stage_failover.py tests/unit/routing/test_engine.py tests/unit/proxy/test_routing_stage.py -v --no-cov`
 Expected: PASS (new tests plus the existing engine + routing-stage suites — the new field defaults keep them green).
 
 - [ ] **Step 5: Commit**
@@ -2425,7 +2615,7 @@ async def test_gate_unentitled_is_403(monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/management/test_routing_destinations_routes.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_routing_destinations_routes.py -v --no-cov`
 Expected: FAIL — module/helpers not defined.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2606,7 +2796,7 @@ Append `routing_destinations,` to the import tuple in `services/management/app/a
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/management/test_routing_destinations_routes.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_routing_destinations_routes.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2662,7 +2852,7 @@ def test_delete_or_rotate_scoped_to_platform_rows():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/management/test_providers_credentials_tenant_filter.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_providers_credentials_tenant_filter.py -v --no-cov`
 Expected: FAIL — the platform credential queries don't reference `owner_org_id`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2690,7 +2880,7 @@ so a BYOK `cred_id` returns `cred_not_found` → 404.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/management/test_providers_credentials_tenant_filter.py tests/unit/management/test_providers.py -v`
+Run: `.venv/bin/pytest tests/unit/management/test_providers_credentials_tenant_filter.py tests/unit/management/test_providers.py -v --no-cov`
 Expected: PASS (guard tests plus the existing providers suite, which uses only platform rows).
 
 - [ ] **Step 5: Commit**
@@ -2713,7 +2903,7 @@ git commit -m "fix(failover): platform credential endpoints exclude tenant-owned
 
 **Interfaces:**
 - Consumes: `FailoverGate` (Task 6), `DestinationResolver` (Task 8), `DestinationConnectorRegistry` (Task 9), `FailoverDispatcher`/`Outcome`/`DestinationsExhausted` (Task 10), `ctx.local_only`/`ctx.provider_pin`/`ctx.bytes_flushed`/`ctx.destination` (Task 11), the `WaddleAIMetrics` gate/attempt methods (Task 5).
-- Produces: `DispatchStage.__init__` new optional params `failover_gate`, `destination_resolver`, `failover_dispatcher`, `metrics` (all default `None`); when any is `None` the failover branch is inert and the existing path runs **byte-for-byte unchanged** (S10). `main.py` merges the destination marker and exposes breaker state.
+- Produces: `DispatchStage.__init__` new optional params `failover_gate`, `destination_resolver`, `failover_dispatcher`, `metrics` (all default `None`); when any is `None` the failover branch is inert and the existing path runs **byte-for-byte unchanged** (S10). `main.py` merges the destination marker and exposes breaker state. On a 429 `DestinationsExhausted` with a non-None `retry_after()`, `ctx.usage_meta["retry_after"]` is set and both error-response builders emit a `Retry-After: <int seconds>` header.
 
 **Rule reminders (spec §5.1):** org from `ctx.user` (`tenant_id` or `organization_id`), never the request body (S1). Gate first — flag OFF / not entitled → count `record_destination_gate_denied(reason)` and fall through (S10). Apply the security_v2 upstream filter identically to the existing branch (pseudonymise before dispatch, de-pseudonymise + cleanup after) (S11). Populate `ctx.provider/requested_model/model/response_text/usage/finish_reason` exactly as the existing path so `MeterStage` counts correctly. Failover only before the first flushed byte (`ctx.bytes_flushed`, S6 — enforced inside the dispatcher).
 
@@ -2727,6 +2917,7 @@ import pytest
 from proxy.apps.proxy_server.pipeline.stages import DispatchStage, PipelineContext
 from shared.routing.destinations import Destination
 from shared.routing.failover import DestinationAttempt, DestinationsExhausted, Outcome
+from shared.utils.llm_connectors import ProviderRateLimitError
 
 
 def _dest():
@@ -2824,6 +3015,17 @@ async def test_destinations_exhausted_maps_to_status():
 
 
 @pytest.mark.asyncio
+async def test_destinations_exhausted_429_sets_usage_meta_retry_after():
+    exc = DestinationsExhausted(
+        (), ProviderRateLimitError("openai", "m", "429", status_code=429, retry_after=5.0)
+    )
+    stage = _stage(_Gate(True), _Resolver([_dest()]), _Dispatcher(exc=exc))
+    out = await stage(_ctx())
+    assert out.blocked is True and out.status_code == 429
+    assert out.usage_meta["retry_after"] == 5.0
+
+
+@pytest.mark.asyncio
 async def test_no_failover_collaborators_is_existing_path():
     # gate/resolver/dispatcher all None -> failover branch inert (byte-for-byte, S10)
     stage = DispatchStage(name="dispatch",
@@ -2835,7 +3037,7 @@ async def test_no_failover_collaborators_is_existing_path():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/proxy/test_dispatch_stage_failover.py -v`
+Run: `.venv/bin/pytest tests/unit/proxy/test_dispatch_stage_failover.py -v --no-cov`
 Expected: FAIL — `DispatchStage` has no failover params/branch.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2894,6 +3096,9 @@ Add the method (populates ctx exactly as the existing path, then returns True; r
             ctx.blocked = True
             ctx.status_code = e.status_code()
             ctx.block_reason = "destinations_exhausted"
+            retry_after = e.retry_after()
+            if ctx.status_code == 429 and retry_after is not None:
+                ctx.usage_meta["retry_after"] = retry_after
             return True
         except Exception as e:  # pragma: no cover - defensive
             logger.error("DispatchStage: failover dispatch error: %s", e, exc_info=True)
@@ -2948,11 +3153,23 @@ and wherever `DispatchStage(...)` is built, pass `failover_gate=self.failover_ga
                 "destinations": proxy_server.destination_breaker.snapshot(),
 ```
 to the returned dict (guard with `getattr(proxy_server, "destination_breaker", None)` so the endpoint still works if failover was never constructed).
+4. In both `if ctx.blocked:` error-response blocks (OpenAI `main.py:1383-1386`; Anthropic `/v1/messages` `:1715-1720`), emit a `Retry-After` header when `ctx.usage_meta` carries one (set by the `DestinationsExhausted` 429 branch above — absent on every other block reason, so this is a no-op on the existing path):
+```python
+        if ctx.blocked:
+            status_code = ctx.status_code or 500
+            error_msg = ctx.block_reason or "Request blocked"
+            response = jsonify({"error": {"message": error_msg, "type": "error"}})
+            retry_after = ctx.usage_meta.get("retry_after") if status_code == 429 else None
+            if retry_after is not None:
+                response.headers["Retry-After"] = str(int(retry_after))
+            return response, status_code
+```
+(same pattern for the Anthropic block — keep its existing `{"error": {"type": "invalid_request_error", "message": error_msg}}` body shape, just wrap it in `response = jsonify(...)` and add the same `retry_after`/header logic before `return response, status_code`.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/proxy/test_dispatch_stage_failover.py tests/unit/proxy/test_dispatch_stage.py -v`
-Expected: PASS (new failover tests plus the existing DispatchStage suite — the branch is inert when collaborators are absent, so the existing path is byte-for-byte unchanged).
+Run: `.venv/bin/pytest tests/unit/proxy/test_dispatch_stage_failover.py tests/unit/proxy/test_pipeline_stages.py tests/unit/proxy/test_pipeline.py -v --no-cov`
+Expected: PASS (new failover tests plus the existing DispatchStage/pipeline suites — the branch is inert when collaborators are absent, so the existing path is byte-for-byte unchanged).
 
 - [ ] **Step 5: Commit**
 
@@ -3306,12 +3523,12 @@ async def test_marker_shape_reports_attempts(two_stubs):
 
 - [ ] **Step 3: Run to verify it fails**
 
-Run: `.venv/bin/pytest tests/unit/failover/ -v`
+Run: `.venv/bin/pytest tests/unit/failover/ -v --no-cov`
 Expected: FAIL first because the module tree is new; once the fixtures + tests are in place, any failure is a real defect in the resolver/registry/dispatcher stack (fix there, not the test).
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `.venv/bin/pytest tests/unit/failover/ -v`
+Run: `.venv/bin/pytest tests/unit/failover/ -v --no-cov`
 Expected: PASS (all seven scenarios, driving the real resolver → registry → real `OpenAIConnector` → aiohttp stub path).
 
 - [ ] **Step 5: Commit**
