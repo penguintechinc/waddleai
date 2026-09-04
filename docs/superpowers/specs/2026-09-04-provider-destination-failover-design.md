@@ -89,8 +89,8 @@ Every response goes through a `@dataclass(slots=True)` DTO with `@validate_respo
 org_id = tenant of ctx.user (tenant_id or organization_id — never request body)
 dests = await resolver.resolve(org_id, ctx.model, pin=ctx.provider_pin, local_only=ctx.local_only) if failover_enabled(org_id) else []
 if dests:
-    messages = upstream_filter.pseudonymize(ctx.messages) if security_v2 else ctx.messages   # SAME transform as the existing path (stages.py:926-931), once, before the loop
-    outcome = await failover_dispatcher.dispatch(ctx, dests, messages)                         # §5.3
+    messages = upstream_filter.pseudonymize(ctx.messages) if security_v2 else ctx.messages # SAME transform as the existing path (stages.py:926-931), once, before the loop
+    outcome = await failover_dispatcher.dispatch(ctx, dests, messages) # §5.3
     # populate ctx EXACTLY as the existing path does (stages.py:922-954):
     ctx.provider = outcome.provider_type; ctx.requested_model = ctx.model
     ctx.model = outcome.destination.provider_model_id or ctx.model
@@ -115,20 +115,20 @@ The security_v2 upstream filter (pre-dispatch pseudonymise/redact, post-dispatch
 ### 5.3 `FailoverDispatcher` (`shared/routing/failover.py`)
 ```
 attempts = []
-for dest in destinations:                              # ≤5, ascending priority
+for dest in destinations: # ≤5, ascending priority
     if breaker.is_open(dest.id) and not breaker.reserve_probe(dest.id):
         attempts.append((dest, "skipped", "breaker_open")); continue
-    connector = registry.get(dest)                     # §5.5; skip+log on ownership assertion failure
+    connector = registry.get(dest) # §5.5; skip+log on ownership assertion failure
     try:
-        result = await attempt(connector, dest, messages, ctx)   # §5.4 — catches asyncio.TimeoutError and re-raises ProviderTimeoutError; wraps aiohttp/httpx connection errors as ProviderServerError
+        result = await attempt(connector, dest, messages, ctx) # §5.4 — catches asyncio.TimeoutError and re-raises ProviderTimeoutError; wraps aiohttp/httpx connection errors as ProviderServerError
         breaker.record_success(dest.id); attempts.append((dest, "ok", None))
         return Outcome(dest, result, attempts)
-    except RETRYABLE as exc:                           # ProviderRateLimitError | ProviderTimeoutError | ProviderServerError (all wrapping done inside attempt(); nothing else escapes)
+    except RETRYABLE as exc: # ProviderRateLimitError | ProviderTimeoutError | ProviderServerError (all wrapping done inside attempt(); nothing else escapes)
         breaker.record_failure(dest.id); attempts.append((dest, "failed", classify(exc)))
-        if ctx.bytes_flushed: raise                    # first-byte rule (§5.4)
+        if ctx.bytes_flushed: raise # first-byte rule (§5.4)
         last = exc; continue
-    except ProviderClientError:                        # 4xx incl. 401/403 on a BYOK key
-        raise                                          # never fail over, never trip the breaker
+    except ProviderClientError: # 4xx incl. 401/403 on a BYOK key
+        raise # never fail over, never trip the breaker
 raise DestinationsExhausted(attempts, last)
 ```
 - `DestinationsExhausted` maps to the **last** retryable error's status (429 → 429 with upstream `Retry-After` if present; timeout → 504; 5xx → 502) with `block_reason = "destinations_exhausted"`. Model substitution (§7.3, `provider_failover`) is **not** attempted in this slice.
@@ -179,7 +179,7 @@ Reuses the `ProviderStats` state machine from `request_router.py` (closed → op
 
 ## 8. Test strategy
 - **Unit (≥90 %, branch):** migration 021 structure + up/down on SQLite; DTO/route tests incl. IDOR, scope, ≤5 cap, ownership 422, masking; resolver SQL (fake DB) incl. cross-org exclusion, pin, `local_only`, TTL; registry keying/eviction/rotation; breaker transitions; dispatcher outcome matrix (ok / retryable→next / client-error→raise / breaker-skip / exhausted / first-byte); `DispatchStage` branch with fake connectors; Bedrock connector config/exception mapping; `_select_credential` pool exclusion (mutation-proven).
-- **Integration (`tests/integration/failover/`, `pytest.mark.integration`):** two in-process OpenAI-compatible HTTP stubs (aiohttp) as active and standby destinations with **distinct keys**; scenarios: active 503 → standby serves and the stub **asserts the standby's own bearer key**; active 429 with `Retry-After` → standby; active hangs past `timeout_seconds` → standby; active 401 → returned as 401, standby untouched; both down → `destinations_exhausted`; breaker opens after 3 failures and skips the active on the 4th request; `usage.waddleai.destination` shape. Streaming variants for the first three.
+- **Integration (`tests/integration/failover/`, `pytest.mark.integration`):** two in-process OpenAI-compatible HTTP stubs (aiohttp) as active and standby destinations with **distinct keys**; scenarios: active 503 → standby serves and the stub **asserts the standby's own bearer key**; active 429 with `Retry-After` → standby; active hangs past `timeout_seconds` → standby; active 401 → returned as 401, standby untouched; both down → `destinations_exhausted`; breaker opens after 3 failures and skips the active on the 4th request; `usage.waddleai.destination` shape. Streaming variants for the first three. As implemented, this in-process harness lives at `tests/unit/failover/` (it counts toward the unit coverage floor) rather than `tests/integration/failover/` under `pytest.mark.integration`.
 - **Contract:** regenerated `openapi/v1.yaml` committed; `make openapi-lint` green.
 - Full gate before merge: `make pre-commit` (lint, security, unit ≥90 %), integration suite locally, CI green.
 
