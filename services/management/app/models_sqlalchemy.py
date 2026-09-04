@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -21,6 +22,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    func,
     text,
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -160,8 +162,64 @@ class ProviderCredential(Base):
     last_used_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     plan_budget = Column(JSON, nullable=True)  # §7.3 window-based plan budget config
+    # Tenant owner (BYOK). NULL = platform pool (existing behaviour, unchanged);
+    # non-null = usable ONLY by that org's destinations, never the platform pool.
+    # NOTE: distinct from `org_id` above (the provider's own workspace id, a String).
+    owner_org_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # Bumped on every row update; the registry's cache key (`credential_version`,
+    # Tasks 8/9) so a rotated credential yields a fresh connector, not a stale one.
+    updated_at = Column(
+        DateTime, nullable=True, server_default=func.now(), onupdate=datetime.utcnow
+    )
 
     provider = relationship("AIProvider", back_populates="credentials")
+
+
+MAX_DESTINATIONS_PER_MODEL = 5
+
+
+class ModelDestination(Base):
+    """One active/standby destination for a logical model, per org (spec §3.2).
+
+    priority 0 = active, >=1 = standby (tried ascending). Failover is implicit
+    when >=2 enabled rows exist for one (org, model); at most
+    ``MAX_DESTINATIONS_PER_MODEL`` enabled per pair (API-enforced).
+    ``credential_id`` NULL = the provider's platform pool / ambient.
+    """
+
+    __tablename__ = "model_destinations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    model = Column(String(255), nullable=False)
+    priority = Column(Integer, nullable=False)
+    provider_id = Column(
+        Integer, ForeignKey("ai_providers.id", ondelete="RESTRICT"), nullable=False
+    )
+    credential_id = Column(
+        Integer, ForeignKey("provider_credentials.id", ondelete="SET NULL"), nullable=True
+    )
+    provider_model_id = Column(String(255), nullable=True)
+    region = Column(String(64), nullable=True)
+    timeout_seconds = Column(Integer, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "model", "priority", name="uq_model_destinations_org_model_priority"
+        ),
+        CheckConstraint("priority >= 0", name="ck_model_destinations_priority"),
+        CheckConstraint(
+            "timeout_seconds IS NULL OR (timeout_seconds >= 1 AND timeout_seconds <= 600)",
+            name="ck_model_destinations_timeout",
+        ),
+    )
 
 
 class FleetBackend(Base):
