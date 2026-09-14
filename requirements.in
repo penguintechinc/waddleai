@@ -91,5 +91,5 @@ mypy>=1.8.0
 # bound requires migrating to the 2.x server API first.
 mcp>=1.28.1,<2.0
 # Performance
-ujson>=5.13.0
+ujson>=6.0.0
 orjson>=3.9.10
