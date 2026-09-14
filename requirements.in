@@ -35,7 +35,7 @@ pyjwt>=2.13.0
 # string, which bcrypt 5 rejects with "password cannot be longer than 72
 # bytes" instead of truncating. That failed every auth/key/quota test in CI.
 bcrypt>=4.1.0,<5.0
-cryptography>=50.0.0
+cryptography>=50.0.1
 passlib>=1.7.4
 # Token Processing and AI
 tiktoken>=0.5.2
