@@ -17,6 +17,17 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
+# Fixture-only key for the management contract subprocess. Never used against a
+# real service, and never a default anywhere outside this harness.
+#
+# Management-only, deliberately: the Helm chart injects
+# CREDENTIAL_ENCRYPTION_KEY into the management Deployment and explicitly NOT
+# into the proxy (see tests/helm/test_migration_and_env_render.py
+# ::test_credential_encryption_key_management_only). Putting it in the shared
+# _launch env would boot the proxy with a key it never has in production, and
+# quietly make the contract harness less faithful than the thing it verifies.
+CONTRACT_ONLY_ENCRYPTION_KEY = "contract-test-encryption-key"  # noqa: S105
+
 
 def _free_port():
     s = socket.socket()
@@ -98,7 +109,17 @@ def management_url(tmp_path_factory):
     entry = "asgi:app" if (REPO / "services/management/asgi.py").exists() else "wsgi:app"
     # Deterministic secrets so contract tests can authenticate (admin login)
     # and produce a valid webhook HMAC signature.
-    extra_env = {"ADMIN_INITIAL_PASSWORD": "admin123", "WEBHOOK_SECRET": "contract-webhook-secret"}
+    # CREDENTIAL_ENCRYPTION_KEY: the subprocess inherits os.environ, which in CI
+    # carries none, so without this the management service boots into a
+    # configuration that exists in no real deployment -- and since
+    # audit-2026-09-14 made credential encryption fail closed, it now refuses to
+    # start at all. Set explicitly rather than inherited, so the harness does
+    # not depend on the developer's shell.
+    extra_env = {
+        "ADMIN_INITIAL_PASSWORD": "admin123",
+        "WEBHOOK_SECRET": "contract-webhook-secret",
+        "CREDENTIAL_ENCRYPTION_KEY": CONTRACT_ONLY_ENCRYPTION_KEY,
+    }
     proc = _launch(
         entry,
         _port := _free_port(),

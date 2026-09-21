@@ -29,8 +29,8 @@ TEST_ONLY_PASSWORD = "password123"  # noqa: S105 -- test fixture, not a real cre
 TEST_ONLY_ENCRYPTION_KEY = "test-encryption-key"  # noqa: S105 -- test fixture, not a real key
 
 
-@pytest.fixture(autouse=True)
-def _credential_encryption_key(monkeypatch):
+@pytest.fixture(scope="session", autouse=True)
+def _credential_encryption_key():
     """Give every management test a credential-encryption key, as production has.
 
     regression: audit-2026-09-14 — shared/security/credential_encryption.py now
@@ -41,8 +41,16 @@ def _credential_encryption_key(monkeypatch):
     that must never exist — and was passing only because of the fallback this
     audit removed. Tests that need the unconfigured behaviour delete the var
     themselves; this fixture only supplies the default.
+
+    Session-scoped, not function-scoped: create_app() now asserts the key at
+    startup, and the flask_app fixture is module-scoped. Higher-scoped fixtures
+    are set up first, so a function-scoped monkeypatch would land *after* the
+    app was already built and the assertion had already failed.
     """
+    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", TEST_ONLY_ENCRYPTION_KEY)
+    yield
+    monkeypatch.undo()
 
 
 # ---------------------------------------------------------------------------
