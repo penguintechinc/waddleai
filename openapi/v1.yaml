@@ -3441,7 +3441,17 @@ paths:
       summary: List all quota configurations.
   /api/v1/quotas/key/{key_id}:
     put:
-      description: ''
+      description: '
+
+        Every column this route writes is privileged (see
+
+        ``keys.PRIVILEGED_KEY_FIELDS``): owning the key proves only that the
+
+        caller may touch it, not that they may raise their own ceiling. The
+
+        field split is shared verbatim with ``PUT /api/v1/keys/<key_id>`` so
+
+        the two routes cannot diverge.'
       operationId: put_set_key_quota
       parameters:
       - in: path
@@ -3449,6 +3459,45 @@ paths:
         required: true
         schema:
           type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: 'Request body for PUT /api/v1/quotas/key/<key_id>.
+
+
+                Every field is an optional partial update; ``None`` means "leave this
+
+                column alone", matching the ``"field" in data`` presence test the
+
+                handler used before it was given a schema.'
+              properties:
+                budget_limit_daily:
+                  anyOf:
+                  - type: number
+                  - type: 'null'
+                  default: null
+                  title: Budget Limit Daily
+                budget_limit_monthly:
+                  anyOf:
+                  - type: number
+                  - type: 'null'
+                  default: null
+                  title: Budget Limit Monthly
+                rpm_limit:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Rpm Limit
+                tpm_limit:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Tpm Limit
+              title: SetKeyQuotaRequest
+              type: object
       responses:
         '200': *id001
       summary: Set virtual key quota.

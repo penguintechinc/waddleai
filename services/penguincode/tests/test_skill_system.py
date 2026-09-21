@@ -36,6 +36,35 @@ except ImportError as exc:
 # ============================================================================
 
 
+def builtin_skill_names() -> set[str]:
+    """Names of the skills shipped in the package, read from disk.
+
+    SkillLoader.discover() also scans ~/.claude/skills and ~/.config/opencode/skills,
+    so the total it returns depends on what the developer happens to have installed.
+    Assertions about "the" skill set must therefore be anchored to the built-in
+    directory, which is the only part this repo controls.
+    """
+    import penguincode_cli
+
+    builtin_dir = Path(penguincode_cli.__file__).parent / "defaults" / "skills"
+    names: set[str] = set()
+    for entry in sorted(builtin_dir.iterdir()):
+        if entry.is_dir() and not entry.name.startswith((".", "_")):
+            if (entry / "SKILL.md").is_file():
+                names.add(entry.name)
+        elif entry.is_file() and entry.suffix == ".md":
+            names.add(entry.stem)
+    return names
+
+
+@pytest.fixture
+def builtin_skills() -> set[str]:
+    """The built-in skill names, asserted non-empty so a bad path cannot pass silently."""
+    names = builtin_skill_names()
+    assert names, "no built-in skills found on disk - discovery source is wrong"
+    return names
+
+
 @pytest.fixture
 def loader():
     """Discovered SkillLoader with all built-in skills."""
@@ -68,9 +97,19 @@ def mock_ollama_client():
 class TestSkillLoaderDiscovery:
     """Verify skill discovery finds all expected skills."""
 
-    def test_discover_returns_51_skills(self, loader):
-        skills = loader.list_all()
-        assert len(skills) == 55, f"Expected 55 skills, got {len(skills)}"
+    def test_discover_returns_all_builtin_skills(self, loader, builtin_skills):
+        """Discovery must surface every skill shipped in the package.
+
+        Asserted as a superset rather than an exact count: discover() also picks up
+        the developer's ~/.claude and ~/.config/opencode skills, so a hardcoded
+        total is wrong on every machine but the one it was written on (it read
+        `== 55` against 51 built-ins and failed everywhere). This still fails hard
+        if discovery breaks, regresses, or loses a built-in skill.
+        """
+        discovered = set(loader.list_all())
+        missing = builtin_skills - discovered
+        assert not missing, f"{len(missing)} built-in skills were not discovered: {sorted(missing)}"
+        assert len(discovered) >= len(builtin_skills)
 
     def test_all_skills_have_name(self, loader):
         for name, info in loader.list_all().items():
@@ -697,25 +736,36 @@ class TestConfigUtilities:
 class TestConfigStoreSkillsSync:
     """Verify config_store default skills match discovered skills."""
 
-    def test_default_skills_count(self):
+    def test_default_skills_count(self, builtin_skills):
+        """One config_store default per built-in skill - derived, never hand-edited."""
         defaults = _default_skills()
-        assert len(defaults) == 55, f"Expected 55 default skills, got {len(defaults)}"
+        assert len(defaults) == len(builtin_skills), (
+            f"Expected {len(builtin_skills)} default skills (one per built-in), got {len(defaults)}"
+        )
 
-    def test_default_skills_match_discovered(self, loader):
-        """Every discovered skill should have a config_store default."""
+    def test_default_skills_match_discovered(self, builtin_skills):
+        """Every built-in skill must have a config_store default.
+
+        Scoped to built-ins deliberately: skills the developer has installed under
+        ~/.claude/skills are discovered too but are not ours to ship defaults for.
+        """
         defaults = {s.name for s in _default_skills()}
-        discovered = set(loader.list_all().keys())
-        missing_from_defaults = discovered - defaults
+        missing_from_defaults = builtin_skills - defaults
         assert (
             missing_from_defaults == set()
-        ), f"Skills discovered but not in config_store defaults: {missing_from_defaults}"
+        ), f"Built-in skills with no config_store default: {sorted(missing_from_defaults)}"
 
-    def test_default_skills_all_discoverable(self, loader):
-        """Every config_store default should be discoverable."""
+    def test_default_skills_all_discoverable(self, builtin_skills, loader):
+        """Every config_store default must correspond to a real, discoverable skill.
+
+        Seeding a default for a skill with no SKILL.md writes a row nothing can
+        resolve - four such entries (microk8s-setup, microk8s-images, mem0,
+        egpu-thunderbolt-fix) were removed when this assertion was made to hold.
+        """
         defaults = {s.name for s in _default_skills()}
-        discovered = set(loader.list_all().keys())
-        missing_from_discovery = defaults - discovered
-        assert missing_from_discovery == set(), f"Skills in config_store but not discovered: {missing_from_discovery}"
+        phantoms = defaults - builtin_skills
+        assert phantoms == set(), f"config_store defaults with no built-in skill on disk: {sorted(phantoms)}"
+        assert defaults <= set(loader.list_all()), "defaults not reachable through discovery"
 
     def test_default_skills_have_permissions(self):
         """All default skills should have at least one permission."""

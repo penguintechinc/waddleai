@@ -574,8 +574,78 @@ jobs:
       env:
         PYTHONPATH: ${{ github.workspace }}
 
+  # services/penguincode/tests/ had never been executed by CI. Root pytest.ini
+  # sets `testpaths = tests`, which only reaches the top-level suite, and no job
+  # pointed at the subtree -- so several hundred test functions, including the
+  # 2026-09-14 security audit regression set (grep shell injection, path
+  # containment, the destructive-command guard, refresh-token reuse), were
+  # documentation rather than a gate: reintroducing any of those bugs produced a
+  # green build.
+  #
+  # The subtree cannot be folded into the root `test` job. It carries its own
+  # pytest config (services/penguincode/pyproject.toml: asyncio_mode = auto,
+  # testpaths = ["tests"]) and its own dependency set that the root lockfile does
+  # not cover -- aiosqlite, ddgs, aiofiles, quart, hypercorn, chromadb and
+  # flask-security-too are all absent from requirements.txt, and
+  # services/penguincode/requirements.txt is a stale partial lock of three
+  # packages that nothing consumes. So this installs the package from its own
+  # pyproject, exactly as services/penguincode/Dockerfile.server does, which
+  # keeps the tested dependency set and the shipped one in step.
+  test-penguincode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/penguincode
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      with:
+        python-version: '3.13'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-penguincode-${{ hashFiles('services/penguincode/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-penguincode-
+          ${{ runner.os }}-pip-
+        lookup-only: true
+
+    - name: Install penguincode and its test dependencies
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        pip install -e '.[dev]'
+
+    # A suite that collects nothing exits 5 and would otherwise read as "no
+    # failures". Assert a real denominator before trusting the run.
+    - name: Verify the suite collects tests
+      run: |
+        set -euo pipefail
+        python -m pytest tests/ --collect-only -q > /tmp/penguincode-collect.txt
+        collected=$(grep -cE '^tests/.*::' /tmp/penguincode-collect.txt)
+        echo "Collected ${collected} test functions from services/penguincode/tests/"
+        # Floor, not an exact count: adding tests must never fail this step, but
+        # a collection that silently drops most of the suite must.
+        if [ "${collected}" -lt 400 ]; then
+          echo "::error::Expected at least 400 collected tests, got ${collected} - the subtree suite is not being collected"
+          exit 1
+        fi
+
+    - name: Run penguincode tests
+      # --no-cov: the subtree has no coverage config of its own and the root
+      # .coveragerc measures shared/, proxy/ and services/management/, none of
+      # which this suite exercises.
+      run: python -m pytest tests/ -v --no-cov
+
   build-platform:
-    needs: [determine-tier, test, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e]
+    needs: [determine-tier, test, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e, test-penguincode]
     runs-on: ubuntu-latest
     permissions:
       contents: read

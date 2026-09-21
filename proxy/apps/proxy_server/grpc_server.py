@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import hmac
+import os
 import threading
 from collections.abc import Callable
 from concurrent import futures
@@ -143,6 +144,58 @@ require_api_version = ApiVersionRouter()
 
 
 # ---------------------------------------------------------------------------
+# Per-caller identity (tenant / user isolation)
+# ---------------------------------------------------------------------------
+
+#: Call-metadata key carrying the *per-caller* WaddleAI credential.
+#:
+#: Deliberately distinct from ``authorization``, which carries the single
+#: shared ``PROXY_GRPC_AUTH_TOKEN`` and proves only that the caller is the
+#: AILB -- it establishes no user and no tenant. The value of this key uses
+#: the exact same grammar as the REST ``Authorization`` header (a raw
+#: ``wa-``/``sk-`` API key, or ``Bearer <jwt>``) so that both surfaces verify
+#: through one code path rather than two.
+CALLER_CREDENTIAL_METADATA_KEY = "x-waddleai-credential"
+
+#: Migration escape hatch restoring the pre-hardening, unscoped behaviour
+#: (``user_id`` read from the request body, ``organization_id`` hardcoded to
+#: 0) for out-of-repo callers that cannot yet forward a per-caller
+#: credential. Defaults OFF; every call served through it logs at ERROR.
+LEGACY_UNSCOPED_IDENTITY_ENV_VAR = "WADDLEAI_GRPC_ALLOW_UNSCOPED_IDENTITY"
+
+_TRUTHY_ENV_VALUES: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+
+
+def _legacy_unscoped_identity_enabled() -> bool:
+    """Report whether the legacy unscoped-identity escape hatch is switched on.
+
+    Fail-secure by construction: an unset, empty, or unrecognised value yields
+    ``False``, so a deployment that never sets the variable is always
+    tenant-scoped.
+    """
+    return os.getenv(LEGACY_UNSCOPED_IDENTITY_ENV_VAR, "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
+@dataclass(slots=True, frozen=True)
+class CallerIdentity:
+    """Identity of a gRPC caller, derived from a *verified* credential.
+
+    Only ever produced by :attr:`ServerComponents.identity_resolver`; it is
+    never assembled from request-body fields, which are attacker-controlled.
+    """
+
+    user_id: int
+    organization_id: int
+    api_key_id: int | None = None
+    username: str = ""
+
+
+#: Verifies a raw credential string, returning the caller's identity and
+#: raising on anything invalid, expired, or unknown.
+IdentityResolver = Callable[[str], CallerIdentity]
+
+
+# ---------------------------------------------------------------------------
 # Server components container
 # ---------------------------------------------------------------------------
 
@@ -151,14 +204,18 @@ require_api_version = ApiVersionRouter()
 class ServerComponents:
     """Holds references to the agent and memory subsystems.
 
-    All fields are optional so the server can start in a degraded mode
-    when a subsystem is unavailable.
+    All subsystem fields are optional so the server can start in a degraded
+    mode when a subsystem is unavailable. ``identity_resolver`` is what makes
+    the memory/usage RPCs tenant-safe: without it (and without the legacy
+    escape hatch) those RPCs refuse every call.
     """
 
     routing_agent: RoutingEngineRouteEvaluator | None = None
     security_agent: SecurityAgent | None = None
     usage_tracker: UsageTracker | None = None
     memory_manager: WaddleAIMemoryManager | None = None
+    identity_resolver: IdentityResolver | None = None
+    allow_unscoped_identity: bool = field(default_factory=_legacy_unscoped_identity_enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +229,76 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
     def __init__(self, components: ServerComponents) -> None:
         """Bind the servicer to its backing agent/memory components."""
         self._components = components
+
+    # ---- caller identity --------------------------------------------------
+
+    def _verified_identity(self, context: grpc.ServicerContext) -> CallerIdentity | None:
+        """Verify the per-caller credential in call metadata, when one is sent.
+
+        Returns ``None`` when the caller sent no credential at all; aborts the
+        RPC when a credential is present but cannot be verified. The request
+        body is never consulted -- identity comes from the credential only.
+        """
+        metadata = {str(key).lower(): value for key, value in (context.invocation_metadata() or ())}
+        credential = str(metadata.get(CALLER_CREDENTIAL_METADATA_KEY) or "").strip()
+        if not credential:
+            return None
+
+        resolver = self._components.identity_resolver
+        if resolver is None:
+            logger.error(
+                "gRPC caller credential supplied but no identity resolver is wired",
+                metadata_key=CALLER_CREDENTIAL_METADATA_KEY,
+            )
+            context.abort(
+                grpc.StatusCode.UNAUTHENTICATED,
+                "Caller credential verification is unavailable",
+            )
+            return None  # pragma: no cover -- context.abort() raises
+
+        try:
+            return resolver(credential)
+        except Exception as exc:
+            logger.warning("gRPC caller credential rejected", error=str(exc))
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid caller credential")
+            return None  # pragma: no cover -- context.abort() raises
+
+    def _required_identity(self, context: grpc.ServicerContext) -> CallerIdentity | None:
+        """Return the verified caller identity, or refuse the call outright.
+
+        Returns ``None`` only when the legacy escape hatch is enabled, in which
+        case the call proceeds unscoped and an ERROR is logged every time.
+        """
+        identity = self._verified_identity(context)
+        if identity is not None:
+            return identity
+
+        if self._components.allow_unscoped_identity:
+            logger.error(
+                "gRPC call served WITHOUT tenant isolation -- legacy escape hatch active; "
+                "unset the env var and forward a per-caller credential instead",
+                env_var=LEGACY_UNSCOPED_IDENTITY_ENV_VAR,
+                metadata_key=CALLER_CREDENTIAL_METADATA_KEY,
+            )
+            return None
+
+        context.abort(
+            grpc.StatusCode.PERMISSION_DENIED,
+            f"Per-caller credential required in '{CALLER_CREDENTIAL_METADATA_KEY}' metadata",
+        )
+        return None  # pragma: no cover -- context.abort() raises
+
+    def _memory_scope(self, request: Any, context: grpc.ServicerContext) -> tuple[int, int]:
+        """Resolve the ``(user_id, organization_id)`` this call is allowed to touch.
+
+        Both values come from the verified credential. The legacy escape hatch
+        is the only remaining path that reads ``request.user_id`` and pools
+        every tenant into organization 0.
+        """
+        identity = self._required_identity(context)
+        if identity is None:
+            return _safe_int(request.user_id, default=0), 0
+        return identity.user_id, identity.organization_id
 
     # ---- EvaluateRoute ----------------------------------------------------
 
@@ -221,6 +348,11 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         context: grpc.ServicerContext,
     ) -> waddleai_pb2.SecurityResponse:
         """Evaluate a raw command for security threats."""
+        # Advisory identity only (SecurityAgent uses user_id for audit logging,
+        # not as a data boundary), so an absent credential is not fatal here --
+        # but a body-supplied user_id is never honoured either way.
+        identity = self._verified_identity(context)
+
         agent = self._components.security_agent
         if agent is None:
             context.set_code(grpc.StatusCode.UNAVAILABLE)
@@ -230,12 +362,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         try:
             import asyncio
 
-            user_id: int | None = None
-            if request.user_id:
-                try:
-                    user_id = int(request.user_id)
-                except ValueError:
-                    user_id = None
+            user_id: int | None = identity.user_id if identity is not None else None
 
             decision = asyncio.run(
                 agent.evaluate(
@@ -267,6 +394,11 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         context: grpc.ServicerContext,
     ) -> waddleai_pb2.StoreTurnResponse:
         """Store a conversation turn in the memory subsystem."""
+        # Identity is resolved before the availability check so an
+        # unauthenticated caller learns nothing about server configuration,
+        # and outside the try/except so context.abort() is not swallowed.
+        user_id_int, organization_id = self._memory_scope(request, context)
+
         mgr = self._components.memory_manager
         if mgr is None:
             context.set_code(grpc.StatusCode.UNAVAILABLE)
@@ -276,7 +408,6 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         try:
             import asyncio
 
-            user_id_int = _safe_int(request.user_id, default=0)
             messages: list[dict[str, str]] = [
                 {"role": "user", "content": request.user_message},
             ]
@@ -284,13 +415,10 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
             metadata.setdefault("model", request.model)
             metadata.setdefault("provider", request.provider)
 
-            # TODO (Feature A): Derive organization_id from verified gRPC credential
-            # instead of hardcoding to 0. Currently bounded by GrpcAuthInterceptor
-            # which validates Bearer token; long-term fix is to extract org from token.
             success = asyncio.run(
                 mgr.add_conversation_turn(
                     user_id=user_id_int,
-                    organization_id=0,
+                    organization_id=organization_id,
                     messages=messages,
                     response=request.assistant_response,
                     session_id=request.session_id or None,
@@ -314,6 +442,8 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         context: grpc.ServicerContext,
     ) -> waddleai_pb2.GetContextResponse:
         """Retrieve conversation context for a session."""
+        user_id_int, organization_id = self._memory_scope(request, context)
+
         mgr = self._components.memory_manager
         if mgr is None:
             context.set_code(grpc.StatusCode.UNAVAILABLE)
@@ -323,13 +453,12 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         try:
             import asyncio
 
-            user_id_int = _safe_int(request.user_id, default=0)
             limit = request.limit if request.limit > 0 else 5
 
             conv_context = asyncio.run(
                 mgr.get_conversation_context(
                     user_id=user_id_int,
-                    organization_id=0,
+                    organization_id=organization_id,
                     current_messages=[],
                     session_id=request.session_id or None,
                     context_limit=limit,
@@ -357,6 +486,8 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         context: grpc.ServicerContext,
     ) -> waddleai_pb2.SearchMemoriesResponse:
         """Search memories by query text."""
+        user_id_int, organization_id = self._memory_scope(request, context)
+
         mgr = self._components.memory_manager
         if mgr is None:
             context.set_code(grpc.StatusCode.UNAVAILABLE)
@@ -366,7 +497,6 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         try:
             import asyncio
 
-            user_id_int = _safe_int(request.user_id, default=0)
             limit = request.limit if request.limit > 0 else 10
             threshold = request.threshold if request.threshold > 0.0 else 0.7
 
@@ -374,7 +504,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
                 mgr.memory_store.search_memories(
                     query=request.query,
                     user_id=user_id_int,
-                    organization_id=0,
+                    organization_id=organization_id,
                     limit=limit,
                     min_relevance=threshold,
                 )
@@ -398,6 +528,17 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
         context: grpc.ServicerContext,
     ) -> waddleai_pb2.UsageAck:
         """Record token usage for a completed request."""
+        identity = self._required_identity(context)
+        if identity is None:
+            # Legacy escape hatch only -- already logged at ERROR upstream.
+            report_user_id = request.user_id
+            report_api_key_id = request.api_key_id or None
+        else:
+            report_user_id = str(identity.user_id)
+            report_api_key_id = (
+                str(identity.api_key_id) if identity.api_key_id is not None else None
+            )
+
         tracker = self._components.usage_tracker
         if tracker is None:
             context.set_code(grpc.StatusCode.UNAVAILABLE)
@@ -412,12 +553,12 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
             import asyncio
 
             report = AgentUsageReport(
-                user_id=request.user_id,
+                user_id=report_user_id,
                 model=request.model,
                 input_tokens=request.input_tokens,
                 output_tokens=request.output_tokens,
                 total_tokens=request.total_tokens,
-                api_key_id=request.api_key_id or None,
+                api_key_id=report_api_key_id,
                 provider=request.provider or None,
                 latency_ms=float(request.latency_ms) if request.latency_ms else None,
                 request_id=request.request_id or None,
@@ -490,6 +631,14 @@ def start_grpc_server(
     bound_port = server.add_insecure_port(f"[::]:{port}")
     server.start()
 
+    if components.allow_unscoped_identity:
+        logger.error(
+            "gRPC server starting with the LEGACY UNSCOPED IDENTITY escape hatch enabled -- "
+            "memory/usage RPCs will trust request-body user_id and pool all tenants into "
+            "organization 0; this is a migration aid only",
+            env_var=LEGACY_UNSCOPED_IDENTITY_ENV_VAR,
+        )
+
     auth_status = "configured" if grpc_auth_token else "NOT CONFIGURED (all calls rejected)"
     logger.info(
         "gRPC server started",
@@ -500,6 +649,8 @@ def start_grpc_server(
         security_agent="ok" if components.security_agent else "unavailable",
         usage_tracker="ok" if components.usage_tracker else "unavailable",
         memory_manager="ok" if components.memory_manager else "unavailable",
+        identity_resolver="ok" if components.identity_resolver else "unavailable",
+        legacy_unscoped_identity=components.allow_unscoped_identity,
     )
 
     return server

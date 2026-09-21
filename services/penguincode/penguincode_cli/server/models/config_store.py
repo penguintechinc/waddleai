@@ -355,11 +355,11 @@ def _default_skills() -> list[SkillDef]:
         SkillDef("code-generation", "Scaffolding, boilerplate generation", "", ["read", "write", "edit", "bash"]),
         SkillDef("pair-programming", "Collaborative coding, explain-as-you-go", "", ["read"]),
         SkillDef("incident-response", "Production incident handling, postmortem", "", ["read", "bash"]),
-        # --- Tools & Environment ---
-        SkillDef("microk8s-setup", "Install and configure MicroK8s local Kubernetes cluster", "", ["read", "bash"]),
-        SkillDef("microk8s-images", "Push container images to MicroK8s local registry", "", ["read", "bash"]),
-        SkillDef("mem0", "Persistent cross-session memory management via mem0", "", ["read"]),
-        SkillDef("egpu-thunderbolt-fix", "Fix NVIDIA eGPU Thunderbolt connection issues", "", ["read", "bash"]),
+        # NOTE: microk8s-setup, microk8s-images, mem0 and egpu-thunderbolt-fix used to be
+        # listed here but have no SKILL.md under penguincode_cli/defaults/skills/, so
+        # seeding them wrote four rows the loader can never resolve. Every entry below
+        # must correspond to a discoverable built-in skill - tests/test_skill_system.py
+        # derives the expected set from that directory and fails if the two drift apart.
     ]
 
 

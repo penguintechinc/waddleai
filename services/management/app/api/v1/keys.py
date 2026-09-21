@@ -2,7 +2,8 @@
 
 import asyncio
 import secrets
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, fields
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -10,6 +11,8 @@ from passlib.hash import bcrypt
 from penguin_dal.db import DB
 from quart import g, jsonify, request
 from quart_schema import security_scheme, tag, validate_request, validate_response
+
+from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
@@ -29,6 +32,67 @@ def _db() -> DB:
     if db is None:
         raise RuntimeError("database not initialized")
     return db
+
+
+# Virtual-key columns whose value raises the holder's own ceiling or widens
+# what the key may reach. Editing one is a privilege decision, not an
+# ownership one: passing the ownership check below only proves the caller
+# owns the key, and a plain ``Role.USER`` owns their own keys. Without the
+# extra scope check a user could lift ``budget_limit_*``/``*_limit`` on
+# their own key, widen ``allowed_models``/``allowed_providers``, or clear
+# ``expires_at`` -- self-service privilege escalation.
+#
+# ``PUT /api/v1/quotas/key/<key_id>`` (quotas.py) writes a subset of these
+# same columns and imports both names from here rather than restating them,
+# so the two routes cannot drift apart again.
+PRIVILEGED_KEY_FIELDS: frozenset[str] = frozenset(
+    {
+        "budget_limit_daily",
+        "budget_limit_monthly",
+        "tpm_limit",
+        "rpm_limit",
+        "allowed_models",
+        "allowed_providers",
+        "expires_at",
+    }
+)
+
+
+def privileged_key_fields_denied(requested: Iterable[str]) -> list[str]:
+    """Return the privileged fields the current caller is not allowed to edit.
+
+    Reads the authoritative ``scope`` claim off ``g.user`` -- never the
+    ``role`` claim, per the house scope-only policy documented on
+    ``auth.require_scope``. Returns the sorted subset of ``requested`` that
+    needs ``Permission.QUOTA_UPDATE`` the caller does not hold; an empty
+    list means every requested field is permitted.
+    """
+    privileged = sorted(set(requested) & PRIVILEGED_KEY_FIELDS)
+    if not privileged:
+        return []
+    user = getattr(g, "user", None) or {}
+    if Permission.QUOTA_UPDATE.value in set(user.get("scope") or []):
+        return []
+    return privileged
+
+
+def privileged_fields_error(denied: list[str]) -> tuple[Any, int]:
+    """Build the 403 body returned when a caller edits a field it may not.
+
+    Named the denied fields explicitly so the caller learns the request was
+    refused outright -- the alternative (silently dropping the fields) would
+    report success for a write that never happened.
+    """
+    return (
+        jsonify(
+            {
+                "error": "Insufficient permissions",
+                "required_scope": Permission.QUOTA_UPDATE.value,
+                "denied_fields": denied,
+            }
+        ),
+        403,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -423,12 +487,21 @@ async def update_key(key_id, data: UpdateKeyRequest):
     if not key:
         return jsonify({"error": "Key not found"}), 404
 
-    # Permission check
+    # Ownership check -- proves the caller may touch this key at all.
     if user_role not in ["admin"]:
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
             return jsonify({"error": "Access denied"}), 403
+
+    # Privilege check -- owning the key is not enough to raise its own
+    # limits or widen its reach. Evaluated against the requested field names
+    # *before* any value is parsed, so an unprivileged caller can neither
+    # write a privileged column nor reach the `expires_at` parser below.
+    requested = {f.name for f in fields(data) if getattr(data, f.name) is not None}
+    denied = privileged_key_fields_denied(requested)
+    if denied:
+        return privileged_fields_error(denied)
 
     update_fields: dict[str, Any] = {}
 
