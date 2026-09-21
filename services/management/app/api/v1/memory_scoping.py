@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RELEVANCE_CUTOFF = 0.7
 _DEFAULT_TOP_K = 3
 _PROMOTABLE_SCOPES = ("repo", "project", "org")
+_MEMORY_SCOPING_ADMIN = Permission.MEMORY_SCOPING_ADMIN.value
 
 
 def _db() -> DB:
@@ -76,11 +77,52 @@ def _row_to_scoped_record(row: Any) -> ScopedRecord:
     )
 
 
+def _resolve_readable_org(requested_org_id: int | None) -> tuple[int | None, tuple | None]:
+    """Resolve which org a memory-scoping read may target, or refuse the read.
+
+    Returns ``(org_id, None)`` when the read is allowed, or
+    ``(None, error_response)`` when it is not.
+
+    regression: audit-2026-09-14 -- the caller-supplied ``organization_id``
+    query parameter used to win unconditionally, so any authenticated user
+    could read another org's memory-injection settings with
+    ``?organization_id=<other>``. A tenant id is never taken from a request
+    parameter: the caller's own org (from the validated token) is
+    authoritative, and only a caller holding ``memory_scoping:admin`` --
+    the same scope the sibling write route requires -- may name a different
+    one. An explicit mismatch is refused with 403 rather than silently
+    substituted, so the parameter cannot be used to probe other orgs.
+    """
+    caller_org_id = g.user.get("organization_id")
+    if requested_org_id is None or requested_org_id == caller_org_id:
+        return caller_org_id, None
+    if _MEMORY_SCOPING_ADMIN in set(g.user.get("scope") or ()):
+        return requested_org_id, None
+    return None, (
+        jsonify({"error": "Cannot read another organization's memory-scoping config"}),
+        403,
+    )
+
+
+def _belongs_to_org(row: Any, org_id: Any) -> bool:
+    """Re-check in Python that a fetched memory row really is this tenant's.
+
+    Deliberately redundant with the ``organization_id`` term already in each
+    route's select: that query is the primary control, this is the guard
+    that keeps a cross-tenant row from being acted on if the query is ever
+    widened or reordered. Same defence-in-depth rationale as
+    cache_configs._row_visible_to (audit-2026-09-14).
+    """
+    return org_id is not None and getattr(row, "organization_id", None) == org_id
+
+
 @api_v1_bp.route("/memory-scoping", methods=["GET"])
 @require_auth
 async def get_memory_config_v2():
     """§9.4 seeded conversation-memory defaults (0.7 relevance cutoff, top-3 injection)."""
-    org_id = request.args.get("organization_id", type=int) or g.user.get("organization_id")
+    org_id, denied = _resolve_readable_org(request.args.get("organization_id", type=int))
+    if denied is not None:
+        return denied
 
     def _fetch() -> Any:
         conn = _db()
@@ -179,7 +221,7 @@ async def memory_promote(item_id: int):
         return conn(query).select().first()
 
     row = await asyncio.to_thread(_fetch)
-    if row is None:
+    if row is None or not _belongs_to_org(row, org_id):
         return jsonify({"error": "not found"}), 404
 
     if row.author_user_id != user_id and role != "admin":
@@ -236,7 +278,7 @@ async def memory_correct(item_id: int):
         return conn(query).select().first()
 
     row = await asyncio.to_thread(_fetch)
-    if row is None:
+    if row is None or not _belongs_to_org(row, org_id):
         return jsonify({"error": "not found"}), 404
 
     if row.author_user_id != user_id and role != "admin":
@@ -331,7 +373,7 @@ async def memory_dispute(item_id: int):
         mem = conn.memory_embeddings
         query = (mem.id == item_id) & (mem.organization_id == org_id)
         existing = conn(query).select().first()
-        if existing is None:
+        if existing is None or not _belongs_to_org(existing, org_id):
             return False
         provenance = dict(getattr(existing, "provenance", None) or {})
         provenance["disputed_by"] = user_id
