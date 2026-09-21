@@ -496,19 +496,26 @@ def _throttled_response(decision: ThrottleDecision) -> Response:
 @validate_response(LoginResponse, 200)
 @validate_request(LoginRequest)
 async def login(data: LoginRequest):
-    """Authenticate a user and issue a bearer token.
+    """Authenticate a user and issue a bearer access token.
 
-    Hardened for audit-2026-09-14. Two properties are load-bearing and must
-    survive any future edit:
-
-    1. Every failure mode -- unknown user, disabled account, wrong password,
-       malformed stored hash -- returns the same status and the same body,
-       and performs the same bcrypt work before deciding. Short-circuiting
-       any of them re-opens user enumeration by response *or* by timing.
-    2. Every failure increments a per-account throttle counter, including
-       failures for usernames that do not exist. Counting only real accounts
-       would make "throttled vs not throttled" its own enumeration oracle.
+    Repeated failed attempts against the same account are rate limited and
+    answered with 429 and a Retry-After header.
     """
+    # NOTE: this docstring is published verbatim in the UNAUTHENTICATED
+    # OpenAPI document (build_public_schema copies the login path item, and
+    # quart-schema derives `description` from the docstring), so it must not
+    # describe the defences below. Keep the rationale in comments.
+    #
+    # Hardened for audit-2026-09-14. Two properties are load-bearing and must
+    # survive any future edit:
+    #
+    # 1. Every failure mode -- unknown user, disabled account, wrong password,
+    #    malformed stored hash -- returns the same status and the same body,
+    #    and performs the same bcrypt work before deciding. Short-circuiting
+    #    any of them re-opens user enumeration by response *or* by timing.
+    # 2. Every failure increments a per-account throttle counter, including
+    #    failures for usernames that do not exist. Counting only real accounts
+    #    would make "throttled vs not throttled" its own enumeration oracle.
     username = data.username
     password = data.password
 
@@ -597,12 +604,13 @@ async def login(data: LoginRequest):
 async def logout():
     """Revoke the caller's bearer token server-side.
 
-    The token's `jti` is added to a denylist that `require_auth` consults on
-    every subsequent request, with the entry expiring at the token's own
-    `exp` so the store self-cleans. Previously this endpoint reported success
-    while doing nothing, leaving a stolen token valid for its full lifetime
-    (audit-2026-09-14).
+    The token is rejected on every subsequent request from here on, until the
+    point it would have expired on its own.
     """
+    # The token's `jti` goes on a denylist that `require_auth` consults on
+    # every request, with the entry expiring at the token's own `exp` so the
+    # store self-cleans. Before audit-2026-09-14 this endpoint reported
+    # success while doing nothing at all.
     jti = g.user.get("jti")
     exp = g.user.get("exp")
 

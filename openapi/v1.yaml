@@ -596,7 +596,11 @@ paths:
       - Auth
   /api/v1/auth/login:
     post:
-      description: ''
+      description: '
+
+        Repeated failed attempts against the same account are rate limited and
+
+        answered with 429 and a Retry-After header.'
       operationId: post_login
       parameters: []
       requestBody:
@@ -645,12 +649,16 @@ paths:
                 title: LoginResponse
                 type: object
           description: Response body for a successful login.
-      summary: User login endpoint.
+      summary: Authenticate a user and issue a bearer access token.
       tags:
       - Auth
   /api/v1/auth/logout:
     post:
-      description: ''
+      description: '
+
+        The token is rejected on every subsequent request from here on, until the
+
+        point it would have expired on its own.'
       operationId: post_logout
       parameters: []
       responses:
@@ -671,7 +679,7 @@ paths:
           description: 'Generic `{"message": str}` envelope used by several auth endpoints.'
       security:
       - bearerAuth: []
-      summary: User logout endpoint.
+      summary: Revoke the caller's bearer token server-side.
       tags:
       - Auth
   /api/v1/auth/me:
