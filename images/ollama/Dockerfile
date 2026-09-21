@@ -61,6 +61,19 @@ FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3
 # needed), so this pins an explicit upgrade at build time rather than
 # ignoring the finding. Package list matches exactly what Trivy reported
 # against the bare base image.
+#
+# libpcre2-8-0 is likewise already in debian:trixie-slim's base rootfs (pulled
+# in by grep/libselinux), not a new dependency. At the version this base digest
+# ships (10.46-1~deb13u1) it carries CVE-2026-86145/-89157/-89161 (pcre2
+# out-of-bounds write / memory corruption, Trivy: HIGH x3, status "fixed").
+# That is Trivy DB drift, not a regression from any change here -- the
+# identical Dockerfile scanned green on 2026-09-11 and red on 2026-09-21; the
+# CVEs were published in between. A patched 10.46-1~deb13u2 is already the apt
+# Candidate on trixie/main against this exact base digest (confirmed via
+# `apt-cache policy libpcre2-8-0`), so it gets pinned here rather than
+# suppressed -- same treatment as the util-linux family above, and per
+# .trivyignore's stated policy that suppressions are only for no-fix findings
+# awaiting a vendor patch.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates=20250419 \
         libvulkan1=1.4.309.0-1 \
@@ -76,6 +89,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         login=1:4.16.0-2+really2.41.5-0+deb13u1 \
         mount=2.41.5-0+deb13u1 \
         util-linux=2.41.5-0+deb13u1 \
+        libpcre2-8-0=10.46-1~deb13u2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user, UID/GID 1000 (regular range, not --system — 1000 is above
