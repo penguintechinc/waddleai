@@ -340,10 +340,16 @@ class TestSetKeyQuota:
         )
         assert resp.status_code == 403
 
-    async def test_set_key_quota_regular_user_own_key(
+    async def test_set_key_quota_regular_user_own_key_forbidden(
         self, client, app_mock_db: MagicMock, user_auth_headers: dict
     ) -> None:
-        """Regular user can set quota for own key."""
+        """Regular user cannot raise the rate limit on their OWN key.
+
+        regression: audit-2026-09-14 -- this test previously asserted 200,
+        encoding the privilege-escalation finding as intended behaviour.
+        Every column this route writes is privileged; owning the key is not
+        enough. See keys.PRIVILEGED_KEY_FIELDS.
+        """
         # user_auth_headers has user_id=2 (from conftest)
         key = make_mock_key(key_id=10, user_id=2, org_id=1)
         app_mock_db.return_value.select.return_value.first.return_value = key
@@ -353,7 +359,8 @@ class TestSetKeyQuota:
             headers=user_auth_headers,
             json={"rpm_limit": 90},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
 
     async def test_set_key_quota_regular_user_other_key_forbidden(
         self, client, app_mock_db: MagicMock, user_auth_headers: dict
@@ -795,3 +802,238 @@ class TestGetQuotaStatus:
         """Missing auth returns 401."""
         resp = await client.get("/api/v1/quotas/status/1?type=key")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/v1/quotas/key/<key_id> -- privilege split + request validation
+#
+# regression: audit-2026-09-14
+#
+# HIGH: the route carried only @require_auth and an ownership-only in-handler
+# check, so a Role.USER could raise budget_limit_daily/monthly and
+# tpm_limit/rpm_limit on their own key -- self-service privilege escalation.
+# Role.USER does not hold Permission.QUOTA_UPDATE (shared/auth/rbac.py); the
+# sibling PUT /quotas/user/<id> already required it, this route never checked.
+#
+# MEDIUM (same audit): the body was read with request.get_json() and written
+# straight to the DB with no type or bounds checking.
+# ---------------------------------------------------------------------------
+
+
+class TestSetKeyQuotaPrivilegeSplit:
+    """Privilege gating for PUT /api/v1/quotas/key/<key_id>."""
+
+    async def test_user_cannot_set_budget_limit_daily_on_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """A plain user raising their own daily budget is refused. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=user_auth_headers,
+            json={"budget_limit_daily": 999999.0},
+        )
+        assert resp.status_code == 403
+        body = await resp.get_json()
+        assert body["required_scope"] == "quota:update"
+        assert body["denied_fields"] == ["budget_limit_daily"]
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_user_denied_fields_lists_every_privileged_field(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """The 403 names all refused fields -- none are silently dropped.
+
+        regression: audit-2026-09-14 -- dropping the fields and returning
+        200 would be a silent no-op, the second failure mode the fix had to
+        avoid.
+        """
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=user_auth_headers,
+            json={
+                "budget_limit_daily": 1.0,
+                "budget_limit_monthly": 2.0,
+                "tpm_limit": 3,
+                "rpm_limit": 4,
+            },
+        )
+        assert resp.status_code == 403
+        body = await resp.get_json()
+        assert body["denied_fields"] == [
+            "budget_limit_daily",
+            "budget_limit_monthly",
+            "rpm_limit",
+            "tpm_limit",
+        ]
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_admin_can_set_budget(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin holds quota:update, so the budget write succeeds. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10, name="AdminKey")
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"budget_limit_daily": 500.0},
+        )
+        assert resp.status_code == 200
+        app_mock_db.return_value.update.assert_called_once_with(budget_limit_daily=500.0)
+
+    async def test_resource_manager_can_set_budget_in_own_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager holds quota:update for its own org -- not over-restricted.
+
+        regression: audit-2026-09-14.
+        """
+        key = make_mock_key(key_id=10, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=rm_auth_headers,
+            json={"budget_limit_monthly": 4200.0},
+        )
+        assert resp.status_code == 200
+
+    async def test_resource_manager_cannot_set_budget_out_of_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """Org scoping still refuses a resource_manager on another org's key.
+
+        regression: audit-2026-09-14.
+        """
+        key = make_mock_key(key_id=10, org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=rm_auth_headers,
+            json={"budget_limit_daily": 100.0},
+        )
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
+
+
+class TestSetKeyQuotaRequestValidation:
+    """Type and bounds validation for PUT /api/v1/quotas/key/<key_id>.
+
+    regression: audit-2026-09-14 -- values previously went from raw JSON
+    into the DB unchecked.
+    """
+
+    async def test_non_numeric_budget_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A string budget is refused by the schema, not persisted."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"budget_limit_daily": "not-a-number"},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_non_integer_tpm_limit_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A list where an int is expected is refused, not persisted."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"tpm_limit": ["nope"]},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_negative_budget_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A negative budget is out of bounds, not persisted."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"budget_limit_daily": -5.0},
+        )
+        assert resp.status_code == 400
+        body = await resp.get_json()
+        assert "budget_limit_daily" in body["error"]
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_negative_rpm_limit_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A negative rate limit is out of bounds, not persisted."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"rpm_limit": -1},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_absurd_tpm_limit_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A rate limit above the sanity ceiling is refused, not persisted."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"tpm_limit": 99_999_999_999},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_absurd_budget_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A budget above the sanity ceiling is refused, not persisted."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"budget_limit_monthly": 1e12},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_valid_bounds_accepted(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A well-formed in-range body still writes -- validation is not over-tight."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/quotas/key/10",
+            headers=auth_headers,
+            json={"budget_limit_daily": 0.0, "tpm_limit": 0},
+        )
+        assert resp.status_code == 200
+        app_mock_db.return_value.update.assert_called_once_with(budget_limit_daily=0.0, tpm_limit=0)
