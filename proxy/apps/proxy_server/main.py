@@ -28,6 +28,7 @@ from penguin_aaa.middleware import AuditMiddleware, OIDCAuthMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST
 from quart import Quart, Response, abort, jsonify, request
 
+from shared.agents import SecurityAgent, UsageTracker
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -60,7 +61,7 @@ from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
 
-from .grpc_server import ServerComponents, run_grpc_in_thread
+from .grpc_server import CallerIdentity, ServerComponents, run_grpc_in_thread
 from .mcp_mount import MCPMount
 from .mem0_api import mem0_bp, set_memory_manager
 from .pipeline import (
@@ -251,6 +252,59 @@ def _merge_waddleai_usage(cache_meta: dict | None, memory_meta: dict | None) -> 
         else:
             merged[key] = value
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Credential verification (shared by the REST surface and the gRPC surface)
+# ---------------------------------------------------------------------------
+
+
+def authenticate_credential(credential: str) -> UserContext:
+    """Verify a raw WaddleAI credential and return its authenticated context.
+
+    The single verification path for every surface: ``get_current_user`` calls
+    it for HTTP ``Authorization`` headers and ``grpc_identity_resolver`` calls
+    it for the gRPC per-caller credential, so neither can drift from the other.
+
+    Args:
+        credential: A raw ``wa-``/``sk-`` API key, or ``Bearer <jwt>``.
+
+    Returns:
+        The :class:`UserContext` the credential belongs to.
+
+    Raises:
+        AuthenticationError: The credential is malformed, unknown, or expired.
+
+    """
+    if credential.startswith("sk-") or credential.startswith("wa-"):
+        # Called synchronously: authenticate_api_key uses the shared PyDAL DAL,
+        # whose connections are thread-local AND it performs a write
+        # (last_used); offloading to asyncio.to_thread would open a second
+        # thread-local SQLite connection whose uncommitted write locks the
+        # file. A true async offload needs a dedicated per-worker DAL
+        # (follow-up); the brief cost of a bcrypt+query matches the original
+        # proven behavior.
+        return proxy_server.rbac.authenticate_api_key(credential)
+    if credential.startswith("Bearer "):
+        # RS256 JWT via penguin-aaa.
+        return verify_token(credential[7:], proxy_server.oidc_provider)
+    raise AuthenticationError("Invalid authorization format")
+
+
+def grpc_identity_resolver(credential: str) -> CallerIdentity:
+    """Resolve a gRPC per-caller credential to a verified :class:`CallerIdentity`.
+
+    Wired into :class:`ServerComponents` so the memory/usage RPCs derive
+    ``user_id``/``organization_id`` from a proven credential instead of from
+    attacker-controlled request-body fields.
+    """
+    user_context = authenticate_credential(credential)
+    return CallerIdentity(
+        user_id=user_context.user_id,
+        organization_id=user_context.organization_id,
+        api_key_id=user_context.api_key_id,
+        username=user_context.username,
+    )
 
 
 class ProxyServer:
@@ -541,9 +595,13 @@ class ProxyServer:
                     if self.routing_engine is not None
                     else None
                 ),
-                security_agent=getattr(self.security_scanner, "security_agent", None),
-                usage_tracker=getattr(self.token_manager, "usage_tracker", None),
+                # Real components, not getattr(..., None) probes for attributes
+                # that nothing ever assigns -- those made EvaluateSecurity and
+                # ReportUsage return UNAVAILABLE on every call, permanently.
+                security_agent=self._build_security_agent(embedding_manager),
+                usage_tracker=UsageTracker(self.db, license_client=_get_license_client()),
                 memory_manager=self.memory_manager,
+                identity_resolver=grpc_identity_resolver,
             )
             self.grpc_server = run_grpc_in_thread(
                 port=grpc_port,
@@ -553,6 +611,22 @@ class ProxyServer:
             logger.info("gRPC server started", port=grpc_port)
 
         logger.info("Proxy server initialized successfully")
+
+    def _build_security_agent(self, embedding_manager: Any) -> SecurityAgent | None:
+        """Construct the gRPC ``EvaluateSecurity`` backend, or None if it cannot start.
+
+        Failure is logged at ERROR rather than swallowed: the RPC degrading to
+        UNAVAILABLE must be a visible, explained event, never the silent
+        default it used to be.
+        """
+        try:
+            return SecurityAgent(self.db, embedding_manager)
+        except Exception as exc:
+            logger.error(
+                "SecurityAgent unavailable -- gRPC EvaluateSecurity will return UNAVAILABLE",
+                error=str(exc),
+            )
+            return None
 
     def _seed_contract_test_data(self) -> None:
         """Seed one deterministic org/user/api_key and mint a real Bearer JWT.
@@ -1135,24 +1209,9 @@ async def get_current_user():
         abort(401, description="Authorization header required")
 
     try:
-        if authorization.startswith("sk-") or authorization.startswith("wa-"):
-            # --- path 2: raw API key (penguin-aaa middleware does not intercept these) ---
-            # Called synchronously on the event-loop thread. authenticate_api_key
-            # uses the shared PyDAL DAL, whose connections are thread-local AND it
-            # performs a write (last_used); offloading to asyncio.to_thread would
-            # open a second thread-local SQLite connection whose uncommitted write
-            # locks the file. A true async offload needs a dedicated per-worker DAL
-            # (follow-up); the brief cost of a bcrypt+query on the loop matches the
-            # original proven behavior.
-            user_context = proxy_server.rbac.authenticate_api_key(authorization)
-        elif authorization.startswith("Bearer "):
-            # --- path 3: RS256 JWT via penguin-aaa ---
-            token = authorization[7:]  # Local var, not from request
-            user_context = verify_token(token, proxy_server.oidc_provider)
-        else:
-            abort(401, description="Invalid authorization format")
-
-        return user_context
+        # --- paths 2 and 3: raw API key / Bearer JWT, via the one shared verifier
+        #     that the gRPC surface also uses (authenticate_credential).
+        return authenticate_credential(authorization)
     except AuthenticationError as e:
         abort(401, description=str(e))
     except Exception as e:
