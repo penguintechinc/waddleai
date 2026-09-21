@@ -14,6 +14,8 @@ own top-level path.
 
 import asyncio
 import logging
+import uuid
+from typing import Any
 
 from quart import jsonify, request
 
@@ -24,6 +26,21 @@ from . import api_v1_bp
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
+
+
+def _internal_error(operation: str, exc: Exception) -> tuple[Any, int]:
+    """Log an unexpected handler failure server-side and return a safe 500 body.
+
+    regression: audit-2026-09-14 -- every handler in this module used to
+    return the raw exception text straight to the caller, leaking SQL
+    fragments, table names and filesystem paths. The exception (with its
+    traceback) now goes to the log at ERROR and the client gets a fixed
+    message plus an ``error_id`` correlating the two, so support can still
+    trace a reported failure without the response carrying internal detail.
+    """
+    error_id = uuid.uuid4().hex
+    logger.error("%s failed [error_id=%s]", operation, error_id, exc_info=exc)
+    return jsonify({"error": "Internal server error", "error_id": error_id}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +91,7 @@ async def get_memory_config():
             200,
         )
     except Exception as exc:
-        logger.error("get_memory_config error: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return _internal_error("get_memory_config", exc)
 
 
 @api_v1_bp.route("/memory-config", methods=["POST"])
@@ -122,8 +138,7 @@ async def set_memory_config():
             return jsonify({"status": "updated", "organization_id": org_id}), 200
         return jsonify({"status": "created", "organization_id": org_id}), 201
     except Exception as exc:
-        logger.error("set_memory_config error: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return _internal_error("set_memory_config", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +191,7 @@ async def get_rag_config():
             200,
         )
     except Exception as exc:
-        logger.error("get_rag_config error: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return _internal_error("get_rag_config", exc)
 
 
 @api_v1_bp.route("/rag-config", methods=["POST"])
@@ -223,8 +237,7 @@ async def set_rag_config():
             return jsonify({"status": "updated", "organization_id": org_id}), 200
         return jsonify({"status": "created", "organization_id": org_id}), 201
     except Exception as exc:
-        logger.error("set_rag_config error: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return _internal_error("set_rag_config", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -278,8 +291,7 @@ async def get_embedding_config():
             200,
         )
     except Exception as exc:
-        logger.error("get_embedding_config error: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return _internal_error("get_embedding_config", exc)
 
 
 @api_v1_bp.route("/embedding-config", methods=["POST"])
@@ -330,5 +342,4 @@ async def set_embedding_config():
             return jsonify({"status": "updated", "backend": backend}), 200
         return jsonify({"status": "created", "backend": backend}), 201
     except Exception as exc:
-        logger.error("set_embedding_config error: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return _internal_error("set_embedding_config", exc)
