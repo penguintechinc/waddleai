@@ -30,8 +30,10 @@ if PROXY_SERVER_DIR not in sys.path:
     sys.path.insert(0, PROXY_SERVER_DIR)
 
 from proxy.apps.proxy_server.grpc_server import (  # noqa: E402
+    CALLER_CREDENTIAL_METADATA_KEY,
     SUPPORTED_API_VERSIONS,
     ApiVersionRouter,
+    CallerIdentity,
     GrpcAuthInterceptor,
     ServerComponents,
     WaddleAIServiceServicer,
@@ -50,6 +52,34 @@ from shared.utils.memory_integration import (  # noqa: E402
     MemoryEntry,
     WaddleAIMemoryManager,
 )
+
+# ---------------------------------------------------------------------------
+# Verified-caller identity fixtures
+# ---------------------------------------------------------------------------
+
+#: Credential the default FakeServicerContext presents in call metadata.
+TEST_CREDENTIAL = "wa-test-credential"
+
+#: Identity the fake resolver derives from TEST_CREDENTIAL. Deliberately
+#: different from every user_id/organization_id the request bodies below
+#: carry, so any test that accidentally trusts the body fails loudly.
+TEST_IDENTITY = CallerIdentity(
+    user_id=7001, organization_id=4200, api_key_id=555, username="verified-caller"
+)
+
+
+def fake_identity_resolver(credential: str) -> CallerIdentity:
+    """Resolve TEST_CREDENTIAL to TEST_IDENTITY; reject anything else."""
+    if credential != TEST_CREDENTIAL:
+        raise ValueError(f"unknown credential: {credential}")
+    return TEST_IDENTITY
+
+
+def _components(**kwargs: Any) -> ServerComponents:
+    """Build ServerComponents with the fake identity resolver wired by default."""
+    kwargs.setdefault("identity_resolver", fake_identity_resolver)
+    return ServerComponents(**kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Hand-written fakes (no spec-less MagicMock)
@@ -75,12 +105,24 @@ class AbortedError(Exception):
 
 
 class FakeServicerContext:
-    """Hand-written stand-in for grpc.ServicerContext (spec limited to used methods)."""
+    """Hand-written stand-in for grpc.ServicerContext (spec limited to used methods).
 
-    def __init__(self) -> None:
-        """Start with no status set."""
+    Defaults to carrying a per-caller credential in call metadata, matching a
+    correctly-configured AILB; pass ``metadata=[]`` to model a caller that
+    sends none.
+    """
+
+    def __init__(self, metadata: list[tuple[str, str]] | None = None) -> None:
+        """Start with no status set and the given (default: valid) call metadata."""
         self.code: grpc.StatusCode | None = None
         self.details: str | None = None
+        self._metadata: list[tuple[str, str]] = (
+            [(CALLER_CREDENTIAL_METADATA_KEY, TEST_CREDENTIAL)] if metadata is None else metadata
+        )
+
+    def invocation_metadata(self) -> list[tuple[str, str]]:
+        """Return the call metadata, as grpc.ServicerContext does."""
+        return self._metadata
 
     def set_code(self, code: grpc.StatusCode) -> None:
         """Record the status code the servicer set."""
@@ -213,7 +255,7 @@ class FakeMemoryManager:
 
 # ServerComponents' fields are typed against the concrete production classes
 # (no Protocol exists to type these hand-written fakes against structurally),
-# so each fake is cast at the ServerComponents() call boundary below.
+# so each fake is cast at the _components() call boundary below.
 
 
 def _as_routing_agent(fake: FakeRoutingAgent) -> RoutingEngineRouteEvaluator:
@@ -354,7 +396,7 @@ class TestEvaluateRoute:
 
     def test_unavailable_when_routing_agent_not_configured(self) -> None:
         """No routing_agent configured -> UNAVAILABLE and an empty response."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
 
         response = servicer.EvaluateRoute(
@@ -375,7 +417,7 @@ class TestEvaluateRoute:
                 reasoning="complex prompt",
             )
         )
-        servicer = WaddleAIServiceServicer(ServerComponents(routing_agent=_as_routing_agent(agent)))
+        servicer = WaddleAIServiceServicer(_components(routing_agent=_as_routing_agent(agent)))
         ctx = FakeServicerContext()
         request = waddleai_pb2.RouteRequest(
             api_version="v1", prompt="explain quantum computing", tool_type="general"
@@ -391,7 +433,7 @@ class TestEvaluateRoute:
     def test_internal_error_sets_status_and_empty_response(self) -> None:
         """Agent exception -> INTERNAL status and an empty RouteResponse."""
         agent = FakeRoutingAgent(exc=RuntimeError("engine down"))
-        servicer = WaddleAIServiceServicer(ServerComponents(routing_agent=_as_routing_agent(agent)))
+        servicer = WaddleAIServiceServicer(_components(routing_agent=_as_routing_agent(agent)))
         ctx = FakeServicerContext()
 
         response = servicer.EvaluateRoute(
@@ -414,7 +456,7 @@ class TestEvaluateSecurity:
 
     def test_unavailable_when_security_agent_not_configured(self) -> None:
         """No security_agent configured -> UNAVAILABLE and an empty response."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
 
         response = servicer.EvaluateSecurity(
@@ -436,9 +478,7 @@ class TestEvaluateSecurity:
                 matched_patterns=["ignore previous instructions"],
             )
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(security_agent=_as_security_agent(agent))
-        )
+        servicer = WaddleAIServiceServicer(_components(security_agent=_as_security_agent(agent)))
         ctx = FakeServicerContext()
         request = waddleai_pb2.SecurityRequest(
             api_version="v1", raw_command="rm -rf /", tool_type="bash"
@@ -463,9 +503,7 @@ class TestEvaluateSecurity:
                 matched_patterns=[],
             )
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(security_agent=_as_security_agent(agent))
-        )
+        servicer = WaddleAIServiceServicer(_components(security_agent=_as_security_agent(agent)))
         ctx = FakeServicerContext()
 
         response = servicer.EvaluateSecurity(
@@ -474,8 +512,8 @@ class TestEvaluateSecurity:
 
         assert response.threat_type == ""
 
-    def test_valid_numeric_user_id_is_parsed(self) -> None:
-        """Numeric string user_id is converted to int before being passed to the agent."""
+    def test_user_id_comes_from_the_verified_credential(self) -> None:
+        """user_id handed to the agent is the credential's, not the request body's."""
         agent = FakeSecurityAgent(
             result=SecurityDecision(
                 safe=True,
@@ -486,19 +524,17 @@ class TestEvaluateSecurity:
                 matched_patterns=[],
             )
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(security_agent=_as_security_agent(agent))
-        )
+        servicer = WaddleAIServiceServicer(_components(security_agent=_as_security_agent(agent)))
         ctx = FakeServicerContext()
 
         servicer.EvaluateSecurity(
             waddleai_pb2.SecurityRequest(api_version="v1", raw_command="cmd", user_id="42"), ctx
         )
 
-        assert agent.calls[0]["user_id"] == 42
+        assert agent.calls[0]["user_id"] == TEST_IDENTITY.user_id
 
-    def test_non_numeric_user_id_falls_back_to_none(self) -> None:
-        """Non-numeric user_id string -> ValueError caught, user_id passed as None."""
+    def test_user_id_is_none_when_no_credential_is_presented(self) -> None:
+        """Without a credential the body's user_id is dropped, not parsed and trusted."""
         agent = FakeSecurityAgent(
             result=SecurityDecision(
                 safe=True,
@@ -509,13 +545,11 @@ class TestEvaluateSecurity:
                 matched_patterns=[],
             )
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(security_agent=_as_security_agent(agent))
-        )
-        ctx = FakeServicerContext()
+        servicer = WaddleAIServiceServicer(_components(security_agent=_as_security_agent(agent)))
+        ctx = FakeServicerContext(metadata=[])
 
         servicer.EvaluateSecurity(
-            waddleai_pb2.SecurityRequest(api_version="v1", raw_command="cmd", user_id="not-an-int"),
+            waddleai_pb2.SecurityRequest(api_version="v1", raw_command="cmd", user_id="42"),
             ctx,
         )
 
@@ -524,9 +558,7 @@ class TestEvaluateSecurity:
     def test_internal_error_sets_status_and_empty_response(self) -> None:
         """Agent exception -> INTERNAL status and an empty SecurityResponse."""
         agent = FakeSecurityAgent(exc=ValueError("scanner unavailable"))
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(security_agent=_as_security_agent(agent))
-        )
+        servicer = WaddleAIServiceServicer(_components(security_agent=_as_security_agent(agent)))
         ctx = FakeServicerContext()
 
         response = servicer.EvaluateSecurity(
@@ -549,7 +581,7 @@ class TestStoreTurn:
 
     def test_unavailable_when_memory_manager_not_configured(self) -> None:
         """No memory_manager configured -> UNAVAILABLE and success=False."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
 
         response = servicer.StoreTurn(
@@ -562,7 +594,7 @@ class TestStoreTurn:
     def test_persists_and_returns_ack(self) -> None:
         """Success path stores the turn and echoes success=True; defaults model/provider."""
         mgr = FakeMemoryManager(store_turn_result=True)
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
         request = waddleai_pb2.StoreTurnRequest(
             api_version="v1",
@@ -578,8 +610,8 @@ class TestStoreTurn:
 
         assert response.success is True
         call = mgr.store_turn_calls[0]
-        assert call["user_id"] == 7
-        assert call["organization_id"] == 0
+        assert call["user_id"] == TEST_IDENTITY.user_id
+        assert call["organization_id"] == TEST_IDENTITY.organization_id
         assert call["session_id"] == "sess-1"
         assert call["metadata"]["model"] == "gpt-4"
         assert call["metadata"]["provider"] == "openai"
@@ -587,7 +619,7 @@ class TestStoreTurn:
     def test_empty_session_id_becomes_none(self) -> None:
         """Empty session_id string is normalised to None before delegating."""
         mgr = FakeMemoryManager(store_turn_result=True)
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         servicer.StoreTurn(
@@ -599,7 +631,7 @@ class TestStoreTurn:
     def test_metadata_setdefault_preserves_explicit_model_key(self) -> None:
         """Explicit metadata['model'] is not overwritten by request.model (setdefault semantics)."""
         mgr = FakeMemoryManager(store_turn_result=True)
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
         request = waddleai_pb2.StoreTurnRequest(api_version="v1", user_message="hi", model="gpt-4")
         request.metadata["model"] = "already-set"
@@ -611,7 +643,7 @@ class TestStoreTurn:
     def test_manager_returns_false_is_forwarded(self) -> None:
         """Manager returning success=False (not an exception) is forwarded as-is."""
         mgr = FakeMemoryManager(store_turn_result=False)
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         response = servicer.StoreTurn(
@@ -624,7 +656,7 @@ class TestStoreTurn:
     def test_internal_error_sets_status_and_success_false(self) -> None:
         """Manager exception -> INTERNAL status and success=False."""
         mgr = FakeMemoryManager(store_turn_exc=RuntimeError("db unavailable"))
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         response = servicer.StoreTurn(
@@ -647,7 +679,7 @@ class TestGetContext:
 
     def test_unavailable_when_memory_manager_not_configured(self) -> None:
         """No memory_manager configured -> UNAVAILABLE and an empty response."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
 
         response = servicer.GetContext(
@@ -669,7 +701,7 @@ class TestGetContext:
                 conversation_summary=None,
             )
         )
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         response = servicer.GetContext(
@@ -690,7 +722,7 @@ class TestGetContext:
                 relevant_memories=[],
             )
         )
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         servicer.GetContext(waddleai_pb2.GetContextRequest(api_version="v1", limit=0), ctx)
@@ -708,7 +740,7 @@ class TestGetContext:
                 relevant_memories=[],
             )
         )
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         servicer.GetContext(waddleai_pb2.GetContextRequest(api_version="v1", limit=3), ctx)
@@ -718,7 +750,7 @@ class TestGetContext:
     def test_internal_error_sets_status_and_empty_response(self) -> None:
         """Manager exception -> INTERNAL status and an empty GetContextResponse."""
         mgr = FakeMemoryManager(context_exc=RuntimeError("vector store down"))
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         response = servicer.GetContext(waddleai_pb2.GetContextRequest(api_version="v1"), ctx)
@@ -739,7 +771,7 @@ class TestSearchMemories:
 
     def test_unavailable_when_memory_manager_not_configured(self) -> None:
         """No memory_manager configured -> UNAVAILABLE and an empty response."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
 
         response = servicer.SearchMemories(
@@ -763,7 +795,7 @@ class TestSearchMemories:
             relevance_score=0.88,
         )
         mgr = FakeMemoryManager(memory_store=FakeMemoryStore(results=[entry]))
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         response = servicer.SearchMemories(
@@ -783,7 +815,7 @@ class TestSearchMemories:
         """limit<=0 and threshold<=0.0 fall back to defaults (10, 0.7)."""
         store = FakeMemoryStore(results=[])
         mgr = FakeMemoryManager(memory_store=store)
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         servicer.SearchMemories(
@@ -797,7 +829,7 @@ class TestSearchMemories:
         """Positive limit/threshold values are forwarded unchanged."""
         store = FakeMemoryStore(results=[])
         mgr = FakeMemoryManager(memory_store=store)
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         servicer.SearchMemories(
@@ -814,7 +846,7 @@ class TestSearchMemories:
         """Store exception -> INTERNAL status and an empty SearchMemoriesResponse."""
         store = FakeMemoryStore(exc=RuntimeError("index corrupt"))
         mgr = FakeMemoryManager(memory_store=store)
-        servicer = WaddleAIServiceServicer(ServerComponents(memory_manager=_as_memory_manager(mgr)))
+        servicer = WaddleAIServiceServicer(_components(memory_manager=_as_memory_manager(mgr)))
         ctx = FakeServicerContext()
 
         response = servicer.SearchMemories(
@@ -837,7 +869,7 @@ class TestReportUsage:
 
     def test_unavailable_when_usage_tracker_not_configured(self) -> None:
         """No usage_tracker configured -> UNAVAILABLE and a rejected UsageAck."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
 
         response = servicer.ReportUsage(
@@ -853,9 +885,7 @@ class TestReportUsage:
         tracker = FakeUsageTracker(
             result=UsageAck(accepted=True, quota_exceeded=False, message="recorded")
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(usage_tracker=_as_usage_tracker(tracker))
-        )
+        servicer = WaddleAIServiceServicer(_components(usage_tracker=_as_usage_tracker(tracker)))
         ctx = FakeServicerContext()
         request = waddleai_pb2.UsageReport(
             api_version="v1",
@@ -877,7 +907,10 @@ class TestReportUsage:
         report = tracker.calls[0]
         assert report.input_tokens == 100
         assert report.total_tokens == 150
-        assert report.api_key_id == "key-1"
+        # Identity fields come from the verified credential; the body's
+        # user_id="u1"/api_key_id="key-1" are ignored.
+        assert report.user_id == str(TEST_IDENTITY.user_id)
+        assert report.api_key_id == str(TEST_IDENTITY.api_key_id)
         assert report.latency_ms == pytest.approx(250.0)
 
     def test_zero_latency_becomes_none(self) -> None:
@@ -885,9 +918,7 @@ class TestReportUsage:
         tracker = FakeUsageTracker(
             result=UsageAck(accepted=True, quota_exceeded=False, message="ok")
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(usage_tracker=_as_usage_tracker(tracker))
-        )
+        servicer = WaddleAIServiceServicer(_components(usage_tracker=_as_usage_tracker(tracker)))
         ctx = FakeServicerContext()
 
         servicer.ReportUsage(
@@ -897,19 +928,20 @@ class TestReportUsage:
         assert tracker.calls[0].latency_ms is None
 
     def test_empty_optional_fields_become_none(self) -> None:
-        """Empty api_key_id/provider/request_id strings are normalised to None."""
+        """Empty provider/request_id strings are normalised to None.
+
+        api_key_id is excluded: it is now sourced from the verified credential
+        rather than from the (empty) request body field.
+        """
         tracker = FakeUsageTracker(
             result=UsageAck(accepted=True, quota_exceeded=False, message="ok")
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(usage_tracker=_as_usage_tracker(tracker))
-        )
+        servicer = WaddleAIServiceServicer(_components(usage_tracker=_as_usage_tracker(tracker)))
         ctx = FakeServicerContext()
 
         servicer.ReportUsage(waddleai_pb2.UsageReport(api_version="v1", user_id="u1"), ctx)
 
         report = tracker.calls[0]
-        assert report.api_key_id is None
         assert report.provider is None
         assert report.request_id is None
 
@@ -918,9 +950,7 @@ class TestReportUsage:
         tracker = FakeUsageTracker(
             result=UsageAck(accepted=False, quota_exceeded=True, message="quota exceeded")
         )
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(usage_tracker=_as_usage_tracker(tracker))
-        )
+        servicer = WaddleAIServiceServicer(_components(usage_tracker=_as_usage_tracker(tracker)))
         ctx = FakeServicerContext()
 
         response = servicer.ReportUsage(
@@ -933,9 +963,7 @@ class TestReportUsage:
     def test_internal_error_sets_status_and_rejected_ack(self) -> None:
         """Tracker exception -> INTERNAL status and an ack embedding the error message."""
         tracker = FakeUsageTracker(exc=RuntimeError("quota service down"))
-        servicer = WaddleAIServiceServicer(
-            ServerComponents(usage_tracker=_as_usage_tracker(tracker))
-        )
+        servicer = WaddleAIServiceServicer(_components(usage_tracker=_as_usage_tracker(tracker)))
         ctx = FakeServicerContext()
 
         response = servicer.ReportUsage(
@@ -1085,7 +1113,7 @@ class TestServerLifecycle:
         """port=0 lets the OS assign a free port; the returned server is running and stoppable."""
         server = start_grpc_server(
             port=0,
-            server_components=ServerComponents(),
+            server_components=_components(),
             max_workers=2,
             grpc_auth_token="test-token",  # noqa: S106 -- fixed test value, not a real secret
         )
@@ -1112,7 +1140,7 @@ class TestServerLifecycle:
 
         server = run_grpc_in_thread(
             port=0,
-            components=ServerComponents(),
+            components=_components(),
             max_workers=2,
             grpc_auth_token="tok",  # noqa: S106 -- test value
         )
@@ -1156,7 +1184,7 @@ class TestApiVersionRouting:
         self, method_name: str, request_cls: type
     ) -> None:
         """Default (unset) api_version -> UNIMPLEMENTED naming the empty value."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
         method = getattr(servicer, method_name)
 
@@ -1172,7 +1200,7 @@ class TestApiVersionRouting:
         self, method_name: str, request_cls: type
     ) -> None:
         """An unrecognised api_version (e.g. 'v2') -> UNIMPLEMENTED naming the value."""
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
         method = getattr(servicer, method_name)
 
@@ -1191,7 +1219,7 @@ class TestApiVersionRouting:
         With no configured component, the version check never masks the
         real not-configured behaviour.
         """
-        servicer = WaddleAIServiceServicer(ServerComponents())
+        servicer = WaddleAIServiceServicer(_components())
         ctx = FakeServicerContext()
         method = getattr(servicer, method_name)
 

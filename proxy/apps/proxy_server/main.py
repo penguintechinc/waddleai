@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(__file__))
 
 import asyncio
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -28,6 +29,7 @@ from penguin_aaa.middleware import AuditMiddleware, OIDCAuthMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST
 from quart import Quart, Response, abort, jsonify, request
 
+from shared.agents import SecurityAgent, UsageTracker
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
@@ -60,7 +62,7 @@ from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
 
-from .grpc_server import ServerComponents, run_grpc_in_thread
+from .grpc_server import CallerIdentity, ServerComponents, run_grpc_in_thread
 from .mcp_mount import MCPMount
 from .mem0_api import mem0_bp, set_memory_manager
 from .pipeline import (
@@ -251,6 +253,59 @@ def _merge_waddleai_usage(cache_meta: dict | None, memory_meta: dict | None) -> 
         else:
             merged[key] = value
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Credential verification (shared by the REST surface and the gRPC surface)
+# ---------------------------------------------------------------------------
+
+
+def authenticate_credential(credential: str) -> UserContext:
+    """Verify a raw WaddleAI credential and return its authenticated context.
+
+    The single verification path for every surface: ``get_current_user`` calls
+    it for HTTP ``Authorization`` headers and ``grpc_identity_resolver`` calls
+    it for the gRPC per-caller credential, so neither can drift from the other.
+
+    Args:
+        credential: A raw ``wa-``/``sk-`` API key, or ``Bearer <jwt>``.
+
+    Returns:
+        The :class:`UserContext` the credential belongs to.
+
+    Raises:
+        AuthenticationError: The credential is malformed, unknown, or expired.
+
+    """
+    if credential.startswith("sk-") or credential.startswith("wa-"):
+        # Called synchronously: authenticate_api_key uses the shared PyDAL DAL,
+        # whose connections are thread-local AND it performs a write
+        # (last_used); offloading to asyncio.to_thread would open a second
+        # thread-local SQLite connection whose uncommitted write locks the
+        # file. A true async offload needs a dedicated per-worker DAL
+        # (follow-up); the brief cost of a bcrypt+query matches the original
+        # proven behavior.
+        return proxy_server.rbac.authenticate_api_key(credential)
+    if credential.startswith("Bearer "):
+        # RS256 JWT via penguin-aaa.
+        return verify_token(credential[7:], proxy_server.oidc_provider)
+    raise AuthenticationError("Invalid authorization format")
+
+
+def grpc_identity_resolver(credential: str) -> CallerIdentity:
+    """Resolve a gRPC per-caller credential to a verified :class:`CallerIdentity`.
+
+    Wired into :class:`ServerComponents` so the memory/usage RPCs derive
+    ``user_id``/``organization_id`` from a proven credential instead of from
+    attacker-controlled request-body fields.
+    """
+    user_context = authenticate_credential(credential)
+    return CallerIdentity(
+        user_id=user_context.user_id,
+        organization_id=user_context.organization_id,
+        api_key_id=user_context.api_key_id,
+        username=user_context.username,
+    )
 
 
 class ProxyServer:
@@ -541,9 +596,13 @@ class ProxyServer:
                     if self.routing_engine is not None
                     else None
                 ),
-                security_agent=getattr(self.security_scanner, "security_agent", None),
-                usage_tracker=getattr(self.token_manager, "usage_tracker", None),
+                # Real components, not getattr(..., None) probes for attributes
+                # that nothing ever assigns -- those made EvaluateSecurity and
+                # ReportUsage return UNAVAILABLE on every call, permanently.
+                security_agent=self._build_security_agent(embedding_manager),
+                usage_tracker=UsageTracker(self.db, license_client=_get_license_client()),
                 memory_manager=self.memory_manager,
+                identity_resolver=grpc_identity_resolver,
             )
             self.grpc_server = run_grpc_in_thread(
                 port=grpc_port,
@@ -553,6 +612,22 @@ class ProxyServer:
             logger.info("gRPC server started", port=grpc_port)
 
         logger.info("Proxy server initialized successfully")
+
+    def _build_security_agent(self, embedding_manager: Any) -> SecurityAgent | None:
+        """Construct the gRPC ``EvaluateSecurity`` backend, or None if it cannot start.
+
+        Failure is logged at ERROR rather than swallowed: the RPC degrading to
+        UNAVAILABLE must be a visible, explained event, never the silent
+        default it used to be.
+        """
+        try:
+            return SecurityAgent(self.db, embedding_manager)
+        except Exception as exc:
+            logger.error(
+                "SecurityAgent unavailable -- gRPC EvaluateSecurity will return UNAVAILABLE",
+                error=str(exc),
+            )
+            return None
 
     def _seed_contract_test_data(self) -> None:
         """Seed one deterministic org/user/api_key and mint a real Bearer JWT.
@@ -988,6 +1063,166 @@ async def _api_key_verifier(credential: str) -> dict:
     return user_context_to_claims_dict(uc)
 
 
+# ---------------------------------------------------------------------------
+# CORS policy
+# ---------------------------------------------------------------------------
+
+#: Comma-separated allowlist, same env-var name/shape the management service
+#: uses (``services/management/app/config.py``). Unlike that service the proxy
+#: does NOT default to ``*``: the proxy is the credential-bearing surface, so
+#: an unset value means "no cross-origin access" rather than "any origin".
+CORS_ORIGINS_ENV_VAR = "CORS_ORIGINS"
+
+#: Comma-separated override for the request-header allowlist below, for
+#: deployments whose browser clients send headers the proxy itself does not
+#: read (a gateway-injected trace header, say).
+CORS_ALLOW_HEADERS_ENV_VAR = "CORS_ALLOW_HEADERS"
+
+#: Explicit request-header allowlist, never ``*``. The Fetch spec ignores a
+#: wildcard ``Access-Control-Allow-Headers`` on a credentialed request, so a
+#: wildcard silently breaks the clients it appears to be permissive toward.
+#: Contents: every header this service or its auth middleware reads, plus
+#: the conventional correlation header ingress injects.
+_DEFAULT_CORS_ALLOW_HEADERS: tuple[str, ...] = (
+    "Authorization",
+    "Content-Type",
+    "X-API-Key",
+    "X-Preferred-Model",
+    "X-Request-ID",
+    "X-Session-ID",
+    "X-WaddleAI-Escalate",
+    "X-WaddleAI-Session",
+    "X-WaddleAI-Tool-Type",
+)
+
+_DEFAULT_CORS_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+
+@dataclass(slots=True, frozen=True)
+class CORSPolicy:
+    """Resolved cross-origin policy for the proxy's HTTP surface.
+
+    Encodes the one invariant the old handler broke: a literal ``*`` origin and
+    ``Access-Control-Allow-Credentials: true`` are mutually exclusive, so an
+    allowlisted origin is echoed back verbatim and only then may credentials
+    be advertised.
+    """
+
+    origins: tuple[str, ...] = ()
+    methods: tuple[str, ...] = _DEFAULT_CORS_METHODS
+    headers: tuple[str, ...] = _DEFAULT_CORS_ALLOW_HEADERS
+    max_age: int = 600
+
+    @property
+    def wildcard(self) -> bool:
+        """Report whether the deployment explicitly opted into anonymous ``*``."""
+        return "*" in self.origins
+
+    def allows(self, origin: str) -> bool:
+        """Report whether *origin* may receive cross-origin responses."""
+        return bool(origin) and (self.wildcard or origin in self.origins)
+
+
+def load_cors_policy(environ: dict[str, str] | None = None) -> CORSPolicy:
+    """Build the :class:`CORSPolicy` from the process environment.
+
+    Reads ``CORS_ORIGINS`` as a comma-separated list; an unset or empty value
+    yields an empty allowlist, which emits no CORS headers at all.
+    ``CORS_ALLOW_HEADERS`` optionally replaces the request-header allowlist.
+    """
+    env = environ if environ is not None else dict(os.environ)
+    origins = _split_csv(env.get(CORS_ORIGINS_ENV_VAR, ""))
+    headers = _split_csv(env.get(CORS_ALLOW_HEADERS_ENV_VAR, "")) or _DEFAULT_CORS_ALLOW_HEADERS
+    return CORSPolicy(origins=origins, headers=headers)
+
+
+def _split_csv(raw: str) -> tuple[str, ...]:
+    """Split a comma-separated env value into a tuple, dropping blank entries."""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def cors_headers(origin: str, policy: CORSPolicy, *, preflight: bool = False) -> dict[str, str]:
+    """Compute the CORS response headers for *origin* under *policy*.
+
+    Returns an empty mapping when no policy is configured or the origin is not
+    allowlisted -- the browser then blocks the response, which is the intended
+    outcome rather than a failure to handle.
+    """
+    if not policy.origins or not policy.allows(origin):
+        return {}
+
+    headers: dict[str, str] = {}
+    if policy.wildcard:
+        # Anonymous wildcard: credentials must NOT be advertised alongside it.
+        headers["Access-Control-Allow-Origin"] = "*"
+    else:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+
+    if preflight:
+        headers["Access-Control-Allow-Methods"] = ", ".join(policy.methods)
+        headers["Access-Control-Allow-Headers"] = ", ".join(policy.headers)
+        headers["Access-Control-Max-Age"] = str(policy.max_age)
+    return headers
+
+
+def _merge_vary_origin(existing: str) -> str:
+    """Append ``Origin`` to an existing ``Vary`` header value without duplicating it."""
+    parts = [part.strip() for part in existing.split(",") if part.strip()]
+    if not any(part.lower() == "origin" for part in parts):
+        parts.append("Origin")
+    return ", ".join(parts)
+
+
+class CORSPreflightMiddleware:
+    """ASGI wrapper answering CORS preflights ahead of the authentication chain.
+
+    A browser preflight carries no credentials by design, so letting it reach
+    ``OIDCAuthMiddleware`` yields a 401 with no CORS headers and the real
+    request is never sent. This answers the preflight directly and forwards
+    everything else untouched.
+    """
+
+    def __init__(self, app: Any, policy: CORSPolicy) -> None:
+        """Wrap *app*, answering preflight requests according to *policy*."""
+        self._app = app
+        self._policy = policy
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        """Serve CORS preflights; pass every other message to the wrapped app."""
+        if scope.get("type") != "http" or scope.get("method") != "OPTIONS":
+            await self._app(scope, receive, send)
+            return
+
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        if "access-control-request-method" not in headers:
+            # Not a preflight -- a plain OPTIONS request belongs to the app.
+            await self._app(scope, receive, send)
+            return
+
+        computed = cors_headers(headers.get("origin", ""), self._policy, preflight=True)
+        raw_headers = [(b"vary", b"Origin")]
+        raw_headers += [
+            (key.lower().encode("latin-1"), value.encode("latin-1"))
+            for key, value in computed.items()
+        ]
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 204 if computed else 403,
+                "headers": raw_headers,
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+
+
+#: Process-wide policy, resolved once at import.
+_cors_policy: CORSPolicy = load_cors_policy()
+
+
 # Quart app
 app = Quart(__name__)
 
@@ -1038,6 +1273,14 @@ async def on_startup():
     )
     logger.info("MCP /mcp and /mcp/admin mounted (flag-gated: waddleai.mcp_v2)")
 
+    # Outermost: preflights must be answered before any auth layer 401s them.
+    app.asgi_app = CORSPreflightMiddleware(app.asgi_app, _cors_policy)
+    logger.info(
+        "CORS policy applied",
+        origins=list(_cors_policy.origins) or "none (cross-origin disabled)",
+        credentials=not _cors_policy.wildcard and bool(_cors_policy.origins),
+    )
+
 
 if _TEST_MODE:
 
@@ -1065,17 +1308,28 @@ async def on_shutdown():
 
 
 # ---------------------------------------------------------------------------
-# CORS — manual after_request handler
+# CORS — allowlist-driven after_request handler
 # ---------------------------------------------------------------------------
 
 
 @app.after_request
 async def add_cors_headers(response: Response) -> Response:
-    """Attach permissive CORS headers to every outgoing response."""
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
+    """Attach allowlisted CORS headers to an outgoing response.
+
+    Emits nothing when no allowlist is configured or the request's ``Origin``
+    is not on it, and never pairs a literal ``*`` with credentials.
+    """
+    if not _cors_policy.origins:
+        return response
+
+    response.headers["Vary"] = _merge_vary_origin(response.headers.get("Vary", ""))
+    computed = cors_headers(
+        request.headers.get("Origin", ""),
+        _cors_policy,
+        preflight=request.method == "OPTIONS",
+    )
+    for key, value in computed.items():
+        response.headers[key] = value
     return response
 
 
@@ -1135,24 +1389,9 @@ async def get_current_user():
         abort(401, description="Authorization header required")
 
     try:
-        if authorization.startswith("sk-") or authorization.startswith("wa-"):
-            # --- path 2: raw API key (penguin-aaa middleware does not intercept these) ---
-            # Called synchronously on the event-loop thread. authenticate_api_key
-            # uses the shared PyDAL DAL, whose connections are thread-local AND it
-            # performs a write (last_used); offloading to asyncio.to_thread would
-            # open a second thread-local SQLite connection whose uncommitted write
-            # locks the file. A true async offload needs a dedicated per-worker DAL
-            # (follow-up); the brief cost of a bcrypt+query on the loop matches the
-            # original proven behavior.
-            user_context = proxy_server.rbac.authenticate_api_key(authorization)
-        elif authorization.startswith("Bearer "):
-            # --- path 3: RS256 JWT via penguin-aaa ---
-            token = authorization[7:]  # Local var, not from request
-            user_context = verify_token(token, proxy_server.oidc_provider)
-        else:
-            abort(401, description="Invalid authorization format")
-
-        return user_context
+        # --- paths 2 and 3: raw API key / Bearer JWT, via the one shared verifier
+        #     that the gRPC surface also uses (authenticate_credential).
+        return authenticate_credential(authorization)
     except AuthenticationError as e:
         abort(401, description=str(e))
     except Exception as e:
