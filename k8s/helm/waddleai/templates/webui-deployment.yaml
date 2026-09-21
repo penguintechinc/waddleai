@@ -32,7 +32,14 @@ spec:
             runAsNonRoot: true
             runAsUser: 1000
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            # trivy KSV-0014. nginx needs exactly three writable paths, all
+            # mounted as emptyDir below: /tmp, /var/cache/nginx (client_temp,
+            # proxy_temp and friends -- nginx mkdir()s these at startup) and
+            # /var/run (nginx.pid). /var/log/nginx is deliberately NOT mounted:
+            # the base image symlinks access.log/error.log to /dev/stdout and
+            # /dev/stderr, and an emptyDir over it would shadow those symlinks
+            # and silently divert container logs into the volume.
+            readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
             capabilities:
@@ -63,10 +70,14 @@ spec:
               mountPath: /tmp
             - name: nginx-cache
               mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
       volumes:
         - name: tmp
           emptyDir: {}
         - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
           emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:

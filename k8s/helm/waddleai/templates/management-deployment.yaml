@@ -55,8 +55,14 @@ spec:
                 - ALL
       containers:
         - name: management
+          # trivy KSV-0014. readOnlyRootFilesystem is forced on here rather
+          # than in values.yaml because .Values.securityContext is shared with
+          # migration-job.yaml; the writable paths this service needs are
+          # mounted as emptyDir below. Operators can still override the whole
+          # context via .Values.management.securityContext.
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- $ctx := mergeOverwrite (deepCopy .Values.securityContext) (dict "readOnlyRootFilesystem" true) (.Values.management.securityContext | default dict) }}
+            {{- toYaml $ctx | nindent 12 }}
           image: {{ include "waddleai.management.image" . }}
           imagePullPolicy: {{ .Values.management.image.pullPolicy }}
           ports:
@@ -125,6 +131,30 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.management.resources | nindent 12 }}
+          # Writable paths under a read-only root filesystem. /tmp is load
+          # bearing: app/services/coderag_worker.py works out of
+          # tempfile.gettempdir(). The other three are the directories the
+          # image creates and chowns to the app user at build time
+          # (services/management/Dockerfile), i.e. the image's own declaration
+          # of what it expects to write at runtime.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: app-logs
+              mountPath: /app/logs
+            - name: app-databases
+              mountPath: /app/databases
+            - name: app-config-marchproxy
+              mountPath: /app/config/marchproxy
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: app-logs
+          emptyDir: {}
+        - name: app-databases
+          emptyDir: {}
+        - name: app-config-marchproxy
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
