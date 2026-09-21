@@ -4,23 +4,42 @@ import asyncio
 import os
 from pathlib import Path
 
+from penguincode_cli.shared.command_safety import (
+    ConfirmCallback,
+    approve_destructive,
+    classify_destructive,
+    refusal_message,
+)
+
 from .base import BaseTool, ToolResult
 
 
 class BashTool(BaseTool):
     """Tool for executing bash commands."""
 
-    def __init__(self, timeout: int = 30, working_dir: str | None = None):
+    def __init__(
+        self,
+        timeout: int = 30,
+        working_dir: str | None = None,
+        allow_destructive: bool = False,
+        confirm_destructive: ConfirmCallback | None = None,
+    ):
         """
         Initialize bash tool.
 
         Args:
             timeout: Command timeout in seconds
             working_dir: Working directory for commands
+            allow_destructive: Pre-approve destructive commands (opt-in, off by default)
+            confirm_destructive: Async (command, keyword) -> bool approval callback;
+                takes precedence over allow_destructive. With neither wired up,
+                destructive commands are refused.
         """
         super().__init__("bash", "Execute bash commands")
         self.timeout = timeout
         self.working_dir = working_dir
+        self.allow_destructive = allow_destructive
+        self.confirm_destructive = confirm_destructive
 
     @staticmethod
     def _is_blocking_command(command: str) -> bool:
@@ -101,6 +120,21 @@ class BashTool(BaseTool):
                 metadata={"command": command, "blocked": True},
             )
 
+        # Gate destructive commands — the agent driving this tool may be acting on
+        # untrusted repository content, so the verdict is enforced, not advisory.
+        approved, keyword = await approve_destructive(
+            command,
+            allow_destructive=self.allow_destructive,
+            confirm=self.confirm_destructive,
+        )
+        if not approved and keyword is not None:
+            return ToolResult(
+                success=False,
+                data=None,
+                error=refusal_message(command, keyword),
+                metadata={"command": command, "blocked": True, "destructive": keyword},
+            )
+
         try:
             # Set working directory
             cwd = None
@@ -174,33 +208,16 @@ class BashTool(BaseTool):
         """
         Check if a command is potentially destructive.
 
+        Enforced by execute() before every command; the keyword list itself lives in
+        shared.command_safety so the client-side executor gates on the same rules.
+
         Args:
             command: Command to check
 
         Returns:
             True if command might be destructive
         """
-        destructive_keywords = [
-            "rm ",
-            "rmdir",
-            "del ",
-            "format",
-            "mkfs",
-            "dd ",
-            ">",  # Redirect (overwrite)
-            "sudo",
-            "su ",
-            "chmod",
-            "chown",
-            "kill",
-            "pkill",
-            "shutdown",
-            "reboot",
-            "halt",
-        ]
-
-        cmd_lower = command.lower()
-        return any(keyword in cmd_lower for keyword in destructive_keywords)
+        return classify_destructive(command) is not None
 
 
 # Convenience function
@@ -209,6 +226,7 @@ async def execute_bash(
     timeout: int = 30,
     working_dir: str | None = None,
     env: dict | None = None,
+    allow_destructive: bool = False,
 ) -> ToolResult:
     """
     Convenience function to execute bash command.
@@ -218,9 +236,10 @@ async def execute_bash(
         timeout: Command timeout
         working_dir: Working directory
         env: Environment variables
+        allow_destructive: Pre-approve destructive commands (off by default)
 
     Returns:
         ToolResult with execution outcome
     """
-    tool = BashTool(timeout=timeout, working_dir=working_dir)
+    tool = BashTool(timeout=timeout, working_dir=working_dir, allow_destructive=allow_destructive)
     return await tool.execute(command=command, env=env)
