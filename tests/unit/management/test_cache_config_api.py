@@ -3,7 +3,7 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from tests.unit.management.conftest import make_select_result
+from tests.unit.management.conftest import make_mock_key, make_select_result
 
 
 def make_mock_cache_config(
@@ -342,3 +342,159 @@ class TestReadTenantIsolation:
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["data"]["scope_type"] == "global"
+
+
+class TestWriteScopeAuthorizationIsExhaustive:
+    """`_authorize_scope_write` must authorize every scope type, not just global/org.
+
+    regression: audit-2026-09-14 -- the helper branched only on "global"
+    and "org" and then returned None (allowed) for anything else. "key" is
+    a valid scope type, so a caller submitting scope_type="key" with
+    another organization's virtual-key id passed authorization untouched
+    and could create, update or delete that tenant's response-cache
+    behaviour. These tests are falsifiable because the key -> owning-org
+    lookup goes through the mocked DB, so the row the test feeds it is
+    exactly what the authorization decision is made on: delete the check
+    and the refusals below turn into 201/200.
+    """
+
+    async def test_non_admin_cannot_create_key_config_for_another_orgs_key(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- key scope is tenant-checked like org scope."""
+        # rm_auth_headers is org 1; this virtual key belongs to org 2.
+        # conftest caches the _DBTable per table name for the module-scoped
+        # app and its insert mock is not a child of mock_db, so app_mock_db's
+        # reset_mock() leaves earlier tests' calls on it.
+        app_mock_db.cache_configs.insert.reset_mock()
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_key(key_id=77, org_id=2)])
+        ]
+
+        resp = await client.post(
+            "/api/v1/cache-configs",
+            headers=rm_auth_headers,
+            json={"scope_type": "key", "scope_ref": "77"},
+        )
+
+        assert resp.status_code == 403
+        app_mock_db.cache_configs.insert.assert_not_called()
+
+    async def test_non_admin_can_create_key_config_for_own_orgs_key(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- the fix must not block a legitimate key write."""
+        created_row = make_mock_cache_config(9, "key", "55")
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_key(key_id=55, org_id=1)]),  # ownership lookup
+            make_select_result([]),  # no existing row for this scope
+            make_select_result([created_row]),  # the created row
+        ]
+        app_mock_db.cache_configs.insert.return_value = 9
+
+        with patch("services.management.app.api.v1.cache_configs.redis_client", MagicMock()):
+            resp = await client.post(
+                "/api/v1/cache-configs",
+                headers=rm_auth_headers,
+                json={"scope_type": "key", "scope_ref": "55"},
+            )
+
+        assert resp.status_code == 201
+
+    async def test_non_admin_cannot_create_key_config_for_unknown_key(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- an unresolvable key denies, never falls through.
+
+        Uses `return_value` rather than a `side_effect` sequence so the
+        number of select() calls does not change the outcome: every select
+        returns "nothing found", whichever code path runs. That makes the
+        pre-fix and post-fix behaviours cleanly comparable -- with the
+        authorization deleted this returns 201 and writes the row, with it
+        in place it returns 403 and writes nothing.
+        """
+        app_mock_db.cache_configs.insert.reset_mock()  # see sibling test above
+        app_mock_db.return_value.select.side_effect = None
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.post(
+            "/api/v1/cache-configs",
+            headers=rm_auth_headers,
+            json={"scope_type": "key", "scope_ref": "12345"},
+        )
+
+        # Assert the write first: it is the actual security property, and it
+        # is what fails with the authorization removed (the pre-fix code
+        # inserts the row, then 500s serializing the mock's empty re-read --
+        # a 403-vs-500 status diff would be a far muddier signal).
+        app_mock_db.cache_configs.insert.assert_not_called()
+        assert resp.status_code == 403
+
+    async def test_admin_may_still_write_any_key_scope(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- admin keeps cross-org key writes."""
+        created_row = make_mock_cache_config(10, "key", "77")
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([]),  # no existing row (admin needs no lookup)
+            make_select_result([created_row]),
+        ]
+        app_mock_db.cache_configs.insert.return_value = 10
+
+        with patch("services.management.app.api.v1.cache_configs.redis_client", MagicMock()):
+            resp = await client.post(
+                "/api/v1/cache-configs",
+                headers=auth_headers,
+                json={"scope_type": "key", "scope_ref": "77"},
+            )
+
+        assert resp.status_code == 201
+
+    async def test_non_admin_cannot_delete_another_orgs_key_config(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- DELETE authorizes through the same helper."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(4, "key", "77")]),  # existing row
+            make_select_result([make_mock_key(key_id=77, org_id=2)]),  # owned by org 2
+        ]
+
+        resp = await client.delete("/api/v1/cache-configs/4", headers=rm_auth_headers)
+
+        assert resp.status_code == 403
+        app_mock_db.return_value.delete.assert_not_called()
+
+    async def test_non_admin_cannot_update_another_orgs_key_config(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- PUT authorizes through the same helper."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(4, "key", "77")]),
+            make_select_result([make_mock_key(key_id=77, org_id=2)]),
+        ]
+
+        resp = await client.put(
+            "/api/v1/cache-configs/4", headers=rm_auth_headers, json={"ttl_seconds": 60}
+        )
+
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_unrecognized_scope_type_is_denied_not_allowed(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- the fall-through default must deny.
+
+        Reached via DELETE, where scope_type comes off the stored row rather
+        than a validated payload: a scope type this helper does not know
+        about (a future one, or a corrupted row) must be refused, which is
+        precisely the defaulting bug that let key-scoped writes through.
+        """
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(5, "team", "99")])
+        ]
+
+        resp = await client.delete("/api/v1/cache-configs/5", headers=rm_auth_headers)
+
+        assert resp.status_code == 403
+        app_mock_db.return_value.delete.assert_not_called()

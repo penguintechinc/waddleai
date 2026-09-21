@@ -135,19 +135,63 @@ def _row_visible_to(row: Any, user_role: str, user_org_id: int | None) -> bool:
     )
 
 
-def _authorize_scope_write(scope_type: str, scope_ref: str | None, verb: str) -> tuple | None:
+def _forbidden(message: str) -> tuple:
+    """Build the standard 403 body for a refused cache-config write."""
+    return jsonify({"status": "error", "error": message}), 403
+
+
+def _org_for_key_scope_ref(scope_ref: str | None) -> int | None:
+    """Resolve a key-scoped ``scope_ref`` to the organization owning that virtual key.
+
+    ``cache_configs.scope_ref`` stores ``str(virtual_keys.id)`` for
+    key-scoped rows, so ownership has to be looked up rather than read off
+    the row. Returns ``None`` when the key does not exist, which callers
+    must treat as "cannot authorize" -- never as "unconstrained".
+    """
+    if not scope_ref:
+        return None
+    database = _db()
+    row = database(database.virtual_keys.id == scope_ref).select().first()
+    return row.organization_id if row else None
+
+
+async def _authorize_scope_write(scope_type: str, scope_ref: str | None, verb: str) -> tuple | None:
     """Return a (jsonify, 403) tuple if the caller may not write/delete this scope, else None.
 
-    Global rows require admin; org rows require admin or ownership of that org.
+    Admin may write any scope. Otherwise: global rows are admin-only, org
+    rows require ownership of that org, and key rows require the virtual
+    key to belong to the caller's org. Any other ``scope_type`` is refused.
+
+    regression: audit-2026-09-14 -- this function used to branch only on
+    "global" and "org" and then `return None` (allow) for everything else.
+    "key" is a valid scope type (see `_validate_payload`), so a caller
+    submitting ``scope_type="key"`` with another organization's virtual-key
+    id passed authorization untouched and could create, update or delete
+    that tenant's response-cache behaviour. The fall-through default is now
+    deny: a scope_type this function does not explicitly authorize is
+    refused rather than allowed.
     """
     role = g.user.get("role")
-    if scope_type == "global" and role != "admin":
-        error_msg = f"Only admin may {verb} global cache config"
-        return jsonify({"status": "error", "error": error_msg}), 403
-    if scope_type == "org" and role != "admin" and scope_ref != str(g.user.get("organization_id")):
-        error_msg = f"Cannot {verb} another organization's cache config"
-        return jsonify({"status": "error", "error": error_msg}), 403
-    return None
+    if role == "admin":
+        return None
+
+    if scope_type == "global":
+        return _forbidden(f"Only admin may {verb} global cache config")
+
+    if scope_type == "org":
+        if scope_ref != str(g.user.get("organization_id")):
+            return _forbidden(f"Cannot {verb} another organization's cache config")
+        return None
+
+    if scope_type == "key":
+        key_org_id = await asyncio.to_thread(_org_for_key_scope_ref, scope_ref)
+        # An unresolvable key is refused too: "key not found" must not be
+        # the same outcome as "key is mine".
+        if key_org_id is None or key_org_id != g.user.get("organization_id"):
+            return _forbidden(f"Cannot {verb} another organization's cache config")
+        return None
+
+    return _forbidden(f"Cannot {verb} cache config for unrecognized scope type")
 
 
 @api_v1_bp.route("/cache-configs", methods=["GET"])
@@ -208,7 +252,7 @@ async def create_cache_config() -> tuple:
     scope_type = data["scope_type"]
     scope_ref = data.get("scope_ref")
 
-    auth_error = _authorize_scope_write(scope_type, scope_ref, verb="write")
+    auth_error = await _authorize_scope_write(scope_type, scope_ref, verb="write")
     if auth_error:
         return auth_error
 
@@ -270,7 +314,7 @@ async def update_cache_config(config_id: int) -> tuple:
 
     scope_type = existing.scope_type
     scope_ref = existing.scope_ref
-    auth_error = _authorize_scope_write(scope_type, scope_ref, verb="write")
+    auth_error = await _authorize_scope_write(scope_type, scope_ref, verb="write")
     if auth_error:
         return auth_error
 
@@ -308,7 +352,7 @@ async def delete_cache_config(config_id: int) -> tuple:
 
     scope_type = existing.scope_type
     scope_ref = existing.scope_ref
-    auth_error = _authorize_scope_write(scope_type, scope_ref, verb="delete")
+    auth_error = await _authorize_scope_write(scope_type, scope_ref, verb="delete")
     if auth_error:
         return auth_error
 
