@@ -381,9 +381,15 @@ class TestLoginBruteForceThrottle:
         )
         assert ok.status_code == 200
 
-        # Without the reset these two would be failures 3 and 4 and would lock.
+        # Without the reset these would be failures 3 and 4, so the first of
+        # them would already lock the account.
         assert (await self._fail(client)).status_code == 401
         assert (await self._fail(client)).status_code == 401
+
+        # ...and the throttle is still armed afterwards: the counter restarted
+        # at zero, it was not switched off. Without this the test would also
+        # pass against a build that has no throttle at all.
+        assert (await self._fail(client)).status_code == 429
 
     async def test_counter_is_per_account_not_per_ip(self, client, app_mock_db: MagicMock) -> None:
         """Locking one account leaves every other account reachable.
