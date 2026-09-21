@@ -5,9 +5,18 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from penguincode_cli.shared.command_safety import (
+    ConfirmCallback,
+    approve_destructive,
+    refusal_message,
+)
 from penguincode_cli.shared.interfaces import IToolExecutor, ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+class PathOutsideWorkingDirError(ValueError):
+    """Raised when a tool argument resolves outside the configured working directory."""
 
 
 class LocalToolExecutor(IToolExecutor):
@@ -22,9 +31,16 @@ class LocalToolExecutor(IToolExecutor):
     - glob: Find files by pattern
     """
 
-    def __init__(self, working_dir: str = "."):
+    def __init__(
+        self,
+        working_dir: str = ".",
+        allow_destructive: bool = False,
+        confirm_destructive: ConfirmCallback | None = None,
+    ):
         self.working_dir = Path(working_dir).resolve()
         self._available_tools = ["read", "write", "edit", "bash", "grep", "glob"]
+        self.allow_destructive = allow_destructive
+        self.confirm_destructive = confirm_destructive
 
     def get_available_tools(self) -> list[str]:
         """Get list of available tools."""
@@ -61,6 +77,9 @@ class LocalToolExecutor(IToolExecutor):
 
         except TimeoutError:
             return ToolResult(success=False, error=f"Tool execution timed out after {timeout}s")
+        except PathOutsideWorkingDirError as e:
+            logger.warning(f"Refused {tool_name}: {e}")
+            return ToolResult(success=False, error=str(e))
         except Exception as e:
             logger.error(f"Tool execution error: {e}")
             return ToolResult(success=False, error=str(e))
@@ -134,6 +153,17 @@ class LocalToolExecutor(IToolExecutor):
         if not command:
             return ToolResult(success=False, error="Missing 'command' argument")
 
+        # Same destructive gate as tools.bash.BashTool — this path is driven by the
+        # same agent, so it cannot be the softer of the two.
+        approved, keyword = await approve_destructive(
+            command,
+            allow_destructive=self.allow_destructive,
+            confirm=self.confirm_destructive,
+        )
+        if not approved and keyword is not None:
+            logger.warning(f"Refused destructive bash command (matched {keyword!r})")
+            return ToolResult(success=False, error=refusal_message(command, keyword))
+
         try:
             process = await asyncio.wait_for(
                 asyncio.create_subprocess_shell(
@@ -173,10 +203,15 @@ class LocalToolExecutor(IToolExecutor):
         search_path = self._resolve_path(path)
 
         try:
-            # Use grep command for simplicity
-            cmd = f"grep -rn '{pattern}' '{search_path}'"
-            process = await asyncio.create_subprocess_shell(
-                cmd,
+            # Argument-list form: the pattern is passed as a single argv entry and
+            # is never parsed as shell syntax. "--" stops option parsing so a
+            # pattern beginning with "-" cannot be read as a grep flag either.
+            process = await asyncio.create_subprocess_exec(
+                "grep",
+                "-rn",
+                "--",
+                pattern,
+                str(search_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -200,8 +235,10 @@ class LocalToolExecutor(IToolExecutor):
         search_path = self._resolve_path(path)
 
         try:
-            matches = list(search_path.glob(pattern))
-            result = "\n".join(str(m.relative_to(self.working_dir)) for m in matches[:100])
+            # The pattern is agent-supplied as well, so filter the results: a
+            # pattern such as "../../*" must not leak paths outside the tree.
+            matches = [m for m in search_path.glob(pattern) if self._is_contained(m)]
+            result = "\n".join(str(m.resolve().relative_to(self.working_dir)) for m in matches[:100])
 
             if len(matches) > 100:
                 result += f"\n... and {len(matches) - 100} more files"
@@ -211,9 +248,25 @@ class LocalToolExecutor(IToolExecutor):
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
+    def _is_contained(self, path: Path) -> bool:
+        """Report whether a path resolves inside the working directory."""
+        resolved = path.resolve()
+        return resolved == self.working_dir or self.working_dir in resolved.parents
+
     def _resolve_path(self, path: str) -> Path:
-        """Resolve a path relative to working directory."""
-        p = Path(path)
-        if p.is_absolute():
-            return p
-        return self.working_dir / p
+        """Resolve a path and require the result to stay inside the working directory.
+
+        Symlinks are resolved before the containment check, so a link that lives
+        inside the working directory cannot be used to reach a file outside it.
+        Raises PathOutsideWorkingDirError for absolute paths, ``..`` traversal and
+        symlink escapes alike.
+        """
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.working_dir / candidate
+        resolved = candidate.resolve()
+        if resolved != self.working_dir and self.working_dir not in resolved.parents:
+            raise PathOutsideWorkingDirError(
+                f"Path is outside the working directory {self.working_dir}: {path}"
+            )
+        return resolved
