@@ -59,7 +59,13 @@ def _drop_keys(obj, *keys):
 
 
 def test_auth_login_shape(management_url):
-    """Pin the /auth/login response shape for valid admin credentials."""
+    """Pin the /auth/login response shape for valid admin credentials.
+
+    The snapshot's `expires_in` went 86400 -> 3600 on 2026-09-21. That was
+    NOT a session-length change: tokens have always been signed with a 3600s
+    exp, and the endpoint was advertising a number that never matched them.
+    See tests/contract/snapshots/NOTES.md before "restoring" the old value.
+    """
     r = httpx.post(
         f"{management_url}/api/v1/auth/login",
         json={"username": "admin", "password": "admin123"},
@@ -105,7 +111,12 @@ def test_auth_verify(management_url):
 
 
 def test_auth_refresh(management_url):
-    """Pin the /auth/refresh response shape (token popped before snapshotting)."""
+    """Pin the /auth/refresh response shape (token popped before snapshotting).
+
+    `expires_in` is 3600 here for the same reason as in the login test above:
+    a corrected advertisement, not a shortened session. See
+    tests/contract/snapshots/NOTES.md.
+    """
     r = httpx.post(f"{management_url}/api/v1/auth/refresh", headers=_login(management_url))
     body = r.json()
     # access_token is dynamically generated; pop it to match login test pattern
