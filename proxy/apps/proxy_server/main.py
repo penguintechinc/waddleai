@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(__file__))
 
 import asyncio
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -1062,6 +1063,166 @@ async def _api_key_verifier(credential: str) -> dict:
     return user_context_to_claims_dict(uc)
 
 
+# ---------------------------------------------------------------------------
+# CORS policy
+# ---------------------------------------------------------------------------
+
+#: Comma-separated allowlist, same env-var name/shape the management service
+#: uses (``services/management/app/config.py``). Unlike that service the proxy
+#: does NOT default to ``*``: the proxy is the credential-bearing surface, so
+#: an unset value means "no cross-origin access" rather than "any origin".
+CORS_ORIGINS_ENV_VAR = "CORS_ORIGINS"
+
+#: Comma-separated override for the request-header allowlist below, for
+#: deployments whose browser clients send headers the proxy itself does not
+#: read (a gateway-injected trace header, say).
+CORS_ALLOW_HEADERS_ENV_VAR = "CORS_ALLOW_HEADERS"
+
+#: Explicit request-header allowlist, never ``*``. The Fetch spec ignores a
+#: wildcard ``Access-Control-Allow-Headers`` on a credentialed request, so a
+#: wildcard silently breaks the clients it appears to be permissive toward.
+#: Contents: every header this service or its auth middleware reads, plus
+#: the conventional correlation header ingress injects.
+_DEFAULT_CORS_ALLOW_HEADERS: tuple[str, ...] = (
+    "Authorization",
+    "Content-Type",
+    "X-API-Key",
+    "X-Preferred-Model",
+    "X-Request-ID",
+    "X-Session-ID",
+    "X-WaddleAI-Escalate",
+    "X-WaddleAI-Session",
+    "X-WaddleAI-Tool-Type",
+)
+
+_DEFAULT_CORS_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+
+@dataclass(slots=True, frozen=True)
+class CORSPolicy:
+    """Resolved cross-origin policy for the proxy's HTTP surface.
+
+    Encodes the one invariant the old handler broke: a literal ``*`` origin and
+    ``Access-Control-Allow-Credentials: true`` are mutually exclusive, so an
+    allowlisted origin is echoed back verbatim and only then may credentials
+    be advertised.
+    """
+
+    origins: tuple[str, ...] = ()
+    methods: tuple[str, ...] = _DEFAULT_CORS_METHODS
+    headers: tuple[str, ...] = _DEFAULT_CORS_ALLOW_HEADERS
+    max_age: int = 600
+
+    @property
+    def wildcard(self) -> bool:
+        """Report whether the deployment explicitly opted into anonymous ``*``."""
+        return "*" in self.origins
+
+    def allows(self, origin: str) -> bool:
+        """Report whether *origin* may receive cross-origin responses."""
+        return bool(origin) and (self.wildcard or origin in self.origins)
+
+
+def load_cors_policy(environ: dict[str, str] | None = None) -> CORSPolicy:
+    """Build the :class:`CORSPolicy` from the process environment.
+
+    Reads ``CORS_ORIGINS`` as a comma-separated list; an unset or empty value
+    yields an empty allowlist, which emits no CORS headers at all.
+    ``CORS_ALLOW_HEADERS`` optionally replaces the request-header allowlist.
+    """
+    env = environ if environ is not None else dict(os.environ)
+    origins = _split_csv(env.get(CORS_ORIGINS_ENV_VAR, ""))
+    headers = _split_csv(env.get(CORS_ALLOW_HEADERS_ENV_VAR, "")) or _DEFAULT_CORS_ALLOW_HEADERS
+    return CORSPolicy(origins=origins, headers=headers)
+
+
+def _split_csv(raw: str) -> tuple[str, ...]:
+    """Split a comma-separated env value into a tuple, dropping blank entries."""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def cors_headers(origin: str, policy: CORSPolicy, *, preflight: bool = False) -> dict[str, str]:
+    """Compute the CORS response headers for *origin* under *policy*.
+
+    Returns an empty mapping when no policy is configured or the origin is not
+    allowlisted -- the browser then blocks the response, which is the intended
+    outcome rather than a failure to handle.
+    """
+    if not policy.origins or not policy.allows(origin):
+        return {}
+
+    headers: dict[str, str] = {}
+    if policy.wildcard:
+        # Anonymous wildcard: credentials must NOT be advertised alongside it.
+        headers["Access-Control-Allow-Origin"] = "*"
+    else:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+
+    if preflight:
+        headers["Access-Control-Allow-Methods"] = ", ".join(policy.methods)
+        headers["Access-Control-Allow-Headers"] = ", ".join(policy.headers)
+        headers["Access-Control-Max-Age"] = str(policy.max_age)
+    return headers
+
+
+def _merge_vary_origin(existing: str) -> str:
+    """Append ``Origin`` to an existing ``Vary`` header value without duplicating it."""
+    parts = [part.strip() for part in existing.split(",") if part.strip()]
+    if not any(part.lower() == "origin" for part in parts):
+        parts.append("Origin")
+    return ", ".join(parts)
+
+
+class CORSPreflightMiddleware:
+    """ASGI wrapper answering CORS preflights ahead of the authentication chain.
+
+    A browser preflight carries no credentials by design, so letting it reach
+    ``OIDCAuthMiddleware`` yields a 401 with no CORS headers and the real
+    request is never sent. This answers the preflight directly and forwards
+    everything else untouched.
+    """
+
+    def __init__(self, app: Any, policy: CORSPolicy) -> None:
+        """Wrap *app*, answering preflight requests according to *policy*."""
+        self._app = app
+        self._policy = policy
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        """Serve CORS preflights; pass every other message to the wrapped app."""
+        if scope.get("type") != "http" or scope.get("method") != "OPTIONS":
+            await self._app(scope, receive, send)
+            return
+
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        if "access-control-request-method" not in headers:
+            # Not a preflight -- a plain OPTIONS request belongs to the app.
+            await self._app(scope, receive, send)
+            return
+
+        computed = cors_headers(headers.get("origin", ""), self._policy, preflight=True)
+        raw_headers = [(b"vary", b"Origin")]
+        raw_headers += [
+            (key.lower().encode("latin-1"), value.encode("latin-1"))
+            for key, value in computed.items()
+        ]
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 204 if computed else 403,
+                "headers": raw_headers,
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+
+
+#: Process-wide policy, resolved once at import.
+_cors_policy: CORSPolicy = load_cors_policy()
+
+
 # Quart app
 app = Quart(__name__)
 
@@ -1112,6 +1273,14 @@ async def on_startup():
     )
     logger.info("MCP /mcp and /mcp/admin mounted (flag-gated: waddleai.mcp_v2)")
 
+    # Outermost: preflights must be answered before any auth layer 401s them.
+    app.asgi_app = CORSPreflightMiddleware(app.asgi_app, _cors_policy)
+    logger.info(
+        "CORS policy applied",
+        origins=list(_cors_policy.origins) or "none (cross-origin disabled)",
+        credentials=not _cors_policy.wildcard and bool(_cors_policy.origins),
+    )
+
 
 if _TEST_MODE:
 
@@ -1139,17 +1308,28 @@ async def on_shutdown():
 
 
 # ---------------------------------------------------------------------------
-# CORS — manual after_request handler
+# CORS — allowlist-driven after_request handler
 # ---------------------------------------------------------------------------
 
 
 @app.after_request
 async def add_cors_headers(response: Response) -> Response:
-    """Attach permissive CORS headers to every outgoing response."""
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
+    """Attach allowlisted CORS headers to an outgoing response.
+
+    Emits nothing when no allowlist is configured or the request's ``Origin``
+    is not on it, and never pairs a literal ``*`` with credentials.
+    """
+    if not _cors_policy.origins:
+        return response
+
+    response.headers["Vary"] = _merge_vary_origin(response.headers.get("Vary", ""))
+    computed = cors_headers(
+        request.headers.get("Origin", ""),
+        _cors_policy,
+        preflight=request.method == "OPTIONS",
+    )
+    for key, value in computed.items():
+        response.headers[key] = value
     return response
 
 
