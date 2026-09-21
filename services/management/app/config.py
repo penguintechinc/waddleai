@@ -1,7 +1,10 @@
 """WaddleAI Management Server Configuration."""
 
+import logging
 import os
 from datetime import timedelta
+
+logger = logging.getLogger(__name__)
 
 
 def _build_database_url() -> str:
@@ -44,6 +47,28 @@ def _build_database_url() -> str:
             return f"sqlite:///{db_path}"
         else:
             return f"sqlite:///{db_path}"
+
+
+def _parse_cors_origins(raw: str, *, allow_wildcard: bool) -> list[str]:
+    """Parse a comma-separated CORS_ORIGINS value into an explicit allowlist.
+
+    Defaults to deny: an unset or empty value yields an empty list rather than
+    a wildcard, so cross-origin access must be configured deliberately. With
+    ``allow_wildcard=False`` a configured ``*`` is stripped and logged instead
+    of honored (regression: audit-2026-09-14).
+    """
+    origins = [origin.strip() for origin in raw.split(",")]
+    origins = [origin for origin in origins if origin]
+
+    if not allow_wildcard and "*" in origins:
+        logger.warning(
+            "CORS_ORIGINS contains '*', which is refused in this configuration; "
+            "dropping it and keeping only explicitly listed origins. Set "
+            "CORS_ORIGINS to the exact origins that need cross-origin access."
+        )
+        origins = [origin for origin in origins if origin != "*"]
+
+    return origins
 
 
 class Config:
@@ -106,8 +131,9 @@ class Config:
     ENABLE_AZURE_OPENAI = os.getenv("ENABLE_AZURE_OPENAI", "true").lower() == "true"
     ENABLE_COHERE = os.getenv("ENABLE_COHERE", "true").lower() == "true"
 
-    # CORS settings
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+    # CORS settings — default deny. Empty list means no cross-origin access;
+    # operators must name the origins explicitly (regression: audit-2026-09-14).
+    CORS_ORIGINS = _parse_cors_origins(os.getenv("CORS_ORIGINS", ""), allow_wildcard=True)
 
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -149,6 +175,10 @@ class ProductionConfig(Config):
     SECURITY_PASSWORD_SALT = os.getenv("SECURITY_PASSWORD_SALT", "")
     WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
     ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "")
+
+    # Production never resolves CORS to a wildcard, even if one is configured:
+    # a '*' in CORS_ORIGINS is dropped and logged, not honored.
+    CORS_ORIGINS = _parse_cors_origins(os.getenv("CORS_ORIGINS", ""), allow_wildcard=False)
 
 
 class TestingConfig(Config):
