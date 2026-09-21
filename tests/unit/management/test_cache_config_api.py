@@ -237,3 +237,108 @@ class TestUpdateAndDelete:
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["data"]["deleted"] is True
+
+
+class TestReadTenantIsolation:
+    """GET /api/v1/cache-configs{,/<id>} must only expose the caller's own scopes.
+
+    regression: audit-2026-09-14 (MEDIUM, cache_configs.py:113 and :132) --
+    both read routes carried only @require_auth and did no organization_id
+    filtering at all, so any authenticated user enumerated every
+    organization's cache configuration. The write handlers in the same file
+    were already gated by `_authorize_scope_write`, making this an
+    asymmetric read-path gap.
+    """
+
+    async def test_list_hides_other_orgs_rows(
+        self, client, app_mock_db: MagicMock, rm_org2_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- an org-2 caller never sees org 1's row."""
+        rows = [
+            make_mock_cache_config(1, "global"),
+            make_mock_cache_config(2, "org", "1"),
+            make_mock_cache_config(3, "org", "2"),
+            make_mock_cache_config(4, "key", "77"),
+        ]
+        app_mock_db.return_value.select.return_value = make_select_result(rows)
+
+        resp = await client.get("/api/v1/cache-configs", headers=rm_org2_auth_headers)
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        returned = {(r["scope_type"], r["scope_ref"]) for r in data["data"]}
+        # Own org row + the global default only: never org 1's row, and never
+        # a key-scoped row (whose owning org cannot be resolved here).
+        assert returned == {("global", None), ("org", "2")}
+        assert ("org", "1") not in returned
+
+    async def test_list_still_returns_everything_to_admin(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- the fix must not over-restrict admin."""
+        rows = [
+            make_mock_cache_config(1, "global"),
+            make_mock_cache_config(2, "org", "1"),
+            make_mock_cache_config(3, "org", "2"),
+            make_mock_cache_config(4, "key", "77"),
+        ]
+        app_mock_db.return_value.select.return_value = make_select_result(rows)
+
+        resp = await client.get("/api/v1/cache-configs", headers=auth_headers)
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert len(data["data"]) == 4
+
+    async def test_get_by_id_of_another_orgs_row_is_not_found(
+        self, client, app_mock_db: MagicMock, rm_org2_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- org 1's row is invisible to an org-2 caller."""
+        row = make_mock_cache_config(2, "org", "1", ttl_seconds=999)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.get("/api/v1/cache-configs/2", headers=rm_org2_auth_headers)
+
+        # 404 rather than 403: the id must not be confirmed as existing.
+        assert resp.status_code == 404
+        body = await resp.get_data(as_text=True)
+        assert "999" not in body
+
+    async def test_get_by_id_of_key_scoped_row_is_not_found_for_non_admin(
+        self, client, app_mock_db: MagicMock, rm_org2_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- key-scoped rows are admin-only on read."""
+        row = make_mock_cache_config(4, "key", "77", ttl_seconds=888)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.get("/api/v1/cache-configs/4", headers=rm_org2_auth_headers)
+
+        assert resp.status_code == 404
+        body = await resp.get_data(as_text=True)
+        assert "888" not in body
+
+    async def test_get_by_id_of_own_org_row_still_succeeds(
+        self, client, app_mock_db: MagicMock, rm_org2_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- the caller's own org row stays readable."""
+        row = make_mock_cache_config(3, "org", "2")
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.get("/api/v1/cache-configs/3", headers=rm_org2_auth_headers)
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"]["scope_ref"] == "2"
+
+    async def test_get_by_id_of_global_row_still_succeeds(
+        self, client, app_mock_db: MagicMock, rm_org2_auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14 -- the global default stays readable by everyone."""
+        row = make_mock_cache_config(1, "global")
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.get("/api/v1/cache-configs/1", headers=rm_org2_auth_headers)
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["data"]["scope_type"] == "global"

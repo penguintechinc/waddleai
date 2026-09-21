@@ -93,6 +93,48 @@ async def _invalidate_scope(scope_type: str, scope_ref: str | None) -> None:
         logger.warning("cache_configs: failed to invalidate %s: %s", key, exc)
 
 
+def _visible_query(user_role: str, user_org_id: int | None) -> Any:
+    """Admin sees every row; everyone else sees global rows plus their own org's row.
+
+    regression: audit-2026-09-14 -- the two read routes previously carried
+    no tenant filter at all, so any authenticated user enumerated every
+    organization's cache config. Mirrors the write path's ownership model
+    (`_authorize_scope_write`) and the identical visibility helper in
+    model_access_policies.py.
+
+    Key-scoped rows are admin-only on read: `scope_ref` holds a
+    `virtual_keys.id`, so resolving their owning org needs a per-row lookup
+    the query builder cannot express as a join here. Same trade-off, and
+    same rationale, as model_access_policies._visible_query.
+    """
+    table = _db().cache_configs
+    if user_role == "admin":
+        return table.id > 0
+    query = table.scope_type == "global"
+    if user_org_id is not None:
+        query |= (table.scope_type == "org") & (table.scope_ref == str(user_org_id))
+    return query
+
+
+def _row_visible_to(row: Any, user_role: str, user_org_id: int | None) -> bool:
+    """Re-check one row's visibility in Python, immediately before it is serialized.
+
+    Deliberately redundant with `_visible_query`: the SQL filter is the
+    primary control, this is the response-side guard that keeps another
+    tenant's row from being serialized even if the query is later widened
+    or bypassed (which is exactly the regression audit-2026-09-14 found).
+    """
+    if user_role == "admin":
+        return True
+    if row.scope_type == "global":
+        return True
+    return (
+        row.scope_type == "org"
+        and user_org_id is not None
+        and str(row.scope_ref) == str(user_org_id)
+    )
+
+
 def _authorize_scope_write(scope_type: str, scope_ref: str | None, verb: str) -> tuple | None:
     """Return a (jsonify, 403) tuple if the caller may not write/delete this scope, else None.
 
@@ -114,9 +156,11 @@ async def list_cache_configs() -> tuple:
     """List cache configs, optionally filtered by scope_type/scope_ref."""
     scope_type = request.args.get("scope_type")
     scope_ref = request.args.get("scope_ref")
+    user_role = g.user.get("role")
+    user_org_id = g.user.get("organization_id")
 
     def _fetch():
-        query = _db().cache_configs.id > 0
+        query = _visible_query(user_role, user_org_id)
         if scope_type:
             query &= _db().cache_configs.scope_type == scope_type
         if scope_ref is not None:
@@ -124,17 +168,26 @@ async def list_cache_configs() -> tuple:
         return _db()(query).select(orderby=_db().cache_configs.id)
 
     rows = await asyncio.to_thread(_fetch)
-    return jsonify({"status": "success", "data": [_row_to_dict(r) for r in rows]}), 200
+    visible = [r for r in rows if _row_visible_to(r, user_role, user_org_id)]
+    return jsonify({"status": "success", "data": [_row_to_dict(r) for r in visible]}), 200
 
 
 @api_v1_bp.route("/cache-configs/<int:config_id>", methods=["GET"])
 @require_auth
 async def get_cache_config(config_id: int) -> tuple:
     """Get a single cache config row by ID."""
-    row = await asyncio.to_thread(
-        lambda: _db()(_db().cache_configs.id == config_id).select().first()
-    )
-    if not row:
+    user_role = g.user.get("role")
+    user_org_id = g.user.get("organization_id")
+
+    def _fetch_one():
+        query = _visible_query(user_role, user_org_id) & (_db().cache_configs.id == config_id)
+        return _db()(query).select().first()
+
+    row = await asyncio.to_thread(_fetch_one)
+    # A row outside the caller's tenant is reported as absent rather than
+    # forbidden, so this route cannot be used to enumerate which config ids
+    # exist in other organizations (matches model_access_policies.py).
+    if not row or not _row_visible_to(row, user_role, user_org_id):
         return jsonify({"status": "error", "error": "Cache config not found"}), 404
     return jsonify({"status": "success", "data": _row_to_dict(row)}), 200
 
