@@ -1,15 +1,89 @@
 """WaddleAI Management API v1 - Quota Management Endpoints."""
 
 import asyncio
+import math
+from dataclasses import dataclass
 from datetime import date
 
+from penguin_dal.db import DB
 from quart import g, jsonify, request
+from quart.typing import ResponseReturnValue
+from quart_schema import validate_request
 
 from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
 from .auth import require_auth, require_scope
+from .keys import privileged_fields_error, privileged_key_fields_denied
+
+
+def _db() -> DB:
+    """Return the process-wide penguin-dal handle, narrowed away from ``None``.
+
+    ``extensions.db`` is declared ``DB | None`` because it starts unset
+    before ``init_db()`` runs at startup; every route below only executes
+    after that point, so this narrows the type for mypy without adding any
+    reachable failure mode.
+    """
+    if db is None:
+        raise RuntimeError("database not initialized")
+    return db
+
+
+# Bounds for the virtual-key quota columns. These values previously went
+# from the raw request JSON straight into the DB with no type or range
+# check at all, so a string, a negative number, NaN, or an absurd magnitude
+# were all persisted verbatim and only surfaced later as a broken
+# enforcement calculation. Ceilings are deliberately generous -- they exist
+# to reject nonsense, not to express product policy.
+MAX_BUDGET_USD = 1_000_000.0
+MAX_RATE_LIMIT = 10_000_000
+
+
+@dataclass(slots=True)
+class SetKeyQuotaRequest:
+    """Request body for PUT /api/v1/quotas/key/<key_id>.
+
+    Every field is an optional partial update; ``None`` means "leave this
+    column alone", matching the ``"field" in data`` presence test the
+    handler used before it was given a schema.
+    """
+
+    budget_limit_daily: float | None = None
+    budget_limit_monthly: float | None = None
+    tpm_limit: int | None = None
+    rpm_limit: int | None = None
+
+
+def _validate_key_quota_bounds(data: SetKeyQuotaRequest) -> str | None:
+    """Return an error message for the first out-of-range field, else ``None``.
+
+    Type coercion is handled by ``@validate_request``; this adds the range
+    and finiteness checks a type annotation cannot express.
+    """
+    for name, limit in (
+        ("budget_limit_daily", MAX_BUDGET_USD),
+        ("budget_limit_monthly", MAX_BUDGET_USD),
+    ):
+        value = getattr(data, name)
+        if value is None:
+            continue
+        if not math.isfinite(value):
+            return f"{name} must be a finite number"
+        if value < 0 or value > limit:
+            return f"{name} must be between 0 and {limit:g}"
+
+    for name in ("tpm_limit", "rpm_limit"):
+        value = getattr(data, name)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return f"{name} must be an integer, not a boolean"
+        if value < 0 or value > MAX_RATE_LIMIT:
+            return f"{name} must be between 0 and {MAX_RATE_LIMIT}"
+
+    return None
 
 
 @api_v1_bp.route("/quotas", methods=["GET"])
@@ -181,50 +255,59 @@ async def set_organization_quota(org_id):
 
 @api_v1_bp.route("/quotas/key/<int:key_id>", methods=["PUT"])
 @require_auth
-async def set_key_quota(key_id):
-    """Set virtual key quota."""
-    data = await request.get_json()
+@validate_request(SetKeyQuotaRequest)
+async def set_key_quota(key_id: int, data: SetKeyQuotaRequest) -> ResponseReturnValue:
+    """Set virtual key quota.
 
-    if not data:
+    Every column this route writes is privileged (see
+    ``keys.PRIVILEGED_KEY_FIELDS``): owning the key proves only that the
+    caller may touch it, not that they may raise their own ceiling. The
+    field split is shared verbatim with ``PUT /api/v1/keys/<key_id>`` so
+    the two routes cannot diverge.
+    """
+    update_fields = {
+        name: value
+        for name in ("budget_limit_daily", "budget_limit_monthly", "tpm_limit", "rpm_limit")
+        if (value := getattr(data, name)) is not None
+    }
+
+    if not update_fields:
         return jsonify({"error": "Request body required"}), 400
 
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
 
-    key = await asyncio.to_thread(lambda: db(db.virtual_keys.id == key_id).select().first())
+    database = _db()
+    key = await asyncio.to_thread(
+        lambda: database(database.virtual_keys.id == key_id).select().first()
+    )
 
     if not key:
         return jsonify({"error": "Key not found"}), 404
 
-    # Permission check
+    # Ownership check -- proves the caller may touch this key at all.
     if user_role not in ["admin"]:
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
             return jsonify({"error": "Access denied"}), 403
 
-    update_fields = {}
+    # Privilege check -- refuses outright rather than dropping the fields,
+    # which would report success for a write that never happened.
+    denied = privileged_key_fields_denied(update_fields)
+    if denied:
+        return privileged_fields_error(denied)
 
-    if "budget_limit_daily" in data:
-        update_fields["budget_limit_daily"] = data["budget_limit_daily"]
+    bounds_error = _validate_key_quota_bounds(data)
+    if bounds_error:
+        return jsonify({"error": bounds_error}), 400
 
-    if "budget_limit_monthly" in data:
-        update_fields["budget_limit_monthly"] = data["budget_limit_monthly"]
+    def _update() -> None:
+        database(database.virtual_keys.id == key_id).update(**update_fields)
+        database.commit()
 
-    if "tpm_limit" in data:
-        update_fields["tpm_limit"] = data["tpm_limit"]
-
-    if "rpm_limit" in data:
-        update_fields["rpm_limit"] = data["rpm_limit"]
-
-    if update_fields:
-
-        def _update():
-            db(db.virtual_keys.id == key_id).update(**update_fields)
-            db.commit()
-
-        await asyncio.to_thread(_update)
+    await asyncio.to_thread(_update)
 
     return jsonify(
         {"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully."}

@@ -369,3 +369,210 @@ class TestGetKeyUsage:
         """Missing auth returns 401."""
         resp = await client.get("/api/v1/keys/1/usage")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/v1/keys/<key_id> -- owner-editable vs privileged field split
+#
+# regression: audit-2026-09-14
+#
+# HIGH: the route carried only @require_auth and an ownership-only in-handler
+# check, so a Role.USER could raise budget_limit_daily/monthly and
+# tpm_limit/rpm_limit, widen allowed_models/allowed_providers, and clear
+# expires_at on their own key -- self-service privilege escalation.
+# Role.USER does not hold Permission.QUOTA_UPDATE (shared/auth/rbac.py).
+#
+# The same split is applied to PUT /api/v1/quotas/key/<key_id>; both routes
+# share keys.PRIVILEGED_KEY_FIELDS so they cannot diverge again.
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateKeyPrivilegeSplit:
+    """Owner-editable vs privileged fields on PUT /api/v1/keys/<key_id>."""
+
+    async def test_user_can_still_rename_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """`name` stays owner-editable -- the fix must not over-restrict.
+
+        regression: audit-2026-09-14.
+        """
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"name": "My Laptop Key"},
+        )
+        assert resp.status_code == 200
+        app_mock_db.return_value.update.assert_called_once_with(name="My Laptop Key")
+
+    async def test_user_can_still_disable_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """`enabled` stays owner-editable. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"enabled": False},
+        )
+        assert resp.status_code == 200
+        app_mock_db.return_value.update.assert_called_once_with(enabled=False)
+
+    async def test_user_cannot_set_budget_limit_daily_on_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """A plain user raising their own daily budget is refused. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"budget_limit_daily": 999999.0},
+        )
+        assert resp.status_code == 403
+        body = await resp.get_json()
+        assert body["required_scope"] == "quota:update"
+        assert body["denied_fields"] == ["budget_limit_daily"]
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_user_cannot_widen_allowed_models_on_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """Model access is not owner-editable. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"allowed_models": ["gpt-4", "claude-opus-4"]},
+        )
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_user_cannot_widen_allowed_providers_on_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """Provider access is not owner-editable. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"allowed_providers": ["openai"]},
+        )
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_user_cannot_extend_expiry_on_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """Expiry is not owner-editable. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"expires_at": "2099-01-01T00:00:00Z"},
+        )
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_user_cannot_clear_expiry_on_own_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """Clearing expiry (empty string) is refused too, and never parsed.
+
+        regression: audit-2026-09-14 -- the privilege check runs on field
+        names before any value is parsed, so an unprivileged caller cannot
+        reach the `datetime.fromisoformat` call either.
+        """
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"expires_at": ""},
+        )
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_user_mixing_owner_and_privileged_fields_is_refused_whole(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """A mixed body is refused outright -- the rename does not slip through.
+
+        regression: audit-2026-09-14 -- partially applying the request would
+        make the refusal invisible to the caller.
+        """
+        key = make_mock_key(key_id=10, user_id=2, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=user_auth_headers,
+            json={"name": "Renamed", "tpm_limit": 10_000_000},
+        )
+        assert resp.status_code == 403
+        body = await resp.get_json()
+        assert body["denied_fields"] == ["tpm_limit"]
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_admin_can_set_budget(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin holds quota:update, so the budget write succeeds. regression: audit-2026-09-14."""
+        key = make_mock_key(key_id=10)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=auth_headers,
+            json={"budget_limit_daily": 500.0},
+        )
+        assert resp.status_code == 200
+        app_mock_db.return_value.update.assert_called_once_with(budget_limit_daily=500.0)
+
+    async def test_resource_manager_can_set_budget_in_own_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager holds quota:update for its own org -- not over-restricted.
+
+        regression: audit-2026-09-14.
+        """
+        key = make_mock_key(key_id=10, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=rm_auth_headers,
+            json={"budget_limit_monthly": 4200.0},
+        )
+        assert resp.status_code == 200
+
+    async def test_resource_manager_cannot_set_budget_out_of_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """Org scoping still refuses a resource_manager on another org's key.
+
+        regression: audit-2026-09-14.
+        """
+        key = make_mock_key(key_id=10, org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.put(
+            "/api/v1/keys/10",
+            headers=rm_auth_headers,
+            json={"budget_limit_daily": 100.0},
+        )
+        assert resp.status_code == 403
+        app_mock_db.return_value.update.assert_not_called()
