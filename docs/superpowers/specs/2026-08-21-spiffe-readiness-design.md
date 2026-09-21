@@ -3,6 +3,14 @@
 **Status**: decisions recorded 2026-08-21 — ready for planning
 **Date**: 2026-08-21
 
+> **Update 2026-09-21**: the vendored `shared/py_libs/` tree cited below was
+> deleted as an unused local copy of penguin-libs code (house rule:
+> `backend.md` Shared Libraries). Nothing imported it, so the evidence rows
+> and outbound-client references naming `shared/py_libs/py_libs/...` describe
+> code that no longer exists — they are kept as the record of what was found on
+> 2026-08-21. Implement the outbound-client work against the real call sites
+> (`proxy/`, `shared/routing/`, `shared/fleet/`) instead.
+
 ## Problem
 
 SPIFFE/SPIRE is currently docs-only in this repo: zero implementation in
