@@ -456,8 +456,13 @@ class TestRoutingAssignments:
 
     # -- update_entry --------------------------------------------------------
 
-    async def test_update_requires_body(self, client, auth_headers: dict) -> None:
-        """An empty JSON body ({}) returns 400."""
+    async def test_update_requires_body(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An empty JSON body ({}) has no updatable fields -> 400 (row exists)."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row(
+            scope="global", scope_ref=None
+        )
         resp = await client.put("/api/v1/routing/assignments/1", headers=auth_headers, json={})
         assert resp.status_code == 400
 
@@ -985,8 +990,11 @@ class TestRoutingRules:
 
     # -- update_rule -----------------------------------------------------
 
-    async def test_update_requires_body(self, client, auth_headers: dict) -> None:
-        """An empty JSON body ({}) returns 400."""
+    async def test_update_requires_body(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An empty JSON body ({}) has no updatable fields -> 400 (row exists)."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
         resp = await client.put("/api/v1/routing/rules/1", headers=auth_headers, json={})
         assert resp.status_code == 400
 
@@ -1317,3 +1325,300 @@ class TestRoutingDryRun:
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["meta"]["organization_id"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Response-schema exact-field regression (@validate_response guard)
+# ---------------------------------------------------------------------------
+
+
+_ASSIGNMENT_KEYS = {
+    "id",
+    "tool_type",
+    "complexity",
+    "region",
+    "model_name",
+    "model_params",
+    "vram_gb",
+    "capability_score",
+    "enabled",
+    "credential_label",
+    "escalation_model",
+    "fallback_models",
+    "scope",
+    "scope_ref",
+    "created_at",
+}
+_RULE_KEYS = {
+    "id",
+    "name",
+    "priority",
+    "match",
+    "action",
+    "enabled",
+    "organization_id",
+    "created_at",
+}
+_POLICY_KEYS = {
+    "id",
+    "organization_id",
+    "mode",
+    "escalation_threshold",
+    "escalation_target",
+    "classifier_prompt",
+    "de_escalation",
+    "idle_reset_minutes",
+    "sensitivity_routing",
+    "budget_pressure_enabled",
+    "provider_failover",
+    "created_at",
+    "updated_at",
+}
+_TRACE_KEYS = {
+    "id",
+    "request_id",
+    "organization_id",
+    "timestamp",
+    "requirements",
+    "tool_type",
+    "tool_type_source",
+    "rules_fired",
+    "classifier_output",
+    "assignment_model",
+    "capability_veto",
+    "veto_reason",
+    "qualified_candidates",
+    "pressure_signals",
+    "final_model",
+    "routed_from",
+    "escalated",
+}
+_DRY_RUN_KEYS = {
+    "model",
+    "fallback_chain",
+    "routed_from",
+    "tool_type",
+    "tool_type_source",
+    "rules_fired",
+    "classifier_output",
+    "assignment_model",
+    "capability_veto",
+    "veto_reason",
+    "qualified_candidates",
+    "escalated",
+}
+
+
+class TestResponseSchemaFieldSets:
+    """Assert the EXACT field set of every routing-admin response envelope.
+
+    regression: audit-2026-09-14-wave2 -- @validate_response reserializes each
+    body to its declared model, so a field dropped from a model (or a handler
+    return) disappears from the wire. These pin the contract so a silent drop
+    fails loudly.
+    """
+
+    # -- assignments -----------------------------------------------------
+
+    async def test_assignment_list_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment list fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_assignment_row()])
+        app_mock_db.return_value.count.return_value = 1
+        body = await (
+            await client.get("/api/v1/routing/assignments/", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta", "pagination"}
+        assert set(body["meta"].keys()) == {"total", "timestamp"}
+        assert set(body["pagination"].keys()) == {"page", "limit", "total", "pages"}
+        assert set(body["data"][0].keys()) == _ASSIGNMENT_KEYS
+
+    async def test_assignment_get_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment get fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row()
+        body = await (
+            await client.get("/api/v1/routing/assignments/1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"timestamp"}
+        assert set(body["data"].keys()) == _ASSIGNMENT_KEYS
+
+    async def test_assignment_create_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment create fields."""
+        new_row = _assignment_row(id=7, tool_type="embed")
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, new_row]
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "embed", "model_name": "gpt-4o"},
+        )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"action", "warnings", "timestamp"}
+        assert set(body["data"].keys()) == _ASSIGNMENT_KEYS
+
+    async def test_assignment_delete_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment delete fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row()
+        body = await (
+            await client.delete("/api/v1/routing/assignments/1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == {"id"}
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+
+    async def test_assignment_seed_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment seed fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        body = await (
+            await client.post("/api/v1/routing/assignments/seed", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == {"created", "updated", "total"}
+        assert set(body["meta"].keys()) == {"timestamp"}
+
+    # -- rules -----------------------------------------------------------
+
+    async def test_rule_list_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule list fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_rule_row()])
+        app_mock_db.return_value.count.return_value = 1
+        body = await (await client.get("/api/v1/routing/rules/", headers=auth_headers)).get_json()
+        assert set(body.keys()) == {"status", "data", "meta", "pagination"}
+        assert set(body["pagination"].keys()) == {"page", "limit", "total", "pages"}
+        assert set(body["data"][0].keys()) == _RULE_KEYS
+
+    async def test_rule_get_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule get fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+        body = await (await client.get("/api/v1/routing/rules/1", headers=auth_headers)).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == _RULE_KEYS
+
+    async def test_rule_create_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule create fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=auth_headers,
+            json={"name": "r", "match": {"a": 1}, "action": {"tool_type": "chat"}},
+        )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+        assert set(body["data"].keys()) == _RULE_KEYS
+
+    async def test_rule_delete_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule delete fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+        body = await (
+            await client.delete("/api/v1/routing/rules/1", headers=auth_headers)
+        ).get_json()
+        assert set(body["data"].keys()) == {"id"}
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+
+    # -- policies --------------------------------------------------------
+
+    async def test_policy_get_defaults_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: policy get defaults fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        body = await (
+            await client.get("/api/v1/routing/policies/1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"defaulted", "timestamp"}
+        assert set(body["data"].keys()) == _POLICY_KEYS
+
+    async def test_policy_upsert_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: policy upsert fields."""
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, _policy_row()]
+        resp = await client.put(
+            "/api/v1/routing/policies/1", headers=auth_headers, json={"mode": "cost"}
+        )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+        assert set(body["data"].keys()) == _POLICY_KEYS
+
+    async def test_policy_delete_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: policy delete fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _policy_row()
+        body = await (
+            await client.delete("/api/v1/routing/policies/1", headers=auth_headers)
+        ).get_json()
+        assert set(body["data"].keys()) == {"organization_id"}
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+
+    # -- decisions -------------------------------------------------------
+
+    async def test_decision_get_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: decision get fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_trace_row()])
+        body = await (
+            await client.get("/api/v1/routing/decisions/req-1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"timestamp"}
+        assert set(body["data"].keys()) == _TRACE_KEYS
+
+    async def test_decision_summary_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: decision summary fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_trace_row()])
+        body = await (
+            await client.get("/api/v1/routing/decisions/", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"organization_id", "from", "to", "timestamp"}
+        assert set(body["data"].keys()) == {
+            "total",
+            "by_tool_type_source",
+            "veto_rate",
+            "pressure_shift_rate",
+            "escalation_rate",
+        }
+
+    # -- dry run ---------------------------------------------------------
+
+    async def test_dry_run_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """Exact response field set: dry run fields."""
+        monkeypatch.setenv(_DRY_RUN_FLAG_ENV, "1")
+        resp = await client.post(
+            "/api/v1/routing/dry-run/",
+            headers=auth_headers,
+            json={"prompt": "Write a bubble sort in Python", "tool_type": "code"},
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"organization_id", "persisted", "timestamp"}
+        assert set(body["data"].keys()) == _DRY_RUN_KEYS
