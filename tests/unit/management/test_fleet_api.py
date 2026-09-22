@@ -86,6 +86,7 @@ class TestListFleetBackends:
         _enable_flag(monkeypatch)
         backend = make_mock_backend()
         app_mock_db.return_value.select.return_value = make_select_result([backend])
+        app_mock_db.return_value.count.return_value = 1  # regression: audit-2026-09-14-wave2
 
         resp = await client.get(ENDPOINT_PATH, headers=auth_headers)
         assert resp.status_code == 200
@@ -94,6 +95,9 @@ class TestListFleetBackends:
         assert len(body["data"]) == 1
         assert body["data"][0]["name"] == "primary-ollama"
         assert body["data"][0]["management_scope"] == "full_lifecycle"
+        # bounded page: meta carries the pagination window + true total
+        assert body["meta"]["total"] == 1
+        assert body["meta"]["limit"] <= 1000
 
 
 class TestCreateFleetBackend:
@@ -412,3 +416,93 @@ class TestFleetBackendHealth:
         assert resp.status_code == 200
         body = await resp.get_json()
         assert body["data"]["healthy"] is False
+
+
+# ============================================================================
+# Response-schema exact-field coverage (regression: audit-2026-09-14-wave2)
+#
+# quart-schema silently DROPS any handler-returned field absent from the
+# response model, and silently would let an ADDED model field leak. These pin
+# the exact serialised field set of every fleet envelope -- most importantly
+# that `data` never grows a plaintext-credential field. Verified to fail
+# pre-change by deleting one model field and observing the assertion break.
+# ============================================================================
+
+_BACKEND_FIELDS = {
+    "id",
+    "org_id",
+    "name",
+    "type",
+    "mode",
+    "management_scope",
+    "config",
+    "credentials_ref",
+    "status",
+    "created_at",
+    "updated_at",
+}
+
+
+class TestResponseSchemasWave2:
+    """Exact-field-set assertions for every JSON fleet response envelope."""
+
+    async def test_get_exact_fields(self, client, app_mock_db, auth_headers, monkeypatch):
+        """GET envelope is exactly {status,data,meta}; data is the full backend field set."""
+        _enable_flag(monkeypatch)
+        backend = make_mock_backend(org_id=1, credentials_ref="enc:supersecretvalue")
+        app_mock_db.return_value.select.return_value = make_select_result([backend])
+        resp = await client.get(f"{ENDPOINT_PATH}/1", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == _BACKEND_FIELDS
+        assert set(body["meta"].keys()) == {"timestamp"}
+        # the stored credential is never echoed in plaintext
+        assert body["data"]["credentials_ref"] != "enc:supersecretvalue"
+
+    async def test_list_exact_fields(self, client, app_mock_db, auth_headers, monkeypatch):
+        """List data items carry the full backend field set; meta carries the page window."""
+        _enable_flag(monkeypatch)
+        backend = make_mock_backend(org_id=1)
+        app_mock_db.return_value.select.return_value = make_select_result([backend])
+        app_mock_db.return_value.count.return_value = 1
+        resp = await client.get(ENDPOINT_PATH, headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body["data"][0].keys()) == _BACKEND_FIELDS
+        assert set(body["meta"].keys()) == {"total", "page", "limit", "timestamp"}
+
+    async def test_create_exact_fields(self, client, app_mock_db, auth_headers, monkeypatch):
+        """Create data is the full backend field set; meta is {action,timestamp}."""
+        _enable_flag(monkeypatch)
+        created = make_mock_backend(org_id=1)
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([]),
+            make_select_result([created]),
+        ]
+        app_mock_db.fleet_backends.insert.return_value = 1
+        resp = await client.post(
+            ENDPOINT_PATH,
+            headers=auth_headers,
+            json={"name": "n", "type": "ollama", "management_scope": "full_lifecycle"},
+        )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert set(body["data"].keys()) == _BACKEND_FIELDS
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+
+    async def test_health_exact_fields(self, client, app_mock_db, auth_headers, monkeypatch):
+        """Health data is exactly {backend_id,healthy,node_count,detail}."""
+        _enable_flag(monkeypatch)
+        backend_row = make_mock_backend(org_id=1)
+        app_mock_db.return_value.select.return_value = make_select_result([backend_row])
+        fake_backend = MagicMock()
+        fake_backend.health = AsyncMock(
+            return_value=FleetHealth(backend_id=1, healthy=True, node_count=2, detail={"ok": True})
+        )
+        with patch("services.management.app.api.v1.fleet.build_backend", return_value=fake_backend):
+            resp = await client.get(f"{ENDPOINT_PATH}/1/health", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body["data"].keys()) == {"backend_id", "healthy", "node_count", "detail"}
+        assert set(body["meta"].keys()) == {"timestamp"}
