@@ -14,7 +14,6 @@ omit =
     */proto/*
     *_pb2.py
     *_pb2_grpc.py
-    shared/py_libs/*
     services/management/app/grpc/proto/*
     # 2026-08-21 coverage audit: 0 dedicated tests, 1229 lines -- deliberate
     # deferral, decide in Stage 1 whether to test or knowingly keep deferred.
