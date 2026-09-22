@@ -102,8 +102,9 @@ async def test_list_ollama_deployments_admin_success(client, app_mock_db, auth_h
 
     # Mock select() to return deployments
     app_mock_db.return_value.select.return_value = make_select_result([dep1, dep2])
-    # Mock count() for model counts
-    app_mock_db.return_value.count.side_effect = [2, 3]  # dep1 has 2 models, dep2 has 3
+    # count() is called once for the pagination total, then once per deployment
+    # for its model_count (regression: audit-2026-09-14-wave2).
+    app_mock_db.return_value.count.side_effect = [2, 2, 3]  # total=2, dep1=2 models, dep2=3
 
     resp = await client.get("/api/v1/ollama/deployments", headers=auth_headers)
 
@@ -115,11 +116,14 @@ async def test_list_ollama_deployments_admin_success(client, app_mock_db, auth_h
     assert data["deployments"][0]["model_count"] == 2
     assert data["deployments"][1]["name"] == "dep2"
     assert data["deployments"][1]["model_count"] == 3
+    assert data["pagination"]["total"] == 2  # bounded page metadata
+    assert data["pagination"]["limit"] <= 1000
 
 
 async def test_list_ollama_deployments_empty(client, app_mock_db, auth_headers):
     """List returns empty array when no deployments."""
     app_mock_db.return_value.select.return_value = make_select_result([])
+    app_mock_db.return_value.count.return_value = 0  # regression: audit-2026-09-14-wave2
 
     resp = await client.get("/api/v1/ollama/deployments", headers=auth_headers)
 
@@ -643,6 +647,7 @@ async def test_list_ollama_models_success(client, app_mock_db, auth_headers):
         make_select_result([]),  # route status for model1
         make_select_result([]),  # route status for model2
     ]
+    app_mock_db.return_value.count.return_value = 2  # regression: audit-2026-09-14-wave2
 
     resp = await client.get("/api/v1/ollama/deployments/1/models", headers=auth_headers)
 
@@ -660,6 +665,7 @@ async def test_list_ollama_models_empty(client, app_mock_db, auth_headers):
         make_select_result([dep]),
         make_select_result([]),
     ]
+    app_mock_db.return_value.count.return_value = 0  # regression: audit-2026-09-14-wave2
 
     resp = await client.get("/api/v1/ollama/deployments/1/models", headers=auth_headers)
 
@@ -923,12 +929,23 @@ async def test_create_ollama_deployment_docker_type_generates_compose(
 
 
 async def test_update_ollama_deployment_empty_body_dict(client, app_mock_db, auth_headers):
-    """An empty JSON object ({}) body is falsy -> 400."""
+    """An empty JSON object ({}) is a valid no-op partial update -> 200.
+
+    regression: audit-2026-09-14-wave2 -- adding @validate_request makes {} a
+    valid empty partial (every field None), identical to a body carrying only
+    unrecognised fields (see test_update_ollama_deployment_unrecognized_field_is_a_noop).
+    The pre-audit 400 came from a raw-dict `if not data` truthiness check that
+    the typed request model removes; keys.py behaves the same way.
+    """
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+
     resp = await client.put(
         "/api/v1/ollama/deployments/1", headers=auth_headers, data=json.dumps({})
     )
 
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    assert "updated" in (await resp.get_json())["message"].lower()
 
 
 async def test_update_ollama_deployment_only_endpoint_url(client, app_mock_db, auth_headers):
@@ -1387,3 +1404,118 @@ async def test_export_all_metallb_services_not_admin(client, app_mock_db, user_a
     resp = await client.get("/api/v1/ollama/export/metallb-all", headers=user_auth_headers)
 
     assert resp.status_code == 403
+
+
+# ============================================================================
+# Response-schema exact-field coverage (regression: audit-2026-09-14-wave2)
+#
+# quart-schema silently DROPS any handler-returned field absent from the
+# response model. These pin the exact serialised field set of each JSON
+# response so a model edit that omits a field fails loudly. Verified to fail
+# pre-change by deleting one model field and observing the assertion break.
+# ============================================================================
+
+_SUMMARY_FIELDS = {
+    "id",
+    "name",
+    "endpoint_url",
+    "deployment_type",
+    "status",
+    "health_status",
+    "model_count",
+    "auto_start",
+    "last_health_check",
+    "created_at",
+}
+
+_DETAIL_FIELDS = {
+    "id",
+    "name",
+    "endpoint_url",
+    "deployment_type",
+    "docker_compose_config",
+    "gpu_config",
+    "resource_limits",
+    "status",
+    "health_status",
+    "auto_start",
+    "last_health_check",
+    "created_at",
+    "models",
+}
+
+_MODEL_FIELDS = {"id", "model_name", "model_tag", "status", "size_bytes"}
+
+
+async def test_list_deployment_exact_fields(client, app_mock_db, auth_headers):
+    """Each list item carries exactly the summary field set; body carries pagination."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+    app_mock_db.return_value.count.side_effect = [1, 0]  # total=1, dep model_count=0
+    resp = await client.get("/api/v1/ollama/deployments", headers=auth_headers)
+    assert resp.status_code == 200
+    body = await resp.get_json()
+    assert set(body.keys()) == {"deployments", "total", "pagination"}
+    assert set(body["deployments"][0].keys()) == _SUMMARY_FIELDS
+    assert set(body["pagination"].keys()) == {"page", "limit", "total", "pages"}
+
+
+async def test_get_deployment_exact_fields(client, app_mock_db, auth_headers):
+    """GET by id serialises exactly the detail field set, models nested exactly."""
+    dep = make_mock_deployment(dep_id=1)
+    model = make_mock_model(model_id=1, name="llama3.2")
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),
+        make_select_result([model]),
+    ]
+    resp = await client.get("/api/v1/ollama/deployments/1", headers=auth_headers)
+    assert resp.status_code == 200
+    body = await resp.get_json()
+    assert set(body.keys()) == _DETAIL_FIELDS
+    assert set(body["models"][0].keys()) == _MODEL_FIELDS
+
+
+async def test_create_deployment_exact_fields(client, app_mock_db, auth_headers):
+    """Create returns exactly {id, name, deployment_type, message}."""
+    app_mock_db.return_value.select.return_value = make_select_result([])
+    app_mock_db.ollama_deployments.insert.return_value = 9
+    resp = await client.post(
+        "/api/v1/ollama/deployments",
+        headers=auth_headers,
+        json={"name": "d", "endpoint_url": "http://ollama:11434"},
+    )
+    assert resp.status_code == 201
+    assert set((await resp.get_json()).keys()) == {"id", "name", "deployment_type", "message"}
+
+
+async def test_start_action_exact_fields(client, app_mock_db, auth_headers):
+    """Start returns exactly {deployment_id, status, message}."""
+    dep = make_mock_deployment(dep_id=1)
+    dep.deployment_type = "docker"
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+    resp = await client.post("/api/v1/ollama/deployments/1/start", headers=auth_headers)
+    assert resp.status_code == 200
+    assert set((await resp.get_json()).keys()) == {"deployment_id", "status", "message"}
+
+
+async def test_health_response_exact_fields(client, app_mock_db, auth_headers):
+    """Health returns exactly the six documented fields."""
+    dep = make_mock_deployment(dep_id=1)
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+    mock_response = MagicMock(status_code=200)
+    mock_http_client = MagicMock()
+    mock_http_client.__enter__.return_value.get.return_value = mock_response
+    with patch(
+        "services.management.app.services.ollama_manager.httpx.Client",
+        return_value=mock_http_client,
+    ):
+        resp = await client.get("/api/v1/ollama/deployments/1/health", headers=auth_headers)
+    assert resp.status_code == 200
+    assert set((await resp.get_json()).keys()) == {
+        "deployment_id",
+        "endpoint_url",
+        "health_status",
+        "healthy",
+        "checked_at",
+        "error",
+    }
