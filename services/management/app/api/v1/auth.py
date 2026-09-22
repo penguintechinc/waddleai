@@ -13,7 +13,7 @@ import jwt as _jwt
 from passlib.hash import bcrypt
 from penguin_aaa.authn import OIDCProvider, OIDCProviderConfig
 from penguin_dal.db import DB
-from quart import Response, g, jsonify, request
+from quart import Response, after_this_request, g, jsonify, request
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
@@ -39,6 +39,101 @@ _DEFAULT_TOKEN_TTL_HOURS = 1
 _MAX_TOKEN_TTL_HOURS = 24
 
 _GENERIC_LOGIN_FAILURE = "Invalid credentials"
+
+# ---------------------------------------------------------------------------
+# Browser session cookie (audit-2026-09-14).
+#
+# The access token is additionally delivered to browsers in an HttpOnly +
+# Secure + SameSite=Strict cookie so JavaScript can never read it (the webui
+# previously kept it in localStorage, where any XSS could exfiltrate it). The
+# JSON body of the login response still carries the token unchanged, so API and
+# CLI clients are unaffected -- the cookie is purely additive for the browser.
+# ---------------------------------------------------------------------------
+_ACCESS_COOKIE_NAME = "waddleai_access_token"  # noqa: S105 -- cookie NAME, not a secret
+
+# CSRF: an HttpOnly cookie is attached automatically by the browser, which
+# reintroduces the CSRF exposure a localStorage bearer token did not have. Two
+# layers defend it. First, SameSite=Strict on the cookie: a cross-site context
+# never sends it at all. Second, for cookie-authenticated *state-changing*
+# requests, a mandatory custom request header -- a cross-site attacker can
+# forge a form/img/navigation POST but cannot attach a custom header without a
+# CORS preflight, which this service's default-deny origin allowlist refuses,
+# so the header's presence proves the request came from our own same-origin
+# SPA (the OWASP "custom request header" CSRF defence for JSON APIs).
+# Bearer-header (API/CLI) callers are exempt: CSRF only abuses ambient cookie
+# credentials, and a browser never attaches an Authorization header on its own.
+_CSRF_HEADER = "X-Requested-With"
+_CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
+def _access_cookie_secure() -> bool:
+    """Return whether the access cookie must carry the ``Secure`` attribute.
+
+    Reads a dedicated ``AUTH_COOKIE_SECURE`` env var rather than Quart's
+    ``SESSION_COOKIE_SECURE`` config key: Quart pre-populates the latter to
+    False on every app, so inheriting it would silently ship a non-Secure
+    token cookie in any config that does not explicitly override it. Secure by
+    default; an operator serving the stack over plain HTTP locally can set
+    ``AUTH_COOKIE_SECURE=false``. Browsers treat ``localhost`` as a secure
+    context, so the secure default still works behind the usual dev proxy.
+    """
+    raw = os.getenv("AUTH_COOKIE_SECURE")
+    if raw is not None:
+        return raw.strip().lower() not in {"0", "false", "no", "off"}
+    return True
+
+
+def _set_access_cookie(token: str, max_age_seconds: int) -> None:
+    """Attach the HttpOnly access-token cookie to the outgoing response.
+
+    Registered via ``after_this_request`` so it lands on the final Response
+    that ``quart_schema.validate_response`` builds from the handler's returned
+    dict, instead of fighting that decorator for control of the return value.
+    """
+
+    # `response` is intentionally left unannotated: quart's after_this_request
+    # types its callback for the quart|werkzeug Response union, and narrowing
+    # the parameter to quart's Response alone is a contravariance error.
+    @after_this_request
+    def _apply(response):
+        response.set_cookie(
+            _ACCESS_COOKIE_NAME,
+            token,
+            max_age=max_age_seconds,
+            httponly=True,
+            secure=_access_cookie_secure(),
+            samesite="Strict",
+            path="/",
+        )
+        return response
+
+
+def _clear_access_cookie() -> None:
+    """Expire the HttpOnly access-token cookie on the outgoing response."""
+
+    # Unannotated `response` for the same after_this_request contravariance
+    # reason documented on _set_access_cookie's callback above.
+    @after_this_request
+    def _apply(response):
+        response.delete_cookie(
+            _ACCESS_COOKIE_NAME,
+            path="/",
+            httponly=True,
+            secure=_access_cookie_secure(),
+            samesite="Strict",
+        )
+        return response
+
+
+def _csrf_ok_for_cookie_auth() -> bool:
+    """Return True when a cookie-authenticated request clears the CSRF gate.
+
+    Safe methods (which change no state) always pass; unsafe methods must carry
+    the custom header the SPA sends on every request (see ``_CSRF_HEADER``).
+    """
+    if request.method in _CSRF_SAFE_METHODS:
+        return True
+    return bool(request.headers.get(_CSRF_HEADER))
 
 
 def _db() -> DB:
@@ -364,45 +459,72 @@ def verify_api_key(api_key: str) -> dict[str, Any] | None:
 
 
 def require_auth(f):
-    """Decorator to require authentication."""
+    """Decorator to require authentication.
+
+    Accepts either the ``Authorization: Bearer`` header (API and CLI clients,
+    authoritative when present) or, when that header is absent, the HttpOnly
+    ``waddleai_access_token`` cookie the browser attaches automatically
+    (audit-2026-09-14). Cookie-authenticated *state-changing* requests must
+    additionally carry the CSRF header (``_CSRF_HEADER``); header-authenticated
+    requests are exempt, because a browser never attaches an Authorization
+    header on its own, so the cookie-borne CSRF risk cannot reach that path.
+    """
 
     @wraps(f)
     async def decorated_function(*args, **kwargs):
+        async def _invoke():
+            if asyncio.iscoroutinefunction(f):
+                return await f(*args, **kwargs)
+            return f(*args, **kwargs)
+
+        async def _authenticate_jwt(token: str) -> bool:
+            """Set ``g.user`` from a valid, non-revoked JWT; report success.
+
+            ``_decode_token`` deliberately skips the revocation check so the
+            cache lookup can be offloaded off the event loop rather than
+            blocking it on every authenticated request.
+            """
+            payload = _decode_token(token)
+            if not payload:
+                return False
+            revoked = await asyncio.to_thread(get_token_denylist().is_revoked, payload.get("jti"))
+            if revoked:
+                logger.info("auth: rejected a revoked token")
+                return False
+            g.user = payload
+            return True
+
         auth_header = request.headers.get("Authorization")
 
-        if not auth_header:
-            return jsonify({"error": "Authorization header required"}), 401
+        # Authorization header is authoritative when present (API/CLI clients),
+        # and exempt from the CSRF-header requirement (see the decorator's
+        # docstring). A malformed or invalid header is refused here rather than
+        # silently falling through to the cookie path.
+        if auth_header:
+            if auth_header.startswith("Bearer "):
+                token = auth_header.split(" ", 1)[1]
+                if await _authenticate_jwt(token):
+                    return await _invoke()
+                # Not a valid JWT -- an API key may occupy the same slot.
+                user_ctx = await asyncio.to_thread(verify_api_key, token)
+                if user_ctx:
+                    g.user = user_ctx
+                    return await _invoke()
+            return jsonify({"error": "Invalid or expired token"}), 401
 
-        # Handle Bearer token
-        if auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
+        # No Authorization header: fall back to the browser session cookie.
+        cookie_token = request.cookies.get(_ACCESS_COOKIE_NAME)
+        if cookie_token:
+            if not _csrf_ok_for_cookie_auth():
+                logger.info("auth: cookie-authenticated request refused: missing CSRF header")
+                return jsonify({"error": "CSRF verification failed"}), 403
+            if await _authenticate_jwt(cookie_token):
+                return await _invoke()
+            return jsonify({"error": "Invalid or expired token"}), 401
 
-            # Try JWT first (CPU-only, no DB access -- safe to call directly).
-            # _decode_token deliberately skips the revocation check so the
-            # cache lookup below can be offloaded instead of blocking the
-            # event loop on every authenticated request.
-            payload = _decode_token(token)
-            if payload:
-                revoked = await asyncio.to_thread(
-                    get_token_denylist().is_revoked, payload.get("jti")
-                )
-                if revoked:
-                    logger.info("auth: rejected a revoked token")
-                    return jsonify({"error": "Invalid or expired token"}), 401
-                g.user = payload
-                if asyncio.iscoroutinefunction(f):
-                    return await f(*args, **kwargs)
-                return f(*args, **kwargs)
-
-            # Try API key (does DB lookups -- offload to a thread)
-            user_ctx = await asyncio.to_thread(verify_api_key, token)
-            if user_ctx:
-                g.user = user_ctx
-                if asyncio.iscoroutinefunction(f):
-                    return await f(*args, **kwargs)
-                return f(*args, **kwargs)
-
-        return jsonify({"error": "Invalid or expired token"}), 401
+        # No credential at all. Preserve the exact legacy 401 body pinned by the
+        # management contract snapshot (tests/contract/snapshots/mgmt_orgs_unauth).
+        return jsonify({"error": "Authorization header required"}), 401
 
     return decorated_function
 
@@ -582,6 +704,11 @@ async def login(data: LoginRequest):
         organization_id=user.organization_id,
     )
 
+    # Additionally hand the browser an HttpOnly cookie carrying the same token
+    # (audit-2026-09-14). The JSON body below is unchanged, so API/CLI clients
+    # keep reading the token from it exactly as before.
+    _set_access_cookie(issued.access_token, issued.expires_in)
+
     return {
         "access_token": issued.access_token,
         "token_type": "bearer",
@@ -611,6 +738,14 @@ async def logout():
     # every request, with the entry expiring at the token's own `exp` so the
     # store self-cleans. Before audit-2026-09-14 this endpoint reported
     # success while doing nothing at all.
+    #
+    # Also expire the browser session cookie so a logged-out browser stops
+    # sending the token on its own. This is additive to (never a replacement
+    # for) the jti revocation above: clearing the cookie stops future browser
+    # requests, while the denylist rejects the token even if a copy was already
+    # captured elsewhere.
+    _clear_access_cookie()
+
     jti = g.user.get("jti")
     exp = g.user.get("exp")
 
