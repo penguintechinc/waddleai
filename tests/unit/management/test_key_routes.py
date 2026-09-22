@@ -3,6 +3,7 @@
 from datetime import datetime
 from unittest.mock import MagicMock
 
+from shared.auth.rbac import Permission
 from tests.unit.management.conftest import make_select_result
 from tests.unit.management.route_conftest import make_mock_key
 
@@ -698,3 +699,157 @@ class TestDeleteKeyScopeGate:
 
         resp = await client.delete("/api/v1/keys/10", headers=auth_headers)
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# audit-2026-09-14-wave2: APIKEY_ADMIN scope reconciliation.
+#
+# The admin cross-org "touch any key" bypass in get_key/update_key/rotate_key/
+# get_key_usage was converted from `role == "admin"` to the admin-only
+# `apikey:admin` scope (delete_key was already scope-based on the admin-only
+# apikey:delete). These tests use a DIVERGENT token (role=resource_manager +
+# scope=[apikey:admin]) so they FAIL against the old role-name check (403) and
+# PASS against the new scope check (200) -- proving the conversion is real, not
+# a rename. A plain resource_manager (no apikey:admin) stays refused cross-org.
+# ---------------------------------------------------------------------------
+
+
+class TestApikeyAdminScopeReconciliation:
+    """apikey:admin gates the cross-org key bypass, not the role name.
+
+    The keys below are owned by another org (99) and another user (99); the
+    divergent caller is resource_manager in org 1.
+    """
+
+    async def test_get_key_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) role=resource_manager + apikey:admin reads another org's key.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([key]), empty, empty]
+        headers = divergent_headers([Permission.APIKEY_ADMIN])
+        resp = await client.get("/api/v1/keys/77", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_get_key_without_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) role=resource_manager WITHOUT apikey:admin is refused cross-org.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        resp = await client.get("/api/v1/keys/77", headers=divergent_headers([]))
+        assert resp.status_code == 403
+
+    async def test_get_key_own_org_still_works_without_scope(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still reads a key in its OWN org without the scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=5, user_id=99, org_id=1)
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([key]), empty, empty]
+        resp = await client.get("/api/v1/keys/5", headers=divergent_headers([]))
+        assert resp.status_code == 200
+
+    async def test_update_key_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) apikey:admin lets a non-admin rename another org's key.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        headers = divergent_headers([Permission.APIKEY_ADMIN])
+        resp = await client.put("/api/v1/keys/77", headers=headers, json={"name": "renamed"})
+        assert resp.status_code == 200
+
+    async def test_update_key_without_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no apikey:admin -> cross-org update refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        resp = await client.put(
+            "/api/v1/keys/77", headers=divergent_headers([]), json={"name": "renamed"}
+        )
+        assert resp.status_code == 403
+
+    async def test_update_key_own_org_still_works_without_scope(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) own-org rename still works for a scopeless resource_manager.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=6, user_id=99, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        resp = await client.put(
+            "/api/v1/keys/6", headers=divergent_headers([]), json={"name": "renamed"}
+        )
+        assert resp.status_code == 200
+
+    async def test_rotate_key_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) apikey:admin lets a non-admin rotate another org's key.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        headers = divergent_headers([Permission.APIKEY_ADMIN])
+        resp = await client.post("/api/v1/keys/77/rotate", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_rotate_key_without_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no apikey:admin -> cross-org rotate refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        resp = await client.post("/api/v1/keys/77/rotate", headers=divergent_headers([]))
+        assert resp.status_code == 403
+
+    async def test_key_usage_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) apikey:admin lets a non-admin read another org's key usage.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([key]),
+            make_select_result([]),
+        ]
+        headers = divergent_headers([Permission.APIKEY_ADMIN])
+        resp = await client.get("/api/v1/keys/77/usage", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_key_usage_without_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no apikey:admin -> cross-org usage refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=77, user_id=99, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        resp = await client.get("/api/v1/keys/77/usage", headers=divergent_headers([]))
+        assert resp.status_code == 403

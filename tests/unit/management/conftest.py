@@ -510,6 +510,42 @@ def rm_org2_auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+@pytest.fixture
+def divergent_headers():
+    """Factory for a token whose ``role`` and OIDC ``scope`` DELIBERATELY diverge.
+
+    audit-2026-09-14-wave2: the admin cross-org "bypass" checks in the
+    management route files were converted from ``role == "admin"`` to an
+    admin-only *scope* check. With the standard fixtures role and scope are
+    always aligned (scope is derived from role via ROLE_PERMISSIONS), so a
+    scope-vs-role conversion would pass identically before AND after -- proving
+    nothing. This factory mints a token carrying a NON-admin ``role`` claim
+    together with an explicit ``permissions`` set, which
+    ``user_context_to_claims`` serializes into the ``scope`` claim
+    independently of ``roles`` -- so the resulting ``g.user`` has e.g.
+    role=resource_manager + scope=[apikey:admin]. A pre-change (role-name)
+    check refuses it; a post-change (scope) check admits it. Signed with the
+    same ``_test_oidc_provider`` keypair the app verifies against (see
+    ``rm_org2_auth_headers`` for the keypair-namespace caveat -- this lives in
+    conftest for the same reason).
+    """
+
+    def _make(permissions, role: str = "resource_manager", user_id: int = 3, org_id: int = 1):
+        provider = _test_oidc_provider()
+        uc = UserContext(
+            user_id=user_id,
+            username="divergent",
+            role=Role(role),
+            organization_id=org_id,
+            managed_orgs=[],
+            permissions=set(permissions),
+        )
+        token = issue_token(uc, provider)
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    return _make
+
+
 def make_mock_user(
     user_id: int = 1,
     username: str = "admin",

@@ -32,6 +32,20 @@ def _db() -> DB:
     return db
 
 
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). audit-2026-09-14-wave2:
+    replaces the ``role == "admin"`` cross-org "any entity's quota" bypasses
+    with the admin-only ``quota:admin`` scope. Identical for a fresh admin
+    token; an in-flight admin JWT gains it on next login (<=1h TTL), API-key
+    admins immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
 # Bounds for the virtual-key quota columns. These values previously went
 # from the raw request JSON straight into the DB with no type or range
 # check at all, so a string, a negative number, NaN, or an absurd magnitude
@@ -165,29 +179,31 @@ def _validate_key_quota_bounds(data: SetKeyQuotaRequest) -> str | None:
 @require_scope(Permission.QUOTA_LIST)
 async def list_quotas():
     """List all quota configurations."""
-    user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
     page = PageRequest.from_request()
+    # audit-2026-09-14-wave2: admin "see every org's quotas" now keys on the
+    # admin-only quota:admin scope, not the role name.
+    can_admin = _has_scope(Permission.QUOTA_ADMIN)
 
     def _fetch():
         # Each entity select is bounded and stably ordered (audit-2026-09-14
         # DoS finding): the admin branches select every org/user/key otherwise.
         limitby = page.limitby
-        if user_role == "admin":
+        if can_admin:
             orgs = db(db.organizations.id > 0).select(limitby=limitby, orderby=db.organizations.id)
         else:
             orgs = db(db.organizations.id == org_id).select(
                 limitby=limitby, orderby=db.organizations.id
             )
 
-        if user_role == "admin":
+        if can_admin:
             users = db(db.users.id > 0).select(limitby=limitby, orderby=db.users.id)
         else:
             users = db(db.users.organization_id == org_id).select(
                 limitby=limitby, orderby=db.users.id
             )
 
-        if user_role == "admin":
+        if can_admin:
             keys = db(db.virtual_keys.id > 0).select(limitby=limitby, orderby=db.virtual_keys.id)
         else:
             keys = db(db.virtual_keys.organization_id == org_id).select(
@@ -271,8 +287,11 @@ async def set_user_quota(user_id: int, data: SetUserQuotaRequest) -> ResponseRet
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Permission check
-    if user_role == "resource_manager" and user.organization_id != org_id:
+    # Permission check -- audit-2026-09-14-wave2: the admin "any org's user
+    # quota" cross-org bypass now keys on the admin-only quota:admin scope, not
+    # the role name. The Vuln C role-hierarchy guard below is NOT a cross-org
+    # bypass (it stops a non-admin editing an admin USER's quota) and stays.
+    if not _has_scope(Permission.QUOTA_ADMIN) and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
     # Vuln C fix: prevent non-admin from modifying admin quota
     if user_role != "admin" and user.role == "admin":
@@ -370,7 +389,9 @@ async def set_key_quota(key_id: int, data: SetKeyQuotaRequest) -> ResponseReturn
         return jsonify({"error": "Key not found"}), 404
 
     # Ownership check -- proves the caller may touch this key at all.
-    if user_role not in ["admin"]:
+    # audit-2026-09-14-wave2: cross-org "touch any key" bypass keys on the
+    # admin-only quota:admin scope, not the role name.
+    if not _has_scope(Permission.QUOTA_ADMIN):
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
@@ -429,8 +450,9 @@ async def get_quota_status(entity_id):
         if not key:
             return jsonify({"error": "Key not found"}), 404
 
-        # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter
-        if user_role == "admin":
+        # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter.
+        # audit-2026-09-14-wave2: the admin "any key" bypass keys on quota:admin.
+        if _has_scope(Permission.QUOTA_ADMIN):
             # Admin can access any key
             pass
         elif user_role == "resource_manager":
@@ -493,8 +515,8 @@ async def get_quota_status(entity_id):
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        # Permission check
-        if user_role not in ["admin"]:
+        # Permission check -- audit-2026-09-14-wave2: admin "any user" bypass on quota:admin.
+        if not _has_scope(Permission.QUOTA_ADMIN):
             if user_role == "resource_manager" and user.organization_id != org_id:
                 return jsonify({"error": "Access denied"}), 403
             elif user_role not in ["resource_manager"] and user.id != user_id:
@@ -550,8 +572,8 @@ async def get_quota_status(entity_id):
         if not org:
             return jsonify({"error": "Organization not found"}), 404
 
-        # Permission check
-        if user_role not in ["admin"] and entity_id != org_id:
+        # Permission check -- audit-2026-09-14-wave2: admin "any org" bypass on quota:admin.
+        if not _has_scope(Permission.QUOTA_ADMIN) and entity_id != org_id:
             return jsonify({"error": "Access denied"}), 403
 
         daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)

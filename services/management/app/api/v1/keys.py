@@ -49,6 +49,26 @@ def _db() -> DB:
     return db
 
 
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Reads the authoritative ``scope`` claim off ``g.user`` -- never the
+    ``role`` claim, per the house scope-only policy on ``auth.require_scope``.
+    MUST be called from the request context (not a worker thread): handlers
+    compute the admin-capability boolean here and capture it in DB-thread
+    closures.
+
+    audit-2026-09-14-wave2: replaces the former ``role == "admin"`` cross-org
+    "touch any key" bypasses. Behaviour is identical for a freshly-issued
+    token (admin's bundle carries ``apikey:admin``); an admin JWT minted
+    BEFORE this deploys will not carry the new scope until the next login
+    (<=1h token TTL) -- API-key admins re-derive scope per request and get it
+    at once.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
 # Virtual-key columns whose value raises the holder's own ceiling or widens
 # what the key may reach. Editing one is a privilege decision, not an
 # ownership one: passing the ownership check below only proves the caller
@@ -289,6 +309,9 @@ async def list_keys():
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
     page = PageRequest.from_request()
+    # audit-2026-09-14-wave2: admin "see every org's keys" now keys on the
+    # admin-only apikey:admin scope, not the role name.
+    can_admin = _has_scope(Permission.APIKEY_ADMIN)
 
     def _fetch():
         # Bounded, stably-ordered window per role scope (audit-2026-09-14 DoS
@@ -296,7 +319,7 @@ async def list_keys():
         # unbounded result set into memory.
         limitby = page.limitby
         orderby = db.virtual_keys.id
-        if user_role == "admin":
+        if can_admin:
             return db(db.virtual_keys.id > 0).select(limitby=limitby, orderby=orderby)
         elif user_role == "resource_manager":
             return db(db.virtual_keys.organization_id == org_id).select(
@@ -348,8 +371,9 @@ async def get_key(key_id):
     if not key:
         return jsonify({"error": "Key not found"}), 404
 
-    # Permission check
-    if user_role not in ["admin"]:
+    # Permission check -- audit-2026-09-14-wave2: the cross-org "touch any key"
+    # bypass is now the admin-only apikey:admin scope, not the role name.
+    if not _has_scope(Permission.APIKEY_ADMIN):
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
@@ -512,7 +536,8 @@ async def update_key(key_id, data: UpdateKeyRequest):
         return jsonify({"error": "Key not found"}), 404
 
     # Ownership check -- proves the caller may touch this key at all.
-    if user_role not in ["admin"]:
+    # audit-2026-09-14-wave2: cross-org bypass keys on apikey:admin, not role.
+    if not _has_scope(Permission.APIKEY_ADMIN):
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
@@ -628,8 +653,9 @@ async def rotate_key(key_id):
     if not key:
         return jsonify({"error": "Key not found"}), 404
 
-    # Permission check
-    if user_role not in ["admin"]:
+    # Permission check -- audit-2026-09-14-wave2: cross-org bypass keys on the
+    # admin-only apikey:admin scope, not the role name.
+    if not _has_scope(Permission.APIKEY_ADMIN):
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
@@ -672,8 +698,9 @@ async def get_key_usage(key_id):
     if not key:
         return jsonify({"error": "Key not found"}), 404
 
-    # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter
-    if user_role == "admin":
+    # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter.
+    # audit-2026-09-14-wave2: the admin "any key" bypass keys on apikey:admin.
+    if _has_scope(Permission.APIKEY_ADMIN):
         # Admin can access any key
         pass
     elif user_role == "resource_manager":
