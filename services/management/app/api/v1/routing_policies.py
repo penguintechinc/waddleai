@@ -199,9 +199,25 @@ def _db() -> DB:
     return db
 
 
-def _can_access(user_role: str, user_org_id: int | None, target_org_id: int) -> bool:
-    """Admin manages any org's policy; everyone else only their own."""
-    return user_role == "admin" or target_org_id == user_org_id
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``).
+
+    audit-2026-09-14-wave2: the ``role == "admin"`` cross-org bypass in
+    ``_can_access`` (read/write any org's policy) is now the admin-only
+    ``routing_policy:admin`` scope. Identical for a fresh admin token; an
+    in-flight admin JWT gains it on next login (<=1h TTL), API-key admins
+    immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _can_access(can_admin: bool, user_org_id: int | None, target_org_id: int) -> bool:
+    """Admin (routing_policy:admin) manages any org's policy; everyone else only their own."""
+    return can_admin or target_org_id == user_org_id
 
 
 async def _invalidate_policy_cache(org_id: int) -> None:
@@ -221,9 +237,9 @@ async def _invalidate_policy_cache(org_id: int) -> None:
 @validate_response(PolicyGetResponse, 200)
 async def get_policy(organization_id: int) -> tuple:
     """Get an org's routing policy, or engine defaults if no row exists yet."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_POLICY_ADMIN)
     user_org_id = g.user.get("organization_id")
-    if not _can_access(user_role, user_org_id, organization_id):
+    if not _can_access(can_admin, user_org_id, organization_id):
         return jsonify({"status": "error", "error": "Access denied"}), 403
 
     def _fetch():
@@ -280,9 +296,9 @@ async def get_policy(organization_id: int) -> tuple:
 @validate_request(UpsertPolicyRequest)
 async def upsert_policy(organization_id: int, data: UpsertPolicyRequest) -> tuple:
     """Create or update an org's routing policy (upsert on organization_id)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_POLICY_ADMIN)
     user_org_id = g.user.get("organization_id")
-    if not _can_access(user_role, user_org_id, organization_id):
+    if not _can_access(can_admin, user_org_id, organization_id):
         return jsonify({"status": "error", "error": "Access denied"}), 403
 
     update_fields: dict[str, Any] = {

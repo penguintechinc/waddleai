@@ -201,7 +201,24 @@ async def _invalidate_scope(scope_type: str, scope_ref: str | None) -> None:
         logger.warning("cache_configs: failed to invalidate %s: %s", key, exc)
 
 
-def _visible_query(user_role: str, user_org_id: int | None) -> Any:
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). MUST be called from the
+    request context, not a DB worker thread: the read handlers compute the
+    admin-capability boolean here and capture it in their thread closures.
+
+    audit-2026-09-14-wave2: replaces the ``role == "admin"`` cross-org
+    read/write bypass with the admin-only ``cache_config:admin`` scope.
+    Identical for a fresh admin token; an in-flight admin JWT gains it on
+    next login (<=1h TTL), API-key admins immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _visible_query(can_admin: bool, user_org_id: int | None) -> Any:
     """Admin sees every row; everyone else sees global rows plus their own org's row.
 
     regression: audit-2026-09-14 -- the two read routes previously carried
@@ -216,7 +233,7 @@ def _visible_query(user_role: str, user_org_id: int | None) -> Any:
     same rationale, as model_access_policies._visible_query.
     """
     table = _db().cache_configs
-    if user_role == "admin":
+    if can_admin:
         return table.id > 0
     query = table.scope_type == "global"
     if user_org_id is not None:
@@ -224,7 +241,7 @@ def _visible_query(user_role: str, user_org_id: int | None) -> Any:
     return query
 
 
-def _row_visible_to(row: Any, user_role: str, user_org_id: int | None) -> bool:
+def _row_visible_to(row: Any, can_admin: bool, user_org_id: int | None) -> bool:
     """Re-check one row's visibility in Python, immediately before it is serialized.
 
     Deliberately redundant with `_visible_query`: the SQL filter is the
@@ -232,7 +249,7 @@ def _row_visible_to(row: Any, user_role: str, user_org_id: int | None) -> bool:
     tenant's row from being serialized even if the query is later widened
     or bypassed (which is exactly the regression audit-2026-09-14 found).
     """
-    if user_role == "admin":
+    if can_admin:
         return True
     if row.scope_type == "global":
         return True
@@ -279,20 +296,17 @@ async def _authorize_scope_write(scope_type: str, scope_ref: str | None, verb: s
     deny: a scope_type this function does not explicitly authorize is
     refused rather than allowed.
 
-    NOTE (audit-2026-09-14-wave2): the ``role == "admin"`` short-circuit
-    below is a house-rule deviation (security.md: authorize on scope, never
-    role name). It is NOT convertible to a scope check with the existing
-    Permission members: the only cache scope, ``CACHE_CONFIG_WRITE``, is
-    held by BOTH admin and resource_manager (rbac.py), and the route already
-    requires it -- so keying the cross-tenant/global bypass on it would let
-    resource_manager write any org's and the global config, breaking the
-    tenant isolation these very tests pin and the #239 exhaustiveness fix. A
-    faithful conversion needs a new admin-only scope (e.g. CACHE_CONFIG_ADMIN)
-    in rbac.py, which this pass is scoped out of touching. Left as-is,
-    pending that scope.
+    audit-2026-09-14-wave2: the cross-tenant/global bypass now keys on the
+    admin-only ``cache_config:admin`` scope, minted for exactly this in
+    rbac.py. ``CACHE_CONFIG_WRITE`` (the scope the route already requires)
+    could not be reused -- it is held by BOTH admin and resource_manager, so
+    keying the bypass on it would let resource_manager write any org's and
+    the global config, breaking tenant isolation and the #239 exhaustiveness
+    fix. Behaviour is identical for a fresh admin token; an in-flight admin
+    JWT gains ``cache_config:admin`` on next login (<=1h TTL), API-key admins
+    immediately.
     """
-    role = g.user.get("role")
-    if role == "admin":
+    if _has_scope(Permission.CACHE_CONFIG_ADMIN):
         return None
 
     if scope_type == "global":
@@ -321,12 +335,12 @@ async def list_cache_configs() -> tuple:
     """List cache configs, optionally filtered by scope_type/scope_ref, paginated."""
     scope_type = request.args.get("scope_type")
     scope_ref = request.args.get("scope_ref")
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.CACHE_CONFIG_ADMIN)
     user_org_id = g.user.get("organization_id")
     page = PageRequest.from_request()
 
     def _fetch():
-        query = _visible_query(user_role, user_org_id)
+        query = _visible_query(can_admin, user_org_id)
         if scope_type:
             query &= _db().cache_configs.scope_type == scope_type
         if scope_ref is not None:
@@ -334,7 +348,7 @@ async def list_cache_configs() -> tuple:
         return _db()(query).select(limitby=page.limitby, orderby=_db().cache_configs.id)
 
     rows = await asyncio.to_thread(_fetch)
-    visible = [r for r in rows if _row_visible_to(r, user_role, user_org_id)]
+    visible = [r for r in rows if _row_visible_to(r, can_admin, user_org_id)]
     return {
         "status": "success",
         "data": [_row_to_dict(r) for r in visible],
@@ -347,18 +361,18 @@ async def list_cache_configs() -> tuple:
 @validate_response(CacheConfigEnvelope, 200)
 async def get_cache_config(config_id: int) -> tuple:
     """Get a single cache config row by ID."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.CACHE_CONFIG_ADMIN)
     user_org_id = g.user.get("organization_id")
 
     def _fetch_one():
-        query = _visible_query(user_role, user_org_id) & (_db().cache_configs.id == config_id)
+        query = _visible_query(can_admin, user_org_id) & (_db().cache_configs.id == config_id)
         return _db()(query).select().first()
 
     row = await asyncio.to_thread(_fetch_one)
     # A row outside the caller's tenant is reported as absent rather than
     # forbidden, so this route cannot be used to enumerate which config ids
     # exist in other organizations (matches model_access_policies.py).
-    if not row or not _row_visible_to(row, user_role, user_org_id):
+    if not row or not _row_visible_to(row, can_admin, user_org_id):
         return jsonify({"status": "error", "error": "Cache config not found"}), 404
     return {"status": "success", "data": _row_to_dict(row)}, 200
 

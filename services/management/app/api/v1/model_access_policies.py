@@ -302,7 +302,25 @@ def _validate_rule(model_pattern: Any, action: Any, fallback_model: Any) -> str 
     return None
 
 
-def _visible_query(user_role: str, user_org_id: int | None, user_id: int | None) -> Any:
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). MUST be called from the
+    request context, not a DB worker thread: handlers compute the
+    admin-capability boolean here and capture it in the thread closures.
+
+    audit-2026-09-14-wave2: replaces the ``role == "admin"`` cross-org bypass
+    (read/write any org's policy) with the admin-only
+    ``model_access_policy:admin`` scope. Identical for a fresh admin token; an
+    in-flight admin JWT gains it on next login (<=1h TTL), API-key admins
+    immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _visible_query(can_admin: bool, user_org_id: int | None, user_id: int | None) -> Any:
     """Admin sees every row; everyone else sees global + their own org/user scoped rows.
 
     Key-scoped rows are visible to admin only in list/get -- resolving
@@ -313,7 +331,7 @@ def _visible_query(user_role: str, user_org_id: int | None, user_id: int | None)
     explicit per-row lookup.
     """
     table = _db().model_access_policies
-    if user_role == "admin":
+    if can_admin:
         return table.id > 0
     query = table.scope_type == "global"
     query |= (table.scope_type == "org") & (table.scope_ref == str(user_org_id))
@@ -343,10 +361,10 @@ def _target_org_for_scope(scope_type: str, scope_ref: str | None) -> int | None:
 
 
 def _can_write(
-    user_role: str, user_org_id: int | None, scope_type: str, scope_ref: str | None
+    can_admin: bool, user_role: str, user_org_id: int | None, scope_type: str, scope_ref: str | None
 ) -> bool:
-    """Admin may write any row; resource_manager only rows whose resolved org is their own."""
-    if user_role == "admin":
+    """Admin (model_access_policy:admin) may write any row; resource_manager only own-org rows."""
+    if can_admin:
         return True
     if user_role != "resource_manager" or scope_type == "global":
         return False
@@ -364,13 +382,13 @@ async def list_access_policies() -> tuple:
     if gate_error:
         return gate_error
 
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.MODEL_ACCESS_POLICY_ADMIN)
     user_id = g.user.get("user_id")
     scope_type = request.args.get("scope_type")
     page = PageRequest.from_request()
 
     def _fetch():
-        query = _visible_query(user_role, org_id, user_id)
+        query = _visible_query(can_admin, org_id, user_id)
         if scope_type:
             query &= db.model_access_policies.scope_type == scope_type
         scoped = db(query)
@@ -401,11 +419,11 @@ async def get_access_policy(policy_id: int) -> tuple:
     if gate_error:
         return gate_error
 
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.MODEL_ACCESS_POLICY_ADMIN)
     user_id = g.user.get("user_id")
 
     def _fetch_one():
-        query = _visible_query(user_role, org_id, user_id) & (
+        query = _visible_query(can_admin, org_id, user_id) & (
             db.model_access_policies.id == policy_id
         )
         return db(query).select().first()
@@ -450,9 +468,10 @@ async def create_access_policy(data: CreateAccessPolicyRequest) -> tuple:
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
     user_id = g.user.get("user_id")
+    can_admin = _has_scope(Permission.MODEL_ACCESS_POLICY_ADMIN)
 
     def _create():
-        if not _can_write(user_role, user_org_id, scope_type, scope_ref):
+        if not _can_write(can_admin, user_role, user_org_id, scope_type, scope_ref):
             return "forbidden", None
 
         new_id = db.model_access_policies.insert(
@@ -505,12 +524,15 @@ async def update_access_policy(policy_id: int, data: UpdateAccessPolicyRequest) 
 
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.MODEL_ACCESS_POLICY_ADMIN)
 
     def _update():
         existing = db(db.model_access_policies.id == policy_id).select().first()
         if not existing:
             return "not_found", None
-        if not _can_write(user_role, user_org_id, existing.scope_type, existing.scope_ref):
+        if not _can_write(
+            can_admin, user_role, user_org_id, existing.scope_type, existing.scope_ref
+        ):
             return "forbidden", None
 
         merged_pattern = update_fields.get("model_pattern", existing.model_pattern)
@@ -558,12 +580,13 @@ async def delete_access_policy(policy_id: int) -> tuple:
 
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.MODEL_ACCESS_POLICY_ADMIN)
 
     def _delete():
         row = db(db.model_access_policies.id == policy_id).select().first()
         if not row:
             return "not_found"
-        if not _can_write(user_role, user_org_id, row.scope_type, row.scope_ref):
+        if not _can_write(can_admin, user_role, user_org_id, row.scope_type, row.scope_ref):
             return "forbidden"
         db(db.model_access_policies.id == policy_id).delete()
         db.commit()

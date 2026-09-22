@@ -189,17 +189,36 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def _visible_query(user_role: str, user_org_id: int | None):
-    """Admin sees every rule; everyone else sees global + their own org's rules."""
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). MUST be called from the
+    request context, not a DB worker thread: handlers compute the
+    admin-capability boolean here and capture it in the thread closures.
+
+    audit-2026-09-14-wave2: replaces the ``role == "admin"`` cross-org bypass
+    (write a global/other-org rule) with the admin-only ``routing_rule:admin``
+    scope. Identical for a fresh admin token; an in-flight admin JWT gains it
+    on next login (<=1h TTL), API-key admins immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _visible_query(can_admin: bool, user_org_id: int | None):
+    """Admin (routing_rule:admin) sees every rule; else global + their own org's."""
     table = _db().routing_rules_v2
-    if user_role == "admin":
+    if can_admin:
         return table.id > 0
     return (table.organization_id == None) | (table.organization_id == user_org_id)  # noqa: E711
 
 
-def _can_write(user_role: str, user_org_id: int | None, organization_id: int | None) -> bool:
-    """Admin manages any rule; resource_manager only their own org's (never global)."""
-    if user_role == "admin":
+def _can_write(
+    can_admin: bool, user_role: str, user_org_id: int | None, organization_id: int | None
+) -> bool:
+    """Admin (routing_rule:admin) manages any rule; resource_manager only own org's."""
+    if can_admin:
         return True
     return (
         user_role == "resource_manager"
@@ -213,13 +232,13 @@ def _can_write(user_role: str, user_org_id: int | None, organization_id: int | N
 @validate_response(RuleListResponse, 200)
 async def list_rules() -> tuple:
     """List visible routing_rules_v2 rows, priority-ordered (bounded by ``?page=&limit=``)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_RULE_ADMIN)
     user_org_id = g.user.get("organization_id")
     enabled_param: str | None = request.args.get("enabled")
     page = PageRequest.from_request()
 
     def _fetch():
-        query = _visible_query(user_role, user_org_id)
+        query = _visible_query(can_admin, user_org_id)
         if enabled_param is not None:
             enabled_val: bool = enabled_param.lower() in ("true", "1", "yes")
             query &= db.routing_rules_v2.enabled == enabled_val
@@ -246,12 +265,12 @@ async def list_rules() -> tuple:
 @validate_response(RuleDetailResponse, 200)
 async def get_rule(rule_id: int) -> tuple:
     """Get a single routing_rules_v2 row by ID (org-visibility scoped)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_RULE_ADMIN)
     user_org_id = g.user.get("organization_id")
 
     def _fetch():
         database = _db()
-        query = _visible_query(user_role, user_org_id) & (database.routing_rules_v2.id == rule_id)
+        query = _visible_query(can_admin, user_org_id) & (database.routing_rules_v2.id == rule_id)
         return database(query).select().first()
 
     row = await asyncio.to_thread(_fetch)
@@ -284,8 +303,9 @@ async def create_rule(data: CreateRuleRequest) -> tuple:
 
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.ROUTING_RULE_ADMIN)
     organization_id: int | None = data.organization_id
-    if not _can_write(user_role, user_org_id, organization_id):
+    if not _can_write(can_admin, user_role, user_org_id, organization_id):
         return jsonify({"status": "error", "error": "Access denied for this organization_id"}), 403
 
     def _insert():
@@ -322,6 +342,7 @@ async def update_rule(rule_id: int, data: UpdateRuleRequest) -> tuple:
     """Update an existing routing_rules_v2 row by ID."""
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.ROUTING_RULE_ADMIN)
     update_fields: dict[str, Any] = {
         f: getattr(data, f) for f in _WRITABLE_FIELDS if getattr(data, f) is not None
     }
@@ -330,7 +351,7 @@ async def update_rule(rule_id: int, data: UpdateRuleRequest) -> tuple:
         row = db(db.routing_rules_v2.id == rule_id).select().first()
         if not row:
             return "not_found", None
-        if not _can_write(user_role, user_org_id, row.organization_id):
+        if not _can_write(can_admin, user_role, user_org_id, row.organization_id):
             return "forbidden", None
         if not update_fields:
             return "no_fields", None
@@ -366,12 +387,13 @@ async def delete_rule(rule_id: int) -> tuple:
     """Delete a routing_rules_v2 row by ID."""
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.ROUTING_RULE_ADMIN)
 
     def _delete():
         row = db(db.routing_rules_v2.id == rule_id).select().first()
         if not row:
             return "not_found"
-        if not _can_write(user_role, user_org_id, row.organization_id):
+        if not _can_write(can_admin, user_role, user_org_id, row.organization_id):
             return "forbidden"
         db(db.routing_rules_v2.id == rule_id).delete()
         db.commit()

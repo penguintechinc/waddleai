@@ -1622,3 +1622,205 @@ class TestResponseSchemaFieldSets:
         assert set(body.keys()) == {"status", "data", "meta"}
         assert set(body["meta"].keys()) == {"organization_id", "persisted", "timestamp"}
         assert set(body["data"].keys()) == _DRY_RUN_KEYS
+
+
+# ---------------------------------------------------------------------------
+# audit-2026-09-14-wave2: admin cross-org bypass -> admin-only scope.
+#
+# routing_rules._can_write / routing_policies._can_access /
+# routing_decisions._visible_org_filter+summary had their `role == "admin"`
+# cross-org bypass converted to a dedicated admin-only scope
+# (routing_rule:admin / routing_policy:admin / routing_decision:read). Each
+# test below uses a DIVERGENT token (role=resource_manager + the admin scope)
+# so it FAILS against the old role-name check and PASSES against the new scope
+# check; the same role WITHOUT the admin scope stays refused / own-org-scoped.
+# (routing_rules/policies list+get read scoping and get_trace are not HTTP-
+# observable -- the mocked DB ignores the query -- so only the write/summary
+# paths are asserted here.)
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingRuleAdminScopeReconciliation:
+    """routing_rule:admin gates the global/cross-org rule write bypass."""
+
+    async def test_create_global_rule_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + routing_rule:admin creates a GLOBAL rule.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=None
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE, Permission.ROUTING_RULE_ADMIN])
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=headers,
+            json={"name": "global-rule", "match": {}, "action": {}},
+        )
+        assert resp.status_code == 201
+
+    async def test_create_global_rule_without_admin_scope_refused(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) routing_rule:write but NOT routing_rule:admin -> global rule refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE])
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=headers,
+            json={"name": "global-rule", "match": {}, "action": {}},
+        )
+        assert resp.status_code == 403
+
+    async def test_create_own_org_rule_without_admin_scope_still_works(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still writes its OWN org's rule without the admin scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=1
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE])
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=headers,
+            json={"name": "own", "match": {}, "action": {}, "organization_id": 1},
+        )
+        assert resp.status_code == 201
+
+    async def test_update_other_org_rule_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) routing_rule:admin lets a non-admin update another org's rule.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=2
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE, Permission.ROUTING_RULE_ADMIN])
+        resp = await client.put(
+            "/api/v1/routing/rules/1", headers=headers, json={"name": "renamed"}
+        )
+        assert resp.status_code == 200
+
+    async def test_update_other_org_rule_without_admin_scope_refused(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no routing_rule:admin -> cross-org rule update refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=2
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE])
+        resp = await client.put(
+            "/api/v1/routing/rules/1", headers=headers, json={"name": "renamed"}
+        )
+        assert resp.status_code == 403
+
+
+class TestRoutingPolicyAdminScopeReconciliation:
+    """routing_policy:admin gates the cross-org policy read/write bypass."""
+
+    async def test_get_other_org_policy_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + routing_policy:admin reads another org's policy.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        headers = divergent_headers([Permission.ROUTING_POLICY_ADMIN])
+        resp = await client.get("/api/v1/routing/policies/2", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_get_other_org_policy_without_admin_scope_refused(
+        self, client, divergent_headers
+    ) -> None:
+        """(a) no routing_policy:admin -> cross-org policy read refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        resp = await client.get("/api/v1/routing/policies/2", headers=divergent_headers([]))
+        assert resp.status_code == 403
+
+    async def test_get_own_org_policy_without_admin_scope_still_works(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still reads its OWN org's policy without the scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        resp = await client.get("/api/v1/routing/policies/1", headers=divergent_headers([]))
+        assert resp.status_code == 200
+
+    async def test_upsert_other_org_policy_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) routing_policy:admin lets a non-admin upsert another org's policy.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _policy_row(
+            organization_id=2
+        )
+        headers = divergent_headers(
+            [Permission.ROUTING_POLICY_WRITE, Permission.ROUTING_POLICY_ADMIN]
+        )
+        resp = await client.put(
+            "/api/v1/routing/policies/2", headers=headers, json={"mode": "cost"}
+        )
+        assert resp.status_code in (200, 201)
+
+    async def test_upsert_other_org_policy_without_admin_scope_refused(
+        self, client, divergent_headers
+    ) -> None:
+        """(a) routing_policy:write but NOT routing_policy:admin -> cross-org upsert refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        headers = divergent_headers([Permission.ROUTING_POLICY_WRITE])
+        resp = await client.put(
+            "/api/v1/routing/policies/2", headers=headers, json={"mode": "cost"}
+        )
+        assert resp.status_code == 403
+
+
+class TestRoutingDecisionReadScopeReconciliation:
+    """routing_decision:read gates the cross-org trace summary bypass."""
+
+    async def test_summary_divergent_admin_scope_honours_org_param(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + routing_decision:read may summarize another org via ?org=.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        headers = divergent_headers([Permission.ROUTING_DECISION_READ])
+        resp = await client.get("/api/v1/routing/decisions/?org=999", headers=headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["organization_id"] == 999
+
+    async def test_summary_without_scope_is_pinned_to_own_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no routing_decision:read -> ?org= is ignored, summary pinned to own org.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.get("/api/v1/routing/decisions/?org=999", headers=divergent_headers([]))
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["organization_id"] == 1

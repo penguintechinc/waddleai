@@ -657,3 +657,108 @@ class TestDeletePolicy:
         _gate_open(monkeypatch)
         resp = await client.delete(f"{ENDPOINT_PATH}1")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# audit-2026-09-14-wave2: MODEL_ACCESS_POLICY_ADMIN scope reconciliation.
+#
+# `_can_write`'s admin cross-org/global bypass and `_visible_query`'s admin
+# read-all bypass were converted from `role == "admin"` to the admin-only
+# `model_access_policy:admin` scope. (List/get read scoping is not HTTP-
+# observable -- the mocked DB ignores the query.) A DIVERGENT token
+# (role=resource_manager + model_access_policy:write + model_access_policy:
+# admin) may write a global policy (201); the same role WITHOUT the admin
+# scope may not (403). Two-layer Enterprise gate opened via _gate_open.
+# ---------------------------------------------------------------------------
+
+from shared.auth.rbac import Permission  # noqa: E402
+
+
+class TestModelAccessPolicyAdminScopeReconciliation:
+    """model_access_policy:admin gates the global/cross-org write bypass."""
+
+    async def test_create_global_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, monkeypatch, divergent_headers
+    ) -> None:
+        """(b) resource_manager + model_access_policy:admin creates a GLOBAL policy.
+
+        regression: audit-2026-09-14-wave2
+        """
+        _gate_open(monkeypatch)
+        new_row = _make_policy_row(policy_id=1, scope_type="global", model_pattern="claude-opus-5*")
+        app_mock_db.model_access_policies.insert.return_value = 1
+        app_mock_db.return_value.select.return_value.first.return_value = new_row
+        headers = divergent_headers(
+            [Permission.MODEL_ACCESS_POLICY_WRITE, Permission.MODEL_ACCESS_POLICY_ADMIN]
+        )
+        resp = await client.post(
+            ENDPOINT_PATH,
+            headers=headers,
+            json={"scope_type": "global", "model_pattern": "claude-opus-5*"},
+        )
+        assert resp.status_code == 201
+
+    async def test_create_global_without_admin_scope_refused(
+        self, client, monkeypatch, divergent_headers
+    ) -> None:
+        """(a) model_access_policy:write but NOT ...:admin -> global policy refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        _gate_open(monkeypatch)
+        headers = divergent_headers([Permission.MODEL_ACCESS_POLICY_WRITE])
+        resp = await client.post(
+            ENDPOINT_PATH,
+            headers=headers,
+            json={"scope_type": "global", "model_pattern": "gpt-4o"},
+        )
+        assert resp.status_code == 403
+
+    async def test_create_own_org_without_admin_scope_still_works(
+        self, client, app_mock_db: MagicMock, monkeypatch, divergent_headers
+    ) -> None:
+        """(c) resource_manager still writes its OWN org's policy without the admin scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        _gate_open(monkeypatch)
+        new_row = _make_policy_row(policy_id=2, scope_type="org", scope_ref="1")
+        app_mock_db.model_access_policies.insert.return_value = 2
+        app_mock_db.return_value.select.return_value.first.return_value = new_row
+        headers = divergent_headers([Permission.MODEL_ACCESS_POLICY_WRITE])
+        resp = await client.post(
+            ENDPOINT_PATH,
+            headers=headers,
+            json={"scope_type": "org", "scope_ref": "1", "model_pattern": "claude-opus-5*"},
+        )
+        assert resp.status_code == 201
+
+    async def test_update_other_org_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, monkeypatch, divergent_headers
+    ) -> None:
+        """(b) model_access_policy:admin lets a non-admin update another org's policy.
+
+        regression: audit-2026-09-14-wave2
+        """
+        _gate_open(monkeypatch)
+        row = _make_policy_row(policy_id=3, scope_type="org", scope_ref="2")
+        app_mock_db.return_value.select.return_value.first.return_value = row
+        headers = divergent_headers(
+            [Permission.MODEL_ACCESS_POLICY_WRITE, Permission.MODEL_ACCESS_POLICY_ADMIN]
+        )
+        resp = await client.put(f"{ENDPOINT_PATH}3", headers=headers, json={"enabled": False})
+        assert resp.status_code == 200
+
+    async def test_update_other_org_without_admin_scope_refused(
+        self, client, app_mock_db: MagicMock, monkeypatch, divergent_headers
+    ) -> None:
+        """(a) no model_access_policy:admin -> cross-org update refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        _gate_open(monkeypatch)
+        row = _make_policy_row(policy_id=3, scope_type="org", scope_ref="2")
+        app_mock_db.return_value.select.return_value.first.return_value = row
+        headers = divergent_headers([Permission.MODEL_ACCESS_POLICY_WRITE])
+        resp = await client.put(f"{ENDPOINT_PATH}3", headers=headers, json={"enabled": False})
+        assert resp.status_code == 403

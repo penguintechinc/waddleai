@@ -187,17 +187,36 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def _visible_query(user_role: str, user_org_id: int | None):
-    """Admin sees every alias; everyone else sees global + their own org's aliases."""
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). MUST be called from the
+    request context, not a DB worker thread: handlers compute the
+    admin-capability boolean here and capture it in the thread closures.
+
+    audit-2026-09-14-wave2: replaces the ``role == "admin"`` cross-org bypass
+    (write a global/other-org alias) with the admin-only ``model_alias:admin``
+    scope. Identical for a fresh admin token; an in-flight admin JWT gains it
+    on next login (<=1h TTL), API-key admins immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _visible_query(can_admin: bool, user_org_id: int | None):
+    """Admin (model_alias:admin) sees every alias; else global + their own org's."""
     table = _db().model_aliases
-    if user_role == "admin":
+    if can_admin:
         return table.id > 0
     return (table.organization_id == None) | (table.organization_id == user_org_id)  # noqa: E711
 
 
-def _can_write(user_role: str, user_org_id: int | None, organization_id: int | None) -> bool:
-    """Admin manages any alias; resource_manager only their own org's (never global)."""
-    if user_role == "admin":
+def _can_write(
+    can_admin: bool, user_role: str, user_org_id: int | None, organization_id: int | None
+) -> bool:
+    """Admin (model_alias:admin) manages any alias; resource_manager only own org's."""
+    if can_admin:
         return True
     return (
         user_role == "resource_manager"
@@ -211,14 +230,14 @@ def _can_write(user_role: str, user_org_id: int | None, organization_id: int | N
 @validate_response(AliasListResponse, 200)
 async def list_aliases() -> tuple:
     """List visible model_aliases rows (bounded by ``?page=&limit=``)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
     user_org_id = g.user.get("organization_id")
     source_model: str | None = request.args.get("source_model")
     page = PageRequest.from_request()
 
     def _fetch():
         database = _db()
-        query = _visible_query(user_role, user_org_id)
+        query = _visible_query(can_admin, user_org_id)
         if source_model:
             query &= database.model_aliases.source_model == source_model
         scoped = database(query)
@@ -244,14 +263,14 @@ async def list_aliases() -> tuple:
 @validate_response(AliasDetailResponse, 200)
 async def get_alias(alias_id: int) -> tuple:
     """Get a single model_aliases row by ID (org-visibility scoped)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
     user_org_id = g.user.get("organization_id")
 
     database = _db()
     row = await asyncio.to_thread(
         lambda: (
             database(
-                _visible_query(user_role, user_org_id) & (database.model_aliases.id == alias_id)
+                _visible_query(can_admin, user_org_id) & (database.model_aliases.id == alias_id)
             )
             .select()
             .first()
@@ -294,8 +313,9 @@ async def create_alias(data: CreateAliasRequest) -> tuple:
 
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
     organization_id: int | None = data.organization_id
-    if not _can_write(user_role, user_org_id, organization_id):
+    if not _can_write(can_admin, user_role, user_org_id, organization_id):
         return jsonify({"status": "error", "error": "Access denied for this organization_id"}), 403
 
     def _upsert():
@@ -348,6 +368,7 @@ async def update_alias(alias_id: int, data: UpdateAliasRequest) -> tuple:
     """Update an existing model_aliases row by ID."""
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
     update_fields: dict[str, Any] = {
         f: getattr(data, f) for f in _WRITABLE_FIELDS if getattr(data, f) is not None
     }
@@ -357,7 +378,7 @@ async def update_alias(alias_id: int, data: UpdateAliasRequest) -> tuple:
         row = database(database.model_aliases.id == alias_id).select().first()
         if not row:
             return "not_found", None
-        if not _can_write(user_role, user_org_id, row.organization_id):
+        if not _can_write(can_admin, user_role, user_org_id, row.organization_id):
             return "forbidden", None
         if not update_fields:
             return "no_fields", None
@@ -393,13 +414,14 @@ async def delete_alias(alias_id: int) -> tuple:
     """Delete a model_aliases row by ID."""
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
 
     def _delete():
         database = _db()
         row = database(database.model_aliases.id == alias_id).select().first()
         if not row:
             return "not_found"
-        if not _can_write(user_role, user_org_id, row.organization_id):
+        if not _can_write(can_admin, user_role, user_org_id, row.organization_id):
             return "forbidden"
         database(database.model_aliases.id == alias_id).delete()
         database.commit()

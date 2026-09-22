@@ -25,6 +25,8 @@ from penguin_dal.db import DB
 from quart import Blueprint, g, jsonify, request
 from quart_schema import validate_response
 
+from shared.auth.rbac import Permission
+
 from ...extensions import db
 from .auth import require_auth
 
@@ -37,9 +39,10 @@ routing_decisions_bp = Blueprint(
 
 # ---------------------------------------------------------------------------
 # OpenAPI response models (audit-2026-09-14). Read-only endpoints; response
-# models mirror EXACTLY the keys each handler returns. ``routing_decision``
-# has no dedicated OIDC scope, so both routes are authenticated-only and the
-# admin cross-org visibility remains a tenant filter (see ``_visible_org_filter``).
+# models mirror EXACTLY the keys each handler returns. Both routes stay
+# authenticated-only at the decorator; the admin cross-org visibility is gated
+# in-handler on the admin-only ``routing_decision:read`` scope
+# (audit-2026-09-14-wave2, see ``_visible_org_filter``).
 # ---------------------------------------------------------------------------
 
 
@@ -143,10 +146,28 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def _visible_org_filter(user_role: str, user_org_id: int | None):
-    """Admin sees every org's traces; everyone else only their own org's."""
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). MUST be called from the
+    request context, not a DB worker thread: ``get_trace`` computes the
+    admin-capability boolean here and captures it in its thread closure.
+
+    audit-2026-09-14-wave2: replaces the ``role == "admin"`` cross-org
+    trace-visibility bypass with the admin-only ``routing_decision:read``
+    scope (this table had no dedicated scope before). Identical for a fresh
+    admin token; an in-flight admin JWT gains it on next login (<=1h TTL),
+    API-key admins immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _visible_org_filter(can_admin: bool, user_org_id: int | None):
+    """Admin (routing_decision:read) sees every org's traces; else only their own org's."""
     table = _db().routing_decision_traces
-    if user_role == "admin":
+    if can_admin:
         return table.id > 0
     return table.organization_id == user_org_id
 
@@ -156,13 +177,13 @@ def _visible_org_filter(user_role: str, user_org_id: int | None):
 @validate_response(TraceGetResponse, 200)
 async def get_trace(request_id: str) -> tuple:
     """Return the full decision trace for one request_id (org-visibility scoped)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_DECISION_READ)
     user_org_id = g.user.get("organization_id")
 
     def _fetch() -> Any:
         database = _db()
         rows = database(
-            _visible_org_filter(user_role, user_org_id)
+            _visible_org_filter(can_admin, user_org_id)
             & (database.routing_decision_traces.request_id == request_id)
         ).select()
         if len(rows) == 0:
@@ -197,18 +218,21 @@ async def list_decisions_summary() -> tuple:
     Query params: org (int, admin only -- others are always scoped to their
     own org), from/to (ISO 8601 timestamps, inclusive/exclusive bounds).
     """
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_DECISION_READ)
     user_org_id = g.user.get("organization_id")
     org_param = request.args.get("org")
     from_param = request.args.get("from")
     to_param = request.args.get("to")
 
-    if user_role == "admin" and org_param is not None:
+    # audit-2026-09-14-wave2: cross-org trace visibility (honouring ?org= and
+    # the "every org" default) keys on the admin-only routing_decision:read
+    # scope, not the role name.
+    if can_admin and org_param is not None:
         try:
             target_org_id: int | None = int(org_param)
         except ValueError:
             return jsonify({"status": "error", "error": "org must be an integer"}), 400
-    elif user_role == "admin":
+    elif can_admin:
         target_org_id = None  # no org filter -- every org
     else:
         target_org_id = user_org_id
