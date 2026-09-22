@@ -30,11 +30,13 @@ different label granularity:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
-from quart import g, jsonify
+from quart import g
+from quart_schema import validate_response
 
 from shared.auth.rbac import Permission
 from shared.utils.metrics import get_management_metrics
@@ -45,6 +47,40 @@ from .hook_rules import scope_readable
 from .hooks import hooks_bp
 
 _DECISIONS = ("allow", "deny", "ask")
+
+
+# ---------------------------------------------------------------------------
+# quart-schema response model (audit-2026-09-14 wave2). `rule_hits` items and
+# the admin-only `platform` block carry heterogeneous, metric-shaped payloads
+# (variable label sets, optional latency percentiles), so they stay `Any`
+# rather than a forced fixed schema. The `platform is None for non-admin`
+# ownership boundary (§18 deployment-wide metrics) is preserved unchanged.
+# GET-only: no @validate_request.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class HookMetricsData:
+    """`data` block: per-rule hit counts + (admin-only) deployment-wide platform metrics."""
+
+    rule_hits: list[Any]
+    platform: Any
+
+
+@dataclass(slots=True)
+class HookMetricsMeta:
+    """`meta` block (timestamp only)."""
+
+    timestamp: str
+
+
+@dataclass(slots=True)
+class HookMetricsResponse:
+    """Response body for GET /api/v1/hooks/metrics."""
+
+    status: str
+    data: HookMetricsData
+    meta: HookMetricsMeta
 
 
 def _db() -> DB:
@@ -131,6 +167,7 @@ def _histogram_percentiles(
 @hooks_bp.route("/metrics", methods=["GET"])
 @require_auth
 @require_scope(Permission.HOOK_METRICS_READ)
+@validate_response(HookMetricsResponse, 200)
 async def get_hook_metrics() -> tuple:
     """GET /api/v1/hooks/metrics -- rule hit-rates + (admin-only) platform latency/decisions."""
     user_role = g.user.get("role")
@@ -217,12 +254,10 @@ async def get_hook_metrics() -> tuple:
         }
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"rule_hits": rule_hits, "platform": platform},
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"rule_hits": rule_hits, "platform": platform},
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )

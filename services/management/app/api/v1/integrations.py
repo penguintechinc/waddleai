@@ -37,6 +37,7 @@ from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 _BEARER_AUTH: list[dict[str, list[str]]] = [{"bearerAuth": []}]
@@ -96,6 +97,7 @@ class ListMcpEndpointsMeta:
 
     total: int
     timestamp: str
+    pagination: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -276,18 +278,25 @@ def _validation_error(detail: str) -> tuple[Any, int]:
 @validate_response(ListMcpEndpointsResponse, 200)
 async def list_mcp_endpoints():
     """List this org's registered external MCP endpoints."""
+    page = PageRequest.from_request()
     org_id = g.user.get("organization_id")
     if not _feature_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
 
     def _fetch():
-        return db(db.mcp_endpoints.org_id == org_id).select(orderby=db.mcp_endpoints.id)
+        return db(db.mcp_endpoints.org_id == org_id).select(
+            limitby=page.limitby, orderby=db.mcp_endpoints.id
+        )
 
     rows = await asyncio.to_thread(_fetch)
     return {
         "status": "success",
         "data": [_endpoint_to_dict(r) for r in rows],
-        "meta": {"total": len(rows), "timestamp": datetime.utcnow().isoformat() + "Z"},
+        "meta": {
+            "total": len(rows),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            **page.meta(),
+        },
     }
 
 

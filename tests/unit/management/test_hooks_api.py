@@ -234,3 +234,42 @@ class TestGetPolicy:
         """Missing auth returns 401."""
         resp = await client.get("/api/v1/hooks/policy")
         assert resp.status_code == 401
+
+
+class TestHooksContractResponseSchema:
+    """audit-2026-09-14-wave2: response DTOs pin the fixed §18.2 adapter wire contract.
+
+    # regression: audit-2026-09-14-wave2
+    """
+
+    async def test_evaluate_field_set_is_exact(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """POST /evaluate (flag-off path) returns exactly the §18.2 contract fields."""
+        resp = await client.post(
+            "/api/v1/hooks/evaluate",
+            headers=auth_headers,
+            json={
+                "hook_version": "1",
+                "ecosystem": "claude-code",
+                "event": "pre_tool_use",
+                "tool_name": "Bash",
+                "tool_input": {},
+            },
+        )
+        assert resp.status_code == 200
+        assert set((await resp.get_json()).keys()) == {
+            "decision",
+            "reason",
+            "rule_id",
+            "evaluated_in_ms",
+        }
+
+    async def test_policy_field_set_is_exact(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET /policy returns exactly the §18.1 contract fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.get("/api/v1/hooks/policy", headers=auth_headers)
+        assert resp.status_code == 200
+        assert set((await resp.get_json()).keys()) == {"denylist_patterns", "updated_at"}

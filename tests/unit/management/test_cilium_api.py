@@ -163,3 +163,41 @@ class TestOrganizationWriteTriggersReconcile:
 
         assert resp.status_code == 200
         mock_cls.assert_called_once()
+
+
+class TestCiliumResponseSchema:
+    """audit-2026-09-14-wave2: response DTOs pin the exact cilium field sets.
+
+    # regression: audit-2026-09-14-wave2
+    """
+
+    async def test_status_field_set_is_exact(self, client, auth_headers: dict) -> None:
+        """GET /cilium/status returns exactly the documented field set."""
+        with (
+            patch(f"{MODULE}.cilium_capabilities", return_value={"available": True}),
+            patch(f"{MODULE}.is_native_rate_limit_enabled", return_value=True),
+            patch(f"{MODULE}.get_last_status", return_value=None),
+        ):
+            resp = await client.get("/api/v1/cilium/status", headers=auth_headers)
+
+        assert set((await resp.get_json()).keys()) == {
+            "capabilities",
+            "flag_enabled",
+            "last_reconcile",
+            "applied",
+            "degraded",
+        }
+
+    async def test_reconcile_field_set_is_exact(self, client, auth_headers: dict) -> None:
+        """POST /cilium/reconcile returns exactly the documented field set."""
+        mock_instance = MagicMock()
+        mock_instance.reconcile.return_value = ReconcileStatus(applied=["x"])
+        with patch(f"{MODULE}.CiliumPolicyReconciler", MagicMock(return_value=mock_instance)):
+            resp = await client.post("/api/v1/cilium/reconcile", headers=auth_headers)
+
+        assert set((await resp.get_json()).keys()) == {
+            "applied",
+            "skipped",
+            "reason",
+            "degraded",
+        }
