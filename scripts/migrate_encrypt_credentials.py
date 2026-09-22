@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from shared.database.models import get_db
 from shared.security.credential_encryption import (
+    CredentialEncryptionNotConfiguredError,
     encrypt_credential,
     get_encryption_config,
     is_encrypted,
@@ -22,7 +23,13 @@ from shared.security.credential_encryption import (
 
 def migrate() -> None:
     """Migrate plaintext credentials to encrypted format."""
-    config = get_encryption_config()
+    # get_encryption_config() fails closed (raises) when no key is configured;
+    # catch it so this stays a one-line operator error rather than a traceback.
+    try:
+        config = get_encryption_config()
+    except CredentialEncryptionNotConfiguredError:
+        print("ERROR: CREDENTIAL_ENCRYPTION_KEY not set. Cannot migrate.")
+        sys.exit(1)
     if not config.enabled:
         print("ERROR: CREDENTIAL_ENCRYPTION_KEY not set. Cannot migrate.")
         sys.exit(1)

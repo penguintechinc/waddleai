@@ -1060,6 +1060,14 @@ jobs:
               - DATABASE_URL=postgresql://test:test@db:5432/waddleai_test
               - REDIS_URL=redis://redis:6379/0
               - JWT_SECRET_KEY=ci-test-secret-key-not-for-production
+              # The management service refuses to start without a
+              # credential-encryption key (audit-2026-09-14): it stores
+              # provider API keys, so a missing key is a deployment error, not
+              # a runtime one. Every real deployment has one -- the Helm chart
+              # generates it on first install -- so this smoke compose needs a
+              # throwaway equivalent or the container never comes up and the
+              # health-endpoint step below fails on a connection refusal.
+              - CREDENTIAL_ENCRYPTION_KEY=ci-test-credential-encryption-key-not-for-production
               - LOG_LEVEL=DEBUG
               - FLASK_ENV=testing
             depends_on:

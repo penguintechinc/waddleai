@@ -25,6 +25,13 @@
 # modules, or a from-source rebuild with a current Go toolchain — the latter
 # is explicitly out of scope for spec §10.2 ("digest-pinned upstream base",
 # not a from-source rebuild).
+#
+# Review by 2026-09-22. Retro-dated 2026-09-21 (audit-2026-09-14): these
+# entries carried no review-by marker at all, so the weekly re-triage could
+# never surface them and they had become permanent exceptions. Dated into
+# the file's existing 2026-09-22 cohort rather than granted a fresh 14-day
+# window -- they have never actually been re-verified, so they must not
+# outlive the entries that have.
 CVE-2026-25679
 CVE-2026-25681
 CVE-2026-27136
@@ -95,6 +102,13 @@ CVE-2026-56865
 # scan). Worth a follow-up ticket against proxy/management/webui's Trivy job
 # (currently SARIF-only, non-blocking) to confirm whether they carry the same
 # baseline set.
+#
+# Review by 2026-09-22. Retro-dated 2026-09-21 (audit-2026-09-14): these
+# entries carried no review-by marker at all, so the weekly re-triage could
+# never surface them and they had become permanent exceptions. Dated into
+# the file's existing 2026-09-22 cohort rather than granted a fresh 14-day
+# window -- they have never actually been re-verified, so they must not
+# outlive the entries that have.
 CVE-2026-53615
 CVE-2026-41992
 CVE-2026-54369
@@ -167,6 +181,10 @@ CVE-2026-76642
 #     category 2. Nothing in this image invokes an external mount helper,
 #     nsenter, or systemd-homed, so none of these are reachable from its
 #     workload.
+#     Review by 2026-09-22. Retro-dated 2026-09-21 (audit-2026-09-14): this
+#     sub-block was the only one of the 09-08 pair with no review-by marker,
+#     so its four entries were invisible to the weekly re-triage. Dated into
+#     the existing cohort, not given a fresh window.
 CVE-2026-78408
 CVE-2026-78409
 CVE-2026-78410

@@ -1,6 +1,7 @@
 """Security utilities for WaddleAI."""
 
 from .credential_encryption import (
+    CredentialEncryptionNotConfiguredError,
     EncryptionConfig,
     decrypt_credential,
     encrypt_credential,
@@ -14,4 +15,5 @@ __all__ = [
     "is_encrypted",
     "get_encryption_config",
     "EncryptionConfig",
+    "CredentialEncryptionNotConfiguredError",
 ]

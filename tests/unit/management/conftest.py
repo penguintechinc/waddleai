@@ -26,6 +26,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../services/ma
 # purpose is explicit at both definition and call sites.
 TEST_ONLY_JWT_SECRET = "test-secret-key-32chars-minimum!!"  # noqa: S105 -- test fixture, not a real secret
 TEST_ONLY_PASSWORD = "password123"  # noqa: S105 -- test fixture, not a real credential
+TEST_ONLY_ENCRYPTION_KEY = "test-encryption-key"  # noqa: S105 -- test fixture, not a real key
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _credential_encryption_key():
+    """Give every management test a credential-encryption key, as production has.
+
+    regression: audit-2026-09-14 — shared/security/credential_encryption.py now
+    fails closed: with no CREDENTIAL_ENCRYPTION_KEY set, the write path raises
+    instead of silently storing provider API keys as plaintext. Every deployed
+    environment has a key (the Helm chart generates a stable one on first
+    install), so a test suite running without one was modelling a configuration
+    that must never exist — and was passing only because of the fallback this
+    audit removed. Tests that need the unconfigured behaviour delete the var
+    themselves; this fixture only supplies the default.
+
+    Session-scoped, not function-scoped: create_app() now asserts the key at
+    startup, and the flask_app fixture is module-scoped. Higher-scoped fixtures
+    are set up first, so a function-scoped monkeypatch would land *after* the
+    app was already built and the assertion had already failed.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", TEST_ONLY_ENCRYPTION_KEY)
+    yield
+    monkeypatch.undo()
 
 
 # ---------------------------------------------------------------------------

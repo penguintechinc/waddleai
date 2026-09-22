@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import secrets
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -38,6 +40,13 @@ def _build_app():
 
         ext_mod.db = mock_db
         ext_mod.redis_client = MagicMock()
+
+    # create_app() refuses to start without a credential-encryption key
+    # (audit-2026-09-14). This app is built only to introspect routes for the
+    # spec -- extensions are mocked out above and no credential is ever written
+    # -- so an ephemeral per-run key is the honest way to satisfy the check
+    # without pretending the service is running unencrypted.
+    os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", secrets.token_urlsafe(32))
 
     with patch("services.management.app.init_extensions", side_effect=_noop_init_extensions):
         from services.management.app import create_app

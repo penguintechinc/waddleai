@@ -93,6 +93,49 @@ def _bootstrap_cilium_reconcile_sync(app):
         app.logger.warning(f"Bootstrap Cilium reconcile failed (non-fatal): {e}")
 
 
+def _assert_credential_encryption_configured(app) -> None:
+    """Refuse to boot when provider-credential encryption is unconfigured.
+
+    This service stores provider API keys, so a missing
+    CREDENTIAL_ENCRYPTION_KEY is a deployment misconfiguration, not a runtime
+    condition. Checking it at startup rather than at first write is the whole
+    point: a per-request failure surfaces as a 500 buried in logs, at an
+    arbitrary later moment, precisely when a secret was about to be written.
+    A boot failure is loud, immediate, and attributable to the deploy that
+    caused it (regression: audit-2026-09-14).
+    """
+    from shared.security.credential_encryption import (
+        KEY_ENV_VAR,
+        PLAINTEXT_OPT_IN_ENV_VAR,
+        CredentialEncryptionNotConfiguredError,
+        get_encryption_config,
+    )
+
+    try:
+        encryption_config = get_encryption_config()
+    except CredentialEncryptionNotConfiguredError as err:
+        message = (
+            f"Refusing to start: {KEY_ENV_VAR} is not set. The management "
+            "service stores provider API keys and will not run without "
+            f"credential encryption. Set {KEY_ENV_VAR} (the Helm chart "
+            "generates one on first install), or set "
+            f"{PLAINTEXT_OPT_IN_ENV_VAR}=1 to accept plaintext credential "
+            "storage in a development environment."
+        )
+        app.logger.critical(message)
+        raise CredentialEncryptionNotConfiguredError(message) from err
+
+    if encryption_config.enabled:
+        app.logger.info("Provider-credential encryption enabled (%s is set).", KEY_ENV_VAR)
+    else:
+        app.logger.warning(
+            "INSECURE: starting with provider credentials stored as PLAINTEXT — "
+            "%s is unset and %s permits it. Development only.",
+            KEY_ENV_VAR,
+            PLAINTEXT_OPT_IN_ENV_VAR,
+        )
+
+
 def create_app(config_class=Config):
     """Quart application factory."""
     app = Quart(__name__)
@@ -104,6 +147,10 @@ def create_app(config_class=Config):
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     app.logger.info("Initializing WaddleAI Management Server")
+
+    # Fail closed before anything is served: a missing credential-encryption
+    # key must stop the deploy, not wait to become a 500 on the first write.
+    _assert_credential_encryption_configured(app)
 
     # Initialize extensions
     init_extensions(app)
