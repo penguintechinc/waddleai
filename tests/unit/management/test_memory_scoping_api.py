@@ -435,3 +435,160 @@ class TestMemoryMutationTenantIsolation:
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["status"] == "quarantined"
+
+
+# ============================================================================
+# Wave-2 audit: role-name -> scope conversion + response-schema hardening
+# ============================================================================
+
+
+def _scoped_nonadmin_headers() -> dict[str, str]:
+    """A bearer token whose role is NOT admin but whose scope carries memory_scoping:admin.
+
+    This is the token that distinguishes a scope check from a role-name
+    check: under the old ``role == "admin"`` gate it is refused (the role is
+    resource_manager), under the scope gate it is allowed. Minted through the
+    same provider ``flask_app`` patches ``auth._get_oidc_provider`` to, so it
+    verifies like any other test token.
+    """
+    from services.management.app.api.v1 import auth as auth_mod
+    from shared.auth.penguin_auth import issue_token
+    from shared.auth.rbac import Permission, Role, UserContext
+
+    provider = auth_mod._get_oidc_provider()
+    ctx = UserContext(
+        user_id=4242,
+        username="scoped-nonadmin",
+        role=Role.RESOURCE_MANAGER,
+        organization_id=1,
+        managed_orgs=[],
+        permissions={Permission.MEMORY_SCOPING_ADMIN},
+    )
+    token = issue_token(ctx, provider)
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+class TestPromoteCorrectScopeAuthorization:
+    """promote/correct authorize on the memory_scoping:admin SCOPE, not the role name.
+
+    regression: audit-2026-09-14-wave2 (house policy, security.md: "middleware
+    checks scopes only, never role names") -- these two routes gated the
+    non-owner path on ``role == "admin"``. The tokens below carry the admin
+    SCOPE while their role claim is resource_manager, so they are refused by
+    the old role check and allowed by the new scope check -- the divergence
+    that proves the conversion.
+    """
+
+    async def test_scope_holder_without_admin_role_may_promote_others_memory(
+        self, client, flask_app, app_mock_db
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- memory_scoping:admin scope permits promote."""
+        headers = _scoped_nonadmin_headers()
+        row = _memory_row(author_user_id=999, organization_id=1)  # owned by another user
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.post(
+            "/api/v1/memory/1/promote",
+            headers=headers,
+            json={"target_scope": "repo", "scope_ref": "repo-9"},
+        )
+
+        assert resp.status_code == 200
+
+    async def test_scope_holder_without_admin_role_may_correct_others_memory(
+        self, client, flask_app, app_mock_db
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- memory_scoping:admin scope permits correct."""
+        headers = _scoped_nonadmin_headers()
+        row = _memory_row(author_user_id=999, organization_id=1, trust_tier="unverified")
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+        app_mock_db.memory_embeddings.insert.return_value = 555
+
+        resp = await client.post(
+            "/api/v1/memory/1/correct",
+            headers=headers,
+            json={"content": "the corrected value"},
+        )
+
+        assert resp.status_code == 200
+
+    async def test_plain_non_owner_without_the_scope_still_refused(
+        self, client, app_mock_db, user_auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- a non-owner lacking the scope is still 403."""
+        row = _memory_row(author_user_id=999, organization_id=1)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.post(
+            "/api/v1/memory/1/promote",
+            headers=user_auth_headers,
+            json={"target_scope": "repo", "scope_ref": "repo-9"},
+        )
+
+        assert resp.status_code == 403
+
+
+class TestMemoryScopingBounds:
+    """POST /memory-scoping range-checks relevance_cutoff before it reaches the DB."""
+
+    async def test_relevance_cutoff_out_of_range_400(
+        self, client, app_mock_db, auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- a >1 cutoff is refused, not persisted."""
+        app_mock_db.conversation_memory_configs.insert.reset_mock()
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.post(
+            "/api/v1/memory-scoping",
+            headers=auth_headers,
+            json={"organization_id": 1, "relevance_cutoff": 9.0},
+        )
+
+        assert resp.status_code == 400
+        app_mock_db.conversation_memory_configs.insert.assert_not_called()
+
+
+class TestMemoryScopingResponseSchema:
+    """@validate_response pins the exact field set every route emits."""
+
+    async def test_get_field_set(self, client, app_mock_db, auth_headers) -> None:
+        """# regression: audit-2026-09-14-wave2 -- GET /memory-scoping field set is fixed."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.get("/api/v1/memory-scoping?organization_id=1", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {
+            "organization_id",
+            "enabled",
+            "relevance_cutoff",
+            "top_k",
+            "configured",
+        }
+
+    async def test_post_field_set(self, client, app_mock_db, auth_headers) -> None:
+        """# regression: audit-2026-09-14-wave2 -- POST /memory-scoping carries status+org+top_k."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/memory-scoping", headers=auth_headers, json={"organization_id": 1}
+        )
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "organization_id", "top_k"}
+
+    async def test_promote_field_set(self, client, app_mock_db, auth_headers) -> None:
+        """# regression: audit-2026-09-14-wave2 -- promote carries the fixed field set."""
+        row = _memory_row(author_user_id=1, organization_id=1)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+        resp = await client.post(
+            "/api/v1/memory/1/promote",
+            headers=auth_headers,
+            json={"target_scope": "repo", "scope_ref": "repo-1"},
+        )
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "id", "scope_type", "scope_ref"}
+
+    async def test_dispute_field_set(self, client, app_mock_db, auth_headers) -> None:
+        """# regression: audit-2026-09-14-wave2 -- dispute carries status+id+disputed_by."""
+        row = _memory_row(organization_id=1)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+        resp = await client.post("/api/v1/memory/1/dispute", headers=auth_headers, json={})
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "id", "disputed_by"}

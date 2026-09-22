@@ -498,3 +498,72 @@ class TestWriteScopeAuthorizationIsExhaustive:
 
         assert resp.status_code == 403
         app_mock_db.return_value.delete.assert_not_called()
+
+
+class TestPaginationAndResponseSchema:
+    """Wave-2 audit: the list select is bounded, and every route emits a fixed field set.
+
+    regression: audit-2026-09-14-wave2 -- ``GET /cache-configs`` ran an
+    unbounded ``select()`` (the DoS/resource finding), and the CRUD routes
+    carried no ``@validate_response`` schema. The mocked DB ignores
+    ``limitby`` (it returns whatever rows the test feeds), so these assert on
+    the response envelope and the ``select`` call args -- the observable the
+    #239 stream documented -- not on row counts the mock cannot enforce.
+    """
+
+    async def test_list_carries_pagination_meta(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- list responses carry a pagination block."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        resp = await client.get("/api/v1/cache-configs?limit=5&page=2", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "pagination"}
+        assert data["pagination"]["limit"] == 5
+        assert data["pagination"]["page"] == 2
+
+    async def test_list_select_is_bounded_by_limitby(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- the bound is applied at query level."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        await client.get("/api/v1/cache-configs", headers=auth_headers)
+        assert "limitby" in app_mock_db.return_value.select.call_args.kwargs
+
+    async def test_list_limit_is_clamped_to_ceiling(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- a hostile ?limit is clamped, not honoured."""
+        app_mock_db.return_value.select.side_effect = [make_select_result([])]
+        resp = await client.get("/api/v1/cache-configs?limit=99999999", headers=auth_headers)
+        data = await resp.get_json()
+        assert data["pagination"]["limit"] == 1000  # _pagination.MAX_PAGE_SIZE
+
+    async def test_get_single_field_set(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- get-single envelope is status+data only."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        resp = await client.get("/api/v1/cache-configs/1", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data"}
+
+    async def test_delete_field_set(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- delete envelope is status + {id, deleted}."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        with patch("services.management.app.api.v1.cache_configs.redis_client", MagicMock()):
+            resp = await client.delete("/api/v1/cache-configs/1", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data"}
+        assert set(data["data"].keys()) == {"id", "deleted"}
