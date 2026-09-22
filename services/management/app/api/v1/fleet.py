@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
-from quart import g, jsonify
+from quart import g, jsonify, request
 from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
@@ -203,21 +203,6 @@ class CreateFleetBackendRequest:
     management_scope: str | None = None
     config: dict[str, Any] | None = field(default=None)
     credentials: str | None = None
-
-
-@dataclass(slots=True)
-class UpdateFleetBackendRequest:
-    """Request body for PUT /api/v1/fleet/backends/<id>. Every field a partial.
-
-    ``type`` is intentionally absent -- it is immutable after creation.
-    """
-
-    name: str | None = None
-    mode: str | None = None
-    management_scope: str | None = None
-    config: dict[str, Any] | None = field(default=None)
-    credentials: str | None = None
-    status: str | None = None
 
 
 def _get_license_client() -> Any:
@@ -453,13 +438,20 @@ async def get_fleet_backend(backend_id: int):
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
 @validate_response(FleetBackendActionResponse, 200)
-@validate_request(UpdateFleetBackendRequest)
-async def update_fleet_backend(backend_id: int, data: UpdateFleetBackendRequest):
+async def update_fleet_backend(backend_id: int):
     """Update a registered fleet backend's mutable fields.
 
     ``type`` is immutable after creation (changing it would silently
     reinterpret ``config``/``credentials_ref`` for a different backend
     class) -- delete and recreate to change type.
+
+    Body validation runs in-handler, AFTER the flag/existence/forbidden
+    checks, so a malformed body against a nonexistent or foreign-org backend
+    returns 404/403 rather than 400 -- preserving the deliberate
+    existence/authz-before-input-validation order that
+    tests/contract/test_management_mutations.py locks. A @validate_request
+    decorator would run before the handler and invert that order
+    (regression: audit-2026-09-14-wave2).
     """
     org_id = g.user.get("organization_id")
     if not _fleet_v2_enabled(org_id):
@@ -471,28 +463,29 @@ async def update_fleet_backend(backend_id: int, data: UpdateFleetBackendRequest)
     if outcome == "forbidden":
         return jsonify({"status": "error", "error": "forbidden"}), 403
 
+    body = (await request.get_json(silent=True)) or {}
     update_fields: dict[str, Any] = {}
-    if data.name is not None:
-        name = data.name.strip()
+    if body.get("name") is not None:
+        name = str(body["name"]).strip()
         if not name or len(name) > 255:
             return _validation_error("name must be 1-255 characters")
         update_fields["name"] = name
-    if data.mode is not None:
-        update_fields["mode"] = data.mode
-    if data.management_scope is not None:
-        if data.management_scope not in _VALID_SCOPES:
+    if body.get("mode") is not None:
+        update_fields["mode"] = body["mode"]
+    if body.get("management_scope") is not None:
+        if body["management_scope"] not in _VALID_SCOPES:
             return _validation_error(f"management_scope must be one of {sorted(_VALID_SCOPES)}")
-        update_fields["management_scope"] = data.management_scope
-    if data.config is not None:
-        if not isinstance(data.config, dict):
+        update_fields["management_scope"] = body["management_scope"]
+    if body.get("config") is not None:
+        if not isinstance(body["config"], dict):
             return _validation_error("config must be an object")
-        update_fields["config"] = data.config
-    if data.credentials:
-        update_fields["credentials_ref"] = encrypt_credential(data.credentials)
-    if data.status is not None:
-        if data.status not in _VALID_STATUSES:
+        update_fields["config"] = body["config"]
+    if body.get("credentials"):
+        update_fields["credentials_ref"] = encrypt_credential(body["credentials"])
+    if body.get("status") is not None:
+        if body["status"] not in _VALID_STATUSES:
             return _validation_error(_STATUS_ERROR)
-        update_fields["status"] = data.status
+        update_fields["status"] = body["status"]
 
     if update_fields:
         update_fields["updated_at"] = datetime.utcnow()
