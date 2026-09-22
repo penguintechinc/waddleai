@@ -305,3 +305,128 @@ class TestGetOrganizationUsage:
         """Missing auth returns 401."""
         resp = await client.get("/api/v1/organizations/1/usage")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Wave-2 audit: role-name -> OIDC-scope conversion regression tests.
+#
+# admin holds ORG_ADMIN_UPDATE and ANALYTICS_SYSTEM (both admin-only);
+# resource_manager and plain user hold neither -- so these role tokens
+# exercise the exact admin-only scope tiers the handlers now branch on.
+# ---------------------------------------------------------------------------
+
+
+class TestOrganizationsScopeAuthzWave2:
+    """Scope-gate conversions in organizations.py (regression: audit-2026-09-14-wave2)."""
+
+    async def test_get_org_non_admin_denied_other_org(
+        self, client, user_auth_headers: dict
+    ) -> None:
+        """Plain user (no ORG_ADMIN_UPDATE) may not view another org → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        resp = await client.get("/api/v1/organizations/999", headers=user_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_get_org_rm_denied_other_org(self, client, rm_auth_headers: dict) -> None:
+        """resource_manager (no ORG_ADMIN_UPDATE) may not view another org → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        resp = await client.get("/api/v1/organizations/999", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_get_org_admin_allowed_other_org(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin (ORG_ADMIN_UPDATE) may view any org → 200.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=999)
+        app_mock_db.return_value.select.return_value.first.return_value = org
+        app_mock_db.return_value.count.return_value = 2
+
+        resp = await client.get("/api/v1/organizations/999", headers=auth_headers)
+        assert resp.status_code == 200
+
+    async def test_get_org_usage_rm_denied_other_org(self, client, rm_auth_headers: dict) -> None:
+        """resource_manager (no ANALYTICS_SYSTEM) may not read another org's usage → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        resp = await client.get("/api/v1/organizations/999/usage", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_get_org_usage_admin_allowed_other_org(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin (ANALYTICS_SYSTEM) may read any org's usage → 200.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=999)
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([org]),
+            empty,
+            empty,
+        ]
+
+        resp = await client.get("/api/v1/organizations/999/usage", headers=auth_headers)
+        assert resp.status_code == 200
+
+    async def test_list_orgs_response_field_set_is_exactly_todays(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """@validate_response pins the org list record to its exact field set.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org()
+        app_mock_db.return_value.select.return_value = make_select_result([org])
+        app_mock_db.return_value.count.return_value = 1
+
+        resp = await client.get("/api/v1/organizations", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert set(data.keys()) == {"organizations", "total", "pagination"}
+        assert set(data["organizations"][0].keys()) == {
+            "id",
+            "name",
+            "description",
+            "token_quota_daily",
+            "token_quota_monthly",
+            "default_model",
+            "enabled",
+            "user_count",
+            "created_at",
+        }
+
+    async def test_get_org_response_field_set_is_exactly_todays(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """@validate_response pins the org detail record to its exact field set.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org()
+        app_mock_db.return_value.select.return_value.first.return_value = org
+        app_mock_db.return_value.count.return_value = 3
+
+        resp = await client.get("/api/v1/organizations/1", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert set(data.keys()) == {
+            "id",
+            "name",
+            "description",
+            "token_quota_daily",
+            "token_quota_monthly",
+            "default_model",
+            "enabled",
+            "created_at",
+            "statistics",
+        }
+        assert set(data["statistics"].keys()) == {"user_count", "key_count"}
