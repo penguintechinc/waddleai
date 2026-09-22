@@ -268,12 +268,38 @@ def define_tables(db):
     )
 
     # Token Usage Tracking
+    #
+    # regression: gh-212 -- source/estimated/cost_usd_total/tokens_saved/
+    # cache_status below were missing from this hand-declared field list
+    # even though Alembic migrations 007 (source, estimated) and 009a
+    # (cache_status, tokens_saved) already added them to the real,
+    # deployed schema, and cost_usd_total predates both (original
+    # services/management/app/models_sqlalchemy.py baseline). Discovered
+    # because shared/utils/metering.py's PenguinDALUsageWriter.
+    # write_aggregated_row() unconditionally reads/writes all five on every
+    # insert/update -- caught by a test against this real get_db() schema
+    # (tests/unit/test_metering_dal_writer.py), which raised
+    # sqlalchemy.exc.CompileError ("Unconsumed column names") rather than
+    # AttributeError once the api_key_id rename alone was applied, proving
+    # the rename by itself was not sufficient to make writes succeed.
+    #
+    # user_id/organization_id are declared nullable here (not notnull, as
+    # this file previously had it) to match the real, deployed schema
+    # (services/management/app/models_sqlalchemy.py's TokenUsage ORM class,
+    # the create_all()-authoritative baseline -- see gh-207 defect 4):
+    # neither column has `nullable=False` there. The prior `notnull=True`
+    # here was itself a drift in the other direction (PyDAL stricter than
+    # the real DB) -- write_aggregated_row() legitimately inserts
+    # user_id=None/organization_id=None (aggregated proxy-side usage isn't
+    # yet joined to a specific user/org row; its own comment says "Will be
+    # populated by management layer"), which the real DB has always
+    # allowed and this file incorrectly refused to model.
     _define_table_if_absent(
         db,
         "token_usage",
         Field("api_key_id", "reference api_keys", notnull=True),
-        Field("user_id", "reference users", notnull=True),
-        Field("organization_id", "reference organizations", notnull=True),
+        Field("user_id", "reference users"),
+        Field("organization_id", "reference organizations"),
         Field("date", "date", default=date.today),
         # WaddleAI Tokens (normalized usage units)
         Field("waddleai_tokens", "integer", default=0),
@@ -284,7 +310,15 @@ def define_tables(db):
         Field("tokens_input_total", "integer", default=0),  # Sum across all LLMs
         Field("tokens_output_total", "integer", default=0),  # Sum across all LLMs
         Field("request_count", "integer", default=0),
+        Field("cost_usd_total", "integer", default=0),  # Cents
         Field("last_updated", "datetime", default=datetime.utcnow),
+        Field("source", "string", notnull=True, default="aiproxy"),
+        Field("estimated", "boolean", notnull=True, default=False),
+        # Response cache accounting (spec §6.4, migration 009a). cache_status
+        # is one of exact|semantic|upstream|miss (None for rows predating
+        # the cache feature); tokens_saved is 0 for misses/non-cache rows.
+        Field("cache_status", "string"),
+        Field("tokens_saved", "integer", notnull=True, default=0),
     )
 
     # Real-time Usage Cache (for quota enforcement)

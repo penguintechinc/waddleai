@@ -10,7 +10,8 @@ Covers:
 """
 
 import inspect
-from unittest.mock import AsyncMock, Mock, create_autospec
+import logging
+from unittest.mock import AsyncMock, MagicMock, Mock, create_autospec
 
 import pytest
 
@@ -23,6 +24,7 @@ from proxy.apps.proxy_server.pipeline import (
     SecurityOutStage,
     TokenBudgetStage,
 )
+from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
 from shared.security.content_filter import ContentFilter, FilterResult, FilterViolation
 from shared.security.prompt_security import Action, Severity, ThreatDetection, ThreatType
 from shared.utils.llm_connectors import (
@@ -33,8 +35,8 @@ from shared.utils.llm_connectors import (
     ProviderTimeoutError,
     StreamChunk,
 )
-from shared.utils.metering import MeteringEvent
-from shared.utils.token_limiter import GateDecision
+from shared.utils.metering import AggregatedMetrics, MeteringBuffer, MeteringEvent
+from shared.utils.token_limiter import GateDecision, KeyLimits, TokenLimiter
 
 
 @pytest.mark.asyncio
@@ -99,7 +101,7 @@ class TestTokenBudgetStageImplementation:
             flag="waddleai.native_rate_limit",
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42)
         ctx = PipelineContext(
             user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}]
         )
@@ -126,7 +128,7 @@ class TestTokenBudgetStageImplementation:
             flag="waddleai.native_rate_limit",
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42)
         ctx = PipelineContext(user=user, body={}, model="gpt-4")
         result = await stage(ctx)
 
@@ -151,7 +153,7 @@ class TestTokenBudgetStageImplementation:
             flag="waddleai.native_rate_limit",
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42)
         ctx = PipelineContext(user=user, body={}, model="gpt-4")
         result = await stage(ctx)
 
@@ -171,7 +173,7 @@ class TestTokenBudgetStageImplementation:
             flag="waddleai.native_rate_limit",
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42, limits=None)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42, limits=None)
         ctx = PipelineContext(
             user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}]
         )
@@ -180,16 +182,21 @@ class TestTokenBudgetStageImplementation:
         # Stage should allow through (no limits configured)
         assert result.status_code == 200
 
-    async def test_token_budget_stage_skips_when_user_has_no_vkey_id(self):
-        """TokenBudgetStage should skip budget checks entirely when ctx.user has no vkey_id.
+    async def test_token_budget_stage_skips_when_user_has_no_api_key_id(self, caplog):
+        """TokenBudgetStage fail-opens (skips) when ctx.user has no api_key_id.
 
-        Uses a plain object (not Mock) so hasattr() genuinely returns False --
-        a bare Mock auto-creates any attribute and would make this vacuous.
+        # regression: gh-212 -- this used to be
+        # test_token_budget_stage_skips_when_user_has_no_vkey_id, asserting a
+        # skip on a field (`vkey_id`) UserContext never had -- i.e. it
+        # asserted the bug itself as correct behavior. Uses a plain object
+        # (not Mock) so getattr(..., None) genuinely returns None -- a bare
+        # Mock auto-creates any attribute and would make this vacuous.
         """
 
-        class _UserNoVkey:
+        class _UserNoApiKey:
             id = 1
             tenant_id = "org1"
+            user_id = 1
 
         token_limiter = Mock()
         token_limiter.reserve = AsyncMock()
@@ -201,12 +208,20 @@ class TestTokenBudgetStageImplementation:
             features=features,
             flag=None,
         )
-        ctx = PipelineContext(user=_UserNoVkey(), body={}, model="gpt-4")
-        result = await stage(ctx)
+        ctx = PipelineContext(user=_UserNoApiKey(), body={}, model="gpt-4")
+        with caplog.at_level(logging.WARNING):
+            result = await stage(ctx)
 
         assert result.blocked is False
         assert result.status_code == 200
         token_limiter.reserve.assert_not_called()
+        # The skip must be LOUD (WARNING+), never a silent DEBUG no-op --
+        # a DEBUG-level skip is what hid this control being disabled for
+        # as long as it was (gh-212).
+        assert any(
+            rec.levelno >= logging.WARNING and "api_key_id" in rec.getMessage()
+            for rec in caplog.records
+        )
 
 
 @pytest.mark.asyncio
@@ -1066,7 +1081,7 @@ class TestMeterStageImplementation:
             flag=None,
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42)
         ctx = PipelineContext(
             user=user,
             body={},
@@ -1082,7 +1097,7 @@ class TestMeterStageImplementation:
         metering_buffer.record.assert_called_once()
         event = metering_buffer.record.call_args[0][0]
         assert isinstance(event, MeteringEvent)
-        assert event.virtual_key_id == 42
+        assert event.api_key_id == 42
         assert event.model == "gpt-4o"
 
     async def test_meter_stage_reconciles_reservation(self):
@@ -1100,7 +1115,7 @@ class TestMeterStageImplementation:
             flag=None,
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42)
         ctx = PipelineContext(
             user=user,
             body={},
@@ -1133,7 +1148,7 @@ class TestMeterStageImplementation:
             flag=None,
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42)
         ctx = PipelineContext(
             user=user,
             body={},
@@ -1164,7 +1179,7 @@ class TestMeterStageImplementation:
             flag=None,
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=42)
+        user = Mock(id=1, tenant_id="org1", api_key_id=42)
         ctx = PipelineContext(
             user=user,
             body={},
@@ -1178,8 +1193,21 @@ class TestMeterStageImplementation:
         # Should not crash; metering buffer handles None usage gracefully
         assert result.blocked is False
 
-    async def test_meter_stage_skips_when_no_vkey_id(self):
-        """MeterStage should skip metering entirely when ctx.user has no vkey_id."""
+    async def test_meter_stage_skips_when_no_api_key_id(self, caplog):
+        """MeterStage fail-opens (skips recording) when ctx.user has no api_key_id.
+
+        # regression: gh-212 -- this used to be test_meter_stage_skips_when_no_vkey_id
+        # on a `Mock(..., vkey_id=None)`. `provider="openai"` is set explicitly
+        # here (unlike the original) so the skip is genuinely attributable to
+        # the missing-identity guard, not to the separate `ctx.usage and
+        # ctx.provider and ctx.model` recording condition also being false.
+        """
+
+        class _UserNoApiKey:
+            id = 1
+            tenant_id = "org1"
+            user_id = 1
+
         metering_buffer = Mock()
         metering_buffer.record = Mock()
 
@@ -1193,15 +1221,175 @@ class TestMeterStageImplementation:
             flag=None,
         )
 
-        user = Mock(id=1, tenant_id="org1", vkey_id=None)
         ctx = PipelineContext(
-            user=user,
+            user=_UserNoApiKey(),
             body={},
             model="gpt-4o",
             usage={"input_tokens": 1, "output_tokens": 1},
+            provider="openai",
         )
-        result = await stage(ctx)
+        with caplog.at_level(logging.WARNING):
+            result = await stage(ctx)
 
         assert result.blocked is False
         metering_buffer.record.assert_not_called()
         token_limiter.reconcile.assert_not_called()
+        # Loud, not silent (gh-212): a DEBUG-level skip is exactly what hid
+        # this stage never recording usage in production.
+        assert any(
+            rec.levelno >= logging.WARNING and "api_key_id" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+
+@pytest.mark.asyncio
+class TestGh212RealUserContextBudgetAndMeterRegression:
+    """# regression: gh-212.
+
+    TokenBudgetStage and MeterStage gated on `ctx.user.vkey_id`, a field
+    `UserContext` (shared/auth/rbac.py) never had -- `hasattr()`/`getattr()`
+    was always False/None, so both stages silently no-op'd on every request
+    in production. Every test above this class constructs `ctx.user` as a
+    bare `unittest.mock.Mock`, which auto-creates whatever attribute you ask
+    for -- exactly what let a test keep "passing" against the wrong field
+    name and hid the bug. These tests instead construct a REAL
+    `shared.auth.rbac.UserContext` (the only class ever assigned to
+    `ctx.user` in production) so a wrong attribute name shows up as a real
+    `AttributeError`/`None`, not a mock auto-attribute.
+    """
+
+    @staticmethod
+    def _real_user(api_key_id: int | None) -> UserContext:
+        """A real UserContext as RBACManager.authenticate_api_key() builds one."""
+        return UserContext(
+            user_id=1,
+            username="gh212-regression-user",
+            role=Role.USER,
+            organization_id=7,
+            managed_orgs=[],
+            permissions=set(ROLE_PERMISSIONS[Role.USER]),
+            api_key_id=api_key_id,
+        )
+
+    async def test_token_budget_stage_enforces_configured_limit_over_quota(self):
+        """A real UserContext over a configured monthly token budget is REJECTED.
+
+        Only the Valkey wire client is mocked (evalsha returns the Lua
+        script's own reject tuple) -- TokenLimiter, KeyLimits, and
+        TokenBudgetStage are all real, matching tests/unit/test_token_limiter.py's
+        established convention for testing this class without a live Redis.
+        """
+        mock_valkey = MagicMock()
+        mock_valkey.script_load = AsyncMock(return_value="mock-sha")
+        mock_valkey.evalsha = AsyncMock(return_value=[0, "monthly_tokens_exceeded", None])
+        features = Mock(is_feature_enabled=Mock(return_value=True))
+        token_limiter = TokenLimiter(mock_valkey, features)
+
+        user = self._real_user(api_key_id=99)
+        # KeyLimits is a real, configured limit -- not a mock attribute.
+        # UserContext is a plain (non-slotted) dataclass, so attaching the
+        # duck-typed `.limits` extension TokenBudgetStage reads is legitimate
+        # on a real instance (see stages.py's NOTE on this being the one
+        # piece of TokenBudgetStage not wired to a real DB-backed provider
+        # yet -- tracked separately from gh-212's vkey_id/api_key_id bug).
+        user.limits = KeyLimits(tpm_limit=None, monthly_token_limit=1000, monthly_usd_limit=None)
+
+        stage = TokenBudgetStage(
+            name="token_budget",
+            token_limiter=token_limiter,
+            features=features,
+            flag=None,
+        )
+        ctx = PipelineContext(
+            user=user,
+            body={},
+            model="gpt-4",
+            messages=[{"role": "user", "content": "x" * 4000}],
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is True
+        assert result.status_code == 429
+        assert result.block_reason == "monthly_tokens_exceeded"
+        mock_valkey.evalsha.assert_awaited_once()
+        # The real Lua-script ARGV[1] (vkey_id positional arg) must carry the
+        # UserContext's api_key_id -- proving the fix actually threads the
+        # correct identity through to the budget gate, not just a truthy value.
+        assert mock_valkey.evalsha.await_args.args[2] == "99"
+
+    async def test_token_budget_stage_allows_real_user_within_quota(self):
+        """Companion sanity check: same real UserContext, decision=allowed passes through."""
+        mock_valkey = MagicMock()
+        mock_valkey.script_load = AsyncMock(return_value="mock-sha")
+        mock_valkey.evalsha = AsyncMock(return_value=[1, None, "resv-real-1"])
+        features = Mock(is_feature_enabled=Mock(return_value=True))
+        token_limiter = TokenLimiter(mock_valkey, features)
+
+        user = self._real_user(api_key_id=99)
+        user.limits = KeyLimits(
+            tpm_limit=None, monthly_token_limit=1_000_000, monthly_usd_limit=None
+        )
+
+        stage = TokenBudgetStage(
+            name="token_budget",
+            token_limiter=token_limiter,
+            features=features,
+            flag=None,
+        )
+        ctx = PipelineContext(
+            user=user, body={}, model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+        )
+        result = await stage(ctx)
+
+        assert result.blocked is False
+        assert result.reservation_id == "resv-real-1"
+
+    async def test_meter_stage_records_through_real_metering_buffer(self):
+        """MeterStage records through the real metering path.
+
+        Actually enqueues + flushes a usage event for a real UserContext's
+        api_key_id through the real MeteringBuffer aggregation path (not a
+        Mock standing in for the whole buffer). Only the UsageWriter DB
+        seam is faked -- MeteringBuffer's own
+        record()/flush()/_aggregate_events() all run for real, per the
+        module's own documented test boundary (shared/utils/metering.py's
+        docstring: "allowing tests to substitute without coupling to
+        penguin-dal or PyDAL").
+        """
+        written: list[AggregatedMetrics] = []
+
+        class _FakeUsageWriter:
+            """Captures aggregates instead of writing to a real DB."""
+
+            def write_aggregated_row(self, agg: AggregatedMetrics) -> None:
+                written.append(agg)
+
+        metering_buffer = MeteringBuffer(writer=_FakeUsageWriter(), interval=1.0)
+        token_limiter = Mock()
+        token_limiter.reconcile = AsyncMock()
+
+        stage = MeterStage(
+            name="meter",
+            metering_buffer=metering_buffer,
+            token_limiter=token_limiter,
+            flag=None,
+        )
+
+        user = self._real_user(api_key_id=4242)
+        ctx = PipelineContext(
+            user=user,
+            body={},
+            model="gpt-4o",
+            usage={"input_tokens": 50, "output_tokens": 100},
+            provider="openai",
+        )
+        result = await stage(ctx)
+        assert result.blocked is False
+
+        await metering_buffer.flush()
+
+        assert len(written) == 1
+        assert written[0].api_key_id == 4242
+        assert written[0].total_input_tokens == 50
+        assert written[0].total_output_tokens == 100
+        assert written[0].request_count == 1

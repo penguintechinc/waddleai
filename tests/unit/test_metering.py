@@ -36,13 +36,13 @@ class TestMeteringEvent:
         """Test event creation with usage."""
         usage = {"input_tokens": 100, "output_tokens": 50}
         event = MeteringEvent(
-            virtual_key_id=123,
+            api_key_id=123,
             model="gpt-4",
             provider="openai",
             usage=usage,
             timestamp=datetime.utcnow(),
         )
-        assert event.virtual_key_id == 123
+        assert event.api_key_id == 123
         assert event.model == "gpt-4"
         assert event.usage["input_tokens"] == 100
         assert event.estimated is False
@@ -50,7 +50,7 @@ class TestMeteringEvent:
     def test_event_without_usage(self):
         """Test event creation without usage (will require estimation)."""
         event = MeteringEvent(
-            virtual_key_id=123,
+            api_key_id=123,
             model="claude-3-opus",
             provider="anthropic",
             usage=None,
@@ -80,7 +80,7 @@ class TestMeteringBuffer:
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         usage = {"input_tokens": 100, "output_tokens": 50}
         event = MeteringEvent(
-            virtual_key_id=1,
+            api_key_id=1,
             model="gpt-4",
             provider="openai",
             usage=usage,
@@ -96,7 +96,7 @@ class TestMeteringBuffer:
         for i in range(3):
             usage = {"input_tokens": 100 + i, "output_tokens": 50}
             event = MeteringEvent(
-                virtual_key_id=1,
+                api_key_id=1,
                 model="gpt-4",
                 provider="openai",
                 usage=usage,
@@ -110,15 +110,15 @@ class TestMeteringBuffer:
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         now = datetime(2026, 7, 28, 12, 34, 45)
         event = MeteringEvent(
-            virtual_key_id=1,
+            api_key_id=1,
             model="gpt-4",
             provider="openai",
             usage={"input_tokens": 100, "output_tokens": 50},
             timestamp=now,
         )
-        # Key should include minute bucket (vkey, model, provider, minute)
+        # Key should include minute bucket (api_key_id, model, provider, minute)
         key = buffer._get_aggregation_key(event)
-        assert key[0] == 1  # virtual_key_id
+        assert key[0] == 1  # api_key_id
         assert key[1] == "gpt-4"
         assert key[2] == "openai"
         # key[3] should be a minute-level bucket (datetime rounded to minute)
@@ -138,9 +138,9 @@ class TestMeteringBuffer:
             (1, "gpt-4", "openai", 50, 25),  # Same key, same minute
         ]
 
-        for vkey, model, provider, inp, out in events_data:
+        for api_key_id, model, provider, inp, out in events_data:
             event = MeteringEvent(
-                virtual_key_id=vkey,
+                api_key_id=api_key_id,
                 model=model,
                 provider=provider,
                 usage={"input_tokens": inp, "output_tokens": out},
@@ -155,7 +155,7 @@ class TestMeteringBuffer:
         """Test fallback token estimation for missing usage."""
         buffer = MeteringBuffer(mock_writer, interval=1.0)
         event = MeteringEvent(
-            virtual_key_id=1,
+            api_key_id=1,
             model="gpt-4",
             provider="openai",
             usage=None,  # Missing usage
@@ -174,7 +174,7 @@ class TestMeteringBuffer:
         # Record events
         for i in range(3):
             event = MeteringEvent(
-                virtual_key_id=1,
+                api_key_id=1,
                 model="gpt-4",
                 provider="openai",
                 usage={"input_tokens": 100 + i, "output_tokens": 50},
@@ -204,7 +204,7 @@ class TestMeteringBuffer:
             total_input += inp
             total_output += out
             event = MeteringEvent(
-                virtual_key_id=1,
+                api_key_id=1,
                 model="gpt-4",
                 provider="openai",
                 usage={"input_tokens": inp, "output_tokens": out},
@@ -237,7 +237,7 @@ class TestMeteringBuffer:
         # Record initial events
         for i in range(2):  # noqa: B007 -- loop count only, index unused
             event = MeteringEvent(
-                virtual_key_id=1,
+                api_key_id=1,
                 model="gpt-4",
                 provider="openai",
                 usage={"input_tokens": 100, "output_tokens": 50},
@@ -256,7 +256,7 @@ class TestMeteringBuffer:
             # Record more events during flush (after swap but before write complete)
             for i in range(3):  # noqa: B007 -- loop count only, index unused
                 event = MeteringEvent(
-                    virtual_key_id=1,
+                    api_key_id=1,
                     model="gpt-4",
                     provider="openai",
                     usage={"input_tokens": 100, "output_tokens": 50},
@@ -279,7 +279,7 @@ class TestMeteringBuffer:
         # Record some events
         for i in range(3):  # noqa: B007 -- loop count only, index unused
             event = MeteringEvent(
-                virtual_key_id=1,
+                api_key_id=1,
                 model="gpt-4",
                 provider="openai",
                 usage={"input_tokens": 100, "output_tokens": 50},
@@ -305,7 +305,7 @@ class TestMeteringBuffer:
 
         # Record an event
         event = MeteringEvent(
-            virtual_key_id=1,
+            api_key_id=1,
             model="gpt-4",
             provider="openai",
             usage={"input_tokens": 100, "output_tokens": 50},
@@ -333,7 +333,7 @@ class TestMeteringBuffer:
 
         # Create an event without usage
         event = MeteringEvent(
-            virtual_key_id=1,
+            api_key_id=1,
             model="gpt-4",
             provider="openai",
             usage=None,
@@ -358,7 +358,7 @@ class TestMeteringBuffer:
 
         # Record event with missing usage
         event = MeteringEvent(
-            virtual_key_id=1,
+            api_key_id=1,
             model="claude-3-opus",
             provider="anthropic",
             usage=None,
@@ -408,7 +408,7 @@ class TestFlushFailureDoesNotLoseUsage:
         buf = MeteringBuffer(writer=writer, interval=0.01)
         buf.record(
             MeteringEvent(
-                virtual_key_id=1,
+                api_key_id=1,
                 model="gpt-4",
                 provider="openai",
                 usage={"input_tokens": 10, "output_tokens": 5},
@@ -435,7 +435,7 @@ class TestFlushFailureDoesNotLoseUsage:
         for i in range(buf.max_pending_aggregates + 25):
             buf.record(
                 MeteringEvent(
-                    virtual_key_id=i,  # distinct key -> distinct aggregate
+                    api_key_id=i,  # distinct key -> distinct aggregate
                     model="gpt-4",
                     provider="openai",
                     usage={"input_tokens": 1, "output_tokens": 1},

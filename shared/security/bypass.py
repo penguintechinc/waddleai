@@ -83,21 +83,33 @@ class BypassResolver:
         """Resolve the bypass decision for one request context.
 
         `ctx` must expose `token_scopes: Iterable[str]` and either
-        `vkey_id`/`user_id` for grant lookup. No `security:bypass` scope on
+        `api_key_id`/`user_id` for grant lookup. No `security:bypass` scope on
         the caller's token means the grant (if any) is ignored entirely --
         a grant existing in the DB never bypasses the scope check.
+
+        Note (gh-212): the sole production caller passes `ctx.user`, a
+        `UserContext` (shared/auth/rbac.py) -- which has no `token_scopes`
+        field either (always empty, so `resolve()` always short-circuits to
+        `_INACTIVE` before the identity lookup below even runs). That is a
+        separate, still-open gap, not fixed here: bypass grants therefore
+        remain permanently unreachable in production regardless of this
+        fix, which is a fail-closed (safe) direction for a security-bypass
+        control, so left as a follow-up rather than expanded in scope here.
         """
         token_scopes = set(getattr(ctx, "token_scopes", None) or ())
         if BYPASS_SCOPE not in token_scopes:
             return _INACTIVE
 
         now = getattr(ctx, "now", None) or datetime.utcnow()
-        vkey_id = getattr(ctx, "vkey_id", None)
+        # regression: gh-212 -- UserContext (shared/auth/rbac.py) has no
+        # `vkey_id` field; this always resolved to None. api_key_id is the
+        # real field.
+        api_key_id = getattr(ctx, "api_key_id", None)
         user_id = getattr(ctx, "user_id", None)
 
         grant: BypassGrant | None = None
-        if vkey_id is not None:
-            grant = await self.store.find_active_grant("vkey", str(vkey_id), now)
+        if api_key_id is not None:
+            grant = await self.store.find_active_grant("vkey", str(api_key_id), now)
         if grant is None and user_id is not None:
             grant = await self.store.find_active_grant("user", str(user_id), now)
 
@@ -118,7 +130,7 @@ class BypassResolver:
 
     def _audit(self, ctx: Any, decision: BypassDecision) -> None:
         """Log every bypassed request with the grant identity (audit trail + usage flag)."""
-        subject = getattr(ctx, "vkey_id", None) or getattr(ctx, "user_id", None)
+        subject = getattr(ctx, "api_key_id", None) or getattr(ctx, "user_id", None)
         logger.warning(
             "BypassResolver: request bypassed (grant_id=%s, mode=%s, subject=%s, "
             "scope_narrow=%s, include_upstream=%s)",

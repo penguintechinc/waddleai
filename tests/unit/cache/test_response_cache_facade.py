@@ -11,9 +11,14 @@ from shared.cache.semantic import SemanticCache
 from shared.cache.upstream import AnthropicPromptCacheOrchestrator
 
 
-def _make_user(org_id=1, vkey_id=10):
-    """Return a minimal user context (org/tenant/vkey ids) for facade tests."""
-    return SimpleNamespace(organization_id=org_id, tenant_id=org_id, vkey_id=vkey_id)
+def _make_user(org_id=1, api_key_id=10):
+    """Return a minimal user context (org/tenant/api_key ids) for facade tests.
+
+    # regression: gh-212 -- this used to build `vkey_id=vkey_id`, matching the
+    # field name ResponseCache used to (incorrectly) read off ctx.user.
+    # UserContext (shared/auth/rbac.py) has no such field; api_key_id is real.
+    """
+    return SimpleNamespace(organization_id=org_id, tenant_id=org_id, api_key_id=api_key_id)
 
 
 class _Ctx:

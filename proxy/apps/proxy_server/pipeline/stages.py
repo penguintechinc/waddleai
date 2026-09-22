@@ -329,26 +329,64 @@ class TokenBudgetStage(Stage):
         for MeterStage to reconcile with actual usage. Sets ctx.blocked if
         budget exceeded (tpm, monthly tokens, or monthly usd).
         """
-        if not ctx.user or not hasattr(ctx.user, "vkey_id"):
-            logger.debug("TokenBudgetStage: skipping (no vkey_id)")
+        # regression: gh-212 -- this stage used to gate on `hasattr(ctx.user,
+        # "vkey_id")`, a field UserContext (shared/auth/rbac.py) never had --
+        # hasattr() was always False, so this stage silently no-op'd on every
+        # request in production. api_key_id is the real, existing field
+        # (issue #207 established virtual_key_id is dead on the proxy path).
+        if ctx.user is None:
+            # AuthStage runs immediately before this stage in the standard
+            # pipeline order and already blocks/short-circuits an
+            # unauthenticated request -- reaching here with no user at all
+            # means AuthStage was bypassed or this stage is being invoked out
+            # of order. Fail OPEN (there is no identity to check a budget
+            # against) but LOUD: a silent/DEBUG skip is exactly what hid this
+            # control being permanently disabled.
+            logger.error(
+                "TokenBudgetStage: ctx.user is None -- AuthStage should have "
+                "blocked this request already; skipping budget check (fail-open)"
+            )
             return ctx
 
-        vkey_id = ctx.user.vkey_id
+        api_key_id = getattr(ctx.user, "api_key_id", None)
+        if api_key_id is None:
+            # A real, reachable state, not a bug by itself: UserContext.api_key_id
+            # defaults to None for sessions authenticated via bearer JWT with no
+            # underlying API key (shared/auth/penguin_auth.py). Fail OPEN --
+            # hard-blocking every such session here would be a bigger
+            # availability regression than the missing budget check -- but WARN,
+            # not DEBUG, so the gap is visible instead of silent again.
+            logger.warning(
+                "TokenBudgetStage: ctx.user has no api_key_id (user_id=%s) -- "
+                "skipping budget check (fail-open)",
+                getattr(ctx.user, "user_id", "?"),
+            )
+            return ctx
+
         # Estimate input tokens (simplified: ~4 chars per token)
         estimated_input = sum(len(m.get("content", "")) // 4 for m in ctx.messages) or 1
         # Conservative estimate: 2x input for output
         estimated_output = estimated_input * 2
         total_estimated = estimated_input + estimated_output
 
-        # Get limits for this key (mock scenario; in production fetch from DB/config)
+        # Get limits for this key (mock scenario; in production fetch from DB/config).
+        # NOTE (gh-212 follow-up, not fixed here): nothing in the codebase ever
+        # populates ctx.user.limits -- UserContext has no such field and no call
+        # site sets it as an extension attribute either, so this branch fires on
+        # every real request until a DB-backed KeyLimits provider is wired in.
+        # WARN (not DEBUG) so that gap is visible rather than silent again.
         limits = getattr(ctx.user, "limits", None)
         if not limits:
-            logger.debug("TokenBudgetStage: no limits configured for vkey %s", vkey_id)
+            logger.warning(
+                "TokenBudgetStage: no limits configured for api_key_id=%s -- "
+                "skipping budget check (fail-open)",
+                api_key_id,
+            )
             return ctx
 
         # Reserve tokens atomically
         decision = await self.token_limiter.reserve(
-            vkey_id=vkey_id,
+            vkey_id=api_key_id,
             estimated_tokens=total_estimated,
             estimated_usd=0.0,  # USD estimate would come from model pricing
             limits=limits,
@@ -359,16 +397,18 @@ class TokenBudgetStage(Stage):
             ctx.status_code = 429
             ctx.block_reason = decision.reason
             logger.warning(
-                "TokenBudgetStage: quota exceeded for vkey %s: %s", vkey_id, decision.reason
+                "TokenBudgetStage: quota exceeded for api_key_id=%s: %s",
+                api_key_id,
+                decision.reason,
             )
             return ctx
 
         # Stash reservation ID for reconciliation in MeterStage
         ctx.reservation_id = decision.reservation_id
         logger.debug(
-            "TokenBudgetStage: reserved %d tokens for vkey %s (resv=%s)",
+            "TokenBudgetStage: reserved %d tokens for api_key_id=%s (resv=%s)",
             total_estimated,
-            vkey_id,
+            api_key_id,
             decision.reservation_id,
         )
         return ctx
@@ -1244,16 +1284,33 @@ class MeterStage(Stage):
         1. If usage exists and provider was called: record to metering buffer
         2. If reservation was made: reconcile with actual usage
         """
-        vkey_id = getattr(ctx.user, "vkey_id", None) if ctx.user else None
-        if not vkey_id:
-            logger.debug("MeterStage: no vkey_id, skipping")
+        # regression: gh-212 -- this stage used to read `ctx.user.vkey_id` via
+        # getattr(..., None), a field UserContext (shared/auth/rbac.py) never
+        # had -- always None, so this stage silently no-op'd on every request
+        # in production (MeteringBuffer/PenguinDALUsageWriter, wired
+        # unconditionally in main.py, was therefore dead code despite looking
+        # live). api_key_id is the real field -- memory_stages.py:317 already
+        # used it correctly.
+        api_key_id = getattr(ctx.user, "api_key_id", None) if ctx.user else None
+        if not api_key_id:
+            # MeterStage runs post-dispatch, even on a blocked/errored request
+            # (see class docstring) -- by the time we get here the upstream
+            # call has already happened (or definitively did not), so there is
+            # no request left to reject; the only choice is whether to record
+            # usage. Fail OPEN (skip recording) but WARN loudly: a DEBUG-level
+            # skip is what let this stage silently no-op on every request.
+            logger.warning(
+                "MeterStage: ctx.user has no api_key_id (user_id=%s) -- "
+                "skipping usage recording (fail-open)",
+                getattr(ctx.user, "user_id", "?") if ctx.user else "?",
+            )
             return ctx
 
         # Record usage if provider call occurred (or was served from cache --
         # ctx.provider == "cache" on a hit, spec §6.4 cache_status/tokens_saved).
         if ctx.usage and ctx.provider and ctx.model:
             event = MeteringEvent(
-                virtual_key_id=vkey_id,
+                api_key_id=api_key_id,
                 model=ctx.model,
                 provider=ctx.provider,
                 usage=ctx.usage,
@@ -1264,8 +1321,8 @@ class MeterStage(Stage):
             )
             self.metering_buffer.record(event)
             logger.debug(
-                "MeterStage: recorded usage for vkey=%s model=%s tokens_in=%s tokens_out=%s",
-                vkey_id,
+                "MeterStage: recorded usage for api_key_id=%s model=%s tokens_in=%s tokens_out=%s",
+                api_key_id,
                 ctx.model,
                 ctx.usage.get("input_tokens", "?"),
                 ctx.usage.get("output_tokens", "?"),
