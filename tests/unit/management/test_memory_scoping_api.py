@@ -270,3 +270,168 @@ class TestNoAuth:
         """No auth header -> 401 on the promote route too."""
         resp = await client.post("/api/v1/memory/1/promote", json={"target_scope": "repo"})
         assert resp.status_code == 401
+
+
+class TestGetMemoryScopingTenantIsolation:
+    """GET /api/v1/memory-scoping must not honour a caller-supplied organization_id.
+
+    regression: audit-2026-09-14 (MEDIUM, memory_scoping.py:83) -- the
+    ``organization_id`` query parameter used to win over the token's own
+    org unconditionally, so any authenticated user could read another
+    org's memory-injection settings with ``?organization_id=<other>``.
+    """
+
+    async def test_cross_org_read_via_query_param_is_refused(
+        self, client, app_mock_db: MagicMock, user_auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- org-1 user asking for org 2 gets 403.
+
+        The refusal must not carry org 2's config in any form.
+        """
+        other_org_config = make_dal_row(
+            id=99, organization_id=2, enabled=True, similarity_threshold=0.42
+        )
+        app_mock_db.return_value.select.return_value = make_select_result([other_org_config])
+
+        resp = await client.get(
+            "/api/v1/memory-scoping?organization_id=2", headers=user_auth_headers
+        )
+
+        assert resp.status_code == 403
+        body = await resp.get_data(as_text=True)
+        # The refusal must not carry the other org's settings in any form.
+        assert "0.42" not in body
+        data = await resp.get_json()
+        assert data.get("organization_id") is None
+        assert "configured" not in data
+
+    async def test_cross_org_read_is_refused_not_silently_substituted(
+        self, client, app_mock_db: MagicMock, user_auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- explicit mismatch 403s, never a silent substitution."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.get(
+            "/api/v1/memory-scoping?organization_id=2", headers=user_auth_headers
+        )
+
+        # A silent fallback to the caller's own org would return 200 here and
+        # make "does org 2 exist" indistinguishable from "org 2 is mine".
+        assert resp.status_code == 403
+
+    async def test_own_org_read_still_allowed_for_non_admin(
+        self, client, app_mock_db: MagicMock, user_auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- naming your own org explicitly is still fine."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.get(
+            "/api/v1/memory-scoping?organization_id=1", headers=user_auth_headers
+        )
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["organization_id"] == 1
+
+    async def test_omitted_param_falls_back_to_callers_own_org(
+        self, client, app_mock_db: MagicMock, user_auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- with no parameter the token's org is used."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.get("/api/v1/memory-scoping", headers=user_auth_headers)
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["organization_id"] == 1
+
+    async def test_memory_scoping_admin_may_read_another_org(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- a memory_scoping:admin holder keeps cross-org reads."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.get("/api/v1/memory-scoping?organization_id=2", headers=auth_headers)
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["organization_id"] == 2
+
+    async def test_resource_manager_lacking_the_scope_is_refused(
+        self, client, app_mock_db: MagicMock, rm_auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- resource_manager holds no memory_scoping:admin."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.get("/api/v1/memory-scoping?organization_id=2", headers=rm_auth_headers)
+
+        assert resp.status_code == 403
+
+
+class TestMemoryMutationTenantIsolation:
+    """promote/correct/dispute must refuse a memory belonging to another org.
+
+    regression: audit-2026-09-14 -- these three routes carry @require_auth
+    with no @require_scope, so their tenant boundary rests entirely on the
+    `organization_id` term in each handler's own select. These tests pin
+    that boundary: the row the DB hands back is deliberately one from org 2
+    while the caller is in org 1, which is what the route would see if that
+    query term were ever dropped or widened.
+    """
+
+    async def test_promote_refuses_another_orgs_memory(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- an org-2 row is "not found" to an org-1 admin."""
+        foreign = _memory_row(organization_id=2, author_user_id=1)
+        app_mock_db.return_value.select.return_value = make_select_result([foreign])
+
+        resp = await client.post(
+            "/api/v1/memory/1/promote", headers=auth_headers, json={"target_scope": "org"}
+        )
+
+        assert resp.status_code == 404
+        # Admin bypasses the *ownership* check but never the tenant check.
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_correct_refuses_another_orgs_memory(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- correction of an org-2 row is refused."""
+        foreign = _memory_row(organization_id=2, author_user_id=1)
+        app_mock_db.return_value.select.return_value = make_select_result([foreign])
+
+        resp = await client.post(
+            "/api/v1/memory/1/correct", headers=auth_headers, json={"content": "new text"}
+        )
+
+        assert resp.status_code == 404
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_dispute_refuses_another_orgs_memory(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- disputing an org-2 row cannot quarantine it."""
+        foreign = _memory_row(organization_id=2, author_user_id=99)
+        app_mock_db.return_value.select.return_value = make_select_result([foreign])
+
+        resp = await client.post("/api/v1/memory/1/dispute", headers=auth_headers, json={})
+
+        assert resp.status_code == 404
+        # /dispute has no ownership check by design (any member may dispute a
+        # shared memory), so the tenant check is its only guard -- it must
+        # never reach the quarantining update.
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_dispute_still_quarantines_an_own_org_memory(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """# regression: audit-2026-09-14 -- the tenant guard does not block legitimate disputes."""
+        own = _memory_row(organization_id=1, author_user_id=99)
+        app_mock_db.return_value.select.return_value = make_select_result([own])
+
+        resp = await client.post("/api/v1/memory/1/dispute", headers=auth_headers, json={})
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["status"] == "quarantined"

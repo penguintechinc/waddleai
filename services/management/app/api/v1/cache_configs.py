@@ -93,19 +93,105 @@ async def _invalidate_scope(scope_type: str, scope_ref: str | None) -> None:
         logger.warning("cache_configs: failed to invalidate %s: %s", key, exc)
 
 
-def _authorize_scope_write(scope_type: str, scope_ref: str | None, verb: str) -> tuple | None:
+def _visible_query(user_role: str, user_org_id: int | None) -> Any:
+    """Admin sees every row; everyone else sees global rows plus their own org's row.
+
+    regression: audit-2026-09-14 -- the two read routes previously carried
+    no tenant filter at all, so any authenticated user enumerated every
+    organization's cache config. Mirrors the write path's ownership model
+    (`_authorize_scope_write`) and the identical visibility helper in
+    model_access_policies.py.
+
+    Key-scoped rows are admin-only on read: `scope_ref` holds a
+    `virtual_keys.id`, so resolving their owning org needs a per-row lookup
+    the query builder cannot express as a join here. Same trade-off, and
+    same rationale, as model_access_policies._visible_query.
+    """
+    table = _db().cache_configs
+    if user_role == "admin":
+        return table.id > 0
+    query = table.scope_type == "global"
+    if user_org_id is not None:
+        query |= (table.scope_type == "org") & (table.scope_ref == str(user_org_id))
+    return query
+
+
+def _row_visible_to(row: Any, user_role: str, user_org_id: int | None) -> bool:
+    """Re-check one row's visibility in Python, immediately before it is serialized.
+
+    Deliberately redundant with `_visible_query`: the SQL filter is the
+    primary control, this is the response-side guard that keeps another
+    tenant's row from being serialized even if the query is later widened
+    or bypassed (which is exactly the regression audit-2026-09-14 found).
+    """
+    if user_role == "admin":
+        return True
+    if row.scope_type == "global":
+        return True
+    return (
+        row.scope_type == "org"
+        and user_org_id is not None
+        and str(row.scope_ref) == str(user_org_id)
+    )
+
+
+def _forbidden(message: str) -> tuple:
+    """Build the standard 403 body for a refused cache-config write."""
+    return jsonify({"status": "error", "error": message}), 403
+
+
+def _org_for_key_scope_ref(scope_ref: str | None) -> int | None:
+    """Resolve a key-scoped ``scope_ref`` to the organization owning that virtual key.
+
+    ``cache_configs.scope_ref`` stores ``str(virtual_keys.id)`` for
+    key-scoped rows, so ownership has to be looked up rather than read off
+    the row. Returns ``None`` when the key does not exist, which callers
+    must treat as "cannot authorize" -- never as "unconstrained".
+    """
+    if not scope_ref:
+        return None
+    database = _db()
+    row = database(database.virtual_keys.id == scope_ref).select().first()
+    return row.organization_id if row else None
+
+
+async def _authorize_scope_write(scope_type: str, scope_ref: str | None, verb: str) -> tuple | None:
     """Return a (jsonify, 403) tuple if the caller may not write/delete this scope, else None.
 
-    Global rows require admin; org rows require admin or ownership of that org.
+    Admin may write any scope. Otherwise: global rows are admin-only, org
+    rows require ownership of that org, and key rows require the virtual
+    key to belong to the caller's org. Any other ``scope_type`` is refused.
+
+    regression: audit-2026-09-14 -- this function used to branch only on
+    "global" and "org" and then `return None` (allow) for everything else.
+    "key" is a valid scope type (see `_validate_payload`), so a caller
+    submitting ``scope_type="key"`` with another organization's virtual-key
+    id passed authorization untouched and could create, update or delete
+    that tenant's response-cache behaviour. The fall-through default is now
+    deny: a scope_type this function does not explicitly authorize is
+    refused rather than allowed.
     """
     role = g.user.get("role")
-    if scope_type == "global" and role != "admin":
-        error_msg = f"Only admin may {verb} global cache config"
-        return jsonify({"status": "error", "error": error_msg}), 403
-    if scope_type == "org" and role != "admin" and scope_ref != str(g.user.get("organization_id")):
-        error_msg = f"Cannot {verb} another organization's cache config"
-        return jsonify({"status": "error", "error": error_msg}), 403
-    return None
+    if role == "admin":
+        return None
+
+    if scope_type == "global":
+        return _forbidden(f"Only admin may {verb} global cache config")
+
+    if scope_type == "org":
+        if scope_ref != str(g.user.get("organization_id")):
+            return _forbidden(f"Cannot {verb} another organization's cache config")
+        return None
+
+    if scope_type == "key":
+        key_org_id = await asyncio.to_thread(_org_for_key_scope_ref, scope_ref)
+        # An unresolvable key is refused too: "key not found" must not be
+        # the same outcome as "key is mine".
+        if key_org_id is None or key_org_id != g.user.get("organization_id"):
+            return _forbidden(f"Cannot {verb} another organization's cache config")
+        return None
+
+    return _forbidden(f"Cannot {verb} cache config for unrecognized scope type")
 
 
 @api_v1_bp.route("/cache-configs", methods=["GET"])
@@ -114,9 +200,11 @@ async def list_cache_configs() -> tuple:
     """List cache configs, optionally filtered by scope_type/scope_ref."""
     scope_type = request.args.get("scope_type")
     scope_ref = request.args.get("scope_ref")
+    user_role = g.user.get("role")
+    user_org_id = g.user.get("organization_id")
 
     def _fetch():
-        query = _db().cache_configs.id > 0
+        query = _visible_query(user_role, user_org_id)
         if scope_type:
             query &= _db().cache_configs.scope_type == scope_type
         if scope_ref is not None:
@@ -124,17 +212,26 @@ async def list_cache_configs() -> tuple:
         return _db()(query).select(orderby=_db().cache_configs.id)
 
     rows = await asyncio.to_thread(_fetch)
-    return jsonify({"status": "success", "data": [_row_to_dict(r) for r in rows]}), 200
+    visible = [r for r in rows if _row_visible_to(r, user_role, user_org_id)]
+    return jsonify({"status": "success", "data": [_row_to_dict(r) for r in visible]}), 200
 
 
 @api_v1_bp.route("/cache-configs/<int:config_id>", methods=["GET"])
 @require_auth
 async def get_cache_config(config_id: int) -> tuple:
     """Get a single cache config row by ID."""
-    row = await asyncio.to_thread(
-        lambda: _db()(_db().cache_configs.id == config_id).select().first()
-    )
-    if not row:
+    user_role = g.user.get("role")
+    user_org_id = g.user.get("organization_id")
+
+    def _fetch_one():
+        query = _visible_query(user_role, user_org_id) & (_db().cache_configs.id == config_id)
+        return _db()(query).select().first()
+
+    row = await asyncio.to_thread(_fetch_one)
+    # A row outside the caller's tenant is reported as absent rather than
+    # forbidden, so this route cannot be used to enumerate which config ids
+    # exist in other organizations (matches model_access_policies.py).
+    if not row or not _row_visible_to(row, user_role, user_org_id):
         return jsonify({"status": "error", "error": "Cache config not found"}), 404
     return jsonify({"status": "success", "data": _row_to_dict(row)}), 200
 
@@ -155,7 +252,7 @@ async def create_cache_config() -> tuple:
     scope_type = data["scope_type"]
     scope_ref = data.get("scope_ref")
 
-    auth_error = _authorize_scope_write(scope_type, scope_ref, verb="write")
+    auth_error = await _authorize_scope_write(scope_type, scope_ref, verb="write")
     if auth_error:
         return auth_error
 
@@ -217,7 +314,7 @@ async def update_cache_config(config_id: int) -> tuple:
 
     scope_type = existing.scope_type
     scope_ref = existing.scope_ref
-    auth_error = _authorize_scope_write(scope_type, scope_ref, verb="write")
+    auth_error = await _authorize_scope_write(scope_type, scope_ref, verb="write")
     if auth_error:
         return auth_error
 
@@ -255,7 +352,7 @@ async def delete_cache_config(config_id: int) -> tuple:
 
     scope_type = existing.scope_type
     scope_ref = existing.scope_ref
-    auth_error = _authorize_scope_write(scope_type, scope_ref, verb="delete")
+    auth_error = await _authorize_scope_write(scope_type, scope_ref, verb="delete")
     if auth_error:
         return auth_error
 

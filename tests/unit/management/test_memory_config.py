@@ -13,8 +13,11 @@ Tests all endpoints:
 - POST /api/v1/embedding-config - create/update embedding config (admin only)
 """
 
+import logging
 from datetime import datetime
 from unittest.mock import MagicMock
+
+import pytest
 
 from tests.unit.management.conftest import make_dal_row, make_select_result
 
@@ -668,3 +671,72 @@ async def test_multiple_orgs_have_independent_configs(client, app_mock_db, auth_
     app_mock_db.return_value.select.return_value = make_select_result([config2])
     resp2 = await client.get("/api/v1/memory-config?organization_id=2", headers=auth_headers)
     assert (await resp2.get_json())["enabled"] is False
+
+
+# ============================================================================
+# Regression: internal exception text must never reach the client
+# ============================================================================
+
+# Every handler in memory_config.py used to end in
+# `return jsonify({"error": str(exc)}), 500`, handing the caller the raw
+# exception -- SQL fragments, table names, driver internals and filesystem
+# paths included. Each entry below drives one of those six handlers into its
+# except branch.
+_HANDLER_CASES = [
+    ("GET", "/api/v1/memory-config?organization_id=1", None),
+    ("POST", "/api/v1/memory-config", {"organization_id": 1, "enabled": True}),
+    ("GET", "/api/v1/rag-config?organization_id=1", None),
+    ("POST", "/api/v1/rag-config", {"organization_id": 1, "enabled": True}),
+    ("GET", "/api/v1/embedding-config", None),
+    ("POST", "/api/v1/embedding-config", {"backend": "ollama"}),
+]
+
+# Shaped like a real DB error: a SQL fragment plus an on-disk path.
+_LEAKY_EXC_TEXT = (
+    'near "FROM": syntax error in SELECT similarity_threshold FROM '
+    "conversation_memory_configs -- /srv/waddleai/data/management.sqlite"
+)
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), _HANDLER_CASES)
+async def test_internal_error_does_not_leak_exception_text(
+    client, app_mock_db, auth_headers, caplog, method, path, payload
+):
+    """# regression: audit-2026-09-14 -- 500s return a generic body, never the raw exception."""
+    app_mock_db.return_value.select.side_effect = Exception(_LEAKY_EXC_TEXT)
+
+    with caplog.at_level(logging.ERROR):
+        resp = await client.open(method=method, path=path, headers=auth_headers, json=payload)
+
+    assert resp.status_code == 500
+    body = await resp.get_data(as_text=True)
+    assert _LEAKY_EXC_TEXT not in body
+    for fragment in ("SELECT", "FROM", "conversation_memory_configs", "/srv/waddleai"):
+        assert fragment not in body, f"{method} {path} leaked {fragment!r}"
+
+    data = await resp.get_json()
+    assert data["error"] == "Internal server error"
+    assert set(data.keys()) == {"error", "error_id"}
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), _HANDLER_CASES)
+async def test_internal_error_is_logged_with_a_correlating_id(
+    client, app_mock_db, auth_headers, caplog, method, path, payload
+):
+    """# regression: audit-2026-09-14 -- the real detail is logged and traceable by error_id."""
+    app_mock_db.return_value.select.side_effect = Exception(_LEAKY_EXC_TEXT)
+
+    with caplog.at_level(logging.ERROR):
+        resp = await client.open(method=method, path=path, headers=auth_headers, json=payload)
+
+    data = await resp.get_json()
+    error_id = data["error_id"]
+    assert error_id
+
+    records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert records, f"{method} {path} logged nothing at ERROR"
+    # The id in the response ties the caller's report to the logged record,
+    # and the record carries the real exception plus its traceback.
+    assert error_id in caplog.text
+    assert _LEAKY_EXC_TEXT in caplog.text
+    assert any(r.exc_info for r in records), "exception logged without a traceback"
