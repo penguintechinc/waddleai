@@ -5,6 +5,12 @@
       "timestamp": "<VOLATILE>",
       "total": 0
     },
+    "pagination": {
+      "limit": 100,
+      "page": 1,
+      "pages": 1,
+      "total": 0
+    },
     "status": "success"
   },
   "status": 200
