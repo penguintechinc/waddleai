@@ -256,6 +256,103 @@ def _merge_waddleai_usage(cache_meta: dict | None, memory_meta: dict | None) -> 
 
 
 # ---------------------------------------------------------------------------
+# Request-body validation (OpenAI / Anthropic wire-format sensitive)
+#
+# Both chat_completions() and claude_messages() read an untyped JSON body.
+# These helpers reject a malformed body with a 400 in the format-correct error
+# envelope BEFORE any pipeline work, replacing the pre-existing behaviour where
+# a bad body raised inside the handler and surfaced as a generic 500. They stay
+# deliberately permissive of the many optional OpenAI/Anthropic params: only the
+# genuinely required `messages` array (non-empty, objects) and the type of an
+# optional `model` are enforced, so no valid upstream request is rejected.
+# ---------------------------------------------------------------------------
+
+
+def _validate_chat_completions_body(body: Any) -> tuple[dict, int] | None:
+    """Validate a parsed /v1/chat/completions body; return an (envelope, 400) or None if valid."""
+
+    def err(message: str) -> tuple[dict, int]:
+        return {"error": {"message": message, "type": "invalid_request_error"}}, 400
+
+    if not isinstance(body, dict):
+        return err("Request body must be a JSON object.")
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return err("'messages' is required and must be a non-empty array.")
+    if not all(isinstance(m, dict) for m in messages):
+        return err("Each item in 'messages' must be an object.")
+    model = body.get("model")
+    if model is not None and not isinstance(model, str):
+        return err("'model' must be a string when provided.")
+    return None
+
+
+def _validate_messages_body(body: Any) -> tuple[dict, int] | None:
+    """Validate a parsed /v1/messages body; return an (envelope, 400) or None if valid.
+
+    Preserves Anthropic fidelity: message `content` may be a string OR a content
+    array, so only the outer shape (non-empty array of objects) is enforced.
+    """
+
+    def err(message: str) -> tuple[dict, int]:
+        return {"error": {"type": "invalid_request_error", "message": message}}, 400
+
+    if not isinstance(body, dict):
+        return err("Request body must be a JSON object.")
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return err("'messages' is required and must be a non-empty array.")
+    if not all(isinstance(m, dict) for m in messages):
+        return err("Each item in 'messages' must be an object.")
+    model = body.get("model")
+    if model is not None and not isinstance(model, str):
+        return err("'model' must be a string when provided.")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Response-shape projection (output-validation: no unintended field escapes)
+#
+# The WaddleAI-proprietary stats endpoints return dicts assembled elsewhere.
+# Projecting each onto an explicit, reviewed key set at the handler boundary
+# means a field later added to the source aggregate cannot silently leak out.
+# ---------------------------------------------------------------------------
+
+
+def _usage_stats_response(stats: dict[str, Any]) -> dict[str, Any]:
+    """Project TokenManager.get_usage_stats() onto its reviewed public key set."""
+    return {
+        "total_waddleai_tokens": stats.get("total_waddleai_tokens", 0),
+        "total_llm_input_tokens": stats.get("total_llm_input_tokens", 0),
+        "total_llm_output_tokens": stats.get("total_llm_output_tokens", 0),
+        "total_requests": stats.get("total_requests", 0),
+        "llm_breakdown": stats.get("llm_breakdown", {}),
+        "daily_usage": stats.get("daily_usage", {}),
+        "average_daily": stats.get("average_daily", 0),
+    }
+
+
+def _memory_stats_response(stats: dict[str, Any]) -> dict[str, Any]:
+    """Project WaddleAIMemoryManager.get_memory_stats() onto its reviewed public key set."""
+    return {
+        "total_memories": stats.get("total_memories", 0),
+        "average_content_length": stats.get("average_content_length", 0),
+        "daily_counts": stats.get("daily_counts", {}),
+        "oldest_memory": stats.get("oldest_memory"),
+        "newest_memory": stats.get("newest_memory"),
+    }
+
+
+def _quota_response(quota_ok: bool, quota_info: dict[str, Any]) -> dict[str, Any]:
+    """Build the /api/quota response from an explicit key allowlist (no `**` splat)."""
+    response: dict[str, Any] = {"quota_ok": quota_ok}
+    for key in ("daily", "monthly", "error"):
+        if key in quota_info:
+            response[key] = quota_info[key]
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Credential verification (shared by the REST surface and the gRPC surface)
 # ---------------------------------------------------------------------------
 
@@ -1595,9 +1692,16 @@ async def chat_completions():
     x_preferred_model = request.headers.get("X-Preferred-Model")
 
     try:
-        # Parse request
-        body = await request.get_json()
-        messages = body.get("messages", [])
+        # Parse and validate the request body. silent=True yields None (not a
+        # raised BadRequest) on non-JSON input, so malformed bodies return a
+        # 400 in the OpenAI error envelope rather than the handler's generic 500.
+        body = await request.get_json(silent=True)
+        validation_error = _validate_chat_completions_body(body)
+        if validation_error is not None:
+            envelope, status_code = validation_error
+            return jsonify(envelope), status_code
+
+        messages = body["messages"]
         request_model = body.get("model")
         stream = body.get("stream", False)
 
@@ -1847,7 +1951,7 @@ async def get_memory_stats():
         stats = await proxy_server.memory_manager.get_memory_stats(
             user_id=user_context.user_id, organization_id=user_context.organization_id
         )
-        return jsonify(stats)
+        return jsonify(_memory_stats_response(stats))
     except Exception as e:
         logger.error(f"Failed to get memory stats: {e}")
         return jsonify(
@@ -1886,7 +1990,7 @@ async def get_usage():
         stats = proxy_server.token_manager.get_usage_stats(
             api_key_id=user_context.api_key_id, days=30
         )
-        return jsonify(stats)
+        return jsonify(_usage_stats_response(stats))
     except Exception as e:
         logger.error("Failed to get usage stats", error=str(e))
         return jsonify(
@@ -1900,7 +2004,7 @@ async def get_quota():
     user_context = await get_current_user()
     try:
         quota_ok, quota_info = proxy_server.token_manager.check_quota(user_context.api_key_id)
-        return jsonify({"quota_ok": quota_ok, **quota_info})
+        return jsonify(_quota_response(quota_ok, quota_info))
     except Exception as e:
         logger.error("Failed to get quota info", error=str(e))
         return jsonify(
@@ -1927,10 +2031,18 @@ async def claude_messages():
     user_context = await get_current_user()
 
     try:
-        # Parse request body — preserve Anthropic format entirely
-        body = await request.get_json()
+        # Parse and validate the request body — preserve Anthropic format
+        # entirely. silent=True yields None (not a raised BadRequest) on
+        # non-JSON input, so malformed bodies return a 400 in the Anthropic
+        # error envelope rather than the handler's generic 500.
+        body = await request.get_json(silent=True)
+        validation_error = _validate_messages_body(body)
+        if validation_error is not None:
+            envelope, status_code = validation_error
+            return jsonify(envelope), status_code
+
         model = body.get("model", "claude-3-sonnet-20240229")
-        messages = body.get("messages", [])  # Keep as-is (may have content arrays)
+        messages = body["messages"]  # Keep as-is (may have content arrays)
         stream = body.get("stream", False)
         # Preserve max_tokens, temperature, system, and other Anthropic params
         # in body for passthrough to connector
