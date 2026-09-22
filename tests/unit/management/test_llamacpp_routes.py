@@ -39,18 +39,26 @@ class TestListDeployments:
     async def test_list_returns_200(self, client, app_mock_db, auth_headers):
         """An empty deployment table returns 200 with an empty deployments list."""
         app_mock_db.return_value.select.return_value = make_select_result([])
+        app_mock_db.return_value.count.return_value = 0
         resp = await client.get("/api/v1/llamacpp/deployments", headers=auth_headers)
         assert resp.status_code == 200
-        assert (await resp.get_json())["deployments"] == []
+        body = await resp.get_json()
+        assert body["deployments"] == []
+        # regression: audit-2026-09-14-wave2 -- list is now a bounded page
+        assert body["pagination"]["limit"] <= 1000
+        assert body["pagination"]["total"] == 0
 
     async def test_list_with_deployments(self, client, app_mock_db, auth_headers):
         """All rows returned by the query are serialized into the deployments list."""
         dep1 = _mock_deployment(dep_id=1, name="llama-3b")
         dep2 = _mock_deployment(dep_id=2, name="llama-7b")
         app_mock_db.return_value.select.return_value = make_select_result([dep1, dep2])
+        app_mock_db.return_value.count.return_value = 2
         resp = await client.get("/api/v1/llamacpp/deployments", headers=auth_headers)
         assert resp.status_code == 200
-        assert len((await resp.get_json())["deployments"]) == 2
+        body = await resp.get_json()
+        assert len(body["deployments"]) == 2
+        assert body["pagination"]["total"] == 2  # regression: audit-2026-09-14-wave2
 
     async def test_list_requires_auth(self, client):
         """An unauthenticated request is refused with 401 before touching the DB."""
@@ -724,3 +732,79 @@ class TestAuthorizationBoundary:
         """resource_manager cannot delete a deployment -- 403."""
         resp = await client.delete("/api/v1/llamacpp/deployments/1", headers=rm_auth_headers)
         assert resp.status_code == 403
+
+
+# ============================================================================
+# Response-schema exact-field coverage (regression: audit-2026-09-14-wave2)
+#
+# quart-schema silently DROPS any field the handler returns that is absent
+# from the response model. These tests pin the exact serialised field set so
+# a future model edit that omits a field fails loudly instead of quietly
+# breaking every client. Verified to fail pre-change by deleting one model
+# field and observing the set-equality assertion break.
+# ============================================================================
+
+_DEPLOYMENT_FIELDS = {
+    "id",
+    "name",
+    "deployment_type",
+    "status",
+    "status_message",
+    "model_name",
+    "model_url",
+    "model_filename",
+    "n_ctx",
+    "n_gpu_layers",
+    "gpu_count",
+    "endpoint_url",
+    "k8s_namespace",
+    "k8s_daemonset_name",
+    "node_selector",
+    "node_affinity",
+    "created_at",
+    "modified_at",
+}
+
+
+class TestResponseSchemasWave2:
+    """Exact-field-set assertions for every JSON llama.cpp response body."""
+
+    async def test_get_deployment_exact_fields(self, client, app_mock_db, auth_headers):
+        """GET by id serialises exactly the LlamaCppDeployment field set, nothing dropped."""
+        dep = _mock_deployment()
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        resp = await client.get("/api/v1/llamacpp/deployments/1", headers=auth_headers)
+        assert resp.status_code == 200
+        assert set((await resp.get_json()).keys()) == _DEPLOYMENT_FIELDS
+
+    async def test_list_item_exact_fields(self, client, app_mock_db, auth_headers):
+        """Each list item carries the full deployment field set; body carries pagination."""
+        dep = _mock_deployment()
+        app_mock_db.return_value.select.return_value = make_select_result([dep])
+        app_mock_db.return_value.count.return_value = 1
+        resp = await client.get("/api/v1/llamacpp/deployments", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"deployments", "pagination"}
+        assert set(body["deployments"][0].keys()) == _DEPLOYMENT_FIELDS
+        assert set(body["pagination"].keys()) == {"page", "limit", "total", "pages"}
+
+    async def test_create_response_exact_fields(self, client, app_mock_db, auth_headers):
+        """Create returns exactly {deployment_id, message}."""
+        app_mock_db.llamacpp_deployments.insert.return_value = 42
+        resp = await client.post(
+            "/api/v1/llamacpp/deployments",
+            headers=auth_headers,
+            json={"name": "d", "model_name": "m", "deployment_type": "kubernetes"},
+        )
+        assert resp.status_code == 201
+        assert set((await resp.get_json()).keys()) == {"deployment_id", "message"}
+
+    async def test_deploy_response_exact_fields(self, client, app_mock_db, auth_headers):
+        """Deploy returns exactly {message, deployment_id}."""
+        dep = _mock_deployment(status="pending", deployment_type="kubernetes")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        with patch("services.management.app.api.v1.llamacpp.LlamaCppManager"):
+            resp = await client.post("/api/v1/llamacpp/deployments/1/deploy", headers=auth_headers)
+        assert resp.status_code == 200
+        assert set((await resp.get_json()).keys()) == {"message", "deployment_id"}

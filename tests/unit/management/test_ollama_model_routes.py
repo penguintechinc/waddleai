@@ -75,12 +75,15 @@ class TestListAllOllamaModels:
                 make_select_result([deployment]),  # ollama_deployments
                 make_select_result([route]),  # ollama_model_routes
             ]
+            app_mock_db.return_value.count.return_value = 1  # regression: audit-2026-09-14-wave2
 
             resp = await client.get("/api/v1/ollama/models", headers=auth_headers)
 
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["total"] == 1
+        assert data["pagination"]["total"] == 1
+        assert data["pagination"]["limit"] <= 1000
         assert len(data["models"]) == 1
         assert data["models"][0]["model_name"] == "llama3.2"
         assert data["models"][0]["deployment_name"] == "node-1"
@@ -91,6 +94,7 @@ class TestListAllOllamaModels:
         """List returns empty array when no models assigned."""
         with patch("app.extensions.db", app_mock_db):
             app_mock_db.return_value.select.return_value = make_select_result([])
+            app_mock_db.return_value.count.return_value = 0  # regression: audit-2026-09-14-wave2
 
             resp = await client.get("/api/v1/ollama/models", headers=auth_headers)
 
@@ -133,6 +137,7 @@ class TestListDeploymentModels:
                 make_select_result([route1]),  # route for model1
                 make_select_result([route2]),  # route for model2
             ]
+            app_mock_db.return_value.count.return_value = 2  # regression: audit-2026-09-14-wave2
 
             resp = await client.get("/api/v1/ollama/deployments/1/models", headers=auth_headers)
 
@@ -599,3 +604,144 @@ class TestSyncDeploymentModels:
             "/api/v1/ollama/deployments/1/sync-models", headers=user_auth_headers
         )
         assert resp.status_code == 403
+
+
+# ===========================================================================
+# Response-schema exact-field coverage (regression: audit-2026-09-14-wave2)
+#
+# quart-schema silently DROPS any handler-returned field absent from the
+# response model. These pin the exact serialised field set of each JSON
+# response so a model edit that omits a field fails loudly. Verified to fail
+# pre-change by deleting one model field and observing the assertion break.
+# ===========================================================================
+
+_MODEL_ITEM_FIELDS = {
+    "id",
+    "model_name",
+    "model_tag",
+    "deployment_id",
+    "deployment_name",
+    "deployment_endpoint",
+    "status",
+    "size_bytes",
+    "auto_pull",
+    "route_synced",
+    "route_id",
+    "last_updated",
+}
+
+_DEPLOYMENT_MODEL_ITEM_FIELDS = {
+    "id",
+    "model_name",
+    "model_tag",
+    "status",
+    "size_bytes",
+    "auto_pull",
+    "route_synced",
+    "route_id",
+    "last_updated",
+}
+
+
+class TestResponseSchemasWave2:
+    """Exact-field-set assertions for every JSON ollama-model response body."""
+
+    async def test_list_all_item_exact_fields(self, app_mock_db, client, auth_headers):
+        """Each cross-deployment list item carries the full model field set."""
+        deployment = make_mock_deployment(dep_id=1, name="node-1")
+        model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
+        route = make_mock_route(model_id=1, synced=True)
+        with patch("app.extensions.db", app_mock_db):
+            app_mock_db.return_value.select.side_effect = [
+                make_select_result([model]),
+                make_select_result([deployment]),
+                make_select_result([route]),
+            ]
+            app_mock_db.return_value.count.return_value = 1
+            resp = await client.get("/api/v1/ollama/models", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"models", "total", "pagination"}
+        assert set(body["models"][0].keys()) == _MODEL_ITEM_FIELDS
+        assert set(body["pagination"].keys()) == {"page", "limit", "total", "pages"}
+
+    async def test_list_deployment_item_exact_fields(self, app_mock_db, client, auth_headers):
+        """Each per-deployment list item carries the deployment-model field set."""
+        deployment = make_mock_deployment(dep_id=1, name="node-1")
+        model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
+        route = make_mock_route(model_id=1, synced=True)
+        with patch("app.extensions.db", app_mock_db):
+            app_mock_db.return_value.select.side_effect = [
+                make_select_result([deployment]),
+                make_select_result([model]),
+                make_select_result([route]),
+            ]
+            app_mock_db.return_value.count.return_value = 1
+            resp = await client.get("/api/v1/ollama/deployments/1/models", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {
+            "deployment_id",
+            "deployment_name",
+            "models",
+            "total",
+            "pagination",
+        }
+        assert set(body["models"][0].keys()) == _DEPLOYMENT_MODEL_ITEM_FIELDS
+
+    async def test_assign_response_exact_fields(self, app_mock_db, client, auth_headers):
+        """Assign returns exactly {success, model_id, message, route_sync_status}."""
+        deployment = make_mock_deployment(dep_id=1)
+        with patch("app.extensions.db", app_mock_db):
+            app_mock_db.return_value.select.side_effect = [
+                make_select_result([deployment]),
+                make_select_result([]),
+            ]
+            resp = await client.post(
+                "/api/v1/ollama/models/assign",
+                json={"deployment_id": 1, "model_name": "llama3.2", "sync_to_ailb": False},
+                headers=auth_headers,
+            )
+        assert resp.status_code == 201
+        assert set((await resp.get_json()).keys()) == {
+            "success",
+            "model_id",
+            "message",
+            "route_sync_status",
+        }
+
+    async def test_unassign_response_exact_fields(self, app_mock_db, client, auth_headers):
+        """Unassign returns exactly {success, message, deployment_id}."""
+        model = make_mock_model(model_id=1, model_name="llama3.2", dep_id=1)
+        with patch("app.extensions.db", app_mock_db):
+            app_mock_db.return_value.select.return_value = make_select_result([model])
+            resp = await client.delete(
+                "/api/v1/ollama/models/1?remove_route=false", headers=auth_headers
+            )
+        assert resp.status_code == 200
+        assert set((await resp.get_json()).keys()) == {"success", "message", "deployment_id"}
+
+    async def test_bulk_assign_response_exact_fields(self, app_mock_db, client, auth_headers):
+        """Bulk assign returns exactly the five documented top-level fields."""
+        dep1 = make_mock_deployment(dep_id=1, name="node-1")
+        with patch("app.extensions.db", app_mock_db):
+            app_mock_db.return_value.select.side_effect = [
+                make_select_result([dep1]),
+                make_select_result([]),
+            ]
+            resp = await client.post(
+                "/api/v1/ollama/models/bulk-assign",
+                json={
+                    "assignments": [{"deployment_id": 1, "model_name": "llama3.2"}],
+                    "sync_to_ailb": False,
+                },
+                headers=auth_headers,
+            )
+        assert resp.status_code == 201
+        assert set((await resp.get_json()).keys()) == {
+            "success",
+            "results",
+            "total_assigned",
+            "total_failed",
+            "sync_results",
+        }
