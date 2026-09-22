@@ -168,12 +168,9 @@ class OllamaLogsResponse:
     logs: str
 
 
-@dataclass(slots=True)
-class PullOllamaModelRequest:
-    """Request body for POST /api/v1/ollama/deployments/<id>/models/pull."""
-
-    model: str | None = None
-    tag: str | None = "latest"
+# NOTE: the model-pull request body is validated in-handler (not via a
+# @validate_request model) so the deployment-existence 404 fires ahead of any
+# body 400 -- see pull_ollama_model and regression 44cc384.
 
 
 @dataclass(slots=True)
@@ -621,9 +618,16 @@ async def get_ollama_logs(deployment_id):
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
 @validate_response(PullOllamaModelResponse, 200)
-@validate_request(PullOllamaModelRequest)
-async def pull_ollama_model(deployment_id, data: PullOllamaModelRequest):
-    """Pull a model to Ollama deployment."""
+async def pull_ollama_model(deployment_id):
+    """Pull a model to Ollama deployment.
+
+    The deployment-existence check runs BEFORE body validation, so a missing
+    deployment returns 404 even when the body is also absent/invalid. This is a
+    deliberate ordering contract (tests/contract/test_management_mutations.py,
+    regression 44cc384): @validate_request is intentionally NOT used here
+    because it would run ahead of the handler and 400 on the body first. The
+    body is parsed and type-checked in-handler after the 404 check instead.
+    """
     from ...services.ollama_manager import OllamaDeploymentManager
 
     def _check_deployment():
@@ -633,11 +637,16 @@ async def pull_ollama_model(deployment_id, data: PullOllamaModelRequest):
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
-    if data.model is None:
+    body = await request.get_json(silent=True) or {}
+    model = body.get("model")
+    if not isinstance(model, str) or not model:
         return jsonify({"error": "model is required"}), 400
+    tag = body.get("tag", "latest")
+    if tag is not None and not isinstance(tag, str):
+        return jsonify({"error": "tag must be a string"}), 400
 
-    model_name = data.model
-    model_tag = data.tag or "latest"
+    model_name = model
+    model_tag = tag or "latest"
     full_model = f"{model_name}:{model_tag}" if model_tag != "latest" else model_name
 
     def _pull():

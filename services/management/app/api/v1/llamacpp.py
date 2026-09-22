@@ -109,19 +109,10 @@ class CreateLlamaCppDeploymentResponse:
     message: str
 
 
-@dataclass(slots=True)
-class UpdateLlamaCppDeploymentRequest:
-    """Request body for PATCH /api/v1/llamacpp/deployments/<id>. Every field a partial."""
-
-    model_name: str | None = None
-    model_url: str | None = None
-    model_filename: str | None = None
-    n_ctx: int | None = None
-    n_gpu_layers: int | None = None
-    gpu_count: int | None = None
-    k8s_namespace: str | None = None
-    node_selector: dict[str, Any] | None = None
-    node_affinity: dict[str, Any] | None = None
+# NOTE: the PATCH body is parsed and validated in-handler (not via a
+# @validate_request model) so the deployment existence/running checks (404/409)
+# fire ahead of any body 400 -- see update_llamacpp_deployment and regression
+# 44cc384.
 
 
 @dataclass(slots=True)
@@ -328,9 +319,17 @@ async def get_llamacpp_deployment(deployment_id):
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
 @validate_response(MessageResponse, 200)
-@validate_request(UpdateLlamaCppDeploymentRequest)
-async def update_llamacpp_deployment(deployment_id, data: UpdateLlamaCppDeploymentRequest):
-    """Update a llama.cpp deployment (can only update stopped deployments)."""
+async def update_llamacpp_deployment(deployment_id):
+    """Update a llama.cpp deployment (can only update stopped deployments).
+
+    The existence/running checks run BEFORE the body is parsed, so a missing
+    deployment returns 404 (and a running one 409) even when the body is
+    non-JSON/absent. This is a deliberate ordering contract
+    (tests/contract/test_management_mutations.py, regression 44cc384):
+    @validate_request is intentionally NOT used here because it would parse the
+    body ahead of the handler and 400 first. The body is parsed and its
+    security-sensitive fields validated in-handler after those checks.
+    """
 
     def _check():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
@@ -347,6 +346,7 @@ async def update_llamacpp_deployment(deployment_id, data: UpdateLlamaCppDeployme
     if check_result == "running":
         return jsonify({"error": "Stop the deployment before modifying it"}), 409
 
+    data = (await request.get_json(silent=True)) or {}
     allowed = {
         "model_name",
         "model_url",
@@ -358,9 +358,7 @@ async def update_llamacpp_deployment(deployment_id, data: UpdateLlamaCppDeployme
         "node_selector",
         "node_affinity",
     }
-    updates: dict[str, Any] = {
-        name: value for name in allowed if (value := getattr(data, name)) is not None
-    }
+    updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
 
     # Vuln D fix: validate model_url and model_filename in PATCH too
     if "model_url" in updates:
