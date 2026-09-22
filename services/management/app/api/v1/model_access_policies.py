@@ -23,16 +23,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
 from quart import Blueprint, g, jsonify, request
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,144 @@ logger = logging.getLogger(__name__)
 model_access_policies_bp = Blueprint(
     "model_access_policies", __name__, url_prefix="/api/v1/routing/access-policies"
 )
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models (audit-2026-09-14). Request fields Optional
+# so the handler's own scope/rule validation stays authoritative; response
+# models mirror EXACTLY the keys each handler returns.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CreateAccessPolicyRequest:
+    """Request body for POST /api/v1/routing/access-policies/."""
+
+    scope_type: str | None = None
+    scope_ref: str | None = None
+    model_pattern: str | None = None
+    action: str | None = None
+    fallback_model: str | None = None
+    reason: str | None = None
+    enabled: bool | None = None
+
+
+@dataclass(slots=True)
+class UpdateAccessPolicyRequest:
+    """Request body for PUT /api/v1/routing/access-policies/<id>. Partial update.
+
+    scope_type/scope_ref are immutable after creation and deliberately omitted.
+    """
+
+    model_pattern: str | None = None
+    action: str | None = None
+    fallback_model: str | None = None
+    reason: str | None = None
+    enabled: bool | None = None
+
+
+@dataclass(slots=True)
+class AccessPolicyRow:
+    """A single model_access_policies row -- mirrors ``_row_to_dict`` exactly."""
+
+    id: int
+    scope_type: str
+    scope_ref: str | None
+    model_pattern: str
+    action: str
+    fallback_model: str | None
+    reason: str | None
+    enabled: bool
+    created_by: int | None
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass(slots=True)
+class AccessPolicyPagination:
+    """Pagination envelope merged into the list response."""
+
+    page: int
+    limit: int
+    total: int | None
+    pages: int | None
+
+
+@dataclass(slots=True)
+class AccessPolicyListMeta:
+    """``meta`` for the list response."""
+
+    total: int
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AccessPolicyTimestampMeta:
+    """``meta`` carrying only a timestamp (get/update responses)."""
+
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AccessPolicyActionMeta:
+    """``meta`` carrying an action verb plus timestamp (create/delete)."""
+
+    action: str
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AccessPolicyDeletedRef:
+    """``data`` for a delete response -- the deleted row's id."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class AccessPolicyListResponse:
+    """Response body for GET /api/v1/routing/access-policies/."""
+
+    status: str
+    data: list[AccessPolicyRow]
+    meta: AccessPolicyListMeta
+    pagination: AccessPolicyPagination
+
+
+@dataclass(slots=True)
+class AccessPolicyDetailResponse:
+    """Response body for GET /api/v1/routing/access-policies/<id>."""
+
+    status: str
+    data: AccessPolicyRow
+    meta: AccessPolicyTimestampMeta
+
+
+@dataclass(slots=True)
+class AccessPolicyCreateResponse:
+    """Response body for a successful POST."""
+
+    status: str
+    data: AccessPolicyRow
+    meta: AccessPolicyActionMeta
+
+
+@dataclass(slots=True)
+class AccessPolicyUpdateResponse:
+    """Response body for a successful PUT."""
+
+    status: str
+    data: AccessPolicyRow
+    meta: AccessPolicyTimestampMeta
+
+
+@dataclass(slots=True)
+class AccessPolicyDeleteResponse:
+    """Response body for a successful DELETE."""
+
+    status: str
+    data: AccessPolicyDeletedRef
+    meta: AccessPolicyActionMeta
+
 
 MODEL_ACCESS_POLICY_FLAG = "waddleai.model_access_policy"
 _MODEL_ACCESS_POLICY_FEATURE = "model_access_policy"
@@ -215,8 +356,9 @@ def _can_write(
 
 @model_access_policies_bp.route("/", methods=["GET"])
 @require_auth
+@validate_response(AccessPolicyListResponse, 200)
 async def list_access_policies() -> tuple:
-    """List visible model_access_policies rows, optionally filtered by scope_type."""
+    """List visible model_access_policies rows (bounded by ``?page=&limit=``)."""
     org_id = g.user.get("organization_id")
     gate_error = await _gate(org_id)
     if gate_error:
@@ -225,30 +367,33 @@ async def list_access_policies() -> tuple:
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     scope_type = request.args.get("scope_type")
+    page = PageRequest.from_request()
 
     def _fetch():
         query = _visible_query(user_role, org_id, user_id)
         if scope_type:
             query &= db.model_access_policies.scope_type == scope_type
-        return db(query).select(orderby=db.model_access_policies.id)
+        scoped = db(query)
+        rows = scoped.select(limitby=page.limitby, orderby=db.model_access_policies.id)
+        return rows, scoped.count()
 
-    rows = await asyncio.to_thread(_fetch)
+    rows, total = await asyncio.to_thread(_fetch)
     entries = [_row_to_dict(r) for r in rows]
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": entries,
-                "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": entries,
+            "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"},
+            **page.meta(total),
+        },
         200,
     )
 
 
 @model_access_policies_bp.route("/<int:policy_id>", methods=["GET"])
 @require_auth
+@validate_response(AccessPolicyDetailResponse, 200)
 async def get_access_policy(policy_id: int) -> tuple:
     """Get a single model_access_policies row by ID (org-visibility scoped)."""
     org_id = g.user.get("organization_id")
@@ -270,13 +415,11 @@ async def get_access_policy(policy_id: int) -> tuple:
         return jsonify({"status": "error", "error": "Policy not found"}), 404
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -284,25 +427,23 @@ async def get_access_policy(policy_id: int) -> tuple:
 @model_access_policies_bp.route("/", methods=["POST"])
 @require_auth
 @require_scope(Permission.MODEL_ACCESS_POLICY_WRITE)
-async def create_access_policy() -> tuple:
+@validate_response(AccessPolicyCreateResponse, 201)
+@validate_request(CreateAccessPolicyRequest)
+async def create_access_policy(data: CreateAccessPolicyRequest) -> tuple:
     """Create a model_access_policies row."""
     org_id = g.user.get("organization_id")
     gate_error = await _gate(org_id)
     if gate_error:
         return gate_error
 
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    scope_type = data.get("scope_type")
-    scope_ref = data.get("scope_ref")
+    scope_type = data.scope_type
+    scope_ref = data.scope_ref
     error = _validate_scope(scope_type, scope_ref)
     if error:
         return jsonify({"status": "error", "error": error}), 400
 
-    action = data.get("action", "reject")
-    error = _validate_rule(data.get("model_pattern"), action, data.get("fallback_model"))
+    action = data.action if data.action is not None else "reject"
+    error = _validate_rule(data.model_pattern, action, data.fallback_model)
     if error:
         return jsonify({"status": "error", "error": error}), 400
 
@@ -317,11 +458,11 @@ async def create_access_policy() -> tuple:
         new_id = db.model_access_policies.insert(
             scope_type=scope_type,
             scope_ref=scope_ref,
-            model_pattern=data["model_pattern"],
+            model_pattern=data.model_pattern,
             action=action,
-            fallback_model=data.get("fallback_model"),
-            reason=data.get("reason"),
-            enabled=data.get("enabled", True),
+            fallback_model=data.fallback_model,
+            reason=data.reason,
+            enabled=data.enabled if data.enabled is not None else True,
             created_by=user_id,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
@@ -335,13 +476,11 @@ async def create_access_policy() -> tuple:
         return jsonify({"status": "error", "error": "Access denied for this scope"}), 403
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         201,
     )
 
@@ -349,18 +488,18 @@ async def create_access_policy() -> tuple:
 @model_access_policies_bp.route("/<int:policy_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.MODEL_ACCESS_POLICY_WRITE)
-async def update_access_policy(policy_id: int) -> tuple:
+@validate_response(AccessPolicyUpdateResponse, 200)
+@validate_request(UpdateAccessPolicyRequest)
+async def update_access_policy(policy_id: int, data: UpdateAccessPolicyRequest) -> tuple:
     """Update a model_access_policies row. scope_type/scope_ref are immutable after creation."""
     org_id = g.user.get("organization_id")
     gate_error = await _gate(org_id)
     if gate_error:
         return gate_error
 
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    update_fields: dict[str, Any] = {f: data[f] for f in _UPDATABLE_FIELDS if f in data}
+    update_fields: dict[str, Any] = {
+        f: getattr(data, f) for f in _UPDATABLE_FIELDS if getattr(data, f) is not None
+    }
     if not update_fields:
         return jsonify({"status": "error", "error": "No valid fields to update"}), 400
 
@@ -397,13 +536,11 @@ async def update_access_policy(policy_id: int) -> tuple:
         return jsonify({"status": "error", "error": result}), 400
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(result),
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(result),
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -411,6 +548,7 @@ async def update_access_policy(policy_id: int) -> tuple:
 @model_access_policies_bp.route("/<int:policy_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.MODEL_ACCESS_POLICY_DELETE)
+@validate_response(AccessPolicyDeleteResponse, 200)
 async def delete_access_policy(policy_id: int) -> tuple:
     """Delete a model_access_policies row by ID (admin only)."""
     org_id = g.user.get("organization_id")
@@ -438,12 +576,10 @@ async def delete_access_policy(policy_id: int) -> tuple:
         return jsonify({"status": "error", "error": "Access denied"}), 403
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"id": policy_id},
-                "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"id": policy_id},
+            "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )

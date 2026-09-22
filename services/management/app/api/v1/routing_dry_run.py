@@ -37,7 +37,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
-from quart import Blueprint, g, jsonify, request
+from quart import Blueprint, g, jsonify
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 from shared.routing.engine import RoutingEngine, RoutingInput
@@ -75,10 +76,44 @@ class RoutingDryRunResult:
     escalated: bool = False
 
 
+@dataclass(slots=True)
+class DryRunRequest:
+    """Request body for POST /api/v1/routing/dry-run/.
+
+    Every field is Optional so the handler's own presence/length/type checks
+    (and their exact 400 messages) remain the gate; quart-schema only rejects a
+    malformed body or a wrong-typed field.
+    """
+
+    prompt: str | None = None
+    tool_type: str | None = None
+    organization_id: int | None = None
+
+
+@dataclass(slots=True)
+class DryRunMeta:
+    """``meta`` for the dry-run response."""
+
+    organization_id: int
+    persisted: bool
+    timestamp: str
+
+
+@dataclass(slots=True)
+class DryRunResponse:
+    """Response body for POST /api/v1/routing/dry-run/."""
+
+    status: str
+    data: RoutingDryRunResult
+    meta: DryRunMeta
+
+
 @routing_dry_run_bp.route("/", methods=["POST"])
 @require_auth
 @require_scope(Permission.ROUTING_DRY_RUN_ADMIN)
-async def dry_run_decision() -> tuple:
+@validate_response(DryRunResponse, 200)
+@validate_request(DryRunRequest)
+async def dry_run_decision(data: DryRunRequest) -> tuple:
     """Run RoutingEngine.decide() over a supplied prompt with zero side effects.
 
     Request body: ``{"prompt": str, "tool_type": str (optional explicit
@@ -93,11 +128,7 @@ async def dry_run_decision() -> tuple:
     """
     user_org_id = g.user.get("organization_id")
 
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    prompt = data.get("prompt")
+    prompt = data.prompt
     if not isinstance(prompt, str) or not prompt.strip():
         return jsonify({"status": "error", "error": "prompt is required"}), 400
     if len(prompt) > _MAX_PROMPT_LENGTH:
@@ -108,7 +139,7 @@ async def dry_run_decision() -> tuple:
             400,
         )
 
-    explicit_tool_type = data.get("tool_type")
+    explicit_tool_type = data.tool_type
     if explicit_tool_type is not None:
         if not isinstance(explicit_tool_type, str) or not explicit_tool_type.strip():
             return (
@@ -126,7 +157,7 @@ async def dry_run_decision() -> tuple:
                 400,
             )
 
-    org_param = data.get("organization_id", user_org_id)
+    org_param = data.organization_id if data.organization_id is not None else user_org_id
     try:
         target_org_id = int(org_param)
     except (TypeError, ValueError):
@@ -180,16 +211,14 @@ async def dry_run_decision() -> tuple:
     )
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": asdict(result),
-                "meta": {
-                    "organization_id": target_org_id,
-                    "persisted": False,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                },
-            }
-        ),
+        {
+            "status": "success",
+            "data": asdict(result),
+            "meta": {
+                "organization_id": target_org_id,
+                "persisted": False,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        },
         200,
     )
