@@ -740,3 +740,134 @@ async def test_internal_error_is_logged_with_a_correlating_id(
     assert error_id in caplog.text
     assert _LEAKY_EXC_TEXT in caplog.text
     assert any(r.exc_info for r in records), "exception logged without a traceback"
+
+
+# ============================================================================
+# Wave-2 audit: input-bounds and response-schema hardening
+# ============================================================================
+
+
+class TestMemoryConfigBounds:
+    """POST bodies are typed + range-checked before they reach the DB.
+
+    Pre-change these values flowed from the request JSON straight into the
+    insert/update with no bounds check, so an out-of-range threshold or a
+    non-positive count was persisted verbatim and only surfaced later as a
+    broken injection calculation.
+    """
+
+    async def test_memory_similarity_threshold_out_of_range_400(
+        self, client, app_mock_db, auth_headers
+    ):
+        """# regression: audit-2026-09-14-wave2 -- a >1 cutoff is refused, not stored."""
+        # conftest caches the _DBTable insert mock per table name across the
+        # module-scoped app, and it is not a child of mock_db, so
+        # reset_mock() leaves earlier tests' calls on it -- reset explicitly.
+        app_mock_db.conversation_memory_configs.insert.reset_mock()
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/memory-config",
+            headers=auth_headers,
+            json={"organization_id": 1, "similarity_threshold": 5.0},
+        )
+        assert resp.status_code == 400
+        app_mock_db.conversation_memory_configs.insert.assert_not_called()
+
+    async def test_memory_max_messages_non_positive_400(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- max_messages must be a positive int."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/memory-config",
+            headers=auth_headers,
+            json={"organization_id": 1, "max_messages": 0},
+        )
+        assert resp.status_code == 400
+
+    async def test_rag_top_k_non_positive_400(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- top_k must be a positive int."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/rag-config",
+            headers=auth_headers,
+            json={"organization_id": 1, "top_k": -3},
+        )
+        assert resp.status_code == 400
+
+    async def test_embedding_dimensions_non_positive_400(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- dimensions must be a positive int."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/embedding-config",
+            headers=auth_headers,
+            json={"backend": "ollama", "dimensions": 0},
+        )
+        assert resp.status_code == 400
+
+
+class TestMemoryConfigResponseSchema:
+    """@validate_response pins the exact field set every GET/POST emits.
+
+    A future edit that serialized a raw row (or an extra internal column)
+    would now fail the response schema at runtime instead of silently
+    over-exposing it -- these tests assert the whole set, so a dropped or
+    added field is caught here too.
+    """
+
+    async def test_get_memory_config_field_set(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- GET /memory-config field set is fixed."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.get("/api/v1/memory-config?organization_id=1", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {
+            "organization_id",
+            "enabled",
+            "max_messages",
+            "similarity_threshold",
+            "configured",
+        }
+
+    async def test_get_rag_config_field_set(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- GET /rag-config field set is fixed."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.get("/api/v1/rag-config?organization_id=1", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {
+            "organization_id",
+            "enabled",
+            "collection",
+            "top_k",
+            "similarity_threshold",
+            "configured",
+        }
+
+    async def test_get_embedding_config_field_set(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- GET /embedding-config field set is fixed."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.get("/api/v1/embedding-config", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {
+            "organization_id",
+            "backend",
+            "model",
+            "ollama_host",
+            "dimensions",
+            "configured",
+        }
+
+    async def test_set_memory_config_write_field_set(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- the write response carries only status+org."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/memory-config", headers=auth_headers, json={"organization_id": 1}
+        )
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "organization_id"}
+
+    async def test_set_embedding_config_write_field_set(self, client, app_mock_db, auth_headers):
+        """# regression: audit-2026-09-14-wave2 -- embedding write carries status+backend."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.post(
+            "/api/v1/embedding-config", headers=auth_headers, json={"backend": "openai"}
+        )
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "backend"}
