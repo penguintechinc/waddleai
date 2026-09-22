@@ -296,3 +296,56 @@ class TestScopeRequired:
         )
 
         assert resp.status_code == 404
+
+
+def _knowledge_row(doc_id: int = 1) -> MagicMock:
+    """A fully-populated rag_documents knowledge row (all _serialize fields set)."""
+    row = MagicMock()
+    row.id = doc_id
+    row.content = "runbook body"
+    row.source = "runbook.md"
+    row.provenance = {"source_filename": "runbook.md"}
+    row.created_at = None
+    return row
+
+
+class TestKnowledgeListPaginationAndSchema:
+    """audit-2026-09-14-wave2: bounded pagination + response schema on the knowledge list.
+
+    # regression: audit-2026-09-14-wave2
+    """
+
+    _DOC_FIELDS = {"id", "content", "source", "provenance", "created_at"}
+
+    async def test_list_response_carries_pagination_meta(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """GET /knowledge exposes a bounded pagination window (DoS fix)."""
+        app_mock_db.return_value.select.return_value = make_select_result([_knowledge_row()])
+
+        resp = await client.get("/api/v1/knowledge?page=4&limit=9", headers=auth_headers)
+
+        assert resp.status_code == 200
+        pagination = (await resp.get_json())["pagination"]
+        assert pagination["page"] == 4
+        assert pagination["limit"] == 9
+
+    async def test_list_limit_is_clamped(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """A hostile ?limit is clamped to the ceiling, never honoured."""
+        app_mock_db.return_value.select.return_value = make_select_result([_knowledge_row()])
+
+        resp = await client.get("/api/v1/knowledge?limit=99999999", headers=auth_headers)
+
+        assert (await resp.get_json())["pagination"]["limit"] == 1000
+
+    async def test_list_document_field_set_is_exact(
+        self, client, app_mock_db: MagicMock, auth_headers
+    ) -> None:
+        """Response schema pins the exact knowledge-document field set."""
+        app_mock_db.return_value.select.return_value = make_select_result([_knowledge_row()])
+
+        resp = await client.get("/api/v1/knowledge", headers=auth_headers)
+
+        assert set((await resp.get_json())["documents"][0].keys()) == self._DOC_FIELDS

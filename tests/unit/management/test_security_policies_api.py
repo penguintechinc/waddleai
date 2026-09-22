@@ -361,3 +361,80 @@ class TestRevokeBypassGrant:
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["data"]["id"] == 5
+
+
+class TestSecurityPoliciesValidationAndPagination:
+    """audit-2026-09-14-wave2: quart-schema request/response validation + pagination.
+
+    # regression: audit-2026-09-14-wave2
+    """
+
+    _POLICY_FIELDS = {
+        "id",
+        "scope_type",
+        "scope_ref",
+        "direction",
+        "created_at",
+        "updated_at",
+        "tier1_enabled",
+        "tier2_enabled",
+        "tier3_enabled",
+        "tier4_enabled",
+        "tier4_model",
+        "intent_classifier_enabled",
+        "intent_categories",
+        "block_action",
+        "fail_mode",
+        "on_unclassifiable",
+        "auditor_timeout_ms",
+        "latency_budget_ms",
+        "sample_rate",
+        "upstream_filters",
+    }
+
+    async def test_list_response_carries_pagination_meta(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET / exposes a bounded pagination window in meta (DoS fix)."""
+        app_mock_db.return_value.select.return_value = make_select_result([_mock_policy_row()])
+
+        resp = await client.get("/api/v1/security-policies/?page=3&limit=7", headers=auth_headers)
+
+        assert resp.status_code == 200
+        meta = (await resp.get_json())["meta"]
+        assert meta["pagination"]["page"] == 3
+        assert meta["pagination"]["limit"] == 7
+
+    async def test_list_response_field_set_is_exact(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Response schema pins the exact security_policies field set."""
+        app_mock_db.return_value.select.return_value = make_select_result([_mock_policy_row()])
+
+        resp = await client.get("/api/v1/security-policies/", headers=auth_headers)
+
+        assert set((await resp.get_json())["data"][0].keys()) == self._POLICY_FIELDS
+
+    async def test_create_rejects_non_integer_timeout(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A non-int auditor_timeout_ms is a 400 at the schema boundary, not silently stored."""
+        resp = await client.post(
+            "/api/v1/security-policies/",
+            headers=auth_headers,
+            json={"scope_type": "global", "auditor_timeout_ms": "not-an-int"},
+        )
+        assert resp.status_code == 400
+
+    async def test_bypass_grants_list_carries_pagination_meta(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET /bypass-grants is paginated too."""
+        app_mock_db.return_value.select.return_value = make_select_result([_mock_grant_row()])
+
+        resp = await client.get(
+            "/api/v1/security-policies/bypass-grants?limit=99999999", headers=auth_headers
+        )
+
+        assert resp.status_code == 200
+        assert (await resp.get_json())["meta"]["pagination"]["limit"] == 1000

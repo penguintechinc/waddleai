@@ -17,17 +17,19 @@ scope, out of scope for this pass).
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
 from quart import Blueprint, g, jsonify, request
-from quart_schema import operation_id
+from quart_schema import operation_id, validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
 from ... import extensions as _ext
 from ...extensions import db
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,195 @@ _CONFIGURABLE_FIELDS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# quart-schema request/response models (audit-2026-09-14 wave2). Request
+# models stay loose (shape/type only); business rules (scope_type/direction
+# enumerations, org-scoping) remain in the handlers. Response models pin the
+# EXACT `{status, data, meta}` field set each route already emits.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class SecurityPolicyModel:
+    """Exact response schema for one security_policies row (mirrors `_row_to_dict`)."""
+
+    id: int
+    scope_type: str
+    scope_ref: str | None
+    direction: str
+    created_at: str | None
+    updated_at: str | None
+    tier1_enabled: bool | None
+    tier2_enabled: bool | None
+    tier3_enabled: bool | None
+    tier4_enabled: bool | None
+    tier4_model: str | None
+    intent_classifier_enabled: bool | None
+    intent_categories: Any
+    block_action: str | None
+    fail_mode: str | None
+    on_unclassifiable: str | None
+    auditor_timeout_ms: int | None
+    latency_budget_ms: int | None
+    sample_rate: float | None
+    upstream_filters: Any
+
+
+@dataclass(slots=True)
+class BypassGrantModel:
+    """Exact response schema for one security_bypass_grants row (mirrors `_grant_to_dict`)."""
+
+    id: int
+    subject_type: str
+    subject_ref: str
+    mode: str
+    scope_narrow: Any
+    include_upstream: bool | None
+    granted_by: int | None
+    expires_at: str | None
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class IdModel:
+    """`data` block for a delete/revoke response."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class ListMeta:
+    """`meta` for a paginated list response."""
+
+    total: int
+    timestamp: str
+    pagination: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ActionMeta:
+    """`meta` for a create/delete/revoke/upsert response."""
+
+    action: str
+    timestamp: str
+
+
+@dataclass(slots=True)
+class TimestampMeta:
+    """`meta` for an update response (timestamp only)."""
+
+    timestamp: str
+
+
+@dataclass(slots=True)
+class PolicyListResponse:
+    """Response body for GET /."""
+
+    status: str
+    data: list[SecurityPolicyModel]
+    meta: ListMeta
+
+
+@dataclass(slots=True)
+class PolicyUpsertResponse:
+    """Response body for POST / (200 update / 201 create)."""
+
+    status: str
+    data: SecurityPolicyModel
+    meta: ActionMeta
+
+
+@dataclass(slots=True)
+class PolicyUpdateResponse:
+    """Response body for PUT /<id>."""
+
+    status: str
+    data: SecurityPolicyModel
+    meta: TimestampMeta
+
+
+@dataclass(slots=True)
+class IdActionResponse:
+    """Response body for a delete/revoke (id + action meta)."""
+
+    status: str
+    data: IdModel
+    meta: ActionMeta
+
+
+@dataclass(slots=True)
+class BypassGrantListResponse:
+    """Response body for GET /bypass-grants."""
+
+    status: str
+    data: list[BypassGrantModel]
+    meta: ListMeta
+
+
+@dataclass(slots=True)
+class BypassGrantCreateResponse:
+    """Response body for POST /bypass-grants."""
+
+    status: str
+    data: BypassGrantModel
+    meta: ActionMeta
+
+
+@dataclass(slots=True)
+class SecurityPolicyUpsertRequest:
+    """Body for POST /. Business validation stays in the handler."""
+
+    scope_type: str | None = None
+    scope_ref: str | None = None
+    direction: str | None = None
+    tier1_enabled: bool | None = None
+    tier2_enabled: bool | None = None
+    tier3_enabled: bool | None = None
+    tier4_enabled: bool | None = None
+    tier4_model: str | None = None
+    intent_classifier_enabled: bool | None = None
+    intent_categories: Any = None
+    block_action: str | None = None
+    fail_mode: str | None = None
+    on_unclassifiable: str | None = None
+    auditor_timeout_ms: int | None = None
+    latency_budget_ms: int | None = None
+    sample_rate: float | None = None
+    upstream_filters: Any = None
+
+
+@dataclass(slots=True)
+class SecurityPolicyUpdateRequest:
+    """Body for PUT /<id>. Only non-null configurable fields are applied."""
+
+    tier1_enabled: bool | None = None
+    tier2_enabled: bool | None = None
+    tier3_enabled: bool | None = None
+    tier4_enabled: bool | None = None
+    tier4_model: str | None = None
+    intent_classifier_enabled: bool | None = None
+    intent_categories: Any = None
+    block_action: str | None = None
+    fail_mode: str | None = None
+    on_unclassifiable: str | None = None
+    auditor_timeout_ms: int | None = None
+    latency_budget_ms: int | None = None
+    sample_rate: float | None = None
+    upstream_filters: Any = None
+
+
+@dataclass(slots=True)
+class CreateBypassGrantRequest:
+    """Body for POST /bypass-grants."""
+
+    subject_type: str | None = None
+    subject_ref: Any = None
+    mode: str | None = None
+    expires_at: str | None = None
+    scope_narrow: Any = None
+    include_upstream: bool | None = None
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     """Convert a penguin-dal security_policies row to an explicit response schema.
 
@@ -99,8 +290,10 @@ def _get_resolver() -> Any:
 
 @security_policies_bp.route("/", methods=["GET"])
 @require_auth
+@validate_response(PolicyListResponse, 200)
 async def list_policies() -> tuple:
     """List security policies, optionally filtered by scope_type/scope_ref."""
+    page = PageRequest.from_request()
     scope_type: str | None = request.args.get("scope_type")
     scope_ref: str | None = request.args.get("scope_ref")
 
@@ -110,19 +303,21 @@ async def list_policies() -> tuple:
             query &= db.security_policies.scope_type == scope_type
         if scope_ref is not None:
             query &= db.security_policies.scope_ref == scope_ref
-        return db(query).select(orderby=db.security_policies.id)
+        return db(query).select(limitby=page.limitby, orderby=db.security_policies.id)
 
     rows = await asyncio.to_thread(_fetch)
     policies: list[dict[str, Any]] = [_row_to_dict(r) for r in rows]
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": policies,
-                "meta": {"total": len(policies), "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": policies,
+            "meta": {
+                "total": len(policies),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                **page.meta(),
+            },
+        },
         200,
     )
 
@@ -178,15 +373,14 @@ async def resolve_policy() -> tuple:
 @security_policies_bp.route("/", methods=["POST"])
 @require_auth
 @require_scope(Permission.SECURITY_POLICY_ADMIN)
-async def create_or_upsert_policy() -> tuple:
+@validate_response(PolicyUpsertResponse, 200)
+@validate_response(PolicyUpsertResponse, 201)
+@validate_request(SecurityPolicyUpsertRequest)
+async def create_or_upsert_policy(data: SecurityPolicyUpsertRequest) -> tuple:
     """Create or upsert a security policy by (scope_type, scope_ref, direction)."""
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    scope_type: str = data.get("scope_type", "")
-    scope_ref: str | None = data.get("scope_ref")
-    direction: str = data.get("direction", "both")
+    scope_type: str = data.scope_type or ""
+    scope_ref: str | None = data.scope_ref
+    direction: str = data.direction or "both"
 
     if scope_type not in _SCOPE_TYPES:
         error = f"scope_type must be one of {_SCOPE_TYPES}"
@@ -199,7 +393,9 @@ async def create_or_upsert_policy() -> tuple:
     if direction not in _DIRECTIONS:
         return jsonify({"status": "error", "error": f"direction must be one of {_DIRECTIONS}"}), 400
 
-    update_fields: dict[str, Any] = {k: data[k] for k in _CONFIGURABLE_FIELDS if k in data}
+    update_fields: dict[str, Any] = {
+        k: getattr(data, k) for k in _CONFIGURABLE_FIELDS if getattr(data, k) is not None
+    }
 
     def _upsert():
         existing = (
@@ -237,13 +433,11 @@ async def create_or_upsert_policy() -> tuple:
     await resolver.invalidate(scope_type, scope_ref)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200 if action == "updated" else 201,
     )
 
@@ -251,13 +445,13 @@ async def create_or_upsert_policy() -> tuple:
 @security_policies_bp.route("/<int:policy_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.SECURITY_POLICY_ADMIN)
-async def update_policy(policy_id: int) -> tuple:
+@validate_response(PolicyUpdateResponse, 200)
+@validate_request(SecurityPolicyUpdateRequest)
+async def update_policy(policy_id: int, data: SecurityPolicyUpdateRequest) -> tuple:
     """Update selected fields of an existing security policy."""
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    update_fields: dict[str, Any] = {k: data[k] for k in _CONFIGURABLE_FIELDS if k in data}
+    update_fields: dict[str, Any] = {
+        k: getattr(data, k) for k in _CONFIGURABLE_FIELDS if getattr(data, k) is not None
+    }
     if not update_fields:
         return jsonify({"status": "error", "error": "No valid fields to update"}), 400
 
@@ -280,13 +474,11 @@ async def update_policy(policy_id: int) -> tuple:
     await resolver.invalidate(scope_type, row.scope_ref)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -295,6 +487,7 @@ async def update_policy(policy_id: int) -> tuple:
 @operation_id("security_policy")
 @require_auth
 @require_scope(Permission.SECURITY_POLICY_ADMIN)
+@validate_response(IdActionResponse, 200)
 async def delete_policy(policy_id: int) -> tuple:
     """Delete a security policy by ID."""
 
@@ -315,13 +508,11 @@ async def delete_policy(policy_id: int) -> tuple:
     await resolver.invalidate(scope[0], scope[1])
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"id": policy_id},
-                "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"id": policy_id},
+            "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -374,8 +565,10 @@ def _org_scope_allowed(user_role: str | None, user_org_id: Any, subject_org_id: 
 @security_policies_bp.route("/bypass-grants", methods=["GET"])
 @require_auth
 @require_scope(Permission.SECURITY_BYPASS_GRANT_WRITE)
+@validate_response(BypassGrantListResponse, 200)
 async def list_bypass_grants() -> tuple:
     """List bypass grants, org-scoped for non-admin roles."""
+    page = PageRequest.from_request()
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
     subject_type: str | None = request.args.get("subject_type")
@@ -384,7 +577,7 @@ async def list_bypass_grants() -> tuple:
         query = db.security_bypass_grants.id > 0
         if subject_type:
             query &= db.security_bypass_grants.subject_type == subject_type
-        rows = db(query).select(orderby=db.security_bypass_grants.id)
+        rows = db(query).select(limitby=page.limitby, orderby=db.security_bypass_grants.id)
         if user_role == "admin":
             return rows
         return [
@@ -399,13 +592,15 @@ async def list_bypass_grants() -> tuple:
     grants: list[dict[str, Any]] = [_grant_to_dict(r) for r in rows]
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": grants,
-                "meta": {"total": len(grants), "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": grants,
+            "meta": {
+                "total": len(grants),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                **page.meta(),
+            },
+        },
         200,
     )
 
@@ -413,16 +608,14 @@ async def list_bypass_grants() -> tuple:
 @security_policies_bp.route("/bypass-grants", methods=["POST"])
 @require_auth
 @require_scope(Permission.SECURITY_BYPASS_GRANT_WRITE)
-async def create_bypass_grant() -> tuple:
+@validate_response(BypassGrantCreateResponse, 201)
+@validate_request(CreateBypassGrantRequest)
+async def create_bypass_grant(data: CreateBypassGrantRequest) -> tuple:
     """Create a bypass grant. Requires an explicit expires_at -- no indefinite bypass."""
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    subject_type: str = data.get("subject_type", "")
-    subject_ref: str = str(data.get("subject_ref", ""))
-    mode: str = data.get("mode", "shadow")
-    expires_at_raw: str | None = data.get("expires_at")
+    subject_type: str = data.subject_type or ""
+    subject_ref: str = str(data.subject_ref) if data.subject_ref is not None else ""
+    mode: str = data.mode or "shadow"
+    expires_at_raw: str | None = data.expires_at
 
     if subject_type not in _SUBJECT_TYPES:
         error = f"subject_type must be one of {_SUBJECT_TYPES}"
@@ -454,8 +647,10 @@ async def create_bypass_grant() -> tuple:
             subject_type=subject_type,
             subject_ref=subject_ref,
             mode=mode,
-            scope_narrow=data.get("scope_narrow"),
-            include_upstream=bool(data.get("include_upstream", False)),
+            scope_narrow=data.scope_narrow,
+            include_upstream=False
+            if data.include_upstream is None
+            else bool(data.include_upstream),
             granted_by=granted_by,
             expires_at=expires_at,
             created_at=datetime.utcnow(),
@@ -479,13 +674,11 @@ async def create_bypass_grant() -> tuple:
     )
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _grant_to_dict(row),
-                "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _grant_to_dict(row),
+            "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         201,
     )
 
@@ -493,6 +686,7 @@ async def create_bypass_grant() -> tuple:
 @security_policies_bp.route("/bypass-grants/<int:grant_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.SECURITY_BYPASS_GRANT_WRITE)
+@validate_response(IdActionResponse, 200)
 async def revoke_bypass_grant(grant_id: int) -> tuple:
     """Revoke (delete) a bypass grant, org-scoped for non-admin roles."""
     user_role = g.user.get("role")
@@ -526,12 +720,10 @@ async def revoke_bypass_grant(grant_id: int) -> tuple:
     )
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"id": grant_id},
-                "meta": {"action": "revoked", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"id": grant_id},
+            "meta": {"action": "revoked", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
