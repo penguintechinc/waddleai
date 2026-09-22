@@ -1037,3 +1037,158 @@ class TestSetKeyQuotaRequestValidation:
         )
         assert resp.status_code == 200
         app_mock_db.return_value.update.assert_called_once_with(budget_limit_daily=0.0, tpm_limit=0)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/quotas -- bounded list window
+# PUT /api/v1/quotas/{user,org} -- typed + bounded request bodies
+# regression: audit-2026-09-14-wave2
+# ---------------------------------------------------------------------------
+
+
+class TestListQuotasPagination:
+    """The three unbounded entity selects are now bounded and echo their window."""
+
+    async def test_list_quotas_response_includes_pagination(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A `pagination` block reflecting ?page=&limit= is returned.
+
+        regression: audit-2026-09-14-wave2 -- absent before the bounded-select
+        change, so the assertion fails pre-change.
+        """
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [empty, empty, empty]
+
+        resp = await client.get("/api/v1/quotas?page=3&limit=10", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["pagination"]["page"] == 3
+        assert body["pagination"]["limit"] == 10
+
+
+class TestSetUserQuotaRequestValidation:
+    """PUT /api/v1/quotas/user/<id> now type-checks and range-checks its body."""
+
+    async def test_non_numeric_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A non-numeric token quota is refused with 400, never persisted.
+
+        regression: audit-2026-09-14-wave2 -- pre-change the raw JSON value went
+        straight to db.update() and returned 200, so this fails before
+        @validate_request was added.
+        """
+        user = make_mock_user(user_id=5, role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_daily": "not-a-number"},
+        )
+        assert resp.status_code == 400
+
+    async def test_negative_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A negative token quota is refused with 400. regression: audit-2026-09-14-wave2."""
+        user = make_mock_user(user_id=5, role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_daily": -5},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_absurd_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An out-of-range token quota is refused with 400. regression: audit-2026-09-14-wave2."""
+        user = make_mock_user(user_id=5, role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_monthly": 10**15},
+        )
+        assert resp.status_code == 400
+
+    async def test_valid_quota_response_has_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A valid update returns exactly {user_id, username, message}.
+
+        regression: audit-2026-09-14-wave2 -- @validate_response pins the shape.
+        """
+        user = make_mock_user(user_id=5, username="quotauser", role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_daily": 50000},
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"user_id", "username", "message"}
+
+
+class TestSetOrgQuotaRequestValidation:
+    """PUT /api/v1/quotas/org/<id> now type-checks and range-checks its body."""
+
+    async def test_non_numeric_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A non-numeric org quota is refused with 400.
+
+        regression: audit-2026-09-14-wave2 -- pre-change it reached db.update()
+        and returned 200.
+        """
+        org = make_mock_org(org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = org
+
+        resp = await client.put(
+            "/api/v1/quotas/org/2",
+            headers=auth_headers,
+            json={"token_quota_daily": "lots"},
+        )
+        assert resp.status_code == 400
+
+    async def test_absurd_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An out-of-range org quota is refused with 400. regression: audit-2026-09-14-wave2."""
+        org = make_mock_org(org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = org
+
+        resp = await client.put(
+            "/api/v1/quotas/org/2",
+            headers=auth_headers,
+            json={"token_quota_monthly": -1},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_valid_quota_response_has_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A valid update returns exactly {organization_id, organization_name, message}.
+
+        regression: audit-2026-09-14-wave2.
+        """
+        org = make_mock_org(org_id=2, name="Acme")
+        app_mock_db.return_value.select.return_value.first.return_value = org
+
+        resp = await client.put(
+            "/api/v1/quotas/org/2",
+            headers=auth_headers,
+            json={"token_quota_daily": 500000},
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"organization_id", "organization_name", "message"}

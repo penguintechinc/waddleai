@@ -576,3 +576,125 @@ class TestUpdateKeyPrivilegeSplit:
         )
         assert resp.status_code == 403
         app_mock_db.return_value.update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/keys -- bounded list window
+# regression: audit-2026-09-14-wave2
+# ---------------------------------------------------------------------------
+
+
+class TestListKeysPagination:
+    """The formerly-unbounded list select is now bounded and echoes its window."""
+
+    async def test_list_keys_response_includes_pagination(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A `pagination` block reflecting ?page=&limit= is returned.
+
+        regression: audit-2026-09-14-wave2 -- pre-change the handler returned
+        only {keys, total} with no pagination key, so this fails before the
+        bounded-select change.
+        """
+        app_mock_db.return_value.select.return_value = make_select_result([make_mock_key()])
+
+        resp = await client.get("/api/v1/keys?page=2&limit=25", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["pagination"]["page"] == 2
+        assert body["pagination"]["limit"] == 25
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/keys/<id> -- the global-delete bypass is now a scope test
+# regression: audit-2026-09-14-wave2
+# ---------------------------------------------------------------------------
+
+
+def _decoupled_token(*, role: str, scope: list[str], user_id: int, org_id: int = 1) -> str:
+    """Sign a JWT whose `roles` and `scope` claims are deliberately decoupled.
+
+    route_conftest.make_token derives scope from role, so it cannot express "a
+    caller holding apikey:delete without being role=admin" -- which is exactly
+    what proves the delete gate now keys on the scope claim, not the role name.
+    verify_token (shared.auth.penguin_auth) reads the `scope` claim straight
+    off the token, so g.user["scope"] carries whatever is set here.
+
+    The signing key is taken from the *app's* provider (``_get_oidc_provider``,
+    which the module-scoped flask_app fixture patches onto the auth module)
+    rather than importing route_conftest's ``_test_oidc_provider`` directly:
+    under pytest's rootdir the conftest is importable under two module names,
+    each with its own ``lru_cache``d random keypair, so a direct import would
+    sign with a key the app never verifies against and every request would 401.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    import jwt as _pyjwt
+
+    from services.management.app.api.v1 import auth as _authmod
+
+    provider = _authmod._get_oidc_provider()
+    private_key, kid = provider._keystore.get_signing_key()
+    now = datetime.now(UTC)
+    payload = {
+        "sub": str(user_id),
+        "iss": "https://waddleai.localhost.local",
+        "aud": ["waddleai-api"],
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(hours=1)).timestamp()),
+        "scope": scope,
+        "roles": [role],
+        "tenant": str(org_id),
+        "teams": [],
+        "ext": {"username": "synthetic"},
+    }
+    return _pyjwt.encode(payload, private_key, algorithm="RS256", headers={"kid": kid})
+
+
+class TestDeleteKeyScopeGate:
+    """The admin bypass on DELETE keys on the apikey:delete scope, not role name."""
+
+    async def test_apikey_delete_scope_bypasses_ownership(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """A non-admin role holding apikey:delete may revoke another user's key.
+
+        regression: audit-2026-09-14-wave2 -- pre-change the gate read
+        `user_role not in ["admin"]`, so this role=user caller hit the
+        ownership branch and got 403. Keying on the (admin-only) apikey:delete
+        scope instead returns 200, so this fails before the conversion.
+        """
+        key = make_mock_key(key_id=10, user_id=99, org_id=1)  # not owned by caller (id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        token = _decoupled_token(role="user", scope=["apikey:delete"], user_id=2)
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        resp = await client.delete("/api/v1/keys/10", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_user_without_delete_scope_still_blocked_on_others_key(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """Ownership fallback preserved: a plain user cannot revoke another's key.
+
+        regression: audit-2026-09-14-wave2 -- guards the conversion from
+        widening access. Passes both before and after (a preservation guard).
+        """
+        key = make_mock_key(key_id=10, user_id=99, org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.delete("/api/v1/keys/10", headers=user_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_admin_scope_still_deletes_any_key(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin (holds apikey:delete) still bypasses ownership.
+
+        regression: audit-2026-09-14-wave2 -- preservation guard.
+        """
+        key = make_mock_key(key_id=10, user_id=99, org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+
+        resp = await client.delete("/api/v1/keys/10", headers=auth_headers)
+        assert resp.status_code == 200

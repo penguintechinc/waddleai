@@ -16,9 +16,24 @@ from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth
 
 _BEARER_AUTH: list[dict[str, list[str]]] = [{"bearerAuth": []}]
+
+
+@dataclass(slots=True)
+class PaginationMeta:
+    """Pagination window echoed back on a bounded list response.
+
+    Mirrors ``_pagination.PageRequest.meta()`` so quart-schema can validate it;
+    ``total``/``pages`` stay ``None`` when no separate count query is run.
+    """
+
+    page: int
+    limit: int
+    total: int | None
+    pages: int | None
 
 
 def _db() -> DB:
@@ -171,6 +186,7 @@ class KeyListResponse:
 
     keys: list[KeySummary]
     total: int
+    pagination: PaginationMeta
 
 
 @dataclass(slots=True)
@@ -272,14 +288,22 @@ async def list_keys():
     user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
+    page = PageRequest.from_request()
 
     def _fetch():
+        # Bounded, stably-ordered window per role scope (audit-2026-09-14 DoS
+        # finding): the admin "all keys" branch especially could pull an
+        # unbounded result set into memory.
+        limitby = page.limitby
+        orderby = db.virtual_keys.id
         if user_role == "admin":
-            return db(db.virtual_keys.id > 0).select()
+            return db(db.virtual_keys.id > 0).select(limitby=limitby, orderby=orderby)
         elif user_role == "resource_manager":
-            return db(db.virtual_keys.organization_id == org_id).select()
+            return db(db.virtual_keys.organization_id == org_id).select(
+                limitby=limitby, orderby=orderby
+            )
         else:
-            return db(db.virtual_keys.user_id == user_id).select()
+            return db(db.virtual_keys.user_id == user_id).select(limitby=limitby, orderby=orderby)
 
     keys = await asyncio.to_thread(_fetch)
 
@@ -305,7 +329,7 @@ async def list_keys():
             }
         )
 
-    return {"keys": result, "total": len(result)}
+    return {"keys": result, "total": len(result), **page.meta()}
 
 
 @api_v1_bp.route("/keys/<int:key_id>", methods=["GET"])
@@ -564,8 +588,15 @@ async def delete_key(key_id):
     if not key:
         return jsonify({"error": "Key not found"}), 404
 
-    # Permission check
-    if user_role not in ["admin"]:
+    # Permission check. The global-admin bypass is now a scope test, not a
+    # role-name test, per the house scope-only authz policy (see
+    # auth.require_scope): holding ``apikey:delete`` -- which only the admin
+    # bundle carries in ROLE_PERMISSIONS -- lets a caller revoke any key. Every
+    # other caller (resource_manager, plain user) still falls through to the
+    # org/owner fallback below exactly as before, so real behaviour is
+    # unchanged while the role literal is gone.
+    scopes = set(g.user.get("scope") or [])
+    if Permission.APIKEY_DELETE.value not in scopes:
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:

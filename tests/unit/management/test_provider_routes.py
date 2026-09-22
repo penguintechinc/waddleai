@@ -1009,3 +1009,114 @@ class TestDeleteProviderCredential:
         assert body["data"]["id"] == 1
         assert body["meta"]["action"] == "deleted"
         app_mock_db.return_value.delete.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Bounded list windows + the write-only api_key invariant
+# regression: audit-2026-09-14-wave2
+# ---------------------------------------------------------------------------
+
+
+class TestListProvidersPagination:
+    """The unbounded provider list select is now bounded and echoes its window."""
+
+    async def test_list_providers_response_includes_pagination(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A `pagination` block reflecting ?page=&limit= is returned.
+
+        regression: audit-2026-09-14-wave2 -- absent before the bounded-select
+        change, so this fails pre-change.
+        """
+        app_mock_db.return_value.select.return_value = make_select_result([make_mock_provider()])
+
+        resp = await client.get("/api/v1/providers?page=2&limit=5", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["pagination"]["page"] == 2
+        assert body["pagination"]["limit"] == 5
+
+
+class TestListCredentialsPaginationMeta:
+    """The credential list select is bounded; its meta surfaces the window."""
+
+    async def test_list_credentials_meta_includes_page_and_limit(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """The meta block carries page/limit alongside total. regression: audit-2026-09-14-wave2."""
+        provider = make_mock_provider()
+        creds = [make_mock_credential(cred_id=1, api_key="sk-plaintext-long-key-1234")]
+        sel = make_select_result(creds)
+        sel.first.return_value = provider
+        app_mock_db.return_value.select.return_value = sel
+
+        resp = await client.get(
+            "/api/v1/providers/1/credentials?page=4&limit=7", headers=auth_headers
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["meta"]["page"] == 4
+        assert body["meta"]["limit"] == 7
+
+
+class TestProviderResponsesNeverLeakPlaintextApiKey:
+    """No provider response ever serialises a plaintext api_key (write-only invariant)."""
+
+    _SECRET = "sk-supersecret-plaintext-value-9999"  # noqa: S105 -- test literal, not a real key
+
+    async def test_get_provider_omits_api_key(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET /providers/<id> never includes the stored api_key.
+
+        regression: audit-2026-09-14-wave2 -- the response schema has no api_key
+        field, so even a row carrying one cannot be echoed back.
+        """
+        provider = make_mock_provider()
+        provider.api_key = self._SECRET
+        app_mock_db.return_value.select.return_value.first.return_value = provider
+
+        resp = await client.get("/api/v1/providers/1", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert "api_key" not in body
+        assert self._SECRET not in (await resp.get_data(as_text=True))
+
+    async def test_list_providers_omits_api_key(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET /providers never includes any provider's api_key.
+
+        regression: audit-2026-09-14-wave2.
+        """
+        provider = make_mock_provider()
+        provider.api_key = self._SECRET
+        app_mock_db.return_value.select.return_value = make_select_result([provider])
+
+        resp = await client.get("/api/v1/providers", headers=auth_headers)
+        assert resp.status_code == 200
+        assert self._SECRET not in (await resp.get_data(as_text=True))
+        body = await resp.get_json()
+        for entry in body["providers"]:
+            assert "api_key" not in entry
+
+    async def test_list_credentials_masks_plaintext(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET /providers/<id>/credentials returns only masked keys, never plaintext.
+
+        regression: audit-2026-09-14-wave2.
+        """
+        provider = make_mock_provider()
+        creds = [make_mock_credential(cred_id=1, api_key=self._SECRET)]
+        sel = make_select_result(creds)
+        sel.first.return_value = provider
+        app_mock_db.return_value.select.return_value = sel
+
+        resp = await client.get("/api/v1/providers/1/credentials", headers=auth_headers)
+        assert resp.status_code == 200
+        assert self._SECRET not in (await resp.get_data(as_text=True))
+        body = await resp.get_json()
+        for cred in body["data"]:
+            assert "api_key" not in cred
+            assert cred["api_key_masked"] != self._SECRET

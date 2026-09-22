@@ -11,9 +11,25 @@ from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 _BEARER_AUTH: list[dict[str, list[str]]] = [{"bearerAuth": []}]
+
+
+@dataclass(slots=True)
+class PaginationMeta:
+    """Pagination window echoed back on a bounded list response.
+
+    Mirrors the shape ``_pagination.PageRequest.meta()`` emits so quart-schema
+    can validate it; ``total``/``pages`` stay ``None`` when the handler does
+    not pay for a separate count query.
+    """
+
+    page: int
+    limit: int
+    total: int | None
+    pages: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +85,7 @@ class ProviderListResponse:
 
     providers: list[ProviderSummary]
     total: int
+    pagination: PaginationMeta
 
 
 @dataclass(slots=True)
@@ -182,10 +199,17 @@ class ProviderCredential:
 
 @dataclass(slots=True)
 class ListCredentialsMeta:
-    """`meta` block for the list-credentials response."""
+    """`meta` block for the list-credentials response.
+
+    ``page``/``limit`` report the bounded window the ``total`` rows were drawn
+    from -- the credential select is now paginated so a provider with a huge
+    credential pool cannot be loaded in one unbounded query.
+    """
 
     provider_id: int
     total: int
+    page: int
+    limit: int
     timestamp: str
 
 
@@ -366,9 +390,13 @@ async def list_provider_types():
 @validate_response(ProviderListResponse, 200)
 async def list_providers():
     """List all configured AI providers."""
+    page = PageRequest.from_request()
 
     def _fetch():
-        return db(db.ai_providers.id > 0).select()
+        # Bounded select: a large provider table can no longer be pulled into
+        # memory in one unbounded query (audit-2026-09-14 DoS finding). orderby
+        # gives limitby a stable window.
+        return db(db.ai_providers.id > 0).select(limitby=page.limitby, orderby=db.ai_providers.id)
 
     providers = await asyncio.to_thread(_fetch)
 
@@ -389,7 +417,7 @@ async def list_providers():
             }
         )
 
-    return {"providers": result, "total": len(result)}
+    return {"providers": result, "total": len(result), **page.meta()}
 
 
 @api_v1_bp.route("/providers/<int:provider_id>", methods=["GET"])
@@ -685,13 +713,15 @@ def _credential_to_dict(cred) -> dict:
 @validate_response(ListProviderCredentialsResponse, 200)
 async def list_provider_credentials(provider_id: int):
     """List all credentials for a provider. API keys are never returned in plaintext."""
+    page = PageRequest.from_request()
 
     def _fetch():
         provider = db(db.ai_providers.id == provider_id).select().first()
         if not provider:
             return None
+        # Bounded, stably-ordered credential window (audit-2026-09-14 DoS finding).
         return db(db.provider_credentials.provider_id == provider_id).select(
-            orderby=db.provider_credentials.id
+            orderby=db.provider_credentials.id, limitby=page.limitby
         )
 
     creds = await asyncio.to_thread(_fetch)
@@ -705,6 +735,8 @@ async def list_provider_credentials(provider_id: int):
         "meta": {
             "provider_id": provider_id,
             "total": len(creds),
+            "page": page.page,
+            "limit": page.limit,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         },
     }
