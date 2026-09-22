@@ -11,10 +11,13 @@ which seeds one deterministic org/user/api_key and mints a real signed
 Bearer JWT (see ProxyServer._seed_contract_test_data() in
 proxy/apps/proxy_server/main.py). `_auth()` fetches that token (and the
 seeded wa- API key) from the test-only `/_contract_test/token` endpoint,
-which only exists under that flag. Some responses genuinely capture current
-bugs (e.g. malformed JSON bodies producing 500s instead of 400s on
-/v1/chat/completions and /v1/messages) -- that is intentional: the point of
+which only exists under that flag. Some responses still genuinely capture
+current bugs (e.g. the mem0 delete/clear routes 500ing with an HTML body
+against the sqlite contract-test schema) -- that is intentional: the point of
 a golden snapshot is to lock in *current* behavior, not idealized behavior.
+(The /v1/chat/completions and /v1/messages malformed-body snapshots were
+updated from 500 to 400 by audit-2026-09-14-wave2 once input validation was
+added -- see those two tests.)
 """
 
 import httpx
@@ -99,11 +102,13 @@ def test_chat_completions_unauth(proxy_url):
 
 
 def test_chat_completions_malformed_body(proxy_url):
-    """POST /v1/chat/completions with a non-JSON body currently 500s, not 400s.
+    """POST /v1/chat/completions with a non-JSON body returns a 400, not a 500.
 
-    Real current behavior: request.get_json() raises Quart's BadRequest,
-    which the handler's broad `except Exception` catches and reports as a
-    500 "Internal server error" rather than letting the 400 propagate.
+    # regression: audit-2026-09-14-wave2 -- input validation now parses the body
+    # with silent=True and rejects a non-JSON/non-object payload with a 400 in
+    # the OpenAI error envelope, before any pipeline work. Previously the
+    # BadRequest was caught by the outer `except` and surfaced as a generic 500
+    # (a documented bug this snapshot used to pin).
     """
     r = httpx.post(
         f"{proxy_url}/v1/chat/completions",
@@ -164,11 +169,11 @@ def test_messages_unauth(proxy_url):
 
 
 def test_messages_malformed_body(proxy_url):
-    """POST /v1/messages with a non-JSON body currently 500s, not 400s.
+    """POST /v1/messages with a non-JSON body returns a 400, not a 500.
 
-    Real current behavior: same as chat_completions -- the BadRequest from
-    request.get_json() is caught by claude_messages()'s outer
-    `except Exception` and reported as a 500, not a 400.
+    # regression: audit-2026-09-14-wave2 -- same fix as chat_completions:
+    # validation rejects a non-JSON/non-object body with a 400 in the Anthropic
+    # error envelope before the pipeline runs (previously a generic 500).
     """
     r = httpx.post(
         f"{proxy_url}/v1/messages",

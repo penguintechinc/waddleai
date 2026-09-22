@@ -1,9 +1,9 @@
 {
   "body": {
     "error": {
-      "message": "Internal server error",
-      "type": "server_error"
+      "message": "Request body must be a JSON object.",
+      "type": "invalid_request_error"
     }
   },
-  "status": 500
+  "status": 400
 }

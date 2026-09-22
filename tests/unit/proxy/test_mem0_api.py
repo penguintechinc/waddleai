@@ -543,6 +543,19 @@ async def test_search_memories_maps_result_shape(client, auth_as, fake_manager):
     # author_user_id=0 is falsy -> fallback to entry.user_id
     assert second["author_user_id"] == "42"
     assert second["scope"] == "org"
+    # regression: audit-2026-09-14-wave2 -- pin the exact per-item key set so no
+    # internal MemoryEntry field (notably `embedding` and `organization_id`,
+    # both set on the _entry() fixture) can silently leak into the response.
+    assert set(first.keys()) == {
+        "id",
+        "memory",
+        "user_id",
+        "score",
+        "metadata",
+        "created_at",
+        "scope",
+        "author_user_id",
+    }
 
 
 async def test_search_memories_rejects_org_zero_token(client, auth_as, fake_manager):
@@ -652,6 +665,18 @@ async def test_list_memories_forwards_limit_query_param(client, auth_as, fake_ma
     data = await resp.get_json()
     assert data["total"] == 1
     assert data["memories"][0]["id"] == "m1"
+    # regression: audit-2026-09-14-wave2 -- pin the exact per-item key set so no
+    # internal MemoryEntry field (embedding, organization_id) leaks into a list.
+    assert set(data["memories"][0].keys()) == {
+        "id",
+        "memory",
+        "user_id",
+        "score",
+        "metadata",
+        "created_at",
+        "scope",
+        "author_user_id",
+    }
 
 
 async def test_list_memories_default_limit_is_twenty(client, auth_as, fake_manager):
