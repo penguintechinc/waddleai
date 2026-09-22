@@ -15,15 +15,18 @@ retired along with that code path -- the equivalent admin control is now
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
 from quart import Blueprint, g, jsonify, request
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
 from ...extensions import db, redis_client
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
@@ -67,6 +70,186 @@ _ALLOWED_WRITE_FIELDS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models (audit-2026-09-14). Request fields Optional
+# so the handler's own presence/value checks stay authoritative; response
+# models mirror EXACTLY the keys ``_row_to_dict`` / each handler returns.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CreateAssignmentRequest:
+    """Request body for POST /api/v1/routing/assignments/."""
+
+    tool_type: str | None = None
+    model_name: str | None = None
+    scope: str | None = None
+    scope_ref: int | None = None
+    model_params: dict[str, Any] | None = None
+    vram_gb: float | None = None
+    capability_score: float | None = None
+    enabled: bool | None = None
+    credential_label: str | None = None
+    escalation_model: str | None = None
+    fallback_models: list[str] | None = None
+
+
+@dataclass(slots=True)
+class UpdateAssignmentRequest:
+    """Request body for PUT /api/v1/routing/assignments/<id>. Every field is a partial update."""
+
+    model_name: str | None = None
+    model_params: dict[str, Any] | None = None
+    vram_gb: float | None = None
+    capability_score: float | None = None
+    enabled: bool | None = None
+    credential_label: str | None = None
+    escalation_model: str | None = None
+    fallback_models: list[str] | None = None
+
+
+@dataclass(slots=True)
+class AssignmentRow:
+    """A single model_assignments row -- mirrors ``_row_to_dict`` exactly."""
+
+    id: int
+    tool_type: str
+    complexity: Any
+    region: Any
+    model_name: str
+    model_params: Any
+    vram_gb: Any
+    capability_score: Any
+    enabled: bool
+    credential_label: str | None
+    escalation_model: str | None
+    fallback_models: list[str]
+    scope: str
+    scope_ref: int | None
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class AssignmentPagination:
+    """Pagination envelope merged into the list response."""
+
+    page: int
+    limit: int
+    total: int | None
+    pages: int | None
+
+
+@dataclass(slots=True)
+class AssignmentListMeta:
+    """``meta`` for the list response."""
+
+    total: int
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AssignmentGetMeta:
+    """``meta`` for the get-by-id response."""
+
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AssignmentWriteMeta:
+    """``meta`` for create/upsert -- carries the action verb, capability warnings, timestamp."""
+
+    action: str
+    warnings: list[str]
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AssignmentUpdateMeta:
+    """``meta`` for update -- capability warnings plus timestamp."""
+
+    warnings: list[str]
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AssignmentDeleteMeta:
+    """``meta`` for delete -- the deleted action plus timestamp."""
+
+    action: str
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AssignmentDeletedRef:
+    """``data`` for a delete response -- the deleted row's id."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class SeedResult:
+    """``data`` for the seed response -- counts of created/updated rows."""
+
+    created: int
+    updated: int
+    total: int
+
+
+@dataclass(slots=True)
+class AssignmentListResponse:
+    """Response body for GET /api/v1/routing/assignments/."""
+
+    status: str
+    data: list[AssignmentRow]
+    meta: AssignmentListMeta
+    pagination: AssignmentPagination
+
+
+@dataclass(slots=True)
+class AssignmentDetailResponse:
+    """Response body for GET /api/v1/routing/assignments/<id>."""
+
+    status: str
+    data: AssignmentRow
+    meta: AssignmentGetMeta
+
+
+@dataclass(slots=True)
+class AssignmentWriteResponse:
+    """Response body for a successful POST (create/upsert)."""
+
+    status: str
+    data: AssignmentRow
+    meta: AssignmentWriteMeta
+
+
+@dataclass(slots=True)
+class AssignmentUpdateResponse:
+    """Response body for a successful PUT."""
+
+    status: str
+    data: AssignmentRow
+    meta: AssignmentUpdateMeta
+
+
+@dataclass(slots=True)
+class AssignmentDeleteResponse:
+    """Response body for a successful DELETE."""
+
+    status: str
+    data: AssignmentDeletedRef
+    meta: AssignmentDeleteMeta
+
+
+@dataclass(slots=True)
+class SeedResponse:
+    """Response body for POST /api/v1/routing/assignments/seed."""
+
+    status: str
+    data: SeedResult
+    meta: AssignmentGetMeta
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     """Convert a penguin-dal model_assignments row into a serializable dict."""
     return {
@@ -88,26 +271,36 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def _visible_query(user_role: str, user_org_id: int | None):
+def _visible_query(scopes: set[str], user_org_id: int | None):
     """Build the org-scoping filter.
 
-    Admin sees everything; everyone else sees global rows plus their own
-    org's rows (never another org's).
+    Scope-based (audit-2026-09-14): a caller holding ``routing_assignment:admin``
+    sees every org's rows; everyone else sees global rows plus their own org's
+    rows (never another org's). The ``scope_ref == user_org_id`` tenant
+    comparison is preserved.
     """
     table = _db().model_assignments
-    if user_role == "admin":
+    if Permission.ROUTING_ASSIGNMENT_ADMIN.value in scopes:
         return table.id > 0
     return (table.scope == "global") | ((table.scope == "org") & (table.scope_ref == user_org_id))
 
 
-def _can_write(user_role: str, user_org_id: int | None, scope: str, scope_ref: int | None) -> bool:
-    """True when the caller may create/modify a row with this scope."""
-    if user_role == "admin":
+def _can_write(
+    scopes: set[str], user_org_id: int | None, scope: str, scope_ref: int | None
+) -> bool:
+    """True when the caller may create/modify a row with this scope.
+
+    Scope-based (audit-2026-09-14): the cross-tenant/global-write privilege is
+    ``routing_assignment:admin``; the own-org write privilege is
+    ``routing_assignment:write``. A WRITE-only caller may write org-scoped rows
+    only for their own org -- never a global row (those affect every tenant)
+    and never another org's. The ``scope_ref == user_org_id`` tenant comparison
+    is preserved verbatim.
+    """
+    if Permission.ROUTING_ASSIGNMENT_ADMIN.value in scopes:
         return True
-    if user_role != "resource_manager":
+    if Permission.ROUTING_ASSIGNMENT_WRITE.value not in scopes:
         return False
-    # resource_manager may only write org-scoped rows for their own org --
-    # never global rows (those affect every tenant).
     return scope == "org" and scope_ref == user_org_id
 
 
@@ -126,21 +319,23 @@ async def _invalidate_assignment_cache(org_id: int | None, tool_type: str) -> No
 
 @routing_assignments_bp.route("/", methods=["GET"])
 @require_auth
+@validate_response(AssignmentListResponse, 200)
 async def list_entries() -> tuple:
     """List visible model_assignments entries with optional filters.
 
-    Query params: tool_type, scope, enabled. Non-admin callers only ever see
-    global rows plus their own organization's rows.
+    Query params: tool_type, scope, enabled, page, limit. Non-admin callers
+    only ever see global rows plus their own organization's rows.
     """
     tool_type: str | None = request.args.get("tool_type")
     scope_param: str | None = request.args.get("scope")
     enabled_param: str | None = request.args.get("enabled")
-    user_role = g.user.get("role")
+    scopes = set(g.user.get("scope") or [])
     user_org_id = g.user.get("organization_id")
+    page = PageRequest.from_request()
 
     def _fetch():
         database = _db()
-        query = _visible_query(user_role, user_org_id)
+        query = _visible_query(scopes, user_org_id)
 
         if tool_type:
             query &= database.model_assignments.tool_type == tool_type
@@ -150,33 +345,35 @@ async def list_entries() -> tuple:
             enabled_val: bool = enabled_param.lower() in ("true", "1", "yes")
             query &= database.model_assignments.enabled == enabled_val
 
-        return database(query).select(orderby=database.model_assignments.id)
+        scoped = database(query)
+        rows = scoped.select(limitby=page.limitby, orderby=database.model_assignments.id)
+        return rows, scoped.count()
 
-    rows = await asyncio.to_thread(_fetch)
+    rows, total = await asyncio.to_thread(_fetch)
     entries: list[dict[str, Any]] = [_row_to_dict(r) for r in rows]
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": entries,
-                "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": entries,
+            "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"},
+            **page.meta(total),
+        },
         200,
     )
 
 
 @routing_assignments_bp.route("/<int:entry_id>", methods=["GET"])
 @require_auth
+@validate_response(AssignmentDetailResponse, 200)
 async def get_entry(entry_id: int) -> tuple:
     """Get a single model_assignments entry by ID (org-visibility scoped)."""
-    user_role = g.user.get("role")
+    scopes = set(g.user.get("scope") or [])
     user_org_id = g.user.get("organization_id")
 
     def _fetch():
         database = _db()
-        query = _visible_query(user_role, user_org_id) & (database.model_assignments.id == entry_id)
+        query = _visible_query(scopes, user_org_id) & (database.model_assignments.id == entry_id)
         return database(query).select().first()
 
     row = await asyncio.to_thread(_fetch)
@@ -184,13 +381,11 @@ async def get_entry(entry_id: int) -> tuple:
         return jsonify({"status": "error", "error": "Assignment not found"}), 404
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -198,7 +393,10 @@ async def get_entry(entry_id: int) -> tuple:
 @routing_assignments_bp.route("/", methods=["POST"])
 @require_auth
 @require_scope(Permission.ROUTING_ASSIGNMENT_WRITE)
-async def create_or_upsert_entry() -> tuple:
+@validate_response(AssignmentWriteResponse, 200)
+@validate_response(AssignmentWriteResponse, 201)
+@validate_request(CreateAssignmentRequest)
+async def create_or_upsert_entry(data: CreateAssignmentRequest) -> tuple:
     """Create or upsert a model_assignments entry.
 
     Upserts by (tool_type, scope, scope_ref). A capability mismatch (e.g. an
@@ -206,35 +404,34 @@ async def create_or_upsert_entry() -> tuple:
     **warning**, not a hard error -- the row is still saved (spec §7.1
     validate_assignment / Task 14 step 1).
     """
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
+    if data.tool_type is None:
+        return jsonify({"status": "error", "error": "tool_type is required"}), 400
+    if data.model_name is None:
+        return jsonify({"status": "error", "error": "model_name is required"}), 400
 
-    for required in ("tool_type", "model_name"):
-        if required not in data:
-            return jsonify({"status": "error", "error": f"{required} is required"}), 400
-
-    tool_type: str = data["tool_type"]
+    tool_type: str = data.tool_type
     if len(tool_type) > 50:
         return jsonify({"status": "error", "error": "tool_type must be <= 50 characters"}), 400
 
-    scope: str = data.get("scope", "global")
+    scope: str = data.scope if data.scope is not None else "global"
     if scope not in ("global", "org"):
         return jsonify({"status": "error", "error": "scope must be 'global' or 'org'"}), 400
-    scope_ref: int | None = data.get("scope_ref")
+    scope_ref: int | None = data.scope_ref
     if scope == "org" and scope_ref is None:
         return jsonify({"status": "error", "error": "scope_ref is required when scope='org'"}), 400
     if scope == "global":
         scope_ref = None
 
-    user_role = g.user.get("role")
+    scopes = set(g.user.get("scope") or [])
     user_org_id = g.user.get("organization_id")
-    if not _can_write(user_role, user_org_id, scope, scope_ref):
+    if not _can_write(scopes, user_org_id, scope, scope_ref):
         return jsonify({"status": "error", "error": "Access denied for this scope"}), 403
 
-    update_fields: dict[str, Any] = {f: data[f] for f in _ALLOWED_WRITE_FIELDS if f in data}
-    update_fields.setdefault("enabled", data.get("enabled", True))
-    warnings = await _capability_warnings(data["model_name"])
+    update_fields: dict[str, Any] = {
+        f: getattr(data, f) for f in _ALLOWED_WRITE_FIELDS if getattr(data, f) is not None
+    }
+    update_fields.setdefault("enabled", True)
+    warnings = await _capability_warnings(data.model_name)
 
     def _upsert():
         database = _db()
@@ -269,17 +466,15 @@ async def create_or_upsert_entry() -> tuple:
     await _invalidate_assignment_cache(scope_ref if scope == "org" else None, tool_type)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {
-                    "action": action,
-                    "warnings": warnings,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                },
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {
+                "action": action,
+                "warnings": warnings,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        },
         200 if action == "updated" else 201,
     )
 
@@ -287,16 +482,16 @@ async def create_or_upsert_entry() -> tuple:
 @routing_assignments_bp.route("/<int:entry_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.ROUTING_ASSIGNMENT_WRITE)
-async def update_entry(entry_id: int) -> tuple:
+@validate_response(AssignmentUpdateResponse, 200)
+@validate_request(UpdateAssignmentRequest)
+async def update_entry(entry_id: int, data: UpdateAssignmentRequest) -> tuple:
     """Update an existing model_assignments entry by ID."""
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    user_role = g.user.get("role")
+    scopes = set(g.user.get("scope") or [])
     user_org_id = g.user.get("organization_id")
 
-    update_fields: dict[str, Any] = {f: data[f] for f in _ALLOWED_WRITE_FIELDS if f in data}
+    update_fields: dict[str, Any] = {
+        f: getattr(data, f) for f in _ALLOWED_WRITE_FIELDS if getattr(data, f) is not None
+    }
     warnings: list[str] = []
     if "model_name" in update_fields:
         warnings = await _capability_warnings(update_fields["model_name"])
@@ -308,7 +503,7 @@ async def update_entry(entry_id: int) -> tuple:
             return "not_found", None, None
         scope = getattr(row, "scope", "global")
         scope_ref = getattr(row, "scope_ref", None)
-        if not _can_write(user_role, user_org_id, scope, scope_ref):
+        if not _can_write(scopes, user_org_id, scope, scope_ref):
             return "forbidden", None, None
         if not update_fields:
             return "no_fields", None, None
@@ -331,13 +526,11 @@ async def update_entry(entry_id: int) -> tuple:
     await _invalidate_assignment_cache(scope_ref if scope == "org" else None, tool_type)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"warnings": warnings, "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"warnings": warnings, "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -345,9 +538,10 @@ async def update_entry(entry_id: int) -> tuple:
 @routing_assignments_bp.route("/<int:entry_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.ROUTING_ASSIGNMENT_WRITE)
+@validate_response(AssignmentDeleteResponse, 200)
 async def delete_entry(entry_id: int) -> tuple:
     """Delete a model_assignments entry by ID."""
-    user_role = g.user.get("role")
+    scopes = set(g.user.get("scope") or [])
     user_org_id = g.user.get("organization_id")
 
     def _delete():
@@ -357,7 +551,7 @@ async def delete_entry(entry_id: int) -> tuple:
             return "not_found", None
         scope = getattr(row, "scope", "global")
         scope_ref = getattr(row, "scope_ref", None)
-        if not _can_write(user_role, user_org_id, scope, scope_ref):
+        if not _can_write(scopes, user_org_id, scope, scope_ref):
             return "forbidden", None
 
         database(database.model_assignments.id == entry_id).delete()
@@ -375,13 +569,11 @@ async def delete_entry(entry_id: int) -> tuple:
     await _invalidate_assignment_cache(scope_ref if scope == "org" else None, tool_type)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"id": entry_id},
-                "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"id": entry_id},
+            "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -389,6 +581,7 @@ async def delete_entry(entry_id: int) -> tuple:
 @routing_assignments_bp.route("/seed", methods=["POST"])
 @require_auth
 @require_scope(Permission.ROUTING_ASSIGNMENT_ADMIN)
+@validate_response(SeedResponse, 200)
 async def seed_assignments() -> tuple:
     """Populate global model_assignments from DEFAULT_ASSIGNMENTS (admin only).
 
@@ -433,13 +626,11 @@ async def seed_assignments() -> tuple:
     created, updated = await asyncio.to_thread(_seed)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"created": created, "updated": updated, "total": created + updated},
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"created": created, "updated": updated, "total": created + updated},
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 

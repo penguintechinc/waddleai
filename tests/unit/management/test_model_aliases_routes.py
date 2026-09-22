@@ -195,12 +195,14 @@ class TestListAliases:
         """Admin listing returns every seeded alias."""
         rows = [_make_alias_row(alias_id=1), _make_alias_row(alias_id=2, organization_id=3)]
         app_mock_db.return_value.select.return_value = make_select_result(rows)
+        app_mock_db.return_value.count.return_value = 2
 
         resp = await client.get("/api/v1/routing/aliases/", headers=auth_headers)
         assert resp.status_code == 200
         data = await resp.get_json()
         assert [e["id"] for e in data["data"]] == [1, 2]
         assert data["meta"]["total"] == 2
+        assert data["pagination"]["total"] == 2
 
     async def test_list_filters_by_source_model_query_param(
         self, client, app_mock_db: MagicMock, auth_headers: dict
@@ -208,6 +210,7 @@ class TestListAliases:
         """?source_model=<x> exercises the optional filter branch."""
         rows = [_make_alias_row(source_model="gpt-4o")]
         app_mock_db.return_value.select.return_value = make_select_result(rows)
+        app_mock_db.return_value.count.return_value = 1
 
         resp = await client.get(
             "/api/v1/routing/aliases/?source_model=gpt-4o", headers=auth_headers
@@ -218,11 +221,14 @@ class TestListAliases:
 
     async def test_list_empty(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
         """No aliases returns an empty list, not an error."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        app_mock_db.return_value.count.return_value = 0
         resp = await client.get("/api/v1/routing/aliases/", headers=auth_headers)
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["data"] == []
         assert data["meta"]["total"] == 0
+        assert data["pagination"]["total"] == 0
 
     async def test_list_no_auth(self, client) -> None:
         """Missing auth returns 401."""
@@ -232,13 +238,16 @@ class TestListAliases:
     async def test_list_response_envelope_shape(
         self, client, app_mock_db: MagicMock, auth_headers: dict
     ) -> None:
-        """Response matches the {status,data,meta} envelope with the exact field set."""
+        """Response matches the {status,data,meta,pagination} envelope with the exact field set."""
         app_mock_db.return_value.select.return_value = make_select_result([_make_alias_row()])
+        app_mock_db.return_value.count.return_value = 1
 
         resp = await client.get("/api/v1/routing/aliases/", headers=auth_headers)
         data = await resp.get_json()
-        assert set(data.keys()) == {"status", "data", "meta"}
+        # regression: audit-2026-09-14-wave2 -- exact response field set, incl. pagination
+        assert set(data.keys()) == {"status", "data", "meta", "pagination"}
         assert set(data["meta"].keys()) == {"total", "timestamp"}
+        assert set(data["pagination"].keys()) == {"page", "limit", "total", "pages"}
         assert set(data["data"][0].keys()) == {
             "id",
             "organization_id",
@@ -496,3 +505,69 @@ class TestDeleteAlias:
         data = await resp.get_json()
         assert data["meta"]["action"] == "deleted"
         assert data["data"]["id"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Response-schema exact-field regression (@validate_response guard)
+# ---------------------------------------------------------------------------
+
+
+class TestResponseSchemaFieldSets:
+    """Assert the EXACT field set of every alias response envelope.
+
+    regression: audit-2026-09-14-wave2 -- @validate_response reserializes each
+    body to its declared model, so a field dropped from a model (or a handler
+    return) disappears from the wire. These pin the contract so that silent
+    drop fails loudly.
+    """
+
+    _ROW_KEYS = {
+        "id",
+        "organization_id",
+        "source_model",
+        "target_model",
+        "target_provider",
+        "enabled",
+        "created_at",
+    }
+
+    async def test_get_response_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET <id> body is exactly {status, data(row), meta(timestamp)}."""
+        row = _make_alias_row(alias_id=7)
+        app_mock_db.return_value.select.return_value.first.return_value = row
+        resp = await client.get("/api/v1/routing/aliases/7", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "meta"}
+        assert set(data["meta"].keys()) == {"timestamp"}
+        assert set(data["data"].keys()) == self._ROW_KEYS
+
+    async def test_create_response_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """POST create body is exactly {status, data(row), meta(action,timestamp)}."""
+        new_row = _make_alias_row(alias_id=42)
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, new_row]
+        resp = await client.post(
+            "/api/v1/routing/aliases/",
+            headers=auth_headers,
+            json={"source_model": "gpt-4o", "target_model": "local-mixtral"},
+        )
+        assert resp.status_code == 201
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "meta"}
+        assert set(data["meta"].keys()) == {"action", "timestamp"}
+        assert set(data["data"].keys()) == self._ROW_KEYS
+
+    async def test_delete_response_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """DELETE body is exactly {status, data({id}), meta(action,timestamp)}."""
+        row = _make_alias_row(alias_id=4)
+        app_mock_db.return_value.select.return_value.first.return_value = row
+        resp = await client.delete("/api/v1/routing/aliases/4", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "meta"}
+        assert set(data["data"].keys()) == {"id"}
+        assert set(data["meta"].keys()) == {"action", "timestamp"}

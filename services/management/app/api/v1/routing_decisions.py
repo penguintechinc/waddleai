@@ -17,11 +17,13 @@ never edited or created through this API.
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
 from quart import Blueprint, g, jsonify, request
+from quart_schema import validate_response
 
 from ...extensions import db
 from .auth import require_auth
@@ -31,6 +33,78 @@ logger = logging.getLogger(__name__)
 routing_decisions_bp = Blueprint(
     "routing_decisions", __name__, url_prefix="/api/v1/routing/decisions"
 )
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI response models (audit-2026-09-14). Read-only endpoints; response
+# models mirror EXACTLY the keys each handler returns. ``routing_decision``
+# has no dedicated OIDC scope, so both routes are authenticated-only and the
+# admin cross-org visibility remains a tenant filter (see ``_visible_org_filter``).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class TraceRow:
+    """A single routing_decision_traces row -- mirrors ``_row_to_dict`` exactly."""
+
+    id: int
+    request_id: str
+    organization_id: int | None
+    timestamp: str | None
+    requirements: Any
+    tool_type: str | None
+    tool_type_source: str | None
+    rules_fired: Any
+    classifier_output: Any
+    assignment_model: str | None
+    capability_veto: Any
+    veto_reason: str | None
+    qualified_candidates: Any
+    pressure_signals: Any
+    final_model: str | None
+    routed_from: Any
+    escalated: Any
+
+
+@dataclass(slots=True)
+class TraceTimestampMeta:
+    """``meta`` carrying only a timestamp."""
+
+    timestamp: str
+
+
+@dataclass(slots=True)
+class TraceGetResponse:
+    """Response body for GET /api/v1/routing/decisions/<request_id>."""
+
+    status: str
+    data: TraceRow
+    meta: TraceTimestampMeta
+
+
+@dataclass(slots=True)
+class DecisionSummary:
+    """The aggregate summary payload -- mirrors the handler's ``summary`` dict."""
+
+    total: int
+    by_tool_type_source: dict[str, int]
+    veto_rate: Any
+    pressure_shift_rate: Any
+    escalation_rate: Any
+
+
+@dataclass(slots=True)
+class DecisionSummaryResponse:
+    """Response body for GET /api/v1/routing/decisions/.
+
+    ``meta`` is a loose dict because one of its keys is ``from`` -- a Python
+    keyword that cannot be a dataclass field name. The exact meta field set is
+    pinned by the route's regression test instead.
+    """
+
+    status: str
+    data: DecisionSummary
+    meta: dict[str, Any]
 
 
 def _db() -> DB:
@@ -79,6 +153,7 @@ def _visible_org_filter(user_role: str, user_org_id: int | None):
 
 @routing_decisions_bp.route("/<string:request_id>", methods=["GET"])
 @require_auth
+@validate_response(TraceGetResponse, 200)
 async def get_trace(request_id: str) -> tuple:
     """Return the full decision trace for one request_id (org-visibility scoped)."""
     user_role = g.user.get("role")
@@ -103,19 +178,18 @@ async def get_trace(request_id: str) -> tuple:
         return jsonify({"status": "error", "error": "Decision trace not found"}), 404
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
 
 @routing_decisions_bp.route("/", methods=["GET"])
 @require_auth
+@validate_response(DecisionSummaryResponse, 200)
 async def list_decisions_summary() -> tuple:
     """Aggregate summary over a filtered window.
 
@@ -187,17 +261,15 @@ async def list_decisions_summary() -> tuple:
     }
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": summary,
-                "meta": {
-                    "organization_id": target_org_id,
-                    "from": from_param,
-                    "to": to_param,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                },
-            }
-        ),
+        {
+            "status": "success",
+            "data": summary,
+            "meta": {
+                "organization_id": target_org_id,
+                "from": from_param,
+                "to": to_param,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        },
         200,
     )

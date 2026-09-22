@@ -8,10 +8,26 @@ cross-org and global-scope writes), and the {status,data,meta} envelope shape.
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 from services.management.app.api.v1 import model_access_policies
 from tests.unit.management.conftest import make_dal_row, make_select_result
 
 ENDPOINT_PATH = "/api/v1/routing/access-policies/"
+
+
+@pytest.fixture(autouse=True)
+def _default_pagination_count(app_mock_db):
+    """Default ``db(...).count()`` to an int for the pagination envelope.
+
+    The list handler now runs a bounded ``select(limitby=...)`` plus a
+    ``count()``, so ``@validate_response`` needs an int total even when a test
+    only stubs ``.select()``. Tests asserting ``pagination.total`` override it.
+
+    regression: audit-2026-09-14-wave2
+    """
+    app_mock_db.return_value.count.return_value = 0
+    return app_mock_db
 
 
 def _enable_flag(monkeypatch) -> None:
@@ -258,14 +274,30 @@ class TestListPolicies:
     async def test_list_response_envelope_shape(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:
-        """Response matches the {status,data,meta} envelope."""
+        """Response matches the {status,data,meta,pagination} envelope with exact field sets."""
         _gate_open(monkeypatch)
         app_mock_db.return_value.select.return_value = make_select_result([_make_policy_row()])
+        app_mock_db.return_value.count.return_value = 1
 
         resp = await client.get(ENDPOINT_PATH, headers=auth_headers)
         data = await resp.get_json()
-        assert set(data.keys()) == {"status", "data", "meta"}
+        # regression: audit-2026-09-14-wave2 -- exact response field set, incl. pagination
+        assert set(data.keys()) == {"status", "data", "meta", "pagination"}
         assert set(data["meta"].keys()) == {"total", "timestamp"}
+        assert set(data["pagination"].keys()) == {"page", "limit", "total", "pages"}
+        assert set(data["data"][0].keys()) == {
+            "id",
+            "scope_type",
+            "scope_ref",
+            "model_pattern",
+            "action",
+            "fallback_model",
+            "reason",
+            "enabled",
+            "created_by",
+            "created_at",
+            "updated_at",
+        }
 
     async def test_list_resource_manager_scoped_query(
         self, client, app_mock_db: MagicMock, rm_auth_headers: dict, monkeypatch
