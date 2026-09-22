@@ -10,7 +10,22 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 import services.management.app.api.v1.routing_assignments as routing_assignments_mod
+from shared.auth.rbac import Permission
 from tests.unit.management.conftest import make_select_result
+
+
+@pytest.fixture(autouse=True)
+def _default_pagination_count(app_mock_db):
+    """Default ``db(...).count()`` to an int for the pagination envelope.
+
+    List handlers now run a bounded ``select(limitby=...)`` plus a ``count()``,
+    so ``@validate_response`` needs an int total even when a test only stubs
+    ``.select()``. Tests asserting on ``pagination.total`` override it.
+
+    regression: audit-2026-09-14-wave2
+    """
+    app_mock_db.return_value.count.return_value = 0
+    return app_mock_db
 
 
 def _assignment_row(**overrides) -> Mock:
@@ -612,17 +627,28 @@ class TestRoutingAssignments:
         warnings = await routing_assignments_mod._capability_warnings("gpt-4o")
         assert warnings == []
 
-    # -- _can_write (direct) -- unreachable-via-HTTP branch --------------
+    # -- _can_write (direct) -- scope-based guard ------------------------
 
-    def test_can_write_denies_roles_other_than_admin_or_resource_manager(self) -> None:
-        """A role with neither admin nor resource_manager write access is always denied.
+    def test_can_write_scope_based_authorization(self) -> None:
+        """_can_write is scope-based (audit-2026-09-14), not role-name based.
 
-        Unreachable through the HTTP layer (require_scope already blocks any
-        other role before _can_write ever runs) -- exercised directly for
-        full branch coverage of that guard.
+        regression: audit-2026-09-14-wave2 -- ``routing_assignment:admin`` may
+        write anything (global or any org); a ``routing_assignment:write``-only
+        caller may write only their own org's org-scoped rows, never a global
+        row and never another org's; no relevant scope is always denied.
         """
-        assert routing_assignments_mod._can_write("user", 1, "org", 1) is False
-        assert routing_assignments_mod._can_write("reporter", None, "global", None) is False
+        write = {Permission.ROUTING_ASSIGNMENT_WRITE.value}
+        admin = {Permission.ROUTING_ASSIGNMENT_ADMIN.value}
+        # No relevant scope at all -> denied (former role="user"/"reporter").
+        assert routing_assignments_mod._can_write(set(), 1, "org", 1) is False
+        assert routing_assignments_mod._can_write(set(), None, "global", None) is False
+        # admin scope -> may write global and any org.
+        assert routing_assignments_mod._can_write(admin, 1, "global", None) is True
+        assert routing_assignments_mod._can_write(admin, 1, "org", 99) is True
+        # write-only scope -> own org only, never global, never another org.
+        assert routing_assignments_mod._can_write(write, 5, "org", 5) is True
+        assert routing_assignments_mod._can_write(write, 5, "global", None) is False
+        assert routing_assignments_mod._can_write(write, 5, "org", 6) is False
 
 
 class TestSeedAssignments:
