@@ -38,8 +38,10 @@ def _clamp_int(raw: object, *, default: int, minimum: int, maximum: int) -> int:
     never escapes the bounds -- a hostile ``?limit=99999999`` is clamped, not
     honoured, and ``?page=-1`` cannot produce a negative offset.
     """
+    if not isinstance(raw, (str, int, float)):
+        return default
     try:
-        value = int(raw)  # type: ignore[arg-type]
+        value = int(raw)
     except (TypeError, ValueError):
         return default
     return max(minimum, min(value, maximum))
@@ -77,7 +79,7 @@ class PageRequest:
         start = (self.page - 1) * self.limit
         return (start, start + self.limit)
 
-    def meta(self, total: int | None = None) -> dict[str, object]:
+    def meta(self, total: int | None = None) -> dict[str, dict[str, int | None]]:
         """Pagination metadata to merge into a list response body.
 
         Pass *total* (a ``db(query).count()``) when the handler can afford the
