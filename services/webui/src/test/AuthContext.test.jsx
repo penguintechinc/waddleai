@@ -2,6 +2,11 @@ import { render, screen, act, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 
+// regression: audit-2026-09-14 — the JWT moved out of localStorage into an
+// HttpOnly cookie the app cannot read. These tests assert the app never
+// touches localStorage for the token and always sends the cookie
+// (credentials: 'include') on its auth calls.
+
 // Helper component to expose context values
 function AuthConsumer() {
   const { user, loading, login, logout } = useAuth();
@@ -23,10 +28,15 @@ function AuthConsumer() {
 }
 
 describe('AuthContext', () => {
+  let setItemSpy;
+  let getItemSpy;
+
   beforeEach(() => {
     localStorage.clear();
     vi.resetAllMocks();
     global.fetch = vi.fn();
+    setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
+    getItemSpy = vi.spyOn(Storage.prototype, 'getItem');
   });
 
   afterEach(() => {
@@ -43,8 +53,9 @@ describe('AuthContext', () => {
     expect(screen.getByTestId('child')).toBeInTheDocument();
   });
 
-  it('provides initial unauthenticated state when no token in localStorage', async () => {
-    global.fetch = vi.fn(); // should not be called
+  it('probes /auth/verify on mount with credentials included', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false });
+
     render(
       <AuthProvider>
         <AuthConsumer />
@@ -55,13 +66,13 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('loading')).toHaveTextContent('false');
     });
 
+    expect(global.fetch).toHaveBeenCalledWith('/api/v1/auth/verify', {
+      credentials: 'include',
+    });
     expect(screen.getByTestId('user')).toHaveTextContent('null');
-    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('verifies token on mount when token exists in localStorage', async () => {
-    localStorage.setItem('token', 'existing-token');
-
+  it('sets the user when the mount probe succeeds', async () => {
     const mockUser = { id: 1, username: 'admin' };
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -78,15 +89,10 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('loading')).toHaveTextContent('false');
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/api/v1/auth/verify', {
-      headers: { Authorization: 'Bearer existing-token' },
-    });
     expect(screen.getByTestId('user')).toHaveTextContent(JSON.stringify(mockUser));
   });
 
-  it('clears token from localStorage when token verification fails with non-ok response', async () => {
-    localStorage.setItem('token', 'bad-token');
-
+  it('leaves the user null when the mount probe returns a non-ok response', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false });
 
     render(
@@ -99,13 +105,10 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('loading')).toHaveTextContent('false');
     });
 
-    expect(localStorage.getItem('token')).toBeNull();
     expect(screen.getByTestId('user')).toHaveTextContent('null');
   });
 
-  it('clears token from localStorage when token verification throws a network error', async () => {
-    localStorage.setItem('token', 'bad-token');
-
+  it('leaves the user null when the mount probe throws a network error', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 
     render(
@@ -118,12 +121,11 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('loading')).toHaveTextContent('false');
     });
 
-    expect(localStorage.getItem('token')).toBeNull();
     expect(screen.getByTestId('user')).toHaveTextContent('null');
   });
 
-  it('login() sets user and token in state and localStorage on success', async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: false }); // initial verify
+  it('login() posts with credentials + CSRF header and never writes the token to localStorage', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false }); // initial verify probe
     const mockUser = { id: 1, username: 'testuser' };
     const loginFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -140,7 +142,6 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('loading')).toHaveTextContent('false');
     });
 
-    // Now wire up login call
     global.fetch = loginFetch;
 
     await act(async () => {
@@ -151,12 +152,18 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('user')).toHaveTextContent(JSON.stringify(mockUser));
     });
 
-    expect(localStorage.getItem('token')).toBe('new-token');
     expect(loginFetch).toHaveBeenCalledWith('/api/v1/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      credentials: 'include',
       body: JSON.stringify({ username: 'testuser', password: 'testpass' }),
     });
+    // The token is HttpOnly on the server side; the app must not persist it.
+    expect(setItemSpy).not.toHaveBeenCalledWith('token', expect.anything());
+    expect(localStorage.getItem('token')).toBeNull();
   });
 
   it('login() returns success: false with error message on non-ok response', async () => {
@@ -285,10 +292,8 @@ describe('AuthContext', () => {
     expect(loginResult).toEqual({ success: false, error: 'Network error' });
   });
 
-  it('logout() clears user and token from state and localStorage', async () => {
-    localStorage.setItem('token', 'some-token');
+  it('logout() calls the server with credentials + CSRF header, clears the user, and never uses localStorage for the token', async () => {
     const mockUser = { id: 1, username: 'admin' };
-
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ user: mockUser }),
@@ -304,12 +309,75 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('user')).toHaveTextContent(JSON.stringify(mockUser));
     });
 
+    const logoutFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    global.fetch = logoutFetch;
+
     await act(async () => {
       screen.getByTestId('logout-btn').click();
     });
 
-    expect(screen.getByTestId('user')).toHaveTextContent('null');
+    await waitFor(() => {
+      expect(screen.getByTestId('user')).toHaveTextContent('null');
+    });
+
+    expect(logoutFetch).toHaveBeenCalledWith('/api/v1/auth/logout', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      credentials: 'include',
+    });
+    expect(setItemSpy).not.toHaveBeenCalledWith('token', expect.anything());
+    expect(getItemSpy).not.toHaveBeenCalledWith('token');
     expect(localStorage.getItem('token')).toBeNull();
+  });
+
+  it('logout() still clears client state when the server request fails', async () => {
+    const mockUser = { id: 1, username: 'admin' };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ user: mockUser }),
+    });
+
+    render(
+      <AuthProvider>
+        <AuthConsumer />
+      </AuthProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('user')).toHaveTextContent(JSON.stringify(mockUser));
+    });
+
+    global.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+
+    await act(async () => {
+      screen.getByTestId('logout-btn').click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('user')).toHaveTextContent('null');
+    });
+  });
+
+  it('never reads or writes the localStorage "token" key across the whole lifecycle', async () => {
+    const mockUser = { id: 1, username: 'admin' };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ user: mockUser }),
+    });
+
+    render(
+      <AuthProvider>
+        <AuthConsumer />
+      </AuthProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('user')).toHaveTextContent(JSON.stringify(mockUser));
+    });
+
+    // Neither the mount probe nor rendering touched the token in localStorage.
+    expect(getItemSpy).not.toHaveBeenCalledWith('token');
+    expect(setItemSpy).not.toHaveBeenCalledWith('token', expect.anything());
   });
 
   it('useAuth hook throws when used outside AuthProvider', () => {
