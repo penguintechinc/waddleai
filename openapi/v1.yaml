@@ -3784,7 +3784,22 @@ paths:
 
         reinterpret ``config``/``credentials_ref`` for a different backend
 
-        class) -- delete and recreate to change type.'
+        class) -- delete and recreate to change type.
+
+
+        Body validation runs in-handler, AFTER the flag/existence/forbidden
+
+        checks, so a malformed body against a nonexistent or foreign-org backend
+
+        returns 404/403 rather than 400 -- preserving the deliberate
+
+        existence/authz-before-input-validation order that
+
+        tests/contract/test_management_mutations.py locks. A @validate_request
+
+        decorator would run before the handler and invert that order
+
+        (regression: audit-2026-09-14-wave2).'
       operationId: put_update_fleet_backend
       parameters:
       - in: path
@@ -3792,55 +3807,6 @@ paths:
         required: true
         schema:
           type: number
-      requestBody:
-        content:
-          application/json:
-            schema:
-              description: 'Request body for PUT /api/v1/fleet/backends/<id>. Every
-                field a partial.
-
-
-                ``type`` is intentionally absent -- it is immutable after creation.'
-              properties:
-                config:
-                  anyOf:
-                  - additionalProperties: true
-                    type: object
-                  - type: 'null'
-                  default: null
-                  title: Config
-                credentials:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Credentials
-                management_scope:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Management Scope
-                mode:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Mode
-                name:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Name
-                status:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Status
-              title: UpdateFleetBackendRequest
-              type: object
       responses:
         '200':
           content:
@@ -5838,7 +5804,21 @@ paths:
             serialises it.
       summary: Get a specific llama.cpp deployment.
     patch:
-      description: ''
+      description: '
+
+        The existence/running checks run BEFORE the body is parsed, so a missing
+
+        deployment returns 404 (and a running one 409) even when the body is
+
+        non-JSON/absent. This is a deliberate ordering contract
+
+        (tests/contract/test_management_mutations.py, regression 44cc384):
+
+        @validate_request is intentionally NOT used here because it would parse the
+
+        body ahead of the handler and 400 first. The body is parsed and its
+
+        security-sensitive fields validated in-handler after those checks.'
       operationId: patch_update_llamacpp_deployment
       parameters:
       - in: path
@@ -5846,71 +5826,6 @@ paths:
         required: true
         schema:
           type: number
-      requestBody:
-        content:
-          application/json:
-            schema:
-              description: Request body for PATCH /api/v1/llamacpp/deployments/<id>.
-                Every field a partial.
-              properties:
-                gpu_count:
-                  anyOf:
-                  - type: integer
-                  - type: 'null'
-                  default: null
-                  title: Gpu Count
-                k8s_namespace:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: K8S Namespace
-                model_filename:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Model Filename
-                model_name:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Model Name
-                model_url:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Model Url
-                n_ctx:
-                  anyOf:
-                  - type: integer
-                  - type: 'null'
-                  default: null
-                  title: N Ctx
-                n_gpu_layers:
-                  anyOf:
-                  - type: integer
-                  - type: 'null'
-                  default: null
-                  title: N Gpu Layers
-                node_affinity:
-                  anyOf:
-                  - additionalProperties: true
-                    type: object
-                  - type: 'null'
-                  default: null
-                  title: Node Affinity
-                node_selector:
-                  anyOf:
-                  - additionalProperties: true
-                    type: object
-                  - type: 'null'
-                  default: null
-                  title: Node Selector
-              title: UpdateLlamaCppDeploymentRequest
-              type: object
       responses:
         '200':
           content:
@@ -6975,7 +6890,20 @@ paths:
       summary: List models on a specific Ollama deployment (bounded page).
   /api/v1/ollama/deployments/{deployment_id}/models/pull:
     post:
-      description: ''
+      description: '
+
+        The deployment-existence check runs BEFORE body validation, so a missing
+
+        deployment returns 404 even when the body is also absent/invalid. This is
+        a
+
+        deliberate ordering contract (tests/contract/test_management_mutations.py,
+
+        regression 44cc384): @validate_request is intentionally NOT used here
+
+        because it would run ahead of the handler and 400 on the body first. The
+
+        body is parsed and type-checked in-handler after the 404 check instead.'
       operationId: post_pull_ollama_model
       parameters:
       - in: path
@@ -6983,26 +6911,6 @@ paths:
         required: true
         schema:
           type: number
-      requestBody:
-        content:
-          application/json:
-            schema:
-              description: Request body for POST /api/v1/ollama/deployments/<id>/models/pull.
-              properties:
-                model:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                  title: Model
-                tag:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: latest
-                  title: Tag
-              title: PullOllamaModelRequest
-              type: object
       responses:
         '200':
           content:
