@@ -8,15 +8,18 @@ for that org. Admin surface for ``shared.routing.aliases.AliasResolver``.
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
 from quart import Blueprint, g, jsonify, request
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
 from ...extensions import db
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
@@ -24,6 +27,138 @@ logger = logging.getLogger(__name__)
 model_aliases_bp = Blueprint("model_aliases", __name__, url_prefix="/api/v1/routing/aliases")
 
 _WRITABLE_FIELDS = ("source_model", "target_model", "target_provider", "enabled")
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models (audit-2026-09-14).
+#
+# Request models make every field Optional with the same default the handler's
+# own checks used, so quart-schema's automatic validation never fires where the
+# handler's own presence/value checks (and their exact 400 messages) are the
+# gate -- it only rejects a malformed body or a wrong-typed field. Response
+# models mirror EXACTLY the keys each handler returns: a field silently dropped
+# from a response is the client-breaking failure this guards against.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CreateAliasRequest:
+    """Request body for POST /api/v1/routing/aliases/."""
+
+    source_model: str | None = None
+    target_model: str | None = None
+    target_provider: str | None = None
+    organization_id: int | None = None
+    enabled: bool | None = None
+
+
+@dataclass(slots=True)
+class UpdateAliasRequest:
+    """Request body for PUT /api/v1/routing/aliases/<id>. Every field is a partial update."""
+
+    source_model: str | None = None
+    target_model: str | None = None
+    target_provider: str | None = None
+    enabled: bool | None = None
+
+
+@dataclass(slots=True)
+class AliasRow:
+    """A single model_aliases row -- mirrors ``_row_to_dict`` exactly."""
+
+    id: int
+    organization_id: int | None
+    source_model: str
+    target_model: str
+    target_provider: str | None
+    enabled: bool
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class AliasPagination:
+    """Pagination envelope merged into the list response (see ``_pagination.py``)."""
+
+    page: int
+    limit: int
+    total: int | None
+    pages: int | None
+
+
+@dataclass(slots=True)
+class AliasListMeta:
+    """``meta`` for the list response."""
+
+    total: int
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AliasTimestampMeta:
+    """``meta`` carrying only a timestamp (get/update responses)."""
+
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AliasActionMeta:
+    """``meta`` carrying an action verb plus timestamp (create/upsert/delete)."""
+
+    action: str
+    timestamp: str
+
+
+@dataclass(slots=True)
+class AliasDeletedRef:
+    """``data`` for a delete response -- the deleted row's id."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class AliasListResponse:
+    """Response body for GET /api/v1/routing/aliases/."""
+
+    status: str
+    data: list[AliasRow]
+    meta: AliasListMeta
+    pagination: AliasPagination
+
+
+@dataclass(slots=True)
+class AliasDetailResponse:
+    """Response body for GET /api/v1/routing/aliases/<id>."""
+
+    status: str
+    data: AliasRow
+    meta: AliasTimestampMeta
+
+
+@dataclass(slots=True)
+class AliasWriteResponse:
+    """Response body for a successful POST (create/upsert)."""
+
+    status: str
+    data: AliasRow
+    meta: AliasActionMeta
+
+
+@dataclass(slots=True)
+class AliasUpdateResponse:
+    """Response body for a successful PUT."""
+
+    status: str
+    data: AliasRow
+    meta: AliasTimestampMeta
+
+
+@dataclass(slots=True)
+class AliasDeleteResponse:
+    """Response body for a successful DELETE."""
+
+    status: str
+    data: AliasDeletedRef
+    meta: AliasActionMeta
 
 
 def _db() -> DB:
@@ -52,17 +187,36 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def _visible_query(user_role: str, user_org_id: int | None):
-    """Admin sees every alias; everyone else sees global + their own org's aliases."""
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). MUST be called from the
+    request context, not a DB worker thread: handlers compute the
+    admin-capability boolean here and capture it in the thread closures.
+
+    audit-2026-09-14-wave2: replaces the ``role == "admin"`` cross-org bypass
+    (write a global/other-org alias) with the admin-only ``model_alias:admin``
+    scope. Identical for a fresh admin token; an in-flight admin JWT gains it
+    on next login (<=1h TTL), API-key admins immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _visible_query(can_admin: bool, user_org_id: int | None):
+    """Admin (model_alias:admin) sees every alias; else global + their own org's."""
     table = _db().model_aliases
-    if user_role == "admin":
+    if can_admin:
         return table.id > 0
     return (table.organization_id == None) | (table.organization_id == user_org_id)  # noqa: E711
 
 
-def _can_write(user_role: str, user_org_id: int | None, organization_id: int | None) -> bool:
-    """Admin manages any alias; resource_manager only their own org's (never global)."""
-    if user_role == "admin":
+def _can_write(
+    can_admin: bool, user_role: str, user_org_id: int | None, organization_id: int | None
+) -> bool:
+    """Admin (model_alias:admin) manages any alias; resource_manager only own org's."""
+    if can_admin:
         return True
     return (
         user_role == "resource_manager"
@@ -73,46 +227,50 @@ def _can_write(user_role: str, user_org_id: int | None, organization_id: int | N
 
 @model_aliases_bp.route("/", methods=["GET"])
 @require_auth
+@validate_response(AliasListResponse, 200)
 async def list_aliases() -> tuple:
-    """List visible model_aliases rows."""
-    user_role = g.user.get("role")
+    """List visible model_aliases rows (bounded by ``?page=&limit=``)."""
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
     user_org_id = g.user.get("organization_id")
     source_model: str | None = request.args.get("source_model")
+    page = PageRequest.from_request()
 
     def _fetch():
         database = _db()
-        query = _visible_query(user_role, user_org_id)
+        query = _visible_query(can_admin, user_org_id)
         if source_model:
             query &= database.model_aliases.source_model == source_model
-        return database(query).select(orderby=database.model_aliases.id)
+        scoped = database(query)
+        rows = scoped.select(limitby=page.limitby, orderby=database.model_aliases.id)
+        return rows, scoped.count()
 
-    rows = await asyncio.to_thread(_fetch)
+    rows, total = await asyncio.to_thread(_fetch)
     entries = [_row_to_dict(r) for r in rows]
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": entries,
-                "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": entries,
+            "meta": {"total": len(entries), "timestamp": datetime.utcnow().isoformat() + "Z"},
+            **page.meta(total),
+        },
         200,
     )
 
 
 @model_aliases_bp.route("/<int:alias_id>", methods=["GET"])
 @require_auth
+@validate_response(AliasDetailResponse, 200)
 async def get_alias(alias_id: int) -> tuple:
     """Get a single model_aliases row by ID (org-visibility scoped)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
     user_org_id = g.user.get("organization_id")
 
     database = _db()
     row = await asyncio.to_thread(
         lambda: (
             database(
-                _visible_query(user_role, user_org_id) & (database.model_aliases.id == alias_id)
+                _visible_query(can_admin, user_org_id) & (database.model_aliases.id == alias_id)
             )
             .select()
             .first()
@@ -122,13 +280,11 @@ async def get_alias(alias_id: int) -> tuple:
         return jsonify({"status": "error", "error": "Alias not found"}), 404
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -136,20 +292,20 @@ async def get_alias(alias_id: int) -> tuple:
 @model_aliases_bp.route("/", methods=["POST"])
 @require_auth
 @require_scope(Permission.MODEL_ALIAS_WRITE)
-async def create_alias() -> tuple:
+@validate_response(AliasWriteResponse, 200)
+@validate_response(AliasWriteResponse, 201)
+@validate_request(CreateAliasRequest)
+async def create_alias(data: CreateAliasRequest) -> tuple:
     """Create a model_aliases row.
 
     Upserts by (organization_id, source_model) -- matching the table's
     unique constraint.
     """
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    for required in ("source_model", "target_model"):
-        if required not in data:
-            return jsonify({"status": "error", "error": f"{required} is required"}), 400
-    if data["source_model"] == data["target_model"]:
+    if data.source_model is None:
+        return jsonify({"status": "error", "error": "source_model is required"}), 400
+    if data.target_model is None:
+        return jsonify({"status": "error", "error": "target_model is required"}), 400
+    if data.source_model == data.target_model:
         return (
             jsonify({"status": "error", "error": "source_model and target_model must differ"}),
             400,
@@ -157,8 +313,9 @@ async def create_alias() -> tuple:
 
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
-    organization_id: int | None = data.get("organization_id")
-    if not _can_write(user_role, user_org_id, organization_id):
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
+    organization_id: int | None = data.organization_id
+    if not _can_write(can_admin, user_role, user_org_id, organization_id):
         return jsonify({"status": "error", "error": "Access denied for this organization_id"}), 403
 
     def _upsert():
@@ -166,15 +323,15 @@ async def create_alias() -> tuple:
         existing = (
             database(
                 (database.model_aliases.organization_id == organization_id)
-                & (database.model_aliases.source_model == data["source_model"])
+                & (database.model_aliases.source_model == data.source_model)
             )
             .select()
             .first()
         )
         fields = {
-            "target_model": data["target_model"],
-            "target_provider": data.get("target_provider"),
-            "enabled": data.get("enabled", True),
+            "target_model": data.target_model,
+            "target_provider": data.target_provider,
+            "enabled": data.enabled if data.enabled is not None else True,
         }
         if existing:
             database(database.model_aliases.id == existing.id).update(**fields)
@@ -183,7 +340,7 @@ async def create_alias() -> tuple:
 
         new_id = database.model_aliases.insert(
             organization_id=organization_id,
-            source_model=data["source_model"],
+            source_model=data.source_model,
             **fields,
             created_at=datetime.utcnow(),
         )
@@ -193,13 +350,11 @@ async def create_alias() -> tuple:
     action, row = await asyncio.to_thread(_upsert)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200 if action == "updated" else 201,
     )
 
@@ -207,22 +362,23 @@ async def create_alias() -> tuple:
 @model_aliases_bp.route("/<int:alias_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.MODEL_ALIAS_WRITE)
-async def update_alias(alias_id: int) -> tuple:
+@validate_response(AliasUpdateResponse, 200)
+@validate_request(UpdateAliasRequest)
+async def update_alias(alias_id: int, data: UpdateAliasRequest) -> tuple:
     """Update an existing model_aliases row by ID."""
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
-    update_fields: dict[str, Any] = {f: data[f] for f in _WRITABLE_FIELDS if f in data}
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
+    update_fields: dict[str, Any] = {
+        f: getattr(data, f) for f in _WRITABLE_FIELDS if getattr(data, f) is not None
+    }
 
     def _update():
         database = _db()
         row = database(database.model_aliases.id == alias_id).select().first()
         if not row:
             return "not_found", None
-        if not _can_write(user_role, user_org_id, row.organization_id):
+        if not _can_write(can_admin, user_role, user_org_id, row.organization_id):
             return "forbidden", None
         if not update_fields:
             return "no_fields", None
@@ -241,13 +397,11 @@ async def update_alias(alias_id: int) -> tuple:
         return jsonify({"status": "error", "error": "No valid fields to update"}), 400
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -255,17 +409,19 @@ async def update_alias(alias_id: int) -> tuple:
 @model_aliases_bp.route("/<int:alias_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.MODEL_ALIAS_WRITE)
+@validate_response(AliasDeleteResponse, 200)
 async def delete_alias(alias_id: int) -> tuple:
     """Delete a model_aliases row by ID."""
     user_role = g.user.get("role")
     user_org_id = g.user.get("organization_id")
+    can_admin = _has_scope(Permission.MODEL_ALIAS_ADMIN)
 
     def _delete():
         database = _db()
         row = database(database.model_aliases.id == alias_id).select().first()
         if not row:
             return "not_found"
-        if not _can_write(user_role, user_org_id, row.organization_id):
+        if not _can_write(can_admin, user_role, user_org_id, row.organization_id):
             return "forbidden"
         database(database.model_aliases.id == alias_id).delete()
         database.commit()
@@ -278,12 +434,10 @@ async def delete_alias(alias_id: int) -> tuple:
         return jsonify({"status": "error", "error": "Access denied"}), 403
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"id": alias_id},
-                "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"id": alias_id},
+            "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )

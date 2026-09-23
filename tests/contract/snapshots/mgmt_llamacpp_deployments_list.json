@@ -1,6 +1,12 @@
 {
   "body": {
-    "deployments": []
+    "deployments": [],
+    "pagination": {
+      "limit": 100,
+      "page": 1,
+      "pages": 1,
+      "total": 0
+    }
   },
   "status": 200
 }

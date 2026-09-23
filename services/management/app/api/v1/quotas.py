@@ -8,12 +8,13 @@ from datetime import date
 from penguin_dal.db import DB
 from quart import g, jsonify, request
 from quart.typing import ResponseReturnValue
-from quart_schema import validate_request
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 from .keys import privileged_fields_error, privileged_key_fields_denied
 
@@ -31,6 +32,20 @@ def _db() -> DB:
     return db
 
 
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``). audit-2026-09-14-wave2:
+    replaces the ``role == "admin"`` cross-org "any entity's quota" bypasses
+    with the admin-only ``quota:admin`` scope. Identical for a fresh admin
+    token; an in-flight admin JWT gains it on next login (<=1h TTL), API-key
+    admins immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
 # Bounds for the virtual-key quota columns. These values previously went
 # from the raw request JSON straight into the DB with no type or range
 # check at all, so a string, a negative number, NaN, or an absurd magnitude
@@ -39,6 +54,79 @@ def _db() -> DB:
 # to reject nonsense, not to express product policy.
 MAX_BUDGET_USD = 1_000_000.0
 MAX_RATE_LIMIT = 10_000_000
+
+# Token-quota columns (org/user) previously took raw request JSON straight into
+# the DB with no type or range check -- a string, negative, or absurd magnitude
+# was persisted verbatim, exactly the flaw @validate_request + these bounds now
+# close for the key quotas. Ceiling is deliberately generous: it rejects
+# nonsense, not product policy.
+MAX_TOKEN_QUOTA = 1_000_000_000_000
+
+
+@dataclass(slots=True)
+class SetUserQuotaRequest:
+    """Request body for PUT /api/v1/quotas/user/<user_id>.
+
+    Both fields are optional partial updates; ``None`` means "leave this
+    column alone", matching the ``"field" in data`` presence test the handler
+    used before it was given a schema.
+    """
+
+    token_quota_daily: int | None = None
+    token_quota_monthly: int | None = None
+
+
+@dataclass(slots=True)
+class SetOrgQuotaRequest:
+    """Request body for PUT /api/v1/quotas/org/<org_id>. Optional partial update."""
+
+    token_quota_daily: int | None = None
+    token_quota_monthly: int | None = None
+
+
+@dataclass(slots=True)
+class SetUserQuotaResponse:
+    """Response body for a successful PUT /api/v1/quotas/user/<user_id>."""
+
+    user_id: int
+    username: str
+    message: str
+
+
+@dataclass(slots=True)
+class SetOrgQuotaResponse:
+    """Response body for a successful PUT /api/v1/quotas/org/<org_id>."""
+
+    organization_id: int
+    organization_name: str
+    message: str
+
+
+@dataclass(slots=True)
+class SetKeyQuotaResponse:
+    """Response body for a successful PUT /api/v1/quotas/key/<key_id>."""
+
+    key_id: int
+    key_name: str
+    message: str
+
+
+def _validate_token_quota_bounds(daily: int | None, monthly: int | None) -> str | None:
+    """Return an error message for the first out-of-range token quota, else ``None``.
+
+    Type coercion is handled by ``@validate_request``; this adds the finiteness
+    and range checks a type annotation cannot express and rejects a boolean
+    smuggled in where an integer is expected (``True``/``False`` are ``int``
+    subclasses in Python).
+    """
+    for name, value in (("token_quota_daily", daily), ("token_quota_monthly", monthly)):
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return f"{name} must be an integer, not a boolean"
+        if value < 0 or value > MAX_TOKEN_QUOTA:
+            return f"{name} must be between 0 and {MAX_TOKEN_QUOTA}"
+    return None
 
 
 @dataclass(slots=True)
@@ -91,24 +179,36 @@ def _validate_key_quota_bounds(data: SetKeyQuotaRequest) -> str | None:
 @require_scope(Permission.QUOTA_LIST)
 async def list_quotas():
     """List all quota configurations."""
-    user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
+    page = PageRequest.from_request()
+    # audit-2026-09-14-wave2: admin "see every org's quotas" now keys on the
+    # admin-only quota:admin scope, not the role name.
+    can_admin = _has_scope(Permission.QUOTA_ADMIN)
 
     def _fetch():
-        if user_role == "admin":
-            orgs = db(db.organizations.id > 0).select()
+        # Each entity select is bounded and stably ordered (audit-2026-09-14
+        # DoS finding): the admin branches select every org/user/key otherwise.
+        limitby = page.limitby
+        if can_admin:
+            orgs = db(db.organizations.id > 0).select(limitby=limitby, orderby=db.organizations.id)
         else:
-            orgs = db(db.organizations.id == org_id).select()
+            orgs = db(db.organizations.id == org_id).select(
+                limitby=limitby, orderby=db.organizations.id
+            )
 
-        if user_role == "admin":
-            users = db(db.users.id > 0).select()
+        if can_admin:
+            users = db(db.users.id > 0).select(limitby=limitby, orderby=db.users.id)
         else:
-            users = db(db.users.organization_id == org_id).select()
+            users = db(db.users.organization_id == org_id).select(
+                limitby=limitby, orderby=db.users.id
+            )
 
-        if user_role == "admin":
-            keys = db(db.virtual_keys.id > 0).select()
+        if can_admin:
+            keys = db(db.virtual_keys.id > 0).select(limitby=limitby, orderby=db.virtual_keys.id)
         else:
-            keys = db(db.virtual_keys.organization_id == org_id).select()
+            keys = db(db.virtual_keys.organization_id == org_id).select(
+                limitby=limitby, orderby=db.virtual_keys.id
+            )
 
         return orgs, users, keys
 
@@ -160,101 +260,103 @@ async def list_quotas():
             }
         )
 
-    return jsonify({"quotas": quotas, "total": len(quotas)})
+    return jsonify({"quotas": quotas, "total": len(quotas), **page.meta()})
 
 
 @api_v1_bp.route("/quotas/user/<int:user_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.QUOTA_UPDATE)
-async def set_user_quota(user_id):
+@validate_response(SetUserQuotaResponse, 200)
+@validate_request(SetUserQuotaRequest)
+async def set_user_quota(user_id: int, data: SetUserQuotaRequest) -> ResponseReturnValue:
     """Set user quota."""
-    data = await request.get_json()
-
-    if not data:
-        return jsonify({"error": "Request body required"}), 400
-
     user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
 
-    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
+    update_fields: dict[str, int] = {
+        name: value
+        for name in ("token_quota_daily", "token_quota_monthly")
+        if (value := getattr(data, name)) is not None
+    }
+    if not update_fields:
+        return jsonify({"error": "Request body required"}), 400
+
+    database = _db()
+    user = await asyncio.to_thread(lambda: database(database.users.id == user_id).select().first())
 
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Permission check
-    if user_role == "resource_manager" and user.organization_id != org_id:
+    # Permission check -- audit-2026-09-14-wave2: the admin "any org's user
+    # quota" cross-org bypass now keys on the admin-only quota:admin scope, not
+    # the role name. The Vuln C role-hierarchy guard below is NOT a cross-org
+    # bypass (it stops a non-admin editing an admin USER's quota) and stays.
+    if not _has_scope(Permission.QUOTA_ADMIN) and user.organization_id != org_id:
         return jsonify({"error": "Access denied"}), 403
     # Vuln C fix: prevent non-admin from modifying admin quota
     if user_role != "admin" and user.role == "admin":
         return jsonify({"error": "Cannot modify admin quota"}), 403
 
-    update_fields = {}
+    bounds_error = _validate_token_quota_bounds(data.token_quota_daily, data.token_quota_monthly)
+    if bounds_error:
+        return jsonify({"error": bounds_error}), 400
 
-    if "token_quota_daily" in data:
-        update_fields["token_quota_daily"] = data["token_quota_daily"]
+    def _update() -> None:
+        database(database.users.id == user_id).update(**update_fields)
+        database.commit()
 
-    if "token_quota_monthly" in data:
-        update_fields["token_quota_monthly"] = data["token_quota_monthly"]
+    await asyncio.to_thread(_update)
 
-    if update_fields:
-
-        def _update():
-            db(db.users.id == user_id).update(**update_fields)
-            db.commit()
-
-        await asyncio.to_thread(_update)
-
-    return jsonify(
-        {
-            "user_id": user_id,
-            "username": user.username,
-            "message": "User quota updated successfully",
-        }
-    )
+    return {
+        "user_id": user_id,
+        "username": user.username,
+        "message": "User quota updated successfully",
+    }
 
 
 @api_v1_bp.route("/quotas/org/<int:org_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.QUOTA_ORG_UPDATE)
-async def set_organization_quota(org_id):
+@validate_response(SetOrgQuotaResponse, 200)
+@validate_request(SetOrgQuotaRequest)
+async def set_organization_quota(org_id: int, data: SetOrgQuotaRequest) -> ResponseReturnValue:
     """Set organization quota (admin only)."""
-    data = await request.get_json()
-
-    if not data:
+    update_fields: dict[str, int] = {
+        name: value
+        for name in ("token_quota_daily", "token_quota_monthly")
+        if (value := getattr(data, name)) is not None
+    }
+    if not update_fields:
         return jsonify({"error": "Request body required"}), 400
 
-    org = await asyncio.to_thread(lambda: db(db.organizations.id == org_id).select().first())
+    database = _db()
+    org = await asyncio.to_thread(
+        lambda: database(database.organizations.id == org_id).select().first()
+    )
 
     if not org:
         return jsonify({"error": "Organization not found"}), 404
 
-    update_fields = {}
+    bounds_error = _validate_token_quota_bounds(data.token_quota_daily, data.token_quota_monthly)
+    if bounds_error:
+        return jsonify({"error": bounds_error}), 400
 
-    if "token_quota_daily" in data:
-        update_fields["token_quota_daily"] = data["token_quota_daily"]
+    def _update() -> None:
+        database(database.organizations.id == org_id).update(**update_fields)
+        database.commit()
 
-    if "token_quota_monthly" in data:
-        update_fields["token_quota_monthly"] = data["token_quota_monthly"]
+    await asyncio.to_thread(_update)
 
-    if update_fields:
-
-        def _update():
-            db(db.organizations.id == org_id).update(**update_fields)
-            db.commit()
-
-        await asyncio.to_thread(_update)
-
-    return jsonify(
-        {
-            "organization_id": org_id,
-            "organization_name": org.name,
-            "message": "Organization quota updated successfully",
-        }
-    )
+    return {
+        "organization_id": org_id,
+        "organization_name": org.name,
+        "message": "Organization quota updated successfully",
+    }
 
 
 @api_v1_bp.route("/quotas/key/<int:key_id>", methods=["PUT"])
 @require_auth
+@validate_response(SetKeyQuotaResponse, 200)
 @validate_request(SetKeyQuotaRequest)
 async def set_key_quota(key_id: int, data: SetKeyQuotaRequest) -> ResponseReturnValue:
     """Set virtual key quota.
@@ -287,7 +389,9 @@ async def set_key_quota(key_id: int, data: SetKeyQuotaRequest) -> ResponseReturn
         return jsonify({"error": "Key not found"}), 404
 
     # Ownership check -- proves the caller may touch this key at all.
-    if user_role not in ["admin"]:
+    # audit-2026-09-14-wave2: cross-org "touch any key" bypass keys on the
+    # admin-only quota:admin scope, not the role name.
+    if not _has_scope(Permission.QUOTA_ADMIN):
         if user_role == "resource_manager" and key.organization_id != org_id:
             return jsonify({"error": "Access denied"}), 403
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
@@ -309,9 +413,7 @@ async def set_key_quota(key_id: int, data: SetKeyQuotaRequest) -> ResponseReturn
 
     await asyncio.to_thread(_update)
 
-    return jsonify(
-        {"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully."}
-    )
+    return {"key_id": key_id, "key_name": key.name, "message": "Key quota updated successfully."}
 
 
 @api_v1_bp.route("/quotas/status/<int:entity_id>", methods=["GET"])
@@ -348,8 +450,9 @@ async def get_quota_status(entity_id):
         if not key:
             return jsonify({"error": "Key not found"}), 404
 
-        # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter
-        if user_role == "admin":
+        # Permission check — Vuln B fix: always scope to caller's org, never skip for reporter.
+        # audit-2026-09-14-wave2: the admin "any key" bypass keys on quota:admin.
+        if _has_scope(Permission.QUOTA_ADMIN):
             # Admin can access any key
             pass
         elif user_role == "resource_manager":
@@ -412,8 +515,8 @@ async def get_quota_status(entity_id):
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        # Permission check
-        if user_role not in ["admin"]:
+        # Permission check -- audit-2026-09-14-wave2: admin "any user" bypass on quota:admin.
+        if not _has_scope(Permission.QUOTA_ADMIN):
             if user_role == "resource_manager" and user.organization_id != org_id:
                 return jsonify({"error": "Access denied"}), 403
             elif user_role not in ["resource_manager"] and user.id != user_id:
@@ -469,8 +572,8 @@ async def get_quota_status(entity_id):
         if not org:
             return jsonify({"error": "Organization not found"}), 404
 
-        # Permission check
-        if user_role not in ["admin"] and entity_id != org_id:
+        # Permission check -- audit-2026-09-14-wave2: admin "any org" bypass on quota:admin.
+        if not _has_scope(Permission.QUOTA_ADMIN) and entity_id != org_id:
             return jsonify({"error": "Access denied"}), 403
 
         daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)

@@ -12,11 +12,13 @@ natural-language routing UX (spec §7.6) -- there is no separate
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
-from quart import Blueprint, g, jsonify, request
+from quart import Blueprint, g, jsonify
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
@@ -26,6 +28,110 @@ from .auth import require_auth, require_scope
 logger = logging.getLogger(__name__)
 
 routing_policies_bp = Blueprint("routing_policies", __name__, url_prefix="/api/v1/routing/policies")
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models (audit-2026-09-14). Request fields Optional
+# so the handler's own enum validation stays authoritative; response models
+# mirror EXACTLY the keys each handler returns.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class UpsertPolicyRequest:
+    """Request body for PUT /api/v1/routing/policies/<org>. Every field is a partial update."""
+
+    mode: str | None = None
+    escalation_threshold: int | None = None
+    escalation_target: str | None = None
+    classifier_prompt: str | None = None
+    de_escalation: str | None = None
+    idle_reset_minutes: int | None = None
+    sensitivity_routing: str | None = None
+    budget_pressure_enabled: bool | None = None
+    provider_failover: str | None = None
+
+
+@dataclass(slots=True)
+class PolicyRow:
+    """A routing_policies row (or engine defaults) -- mirrors ``_row_to_dict`` exactly.
+
+    ``id`` is nullable because the get-defaults path returns a synthetic row
+    with no persisted id yet.
+    """
+
+    id: int | None
+    organization_id: int
+    mode: str
+    escalation_threshold: Any
+    escalation_target: Any
+    classifier_prompt: str | None
+    de_escalation: str
+    idle_reset_minutes: Any
+    sensitivity_routing: str
+    budget_pressure_enabled: Any
+    provider_failover: str
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass(slots=True)
+class PolicyGetMeta:
+    """``meta`` for the get response -- whether the row was defaulted, plus timestamp."""
+
+    defaulted: bool
+    timestamp: str
+
+
+@dataclass(slots=True)
+class PolicyActionMeta:
+    """``meta`` for the upsert response -- action verb plus timestamp."""
+
+    action: str
+    timestamp: str
+
+
+@dataclass(slots=True)
+class PolicyDeleteMeta:
+    """``meta`` for the delete response -- action verb plus timestamp."""
+
+    action: str
+    timestamp: str
+
+
+@dataclass(slots=True)
+class PolicyDeletedRef:
+    """``data`` for a delete response -- the org whose policy was reset."""
+
+    organization_id: int
+
+
+@dataclass(slots=True)
+class PolicyGetResponse:
+    """Response body for GET /api/v1/routing/policies/<org>."""
+
+    status: str
+    data: PolicyRow
+    meta: PolicyGetMeta
+
+
+@dataclass(slots=True)
+class PolicyWriteResponse:
+    """Response body for a successful PUT (create/update)."""
+
+    status: str
+    data: PolicyRow
+    meta: PolicyActionMeta
+
+
+@dataclass(slots=True)
+class PolicyDeleteResponse:
+    """Response body for a successful DELETE."""
+
+    status: str
+    data: PolicyDeletedRef
+    meta: PolicyDeleteMeta
+
 
 _VALID_MODES = frozenset({"local_only", "local_first", "commercial_only", "cost", "latency"})
 _VALID_DE_ESCALATION = frozenset({"never", "idle_reset"})  # "task_detect" deferred, spec §7.3/§14.1
@@ -93,9 +199,25 @@ def _db() -> DB:
     return db
 
 
-def _can_access(user_role: str, user_org_id: int | None, target_org_id: int) -> bool:
-    """Admin manages any org's policy; everyone else only their own."""
-    return user_role == "admin" or target_org_id == user_org_id
+def _has_scope(perm: Permission) -> bool:
+    """True when the caller's OIDC ``scope`` claim carries ``perm``.
+
+    Authoritative ``scope`` claim only, never the ``role`` claim (house
+    scope-only policy, see ``auth.require_scope``).
+
+    audit-2026-09-14-wave2: the ``role == "admin"`` cross-org bypass in
+    ``_can_access`` (read/write any org's policy) is now the admin-only
+    ``routing_policy:admin`` scope. Identical for a fresh admin token; an
+    in-flight admin JWT gains it on next login (<=1h TTL), API-key admins
+    immediately.
+    """
+    user = getattr(g, "user", None) or {}
+    return perm.value in set(user.get("scope") or [])
+
+
+def _can_access(can_admin: bool, user_org_id: int | None, target_org_id: int) -> bool:
+    """Admin (routing_policy:admin) manages any org's policy; everyone else only their own."""
+    return can_admin or target_org_id == user_org_id
 
 
 async def _invalidate_policy_cache(org_id: int) -> None:
@@ -112,11 +234,12 @@ async def _invalidate_policy_cache(org_id: int) -> None:
 
 @routing_policies_bp.route("/<int:organization_id>", methods=["GET"])
 @require_auth
+@validate_response(PolicyGetResponse, 200)
 async def get_policy(organization_id: int) -> tuple:
     """Get an org's routing policy, or engine defaults if no row exists yet."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_POLICY_ADMIN)
     user_org_id = g.user.get("organization_id")
-    if not _can_access(user_role, user_org_id, organization_id):
+    if not _can_access(can_admin, user_org_id, organization_id):
         return jsonify({"status": "error", "error": "Access denied"}), 403
 
     def _fetch():
@@ -131,36 +254,36 @@ async def get_policy(organization_id: int) -> tuple:
 
         defaults = RoutingPolicyConfig()
         return (
-            jsonify(
-                {
-                    "status": "success",
-                    "data": {
-                        "organization_id": organization_id,
-                        "id": None,
-                        "mode": defaults.mode,
-                        "escalation_threshold": defaults.escalation_threshold,
-                        "escalation_target": defaults.escalation_target,
-                        "classifier_prompt": defaults.classifier_prompt,
-                        "de_escalation": defaults.de_escalation,
-                        "idle_reset_minutes": defaults.idle_reset_minutes,
-                        "sensitivity_routing": defaults.sensitivity_routing,
-                        "budget_pressure_enabled": defaults.budget_pressure_enabled,
-                        "provider_failover": defaults.provider_failover,
-                    },
-                    "meta": {"defaulted": True, "timestamp": datetime.utcnow().isoformat() + "Z"},
-                }
-            ),
+            {
+                "status": "success",
+                "data": {
+                    "organization_id": organization_id,
+                    "id": None,
+                    "mode": defaults.mode,
+                    "escalation_threshold": defaults.escalation_threshold,
+                    "escalation_target": defaults.escalation_target,
+                    "classifier_prompt": defaults.classifier_prompt,
+                    "de_escalation": defaults.de_escalation,
+                    "idle_reset_minutes": defaults.idle_reset_minutes,
+                    "sensitivity_routing": defaults.sensitivity_routing,
+                    "budget_pressure_enabled": defaults.budget_pressure_enabled,
+                    "provider_failover": defaults.provider_failover,
+                    # created_at/updated_at have no persisted row yet; declared
+                    # here so the response field set matches the stored-row path.
+                    "created_at": None,
+                    "updated_at": None,
+                },
+                "meta": {"defaulted": True, "timestamp": datetime.utcnow().isoformat() + "Z"},
+            },
             200,
         )
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"defaulted": False, "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"defaulted": False, "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )
 
@@ -168,24 +291,25 @@ async def get_policy(organization_id: int) -> tuple:
 @routing_policies_bp.route("/<int:organization_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.ROUTING_POLICY_WRITE)
-async def upsert_policy(organization_id: int) -> tuple:
+@validate_response(PolicyWriteResponse, 200)
+@validate_response(PolicyWriteResponse, 201)
+@validate_request(UpsertPolicyRequest)
+async def upsert_policy(organization_id: int, data: UpsertPolicyRequest) -> tuple:
     """Create or update an org's routing policy (upsert on organization_id)."""
-    user_role = g.user.get("role")
+    can_admin = _has_scope(Permission.ROUTING_POLICY_ADMIN)
     user_org_id = g.user.get("organization_id")
-    if not _can_access(user_role, user_org_id, organization_id):
+    if not _can_access(can_admin, user_org_id, organization_id):
         return jsonify({"status": "error", "error": "Access denied"}), 403
 
-    data: dict[str, Any] | None = await request.get_json()
-    if not data:
-        return jsonify({"status": "error", "error": "Request body required"}), 400
-
-    error = _validate_fields(data)
-    if error:
-        return jsonify({"status": "error", "error": error}), 400
-
-    update_fields: dict[str, Any] = {f: data[f] for f in _WRITABLE_FIELDS if f in data}
+    update_fields: dict[str, Any] = {
+        f: getattr(data, f) for f in _WRITABLE_FIELDS if getattr(data, f) is not None
+    }
     if not update_fields:
         return jsonify({"status": "error", "error": "No valid fields to update"}), 400
+
+    error = _validate_fields(update_fields)
+    if error:
+        return jsonify({"status": "error", "error": error}), 400
 
     def _upsert():
         existing = db(db.routing_policies.organization_id == organization_id).select().first()
@@ -209,13 +333,11 @@ async def upsert_policy(organization_id: int) -> tuple:
     await _invalidate_policy_cache(organization_id)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _row_to_dict(row),
-                "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": _row_to_dict(row),
+            "meta": {"action": action, "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200 if action == "updated" else 201,
     )
 
@@ -223,6 +345,7 @@ async def upsert_policy(organization_id: int) -> tuple:
 @routing_policies_bp.route("/<int:organization_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.ROUTING_POLICY_DELETE)
+@validate_response(PolicyDeleteResponse, 200)
 async def delete_policy(organization_id: int) -> tuple:
     """Delete an org's routing policy row (admin only) -- resets it to engine defaults."""
 
@@ -241,12 +364,10 @@ async def delete_policy(organization_id: int) -> tuple:
     await _invalidate_policy_cache(organization_id)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {"organization_id": organization_id},
-                "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
+        {
+            "status": "success",
+            "data": {"organization_id": organization_id},
+            "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
+        },
         200,
     )

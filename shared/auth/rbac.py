@@ -121,6 +121,27 @@ class Permission(Enum):
     MODEL_ACCESS_POLICY_WRITE = "model_access_policy:write"  # admin + resource_manager
     MODEL_ACCESS_POLICY_DELETE = "model_access_policy:delete"  # admin only
 
+    # ------------------------------------------------------------------
+    # Admin-exclusive cross-org "bypass" scopes (audit-2026-09-14 wave-2
+    # authz reconciliation). Each expresses the "an admin may act on / see
+    # ANY org's resource" privilege that used to be a bare `role == "admin"`
+    # check inside a route handler. They are admin-ONLY (added only to
+    # Role.ADMIN below) precisely because the pre-existing *_WRITE scope for
+    # each resource is ALSO held by resource_manager -- gating a cross-org
+    # bypass on that shared scope would let a resource_manager escalate
+    # across tenants (an IDOR). See services/management/app/api/v1/{keys,
+    # quotas,model_aliases,routing_rules,routing_policies,
+    # model_access_policies,cache_configs,routing_decisions}.py.
+    # ------------------------------------------------------------------
+    APIKEY_ADMIN = "apikey:admin"
+    QUOTA_ADMIN = "quota:admin"
+    MODEL_ALIAS_ADMIN = "model_alias:admin"
+    ROUTING_RULE_ADMIN = "routing_rule:admin"
+    ROUTING_POLICY_ADMIN = "routing_policy:admin"
+    MODEL_ACCESS_POLICY_ADMIN = "model_access_policy:admin"
+    CACHE_CONFIG_ADMIN = "cache_config:admin"
+    ROUTING_DECISION_READ = "routing_decision:read"
+
 
 @dataclass
 class UserContext:
@@ -196,6 +217,16 @@ ROLE_PERMISSIONS = {
         Permission.SECURITY_POLICY_ADMIN,
         Permission.MODEL_ACCESS_POLICY_WRITE,
         Permission.MODEL_ACCESS_POLICY_DELETE,
+        # Admin-exclusive cross-org bypass scopes (audit-2026-09-14 wave-2) --
+        # held by admin and NO other role, by design (see Permission enum note).
+        Permission.APIKEY_ADMIN,
+        Permission.QUOTA_ADMIN,
+        Permission.MODEL_ALIAS_ADMIN,
+        Permission.ROUTING_RULE_ADMIN,
+        Permission.ROUTING_POLICY_ADMIN,
+        Permission.MODEL_ACCESS_POLICY_ADMIN,
+        Permission.CACHE_CONFIG_ADMIN,
+        Permission.ROUTING_DECISION_READ,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,

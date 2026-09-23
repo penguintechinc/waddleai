@@ -10,8 +10,10 @@ enter the AIProxy request path (spec §3.3).
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from typing import Any
 
-from quart import jsonify
+from quart_schema import validate_response
 
 from shared.auth.rbac import Permission
 
@@ -28,9 +30,40 @@ from .auth import require_auth, require_scope
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# quart-schema response models (audit-2026-09-14 wave2). `capabilities`,
+# `last_reconcile`, and the `applied`/`skipped` lists are genuinely variable
+# CRD-shaped payloads, so they stay `Any` rather than a forced fixed schema
+# (same reasoning as integrations.py's `auth_config`). /reconcile takes no
+# request body, so it carries no @validate_request.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CiliumStatusResponse:
+    """Response body for GET /cilium/status."""
+
+    capabilities: Any
+    flag_enabled: bool
+    last_reconcile: Any
+    applied: Any
+    degraded: bool
+
+
+@dataclass(slots=True)
+class CiliumReconcileResponse:
+    """Response body for POST /cilium/reconcile."""
+
+    applied: Any
+    skipped: Any
+    reason: str | None
+    degraded: bool
+
+
 @api_v1_bp.route("/cilium/status", methods=["GET"])
 @require_auth
 @require_scope(Permission.CILIUM_ADMIN)
+@validate_response(CiliumStatusResponse, 200)
 async def cilium_status():
     """Report Cilium CRD capabilities + the most recent reconcile outcome (admin only).
 
@@ -53,33 +86,30 @@ async def cilium_status():
         else None
     )
 
-    return jsonify(
-        {
-            "capabilities": caps,
-            "flag_enabled": flag_enabled,
-            "last_reconcile": last_reconcile,
-            "applied": last.applied if last is not None else [],
-            "degraded": last.degraded if last is not None else False,
-        }
-    )
+    return {
+        "capabilities": caps,
+        "flag_enabled": flag_enabled,
+        "last_reconcile": last_reconcile,
+        "applied": last.applied if last is not None else [],
+        "degraded": last.degraded if last is not None else False,
+    }
 
 
 @api_v1_bp.route("/cilium/reconcile", methods=["POST"])
 @require_auth
 @require_scope(Permission.CILIUM_ADMIN)
+@validate_response(CiliumReconcileResponse, 202)
 async def cilium_reconcile():
     """Trigger an on-demand reconcile and return the resulting status (admin only)."""
     reconciler = CiliumPolicyReconciler(db)
     status = await asyncio.to_thread(reconciler.reconcile)
 
     return (
-        jsonify(
-            {
-                "applied": status.applied,
-                "skipped": status.skipped,
-                "reason": status.reason,
-                "degraded": status.degraded,
-            }
-        ),
+        {
+            "applied": status.applied,
+            "skipped": status.skipped,
+            "reason": status.reason,
+            "degraded": status.degraded,
+        },
         202,
     )

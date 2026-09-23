@@ -1,32 +1,216 @@
 """WaddleAI Management API v1 - Ollama Deployment Management Endpoints."""
 
+from __future__ import annotations
+
 import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import yaml
 from quart import Response, current_app, jsonify, request
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
+
+_DEFAULT_GPU_CONFIG: dict[str, Any] = {"count": 0, "driver": "nvidia"}
+_DEFAULT_RESOURCE_LIMITS: dict[str, Any] = {"cpu": "4", "memory": "8G"}
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models (audit-2026-09-14-wave2).
+#
+# Request models make every field Optional with the handler's own defaults so
+# quart-schema never pre-empts the handler's presence checks and their exact
+# error messages. Response models list exactly the fields each handler returns
+# -- a field omitted here is silently dropped from the response, the
+# client-breaking regression these models exist to prevent.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class PageMeta:
+    """Pagination metadata block emitted by ``PageRequest.meta``."""
+
+    page: int
+    limit: int
+    total: int | None
+    pages: int | None
+
+
+@dataclass(slots=True)
+class OllamaDeploymentSummary:
+    """One row of the deployment-list response."""
+
+    id: int
+    name: str
+    endpoint_url: str | None
+    deployment_type: str | None
+    status: str | None
+    health_status: str | None
+    model_count: int
+    auto_start: bool | None
+    last_health_check: str | None
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class OllamaDeploymentListResponse:
+    """Response body for GET /api/v1/ollama/deployments."""
+
+    deployments: list[OllamaDeploymentSummary]
+    total: int
+    pagination: PageMeta
+
+
+@dataclass(slots=True)
+class OllamaModelSummary:
+    """A model row embedded in the single-deployment detail response."""
+
+    id: int
+    model_name: str
+    model_tag: str | None
+    status: str | None
+    size_bytes: int | None
+
+
+@dataclass(slots=True)
+class OllamaDeploymentDetail:
+    """Response body for GET /api/v1/ollama/deployments/<id>."""
+
+    id: int
+    name: str
+    endpoint_url: str | None
+    deployment_type: str | None
+    docker_compose_config: dict[str, Any] | None
+    gpu_config: dict[str, Any] | None
+    resource_limits: dict[str, Any] | None
+    status: str | None
+    health_status: str | None
+    auto_start: bool | None
+    last_health_check: str | None
+    created_at: str | None
+    models: list[OllamaModelSummary]
+
+
+@dataclass(slots=True)
+class CreateOllamaDeploymentRequest:
+    """Request body for POST /api/v1/ollama/deployments. Every field optional."""
+
+    name: str | None = None
+    endpoint_url: str | None = None
+    deployment_type: str | None = "external"
+    gpu_config: dict[str, Any] | None = field(default=None)
+    resource_limits: dict[str, Any] | None = field(default=None)
+    auto_start: bool | None = True
+
+
+@dataclass(slots=True)
+class CreateOllamaDeploymentResponse:
+    """Response body for a successful POST /api/v1/ollama/deployments."""
+
+    id: int
+    name: str
+    deployment_type: str | None
+    message: str
+
+
+@dataclass(slots=True)
+class UpdateOllamaDeploymentRequest:
+    """Request body for PUT /api/v1/ollama/deployments/<id>. Every field a partial."""
+
+    name: str | None = None
+    endpoint_url: str | None = None
+    gpu_config: dict[str, Any] | None = field(default=None)
+    resource_limits: dict[str, Any] | None = field(default=None)
+    auto_start: bool | None = None
+
+
+@dataclass(slots=True)
+class MessageResponse:
+    """Generic ``{"message": str}`` envelope."""
+
+    message: str
+
+
+@dataclass(slots=True)
+class OllamaActionResponse:
+    """Response body for start/stop/restart lifecycle actions."""
+
+    deployment_id: int
+    status: str
+    message: str
+
+
+@dataclass(slots=True)
+class OllamaHealthResponse:
+    """Response body for GET /api/v1/ollama/deployments/<id>/health."""
+
+    deployment_id: int
+    endpoint_url: str | None
+    health_status: str
+    healthy: bool
+    checked_at: str
+    error: str | None
+
+
+@dataclass(slots=True)
+class OllamaLogsResponse:
+    """Response body for GET /api/v1/ollama/deployments/<id>/logs."""
+
+    deployment_id: int
+    lines: int
+    logs: str
+
+
+# NOTE: the model-pull request body is validated in-handler (not via a
+# @validate_request model) so the deployment-existence 404 fires ahead of any
+# body 400 -- see pull_ollama_model and regression 44cc384.
+
+
+@dataclass(slots=True)
+class PullOllamaModelResponse:
+    """Response body for a successful model pull."""
+
+    deployment_id: int
+    model: str
+    status: str
+    completed: bool
+    message: str
+
+
+@dataclass(slots=True)
+class RemoveOllamaModelResponse:
+    """Response body for DELETE .../models/<model_name>."""
+
+    deployment_id: int
+    model: str
+    message: str
 
 
 @api_v1_bp.route("/ollama/deployments", methods=["GET"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(OllamaDeploymentListResponse, 200)
 async def list_ollama_deployments():
-    """List all Ollama deployments."""
+    """List all Ollama deployments (bounded page)."""
     if not current_app.config.get("ENABLE_OLLAMA_MANAGEMENT", True):
         return jsonify({"error": "Ollama management is disabled"}), 403
 
-    def _fetch():
-        deployments = db(db.ollama_deployments.id > 0).select()
-        return [(d, db(db.ollama_models.deployment_id == d.id).count()) for d in deployments]
+    page = PageRequest.from_request()
 
-    deployment_rows = await asyncio.to_thread(_fetch)
+    def _fetch():
+        query = db.ollama_deployments.id > 0
+        total = db(query).count()
+        deployments = db(query).select(limitby=page.limitby, orderby=db.ollama_deployments.id)
+        return total, [(d, db(db.ollama_models.deployment_id == d.id).count()) for d in deployments]
+
+    total, deployment_rows = await asyncio.to_thread(_fetch)
 
     result = []
     for deployment, model_count in deployment_rows:
@@ -47,12 +231,13 @@ async def list_ollama_deployments():
             }
         )
 
-    return jsonify({"deployments": result, "total": len(result)})
+    return {"deployments": result, "total": len(result), **page.meta(total)}, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["GET"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(OllamaDeploymentDetail, 200)
 async def get_ollama_deployment(deployment_id):
     """Get Ollama deployment details."""
 
@@ -68,76 +253,74 @@ async def get_ollama_deployment(deployment_id):
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
-    return jsonify(
-        {
-            "id": deployment.id,
-            "name": deployment.name,
-            "endpoint_url": deployment.endpoint_url,
-            "deployment_type": deployment.deployment_type,
-            "docker_compose_config": deployment.docker_compose_config,
-            "gpu_config": deployment.gpu_config,
-            "resource_limits": deployment.resource_limits,
-            "status": deployment.status,
-            "health_status": deployment.health_status,
-            "auto_start": deployment.auto_start,
-            "last_health_check": deployment.last_health_check.isoformat()
-            if deployment.last_health_check
-            else None,
-            "created_at": deployment.created_at.isoformat() if deployment.created_at else None,
-            "models": [
-                {
-                    "id": m.id,
-                    "model_name": m.model_name,
-                    "model_tag": m.model_tag,
-                    "status": m.status,
-                    "size_bytes": m.size_bytes,
-                }
-                for m in models
-            ],
-        }
-    )
+    return {
+        "id": deployment.id,
+        "name": deployment.name,
+        "endpoint_url": deployment.endpoint_url,
+        "deployment_type": deployment.deployment_type,
+        "docker_compose_config": deployment.docker_compose_config,
+        "gpu_config": deployment.gpu_config,
+        "resource_limits": deployment.resource_limits,
+        "status": deployment.status,
+        "health_status": deployment.health_status,
+        "auto_start": deployment.auto_start,
+        "last_health_check": deployment.last_health_check.isoformat()
+        if deployment.last_health_check
+        else None,
+        "created_at": deployment.created_at.isoformat() if deployment.created_at else None,
+        "models": [
+            {
+                "id": m.id,
+                "model_name": m.model_name,
+                "model_tag": m.model_tag,
+                "status": m.status,
+                "size_bytes": m.size_bytes,
+            }
+            for m in models
+        ],
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments", methods=["POST"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
-async def create_ollama_deployment():
+@validate_response(CreateOllamaDeploymentResponse, 201)
+@validate_request(CreateOllamaDeploymentRequest)
+async def create_ollama_deployment(data: CreateOllamaDeploymentRequest):
     """Create a new Ollama deployment."""
-    data = await request.get_json()
+    if data.name is None:
+        return jsonify({"error": "name is required"}), 400
+    if data.endpoint_url is None:
+        return jsonify({"error": "endpoint_url is required"}), 400
 
-    if not data:
-        return jsonify({"error": "Request body required"}), 400
-
-    required_fields = ["name", "endpoint_url"]
-    for field in required_fields:
-        if field not in data:
-            return jsonify({"error": f"{field} is required"}), 400
-
-    deployment_type = data.get("deployment_type", "external")
-    gpu_config = data.get("gpu_config", {"count": 0, "driver": "nvidia"})
-    resource_limits = data.get("resource_limits", {"cpu": "4", "memory": "8G"})
+    deployment_type = data.deployment_type or "external"
+    gpu_config = data.gpu_config if data.gpu_config is not None else _DEFAULT_GPU_CONFIG.copy()
+    resource_limits = data.resource_limits
+    if resource_limits is None:
+        resource_limits = _DEFAULT_RESOURCE_LIMITS.copy()
+    auto_start = data.auto_start if data.auto_start is not None else True
 
     # Generate docker-compose config if type is docker
     docker_compose_config = None
     if deployment_type == "docker":
         docker_compose_config = generate_docker_compose_config(
-            name=data["name"], gpu_config=gpu_config, resource_limits=resource_limits
+            name=data.name, gpu_config=gpu_config, resource_limits=resource_limits
         )
 
     def _create():
-        existing = db(db.ollama_deployments.name == data["name"]).select().first()
+        existing = db(db.ollama_deployments.name == data.name).select().first()
         if existing:
             return "name_conflict", None
 
         new_id = db.ollama_deployments.insert(
-            name=data["name"],
-            endpoint_url=data["endpoint_url"],
+            name=data.name,
+            endpoint_url=data.endpoint_url,
             deployment_type=deployment_type,
             docker_compose_config=docker_compose_config,
             gpu_config=gpu_config,
             resource_limits=resource_limits,
             status="unknown",
-            auto_start=data.get("auto_start", True),
+            auto_start=auto_start,
             created_at=datetime.utcnow(),
         )
         db.commit()
@@ -148,28 +331,26 @@ async def create_ollama_deployment():
     if result == "name_conflict":
         return jsonify({"error": "Deployment name already exists"}), 409
 
-    return (
-        jsonify(
-            {
-                "id": deployment_id,
-                "name": data["name"],
-                "deployment_type": deployment_type,
-                "message": "Deployment created successfully",
-            }
-        ),
-        201,
-    )
+    return {
+        "id": deployment_id,
+        "name": data.name,
+        "deployment_type": deployment_type,
+        "message": "Deployment created successfully",
+    }, 201
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
-async def update_ollama_deployment(deployment_id):
-    """Update Ollama deployment."""
-    data = await request.get_json()
+@validate_response(MessageResponse, 200)
+@validate_request(UpdateOllamaDeploymentRequest)
+async def update_ollama_deployment(deployment_id, data: UpdateOllamaDeploymentRequest):
+    """Update Ollama deployment.
 
-    if not data:
-        return jsonify({"error": "Request body required"}), 400
+    An empty body (or one carrying no recognised field) is a valid no-op
+    partial update -- the typed request model erases the pre-audit
+    raw-dict-truthiness ``if not data`` 400, matching keys.py.
+    """
 
     def _update():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -177,12 +358,12 @@ async def update_ollama_deployment(deployment_id):
         if not deployment:
             return "not_found"
 
-        update_fields = {}
+        update_fields: dict[str, Any] = {}
 
-        if "name" in data:
+        if data.name is not None:
             existing = (
                 db(
-                    (db.ollama_deployments.name == data["name"])
+                    (db.ollama_deployments.name == data.name)
                     & (db.ollama_deployments.id != deployment_id)
                 )
                 .select()
@@ -190,19 +371,19 @@ async def update_ollama_deployment(deployment_id):
             )
             if existing:
                 return "name_conflict"
-            update_fields["name"] = data["name"]
+            update_fields["name"] = data.name
 
-        if "endpoint_url" in data:
-            update_fields["endpoint_url"] = data["endpoint_url"]
+        if data.endpoint_url is not None:
+            update_fields["endpoint_url"] = data.endpoint_url
 
-        if "gpu_config" in data:
-            update_fields["gpu_config"] = data["gpu_config"]
+        if data.gpu_config is not None:
+            update_fields["gpu_config"] = data.gpu_config
 
-        if "resource_limits" in data:
-            update_fields["resource_limits"] = data["resource_limits"]
+        if data.resource_limits is not None:
+            update_fields["resource_limits"] = data.resource_limits
 
-        if "auto_start" in data:
-            update_fields["auto_start"] = data["auto_start"]
+        if data.auto_start is not None:
+            update_fields["auto_start"] = data.auto_start
 
         if update_fields:
             db(db.ollama_deployments.id == deployment_id).update(**update_fields)
@@ -231,12 +412,13 @@ async def update_ollama_deployment(deployment_id):
     if result == "name_conflict":
         return jsonify({"error": "Deployment name already exists"}), 409
 
-    return jsonify({"message": "Deployment updated successfully"})
+    return {"message": "Deployment updated successfully"}, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(MessageResponse, 200)
 async def delete_ollama_deployment(deployment_id):
     """Delete Ollama deployment."""
 
@@ -260,12 +442,13 @@ async def delete_ollama_deployment(deployment_id):
     if result == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
 
-    return jsonify({"message": "Deployment deleted successfully"})
+    return {"message": "Deployment deleted successfully"}, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/start", methods=["POST"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(OllamaActionResponse, 200)
 async def start_ollama_deployment(deployment_id):
     """Start Ollama deployment (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -297,18 +480,17 @@ async def start_ollama_deployment(deployment_id):
     if result == "invalid_type":
         return jsonify({"error": "Only docker deployments can be started via API"}), 400
 
-    return jsonify(
-        {
-            "deployment_id": deployment_id,
-            "status": "running",
-            "message": "Deployment started successfully",
-        }
-    )
+    return {
+        "deployment_id": deployment_id,
+        "status": "running",
+        "message": "Deployment started successfully",
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/stop", methods=["POST"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(OllamaActionResponse, 200)
 async def stop_ollama_deployment(deployment_id):
     """Stop Ollama deployment (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -332,18 +514,17 @@ async def stop_ollama_deployment(deployment_id):
     if result == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
 
-    return jsonify(
-        {
-            "deployment_id": deployment_id,
-            "status": "stopped",
-            "message": "Deployment stopped successfully",
-        }
-    )
+    return {
+        "deployment_id": deployment_id,
+        "status": "stopped",
+        "message": "Deployment stopped successfully",
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/restart", methods=["POST"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(OllamaActionResponse, 200)
 async def restart_ollama_deployment(deployment_id):
     """Restart Ollama deployment (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -367,18 +548,17 @@ async def restart_ollama_deployment(deployment_id):
     if result == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
 
-    return jsonify(
-        {
-            "deployment_id": deployment_id,
-            "status": "running",
-            "message": "Deployment restarted successfully",
-        }
-    )
+    return {
+        "deployment_id": deployment_id,
+        "status": "running",
+        "message": "Deployment restarted successfully",
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/health", methods=["GET"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(OllamaHealthResponse, 200)
 async def check_ollama_health(deployment_id):
     """Health check for Ollama deployment."""
     from ...services.ollama_manager import OllamaDeploymentManager
@@ -397,21 +577,20 @@ async def check_ollama_health(deployment_id):
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
-    return jsonify(
-        {
-            "deployment_id": deployment_id,
-            "endpoint_url": deployment.endpoint_url,
-            "health_status": result.get("status", "unknown"),
-            "healthy": result.get("healthy", False),
-            "checked_at": result.get("checked_at", datetime.utcnow().isoformat()),
-            "error": result.get("error"),
-        }
-    )
+    return {
+        "deployment_id": deployment_id,
+        "endpoint_url": deployment.endpoint_url,
+        "health_status": result.get("status", "unknown"),
+        "healthy": result.get("healthy", False),
+        "checked_at": result.get("checked_at", datetime.utcnow().isoformat()),
+        "error": result.get("error"),
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/logs", methods=["GET"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(OllamaLogsResponse, 200)
 async def get_ollama_logs(deployment_id):
     """Get Ollama deployment logs (orchestrated mode only)."""
     mode = current_app.config.get("OLLAMA_MANAGEMENT_MODE", "both")
@@ -428,20 +607,27 @@ async def get_ollama_logs(deployment_id):
         return jsonify({"error": "Deployment not found"}), 404
 
     # TODO: Implement Docker API to get logs
-    return jsonify(
-        {
-            "deployment_id": deployment_id,
-            "lines": lines,
-            "logs": "Log retrieval not yet implemented",
-        }
-    )
+    return {
+        "deployment_id": deployment_id,
+        "lines": lines,
+        "logs": "Log retrieval not yet implemented",
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models/pull", methods=["POST"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(PullOllamaModelResponse, 200)
 async def pull_ollama_model(deployment_id):
-    """Pull a model to Ollama deployment."""
+    """Pull a model to Ollama deployment.
+
+    The deployment-existence check runs BEFORE body validation, so a missing
+    deployment returns 404 even when the body is also absent/invalid. This is a
+    deliberate ordering contract (tests/contract/test_management_mutations.py,
+    regression 44cc384): @validate_request is intentionally NOT used here
+    because it would run ahead of the handler and 400 on the body first. The
+    body is parsed and type-checked in-handler after the 404 check instead.
+    """
     from ...services.ollama_manager import OllamaDeploymentManager
 
     def _check_deployment():
@@ -451,12 +637,16 @@ async def pull_ollama_model(deployment_id):
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
-    data = await request.get_json()
-    if not data or "model" not in data:
+    body = await request.get_json(silent=True) or {}
+    model = body.get("model")
+    if not isinstance(model, str) or not model:
         return jsonify({"error": "model is required"}), 400
+    tag = body.get("tag", "latest")
+    if tag is not None and not isinstance(tag, str):
+        return jsonify({"error": "tag must be a string"}), 400
 
-    model_name = data["model"]
-    model_tag = data.get("tag", "latest")
+    model_name = model
+    model_tag = tag or "latest"
     full_model = f"{model_name}:{model_tag}" if model_tag != "latest" else model_name
 
     def _pull():
@@ -468,20 +658,19 @@ async def pull_ollama_model(deployment_id):
     if result.error:
         return jsonify({"error": result.error, "model": full_model, "status": result.status}), 500
 
-    return jsonify(
-        {
-            "deployment_id": deployment_id,
-            "model": full_model,
-            "status": result.status,
-            "completed": result.completed,
-            "message": "Model pulled successfully" if result.completed else "Model pull initiated",
-        }
-    )
+    return {
+        "deployment_id": deployment_id,
+        "model": full_model,
+        "status": result.status,
+        "completed": result.completed,
+        "message": "Model pulled successfully" if result.completed else "Model pull initiated",
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/models/<model_name>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
+@validate_response(RemoveOllamaModelResponse, 200)
 async def remove_ollama_model(deployment_id, model_name):
     """Remove a model from Ollama deployment."""
 
@@ -516,13 +705,11 @@ async def remove_ollama_model(deployment_id, model_name):
     if result == "model_not_found":
         return jsonify({"error": "Model not found"}), 404
 
-    return jsonify(
-        {
-            "deployment_id": deployment_id,
-            "model": model_name,
-            "message": "Model removed successfully",
-        }
-    )
+    return {
+        "deployment_id": deployment_id,
+        "model": model_name,
+        "message": "Model removed successfully",
+    }, 200
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>/docker-compose", methods=["GET"])

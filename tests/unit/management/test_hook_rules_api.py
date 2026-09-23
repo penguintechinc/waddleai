@@ -683,3 +683,80 @@ class TestHookConfigsUpsert:
             "/api/v1/hooks/configs", headers=auth_headers, json={"scope_type": "org"}
         )
         assert resp.status_code == 400
+
+
+class TestHookRulesValidationAndPagination:
+    """audit-2026-09-14-wave2: quart-schema request/response validation + pagination.
+
+    # regression: audit-2026-09-14-wave2
+    """
+
+    _RULE_FIELDS = {
+        "id",
+        "scope_type",
+        "scope_ref",
+        "ecosystem",
+        "event",
+        "tool_name_pattern",
+        "match_pattern",
+        "decision",
+        "reason",
+        "enabled",
+        "priority",
+        "created_by",
+        "created_at",
+        "updated_at",
+    }
+
+    async def test_list_response_carries_pagination_meta(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET /rules exposes a bounded pagination window in meta (DoS fix)."""
+        row = _mock_rule_row(rule_id=1, scope_type="global", scope_ref=None)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.get("/api/v1/hooks/rules?page=2&limit=5", headers=auth_headers)
+
+        assert resp.status_code == 200
+        meta = (await resp.get_json())["meta"]
+        assert meta["pagination"]["page"] == 2
+        assert meta["pagination"]["limit"] == 5
+
+    async def test_list_limit_is_clamped_to_ceiling(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A hostile ?limit is clamped, never honoured (MAX_PAGE_SIZE=1000)."""
+        row = _mock_rule_row(rule_id=1, scope_type="global", scope_ref=None)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.get("/api/v1/hooks/rules?limit=99999999", headers=auth_headers)
+
+        assert resp.status_code == 200
+        assert (await resp.get_json())["meta"]["pagination"]["limit"] == 1000
+
+    async def test_list_response_field_set_is_exact(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Response schema pins the exact hook_rules field set -- no over-/under-exposure."""
+        row = _mock_rule_row(rule_id=1, scope_type="global", scope_ref=None)
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+
+        resp = await client.get("/api/v1/hooks/rules", headers=auth_headers)
+
+        assert set((await resp.get_json())["data"][0].keys()) == self._RULE_FIELDS
+
+    async def test_create_rejects_non_integer_priority(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A non-int priority is a 400 at the schema boundary, not a 500 in int()."""
+        resp = await client.post(
+            "/api/v1/hooks/rules",
+            headers=auth_headers,
+            json={
+                "scope_type": "global",
+                "decision": "deny",
+                "reason": "x",
+                "priority": "not-an-int",
+            },
+        )
+        assert resp.status_code == 400

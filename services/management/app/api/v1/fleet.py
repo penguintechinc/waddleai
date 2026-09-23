@@ -23,11 +23,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
 from quart import g, jsonify, request
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 from shared.fleet.base import BackendType, ManagementScope
@@ -37,6 +39,7 @@ from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
@@ -66,8 +69,140 @@ _PRO_GATED_TYPES = frozenset({BackendType.VERTEX_AI.value, BackendType.BEDROCK.v
 
 _VALID_TYPES = frozenset(t.value for t in BackendType)
 _VALID_SCOPES = frozenset(s.value for s in ManagementScope)
+_VALID_STATUSES = frozenset({"pending", "active", "disabled", "error"})
+_STATUS_ERROR = "status must be one of ['pending', 'active', 'disabled', 'error']"
 
 _license_client: Any = None
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models (audit-2026-09-14-wave2).
+#
+# The `{"status", "data", "meta"}` envelope is preserved exactly; each model
+# lists the precise field set its handler returns so quart-schema cannot
+# silently drop one (a dropped `credentials_ref`/`data` field breaks clients),
+# and the masked-credential guarantee is pinned by a response-schema test.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class FleetBackend:
+    """A ``fleet_backends`` row, exactly as ``_backend_to_dict`` serialises it.
+
+    ``credentials_ref`` is the masked reference only -- the plaintext
+    credential is never a field on this model.
+    """
+
+    id: int
+    org_id: int
+    name: str
+    type: str
+    mode: str | None
+    management_scope: str
+    config: dict[str, Any]
+    credentials_ref: str | None
+    status: str | None
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass(slots=True)
+class ListMeta:
+    """Envelope ``meta`` for the list endpoint -- carries the pagination window."""
+
+    total: int
+    page: int
+    limit: int
+    timestamp: str
+
+
+@dataclass(slots=True)
+class ActionMeta:
+    """Envelope ``meta`` for a mutating action (create/update/delete)."""
+
+    action: str
+    timestamp: str
+
+
+@dataclass(slots=True)
+class TimestampMeta:
+    """Envelope ``meta`` carrying only a timestamp (read/health responses)."""
+
+    timestamp: str
+
+
+@dataclass(slots=True)
+class FleetBackendListResponse:
+    """Response body for GET /api/v1/fleet/backends."""
+
+    status: str
+    data: list[FleetBackend]
+    meta: ListMeta
+
+
+@dataclass(slots=True)
+class FleetBackendResponse:
+    """Response body for GET/POST/PUT of a single fleet backend."""
+
+    status: str
+    data: FleetBackend
+    meta: TimestampMeta
+
+
+@dataclass(slots=True)
+class FleetBackendActionResponse:
+    """Response body for POST (create) / PUT (update) with an action meta."""
+
+    status: str
+    data: FleetBackend
+    meta: ActionMeta
+
+
+@dataclass(slots=True)
+class DeletedBackendRef:
+    """The ``data`` payload of a delete response -- just the removed id."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class DeleteFleetBackendResponse:
+    """Response body for DELETE /api/v1/fleet/backends/<id>."""
+
+    status: str
+    data: DeletedBackendRef
+    meta: ActionMeta
+
+
+@dataclass(slots=True)
+class FleetHealthData:
+    """The ``data`` payload of a backend health response."""
+
+    backend_id: int
+    healthy: bool
+    node_count: int
+    detail: dict[str, Any]
+
+
+@dataclass(slots=True)
+class FleetBackendHealthResponse:
+    """Response body for GET /api/v1/fleet/backends/<id>/health."""
+
+    status: str
+    data: FleetHealthData
+    meta: TimestampMeta
+
+
+@dataclass(slots=True)
+class CreateFleetBackendRequest:
+    """Request body for POST /api/v1/fleet/backends. Every field optional."""
+
+    name: str | None = None
+    type: str | None = None
+    mode: str | None = None
+    management_scope: str | None = None
+    config: dict[str, Any] | None = field(default=None)
+    credentials: str | None = None
 
 
 def _get_license_client() -> Any:
@@ -101,7 +236,7 @@ def _fleet_v2_enabled(org_id: int) -> bool:
 async def _hybrid_targets_entitled() -> bool:
     """Two-layer gate's entitlement half -- fail-closed on any license-client error."""
 
-    def _check() -> bool:
+    def _check():
         try:
             return bool(_get_license_client().check_feature(_HYBRID_TARGETS_FEATURE))
         except Exception as exc:  # pragma: no cover - defensive, license I/O failure
@@ -138,6 +273,11 @@ def _backend_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
+def _now() -> str:
+    """UTC timestamp string used across every envelope ``meta`` block."""
+    return datetime.utcnow().isoformat() + "Z"
+
+
 def _validation_error(detail: str) -> tuple[Any, int]:
     return jsonify({"status": "error", "error": detail}), 400
 
@@ -161,29 +301,35 @@ def _get_org_scoped_backend(backend_id: int, org_id: int) -> tuple[Any, str]:
 @api_v1_bp.route("/fleet/backends", methods=["GET"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
+@validate_response(FleetBackendListResponse, 200)
 async def list_fleet_backends():
-    """List this org's registered inference fleet backends."""
+    """List this org's registered inference fleet backends (bounded page)."""
     org_id = g.user.get("organization_id")
     if not _fleet_v2_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
 
-    def _fetch():
-        return db(db.fleet_backends.org_id == org_id).select(orderby=db.fleet_backends.id)
+    page = PageRequest.from_request()
 
-    rows = await asyncio.to_thread(_fetch)
-    return jsonify(
-        {
-            "status": "success",
-            "data": [_backend_to_dict(r) for r in rows],
-            "meta": {"total": len(rows), "timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    def _fetch():
+        query = db.fleet_backends.org_id == org_id
+        total = db(query).count()
+        rows = db(query).select(limitby=page.limitby, orderby=db.fleet_backends.id)
+        return total, list(rows)
+
+    total, rows = await asyncio.to_thread(_fetch)
+    return {
+        "status": "success",
+        "data": [_backend_to_dict(r) for r in rows],
+        "meta": {"total": total, "page": page.page, "limit": page.limit, "timestamp": _now()},
+    }, 200
 
 
 @api_v1_bp.route("/fleet/backends", methods=["POST"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
-async def create_fleet_backend():
+@validate_response(FleetBackendActionResponse, 201)
+@validate_request(CreateFleetBackendRequest)
+async def create_fleet_backend(data: CreateFleetBackendRequest):
     """Register a new inference fleet backend for this org.
 
     `vertex_ai`/`bedrock` additionally require the `hybrid_targets`
@@ -194,16 +340,12 @@ async def create_fleet_backend():
     if not _fleet_v2_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
 
-    data = await request.get_json()
-    if not data:
-        return _validation_error("Request body required")
-
-    name = (data.get("name") or "").strip()
-    backend_type = data.get("type")
-    mode = data.get("mode")
-    management_scope = data.get("management_scope", ManagementScope.FULL_LIFECYCLE.value)
-    config = data.get("config") or {}
-    credentials = data.get("credentials")
+    name = (data.name or "").strip()
+    backend_type = data.type
+    mode = data.mode
+    management_scope = data.management_scope or ManagementScope.FULL_LIFECYCLE.value
+    config = data.config if data.config is not None else {}
+    credentials = data.credentials
 
     if not name or len(name) > 255:
         return _validation_error("name is required and must be <= 255 characters")
@@ -266,21 +408,17 @@ async def create_fleet_backend():
             409,
         )
 
-    return (
-        jsonify(
-            {
-                "status": "success",
-                "data": _backend_to_dict(row),
-                "meta": {"action": "created", "timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        ),
-        201,
-    )
+    return {
+        "status": "success",
+        "data": _backend_to_dict(row),
+        "meta": {"action": "created", "timestamp": _now()},
+    }, 201
 
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>", methods=["GET"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
+@validate_response(FleetBackendResponse, 200)
 async def get_fleet_backend(backend_id: int):
     """Fetch one registered fleet backend -- 403 across orgs, 404 if it never existed."""
     org_id = g.user.get("organization_id")
@@ -293,24 +431,27 @@ async def get_fleet_backend(backend_id: int):
     if outcome == "forbidden":
         return jsonify({"status": "error", "error": "forbidden"}), 403
 
-    return jsonify(
-        {
-            "status": "success",
-            "data": _backend_to_dict(row),
-            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {"status": "success", "data": _backend_to_dict(row), "meta": {"timestamp": _now()}}, 200
 
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>", methods=["PUT"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
+@validate_response(FleetBackendActionResponse, 200)
 async def update_fleet_backend(backend_id: int):
     """Update a registered fleet backend's mutable fields.
 
     ``type`` is immutable after creation (changing it would silently
     reinterpret ``config``/``credentials_ref`` for a different backend
     class) -- delete and recreate to change type.
+
+    Body validation runs in-handler, AFTER the flag/existence/forbidden
+    checks, so a malformed body against a nonexistent or foreign-org backend
+    returns 404/403 rather than 400 -- preserving the deliberate
+    existence/authz-before-input-validation order that
+    tests/contract/test_management_mutations.py locks. A @validate_request
+    decorator would run before the handler and invert that order
+    (regression: audit-2026-09-14-wave2).
     """
     org_id = g.user.get("organization_id")
     if not _fleet_v2_enabled(org_id):
@@ -322,34 +463,29 @@ async def update_fleet_backend(backend_id: int):
     if outcome == "forbidden":
         return jsonify({"status": "error", "error": "forbidden"}), 403
 
-    data = await request.get_json()
-    if not data:
-        return _validation_error("Request body required")
-
+    body = (await request.get_json(silent=True)) or {}
     update_fields: dict[str, Any] = {}
-    if "name" in data:
-        name = (data["name"] or "").strip()
+    if body.get("name") is not None:
+        name = str(body["name"]).strip()
         if not name or len(name) > 255:
             return _validation_error("name must be 1-255 characters")
         update_fields["name"] = name
-    if "mode" in data:
-        update_fields["mode"] = data["mode"]
-    if "management_scope" in data:
-        if data["management_scope"] not in _VALID_SCOPES:
+    if body.get("mode") is not None:
+        update_fields["mode"] = body["mode"]
+    if body.get("management_scope") is not None:
+        if body["management_scope"] not in _VALID_SCOPES:
             return _validation_error(f"management_scope must be one of {sorted(_VALID_SCOPES)}")
-        update_fields["management_scope"] = data["management_scope"]
-    if "config" in data:
-        if not isinstance(data["config"], dict):
+        update_fields["management_scope"] = body["management_scope"]
+    if body.get("config") is not None:
+        if not isinstance(body["config"], dict):
             return _validation_error("config must be an object")
-        update_fields["config"] = data["config"]
-    if "credentials" in data and data["credentials"]:
-        update_fields["credentials_ref"] = encrypt_credential(data["credentials"])
-    if "status" in data:
-        if data["status"] not in {"pending", "active", "disabled", "error"}:
-            return _validation_error(
-                "status must be one of ['pending', 'active', 'disabled', 'error']"
-            )
-        update_fields["status"] = data["status"]
+        update_fields["config"] = body["config"]
+    if body.get("credentials"):
+        update_fields["credentials_ref"] = encrypt_credential(body["credentials"])
+    if body.get("status") is not None:
+        if body["status"] not in _VALID_STATUSES:
+            return _validation_error(_STATUS_ERROR)
+        update_fields["status"] = body["status"]
 
     if update_fields:
         update_fields["updated_at"] = datetime.utcnow()
@@ -361,18 +497,17 @@ async def update_fleet_backend(backend_id: int):
         return db(db.fleet_backends.id == backend_id).select().first()
 
     updated = await asyncio.to_thread(_update)
-    return jsonify(
-        {
-            "status": "success",
-            "data": _backend_to_dict(updated),
-            "meta": {"action": "updated", "timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": _backend_to_dict(updated),
+        "meta": {"action": "updated", "timestamp": _now()},
+    }, 200
 
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
+@validate_response(DeleteFleetBackendResponse, 200)
 async def delete_fleet_backend(backend_id: int):
     """Delete a registered fleet backend (deployment rows keep their FK, set NULL)."""
     org_id = g.user.get("organization_id")
@@ -390,18 +525,17 @@ async def delete_fleet_backend(backend_id: int):
         db.commit()
 
     await asyncio.to_thread(_delete)
-    return jsonify(
-        {
-            "status": "success",
-            "data": {"id": backend_id},
-            "meta": {"action": "deleted", "timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": {"id": backend_id},
+        "meta": {"action": "deleted", "timestamp": _now()},
+    }, 200
 
 
 @api_v1_bp.route("/fleet/backends/<int:backend_id>/health", methods=["GET"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
+@validate_response(FleetBackendHealthResponse, 200)
 async def check_fleet_backend_health(backend_id: int):
     """Health-check a registered backend through the ``InferenceFleetBackend`` interface.
 
@@ -425,28 +559,24 @@ async def check_fleet_backend_health(backend_id: int):
         health = await backend.health()
     except Exception as exc:
         logger.warning("fleet backend health check failed for id=%s: %s", backend_id, exc)
-        return jsonify(
-            {
-                "status": "success",
-                "data": {
-                    "backend_id": backend_id,
-                    "healthy": False,
-                    "node_count": 0,
-                    "detail": {"error": str(exc)},
-                },
-                "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-            }
-        )
-
-    return jsonify(
-        {
+        return {
             "status": "success",
             "data": {
-                "backend_id": health.backend_id,
-                "healthy": health.healthy,
-                "node_count": health.node_count,
-                "detail": health.detail,
+                "backend_id": backend_id,
+                "healthy": False,
+                "node_count": 0,
+                "detail": {"error": str(exc)},
             },
-            "meta": {"timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+            "meta": {"timestamp": _now()},
+        }, 200
+
+    return {
+        "status": "success",
+        "data": {
+            "backend_id": health.backend_id,
+            "healthy": health.healthy,
+            "node_count": health.node_count,
+            "detail": health.detail,
+        },
+        "meta": {"timestamp": _now()},
+    }, 200

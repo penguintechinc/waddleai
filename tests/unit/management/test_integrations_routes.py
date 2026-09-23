@@ -972,3 +972,35 @@ class TestLinkFlow:
         assert insert_kwargs["access_token_enc"] != MOCK_UPSTREAM_ACCESS_TOKEN
         assert insert_kwargs["access_token_enc"].startswith("enc:")
         assert insert_kwargs["user_uuid"] == "1"
+
+
+class TestMcpEndpointsListPagination:
+    """audit-2026-09-14-wave2: bounded pagination on the mcp-endpoints list.
+
+    # regression: audit-2026-09-14-wave2
+    """
+
+    async def test_list_carries_pagination_meta(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """GET mcp-endpoints exposes a bounded pagination window (DoS fix)."""
+        _enable_flag(monkeypatch)
+        app_mock_db.return_value.select.return_value = make_select_result([make_mock_endpoint()])
+
+        resp = await client.get(f"{ENDPOINT_PATH}?page=2&limit=8", headers=auth_headers)
+
+        assert resp.status_code == 200
+        meta = (await resp.get_json())["meta"]
+        assert meta["pagination"]["page"] == 2
+        assert meta["pagination"]["limit"] == 8
+
+    async def test_list_limit_is_clamped(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """A hostile ?limit is clamped to the ceiling."""
+        _enable_flag(monkeypatch)
+        app_mock_db.return_value.select.return_value = make_select_result([make_mock_endpoint()])
+
+        resp = await client.get(f"{ENDPOINT_PATH}?limit=99999999", headers=auth_headers)
+
+        assert (await resp.get_json())["meta"]["pagination"]["limit"] == 1000

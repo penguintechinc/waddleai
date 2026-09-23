@@ -135,13 +135,14 @@ class TestVisibleQuery:
     def test_admin_sees_everything(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Admins get an unrestricted id>0 filter regardless of org."""
         monkeypatch.setattr(model_aliases, "db", _FakeDBHandle())
-        result = model_aliases._visible_query("admin", 1)
+        # can_admin=True -> holds model_alias:admin (audit-2026-09-14-wave2)
+        result = model_aliases._visible_query(True, 1)
         assert result == _Expr(op="gt", field="id", value=0)
 
     def test_non_admin_scopes_to_global_and_own_org(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-admins see global (NULL org) rows OR their own org's rows -- never another org's."""
         monkeypatch.setattr(model_aliases, "db", _FakeDBHandle())
-        result = model_aliases._visible_query("resource_manager", 7)
+        result = model_aliases._visible_query(False, 7)
         assert result == _Expr(
             op="or",
             left=_Expr(op="eq", field="organization_id", value=None),
@@ -161,24 +162,25 @@ class TestCanWrite:
 
     def test_admin_can_write_global_and_scoped(self) -> None:
         """Admin may write any alias, global or org-scoped."""
-        assert model_aliases._can_write("admin", 1, None) is True
-        assert model_aliases._can_write("admin", 1, 99) is True
+        # can_admin=True models an admin holding model_alias:admin (audit-2026-09-14-wave2).
+        assert model_aliases._can_write(True, "admin", 1, None) is True
+        assert model_aliases._can_write(True, "admin", 1, 99) is True
 
     def test_resource_manager_can_write_own_org(self) -> None:
         """resource_manager may write an alias scoped to their own org."""
-        assert model_aliases._can_write("resource_manager", 5, 5) is True
+        assert model_aliases._can_write(False, "resource_manager", 5, 5) is True
 
     def test_resource_manager_cannot_write_global(self) -> None:
         """resource_manager may never write a NULL-org (global) alias."""
-        assert model_aliases._can_write("resource_manager", 5, None) is False
+        assert model_aliases._can_write(False, "resource_manager", 5, None) is False
 
     def test_resource_manager_cannot_write_other_org(self) -> None:
         """resource_manager cannot write another org's alias -- tenant isolation."""
-        assert model_aliases._can_write("resource_manager", 5, 6) is False
+        assert model_aliases._can_write(False, "resource_manager", 5, 6) is False
 
     def test_plain_user_cannot_write(self) -> None:
         """A role with no write privilege at all is always denied."""
-        assert model_aliases._can_write("user", 5, 5) is False
+        assert model_aliases._can_write(False, "user", 5, 5) is False
 
 
 # ---------------------------------------------------------------------------
@@ -195,12 +197,14 @@ class TestListAliases:
         """Admin listing returns every seeded alias."""
         rows = [_make_alias_row(alias_id=1), _make_alias_row(alias_id=2, organization_id=3)]
         app_mock_db.return_value.select.return_value = make_select_result(rows)
+        app_mock_db.return_value.count.return_value = 2
 
         resp = await client.get("/api/v1/routing/aliases/", headers=auth_headers)
         assert resp.status_code == 200
         data = await resp.get_json()
         assert [e["id"] for e in data["data"]] == [1, 2]
         assert data["meta"]["total"] == 2
+        assert data["pagination"]["total"] == 2
 
     async def test_list_filters_by_source_model_query_param(
         self, client, app_mock_db: MagicMock, auth_headers: dict
@@ -208,6 +212,7 @@ class TestListAliases:
         """?source_model=<x> exercises the optional filter branch."""
         rows = [_make_alias_row(source_model="gpt-4o")]
         app_mock_db.return_value.select.return_value = make_select_result(rows)
+        app_mock_db.return_value.count.return_value = 1
 
         resp = await client.get(
             "/api/v1/routing/aliases/?source_model=gpt-4o", headers=auth_headers
@@ -218,11 +223,14 @@ class TestListAliases:
 
     async def test_list_empty(self, client, app_mock_db: MagicMock, auth_headers: dict) -> None:
         """No aliases returns an empty list, not an error."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        app_mock_db.return_value.count.return_value = 0
         resp = await client.get("/api/v1/routing/aliases/", headers=auth_headers)
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["data"] == []
         assert data["meta"]["total"] == 0
+        assert data["pagination"]["total"] == 0
 
     async def test_list_no_auth(self, client) -> None:
         """Missing auth returns 401."""
@@ -232,13 +240,16 @@ class TestListAliases:
     async def test_list_response_envelope_shape(
         self, client, app_mock_db: MagicMock, auth_headers: dict
     ) -> None:
-        """Response matches the {status,data,meta} envelope with the exact field set."""
+        """Response matches the {status,data,meta,pagination} envelope with the exact field set."""
         app_mock_db.return_value.select.return_value = make_select_result([_make_alias_row()])
+        app_mock_db.return_value.count.return_value = 1
 
         resp = await client.get("/api/v1/routing/aliases/", headers=auth_headers)
         data = await resp.get_json()
-        assert set(data.keys()) == {"status", "data", "meta"}
+        # regression: audit-2026-09-14-wave2 -- exact response field set, incl. pagination
+        assert set(data.keys()) == {"status", "data", "meta", "pagination"}
         assert set(data["meta"].keys()) == {"total", "timestamp"}
+        assert set(data["pagination"].keys()) == {"page", "limit", "total", "pages"}
         assert set(data["data"][0].keys()) == {
             "id",
             "organization_id",
@@ -496,3 +507,171 @@ class TestDeleteAlias:
         data = await resp.get_json()
         assert data["meta"]["action"] == "deleted"
         assert data["data"]["id"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Response-schema exact-field regression (@validate_response guard)
+# ---------------------------------------------------------------------------
+
+
+class TestResponseSchemaFieldSets:
+    """Assert the EXACT field set of every alias response envelope.
+
+    regression: audit-2026-09-14-wave2 -- @validate_response reserializes each
+    body to its declared model, so a field dropped from a model (or a handler
+    return) disappears from the wire. These pin the contract so that silent
+    drop fails loudly.
+    """
+
+    _ROW_KEYS = {
+        "id",
+        "organization_id",
+        "source_model",
+        "target_model",
+        "target_provider",
+        "enabled",
+        "created_at",
+    }
+
+    async def test_get_response_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET <id> body is exactly {status, data(row), meta(timestamp)}."""
+        row = _make_alias_row(alias_id=7)
+        app_mock_db.return_value.select.return_value.first.return_value = row
+        resp = await client.get("/api/v1/routing/aliases/7", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "meta"}
+        assert set(data["meta"].keys()) == {"timestamp"}
+        assert set(data["data"].keys()) == self._ROW_KEYS
+
+    async def test_create_response_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """POST create body is exactly {status, data(row), meta(action,timestamp)}."""
+        new_row = _make_alias_row(alias_id=42)
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, new_row]
+        resp = await client.post(
+            "/api/v1/routing/aliases/",
+            headers=auth_headers,
+            json={"source_model": "gpt-4o", "target_model": "local-mixtral"},
+        )
+        assert resp.status_code == 201
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "meta"}
+        assert set(data["meta"].keys()) == {"action", "timestamp"}
+        assert set(data["data"].keys()) == self._ROW_KEYS
+
+    async def test_delete_response_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """DELETE body is exactly {status, data({id}), meta(action,timestamp)}."""
+        row = _make_alias_row(alias_id=4)
+        app_mock_db.return_value.select.return_value.first.return_value = row
+        resp = await client.delete("/api/v1/routing/aliases/4", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "meta"}
+        assert set(data["data"].keys()) == {"id"}
+        assert set(data["meta"].keys()) == {"action", "timestamp"}
+
+
+# ---------------------------------------------------------------------------
+# audit-2026-09-14-wave2: MODEL_ALIAS_ADMIN scope reconciliation.
+#
+# `_can_write`'s admin cross-org bypass (write a global/other-org alias) was
+# converted from `role == "admin"` to the admin-only `model_alias:admin`
+# scope; `_visible_query`'s admin read-all bypass likewise (that branch is
+# covered by the TestVisibleQuery/TestCanWrite unit tests above -- the mocked
+# DB ignores the query so the list/get read scoping is not HTTP-observable).
+# A DIVERGENT token (role=resource_manager + model_alias:write + model_alias:
+# admin) may write a global alias (201); the same role WITHOUT model_alias:
+# admin may not (403).
+# ---------------------------------------------------------------------------
+
+from shared.auth.rbac import Permission  # noqa: E402
+
+
+class TestModelAliasAdminScopeReconciliation:
+    """model_alias:admin gates the global/cross-org write bypass, not the role name."""
+
+    async def test_create_global_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + model_alias:admin creates a GLOBAL alias.
+
+        regression: audit-2026-09-14-wave2
+        """
+        new_row = _make_alias_row(alias_id=42, organization_id=None)
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, new_row]
+        app_mock_db.model_aliases.insert.return_value = 42
+        headers = divergent_headers([Permission.MODEL_ALIAS_WRITE, Permission.MODEL_ALIAS_ADMIN])
+        resp = await client.post(
+            "/api/v1/routing/aliases/",
+            headers=headers,
+            json={"source_model": "gpt-4o", "target_model": "mistral-large"},
+        )
+        assert resp.status_code == 201
+
+    async def test_create_global_without_admin_scope_refused(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) model_alias:write but NOT model_alias:admin -> global alias refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        headers = divergent_headers([Permission.MODEL_ALIAS_WRITE])
+        resp = await client.post(
+            "/api/v1/routing/aliases/",
+            headers=headers,
+            json={"source_model": "gpt-4o", "target_model": "mistral-large"},
+        )
+        assert resp.status_code == 403
+
+    async def test_create_own_org_without_admin_scope_still_works(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still writes its OWN org's alias without the admin scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        new_row = _make_alias_row(alias_id=43, organization_id=1)
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, new_row]
+        app_mock_db.model_aliases.insert.return_value = 43
+        headers = divergent_headers([Permission.MODEL_ALIAS_WRITE])
+        resp = await client.post(
+            "/api/v1/routing/aliases/",
+            headers=headers,
+            json={"source_model": "gpt-4o", "target_model": "x", "organization_id": 1},
+        )
+        assert resp.status_code == 201
+
+    async def test_update_other_org_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) model_alias:admin lets a non-admin update another org's alias.
+
+        regression: audit-2026-09-14-wave2
+        """
+        row = _make_alias_row(alias_id=9, organization_id=2)
+        updated = _make_alias_row(alias_id=9, organization_id=2, target_model="new")
+        app_mock_db.return_value.select.return_value.first.side_effect = [row, updated]
+        headers = divergent_headers([Permission.MODEL_ALIAS_WRITE, Permission.MODEL_ALIAS_ADMIN])
+        resp = await client.put(
+            "/api/v1/routing/aliases/9", headers=headers, json={"target_model": "new"}
+        )
+        assert resp.status_code == 200
+
+    async def test_update_other_org_without_admin_scope_refused(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no model_alias:admin -> cross-org update refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        row = _make_alias_row(alias_id=9, organization_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = row
+        headers = divergent_headers([Permission.MODEL_ALIAS_WRITE])
+        resp = await client.put(
+            "/api/v1/routing/aliases/9", headers=headers, json={"target_model": "new"}
+        )
+        assert resp.status_code == 403

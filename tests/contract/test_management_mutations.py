@@ -193,3 +193,33 @@ def test_update_llamacpp_deployment_not_found_beats_body_parse(management_url):
     )
     assert r.status_code == 404, r.text
     assert r.json() == {"error": "Deployment not found"}
+
+
+# ---------------------------------------------------------------------------
+# fleet.py :: update_fleet_backend
+# regression: audit-2026-09-14-wave2 -- the fleet-v2 flag gate / existence
+# (404) and foreign-org (403) checks must run before body validation, so a
+# malformed-body PUT to a nonexistent / flag-off / foreign backend returns
+# 404/403, not 400. The wave-2 sweep briefly added a @validate_request
+# decorator here; it ran before the handler and inverted that order, so it
+# was reverted to in-handler validation. Same deliberate ordering as the two
+# tests above (git show 44cc384).
+# ---------------------------------------------------------------------------
+
+
+def test_update_fleet_backend_not_found_beats_body_validation(management_url):
+    """Regression: fleet backend existence/flag (404) wins over body-validation (400)."""
+    headers = _login(management_url)
+
+    # Dual fault: backend 999999 does not exist (or fleet v2 is flag-off for
+    # this org) AND the body is non-JSON with a text/plain content-type
+    # (which a @validate_request decorator would 400 on before the handler
+    # runs). The flag/existence check must answer 404 first.
+    r = httpx.put(
+        f"{management_url}/api/v1/fleet/backends/999999",
+        content=b"not-json-content",
+        headers={**headers, "Content-Type": "text/plain"},
+    )
+    assert r.status_code == 404, r.text
+    # 404 from either the fleet-v2 flag gate or the existence check -- both are
+    # the intended "existence/flag beats body-validation" contract, never a 400.

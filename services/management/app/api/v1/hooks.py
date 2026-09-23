@@ -29,10 +29,12 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from quart import Blueprint, current_app, g, jsonify, request
+from quart_schema import validate_response
 
 from shared.security.content_filter import ContentFilter
 from shared.security.hooks_config import HookConfigResolver, PenguinDALHookConfigStore
@@ -60,6 +62,41 @@ HOOKS_FEATURE_FLAG = "waddleai.agent_hooks"
 
 HOOK_ECOSYSTEMS = ("claude-code", "cortex", "antigravity", "vscode")
 HOOK_EVENTS = ("pre_tool_use", "post_tool_use", "session_start", "notification")
+
+
+# ---------------------------------------------------------------------------
+# quart-schema response models (audit-2026-09-14 wave2). These PIN the fixed
+# §18.2 adapter wire contract -- a DTO + field-set test guards the exact
+# flat shapes adapters are coded against from silent drift. Deliberately NO
+# @validate_request: the manual validation below returns contract-specified
+# {"error": ...} 400 bodies with precise messages, which quart-schema's own
+# request-rejection shape would replace and break interop.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class EvaluateResponse:
+    """Fixed §18.2 response shape for POST /evaluate."""
+
+    decision: str
+    reason: str | None
+    rule_id: Any
+    evaluated_in_ms: int
+
+
+@dataclass(slots=True)
+class TelemetryAcceptedResponse:
+    """Fixed §18.2 response shape for POST /telemetry."""
+
+    accepted: bool
+
+
+@dataclass(slots=True)
+class HookPolicyResponse:
+    """Fixed §18.1 response shape for GET /policy."""
+
+    denylist_patterns: list[str]
+    updated_at: str
 
 
 def _get_redis() -> Any:
@@ -120,6 +157,7 @@ def _parse_occurred_at(raw: str | None) -> datetime | None:
 
 @hooks_bp.route("/evaluate", methods=["POST"])
 @require_auth
+@validate_response(EvaluateResponse, 200)
 async def evaluate_hook() -> tuple:
     """POST /api/v1/hooks/evaluate -- the fixed adapter contract (§18.2).
 
@@ -130,14 +168,12 @@ async def evaluate_hook() -> tuple:
 
     if not is_feature_enabled(HOOKS_FEATURE_FLAG, distinct_id=str(org_id or "server")):
         return (
-            jsonify(
-                {
-                    "decision": "allow",
-                    "reason": "agent hooks disabled",
-                    "rule_id": None,
-                    "evaluated_in_ms": 0,
-                }
-            ),
+            {
+                "decision": "allow",
+                "reason": "agent hooks disabled",
+                "rule_id": None,
+                "evaluated_in_ms": 0,
+            },
             200,
         )
 
@@ -175,14 +211,12 @@ async def evaluate_hook() -> tuple:
     metrics.record_hook_tool_call(ecosystem, tool_name, str(org_id))
 
     return (
-        jsonify(
-            {
-                "decision": result.decision,
-                "reason": result.reason,
-                "rule_id": result.rule_id,
-                "evaluated_in_ms": evaluated_in_ms,
-            }
-        ),
+        {
+            "decision": result.decision,
+            "reason": result.reason,
+            "rule_id": result.rule_id,
+            "evaluated_in_ms": evaluated_in_ms,
+        },
         200,
     )
 
@@ -231,6 +265,7 @@ async def _persist_telemetry(
 
 @hooks_bp.route("/telemetry", methods=["POST"])
 @require_auth
+@validate_response(TelemetryAcceptedResponse, 202)
 async def hook_telemetry() -> tuple:
     """POST /api/v1/hooks/telemetry -- fire-and-forget, must never block the agent.
 
@@ -269,11 +304,12 @@ async def hook_telemetry() -> tuple:
 
     get_management_metrics().record_hook_invocation(ecosystem, event, "telemetry")
 
-    return jsonify({"accepted": True}), 202
+    return {"accepted": True}, 202
 
 
 @hooks_bp.route("/policy", methods=["GET"])
 @require_auth
+@validate_response(HookPolicyResponse, 200)
 async def get_hook_policy() -> tuple:
     """GET /api/v1/hooks/policy -- canonical Tier-1 denylist for adapters to sync.
 
@@ -287,11 +323,9 @@ async def get_hook_policy() -> tuple:
     entries = await resolver.resolve(org_id)
 
     return (
-        jsonify(
-            {
-                "denylist_patterns": [e.pattern for e in entries],
-                "updated_at": datetime.utcnow().isoformat() + "Z",
-            }
-        ),
+        {
+            "denylist_patterns": [e.pattern for e in entries],
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        },
         200,
     )

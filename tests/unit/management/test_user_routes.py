@@ -384,3 +384,287 @@ class TestEnableUser:
 
         resp = await client.post("/api/v1/users/10/enable", headers=rm_auth_headers)
         assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Wave-2 audit: role-name -> OIDC-scope conversion regression tests.
+#
+# Each proves a caller WITHOUT the required scope is refused and one WITH it
+# (or the resource owner) is allowed. Role fixtures carry the real scope
+# bundles: admin holds USER_CREATE (admin-only), resource_manager holds
+# USER_MANAGE but NOT USER_CREATE, plain user holds neither -- so these role
+# tokens exercise the exact scope tiers the handlers now branch on.
+# ---------------------------------------------------------------------------
+
+
+class TestUsersScopeAuthzWave2:
+    """Scope-gate conversions in users.py (regression: audit-2026-09-14-wave2)."""
+
+    async def test_get_user_rm_without_user_create_denied_other_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (USER_MANAGE, no USER_CREATE) may not read another org's user → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=10, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.get("/api/v1/users/10", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_get_user_rm_with_user_manage_allowed_own_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (USER_MANAGE) may read a user in its own org → 200.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=5, org_id=1)
+        org = make_mock_org()
+        app_mock_db.return_value.select.return_value.first.side_effect = [user, org]
+
+        resp = await client.get("/api/v1/users/5", headers=rm_auth_headers)
+        assert resp.status_code == 200
+
+    async def test_get_user_plain_user_denied_other_record(
+        self, client, app_mock_db: MagicMock, user_auth_headers: dict
+    ) -> None:
+        """Plain user (no USER_MANAGE) may not read another user's record → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        other = make_mock_user(user_id=99, role="user")
+        app_mock_db.return_value.select.return_value.first.return_value = other
+
+        resp = await client.get("/api/v1/users/99", headers=user_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_update_user_rm_denied_other_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (no USER_CREATE) may not update another org's user → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=10, org_id=99)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/users/10", headers=rm_auth_headers, json={"email": "x@example.com"}
+        )
+        assert resp.status_code == 403
+
+    async def test_update_user_rm_cannot_modify_admin_user(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (no USER_CREATE) may not modify an admin user, even in-org → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=7, org_id=1, role="admin")
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/users/7", headers=rm_auth_headers, json={"email": "x@example.com"}
+        )
+        assert resp.status_code == 403
+
+    async def test_update_user_rm_cannot_promote_to_admin(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (no USER_CREATE) may not promote a user to admin → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=5, org_id=1, role="user")
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put("/api/v1/users/5", headers=rm_auth_headers, json={"role": "admin"})
+        assert resp.status_code == 403
+
+    async def test_update_user_admin_may_modify_admin_user(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin (USER_CREATE) may modify an admin user → 200.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=7, org_id=1, role="admin")
+        app_mock_db.return_value.select.return_value.first.side_effect = [user, None]
+
+        resp = await client.put(
+            "/api/v1/users/7", headers=auth_headers, json={"email": "x@example.com"}
+        )
+        assert resp.status_code == 200
+
+    async def test_enable_user_rm_cannot_enable_admin_user(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (no USER_CREATE) may not enable an admin user → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=7, org_id=1, role="admin", enabled=False)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.post("/api/v1/users/7/enable", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_create_user_rm_forced_to_own_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (no USER_CREATE) cannot target another org; forced to its own.
+
+        The response org must be the caller's own (1), never the requested 999.
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=1)
+        app_mock_db.return_value.select.return_value.first.side_effect = [org, None]
+        app_mock_db.users.insert.return_value = 50
+
+        resp = await client.post(
+            "/api/v1/users",
+            headers=rm_auth_headers,
+            json={
+                "username": "rmuser",
+                "email": "rmuser@example.com",
+                "password": "Secure!123",
+                "organization_id": 999,
+            },
+        )
+        assert resp.status_code == 201
+        data = await resp.get_json()
+        assert data["organization_id"] == 1
+
+    async def test_create_user_rm_cannot_mint_admin(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager (no USER_CREATE) cannot mint an admin; role downgraded to user.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=1)
+        app_mock_db.return_value.select.return_value.first.side_effect = [org, None]
+        app_mock_db.users.insert.return_value = 51
+
+        resp = await client.post(
+            "/api/v1/users",
+            headers=rm_auth_headers,
+            json={
+                "username": "rmadmin",
+                "email": "rmadmin@example.com",
+                "password": "Secure!123",
+                "role": "admin",
+            },
+        )
+        assert resp.status_code == 201
+        data = await resp.get_json()
+        assert data["role"] == "user"
+
+    async def test_create_user_admin_may_target_other_org(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin (USER_CREATE) may create a user in another org → response echoes org 2.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=2)
+        app_mock_db.return_value.select.return_value.first.side_effect = [org, None]
+        app_mock_db.users.insert.return_value = 52
+
+        resp = await client.post(
+            "/api/v1/users",
+            headers=auth_headers,
+            json={
+                "username": "crossorg",
+                "email": "crossorg@example.com",
+                "password": "Secure!123",
+                "organization_id": 2,
+            },
+        )
+        assert resp.status_code == 201
+        data = await resp.get_json()
+        assert data["organization_id"] == 2
+
+    async def test_create_user_admin_may_mint_admin(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin (USER_CREATE) may mint an admin → response role stays admin.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=1)
+        app_mock_db.return_value.select.return_value.first.side_effect = [org, None]
+        app_mock_db.users.insert.return_value = 53
+
+        resp = await client.post(
+            "/api/v1/users",
+            headers=auth_headers,
+            json={
+                "username": "newadmin",
+                "email": "newadmin@example.com",
+                "password": "Secure!123",
+                "role": "admin",
+            },
+        )
+        assert resp.status_code == 201
+        data = await resp.get_json()
+        assert data["role"] == "admin"
+
+    async def test_list_users_response_field_set_is_exactly_todays(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """@validate_response pins the list user record to its exact field set (no extra PII).
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user()
+        user.created_at = datetime(2025, 1, 1)
+        user.last_login_at = datetime(2025, 1, 2)
+        app_mock_db.return_value.select.return_value = make_select_result([user])
+
+        resp = await client.get("/api/v1/users", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert set(data.keys()) == {"users", "total", "pagination"}
+        assert set(data["users"][0].keys()) == {
+            "id",
+            "username",
+            "email",
+            "role",
+            "organization_id",
+            "enabled",
+            "created_at",
+            "last_login_at",
+        }
+
+    async def test_get_user_response_field_set_is_exactly_todays(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """@validate_response pins the user detail record to its exact field set.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user()
+        org = make_mock_org()
+        app_mock_db.return_value.select.return_value.first.side_effect = [user, org]
+
+        resp = await client.get("/api/v1/users/1", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert set(data.keys()) == {
+            "id",
+            "username",
+            "email",
+            "role",
+            "organization",
+            "token_quota_daily",
+            "token_quota_monthly",
+            "default_model",
+            "enabled",
+            "created_at",
+            "last_login_at",
+            "login_count",
+        }
+        assert set(data["organization"].keys()) == {"id", "name"}

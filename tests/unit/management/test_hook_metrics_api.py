@@ -215,3 +215,24 @@ class TestHistogramPercentiles:
 
         assert result is not None
         assert result["p50_ms"] <= 10.0
+
+
+class TestHookMetricsResponseSchema:
+    """audit-2026-09-14-wave2: response DTO pins the exact metrics envelope.
+
+    # regression: audit-2026-09-14-wave2
+    """
+
+    async def test_envelope_field_set_is_exact(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """GET /hooks/metrics returns exactly the {status, data, meta} envelope shape."""
+        app_mock_db.return_value.select.return_value = make_select_result([])
+
+        resp = await client.get("/api/v1/hooks/metrics", headers=auth_headers)
+
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == {"rule_hits", "platform"}
+        assert set(body["meta"].keys()) == {"timestamp"}

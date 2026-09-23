@@ -1,18 +1,24 @@
 """WaddleAI Management API v1 - llama.cpp Deployment Management Endpoints."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 import requests
 from quart import jsonify, request
+from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
 from ...extensions import db
 from ...services.llamacpp_manager import LlamaCppManager
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
@@ -20,6 +26,124 @@ logger = logging.getLogger(__name__)
 _MODEL_URL_ERROR = (
     "Invalid model_url: must be an https URL with no control characters or shell metacharacters"
 )
+_MODEL_FILENAME_ERROR = "Invalid model_filename: bare filename only (alphanumeric . - _)"
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI request/response models (audit-2026-09-14-wave2).
+#
+# Request models make every field Optional with the handler's own defaults so
+# quart-schema's automatic validation never pre-empts the handler's own
+# presence checks and their exact error messages. Response models list exactly
+# the fields each handler returns -- a field omitted here is silently dropped
+# from the response by quart-schema, which is precisely the client-breaking
+# regression these models exist to prevent.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class PageMeta:
+    """Pagination metadata block emitted by ``PageRequest.meta``."""
+
+    page: int
+    limit: int
+    total: int | None
+    pages: int | None
+
+
+@dataclass(slots=True)
+class LlamaCppDeployment:
+    """A llama.cpp deployment row, exactly as ``_deployment_to_dict`` serialises it."""
+
+    id: int
+    name: str
+    deployment_type: str | None
+    status: str | None
+    status_message: str | None
+    model_name: str | None
+    model_url: str | None
+    model_filename: str | None
+    n_ctx: int | None
+    n_gpu_layers: int | None
+    gpu_count: int | None
+    endpoint_url: str | None
+    k8s_namespace: str | None
+    k8s_daemonset_name: str | None
+    node_selector: dict[str, Any] | None
+    node_affinity: dict[str, Any] | None
+    created_at: str | None
+    modified_at: str | None
+
+
+@dataclass(slots=True)
+class LlamaCppDeploymentListResponse:
+    """Response body for GET /api/v1/llamacpp/deployments."""
+
+    deployments: list[LlamaCppDeployment]
+    pagination: PageMeta
+
+
+@dataclass(slots=True)
+class CreateLlamaCppDeploymentRequest:
+    """Request body for POST /api/v1/llamacpp/deployments. Every field optional."""
+
+    name: str | None = None
+    model_name: str | None = None
+    model_url: str | None = None
+    model_filename: str | None = None
+    deployment_type: str | None = "kubernetes"
+    n_ctx: int | None = 4096
+    n_gpu_layers: int | None = -1
+    gpu_count: int | None = 1
+    endpoint_url: str | None = None
+    k8s_namespace: str | None = "waddleai"
+    node_selector: dict[str, Any] | None = None
+    node_affinity: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class CreateLlamaCppDeploymentResponse:
+    """Response body for a successful POST /api/v1/llamacpp/deployments."""
+
+    deployment_id: int
+    message: str
+
+
+# NOTE: the PATCH body is parsed and validated in-handler (not via a
+# @validate_request model) so the deployment existence/running checks (404/409)
+# fire ahead of any body 400 -- see update_llamacpp_deployment and regression
+# 44cc384.
+
+
+@dataclass(slots=True)
+class MessageResponse:
+    """Generic ``{"message": str}`` envelope used by several llama.cpp endpoints."""
+
+    message: str
+
+
+@dataclass(slots=True)
+class DeployResponse:
+    """Response body for POST /api/v1/llamacpp/deployments/<id>/deploy."""
+
+    message: str
+    deployment_id: int
+
+
+@dataclass(slots=True)
+class LlamaCppHealthResponse:
+    """Health-check response -- the union of every 200 branch's fields.
+
+    Only ``status`` is always present; the remaining fields are populated per
+    branch (``reason`` when no endpoint is set, ``endpoint`` when healthy,
+    ``http_status``/``error`` when unhealthy) and default to ``None`` otherwise.
+    """
+
+    status: str
+    reason: str | None = None
+    endpoint: str | None = None
+    http_status: int | None = None
+    error: str | None = None
 
 
 def _validate_model_url(url: str) -> bool:
@@ -80,7 +204,7 @@ def _validate_model_filename(filename: str) -> bool:
     return True
 
 
-def _deployment_to_dict(dep) -> dict:
+def _deployment_to_dict(dep: Any) -> dict[str, Any]:
     """Convert a LlamaCppDeployment model to a dict for JSON response."""
     return {
         "id": dep.id,
@@ -107,20 +231,33 @@ def _deployment_to_dict(dep) -> dict:
 @api_v1_bp.route("/llamacpp/deployments", methods=["GET"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
+@validate_response(LlamaCppDeploymentListResponse, 200)
 async def list_llamacpp_deployments():
-    """List all llama.cpp deployments."""
-    deployments = await asyncio.to_thread(lambda: db(db.llamacpp_deployments.id > 0).select())
-    return jsonify({"deployments": [_deployment_to_dict(d) for d in deployments]}), 200
+    """List all llama.cpp deployments (bounded page)."""
+    page = PageRequest.from_request()
+
+    def _fetch():
+        query = db.llamacpp_deployments.id > 0
+        total = db(query).count()
+        rows = db(query).select(limitby=page.limitby, orderby=db.llamacpp_deployments.id)
+        return total, list(rows)
+
+    total, deployments = await asyncio.to_thread(_fetch)
+    return {
+        "deployments": [_deployment_to_dict(d) for d in deployments],
+        **page.meta(total),
+    }, 200
 
 
 @api_v1_bp.route("/llamacpp/deployments", methods=["POST"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
-async def create_llamacpp_deployment():
+@validate_response(CreateLlamaCppDeploymentResponse, 201)
+@validate_request(CreateLlamaCppDeploymentRequest)
+async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
     """Create a new llama.cpp deployment."""
-    data = (await request.get_json()) or {}
-    name = data.get("name", "").strip()
-    model_name = data.get("model_name", "").strip()
+    name = (data.name or "").strip()
+    model_name = (data.model_name or "").strip()
 
     if not name:
         return jsonify({"error": "name is required"}), 400
@@ -128,18 +265,16 @@ async def create_llamacpp_deployment():
         return jsonify({"error": "model_name is required"}), 400
 
     # Vuln D fix: validate model_url and model_filename at API layer
-    model_url = data.get("model_url", "").strip()
-    model_filename = data.get("model_filename", "").strip()
+    model_url = (data.model_url or "").strip()
+    model_filename = (data.model_filename or "").strip()
 
     if model_url and not _validate_model_url(model_url):
         return jsonify({"error": _MODEL_URL_ERROR}), 400
 
     if model_filename and not _validate_model_filename(model_filename):
-        return jsonify(
-            {"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}
-        ), 400
+        return jsonify({"error": _MODEL_FILENAME_ERROR}), 400
 
-    deployment_type = data.get("deployment_type", "kubernetes")
+    deployment_type = data.deployment_type or "kubernetes"
 
     def _create():
         mgr = LlamaCppManager(db)
@@ -148,27 +283,28 @@ async def create_llamacpp_deployment():
             deployment_type=deployment_type,
             status="pending",
             model_name=model_name,
-            model_url=data.get("model_url"),
-            model_filename=data.get("model_filename"),
-            n_ctx=data.get("n_ctx", 4096),
-            n_gpu_layers=data.get("n_gpu_layers", -1),
-            gpu_count=data.get("gpu_count", 1),
-            endpoint_url=data.get("endpoint_url"),
-            k8s_namespace=data.get("k8s_namespace", "waddleai"),
+            model_url=data.model_url,
+            model_filename=data.model_filename,
+            n_ctx=data.n_ctx if data.n_ctx is not None else 4096,
+            n_gpu_layers=data.n_gpu_layers if data.n_gpu_layers is not None else -1,
+            gpu_count=data.gpu_count if data.gpu_count is not None else 1,
+            endpoint_url=data.endpoint_url,
+            k8s_namespace=data.k8s_namespace or "waddleai",
             k8s_daemonset_name=mgr._daemonset_name(name),
-            node_selector=data.get("node_selector"),
-            node_affinity=data.get("node_affinity"),
+            node_selector=data.node_selector,
+            node_affinity=data.node_affinity,
         )
         db.commit()
         return new_id
 
     dep_id = await asyncio.to_thread(_create)
-    return jsonify({"deployment_id": dep_id, "message": "Deployment created"}), 201
+    return {"deployment_id": dep_id, "message": "Deployment created"}, 201
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["GET"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
+@validate_response(LlamaCppDeployment, 200)
 async def get_llamacpp_deployment(deployment_id):
     """Get a specific llama.cpp deployment."""
     dep = await asyncio.to_thread(
@@ -176,14 +312,24 @@ async def get_llamacpp_deployment(deployment_id):
     )
     if not dep:
         return jsonify({"error": "Deployment not found"}), 404
-    return jsonify(_deployment_to_dict(dep)), 200
+    return _deployment_to_dict(dep), 200
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["PATCH"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
+@validate_response(MessageResponse, 200)
 async def update_llamacpp_deployment(deployment_id):
-    """Update a llama.cpp deployment (can only update stopped deployments)."""
+    """Update a llama.cpp deployment (can only update stopped deployments).
+
+    The existence/running checks run BEFORE the body is parsed, so a missing
+    deployment returns 404 (and a running one 409) even when the body is
+    non-JSON/absent. This is a deliberate ordering contract
+    (tests/contract/test_management_mutations.py, regression 44cc384):
+    @validate_request is intentionally NOT used here because it would parse the
+    body ahead of the handler and 400 first. The body is parsed and its
+    security-sensitive fields validated in-handler after those checks.
+    """
 
     def _check():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
@@ -212,7 +358,7 @@ async def update_llamacpp_deployment(deployment_id):
         "node_selector",
         "node_affinity",
     }
-    updates = {k: v for k, v in data.items() if k in allowed}
+    updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
 
     # Vuln D fix: validate model_url and model_filename in PATCH too
     if "model_url" in updates:
@@ -223,9 +369,7 @@ async def update_llamacpp_deployment(deployment_id):
     if "model_filename" in updates:
         model_filename = str(updates["model_filename"]).strip()
         if model_filename and not _validate_model_filename(model_filename):
-            return jsonify(
-                {"error": "Invalid model_filename: bare filename only (alphanumeric . - _)"}
-            ), 400
+            return jsonify({"error": _MODEL_FILENAME_ERROR}), 400
 
     def _update():
         if updates:
@@ -235,12 +379,13 @@ async def update_llamacpp_deployment(deployment_id):
 
     await asyncio.to_thread(_update)
 
-    return jsonify({"message": "Deployment updated"}), 200
+    return {"message": "Deployment updated"}, 200
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
+@validate_response(MessageResponse, 200)
 async def delete_llamacpp_deployment(deployment_id):
     """Delete a llama.cpp deployment."""
     force = request.args.get("force", "").lower() == "true"
@@ -271,12 +416,13 @@ async def delete_llamacpp_deployment(deployment_id):
     if result == "running":
         return jsonify({"error": "Deployment is running. Use ?force=true to delete it."}), 409
 
-    return jsonify({"message": "Deployment deleted"}), 200
+    return {"message": "Deployment deleted"}, 200
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/deploy", methods=["POST"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
+@validate_response(DeployResponse, 200)
 async def deploy_llamacpp(deployment_id):
     """Deploy a llama.cpp deployment (create DaemonSet or register remote endpoint)."""
 
@@ -303,12 +449,13 @@ async def deploy_llamacpp(deployment_id):
     if status == "error":
         return jsonify({"error": error}), 503
 
-    return jsonify({"message": "Deployment initiated", "deployment_id": deployment_id}), 200
+    return {"message": "Deployment initiated", "deployment_id": deployment_id}, 200
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/remove", methods=["POST"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
+@validate_response(MessageResponse, 200)
 async def remove_llamacpp(deployment_id):
     """Remove a running llama.cpp deployment."""
 
@@ -336,12 +483,13 @@ async def remove_llamacpp(deployment_id):
     if status == "error":
         return jsonify({"error": error}), 503
 
-    return jsonify({"message": "Deployment removed"}), 200
+    return {"message": "Deployment removed"}, 200
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/health", methods=["GET"])
 @require_auth
 @require_scope(Permission.LLAMACPP_ADMIN)
+@validate_response(LlamaCppHealthResponse, 200)
 async def check_llamacpp_health(deployment_id):
     """Check the health status of a llama.cpp deployment."""
 
@@ -366,12 +514,12 @@ async def check_llamacpp_health(deployment_id):
     if status == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
     if status == "no_endpoint":
-        return jsonify({"status": "unknown", "reason": "endpoint_url not set"}), 200
+        return {"status": "unknown", "reason": "endpoint_url not set"}, 200
     if status == "healthy":
-        return jsonify({"status": "healthy", "endpoint": payload}), 200
+        return {"status": "healthy", "endpoint": payload}, 200
     if status == "unhealthy_status":
-        return jsonify({"status": "unhealthy", "http_status": payload}), 200
-    return jsonify({"status": "unhealthy", "error": payload}), 200
+        return {"status": "unhealthy", "http_status": payload}, 200
+    return {"status": "unhealthy", "error": payload}, 200
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>/export/k8s", methods=["GET"])

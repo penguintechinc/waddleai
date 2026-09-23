@@ -788,3 +788,101 @@ class TestExportUsage:
         """Missing auth returns 401."""
         resp = await client.get("/api/v1/usage/export")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Wave-2 audit: role-name -> OIDC-scope conversion regression tests.
+#
+# The per-tier SELECT scoping in summary/by-model/by-provider/by-key/cost/
+# export (admin -> all orgs, resource_manager/reporter -> own org, user ->
+# own records) is NOT status-observable under the mocked DB: every tier
+# returns 200 with the same mocked rows because the mock ignores the query.
+# Those conversions are covered by the existing per-role 200 tests above.
+# The status-observable gates are the two below (cache-stats org isolation
+# and the by-user decorator scope), each proven refuse/allow here.
+# admin holds ANALYTICS_SYSTEM (admin-only); resource_manager and user do not.
+# ---------------------------------------------------------------------------
+
+
+class TestUsageScopeAuthzWave2:
+    """Scope-gate conversions in usage.py (regression: audit-2026-09-14-wave2)."""
+
+    async def test_cache_stats_rm_denied_other_org(self, client, rm_auth_headers: dict) -> None:
+        """resource_manager (no ANALYTICS_SYSTEM) may not query another org's cache stats → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        resp = await client.get("/api/v1/usage/cache-stats?org_id=999", headers=rm_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_cache_stats_admin_allowed_other_org(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Admin (ANALYTICS_SYSTEM) may query any org's cache stats → 200.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.side_effect = [make_select_result([])]
+
+        resp = await client.get("/api/v1/usage/cache-stats?org_id=42", headers=auth_headers)
+        assert resp.status_code == 200
+        data = (await resp.get_json())["data"]
+        assert data["organization_id"] == 42
+
+    async def test_cache_stats_rm_defaults_to_own_org(
+        self, client, app_mock_db: MagicMock, rm_auth_headers: dict
+    ) -> None:
+        """resource_manager with no org param is pinned to its own org → 200, org 1.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.side_effect = [make_select_result([])]
+
+        resp = await client.get("/api/v1/usage/cache-stats", headers=rm_auth_headers)
+        assert resp.status_code == 200
+        data = (await resp.get_json())["data"]
+        assert data["organization_id"] == 1
+
+    async def test_by_user_plain_user_denied_by_scope(
+        self, client, user_auth_headers: dict
+    ) -> None:
+        """Plain user (no USAGE_READ_BY_USER) is refused the by-user breakdown → 403.
+
+        regression: audit-2026-09-14-wave2
+        """
+        resp = await client.get("/api/v1/usage/by-user", headers=user_auth_headers)
+        assert resp.status_code == 403
+
+    async def test_summary_response_field_set_is_exactly_todays(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """@validate_response pins the usage-summary body to its exact field set.
+
+        regression: audit-2026-09-14-wave2
+        """
+        rec = make_mock_token_usage()
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([rec]),
+            make_select_result([rec]),
+        ]
+
+        resp = await client.get("/api/v1/usage/summary", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert set(data.keys()) == {"summary"}
+        assert set(data["summary"]["daily"].keys()) == {
+            "date",
+            "waddleai_tokens",
+            "tokens_input",
+            "tokens_output",
+            "requests",
+            "cost_usd",
+        }
+        assert set(data["summary"]["monthly"].keys()) == {
+            "month",
+            "waddleai_tokens",
+            "tokens_input",
+            "tokens_output",
+            "requests",
+            "cost_usd",
+        }

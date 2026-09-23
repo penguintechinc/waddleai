@@ -522,11 +522,13 @@ class TestChatCompletions:
         assert resp.status_code == 400
         assert body["error"]["type"] == "error"
 
-    async def test_malformed_body_returns_500(self, running_app):
-        """A non-JSON body raises inside request.get_json(); the broad except maps it to 500.
+    async def test_malformed_body_returns_400(self, running_app):
+        """A non-JSON body is now rejected with a 400 in the OpenAI error envelope.
 
-        Matches tests/contract/test_proxy_contract.py's documented current
-        (non-idealized) behavior for this exact input.
+        # regression: audit-2026-09-14-wave2 -- previously the BadRequest from
+        # request.get_json() was caught by the outer `except` and reported as a
+        # generic 500 (a documented bug the old snapshot pinned). Input
+        # validation now returns a format-correct 400 before any pipeline work.
         """
         client = running_app.test_client()
         resp = await client.post(
@@ -534,7 +536,25 @@ class TestChatCompletions:
             headers={**_bearer_headers(), "Content-Type": "application/json"},
             data=b"not-json",
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        body = await resp.get_json()
+        assert body["error"]["type"] == "invalid_request_error"
+
+    async def test_missing_messages_returns_400(self, running_app):
+        """A JSON body without `messages` is rejected with a 400, not passed to the pipeline.
+
+        # regression: audit-2026-09-14-wave2
+        """
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo"},
+        )
+        assert resp.status_code == 400
+        body = await resp.get_json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "messages" in body["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -1256,12 +1276,23 @@ class TestMemoryStats:
     """GET /api/memory/stats."""
 
     async def test_success_returns_stats_dict(self, running_app):
-        """Returns whatever the memory manager reports (fail-closed defaults against sqlite)."""
+        """Returns the memory stats projected onto the reviewed key set.
+
+        # regression: audit-2026-09-14-wave2 -- the response is built from an
+        # explicit allowlist, so a field added to get_memory_stats() cannot leak.
+        """
         client = running_app.test_client()
         resp = await client.get("/api/memory/stats", headers=_bearer_headers())
         assert resp.status_code == 200
         body = await resp.get_json()
         assert isinstance(body, dict)
+        assert set(body.keys()) == {
+            "total_memories",
+            "average_content_length",
+            "daily_counts",
+            "oldest_memory",
+            "newest_memory",
+        }
 
     async def test_get_memory_stats_exception_returns_500(self, running_app, monkeypatch):
         """A get_memory_stats() exception maps to 500."""
@@ -1313,12 +1344,25 @@ class TestUsageEndpoint:
     """GET /api/usage."""
 
     async def test_success_returns_usage_stats(self, running_app):
-        """Returns the token manager's usage stats for the caller's API key."""
+        """Returns the token manager's usage stats projected onto the reviewed key set.
+
+        # regression: audit-2026-09-14-wave2 -- the response is now built from an
+        # explicit allowlist so no field added to get_usage_stats() can escape.
+        """
         client = running_app.test_client()
         resp = await client.get("/api/usage", headers=_bearer_headers())
         assert resp.status_code == 200
         body = await resp.get_json()
         assert isinstance(body, dict)
+        assert set(body.keys()) == {
+            "total_waddleai_tokens",
+            "total_llm_input_tokens",
+            "total_llm_output_tokens",
+            "total_requests",
+            "llm_breakdown",
+            "daily_usage",
+            "average_daily",
+        }
 
     async def test_get_usage_stats_exception_returns_500(self, running_app, monkeypatch):
         """A get_usage_stats() exception maps to 500."""
@@ -1336,7 +1380,12 @@ class TestQuotaEndpoint:
     """GET /api/quota."""
 
     async def test_success_returns_quota_ok_and_info(self, running_app):
-        """Returns quota_ok plus the daily/monthly quota breakdown."""
+        """Returns quota_ok plus the daily/monthly quota breakdown, no `**` splat leak.
+
+        # regression: audit-2026-09-14-wave2 -- the response is built from an
+        # explicit key allowlist instead of splatting whatever check_quota()
+        # returned, so no unreviewed key can escape.
+        """
         client = running_app.test_client()
         resp = await client.get("/api/quota", headers=_bearer_headers())
         body = await resp.get_json()
@@ -1344,6 +1393,7 @@ class TestQuotaEndpoint:
         assert "quota_ok" in body
         assert "daily" in body
         assert "monthly" in body
+        assert set(body.keys()) <= {"quota_ok", "daily", "monthly", "error"}
 
     async def test_check_quota_exception_returns_500(self, running_app, monkeypatch):
         """A check_quota() exception maps to 500."""
@@ -1421,15 +1471,38 @@ class TestClaudeMessages:
         assert resp.status_code == 400
         assert body["error"]["type"] == "invalid_request_error"
 
-    async def test_malformed_body_returns_500(self, running_app):
-        """A non-JSON body raises inside request.get_json(); the broad except maps it to 500."""
+    async def test_malformed_body_returns_400(self, running_app):
+        """A non-JSON body is now rejected with a 400 in the Anthropic error envelope.
+
+        # regression: audit-2026-09-14-wave2 -- previously surfaced as a generic
+        # 500 (documented bug the old snapshot pinned); validation now returns a
+        # format-correct 400 before any pipeline work.
+        """
         client = running_app.test_client()
         resp = await client.post(
             "/v1/messages",
             headers={**_bearer_headers(), "Content-Type": "application/json"},
             data=b"not-json",
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        body = await resp.get_json()
+        assert body["error"]["type"] == "invalid_request_error"
+
+    async def test_missing_messages_returns_400(self, running_app):
+        """A JSON body without `messages` is rejected with a 400 before the pipeline runs.
+
+        # regression: audit-2026-09-14-wave2
+        """
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={"model": "claude-3-sonnet-20240229", "max_tokens": 100},
+        )
+        assert resp.status_code == 400
+        body = await resp.get_json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "messages" in body["error"]["message"]
 
     async def test_cache_flag_enabled_adds_waddleai_usage_block(self, running_app, monkeypatch):
         """With waddleai.response_cache on, usage.waddleai is populated (§6.4), never omitted.

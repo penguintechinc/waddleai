@@ -16,11 +16,13 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from penguin_dal.db import DB
 from quart import g, jsonify, request
+from quart_schema import validate_response
 
 from shared.auth.rbac import Permission
 from shared.knowledge.embed import embed_cached
@@ -35,12 +37,56 @@ from ...services.content_filter_deps import (
     get_content_filter_license_client,
 )
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
 
 _FLAG_KEY = "waddleai.knowledge_ingest"
 _ALLOWED_EXTENSIONS = (".pdf", ".md", ".markdown", ".txt")
+
+
+# ---------------------------------------------------------------------------
+# quart-schema response models (audit-2026-09-14 wave2). Upload is a
+# multipart file upload, not a JSON body, so it carries no @validate_request.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class KnowledgeDoc:
+    """Exact response schema for one rag_documents knowledge row (mirrors `_serialize`)."""
+
+    id: int
+    content: str
+    source: str | None
+    provenance: Any
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class KnowledgeListResponse:
+    """Response body for GET /knowledge."""
+
+    documents: list[KnowledgeDoc]
+    pagination: dict[str, Any]
+
+
+@dataclass(slots=True)
+class UploadKnowledgeResponse:
+    """Response body for POST /knowledge."""
+
+    status: str
+    document_ids: list[int]
+    chunks: int
+    provenance: Any
+
+
+@dataclass(slots=True)
+class DeleteKnowledgeResponse:
+    """Response body for DELETE /knowledge/<id>."""
+
+    status: str
+    id: int
 
 
 def _db() -> DB:
@@ -95,6 +141,7 @@ def _serialize(row: Any) -> dict[str, Any]:
 @api_v1_bp.route("/knowledge", methods=["POST"])
 @require_auth
 @require_scope(Permission.KNOWLEDGE_WRITE)
+@validate_response(UploadKnowledgeResponse, 201)
 async def upload_knowledge():
     """Upload a PDF or Markdown document into the org knowledge base (§9.3)."""
     org_id = g.user.get("organization_id")
@@ -156,14 +203,12 @@ async def upload_knowledge():
         document_ids.append(doc_id)
 
     return (
-        jsonify(
-            {
-                "status": "created",
-                "document_ids": document_ids,
-                "chunks": len(chunks),
-                "provenance": provenance,
-            }
-        ),
+        {
+            "status": "created",
+            "document_ids": document_ids,
+            "chunks": len(chunks),
+            "provenance": provenance,
+        },
         201,
     )
 
@@ -190,8 +235,10 @@ def _insert_document(
 
 @api_v1_bp.route("/knowledge", methods=["GET"])
 @require_auth
+@validate_response(KnowledgeListResponse, 200)
 async def list_knowledge():
     """List uploaded knowledge documents for the caller's org (§9.3)."""
+    page = PageRequest.from_request()
     org_id = g.user.get("organization_id")
     if not _knowledge_ingest_enabled(org_id):
         return jsonify({"error": "knowledge_ingest feature disabled"}), 404
@@ -200,14 +247,15 @@ async def list_knowledge():
         database = _db()
         docs = database.rag_documents
         query = (docs.organization_id == org_id) & (docs.collection == "knowledge")
-        return list(database(query).select())
+        return list(database(query).select(limitby=page.limitby, orderby=docs.id))
 
     rows = await asyncio.to_thread(_fetch)
-    return jsonify({"documents": [_serialize(r) for r in rows]}), 200
+    return {"documents": [_serialize(r) for r in rows], **page.meta()}, 200
 
 
 @api_v1_bp.route("/knowledge/<int:doc_id>", methods=["GET"])
 @require_auth
+@validate_response(KnowledgeDoc, 200)
 async def get_knowledge(doc_id: int):
     """Fetch a single knowledge document, org-scoped."""
     org_id = g.user.get("organization_id")
@@ -224,12 +272,13 @@ async def get_knowledge(doc_id: int):
     row = await asyncio.to_thread(_fetch)
     if row is None:
         return jsonify({"error": "not found"}), 404
-    return jsonify(_serialize(row)), 200
+    return _serialize(row), 200
 
 
 @api_v1_bp.route("/knowledge/<int:doc_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.KNOWLEDGE_WRITE)
+@validate_response(DeleteKnowledgeResponse, 200)
 async def delete_knowledge(doc_id: int):
     """Delete a knowledge document, org-scoped (IDOR-safe: 404 outside the caller's org)."""
     org_id = g.user.get("organization_id")
@@ -251,4 +300,4 @@ async def delete_knowledge(doc_id: int):
     deleted = await asyncio.to_thread(_delete)
     if not deleted:
         return jsonify({"error": "not found"}), 404
-    return jsonify({"status": "deleted", "id": doc_id}), 200
+    return {"status": "deleted", "id": doc_id}, 200

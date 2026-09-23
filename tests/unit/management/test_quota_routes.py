@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+from shared.auth.rbac import Permission
 from tests.unit.management.conftest import (
     make_mock_key,
     make_mock_org,
@@ -1037,3 +1038,337 @@ class TestSetKeyQuotaRequestValidation:
         )
         assert resp.status_code == 200
         app_mock_db.return_value.update.assert_called_once_with(budget_limit_daily=0.0, tpm_limit=0)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/quotas -- bounded list window
+# PUT /api/v1/quotas/{user,org} -- typed + bounded request bodies
+# regression: audit-2026-09-14-wave2
+# ---------------------------------------------------------------------------
+
+
+class TestListQuotasPagination:
+    """The three unbounded entity selects are now bounded and echo their window."""
+
+    async def test_list_quotas_response_includes_pagination(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A `pagination` block reflecting ?page=&limit= is returned.
+
+        regression: audit-2026-09-14-wave2 -- absent before the bounded-select
+        change, so the assertion fails pre-change.
+        """
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [empty, empty, empty]
+
+        resp = await client.get("/api/v1/quotas?page=3&limit=10", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["pagination"]["page"] == 3
+        assert body["pagination"]["limit"] == 10
+
+
+class TestSetUserQuotaRequestValidation:
+    """PUT /api/v1/quotas/user/<id> now type-checks and range-checks its body."""
+
+    async def test_non_numeric_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A non-numeric token quota is refused with 400, never persisted.
+
+        regression: audit-2026-09-14-wave2 -- pre-change the raw JSON value went
+        straight to db.update() and returned 200, so this fails before
+        @validate_request was added.
+        """
+        user = make_mock_user(user_id=5, role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_daily": "not-a-number"},
+        )
+        assert resp.status_code == 400
+
+    async def test_negative_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A negative token quota is refused with 400.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=5, role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_daily": -5},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_absurd_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An out-of-range token quota is refused with 400.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=5, role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_monthly": 10**15},
+        )
+        assert resp.status_code == 400
+
+    async def test_valid_quota_response_has_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A valid update returns exactly {user_id, username, message}.
+
+        regression: audit-2026-09-14-wave2 -- @validate_response pins the shape.
+        """
+        user = make_mock_user(user_id=5, username="quotauser", role="user", org_id=1)
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        resp = await client.put(
+            "/api/v1/quotas/user/5",
+            headers=auth_headers,
+            json={"token_quota_daily": 50000},
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"user_id", "username", "message"}
+
+
+class TestSetOrgQuotaRequestValidation:
+    """PUT /api/v1/quotas/org/<id> now type-checks and range-checks its body."""
+
+    async def test_non_numeric_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A non-numeric org quota is refused with 400.
+
+        regression: audit-2026-09-14-wave2 -- pre-change it reached db.update()
+        and returned 200.
+        """
+        org = make_mock_org(org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = org
+
+        resp = await client.put(
+            "/api/v1/quotas/org/2",
+            headers=auth_headers,
+            json={"token_quota_daily": "lots"},
+        )
+        assert resp.status_code == 400
+
+    async def test_absurd_quota_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An out-of-range org quota is refused with 400.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = org
+
+        resp = await client.put(
+            "/api/v1/quotas/org/2",
+            headers=auth_headers,
+            json={"token_quota_monthly": -1},
+        )
+        assert resp.status_code == 400
+        app_mock_db.return_value.update.assert_not_called()
+
+    async def test_valid_quota_response_has_exact_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A valid update returns exactly {organization_id, organization_name, message}.
+
+        regression: audit-2026-09-14-wave2.
+        """
+        org = make_mock_org(org_id=2, name="Acme")
+        app_mock_db.return_value.select.return_value.first.return_value = org
+
+        resp = await client.put(
+            "/api/v1/quotas/org/2",
+            headers=auth_headers,
+            json={"token_quota_daily": 500000},
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"organization_id", "organization_name", "message"}
+
+
+# ---------------------------------------------------------------------------
+# audit-2026-09-14-wave2: QUOTA_ADMIN scope reconciliation.
+#
+# The admin cross-org "any entity's quota" bypass in list_quotas (not HTTP-
+# observable under the mocked DB), set_user_quota, set_key_quota and
+# get_quota_status (key/user/org) was converted from `role == "admin"` to the
+# admin-only `quota:admin` scope. QUOTA_ORG_UPDATE was NOT reused: it is
+# write-org-specific, whereas these bypasses span cross-entity reads and key
+# writes. A DIVERGENT token (role=resource_manager + scope containing
+# quota:admin) is admitted cross-org (200); the same role WITHOUT quota:admin
+# is refused (403) -- proving the gate is the scope, not the role name.
+# Own-org access for a plain resource_manager is covered by the pre-existing
+# test_set_user_quota_resource_manager_own_org / _own_key success tests.
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaAdminScopeReconciliation:
+    """quota:admin gates the cross-org quota bypass, not the role name."""
+
+    async def test_set_user_quota_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + quota:admin sets a non-admin user's quota in another org.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=5, org_id=2, role="user")
+        app_mock_db.return_value.select.return_value.first.return_value = user
+        headers = divergent_headers([Permission.QUOTA_UPDATE, Permission.QUOTA_ADMIN])
+        resp = await client.put(
+            "/api/v1/quotas/user/5", headers=headers, json={"token_quota_daily": 25000}
+        )
+        assert resp.status_code == 200
+
+    async def test_set_user_quota_without_admin_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) quota:update but NOT quota:admin -> cross-org user quota refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=5, org_id=2, role="user")
+        app_mock_db.return_value.select.return_value.first.return_value = user
+        headers = divergent_headers([Permission.QUOTA_UPDATE])
+        resp = await client.put(
+            "/api/v1/quotas/user/5", headers=headers, json={"token_quota_daily": 25000}
+        )
+        assert resp.status_code == 403
+
+    async def test_set_key_quota_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + quota:admin sets another org's key quota.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=10, org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        headers = divergent_headers([Permission.QUOTA_UPDATE, Permission.QUOTA_ADMIN])
+        resp = await client.put("/api/v1/quotas/key/10", headers=headers, json={"tpm_limit": 15000})
+        assert resp.status_code == 200
+
+    async def test_set_key_quota_without_admin_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) quota:update but NOT quota:admin -> cross-org key quota refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=10, org_id=2)
+        app_mock_db.return_value.select.return_value.first.return_value = key
+        headers = divergent_headers([Permission.QUOTA_UPDATE])
+        resp = await client.put("/api/v1/quotas/key/10", headers=headers, json={"tpm_limit": 15000})
+        assert resp.status_code == 403
+
+    async def test_quota_status_key_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) quota:admin reads another org's KEY quota status.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=10, user_id=99, org_id=2)
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([key]), empty, empty]
+        headers = divergent_headers([Permission.QUOTA_ADMIN])
+        resp = await client.get("/api/v1/quotas/status/10?type=key", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_quota_status_key_without_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no quota:admin -> cross-org KEY quota status refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        key = make_mock_key(key_id=10, user_id=99, org_id=2)
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([key]), empty, empty]
+        resp = await client.get("/api/v1/quotas/status/10?type=key", headers=divergent_headers([]))
+        assert resp.status_code == 403
+
+    async def test_quota_status_user_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) quota:admin reads another org's USER quota status.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=8, org_id=2, role="user")
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([user]), empty, empty]
+        headers = divergent_headers([Permission.QUOTA_ADMIN])
+        resp = await client.get("/api/v1/quotas/status/8?type=user", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_quota_status_user_without_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no quota:admin -> cross-org USER quota status refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        user = make_mock_user(user_id=8, org_id=2, role="user")
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([user]), empty, empty]
+        resp = await client.get("/api/v1/quotas/status/8?type=user", headers=divergent_headers([]))
+        assert resp.status_code == 403
+
+    async def test_quota_status_org_divergent_admin_scope_allows_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) quota:admin reads another ORG's quota status.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=2, name="OtherOrg")
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([org]), empty, empty]
+        headers = divergent_headers([Permission.QUOTA_ADMIN])
+        resp = await client.get("/api/v1/quotas/status/2?type=org", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_quota_status_org_without_scope_refused_cross_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no quota:admin -> cross-org ORG quota status refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=2, name="OtherOrg")
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([org]), empty, empty]
+        resp = await client.get("/api/v1/quotas/status/2?type=org", headers=divergent_headers([]))
+        assert resp.status_code == 403
+
+    async def test_quota_status_org_own_org_still_works_without_scope(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still reads its OWN org's quota status without the scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        org = make_mock_org(org_id=1, name="OwnOrg")
+        empty = make_select_result([])
+        app_mock_db.return_value.select.side_effect = [make_select_result([org]), empty, empty]
+        resp = await client.get("/api/v1/quotas/status/1?type=org", headers=divergent_headers([]))
+        assert resp.status_code == 200

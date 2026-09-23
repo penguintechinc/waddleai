@@ -10,7 +10,22 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 import services.management.app.api.v1.routing_assignments as routing_assignments_mod
+from shared.auth.rbac import Permission
 from tests.unit.management.conftest import make_select_result
+
+
+@pytest.fixture(autouse=True)
+def _default_pagination_count(app_mock_db):
+    """Default ``db(...).count()`` to an int for the pagination envelope.
+
+    List handlers now run a bounded ``select(limitby=...)`` plus a ``count()``,
+    so ``@validate_response`` needs an int total even when a test only stubs
+    ``.select()``. Tests asserting on ``pagination.total`` override it.
+
+    regression: audit-2026-09-14-wave2
+    """
+    app_mock_db.return_value.count.return_value = 0
+    return app_mock_db
 
 
 def _assignment_row(**overrides) -> Mock:
@@ -441,8 +456,13 @@ class TestRoutingAssignments:
 
     # -- update_entry --------------------------------------------------------
 
-    async def test_update_requires_body(self, client, auth_headers: dict) -> None:
-        """An empty JSON body ({}) returns 400."""
+    async def test_update_requires_body(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An empty JSON body ({}) has no updatable fields -> 400 (row exists)."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row(
+            scope="global", scope_ref=None
+        )
         resp = await client.put("/api/v1/routing/assignments/1", headers=auth_headers, json={})
         assert resp.status_code == 400
 
@@ -612,17 +632,28 @@ class TestRoutingAssignments:
         warnings = await routing_assignments_mod._capability_warnings("gpt-4o")
         assert warnings == []
 
-    # -- _can_write (direct) -- unreachable-via-HTTP branch --------------
+    # -- _can_write (direct) -- scope-based guard ------------------------
 
-    def test_can_write_denies_roles_other_than_admin_or_resource_manager(self) -> None:
-        """A role with neither admin nor resource_manager write access is always denied.
+    def test_can_write_scope_based_authorization(self) -> None:
+        """_can_write is scope-based (audit-2026-09-14), not role-name based.
 
-        Unreachable through the HTTP layer (require_scope already blocks any
-        other role before _can_write ever runs) -- exercised directly for
-        full branch coverage of that guard.
+        regression: audit-2026-09-14-wave2 -- ``routing_assignment:admin`` may
+        write anything (global or any org); a ``routing_assignment:write``-only
+        caller may write only their own org's org-scoped rows, never a global
+        row and never another org's; no relevant scope is always denied.
         """
-        assert routing_assignments_mod._can_write("user", 1, "org", 1) is False
-        assert routing_assignments_mod._can_write("reporter", None, "global", None) is False
+        write = {Permission.ROUTING_ASSIGNMENT_WRITE.value}
+        admin = {Permission.ROUTING_ASSIGNMENT_ADMIN.value}
+        # No relevant scope at all -> denied (former role="user"/"reporter").
+        assert routing_assignments_mod._can_write(set(), 1, "org", 1) is False
+        assert routing_assignments_mod._can_write(set(), None, "global", None) is False
+        # admin scope -> may write global and any org.
+        assert routing_assignments_mod._can_write(admin, 1, "global", None) is True
+        assert routing_assignments_mod._can_write(admin, 1, "org", 99) is True
+        # write-only scope -> own org only, never global, never another org.
+        assert routing_assignments_mod._can_write(write, 5, "org", 5) is True
+        assert routing_assignments_mod._can_write(write, 5, "global", None) is False
+        assert routing_assignments_mod._can_write(write, 5, "org", 6) is False
 
 
 class TestSeedAssignments:
@@ -959,8 +990,11 @@ class TestRoutingRules:
 
     # -- update_rule -----------------------------------------------------
 
-    async def test_update_requires_body(self, client, auth_headers: dict) -> None:
-        """An empty JSON body ({}) returns 400."""
+    async def test_update_requires_body(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An empty JSON body ({}) has no updatable fields -> 400 (row exists)."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
         resp = await client.put("/api/v1/routing/rules/1", headers=auth_headers, json={})
         assert resp.status_code == 400
 
@@ -1291,3 +1325,502 @@ class TestRoutingDryRun:
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["meta"]["organization_id"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Response-schema exact-field regression (@validate_response guard)
+# ---------------------------------------------------------------------------
+
+
+_ASSIGNMENT_KEYS = {
+    "id",
+    "tool_type",
+    "complexity",
+    "region",
+    "model_name",
+    "model_params",
+    "vram_gb",
+    "capability_score",
+    "enabled",
+    "credential_label",
+    "escalation_model",
+    "fallback_models",
+    "scope",
+    "scope_ref",
+    "created_at",
+}
+_RULE_KEYS = {
+    "id",
+    "name",
+    "priority",
+    "match",
+    "action",
+    "enabled",
+    "organization_id",
+    "created_at",
+}
+_POLICY_KEYS = {
+    "id",
+    "organization_id",
+    "mode",
+    "escalation_threshold",
+    "escalation_target",
+    "classifier_prompt",
+    "de_escalation",
+    "idle_reset_minutes",
+    "sensitivity_routing",
+    "budget_pressure_enabled",
+    "provider_failover",
+    "created_at",
+    "updated_at",
+}
+_TRACE_KEYS = {
+    "id",
+    "request_id",
+    "organization_id",
+    "timestamp",
+    "requirements",
+    "tool_type",
+    "tool_type_source",
+    "rules_fired",
+    "classifier_output",
+    "assignment_model",
+    "capability_veto",
+    "veto_reason",
+    "qualified_candidates",
+    "pressure_signals",
+    "final_model",
+    "routed_from",
+    "escalated",
+}
+_DRY_RUN_KEYS = {
+    "model",
+    "fallback_chain",
+    "routed_from",
+    "tool_type",
+    "tool_type_source",
+    "rules_fired",
+    "classifier_output",
+    "assignment_model",
+    "capability_veto",
+    "veto_reason",
+    "qualified_candidates",
+    "escalated",
+}
+
+
+class TestResponseSchemaFieldSets:
+    """Assert the EXACT field set of every routing-admin response envelope.
+
+    regression: audit-2026-09-14-wave2 -- @validate_response reserializes each
+    body to its declared model, so a field dropped from a model (or a handler
+    return) disappears from the wire. These pin the contract so a silent drop
+    fails loudly.
+    """
+
+    # -- assignments -----------------------------------------------------
+
+    async def test_assignment_list_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment list fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_assignment_row()])
+        app_mock_db.return_value.count.return_value = 1
+        body = await (
+            await client.get("/api/v1/routing/assignments/", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta", "pagination"}
+        assert set(body["meta"].keys()) == {"total", "timestamp"}
+        assert set(body["pagination"].keys()) == {"page", "limit", "total", "pages"}
+        assert set(body["data"][0].keys()) == _ASSIGNMENT_KEYS
+
+    async def test_assignment_get_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment get fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row()
+        body = await (
+            await client.get("/api/v1/routing/assignments/1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"timestamp"}
+        assert set(body["data"].keys()) == _ASSIGNMENT_KEYS
+
+    async def test_assignment_create_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment create fields."""
+        new_row = _assignment_row(id=7, tool_type="embed")
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, new_row]
+        resp = await client.post(
+            "/api/v1/routing/assignments/",
+            headers=auth_headers,
+            json={"tool_type": "embed", "model_name": "gpt-4o"},
+        )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"action", "warnings", "timestamp"}
+        assert set(body["data"].keys()) == _ASSIGNMENT_KEYS
+
+    async def test_assignment_delete_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment delete fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _assignment_row()
+        body = await (
+            await client.delete("/api/v1/routing/assignments/1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == {"id"}
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+
+    async def test_assignment_seed_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: assignment seed fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        body = await (
+            await client.post("/api/v1/routing/assignments/seed", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == {"created", "updated", "total"}
+        assert set(body["meta"].keys()) == {"timestamp"}
+
+    # -- rules -----------------------------------------------------------
+
+    async def test_rule_list_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule list fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_rule_row()])
+        app_mock_db.return_value.count.return_value = 1
+        body = await (await client.get("/api/v1/routing/rules/", headers=auth_headers)).get_json()
+        assert set(body.keys()) == {"status", "data", "meta", "pagination"}
+        assert set(body["pagination"].keys()) == {"page", "limit", "total", "pages"}
+        assert set(body["data"][0].keys()) == _RULE_KEYS
+
+    async def test_rule_get_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule get fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+        body = await (await client.get("/api/v1/routing/rules/1", headers=auth_headers)).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["data"].keys()) == _RULE_KEYS
+
+    async def test_rule_create_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule create fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=auth_headers,
+            json={"name": "r", "match": {"a": 1}, "action": {"tool_type": "chat"}},
+        )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+        assert set(body["data"].keys()) == _RULE_KEYS
+
+    async def test_rule_delete_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: rule delete fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row()
+        body = await (
+            await client.delete("/api/v1/routing/rules/1", headers=auth_headers)
+        ).get_json()
+        assert set(body["data"].keys()) == {"id"}
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+
+    # -- policies --------------------------------------------------------
+
+    async def test_policy_get_defaults_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: policy get defaults fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        body = await (
+            await client.get("/api/v1/routing/policies/1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"defaulted", "timestamp"}
+        assert set(body["data"].keys()) == _POLICY_KEYS
+
+    async def test_policy_upsert_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: policy upsert fields."""
+        app_mock_db.return_value.select.return_value.first.side_effect = [None, _policy_row()]
+        resp = await client.put(
+            "/api/v1/routing/policies/1", headers=auth_headers, json={"mode": "cost"}
+        )
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+        assert set(body["data"].keys()) == _POLICY_KEYS
+
+    async def test_policy_delete_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: policy delete fields."""
+        app_mock_db.return_value.select.return_value.first.return_value = _policy_row()
+        body = await (
+            await client.delete("/api/v1/routing/policies/1", headers=auth_headers)
+        ).get_json()
+        assert set(body["data"].keys()) == {"organization_id"}
+        assert set(body["meta"].keys()) == {"action", "timestamp"}
+
+    # -- decisions -------------------------------------------------------
+
+    async def test_decision_get_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: decision get fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_trace_row()])
+        body = await (
+            await client.get("/api/v1/routing/decisions/req-1", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"timestamp"}
+        assert set(body["data"].keys()) == _TRACE_KEYS
+
+    async def test_decision_summary_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Exact response field set: decision summary fields."""
+        app_mock_db.return_value.select.return_value = make_select_result([_trace_row()])
+        body = await (
+            await client.get("/api/v1/routing/decisions/", headers=auth_headers)
+        ).get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"organization_id", "from", "to", "timestamp"}
+        assert set(body["data"].keys()) == {
+            "total",
+            "by_tool_type_source",
+            "veto_rate",
+            "pressure_shift_rate",
+            "escalation_rate",
+        }
+
+    # -- dry run ---------------------------------------------------------
+
+    async def test_dry_run_fields(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """Exact response field set: dry run fields."""
+        monkeypatch.setenv(_DRY_RUN_FLAG_ENV, "1")
+        resp = await client.post(
+            "/api/v1/routing/dry-run/",
+            headers=auth_headers,
+            json={"prompt": "Write a bubble sort in Python", "tool_type": "code"},
+        )
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert set(body.keys()) == {"status", "data", "meta"}
+        assert set(body["meta"].keys()) == {"organization_id", "persisted", "timestamp"}
+        assert set(body["data"].keys()) == _DRY_RUN_KEYS
+
+
+# ---------------------------------------------------------------------------
+# audit-2026-09-14-wave2: admin cross-org bypass -> admin-only scope.
+#
+# routing_rules._can_write / routing_policies._can_access /
+# routing_decisions._visible_org_filter+summary had their `role == "admin"`
+# cross-org bypass converted to a dedicated admin-only scope
+# (routing_rule:admin / routing_policy:admin / routing_decision:read). Each
+# test below uses a DIVERGENT token (role=resource_manager + the admin scope)
+# so it FAILS against the old role-name check and PASSES against the new scope
+# check; the same role WITHOUT the admin scope stays refused / own-org-scoped.
+# (routing_rules/policies list+get read scoping and get_trace are not HTTP-
+# observable -- the mocked DB ignores the query -- so only the write/summary
+# paths are asserted here.)
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingRuleAdminScopeReconciliation:
+    """routing_rule:admin gates the global/cross-org rule write bypass."""
+
+    async def test_create_global_rule_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + routing_rule:admin creates a GLOBAL rule.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=None
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE, Permission.ROUTING_RULE_ADMIN])
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=headers,
+            json={"name": "global-rule", "match": {}, "action": {}},
+        )
+        assert resp.status_code == 201
+
+    async def test_create_global_rule_without_admin_scope_refused(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) routing_rule:write but NOT routing_rule:admin -> global rule refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE])
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=headers,
+            json={"name": "global-rule", "match": {}, "action": {}},
+        )
+        assert resp.status_code == 403
+
+    async def test_create_own_org_rule_without_admin_scope_still_works(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still writes its OWN org's rule without the admin scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=1
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE])
+        resp = await client.post(
+            "/api/v1/routing/rules/",
+            headers=headers,
+            json={"name": "own", "match": {}, "action": {}, "organization_id": 1},
+        )
+        assert resp.status_code == 201
+
+    async def test_update_other_org_rule_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) routing_rule:admin lets a non-admin update another org's rule.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=2
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE, Permission.ROUTING_RULE_ADMIN])
+        resp = await client.put(
+            "/api/v1/routing/rules/1", headers=headers, json={"name": "renamed"}
+        )
+        assert resp.status_code == 200
+
+    async def test_update_other_org_rule_without_admin_scope_refused(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no routing_rule:admin -> cross-org rule update refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _rule_row(
+            organization_id=2
+        )
+        headers = divergent_headers([Permission.ROUTING_RULE_WRITE])
+        resp = await client.put(
+            "/api/v1/routing/rules/1", headers=headers, json={"name": "renamed"}
+        )
+        assert resp.status_code == 403
+
+
+class TestRoutingPolicyAdminScopeReconciliation:
+    """routing_policy:admin gates the cross-org policy read/write bypass."""
+
+    async def test_get_other_org_policy_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + routing_policy:admin reads another org's policy.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        headers = divergent_headers([Permission.ROUTING_POLICY_ADMIN])
+        resp = await client.get("/api/v1/routing/policies/2", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_get_other_org_policy_without_admin_scope_refused(
+        self, client, divergent_headers
+    ) -> None:
+        """(a) no routing_policy:admin -> cross-org policy read refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        resp = await client.get("/api/v1/routing/policies/2", headers=divergent_headers([]))
+        assert resp.status_code == 403
+
+    async def test_get_own_org_policy_without_admin_scope_still_works(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still reads its OWN org's policy without the scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = None
+        resp = await client.get("/api/v1/routing/policies/1", headers=divergent_headers([]))
+        assert resp.status_code == 200
+
+    async def test_upsert_other_org_policy_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) routing_policy:admin lets a non-admin upsert another org's policy.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value.first.return_value = _policy_row(
+            organization_id=2
+        )
+        headers = divergent_headers(
+            [Permission.ROUTING_POLICY_WRITE, Permission.ROUTING_POLICY_ADMIN]
+        )
+        resp = await client.put(
+            "/api/v1/routing/policies/2", headers=headers, json={"mode": "cost"}
+        )
+        assert resp.status_code in (200, 201)
+
+    async def test_upsert_other_org_policy_without_admin_scope_refused(
+        self, client, divergent_headers
+    ) -> None:
+        """(a) routing_policy:write but NOT routing_policy:admin -> cross-org upsert refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        headers = divergent_headers([Permission.ROUTING_POLICY_WRITE])
+        resp = await client.put(
+            "/api/v1/routing/policies/2", headers=headers, json={"mode": "cost"}
+        )
+        assert resp.status_code == 403
+
+
+class TestRoutingDecisionReadScopeReconciliation:
+    """routing_decision:read gates the cross-org trace summary bypass."""
+
+    async def test_summary_divergent_admin_scope_honours_org_param(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + routing_decision:read may summarize another org via ?org=.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        headers = divergent_headers([Permission.ROUTING_DECISION_READ])
+        resp = await client.get("/api/v1/routing/decisions/?org=999", headers=headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["organization_id"] == 999
+
+    async def test_summary_without_scope_is_pinned_to_own_org(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no routing_decision:read -> ?org= is ignored, summary pinned to own org.
+
+        regression: audit-2026-09-14-wave2
+        """
+        app_mock_db.return_value.select.return_value = make_select_result([])
+        resp = await client.get("/api/v1/routing/decisions/?org=999", headers=divergent_headers([]))
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["meta"]["organization_id"] == 1

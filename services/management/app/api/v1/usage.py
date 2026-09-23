@@ -3,34 +3,210 @@
 import asyncio
 import csv
 import io
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from quart import Response, g, jsonify, request
+from quart_schema import validate_response
 
 from shared.auth.rbac import Permission
 
 from ...extensions import db
 from . import api_v1_bp
+from ._pagination import PageRequest
 from .auth import require_auth, require_scope
+
+
+def _has_scope(permission: Permission) -> bool:
+    """True when the authenticated caller's OIDC scope claim carries *permission*.
+
+    Mirrors ``auth.require_scope``'s scope-only check (the ``scope`` claim on
+    ``g.user``, never the ``role`` claim) for the in-handler usage-scoping
+    tiers. ``ANALYTICS_SYSTEM`` (admin-only) selects the cross-org "see
+    everything" branch; ``ORG_READ`` (admin + resource_manager + reporter, not
+    plain user) selects the own-org branch -- exactly the role sets the former
+    ``user_role``/``user_role in [...]`` checks produced, so no role widens or
+    narrows its prior reach.
+    """
+    user = getattr(g, "user", None) or {}
+    return permission.value in set(user.get("scope") or [])
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI response models. Each pins exactly today's response fields; the
+# grouped endpoints (by-model/provider) use dict[str, <model>] because their
+# keys are runtime values (model/provider names).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class SummaryDaily:
+    """Daily rollup in the usage-summary response."""
+
+    date: str
+    waddleai_tokens: int
+    tokens_input: int
+    tokens_output: int
+    requests: int
+    cost_usd: float
+
+
+@dataclass(slots=True)
+class SummaryMonthly:
+    """Monthly rollup in the usage-summary response."""
+
+    month: str
+    waddleai_tokens: int
+    tokens_input: int
+    tokens_output: int
+    requests: int
+    cost_usd: float
+
+
+@dataclass(slots=True)
+class SummaryBlock:
+    """The daily/monthly summary pair."""
+
+    daily: SummaryDaily
+    monthly: SummaryMonthly
+
+
+@dataclass(slots=True)
+class UsageSummaryResponse:
+    """Response body for GET /api/v1/usage/summary."""
+
+    summary: SummaryBlock
+
+
+@dataclass(slots=True)
+class ModelUsage:
+    """Per-model aggregate."""
+
+    tokens: int
+    requests: int
+    cost_usd: float
+
+
+@dataclass(slots=True)
+class ByModelResponse:
+    """Response body for GET /api/v1/usage/by-model."""
+
+    period_days: int
+    by_model: dict[str, ModelUsage]
+
+
+@dataclass(slots=True)
+class ProviderUsage:
+    """Per-provider aggregate."""
+
+    tokens: int
+    tokens_input: int
+    tokens_output: int
+    requests: int
+    cost_usd: float
+    avg_latency_ms: float
+
+
+@dataclass(slots=True)
+class ByProviderResponse:
+    """Response body for GET /api/v1/usage/by-provider."""
+
+    period_days: int
+    by_provider: dict[str, ProviderUsage]
+
+
+@dataclass(slots=True)
+class UserUsage:
+    """Per-user aggregate."""
+
+    user_id: int
+    username: str
+    tokens: int
+    requests: int
+    cost_usd: float
+
+
+@dataclass(slots=True)
+class ByUserResponse:
+    """Response body for GET /api/v1/usage/by-user."""
+
+    period_days: int
+    by_user: list[UserUsage]
+
+
+@dataclass(slots=True)
+class KeyUsage:
+    """Per-key aggregate."""
+
+    key_id: int
+    key_name: str
+    key_prefix: str
+    tokens: int
+    requests: int
+    cost_usd: float
+
+
+@dataclass(slots=True)
+class ByKeyResponse:
+    """Response body for GET /api/v1/usage/by-key."""
+
+    period_days: int
+    by_key: list[KeyUsage]
+
+
+@dataclass(slots=True)
+class CostAnalyticsResponse:
+    """Response body for GET /api/v1/usage/cost."""
+
+    period_days: int
+    total_cost_usd: float
+    avg_daily_cost_usd: float
+    projected_monthly_cost_usd: float
+    daily_cost: dict[str, float]
+
+
+@dataclass(slots=True)
+class CacheStatsData:
+    """The `data` block of the cache-stats response."""
+
+    window_days: int
+    organization_id: int | None
+    virtual_key_id: int | None
+    by_layer: dict[str, int]
+    total_requests: int
+    hit_rate: float
+    tokens_saved_total: int
+    usd_saved_estimate: float
+
+
+@dataclass(slots=True)
+class CacheStatsResponse:
+    """Response body for GET /api/v1/usage/cache-stats."""
+
+    status: str
+    data: CacheStatsData
 
 
 @api_v1_bp.route("/usage/summary", methods=["GET"])
 @require_auth
+@validate_response(UsageSummaryResponse, 200)
 async def get_usage_summary():
     """Get usage summary (daily/monthly)."""
-    user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
+
+    can_all = _has_scope(Permission.ANALYTICS_SYSTEM)
+    can_org = _has_scope(Permission.ORG_READ)
 
     today = date.today()
     month_start = today.replace(day=1)
 
     def _fetch():
-        # Build query based on role
-        if user_role == "admin":
+        # Scope query by the caller's tier (all / own-org / own-user).
+        if can_all:
             daily_query = db.token_usage.date == today
             monthly_query = db.token_usage.date >= month_start
-        elif user_role in ["resource_manager", "reporter"]:
+        elif can_org:
             daily_query = (db.token_usage.date == today) & (
                 db.token_usage.organization_id == org_id
             )
@@ -47,48 +223,49 @@ async def get_usage_summary():
 
     daily_records, monthly_records = await asyncio.to_thread(_fetch)
 
-    return jsonify(
-        {
-            "summary": {
-                "daily": {
-                    "date": today.isoformat(),
-                    "waddleai_tokens": sum(r.waddleai_tokens or 0 for r in daily_records),
-                    "tokens_input": sum(r.tokens_input_total or 0 for r in daily_records),
-                    "tokens_output": sum(r.tokens_output_total or 0 for r in daily_records),
-                    "requests": sum(r.request_count or 0 for r in daily_records),
-                    "cost_usd": sum(r.cost_usd_total or 0 for r in daily_records),
-                },
-                "monthly": {
-                    "month": month_start.isoformat(),
-                    "waddleai_tokens": sum(r.waddleai_tokens or 0 for r in monthly_records),
-                    "tokens_input": sum(r.tokens_input_total or 0 for r in monthly_records),
-                    "tokens_output": sum(r.tokens_output_total or 0 for r in monthly_records),
-                    "requests": sum(r.request_count or 0 for r in monthly_records),
-                    "cost_usd": sum(r.cost_usd_total or 0 for r in monthly_records),
-                },
-            }
+    return {
+        "summary": {
+            "daily": {
+                "date": today.isoformat(),
+                "waddleai_tokens": sum(r.waddleai_tokens or 0 for r in daily_records),
+                "tokens_input": sum(r.tokens_input_total or 0 for r in daily_records),
+                "tokens_output": sum(r.tokens_output_total or 0 for r in daily_records),
+                "requests": sum(r.request_count or 0 for r in daily_records),
+                "cost_usd": sum(r.cost_usd_total or 0 for r in daily_records),
+            },
+            "monthly": {
+                "month": month_start.isoformat(),
+                "waddleai_tokens": sum(r.waddleai_tokens or 0 for r in monthly_records),
+                "tokens_input": sum(r.tokens_input_total or 0 for r in monthly_records),
+                "tokens_output": sum(r.tokens_output_total or 0 for r in monthly_records),
+                "requests": sum(r.request_count or 0 for r in monthly_records),
+                "cost_usd": sum(r.cost_usd_total or 0 for r in monthly_records),
+            },
         }
-    )
+    }
 
 
 @api_v1_bp.route("/usage/by-model", methods=["GET"])
 @require_auth
+@validate_response(ByModelResponse, 200)
 async def get_usage_by_model():
     """Get usage breakdown by model."""
-    user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
+
+    can_all = _has_scope(Permission.ANALYTICS_SYSTEM)
+    can_org = _has_scope(Permission.ORG_READ)
 
     days = request.args.get("days", 30, type=int)
     start_date = date.today() - timedelta(days=days)
 
     def _fetch():
-        # Build query based on role
-        if user_role == "admin":
+        # Scope query by the caller's tier (all / own-org / own-user).
+        if can_all:
             base_query = db.usage_logs.timestamp >= datetime.combine(
                 start_date, datetime.min.time()
             )
-        elif user_role in ["resource_manager", "reporter"]:
+        elif can_org:
             base_query = (
                 db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
             ) & (db.usage_logs.organization_id == org_id)
@@ -102,7 +279,7 @@ async def get_usage_by_model():
     records = await asyncio.to_thread(_fetch)
 
     # Group by model
-    model_usage = {}
+    model_usage: dict = {}
     for record in records:
         model = record.model_used or "unknown"
         if model not in model_usage:
@@ -111,27 +288,30 @@ async def get_usage_by_model():
         model_usage[model]["requests"] += 1
         model_usage[model]["cost_usd"] += record.cost_estimate_usd or 0
 
-    return jsonify({"period_days": days, "by_model": model_usage})
+    return {"period_days": days, "by_model": model_usage}
 
 
 @api_v1_bp.route("/usage/by-provider", methods=["GET"])
 @require_auth
+@validate_response(ByProviderResponse, 200)
 async def get_usage_by_provider():
     """Get usage breakdown by provider."""
-    user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
+
+    can_all = _has_scope(Permission.ANALYTICS_SYSTEM)
+    can_org = _has_scope(Permission.ORG_READ)
 
     days = request.args.get("days", 30, type=int)
     start_date = date.today() - timedelta(days=days)
 
     def _fetch():
-        # Build query based on role
-        if user_role == "admin":
+        # Scope query by the caller's tier (all / own-org / own-user).
+        if can_all:
             base_query = db.usage_logs.timestamp >= datetime.combine(
                 start_date, datetime.min.time()
             )
-        elif user_role in ["resource_manager", "reporter"]:
+        elif can_org:
             base_query = (
                 db.usage_logs.timestamp >= datetime.combine(start_date, datetime.min.time())
             ) & (db.usage_logs.organization_id == org_id)
@@ -145,7 +325,7 @@ async def get_usage_by_provider():
     records = await asyncio.to_thread(_fetch)
 
     # Group by provider
-    provider_usage = {}
+    provider_usage: dict = {}
     for record in records:
         provider = record.provider_type or "unknown"
         if provider not in provider_usage:
@@ -168,23 +348,27 @@ async def get_usage_by_provider():
         if data["requests"] > 0:
             data["avg_latency_ms"] = data.get("total_latency", 0) / data["requests"]
 
-    return jsonify({"period_days": days, "by_provider": provider_usage})
+    return {"period_days": days, "by_provider": provider_usage}
 
 
 @api_v1_bp.route("/usage/by-user", methods=["GET"])
 @require_auth
 @require_scope(Permission.USAGE_READ_BY_USER)
+@validate_response(ByUserResponse, 200)
 async def get_usage_by_user():
     """Get usage breakdown by user."""
-    user_role = g.user.get("role")
     org_id = g.user.get("organization_id")
+
+    # The @require_scope gate already restricts callers to admin +
+    # resource_manager; within that, ANALYTICS_SYSTEM (admin-only) sees every
+    # org, resource_manager only its own.
+    can_all = _has_scope(Permission.ANALYTICS_SYSTEM)
 
     days = request.args.get("days", 30, type=int)
     start_date = date.today() - timedelta(days=days)
 
     def _fetch():
-        # Build query based on role
-        if user_role == "admin":
+        if can_all:
             base_query = db.token_usage.date >= start_date
         else:
             base_query = (db.token_usage.date >= start_date) & (
@@ -194,7 +378,7 @@ async def get_usage_by_user():
         records = db(base_query).select()
 
         # Group by user
-        user_usage = {}
+        user_usage: dict = {}
         for record in records:
             uid = record.user_id
             if uid not in user_usage:
@@ -214,25 +398,28 @@ async def get_usage_by_user():
 
     user_usage = await asyncio.to_thread(_fetch)
 
-    return jsonify({"period_days": days, "by_user": list(user_usage.values())})
+    return {"period_days": days, "by_user": list(user_usage.values())}
 
 
 @api_v1_bp.route("/usage/by-key", methods=["GET"])
 @require_auth
+@validate_response(ByKeyResponse, 200)
 async def get_usage_by_key():
     """Get usage breakdown by API key."""
-    user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
+
+    can_all = _has_scope(Permission.ANALYTICS_SYSTEM)
+    can_org = _has_scope(Permission.ORG_READ)
 
     days = request.args.get("days", 30, type=int)
     start_date = date.today() - timedelta(days=days)
 
     def _fetch():
-        # Build query based on role
-        if user_role == "admin":
+        # Scope query by the caller's tier (all / own-org / own-user).
+        if can_all:
             base_query = db.token_usage.date >= start_date
-        elif user_role in ["resource_manager", "reporter"]:
+        elif can_org:
             base_query = (db.token_usage.date >= start_date) & (
                 db.token_usage.organization_id == org_id
             )
@@ -242,7 +429,7 @@ async def get_usage_by_key():
         records = db(base_query).select()
 
         # Group by key
-        key_usage = {}
+        key_usage: dict = {}
         for record in records:
             kid = record.virtual_key_id
             if kid and kid not in key_usage:
@@ -264,25 +451,28 @@ async def get_usage_by_key():
 
     key_usage = await asyncio.to_thread(_fetch)
 
-    return jsonify({"period_days": days, "by_key": list(key_usage.values())})
+    return {"period_days": days, "by_key": list(key_usage.values())}
 
 
 @api_v1_bp.route("/usage/cost", methods=["GET"])
 @require_auth
+@validate_response(CostAnalyticsResponse, 200)
 async def get_cost_analytics():
     """Get cost analytics."""
-    user_role = g.user.get("role")
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
+
+    can_all = _has_scope(Permission.ANALYTICS_SYSTEM)
+    can_org = _has_scope(Permission.ORG_READ)
 
     days = request.args.get("days", 30, type=int)
     start_date = date.today() - timedelta(days=days)
 
     def _fetch():
-        # Build query based on role
-        if user_role == "admin":
+        # Scope query by the caller's tier (all / own-org / own-user).
+        if can_all:
             base_query = db.token_usage.date >= start_date
-        elif user_role in ["resource_manager", "reporter"]:
+        elif can_org:
             base_query = (db.token_usage.date >= start_date) & (
                 db.token_usage.organization_id == org_id
             )
@@ -294,7 +484,7 @@ async def get_cost_analytics():
     records = await asyncio.to_thread(_fetch)
 
     # Daily cost breakdown
-    daily_cost = {}
+    daily_cost: dict = {}
     for record in records:
         day = record.date.isoformat()
         if day not in daily_cost:
@@ -306,41 +496,48 @@ async def get_cost_analytics():
     avg_daily_cost = total_cost / days if days > 0 else 0
     projected_monthly_cost = avg_daily_cost * 30
 
-    return jsonify(
-        {
-            "period_days": days,
-            "total_cost_usd": round(total_cost, 4),
-            "avg_daily_cost_usd": round(avg_daily_cost, 4),
-            "projected_monthly_cost_usd": round(projected_monthly_cost, 4),
-            "daily_cost": daily_cost,
-        }
-    )
+    return {
+        "period_days": days,
+        "total_cost_usd": round(total_cost, 4),
+        "avg_daily_cost_usd": round(avg_daily_cost, 4),
+        "projected_monthly_cost_usd": round(projected_monthly_cost, 4),
+        "daily_cost": daily_cost,
+    }
 
 
 @api_v1_bp.route("/usage/export", methods=["GET"])
 @require_auth
 async def export_usage():
-    """Export usage data (CSV/JSON)."""
-    user_role = g.user.get("role")
+    """Export usage data (CSV/JSON).
+
+    No @validate_response: this endpoint returns either a CSV ``Response`` or a
+    JSON body depending on ``?format=``, so a single response model cannot
+    describe both content types. The unbounded-select DoS is still closed --
+    the query is bounded by ``PageRequest`` like every other list endpoint.
+    """
     user_id = g.user.get("user_id")
     org_id = g.user.get("organization_id")
+
+    can_all = _has_scope(Permission.ANALYTICS_SYSTEM)
+    can_org = _has_scope(Permission.ORG_READ)
 
     format_type = request.args.get("format", "json")
     days = request.args.get("days", 30, type=int)
     start_date = date.today() - timedelta(days=days)
+    page = PageRequest.from_request()
 
     def _fetch():
-        # Build query based on role
-        if user_role == "admin":
+        # Scope query by the caller's tier (all / own-org / own-user).
+        if can_all:
             base_query = db.token_usage.date >= start_date
-        elif user_role in ["resource_manager", "reporter"]:
+        elif can_org:
             base_query = (db.token_usage.date >= start_date) & (
                 db.token_usage.organization_id == org_id
             )
         else:
             base_query = (db.token_usage.date >= start_date) & (db.token_usage.user_id == user_id)
 
-        return db(base_query).select(orderby=db.token_usage.date)
+        return db(base_query).select(limitby=page.limitby, orderby=db.token_usage.date)
 
     records = await asyncio.to_thread(_fetch)
 
@@ -376,11 +573,12 @@ async def export_usage():
             headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
 
-    return jsonify({"data": data, "count": len(data)})
+    return jsonify({"data": data, "count": len(data), **page.meta()})
 
 
 @api_v1_bp.route("/usage/cache-stats", methods=["GET"])
 @require_auth
+@validate_response(CacheStatsResponse, 200)
 async def get_cache_stats():
     """Response-cache hit rates and estimated $ saved per org/key (spec §6.4).
 
@@ -389,14 +587,16 @@ async def get_cache_stats():
     param for a *different* organization is rejected (403), matching the
     org-isolation posture the cache layers themselves enforce.
     """
-    user_role = g.user.get("role")
     caller_org_id = g.user.get("organization_id")
 
     org_id_param = request.args.get("org_id", type=int)
     vkey_id_param = request.args.get("virtual_key_id", type=int)
     days = request.args.get("window", 30, type=int)
 
-    if user_role != "admin":
+    # Only ANALYTICS_SYSTEM (admin-only, cross-org analytics) may query another
+    # org; every other caller is pinned to its own. Role-NAME test -> scope
+    # test; the tenant comparison is unchanged.
+    if not _has_scope(Permission.ANALYTICS_SYSTEM):
         if org_id_param is not None and org_id_param != caller_org_id:
             return jsonify(
                 {"status": "error", "error": "Cannot query another organization's cache stats"}
@@ -436,18 +636,16 @@ async def get_cache_stats():
     avg_cost_cents_per_token = (cost_cents_total / tokens_total) if tokens_total else 0.0
     usd_saved_estimate = round(tokens_saved_total * avg_cost_cents_per_token / 100, 6)
 
-    return jsonify(
-        {
-            "status": "success",
-            "data": {
-                "window_days": days,
-                "organization_id": org_id_param,
-                "virtual_key_id": vkey_id_param,
-                "by_layer": by_layer,
-                "total_requests": total_requests,
-                "hit_rate": round(hit_rate, 4),
-                "tokens_saved_total": tokens_saved_total,
-                "usd_saved_estimate": usd_saved_estimate,
-            },
-        }
-    )
+    return {
+        "status": "success",
+        "data": {
+            "window_days": days,
+            "organization_id": org_id_param,
+            "virtual_key_id": vkey_id_param,
+            "by_layer": by_layer,
+            "total_requests": total_requests,
+            "hit_rate": round(hit_rate, 4),
+            "tokens_saved_total": tokens_saved_total,
+            "usd_saved_estimate": usd_saved_estimate,
+        },
+    }

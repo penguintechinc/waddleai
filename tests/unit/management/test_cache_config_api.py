@@ -498,3 +498,171 @@ class TestWriteScopeAuthorizationIsExhaustive:
 
         assert resp.status_code == 403
         app_mock_db.return_value.delete.assert_not_called()
+
+
+class TestPaginationAndResponseSchema:
+    """Wave-2 audit: the list select is bounded, and every route emits a fixed field set.
+
+    regression: audit-2026-09-14-wave2 -- ``GET /cache-configs`` ran an
+    unbounded ``select()`` (the DoS/resource finding), and the CRUD routes
+    carried no ``@validate_response`` schema. The mocked DB ignores
+    ``limitby`` (it returns whatever rows the test feeds), so these assert on
+    the response envelope and the ``select`` call args -- the observable the
+    #239 stream documented -- not on row counts the mock cannot enforce.
+    """
+
+    async def test_list_carries_pagination_meta(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- list responses carry a pagination block."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        resp = await client.get("/api/v1/cache-configs?limit=5&page=2", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data", "pagination"}
+        assert data["pagination"]["limit"] == 5
+        assert data["pagination"]["page"] == 2
+
+    async def test_list_select_is_bounded_by_limitby(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- the bound is applied at query level."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        await client.get("/api/v1/cache-configs", headers=auth_headers)
+        assert "limitby" in app_mock_db.return_value.select.call_args.kwargs
+
+    async def test_list_limit_is_clamped_to_ceiling(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- a hostile ?limit is clamped, not honoured."""
+        app_mock_db.return_value.select.side_effect = [make_select_result([])]
+        resp = await client.get("/api/v1/cache-configs?limit=99999999", headers=auth_headers)
+        data = await resp.get_json()
+        assert data["pagination"]["limit"] == 1000  # _pagination.MAX_PAGE_SIZE
+
+    async def test_get_single_field_set(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- get-single envelope is status+data only."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        resp = await client.get("/api/v1/cache-configs/1", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data"}
+
+    async def test_delete_field_set(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """# regression: audit-2026-09-14-wave2 -- delete envelope is status + {id, deleted}."""
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([make_mock_cache_config(1, "global")])
+        ]
+        with patch("services.management.app.api.v1.cache_configs.redis_client", MagicMock()):
+            resp = await client.delete("/api/v1/cache-configs/1", headers=auth_headers)
+        data = await resp.get_json()
+        assert set(data.keys()) == {"status", "data"}
+        assert set(data["data"].keys()) == {"id", "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# audit-2026-09-14-wave2: CACHE_CONFIG_ADMIN scope reconciliation.
+#
+# `_authorize_scope_write`'s global/cross-org write bypass AND `_visible_query`
+# / `_row_visible_to`'s admin read-all bypass were converted from
+# `role == "admin"` to the admin-only `cache_config:admin` scope
+# (CACHE_CONFIG_WRITE could not be reused -- resource_manager holds it too). A
+# DIVERGENT token (role=resource_manager + the admin scope) may write the
+# global config and read a key-scoped/other-org row; the same role WITHOUT it
+# may not.
+# ---------------------------------------------------------------------------
+
+from shared.auth.rbac import Permission  # noqa: E402
+
+
+class TestCacheConfigAdminScopeReconciliation:
+    """cache_config:admin gates the global/cross-org write + read bypass."""
+
+    async def test_create_global_divergent_admin_scope_allowed(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) resource_manager + cache_config:admin creates the GLOBAL config.
+
+        regression: audit-2026-09-14-wave2
+        """
+        created = make_mock_cache_config(5, "global")
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([]),
+            make_select_result([created]),
+        ]
+        app_mock_db.cache_configs.insert.return_value = 5
+        headers = divergent_headers([Permission.CACHE_CONFIG_WRITE, Permission.CACHE_CONFIG_ADMIN])
+        with patch("services.management.app.api.v1.cache_configs.redis_client", MagicMock()):
+            resp = await client.post(
+                "/api/v1/cache-configs", headers=headers, json={"scope_type": "global"}
+            )
+        assert resp.status_code == 201
+
+    async def test_create_global_without_admin_scope_refused(
+        self, client, divergent_headers
+    ) -> None:
+        """(a) cache_config:write but NOT cache_config:admin -> global write refused.
+
+        regression: audit-2026-09-14-wave2
+        """
+        headers = divergent_headers([Permission.CACHE_CONFIG_WRITE])
+        resp = await client.post(
+            "/api/v1/cache-configs", headers=headers, json={"scope_type": "global"}
+        )
+        assert resp.status_code == 403
+
+    async def test_create_own_org_without_admin_scope_still_works(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(c) resource_manager still writes its OWN org's config without the admin scope.
+
+        regression: audit-2026-09-14-wave2
+        """
+        created = make_mock_cache_config(6, "org", "1")
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([]),
+            make_select_result([created]),
+        ]
+        app_mock_db.cache_configs.insert.return_value = 6
+        headers = divergent_headers([Permission.CACHE_CONFIG_WRITE])
+        with patch("services.management.app.api.v1.cache_configs.redis_client", MagicMock()):
+            resp = await client.post(
+                "/api/v1/cache-configs",
+                headers=headers,
+                json={"scope_type": "org", "scope_ref": "1"},
+            )
+        assert resp.status_code == 201
+
+    async def test_read_key_scoped_row_divergent_admin_scope_visible(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(b) cache_config:admin makes an (admin-only) key-scoped row visible on read.
+
+        regression: audit-2026-09-14-wave2
+        """
+        row = make_mock_cache_config(4, "key", "77")
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+        headers = divergent_headers([Permission.CACHE_CONFIG_ADMIN])
+        resp = await client.get("/api/v1/cache-configs/4", headers=headers)
+        assert resp.status_code == 200
+
+    async def test_read_key_scoped_row_without_admin_scope_not_found(
+        self, client, app_mock_db: MagicMock, divergent_headers
+    ) -> None:
+        """(a) no cache_config:admin -> a key-scoped row is invisible (404).
+
+        regression: audit-2026-09-14-wave2
+        """
+        row = make_mock_cache_config(4, "key", "77")
+        app_mock_db.return_value.select.return_value = make_select_result([row])
+        resp = await client.get("/api/v1/cache-configs/4", headers=divergent_headers([]))
+        assert resp.status_code == 404
