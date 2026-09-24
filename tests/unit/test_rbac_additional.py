@@ -85,14 +85,21 @@ def regular_user_context():
 
 
 class TestAuthenticateApiKey:
-    """Test API key authentication."""
+    """Tests for the RBACManager.authenticate_api_key() method.
+
+    audit-2026-09-23 M3: authenticate_api_key now parses the ``key_id`` embedded
+    in ``wa-{key_id}-{secret}`` and loads that single row
+    (``db((key_id==X) & enabled).select().first()``) instead of scanning every
+    enabled key and bcrypt-verifying each. The mocks below drive that call
+    sequence: (1) the key_id lookup, (2) the last_used update, (3) the user
+    lookup.
+    """
 
     def test_authenticate_api_key_valid_format(self, rbac_manager, mock_db):
-        """Test API key authentication with valid format."""
+        """A valid key resolves its single row by key_id and authenticates."""
         api_key = "wa-somekey-somesecret"
         hashed_key = hash_password(api_key)
 
-        # Mock user
         mock_user = MagicMock(
             id=5,
             username="api_user",
@@ -101,33 +108,22 @@ class TestAuthenticateApiKey:
             enabled=True,
             managed_orgs=None,
         )
-
-        # Mock API key record
         mock_key_record = MagicMock()
         mock_key_record.id = 100
         mock_key_record.user_id = 5
         mock_key_record.key_hash = hashed_key
         mock_key_record.enabled = True
 
-        # Setup db mocks
-        mock_select_keys = MagicMock()
-        mock_select_keys.__iter__.return_value = iter([mock_key_record])
-
-        # First db call returns wrapper with .select() method
-        mock_first_call = MagicMock()
-        mock_first_call.select.return_value = mock_select_keys
-
-        # Second db call is the last_used update: db(condition).update(...)
-        # (penguin_dal QuerySet.update -- see shared/auth/rbac.py)
+        # 1) key_id lookup: db(...).select().first() -> the one candidate row
+        mock_key_lookup = MagicMock()
+        mock_key_lookup.select.return_value.first.return_value = mock_key_record
+        # 2) last_used update: db(...).update(...)
         mock_update_call = MagicMock()
+        # 3) user lookup: db(...).select().first() -> the owner
+        mock_user_lookup = MagicMock()
+        mock_user_lookup.select.return_value.first.return_value = mock_user
 
-        # Third db call returns wrapper with .select().first() chain
-        mock_third_call = MagicMock()
-        mock_select_user = MagicMock()
-        mock_select_user.first.return_value = mock_user
-        mock_third_call.select.return_value = mock_select_user
-
-        mock_db.side_effect = [mock_first_call, mock_update_call, mock_third_call]
+        mock_db.side_effect = [mock_key_lookup, mock_update_call, mock_user_lookup]
 
         with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             context = rbac_manager.authenticate_api_key(api_key)
@@ -162,50 +158,42 @@ class TestAuthenticateApiKey:
             rbac_manager.authenticate_api_key(api_key)
 
     def test_authenticate_api_key_not_found(self, rbac_manager, mock_db):
-        """Test API key authentication when no matching key exists."""
+        """An unknown key_id is rejected without any bcrypt work.
+
+        A key_id that resolves to no row short-circuits before bcrypt, so an
+        unknown key never triggers a hash check. (The stronger O(n)-scan proof
+        is TestAuthenticateApiKeyRealDAL.test_only_embedded_key_id_is_bcrypt_verified,
+        which fails pre-fix; this one holds for both, so it carries no
+        regression marker.)
+        """
         api_key = "wa-nonexistent-key"
 
-        mock_select = MagicMock()
-        mock_select.__iter__.return_value = iter([])  # No keys match
+        mock_key_lookup = MagicMock()
+        mock_key_lookup.select.return_value.first.return_value = None
+        mock_db.side_effect = [mock_key_lookup]
 
-        # First db call returns wrapper with .select() method
-        mock_first_call = MagicMock()
-        mock_first_call.select.return_value = mock_select
-        mock_db.side_effect = [mock_first_call]
-
-        with pytest.raises(AuthenticationError) as exc_info:
-            rbac_manager.authenticate_api_key(api_key)
+        with patch("shared.auth.rbac.bcrypt.verify") as mock_verify:
+            with pytest.raises(AuthenticationError) as exc_info:
+                rbac_manager.authenticate_api_key(api_key)
 
         assert "Invalid API key" in str(exc_info.value)
+        mock_verify.assert_not_called()
 
     def test_authenticate_api_key_user_disabled(self, rbac_manager, mock_db):
         """Test API key authentication when user is disabled."""
         api_key = "wa-key-secret"
         hashed_key = hash_password(api_key)
 
-        mock_key_record = MagicMock()
-        mock_key_record.user_id = 5
-        mock_key_record.key_hash = hashed_key
-
+        mock_key_record = MagicMock(id=1, user_id=5, key_hash=hashed_key, enabled=True)
         mock_user = MagicMock(enabled=False, role="user")  # User disabled
 
-        mock_select_keys = MagicMock()
-        mock_select_keys.__iter__.return_value = iter([mock_key_record])
-
-        # First db call returns wrapper with .select() method
-        mock_first_call = MagicMock()
-        mock_first_call.select.return_value = mock_select_keys
-
-        # Second db call is the last_used update: db(condition).update(...)
+        mock_key_lookup = MagicMock()
+        mock_key_lookup.select.return_value.first.return_value = mock_key_record
         mock_update_call = MagicMock()
+        mock_user_lookup = MagicMock()
+        mock_user_lookup.select.return_value.first.return_value = mock_user
 
-        # Third db call returns wrapper with .select().first() chain
-        mock_third_call = MagicMock()
-        mock_select_user = MagicMock()
-        mock_select_user.first.return_value = mock_user
-        mock_third_call.select.return_value = mock_select_user
-
-        mock_db.side_effect = [mock_first_call, mock_update_call, mock_third_call]
+        mock_db.side_effect = [mock_key_lookup, mock_update_call, mock_user_lookup]
 
         with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             with pytest.raises(AuthenticationError) as exc_info:
@@ -218,25 +206,15 @@ class TestAuthenticateApiKey:
         api_key = "wa-key-secret"
         hashed_key = hash_password(api_key)
 
-        mock_key_record = MagicMock(user_id=999, key_hash=hashed_key)
+        mock_key_record = MagicMock(id=1, user_id=999, key_hash=hashed_key, enabled=True)
 
-        mock_select_keys = MagicMock()
-        mock_select_keys.__iter__.return_value = iter([mock_key_record])
-
-        # First db call returns wrapper with .select() method
-        mock_first_call = MagicMock()
-        mock_first_call.select.return_value = mock_select_keys
-
-        # Second db call is the last_used update: db(condition).update(...)
+        mock_key_lookup = MagicMock()
+        mock_key_lookup.select.return_value.first.return_value = mock_key_record
         mock_update_call = MagicMock()
+        mock_user_lookup = MagicMock()
+        mock_user_lookup.select.return_value.first.return_value = None  # User not found
 
-        # Third db call returns wrapper with .select().first() chain
-        mock_third_call = MagicMock()
-        mock_select_user = MagicMock()
-        mock_select_user.first.return_value = None  # User not found
-        mock_third_call.select.return_value = mock_select_user
-
-        mock_db.side_effect = [mock_first_call, mock_update_call, mock_third_call]
+        mock_db.side_effect = [mock_key_lookup, mock_update_call, mock_user_lookup]
 
         with patch("shared.auth.rbac.bcrypt.verify", return_value=True):
             with pytest.raises(AuthenticationError) as exc_info:
@@ -305,6 +283,57 @@ class TestAuthenticateApiKeyRealDAL:
 
         after = real_db(real_db.api_keys.id == key_record_id).select().first()
         assert after.last_used is not None
+
+    def test_only_embedded_key_id_is_bcrypt_verified(self, real_db):
+        """Authenticating loads/hashes only the key whose key_id is embedded.
+
+        # regression: release-audit-2026-09-23
+
+        Two enabled keys belong to the same user. Authenticating with key B
+        must bcrypt-verify B alone -- never key A -- because the embedded
+        key_id selects a single row. Pre-fix (loop over every enabled key +
+        bcrypt each) A's hash was also verified, so this asserts both a single
+        bcrypt call and that A's hash is never one of them.
+        """
+        org_id = real_db.organizations.insert(name="acme")
+        user_id = real_db.users.insert(
+            username="apiuser",
+            email="apiuser@example.com",
+            password_hash=hash_password("unused-login-password"),
+            role="user",
+            organization_id=org_id,
+        )
+        real_db.commit()
+
+        manager = RBACManager(real_db)
+        user_context = UserContext(
+            user_id=user_id,
+            username="apiuser",
+            role=Role.USER,
+            organization_id=org_id,
+            managed_orgs=[],
+            permissions=ROLE_PERMISSIONS[Role.USER],
+        )
+        raw_a, id_a = manager.create_api_key(user_context, name="key-a")
+        raw_b, id_b = manager.create_api_key(user_context, name="key-b")
+        real_db.commit()
+        hash_a = real_db(real_db.api_keys.id == id_a).select().first().key_hash
+
+        import shared.auth.rbac as rbac_mod
+
+        real_verify = rbac_mod.bcrypt.verify
+        verified_hashes: list[str] = []
+
+        def _spy(secret, hashed):
+            verified_hashes.append(hashed)
+            return real_verify(secret, hashed)
+
+        with patch.object(rbac_mod.bcrypt, "verify", side_effect=_spy):
+            context = manager.authenticate_api_key(raw_b)
+
+        assert context.api_key_id == id_b
+        assert len(verified_hashes) == 1, "exactly one key must be bcrypt-verified"
+        assert hash_a not in verified_hashes, "the unrelated key must never be hashed"
 
 
 class TestBuildUserContext:

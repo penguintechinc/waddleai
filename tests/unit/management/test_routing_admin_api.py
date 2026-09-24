@@ -1187,6 +1187,30 @@ class TestRoutingDecisions:
         # org query param is ignored for non-admins -- always their own org (1).
         assert data["meta"]["organization_id"] == 1
 
+    async def test_summary_query_is_bounded_not_a_full_select(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """The summary caps + projects its scan instead of loading the table.
+
+        # regression: release-audit-2026-09-23
+
+        The mocked DB ignores query contents, so this asserts on the call the
+        summary makes: a bounded (``limitby``), column-projected ``select``.
+        Pre-fix the summary issued a bare ``.select()`` with no bound, pulling
+        every routing_decision_traces row (and its large JSON columns) into
+        memory to aggregate in Python.
+        """
+        app_mock_db.return_value.select.return_value = make_select_result([_trace_row()])
+
+        resp = await client.get("/api/v1/routing/decisions/", headers=auth_headers)
+        assert resp.status_code == 200
+
+        select_calls = app_mock_db.return_value.select.call_args_list
+        assert select_calls, "summary must issue a select()"
+        bounded = [c for c in select_calls if c.kwargs.get("limitby") is not None]
+        assert bounded, "summary select() must pass limitby (bounded scan)"
+        assert any(c.args for c in bounded), "summary select() must project columns"
+
 
 # ---------------------------------------------------------------------------
 # routing_dry_run

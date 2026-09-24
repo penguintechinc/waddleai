@@ -10,7 +10,7 @@
         "enabled": true,
         "expires_at": "<VOLATILE>",
         "id": "<VOLATILE>",
-        "key_prefix": "wa-admin",
+        "key_prefix": "wa-adminkey...",
         "last_used": null,
         "name": "Admin Master Key",
         "organization_id": 1,

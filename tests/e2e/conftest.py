@@ -216,19 +216,35 @@ def _seed_org(db_url: str, slug: str, role: str = "admin") -> OrgSeed:
         enabled=True,
         created_at=now,
     )
-    api_key_value = f"wa-{slug}-e2esecretvalue0001"
-    api_key_id = db.api_keys.insert(
-        key_id=f"e2e-{slug}-key",
-        key_hash=bcrypt.hash(api_key_value),
+    # Mint the api_keys row via the REAL production path (create_api_key) so the
+    # seeded key is byte-for-byte the format the app emits: wa-{key_id}-{secret}
+    # with api_keys.key_id == the embedded key_id. The fixture previously
+    # hand-rolled `wa-{slug}-...` with a mismatched `key_id="e2e-{slug}-key"`
+    # column (and a dash-bearing slug), which the O(1) key_id lookup in
+    # rbac.authenticate_api_key cannot resolve -- a fixture bug the old
+    # full-table scan masked. Minting via create_api_key keeps this fixture from
+    # ever drifting from the real key format again (release-audit-2026-09-23 M3).
+    from shared.auth.rbac import ROLE_PERMISSIONS, RBACManager, Role, UserContext
+
+    try:
+        role_enum = Role(role)
+    except ValueError:
+        role_enum = Role.ADMIN
+    user_context = UserContext(
         user_id=user_id,
+        username=f"e2e-{slug}-user",
+        role=role_enum,
         organization_id=org_id,
-        name=f"E2E {slug} key",
-        enabled=True,
-        api_access_level="proxy_api",
-        created_at=now,
+        managed_orgs=[],
+        permissions=ROLE_PERMISSIONS.get(role_enum, set()),
+    )
+    api_key_value, key_record_id = RBACManager(db).create_api_key(
+        user_context, name=f"E2E {slug} key"
     )
     db.commit()
-    return OrgSeed(org_id=org_id, user_id=user_id, api_key_id=api_key_id, api_key=api_key_value)
+    return OrgSeed(
+        org_id=org_id, user_id=user_id, api_key_id=int(key_record_id), api_key=api_key_value
+    )
 
 
 @pytest.fixture(scope="session")

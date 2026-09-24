@@ -393,6 +393,59 @@ class TestMasterKeyPlaintextRegressionCodeQL2507:
         finally:
             os.environ.pop("ADMIN_INITIAL_PASSWORD", None)
 
+    def test_bootstrap_admin_key_is_resolvable_by_both_o1_lookups(self):
+        """The seeded admin key embeds its key_id/prefix so both O(1) auths find it.
+
+        # regression: release-audit-2026-09-23
+
+        The audited O(1) API-key lookups resolve a key from its own value: the
+        proxy path by api_keys.key_id (= the value's embedded key_id) and the
+        management path by virtual_keys.key_prefix (= wa- + first 8 chars). The
+        prior bootstrap emitted a bare `wa-{secret}` with an unrelated
+        key_prefix ("wa-admin") and key_id ("admin-key-..."), which those
+        lookups can no longer find -- a silent admin-auth regression. This
+        pins the value/key_id/key_prefix consistency.
+        """
+        import secrets
+
+        from passlib.hash import bcrypt as _bcrypt
+
+        from services.management.app.api.v1.auth import _virtual_key_prefix
+        from services.management.app.extensions import _ADMIN_MASTER_KEY_ID, init_default_data
+
+        fixed_secret = "SECRET-with-dashes_and_stuff"  # noqa: S105 -- test fixture, not a secret
+        with patch.object(secrets, "token_urlsafe", return_value=fixed_secret):
+            inserted_api_keys = []
+            inserted_virtual_keys = []
+            mock_db = MagicMock()
+            mock_db.commit = MagicMock()
+            mock_db.return_value.select.return_value = []
+            mock_db.organizations.insert = MagicMock(return_value=1)
+            mock_db.users.insert = MagicMock(return_value=1)
+            mock_db.virtual_keys.insert = MagicMock(
+                side_effect=lambda **kw: inserted_virtual_keys.append(kw) or 1
+            )
+            mock_db.api_keys.insert = MagicMock(
+                side_effect=lambda **kw: inserted_api_keys.append(kw) or 1
+            )
+            init_default_data(mock_db, config={"ADMIN_INITIAL_PASSWORD": "test123"})
+
+        # key_id is a fixed, deterministic lookup handle (so the key_prefix and
+        # its contract snapshot are reproducible); the secret is what's random.
+        expected_value = f"wa-{_ADMIN_MASTER_KEY_ID}-{fixed_secret}"
+        api_row = inserted_api_keys[0]
+        vkey_row = inserted_virtual_keys[0]
+
+        # proxy path: rbac.authenticate_api_key parses parts[1] as the key_id.
+        assert api_row["key_id"] == _ADMIN_MASTER_KEY_ID
+        assert api_row["key_id"] == expected_value.split("-")[1]
+        assert "-" not in _ADMIN_MASTER_KEY_ID  # dash-free so the split resolves it
+        assert _bcrypt.verify(expected_value, api_row["key_hash"])
+
+        # management path: auth.verify_api_key narrows by the derived prefix.
+        assert vkey_row["key_prefix"] == _virtual_key_prefix(expected_value)
+        assert _bcrypt.verify(expected_value, vkey_row["key_hash"])
+
 
 class TestModelsPyNoPlaintextKeyPrint:
     """Static guard: models.py must never regain a plaintext-key print().

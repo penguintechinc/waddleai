@@ -428,6 +428,23 @@ def verify_token(token: str) -> dict | None:
     return payload
 
 
+# A virtual key is `wa-{secret}` with `key_prefix = f"wa-{secret[:8]}..."`;
+# the prefix therefore spans the first 11 characters of the presented key
+# ("wa-" + 8 secret chars) plus the literal "..." suffix stored in the row.
+_VIRTUAL_KEY_PREFIX_LEN = 11
+
+
+def _virtual_key_prefix(api_key: str) -> str | None:
+    """Return the stored ``key_prefix`` a presented virtual key must match.
+
+    ``None`` for anything too short or without the ``wa-`` marker, so a
+    malformed key is rejected before touching the database.
+    """
+    if not api_key.startswith("wa-") or len(api_key) < _VIRTUAL_KEY_PREFIX_LEN:
+        return None
+    return f"{api_key[:_VIRTUAL_KEY_PREFIX_LEN]}..."
+
+
 def verify_api_key(api_key: str) -> dict[str, Any] | None:
     """Verify API key and return user context, including OIDC scopes.
 
@@ -436,10 +453,20 @@ def verify_api_key(api_key: str) -> dict[str, Any] | None:
     `_scopes_for_role` -- the same bundle `create_token` would issue them.
     """
     database = _db()
-    # Check virtual_keys table
+    # audit-2026-09-23 M3: narrow by the indexed `key_prefix` instead of
+    # loading every enabled virtual key and bcrypt-verifying each in turn
+    # (an O(n) bcrypt scan on a per-request auth path). bcrypt still gates the
+    # match, so a forged or renamed prefix cannot authenticate; the
+    # constant-time secret comparison and the "unknown key -> None" semantics
+    # are unchanged.
+    expected_prefix = _virtual_key_prefix(api_key)
+    if expected_prefix is None:
+        return None
     # penguin-dal query expression, not a bool comparison
-    enabled_query = database.virtual_keys.enabled == True  # noqa: E712
-    keys = database(enabled_query).select()
+    prefix_query = (database.virtual_keys.key_prefix == expected_prefix) & (
+        database.virtual_keys.enabled == True  # noqa: E712
+    )
+    keys = database(prefix_query).select()
     for key in keys:
         if bcrypt.verify(api_key, key.key_hash):
             user = database(database.users.id == key.user_id).select().first()
@@ -456,6 +483,46 @@ def verify_api_key(api_key: str) -> dict[str, Any] | None:
                     "scope": _scopes_for_role(user.role),
                 }
     return None
+
+
+def _jwt_subject_active(user_id: object) -> bool:
+    """Return False when the token's subject no longer exists or is disabled.
+
+    Closes M1 (audit-2026-09-23): unlike the API-key path, the JWT path never
+    re-checked ``enabled``, so a disabled account kept working until its token
+    expired (<=24h) and could roll the session forward via ``/auth/refresh``.
+    Re-checking on every JWT-authenticated request makes a disable take effect
+    immediately and cross-replica without a per-user token denylist. Uses the
+    penguin_dal primary-key fetch (``db.users[id]``) -- an indexed O(1) lookup,
+    not a scan.
+    """
+    database = _db()
+    row = database.users[user_id]
+    if row is None:
+        return False
+    return bool(getattr(row, "enabled", True))
+
+
+async def _revoke_presented_token() -> None:
+    """Revoke the JWT that authenticated the current request, when there is one.
+
+    API-key credentials carry no ``jti``/``exp`` and cannot be revoked here;
+    that is expected rather than an error (mirrors ``/auth/logout``). The entry
+    expires at the token's own ``exp`` so the denylist self-cleans.
+    """
+    jti = g.user.get("jti")
+    exp = g.user.get("exp")
+    if not jti or not exp:
+        return
+    result = await asyncio.to_thread(
+        get_token_denylist().revoke, str(jti), datetime.fromtimestamp(int(exp), UTC)
+    )
+    if not result.durable:
+        logger.warning(
+            "auth: token revoked in this process only -- other replicas will "
+            "keep honouring it until it expires at %s",
+            datetime.fromtimestamp(int(exp), UTC).isoformat(),
+        )
 
 
 def require_auth(f):
@@ -490,6 +557,9 @@ def require_auth(f):
             revoked = await asyncio.to_thread(get_token_denylist().is_revoked, payload.get("jti"))
             if revoked:
                 logger.info("auth: rejected a revoked token")
+                return False
+            if not await asyncio.to_thread(_jwt_subject_active, payload.get("user_id")):
+                logger.info("auth: rejected a token whose subject is disabled or removed")
                 return False
             g.user = payload
             return True
@@ -774,16 +844,26 @@ async def logout():
 @require_auth
 @validate_response(RefreshTokenResponse, 200)
 async def refresh_token():
-    """Refresh JWT token."""
+    """Refresh JWT token.
+
+    Rotates the session (audit-2026-09-23 M1): the presented token is revoked
+    and a freshly minted one returned, so a refreshed session cannot be
+    continued with the old credential nor rolled forward indefinitely.
+    """
     user = g.user
 
-    # Create new token
+    await _revoke_presented_token()
+
     issued = issue_access_token(
         user_id=user["user_id"],
         username=user["username"],
         role=user["role"],
         organization_id=user["organization_id"],
     )
+
+    # Browser clients authenticate from the HttpOnly cookie, which still holds
+    # the just-revoked token; replace it so the refreshed session keeps working.
+    _set_access_cookie(issued.access_token, issued.expires_in)
 
     return {
         "access_token": issued.access_token,
@@ -875,5 +955,19 @@ async def change_password(data: ChangePasswordRequest):
         database.commit()
 
     await asyncio.to_thread(_update_password)
+
+    # A password change must invalidate the credential that made it
+    # (audit-2026-09-23 M1). Revoke the presented token and hand the browser a
+    # fresh cookie so the current session continues; API/CLI clients that
+    # authenticated with the now-revoked bearer token re-authenticate with the
+    # new password, which is the expected post-change behaviour.
+    await _revoke_presented_token()
+    reissued = issue_access_token(
+        user_id=user.id,
+        username=user.username,
+        role=user.role,
+        organization_id=user.organization_id,
+    )
+    _set_access_cookie(reissued.access_token, reissued.expires_in)
 
     return {"message": "Password changed successfully"}

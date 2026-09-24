@@ -1,6 +1,6 @@
 """Unit tests for auth routes: /api/v1/auth/*."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import jwt as _jwt
 import pytest
@@ -598,3 +598,198 @@ class TestLoginUserEnumeration:
         assert len(calls) == 1
         assert calls[0][0] == "password123"
         assert calls[0][1] == auth_mod._dummy_password_hash()
+
+
+# ---------------------------------------------------------------------------
+# release-audit-2026-09-23: JWT session invalidation (M1) + API-key scale (M3)
+# ---------------------------------------------------------------------------
+
+
+class TestJwtSubjectEnabledRecheck:
+    """require_auth re-checks the token subject's `enabled` state (M1).
+
+    Before this fix only the API-key path checked `enabled`; a JWT kept
+    working until expiry after the account was disabled.
+    """
+
+    async def test_disabled_user_jwt_is_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A JWT whose subject is now disabled is refused on the next request.
+
+        # regression: release-audit-2026-09-23
+        """
+        disabled = make_mock_user(enabled=False)
+        with patch.object(app_mock_db.users, "getitem", MagicMock(return_value=disabled)):
+            resp = await client.get("/api/v1/auth/verify", headers=auth_headers)
+        assert resp.status_code == 401
+
+    async def test_removed_user_jwt_is_rejected(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """A JWT whose subject no longer exists is refused.
+
+        # regression: release-audit-2026-09-23
+        """
+        with patch.object(app_mock_db.users, "getitem", MagicMock(return_value=None)):
+            resp = await client.get("/api/v1/auth/verify", headers=auth_headers)
+        assert resp.status_code == 401
+
+    async def test_enabled_user_jwt_is_accepted(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """An enabled subject authenticates normally (no false rejection)."""
+        enabled = make_mock_user(enabled=True)
+        with patch.object(app_mock_db.users, "getitem", MagicMock(return_value=enabled)):
+            resp = await client.get("/api/v1/auth/verify", headers=auth_headers)
+        assert resp.status_code == 200
+
+    def test_jwt_subject_active_helper(self) -> None:
+        """_jwt_subject_active: True only for an existing, enabled subject."""
+        import services.management.app.api.v1.auth as auth_mod
+
+        db = MagicMock()
+        db.users.__getitem__ = MagicMock(return_value=MagicMock(enabled=True))
+        with patch.object(auth_mod, "db", db):
+            assert auth_mod._jwt_subject_active(1) is True
+        db.users.__getitem__ = MagicMock(return_value=MagicMock(enabled=False))
+        with patch.object(auth_mod, "db", db):
+            assert auth_mod._jwt_subject_active(1) is False
+        db.users.__getitem__ = MagicMock(return_value=None)
+        with patch.object(auth_mod, "db", db):
+            assert auth_mod._jwt_subject_active(1) is False
+
+
+class TestTokenInvalidatedOnRefreshAndChangePassword:
+    """/auth/refresh and /auth/change-password invalidate the prior token (M1)."""
+
+    async def test_refresh_revokes_the_presented_token(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """After refresh, the old token can no longer be replayed.
+
+        # regression: release-audit-2026-09-23
+        """
+        refreshed = await client.post("/api/v1/auth/refresh", headers=auth_headers)
+        assert refreshed.status_code == 200
+        assert "access_token" in await refreshed.get_json()
+
+        reuse = await client.get("/api/v1/auth/verify", headers=auth_headers)
+        assert reuse.status_code == 401
+
+    async def test_change_password_revokes_the_presented_token(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """After a password change, the token that made the change is dead.
+
+        # regression: release-audit-2026-09-23
+        """
+        user = make_mock_user()
+        app_mock_db.return_value.select.return_value.first.return_value = user
+
+        cp = await client.post(
+            "/api/v1/auth/change-password",
+            headers=auth_headers,
+            json={"current_password": "password123", "new_password": "NewSecure!9"},
+        )
+        assert cp.status_code == 200
+
+        reuse = await client.get("/api/v1/auth/verify", headers=auth_headers)
+        assert reuse.status_code == 401
+
+
+class TestVerifyApiKeyNarrowsByPrefix:
+    """verify_api_key filters virtual_keys by the derived key_prefix (M3)."""
+
+    def test_virtual_key_prefix_parsing(self) -> None:
+        """The stored key_prefix is derived from the presented key."""
+        from services.management.app.api.v1.auth import _virtual_key_prefix
+
+        assert _virtual_key_prefix("wa-abcdefghREST_of_secret") == "wa-abcdefgh..."
+        assert _virtual_key_prefix("wa-short") is None  # under 11 chars
+        assert _virtual_key_prefix("nope-abcdefghij") is None  # missing wa- marker
+        assert _virtual_key_prefix("") is None
+
+    def test_verify_api_key_narrows_query_by_key_prefix(self) -> None:
+        """The virtual_keys lookup is filtered by key_prefix, not a full scan.
+
+        # regression: release-audit-2026-09-23
+
+        The mocked route DB ignores query contents, so this drives a recording
+        DB that captures the query the code builds and asserts the key_prefix
+        term is present. Pre-fix the lookup was a bare `enabled == True` scan
+        (no key_prefix term), so this assertion fails.
+        """
+        import services.management.app.api.v1.auth as auth_mod
+
+        api_key = "wa-abcdefghSECRETTAILxyz"
+        expected_prefix = "wa-abcdefgh..."
+        captured: list = []
+
+        class _Q:
+            def __init__(self, terms):
+                self.terms = list(terms)
+
+            def __and__(self, other):
+                return _Q(self.terms + other.terms)
+
+        class _Field:
+            def __init__(self, name):
+                self.name = name
+
+            def __eq__(self, other):  # noqa: ANN001
+                return _Q([(self.name, other)])
+
+        class _Table:
+            def __getattr__(self, name):
+                return _Field(name)
+
+        class _Rows(list):
+            def first(self):
+                return self[0] if self else None
+
+        class _QuerySet:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def select(self, *a, **k):
+                return _Rows(self._rows)
+
+        key_row = MagicMock(key_hash="hash-b", user_id=7, organization_id=3, id=55)
+        user_row = MagicMock(id=7, username="u", role="user", organization_id=3, enabled=True)
+
+        class _RecDB:
+            virtual_keys = _Table()
+            users = _Table()
+
+            def __call__(self, query):
+                captured.append(query)
+                if any(t[0] == "key_prefix" for t in query.terms):
+                    return _QuerySet([key_row])
+                return _QuerySet([user_row])
+
+        with (
+            patch.object(auth_mod, "db", _RecDB()),
+            patch.object(auth_mod.bcrypt, "verify", return_value=True),
+        ):
+            result = auth_mod.verify_api_key(api_key)
+
+        assert result is not None and result["user_id"] == 7
+        assert (
+            "key_prefix",
+            expected_prefix,
+        ) in captured[0].terms
+        assert captured[0].terms != [("enabled", True)]
+
+    def test_verify_api_key_rejects_malformed_without_touching_db(self) -> None:
+        """A malformed key returns None before any DB/bcrypt work."""
+        import services.management.app.api.v1.auth as auth_mod
+
+        db = MagicMock()
+        with (
+            patch.object(auth_mod, "db", db),
+            patch.object(auth_mod.bcrypt, "verify") as verify,
+        ):
+            assert auth_mod.verify_api_key("garbage") is None
+        db.assert_not_called()
+        verify.assert_not_called()
