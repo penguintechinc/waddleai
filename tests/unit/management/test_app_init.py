@@ -95,13 +95,20 @@ class TestMetricsEndpoint:
         assert "# TYPE" in body
 
     async def test_metrics_contains_core_gauges(self, client):
-        """Metrics includes expected gauge names."""
+        """Metrics exposes availability gauges AND real RED metrics.
+
+        regression: release-audit-2026-09-23 -- /metrics now renders the full
+        prometheus_client registry via generate_latest() (RED counters are no
+        longer dead code), replacing the four hand-rolled static gauges.
+        """
         resp = await client.get("/metrics")
         body = (await resp.data).decode()
-        assert "waddleai_up" in body
-        assert "waddleai_db_up" in body
-        assert "waddleai_redis_up" in body
-        assert "waddleai_uptime_seconds" in body
+        assert "waddleai_management_db_up" in body
+        assert "waddleai_management_redis_up" in body
+        assert "waddleai_management_uptime_seconds" in body
+        # RED metrics are now emitted, not declared-and-dropped.
+        assert "waddleai_requests_total" in body
+        assert "waddleai_request_duration_seconds" in body
 
     async def test_metrics_content_type(self, client):
         """Metrics content-type is Prometheus text format."""
