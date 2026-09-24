@@ -227,8 +227,22 @@ def create_app(config_class=Config):
 
     @app.route("/metrics")
     async def metrics():
-        """Basic Prometheus-format metrics endpoint."""
+        """Prometheus scrape surface: real RED metrics + availability gauges.
+
+        The RED counters/histogram (``waddleai_requests_total`` /
+        ``waddleai_request_duration_seconds``) are recorded on every request by
+        the OTel ASGI middleware (``app.observability``); this endpoint renders
+        the full prometheus_client registry via ``generate_latest()`` -- no
+        longer the four hand-rolled static gauges that never reflected traffic.
+        OTLP export is the primary telemetry path; this is the secondary
+        HPA/ServiceMonitor scrape surface (critical-rules Observability).
+        """
+        from prometheus_client import CONTENT_TYPE_LATEST
+
+        from shared.utils.metrics import get_management_metrics
+
         from . import extensions as _ext
+        from .observability import DB_UP, REDIS_UP, UPTIME
 
         db_up = 0
         redis_up = 0
@@ -252,27 +266,25 @@ def create_app(config_class=Config):
             # Expected/ignorable: same rationale as the DB check above.
             app.logger.debug("Metrics Redis check failed: %s", exc)
 
-        uptime_seconds = time.time() - _START_TIME
-        pid = os.getpid()
+        DB_UP.set(db_up)
+        REDIS_UP.set(redis_up)
+        UPTIME.set(time.time() - _START_TIME)
 
-        lines = [
-            "# HELP waddleai_up Management service availability",
-            "# TYPE waddleai_up gauge",
-            "waddleai_up 1",
-            "# HELP waddleai_uptime_seconds Seconds since process start",
-            "# TYPE waddleai_uptime_seconds counter",
-            f"waddleai_uptime_seconds {uptime_seconds:.2f}",
-            "# HELP waddleai_db_up Database connectivity (1=up, 0=down)",
-            "# TYPE waddleai_db_up gauge",
-            f"waddleai_db_up {db_up}",
-            "# HELP waddleai_redis_up Redis connectivity (1=up, 0=down)",
-            "# TYPE waddleai_redis_up gauge",
-            f"waddleai_redis_up {redis_up}",
-            "# HELP waddleai_process_pid Worker process ID",
-            "# TYPE waddleai_process_pid gauge",
-            f"waddleai_process_pid {pid}",
-        ]
-        return Response("\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4")
+        return Response(get_management_metrics().get_metrics(), mimetype=CONTENT_TYPE_LATEST)
+
+    # Audit trail (G10): one after-request hook writes an audit_log row for
+    # every state-changing /api/v1 request -- who/what/when/outcome, user id
+    # only (never raw username). Registered before OTel wraps the ASGI app so
+    # the hook runs inside the request context where g.user is available.
+    from .audit import register_audit_middleware
+
+    register_audit_middleware(app)
+
+    # OpenTelemetry (O1): traces + metrics + logs bootstrap, ASGI request spans,
+    # RED metrics, and SQLAlchemy query spans. No-op without an OTLP endpoint.
+    from .observability import init_observability
+
+    init_observability(app)
 
     app.logger.info("WaddleAI Management Server initialized successfully")
     return app

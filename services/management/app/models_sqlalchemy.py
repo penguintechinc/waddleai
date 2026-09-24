@@ -1323,6 +1323,42 @@ class LocalVectorPoint(Base):
     )
 
 
+class AuditLog(Base):
+    """Admin-action audit trail: one row per state-changing /api/v1 request (G10).
+
+    Records who (``user_id`` -- a reference to the identity table, never the raw
+    username, per the PII-tokenization boundary), what (method + path +
+    resource id), when, and the outcome (HTTP status). Written by the
+    ``app.audit`` after-request middleware, never by individual handlers.
+    """
+
+    __tablename__ = "audit_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # server_default is load-bearing: the middleware inserts through PyDAL
+    # against get_db()'s reflected Table, where the Python-side default never
+    # fires (same rationale as ContentFilterAuditLog.timestamp, gh-207).
+    created_at = Column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default=func.now()
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    method = Column(String(10), nullable=False)  # POST | PUT | PATCH | DELETE
+    path = Column(String(512), nullable=False)
+    resource_id = Column(String(255), nullable=True)
+    status_code = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index("idx_audit_log_created_at", "created_at"),
+        Index("idx_audit_log_user", "user_id", "created_at"),
+        Index("idx_audit_log_org", "organization_id", "created_at"),
+    )
+
+
 def init_schema(database_url: str):
     """Initialize database schema using SQLAlchemy.
 

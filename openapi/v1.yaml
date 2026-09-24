@@ -11624,12 +11624,26 @@ paths:
       summary: Kubernetes-style liveness check — always 200 while process is running.
   /metrics:
     get:
-      description: ''
+      description: '
+
+        The RED counters/histogram (``waddleai_requests_total`` /
+
+        ``waddleai_request_duration_seconds``) are recorded on every request by
+
+        the OTel ASGI middleware (``app.observability``); this endpoint renders
+
+        the full prometheus_client registry via ``generate_latest()`` -- no
+
+        longer the four hand-rolled static gauges that never reflected traffic.
+
+        OTLP export is the primary telemetry path; this is the secondary
+
+        HPA/ServiceMonitor scrape surface (critical-rules Observability).'
       operationId: get_metrics
       parameters: []
       responses:
         '200': *id001
-      summary: Basic Prometheus-format metrics endpoint.
+      summary: 'Prometheus scrape surface: real RED metrics + availability gauges.'
   /readyz:
     get:
       description: ''
