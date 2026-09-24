@@ -30,6 +30,14 @@ management:
     LOG_LEVEL: INFO
     FLASK_ENV: production
 
+  # dal2-beta floor matches the prior fixed replicaCount above; max stays
+  # below the base chart's default (small bare-metal cluster -- no benefit
+  # scaling past this without more capacity).
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+
 # AIProxy Service - Beta
 # NOTE: prod values (not in scope here) MUST pin proxy.image.digest per house SHA256 rule.
 proxy:
@@ -50,6 +58,11 @@ proxy:
   env:
     LOG_LEVEL: INFO
 
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+
 # WebUI Service - Beta
 webui:
   replicaCount: 1
@@ -65,6 +78,11 @@ webui:
     limits:
       memory: "256Mi"
       cpu: "400m"
+
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 2
 
 # PostgreSQL - Beta
 postgres:

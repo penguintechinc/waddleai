@@ -8,7 +8,10 @@ metadata:
     {{- include "waddleai.labels" . | nindent 4 }}
     app.kubernetes.io/component: webui
 spec:
+  # Omitted entirely when autoscaling is enabled -- see management-deployment.yaml.
+  {{- if not .Values.webui.autoscaling.enabled }}
   replicas: {{ .Values.webui.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "waddleai.selectorLabels" . | nindent 6 }}

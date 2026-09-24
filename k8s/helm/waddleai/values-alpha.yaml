@@ -22,6 +22,12 @@ management:
     LOG_LEVEL: DEBUG
     FLASK_ENV: development
 
+  # Local K8s (MicroK8s/Docker Desktop) typically has no metrics-server --
+  # a single-node dev cluster has no scaling upside anyway. Off here, on by
+  # default from values.yaml for beta/prod.
+  autoscaling:
+    enabled: false
+
 # AIProxy Service - Alpha
 proxy:
   replicaCount: 1
@@ -40,6 +46,9 @@ proxy:
   env:
     LOG_LEVEL: DEBUG
 
+  autoscaling:
+    enabled: false
+
 # WebUI Service - Alpha
 webui:
   replicaCount: 1
@@ -54,6 +63,9 @@ webui:
     limits:
       memory: "64Mi"
       cpu: "100m"
+
+  autoscaling:
+    enabled: false
 
 # PostgreSQL - Alpha
 postgres:
