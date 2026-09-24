@@ -139,7 +139,10 @@ def _get_license_client() -> Any:
 # ---------------------------------------------------------------------------
 _TEST_MODE = os.getenv("WADDLEAI_STUB_UPSTREAM") == "1"
 _TEST_AUTH_ROUTE = "/_contract_test/token"
-_TEST_API_KEY_VALUE = "wa-contract-test-0001-secretvalue"
+# wa-{key_id}-{secret}: the middle segment MUST be a single dash-free token
+# equal to the api_keys.key_id column below -- fix/mgmt-auth-scale parses key_id
+# via split("-")[1] for O(1) API-key auth, so a dashed middle segment breaks it.
+_TEST_API_KEY_VALUE = "wa-contracttestkey-secretvalue"
 _STUB_COMPLETION_TEXT = "This is a deterministic stub completion for WaddleAI contract tests."
 
 
@@ -812,7 +815,9 @@ class ProxyServer:
             created_at=datetime.utcnow(),
         )
         api_key_id = self.db.api_keys.insert(
-            key_id="contract-test-key",
+            # Must equal _TEST_API_KEY_VALUE's middle segment (dash-free) so
+            # fix/mgmt-auth-scale's split("-")[1] O(1) key_id lookup resolves it.
+            key_id="contracttestkey",
             key_hash=bcrypt.hash(_TEST_API_KEY_VALUE),
             user_id=user_id,
             organization_id=org_id,
