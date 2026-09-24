@@ -40,6 +40,20 @@ management:
       memory: "512Mi"
       cpu: "500m"
 
+  # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Stateless behind
+  # management-service.yaml's ClusterIP -- safe to scale horizontally.
+  # Disable per-environment (e.g. a cluster with no metrics-server) via
+  # management.autoscaling.enabled: false; the Deployment's own
+  # replicaCount is used as a fixed count whenever this is off (see
+  # management-deployment.yaml, which omits `replicas:` entirely when
+  # autoscaling is enabled so Helm never fights the HPA over pod count).
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 80
+
   livenessProbe:
     enabled: true
     httpGet:
@@ -51,9 +65,15 @@ management:
     failureThreshold: 3
 
   readinessProbe:
+    # O4: readiness must NOT mirror liveness -- /healthz above is
+    # deliberately tolerant of a down DB during startup (see
+    # services/management/app/__init__.py). /readyz gates on real
+    # dependencies (DB + Redis via SQLAlchemy/redis-py checks) and returns
+    # 503 until they're up, so the Service only routes traffic to pods that
+    # can actually serve requests.
     enabled: true
     httpGet:
-      path: /healthz
+      path: /readyz
       port: 8001
     initialDelaySeconds: 10
     periodSeconds: 10
@@ -142,6 +162,18 @@ proxy:
       memory: "256Mi"
       cpu: "250m"
 
+  # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Proxy is the data-plane
+  # workload (/v1/chat/completions, /mem0/*) -- the most request-volume-
+  # sensitive of the three, so it gets the widest max. Disable per-
+  # environment via proxy.autoscaling.enabled: false; see the management
+  # block above for the replicas/HPA interaction note.
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
   livenessProbe:
     enabled: true
     httpGet:
@@ -220,6 +252,16 @@ webui:
     limits:
       memory: "128Mi"
       cpu: "200m"
+
+  # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Static nginx content --
+  # CPU is the only meaningful scaling signal (no memory target; a static
+  # file server's memory footprint doesn't move with request volume).
+  # Disable per-environment via webui.autoscaling.enabled: false.
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 75
 
   livenessProbe:
     enabled: true

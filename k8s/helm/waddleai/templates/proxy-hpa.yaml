@@ -1,0 +1,41 @@
+{{/*
+HorizontalPodAutoscaler for the AIProxy data-plane service (O4: "No HPA
+anywhere"). Proxy fronts /v1/chat/completions, /v1/messages, /mem0/* --
+the highest request-volume workload of the three -- so it gets the widest
+max in values.yaml. Same enabled/autoscaling.enabled double-guard as
+management-hpa.yaml.
+*/}}
+{{- if and .Values.proxy.enabled .Values.proxy.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "waddleai.fullname" . }}-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "waddleai.fullname" . }}-proxy
+  minReplicas: {{ .Values.proxy.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.proxy.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.proxy.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.proxy.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.proxy.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.proxy.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

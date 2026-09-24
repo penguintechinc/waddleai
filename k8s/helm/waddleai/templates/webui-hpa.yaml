@@ -1,0 +1,40 @@
+{{/*
+HorizontalPodAutoscaler for the WebUI service (O4: "No HPA anywhere").
+Static nginx content -- CPU is the only meaningful scaling signal, so no
+memory target is offered here (see webui.autoscaling in values.yaml). Same
+enabled/autoscaling.enabled double-guard as management-hpa.yaml.
+*/}}
+{{- if and .Values.webui.enabled .Values.webui.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "waddleai.fullname" . }}-webui
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webui
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "waddleai.fullname" . }}-webui
+  minReplicas: {{ .Values.webui.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.webui.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.webui.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.webui.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.webui.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.webui.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

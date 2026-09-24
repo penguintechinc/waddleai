@@ -8,7 +8,13 @@ metadata:
     {{- include "waddleai.labels" . | nindent 4 }}
     app.kubernetes.io/component: management
 spec:
+  # Omitted entirely when autoscaling is enabled -- otherwise every `helm
+  # upgrade` resets replicas back to replicaCount and fights the HPA's own
+  # scaling decisions (see authoring-helm-charts skill: "HPA fighting a
+  # pinned replica count").
+  {{- if not .Values.management.autoscaling.enabled }}
   replicas: {{ .Values.management.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "waddleai.selectorLabels" . | nindent 6 }}
