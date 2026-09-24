@@ -351,7 +351,8 @@ Every service reads environment variables directly — there is no `.env.example
 | `FLASK_SECRET_KEY` | No | falls back to `JWT_SECRET` | `services/management/app/config.py` |
 | `ADMIN_INITIAL_PASSWORD` | No | random, un-loggable, if unset | `services/management/app/extensions.py` |
 | `WEBHOOK_SECRET` | Yes, if using webhooks | `""` | `services/management/app/config.py` |
-| `CREDENTIAL_ENCRYPTION_KEY` | Recommended | unset → stored LLM-provider credentials are unencrypted | `shared/security/credential_encryption.py` |
+| `CREDENTIAL_ENCRYPTION_KEY` | **Yes** (fails closed) | unset → writing an LLM-provider credential raises instead of storing plaintext (set `WADDLEAI_ALLOW_PLAINTEXT_CREDENTIALS=1` to opt into plaintext in dev only). Encrypts both `provider_credentials` (management) and `connection_links.api_key` (proxy) at rest | `shared/security/credential_encryption.py` |
+| `WADDLEAI_ALLOW_PLAINTEXT_CREDENTIALS` | No — **dev only** | unset → credential writes require a key | `shared/security/credential_encryption.py` |
 | `HTTP_PORT` | No | `8080` | `proxy/apps/proxy_server/main.py` |
 | `GRPC_PORT` | No | `50051` | `proxy/apps/proxy_server/main.py` |
 | `MANAGEMENT_SERVER_URL` | No | `http://localhost:8001` | `proxy/apps/proxy_server/main.py` |
