@@ -5,9 +5,12 @@ Shared database models for both proxy and management servers.
 
 import os
 from datetime import date, datetime
+from typing import Any
 
 from penguin_dal import DAL, Field
 from sqlalchemy import text
+
+from shared.security.credential_encryption import encrypt_credential, is_encrypted
 
 # Fixed key for the Postgres session-level advisory lock taken in
 # _define_tables_serialized() below. Any int64 works here -- it has no
@@ -190,6 +193,14 @@ def define_tables(db):
         Field("name", unique=True, notnull=True),
         Field("provider", "string", notnull=True),  # ollama, anthropic, openai
         Field("endpoint_url", notnull=True),
+        # SECURITY (finding #33): stores the BYOK provider credential. PyDAL's
+        # "password" type is DISPLAY-masking only, NOT at-rest encryption. The
+        # value persisted here MUST be enc:-prefixed ciphertext produced by
+        # shared.security.credential_encryption.encrypt_credential -- never a
+        # bare plaintext key. Write ONLY via insert_connection_link() /
+        # update_connection_link_api_key() below, which encrypt for you; the
+        # proxy read path (shared/utils/llm_connectors.py::_select_credential)
+        # calls decrypt_credential to recover the plaintext for provider calls.
         Field("api_key", "password"),
         Field("model_list", "json"),
         Field("rate_limits", "json"),
@@ -498,6 +509,41 @@ def define_tables(db):
     )
 
     return db
+
+
+def insert_connection_link(db: DAL, *, api_key: str | None = None, **fields: Any) -> int:
+    """Insert a connection_links row with the provider credential encrypted at rest.
+
+    The ONLY sanctioned way to create a connection_links row (finding #33).
+    Routes ``api_key`` through :func:`encrypt_credential` so the stored value is
+    ``enc:``-prefixed ciphertext, never plaintext; the proxy read path
+    (``shared/utils/llm_connectors.py``) recovers it with ``decrypt_credential``.
+    A bare ``db.connection_links.insert(api_key=...)`` persists the key in the
+    clear and MUST NOT be used. Idempotent: an already-``enc:`` value is stored
+    unchanged, so the backfill's output can be re-inserted safely.
+
+    ``api_key=None`` leaves the column unset (no key needed — the ollama/no-auth
+    case); an empty string is stored as-is. Passing a non-empty plaintext key
+    with no ``CREDENTIAL_ENCRYPTION_KEY`` configured fails closed (raises), per
+    :mod:`shared.security.credential_encryption`.
+    """
+    if api_key and not is_encrypted(api_key):
+        fields["api_key"] = encrypt_credential(api_key)
+    elif api_key is not None:
+        fields["api_key"] = api_key
+    return db.connection_links.insert(**fields)
+
+
+def update_connection_link_api_key(db: DAL, link_id: int, api_key: str) -> int:
+    """Update a connection_links row's provider credential, encrypting at rest.
+
+    Sanctioned update path mirroring :func:`insert_connection_link`. Encrypts a
+    plaintext ``api_key`` before storage and is idempotent with respect to the
+    backfill (an already-``enc:`` value is written through unchanged, never
+    double-encrypted). Returns the number of rows updated.
+    """
+    stored = encrypt_credential(api_key) if api_key and not is_encrypted(api_key) else api_key
+    return db(db.connection_links.id == link_id).update(api_key=stored)
 
 
 # NOTE: default-data bootstrap (default org, admin user, admin API key, token
