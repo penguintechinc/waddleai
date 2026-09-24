@@ -218,13 +218,27 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
             created_at=datetime.utcnow(),
         )
 
-        # Create admin virtual key
-        api_key = "wa-" + secrets.token_urlsafe(32)
+        # Create the admin master key. audit-2026-09-23 M3: the O(1) API-key
+        # lookups now resolve a key from the value itself, so the value MUST
+        # embed its key_id in the `wa-{key_id}-{secret}` form -- the proxy path
+        # (RBACManager.authenticate_api_key) resolves it by the api_keys.key_id
+        # column, and the management path (auth.verify_api_key) by the
+        # virtual_keys.key_prefix. The previous bootstrap emitted a bare
+        # `wa-{secret}` with an unrelated key_prefix ("wa-admin") and key_id
+        # ("admin-key-..."), which those lookups can no longer find. The SAME
+        # plaintext value is hashed into both tables so the admin holds one
+        # key; it is never logged or printed.
+        admin_key_id = secrets.token_hex(8)
+        admin_key_secret = secrets.token_urlsafe(32)
+        api_key = f"wa-{admin_key_id}-{admin_key_secret}"
+        # Mirrors keys.py: "wa-" + the first 8 characters after "wa-" (here the
+        # start of key_id) + "..."; equal to auth._virtual_key_prefix(api_key).
+        admin_key_prefix = f"wa-{admin_key_id[:8]}..."
         db.virtual_keys.insert(
             user_id=admin_id,
             organization_id=org_id,  # INVARIANT: must match admin user's org_id
             name="Admin Master Key",
-            key_prefix="wa-admin",
+            key_prefix=admin_key_prefix,
             key_hash=bcrypt.hash(api_key),
             tpm_limit=1000000,
             rpm_limit=10000,
@@ -234,10 +248,10 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
         # Also seed the api_keys row that the proxy's
         # RBACManager.authenticate_api_key (shared/auth/rbac.py) actually
         # checks -- virtual_keys alone leaves the bootstrap admin unable to
-        # authenticate against the proxy. Same plaintext key value, hashed
-        # separately; never logged or printed.
+        # authenticate against the proxy. Same plaintext value, hashed
+        # separately; key_id matches the value's embedded key_id (above).
         db.api_keys.insert(
-            key_id=f"admin-key-{secrets.token_hex(8)}",
+            key_id=admin_key_id,
             key_hash=bcrypt.hash(api_key),
             user_id=admin_id,
             organization_id=org_id,

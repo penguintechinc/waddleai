@@ -315,41 +315,54 @@ class RBACManager:
         return self._build_user_context(user)
 
     def authenticate_api_key(self, api_key: str) -> UserContext:
-        """Authenticate user with API key."""
-        # Extract key ID from API key (format: wa-{key_id}-{secret})
-        try:
-            parts = api_key.split("-")
-            if len(parts) < 3 or parts[0] != "wa":
-                raise AuthenticationError("Invalid API key format")
-        except Exception:
-            raise AuthenticationError("Invalid API key format") from None
+        """Authenticate user with API key.
 
-        # Find API key by checking hash
-        api_keys = self.db(self.db.api_keys.enabled == True).select()  # noqa: E712
+        The key format is ``wa-{key_id}-{secret}`` where ``key_id`` is a hex
+        token that never contains ``-`` (the secret may). audit-2026-09-23 M3:
+        parse the embedded ``key_id`` and load the single row it identifies,
+        then bcrypt-verify only that key -- instead of loading every enabled
+        key and bcrypt-verifying each in a loop (an O(n) bcrypt scan on the
+        proxy's per-request auth path, and a needlessly large attack surface).
+        bcrypt still gates the secret in constant time, so a forged ``key_id``
+        cannot authenticate; failure semantics are unchanged.
+        """
+        parts = api_key.split("-")
+        if len(parts) < 3 or parts[0] != "wa" or not parts[1]:
+            raise AuthenticationError("Invalid API key format")
+        key_id = parts[1]
 
-        for key_record in api_keys:
-            if bcrypt.verify(api_key, key_record.key_hash):
-                # Update last used.
-                # regression: bug found writing tests/e2e/ -- penguin_dal's
-                # Row (penguin_dal/query.py) has no update_record() method
-                # (that's classic PyDAL API); the uncaught AttributeError
-                # this raised propagated through OIDCAuthMiddleware's api_key
-                # verification (penguin_aaa), which turns *any* exception
-                # into a generic 401 "API key verification failed" -- so
-                # every wa- API-key auth (x-api-key header, raw key, or
-                # Bearer-wrapped key) failed after a *correct* bcrypt match.
-                self.db(self.db.api_keys.id == key_record.id).update(last_used=datetime.utcnow())
+        key_record = (
+            self.db(
+                (self.db.api_keys.key_id == key_id) & (self.db.api_keys.enabled == True)  # noqa: E712
+            )
+            .select()
+            .first()
+        )
 
-                # Get user
-                user = self.db(self.db.users.id == key_record.user_id).select().first()
-                if not user or not user.enabled:
-                    raise AuthenticationError("API key user is disabled")
+        # A missing key_id and a wrong secret are rejected identically; bcrypt
+        # below is the constant-time secret check for a real candidate.
+        if key_record is None or not bcrypt.verify(api_key, key_record.key_hash):
+            raise AuthenticationError("Invalid API key")
 
-                context = self._build_user_context(user)
-                context.api_key_id = key_record.id
-                return context
+        # Update last used.
+        # regression: bug found writing tests/e2e/ -- penguin_dal's
+        # Row (penguin_dal/query.py) has no update_record() method
+        # (that's classic PyDAL API); the uncaught AttributeError
+        # this raised propagated through OIDCAuthMiddleware's api_key
+        # verification (penguin_aaa), which turns *any* exception
+        # into a generic 401 "API key verification failed" -- so
+        # every wa- API-key auth (x-api-key header, raw key, or
+        # Bearer-wrapped key) failed after a *correct* bcrypt match.
+        self.db(self.db.api_keys.id == key_record.id).update(last_used=datetime.utcnow())
 
-        raise AuthenticationError("Invalid API key")
+        # Get user
+        user = self.db(self.db.users.id == key_record.user_id).select().first()
+        if not user or not user.enabled:
+            raise AuthenticationError("API key user is disabled")
+
+        context = self._build_user_context(user)
+        context.api_key_id = key_record.id
+        return context
 
     def _build_user_context(self, user) -> UserContext:
         """Build user context from database record."""
