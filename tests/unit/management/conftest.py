@@ -85,6 +85,12 @@ class _DBField:
     def __or__(self, other):
         return _DBQuery()
 
+    def __invert__(self):
+        # ~field -> descending order marker (penguin_dal FieldProxy.__invert__).
+        # Returned so `orderby=~db.table.col` does not raise in the mock; the
+        # mock's .select() ignores the orderby value anyway.
+        return _DBQuery()
+
     def __add__(self, other):
         return _DBQuery()
 
@@ -172,11 +178,23 @@ class _DBTable:
         self.insert = MagicMock(return_value=1)
         self.update = MagicMock(return_value=0)
         self.delete = MagicMock(return_value=0)
+        # Primary-key lookup (penguin_dal TableProxy.__getitem__: db.users[42]).
+        # Deliberately resolved through its own MagicMock, NOT the
+        # db(query).select().first() chain, so require_auth's per-request
+        # enabled re-check cannot disturb a handler's ordered `.first`
+        # side_effects. Defaults to a truthy row (an enabled user) so every
+        # existing protected-route test authenticates unchanged; tests that
+        # exercise the disabled/deleted path override
+        # `db.<table>.getitem.return_value`.
+        self.getitem = MagicMock()
 
     def __getattr__(self, name):
-        if name in ["insert", "update", "delete"]:
+        if name in ["insert", "update", "delete", "getitem"]:
             return object.__getattribute__(self, name)
         return _DBField()
+
+    def __getitem__(self, pk):
+        return self.getitem(pk)
 
     def __call__(self, *args, **kwargs):
         """Handle table() calls - return a MagicMock that can track update/delete calls."""
