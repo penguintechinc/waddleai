@@ -27,7 +27,7 @@ def test_model_alias_redirect_surfaces_in_response(
 ) -> None:
     """A model_aliases redirect changes the dispatched model and is reported in usage.waddleai."""
     db = open_db(routing_proxy.db_url)
-    key_row = db(db.api_keys.key_id == "contract-test-key").select().first()
+    key_row = db(db.api_keys.key_id == "contracttestkey").select().first()
     assert key_row is not None
     org_id = key_row.organization_id
 
