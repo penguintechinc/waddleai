@@ -269,6 +269,16 @@ jobs:
         bandit -r proxy services/management shared -ll -f json -o bandit-results.json || true
         bandit -r proxy services/management shared -lll
 
+    # G9/R1: scripts/check-licenses.sh (the `make test-security` OSI-license
+    # gate) previously ran locally only -- no workflow ever invoked it, so a
+    # forbidden-license dependency (AGPL/SSPL/BUSL/etc.) could merge
+    # unnoticed. Runs against the exact environment "Install dependencies"
+    # above just built, and has its own `set -euo pipefail` (no `|| true`
+    # here) so a violation fails this job -- which build-platform/release
+    # both gate on via `needs: [..., test, ...]`.
+    - name: Run OSI license gate (pip-licenses)
+      run: bash scripts/check-licenses.sh
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
       with:
@@ -733,6 +743,7 @@ jobs:
     # attestation write most), but the bug applies to every service pushed
     # through this step, so it's disabled here for all of them.
     - name: Build and push Docker image for ${{ matrix.platform }}
+      id: build
       uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
       with:
         context: ${{ matrix.context || '.' }}
@@ -748,6 +759,24 @@ jobs:
         build-args: |
           BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
           VCS_REF=${{ github.sha }}
+
+    # G9/R1: SBOM generation re-enabled, but deliberately NOT via
+    # build-push-action's own `sbom: true` -- that's the exact
+    # attestation-manifest mechanism disabled above for the documented
+    # buildx bug. Syft scans the just-pushed image directly by digest
+    # (registry pull, reusing the docker/login-action session above),
+    # producing a standalone SPDX file with no OCI index/attestation
+    # involvement -- same coverage, none of the "manifest unknown" blast
+    # radius.
+    - name: Generate SBOM for ${{ matrix.service }} (${{ matrix.platform }})
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+      with:
+        image: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+        format: spdx-json
+        artifact-name: sbom-${{ matrix.service }}-${{ steps.arch.outputs.suffix }}.spdx.json
+        output-file: sbom-${{ matrix.service }}-${{ steps.arch.outputs.suffix }}.spdx.json
+        upload-release-assets: false
 
   merge-manifests:
     needs: [determine-tier, build-platform]
@@ -945,6 +974,19 @@ jobs:
         cache-from: type=gha,scope=ollama-${{ matrix.target }}
         cache-to: type=gha,scope=ollama-${{ matrix.target }},mode=max
 
+    # G9/R1: see the equivalent step in build-platform above for why this
+    # goes through syft directly instead of build-push-action's own
+    # `sbom: true`.
+    - name: Generate SBOM for ollama (${{ matrix.target }})
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+      with:
+        image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}@${{ steps.build.outputs.digest }}
+        format: spdx-json
+        artifact-name: sbom-ollama-${{ matrix.target }}.spdx.json
+        output-file: sbom-ollama-${{ matrix.target }}.spdx.json
+        upload-release-assets: false
+
     # Blocking gate (Task 13: "block on Trivy findings") — scans the exact
     # digest just pushed, ignoring only the documented, justified entries in
     # images/ollama/.trivyignore (upstream-embedded Go module CVEs + Debian
@@ -1015,7 +1057,13 @@ jobs:
     needs: build-platform
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-    continue-on-error: true
+    # R6: `continue-on-error: true` used to sit here undocumented, silently
+    # turning every step's hard failure (the internal `set -euo pipefail` /
+    # bounded-retry / no-`|| true` gating this job's own comments describe
+    # step by step) into an overall job "success" -- and `release`/`cleanup`
+    # below both gate on `needs: [..., integration-test]`, so a genuinely
+    # broken build could still cut a release. Removed: this is meant to be a
+    # real gate, not an advisory one.
     permissions:
       contents: read
       packages: read
