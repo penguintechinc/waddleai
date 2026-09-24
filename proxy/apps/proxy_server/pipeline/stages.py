@@ -69,6 +69,16 @@ from shared.utils.token_limiter import TokenLimiter
 
 logger = logging.getLogger(__name__)
 
+# gh-216: MeterStage (and TokenBudgetStage) gate on ctx.user.vkey_id, which
+# UserContext never carries -- so both were permanently no-op "dead gates"
+# (a silent, undocumented disable). Per the #216 decision, MeterStage is now
+# explicitly gated OFF behind this flag (default OFF, non-security -> fails to
+# OFF on a flag-store outage) rather than silently no-op'd, so the disable is
+# visible in stage_log ("skipped:meter") and reversible from PostHog. The
+# underlying vkey_id wiring fix is deliberately deferred (still #216);
+# TokenBudgetStage shares the same root cause and is left as-is for now.
+METERING_FLAG = "waddleai.metering"
+
 
 async def _resolve_flag(
     features: Any, flag_key: str, distinct_id: str | None, *, default: bool = False
@@ -1239,7 +1249,13 @@ class SecurityOutStage(Stage):
 
 
 class MeterStage(Stage):
-    """Record token usage to metering buffer and reconcile budget reservation."""
+    """Record token usage to metering buffer and reconcile budget reservation.
+
+    gh-216: gated OFF behind ``METERING_FLAG`` (``waddleai.metering``, default
+    OFF) by the pipeline builder. Until the vkey_id wiring is fixed the body
+    below still no-ops on the missing ``ctx.user.vkey_id``; the flag makes that
+    disable explicit and documented rather than a silent dead gate.
+    """
 
     def __init__(
         self,

@@ -9,10 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from proxy.apps.proxy_server import feature_flag_cache as ffc
+from proxy.apps.proxy_server.pipeline import (
+    METERING_FLAG,
+    MeterStage,
+    PipelineContext,
+    ProxyPipeline,
+)
 from proxy.apps.proxy_server.pipeline.stages import _resolve_flag
 
 
@@ -228,3 +236,55 @@ class TestDecryptOnRead:
         link = types.SimpleNamespace(name="openai", api_key=stored)
 
         assert manager._select_credential(link) == "sk-real-upstream-secret"
+
+
+class TestMeterStageGh216:
+    """gh-216: MeterStage is explicitly flag-gated OFF, not a silent dead gate."""
+
+    @staticmethod
+    def _pipeline() -> tuple[Mock, ProxyPipeline]:
+        """A one-stage pipeline (MeterStage behind METERING_FLAG) + real flag helper."""
+        buf = Mock()
+        limiter = Mock()
+        limiter.reconcile = AsyncMock()
+        stage = MeterStage(
+            name="meter", metering_buffer=buf, token_limiter=limiter, flag=METERING_FLAG
+        )
+        return buf, ProxyPipeline([stage], ffc.FeatureFlagsHelper())
+
+    # regression: release-audit-2026-09-23 / gh-216
+    async def test_meter_skipped_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With no flag configured (default), MeterStage is skipped explicitly, never run."""
+        monkeypatch.delenv("WADDLEAI_FLAG_METERING", raising=False)
+        # Unconfigured flag store -> DEFAULTED -> default OFF (non-security, never fail-closed).
+        monkeypatch.setattr(ffc, "_get_posthog_client", lambda: None)
+        buf, pipe = self._pipeline()
+        ctx = await pipe.run(PipelineContext(user=SimpleNamespace(id=1), body={}))
+        assert "skipped:meter" in ctx.stage_log
+        assert "ran:meter" not in ctx.stage_log
+        buf.record.assert_not_called()
+
+    # regression: release-audit-2026-09-23 / gh-216
+    async def test_meter_runs_when_flag_forced_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Forcing waddleai.metering ON makes the pipeline execute MeterStage."""
+        monkeypatch.setenv("WADDLEAI_FLAG_METERING", "1")
+        buf, pipe = self._pipeline()
+        ctx = await pipe.run(PipelineContext(user=SimpleNamespace(id=1), body={}))
+        assert "ran:meter" in ctx.stage_log
+        assert "skipped:meter" not in ctx.stage_log
+
+    # regression: release-audit-2026-09-23 / gh-216
+    async def test_metering_flag_is_non_security_and_off_on_outage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flag-store OUTAGE leaves metering OFF (fail-open default), never fail-closed."""
+        monkeypatch.delenv("WADDLEAI_FLAG_METERING", raising=False)
+
+        class _OutageClient:
+            def feature_enabled(self, flag_key: str, distinct_id: str) -> bool:
+                raise RuntimeError("posthog unreachable")
+
+        monkeypatch.setattr(ffc, "_get_posthog_client", lambda: _OutageClient())
+        assert (
+            await ffc.FeatureFlagsHelper().resolve(METERING_FLAG, "org-1", default=False) is False
+        )

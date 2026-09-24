@@ -1807,3 +1807,11 @@ class TestReleaseAudit20260923Handlers:
         )
         assert resp.status_code == 200
         assert limiter.active == 0  # slot released in finally
+
+    # regression: release-audit-2026-09-23 / gh-216
+    async def test_meter_stage_wired_behind_metering_flag(self, running_app):
+        """The assembled pipeline gates MeterStage behind waddleai.metering (default OFF)."""
+        from proxy.apps.proxy_server.pipeline import METERING_FLAG
+
+        meter = next(s for s in proxy_main.proxy_server.pipeline.stages if s.name == "meter")
+        assert meter.flag == METERING_FLAG  # explicit disable, not a silent dead gate (gh-216)

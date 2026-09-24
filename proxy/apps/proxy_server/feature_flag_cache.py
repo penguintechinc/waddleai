@@ -129,10 +129,13 @@ class FeatureFlagsHelper:
             return default
 
         # UNRESOLVED == flag-store outage: degrade to last-known, else fail closed.
+        # A security flag degrading is WARNING-worthy; a non-security flag simply
+        # falling to its default is expected graceful degradation -> INFO.
+        log = logger.warning if security else logger.info
         with self._lock:
             entry = self._cache.get(key)
         if entry is not None:
-            logger.warning(
+            log(
                 "feature flag %s unresolvable (flag-store outage); using last-known "
                 "cached value=%s for distinct_id=%s",
                 flag_key,
@@ -142,7 +145,7 @@ class FeatureFlagsHelper:
             return entry.value
 
         fallback = True if security else default
-        logger.warning(
+        log(
             "feature flag %s unresolvable (flag-store outage) and never cached; "
             "failing %s to %s for distinct_id=%s",
             flag_key,

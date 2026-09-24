@@ -67,6 +67,7 @@ from .grpc_server import CallerIdentity, ServerComponents, run_grpc_in_thread
 from .mcp_mount import MCPMount
 from .mem0_api import mem0_bp, set_memory_manager
 from .pipeline import (
+    METERING_FLAG,
     AuthStage,
     CacheStage,
     DispatchStage,
@@ -1165,12 +1166,20 @@ class ProxyServer:
             usage_writer = PenguinDALUsageWriter(db=self.db)
             metering_buffer = MeteringBuffer(writer=usage_writer, interval=1.0)
 
+        # gh-216: MeterStage gates on ctx.user.vkey_id, which UserContext never
+        # carries -- it was a permanently silent no-op. Per the #216 decision it
+        # is now explicitly gated OFF behind waddleai.metering (default OFF,
+        # non-security -> fails to OFF on a flag-store outage, resolved through
+        # feature_flag_cache like every other flag) so the disable is visible
+        # ("skipped:meter" in stage_log) and reversible. TokenBudgetStage
+        # (flag=None above) shares the same vkey_id dead-gate root cause; its
+        # fix is deferred under the same issue.
         stages.append(
             MeterStage(
                 name="meter",
                 metering_buffer=metering_buffer,
                 token_limiter=token_limiter,
-                flag=None,
+                flag=METERING_FLAG,
             )
         )
 
