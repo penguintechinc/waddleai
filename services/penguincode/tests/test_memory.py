@@ -12,9 +12,19 @@ try:
     )
     from penguincode_cli.tools.memory import MemoryManager, create_memory_manager
 
-    # Probe: verify MemoryManager works with the config pattern used in these tests
+    # Probe: verify MemoryManager works with the config pattern used in these tests.
+    # enabled=False deliberately: with enabled=True, MemoryManager.__init__ calls
+    # mem0's Memory.from_config(), which eagerly initializes the Ollama-backed
+    # LLM/embedder clients and requires a real, reachable Ollama at ollama_url.
+    # That made this probe -- and therefore the module's 13 tests -- silently
+    # skip under a misleading "Memory API changed" reason whenever Ollama
+    # wasn't reachable (e.g. every CI run, which has no local Ollama). With
+    # enabled=False, __init__ returns before touching mem0/Ollama at all, so
+    # this only exercises what the probe is actually meant to check: that the
+    # config schema and MemoryManager/_get_vector_store_config API still match
+    # what these tests assume -- no network involved.
     _probe_config = MemoryConfig(
-        enabled=True,
+        enabled=False,
         vector_store="chroma",
         stores=MemoryStoresConfig(chroma=ChromaStoreConfig(path="/tmp/_probe", collection="probe")),
     )
@@ -83,14 +93,15 @@ class TestMemoryManager:
 
     def test_vector_store_config_chroma(self):
         """Test ChromaDB vector store configuration."""
-        config = MemoryConfig(
+        chroma_config = MemoryConfig(
             enabled=True,
             vector_store="chroma",
             stores=MemoryStoresConfig(chroma=ChromaStoreConfig(path="./.test/memory", collection="test")),
         )
-        manager = MemoryManager(config, ollama_url="http://localhost:11434")
-
-        vector_config = manager._get_vector_store_config(config)
+        # Use a disabled manager to skip Memory.from_config(), then test the config method directly
+        disabled_config = MemoryConfig(enabled=False)
+        manager = MemoryManager(disabled_config, ollama_url="http://localhost:11434")
+        vector_config = manager._get_vector_store_config(chroma_config)
 
         assert vector_config["provider"] == "chroma"
         assert vector_config["config"]["collection_name"] == "test"
@@ -98,14 +109,15 @@ class TestMemoryManager:
 
     def test_vector_store_config_qdrant(self):
         """Test Qdrant vector store configuration."""
-        config = MemoryConfig(
+        qdrant_config = MemoryConfig(
             enabled=True,
             vector_store="qdrant",
             stores=MemoryStoresConfig(qdrant=QdrantStoreConfig(url="http://localhost:6333", collection="test")),
         )
-        manager = MemoryManager(config, ollama_url="http://localhost:11434")
-
-        vector_config = manager._get_vector_store_config(config)
+        # Use a disabled manager to skip Memory.from_config(), then test the config method directly
+        disabled_config = MemoryConfig(enabled=False)
+        manager = MemoryManager(disabled_config, ollama_url="http://localhost:11434")
+        vector_config = manager._get_vector_store_config(qdrant_config)
 
         assert vector_config["provider"] == "qdrant"
         assert vector_config["config"]["collection_name"] == "test"
@@ -165,7 +177,11 @@ class TestMemoryManagerFactory:
 
     def test_create_memory_manager(self):
         """Test creating memory manager via factory."""
-        config = MemoryConfig(enabled=True, vector_store="chroma")
+        # enabled=False: this only asserts attribute passthrough (config,
+        # ollama_url, llm_model), not real mem0 functionality, so it doesn't
+        # need MemoryManager.__init__ to reach mem0's Memory.from_config()
+        # (which requires a live, reachable Ollama when enabled=True).
+        config = MemoryConfig(enabled=False, vector_store="chroma")
 
         manager = create_memory_manager(config, ollama_url="http://localhost:11434", llm_model="gemma4:e4b")
 
