@@ -31,18 +31,31 @@ from shared.observability import metrics as obs_metrics
 
 @pytest.fixture
 def metric_reader() -> Iterator[InMemoryMetricReader]:
-    """Install a real MeterProvider whose data points a test can read back."""
+    """Install a real MeterProvider whose data points a test can read back.
+
+    Hermetic: the process-global OTel MeterProvider and its run-once latch are
+    captured on setup and restored on teardown, so this fixture never leaks a
+    dead in-memory provider into another test module. A leaked provider broke
+    tests/unit/security/test_pii_telemetry.py, which installs its own in-memory
+    reader and can only do so while the run-once latch is still un-tripped.
+    """
+    prev_provider = otel_metrics._internal._METER_PROVIDER
+    prev_once = otel_metrics._internal._METER_PROVIDER_SET_ONCE
     reader = InMemoryMetricReader()
     # set_meter_provider is guarded by a run-once latch; reset both the latch and
-    # the cached provider so each test installs its own reader as the global one.
+    # the cached provider so this test installs its own reader as the global one.
     otel_metrics._internal._METER_PROVIDER = None
     otel_metrics._internal._METER_PROVIDER_SET_ONCE = Once()
     otel_metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
     obs_metrics.reset_for_testing()
     mgmt_obs.reset_for_testing()
-    yield reader
-    obs_metrics.reset_for_testing()
-    mgmt_obs.reset_for_testing()
+    try:
+        yield reader
+    finally:
+        otel_metrics._internal._METER_PROVIDER = prev_provider
+        otel_metrics._internal._METER_PROVIDER_SET_ONCE = prev_once
+        obs_metrics.reset_for_testing()
+        mgmt_obs.reset_for_testing()
 
 
 @pytest.fixture
