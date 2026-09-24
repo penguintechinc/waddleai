@@ -11,6 +11,7 @@ from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
 
+from ... import dsar
 from ...extensions import db
 from . import api_v1_bp
 from ._pagination import PageRequest
@@ -42,6 +43,26 @@ def _has_scope(permission: Permission) -> bool:
     """
     user = getattr(g, "user", None) or {}
     return permission.value in set(user.get("scope") or [])
+
+
+def _dsar_access_denied(user):
+    """Shared DSAR ownership/scope gate -- ``None`` when the caller may proceed.
+
+    A caller may always act on their OWN identity record (statutory
+    self-service, no scope required). Acting on ANOTHER user requires an
+    org-admin scope: ``USER_CREATE`` (admin, any org) or ``USER_MANAGE``
+    confined to the caller's own org -- the same tiering ``get_user`` uses.
+    Deliberately NOT gated on any licence tier: DSAR access and erasure are
+    statutory rights that must work at Free tier.
+    """
+    if user.id == g.user["user_id"]:
+        return None
+    if _has_scope(Permission.USER_CREATE):
+        return None
+    org_id = g.user.get("organization_id")
+    if _has_scope(Permission.USER_MANAGE) and user.organization_id == org_id:
+        return None
+    return jsonify({"error": "Access denied"}), 403
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +180,64 @@ class CreateUserResponse:
     role: str
     organization_id: int
     message: str
+
+
+@dataclass(slots=True)
+class ExportedIdentity:
+    """The subject's identity-table record, as disclosed by a DSAR access export.
+
+    Every column held about the subject in ``users`` EXCEPT the password hash --
+    a data subject is entitled to know a credential digest is stored (the
+    manifest says so), but returning the digest itself is a needless security
+    risk. Mirrors ``dsar.export_identity`` field-for-field.
+    """
+
+    id: int
+    username: str
+    email: str
+    role: str
+    organization_id: int
+    enabled: bool
+    default_model: str | None
+    token_quota_daily: int | None
+    token_quota_monthly: int | None
+    created_at: str | None
+    last_login_at: str | None
+    current_login_at: str | None
+    last_login_ip: str | None
+    current_login_ip: str | None
+    login_count: int | None
+
+
+@dataclass(slots=True)
+class DataHoldingManifestEntry:
+    """One row of the GDPR Art. 15 manifest: a table that holds data about the subject."""
+
+    table: str
+    description: str
+    contains_pii: bool
+    reference: str
+
+
+@dataclass(slots=True)
+class UserDataExportResponse:
+    """Response body for GET /api/v1/users/<user_id>/export (right of access)."""
+
+    subject_user_id: int
+    generated_at: str
+    identity: ExportedIdentity
+    manifest: list[DataHoldingManifestEntry]
+    notice: str
+
+
+@dataclass(slots=True)
+class ErasureResponse:
+    """Response body for POST /api/v1/users/<user_id>/erase (right to erasure)."""
+
+    message: str
+    user_id: int
+    erased: bool
+    anonymized_fields: list[str]
 
 
 @api_v1_bp.route("/users", methods=["GET"])
@@ -455,3 +534,78 @@ async def enable_user(user_id):
     await asyncio.to_thread(_enable)
 
     return {"message": "User enabled successfully"}
+
+
+@api_v1_bp.route("/users/<int:user_id>/export", methods=["GET"])
+@require_auth
+@validate_response(UserDataExportResponse, 200)
+async def export_user_data(user_id):
+    """DSAR right of access (GDPR Art. 15): export the personal data held about a user.
+
+    A user exports their own record; an org-admin (USER_MANAGE, own org) or an
+    admin (USER_CREATE, any org) may export a user in scope. Returns the
+    identity record (minus the password hash) plus a manifest of every table
+    that holds data about the subject. Statutory -- authenticated + owned/scoped
+    only, never gated on a licence entitlement.
+    """
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    denied = _dsar_access_denied(user)
+    if denied is not None:
+        return denied
+
+    return {
+        "subject_user_id": user.id,
+        "generated_at": datetime.utcnow().isoformat(),
+        "identity": dsar.export_identity(user),
+        "manifest": dsar.data_holding_manifest(),
+        "notice": (
+            "This export lists the personal data held about you in the identity "
+            "table plus the other tables that reference your account by id only. "
+            "Use POST /api/v1/users/{id}/erase to exercise your right to erasure."
+        ),
+    }
+
+
+@api_v1_bp.route("/users/<int:user_id>/erase", methods=["POST"])
+@require_auth
+@validate_response(ErasureResponse, 200)
+async def erase_user_data(user_id):
+    """DSAR right to erasure (GDPR Art. 17): anonymize a user's PII in place.
+
+    A user erases their own account; an org-admin (USER_MANAGE, own org) or an
+    admin (USER_CREATE, any org) may erase a user in scope. Every direct-PII
+    column is replaced with a non-reversible tombstone and the account disabled;
+    the row is retained so id references from other tables keep resolving
+    (PII-tokenization design). Statutory -- never gated on a licence tier.
+    """
+    user = await asyncio.to_thread(lambda: db(db.users.id == user_id).select().first())
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    denied = _dsar_access_denied(user)
+    if denied is not None:
+        return denied
+
+    is_self = user.id == g.user["user_id"]
+    # An org-admin (USER_MANAGE only) may not erase an admin account -- mirrors
+    # update_user/enable_user. Self-erasure is always allowed regardless of role.
+    if not is_self and not _has_scope(Permission.USER_CREATE) and user.role == "admin":
+        return jsonify({"error": "Cannot erase admin user"}), 403
+
+    updates = dsar.anonymized_values(user.id)
+
+    def _erase():
+        db(db.users.id == user.id).update(**updates)
+        db.commit()
+
+    await asyncio.to_thread(_erase)
+
+    return {
+        "message": "User data erased successfully",
+        "user_id": user.id,
+        "erased": True,
+        "anonymized_fields": list(dsar.PII_FIELDS),
+    }
