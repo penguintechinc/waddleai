@@ -32,6 +32,12 @@ from .auth import require_auth
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on rows scanned by the aggregate summary. routing_decision_traces
+# grows with every routed request, so the summary bounds its scan to the most
+# recent N traces rather than loading the entire table into memory
+# (audit-2026-09-23 M2/O6).
+_SUMMARY_MAX_ROWS = 100000
+
 routing_decisions_bp = Blueprint(
     "routing_decisions", __name__, url_prefix="/api/v1/routing/decisions"
 )
@@ -256,7 +262,22 @@ async def list_decisions_summary() -> tuple:
             query &= table.timestamp >= from_ts
         if to_ts is not None:
             query &= table.timestamp < to_ts
-        return list(database(query).select())
+        # Project only the four columns the summary reads and bound the scan to
+        # the most recent _SUMMARY_MAX_ROWS traces, so this endpoint never pulls
+        # the whole (ever-growing) table -- nor its large per-row JSON payloads
+        # -- into memory to aggregate in Python (audit-2026-09-23 M2/O6). When
+        # the window holds more than the cap, the summary reflects the most
+        # recent _SUMMARY_MAX_ROWS traces.
+        return list(
+            database(query).select(
+                table.tool_type_source,
+                table.capability_veto,
+                table.escalated,
+                table.pressure_signals,
+                orderby=~table.timestamp,
+                limitby=(0, _SUMMARY_MAX_ROWS),
+            )
+        )
 
     rows = await asyncio.to_thread(_fetch)
 
