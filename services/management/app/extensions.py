@@ -19,6 +19,14 @@ from quart import Quart
 
 logger = logging.getLogger(__name__)
 
+# Fixed, NON-secret lookup handle for the bootstrap admin key. It is the
+# `key_id` half of the `wa-{key_id}-{secret}` value (analogous to a username),
+# NOT a credential -- the credential is the random secret, bcrypt-hashed. Kept
+# deterministic so the admin key's key_prefix is reproducible across deployments
+# (and its contract snapshot, tests/contract/snapshots/mgmt_keys_list.json, is
+# stable). Dash-free so rbac's `wa-{key_id}-{secret}` split resolves it.
+_ADMIN_MASTER_KEY_ID = "adminkey"  # noqa: S105 -- non-secret lookup handle, not a credential
+
 # Global instances
 db: DB | None = None
 redis_client: redis.Redis | None = None
@@ -228,7 +236,7 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
         # ("admin-key-..."), which those lookups can no longer find. The SAME
         # plaintext value is hashed into both tables so the admin holds one
         # key; it is never logged or printed.
-        admin_key_id = secrets.token_hex(8)
+        admin_key_id = _ADMIN_MASTER_KEY_ID
         admin_key_secret = secrets.token_urlsafe(32)
         api_key = f"wa-{admin_key_id}-{admin_key_secret}"
         # Mirrors keys.py: "wa-" + the first 8 characters after "wa-" (here the

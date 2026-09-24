@@ -411,14 +411,10 @@ class TestMasterKeyPlaintextRegressionCodeQL2507:
         from passlib.hash import bcrypt as _bcrypt
 
         from services.management.app.api.v1.auth import _virtual_key_prefix
-        from services.management.app.extensions import init_default_data
+        from services.management.app.extensions import _ADMIN_MASTER_KEY_ID, init_default_data
 
-        fixed_key_id = "0011223344556677"
         fixed_secret = "SECRET-with-dashes_and_stuff"  # noqa: S105 -- test fixture, not a secret
-        with (
-            patch.object(secrets, "token_hex", return_value=fixed_key_id),
-            patch.object(secrets, "token_urlsafe", return_value=fixed_secret),
-        ):
+        with patch.object(secrets, "token_urlsafe", return_value=fixed_secret):
             inserted_api_keys = []
             inserted_virtual_keys = []
             mock_db = MagicMock()
@@ -434,14 +430,16 @@ class TestMasterKeyPlaintextRegressionCodeQL2507:
             )
             init_default_data(mock_db, config={"ADMIN_INITIAL_PASSWORD": "test123"})
 
-        # token_hex is used for both key_id and the admin password; the api_keys
-        # key_id must equal the value's embedded key_id (parts[1]).
-        expected_value = f"wa-{fixed_key_id}-{fixed_secret}"
+        # key_id is a fixed, deterministic lookup handle (so the key_prefix and
+        # its contract snapshot are reproducible); the secret is what's random.
+        expected_value = f"wa-{_ADMIN_MASTER_KEY_ID}-{fixed_secret}"
         api_row = inserted_api_keys[0]
         vkey_row = inserted_virtual_keys[0]
 
         # proxy path: rbac.authenticate_api_key parses parts[1] as the key_id.
+        assert api_row["key_id"] == _ADMIN_MASTER_KEY_ID
         assert api_row["key_id"] == expected_value.split("-")[1]
+        assert "-" not in _ADMIN_MASTER_KEY_ID  # dash-free so the split resolves it
         assert _bcrypt.verify(expected_value, api_row["key_hash"])
 
         # management path: auth.verify_api_key narrows by the derived prefix.
