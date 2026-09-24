@@ -1,5 +1,7 @@
 """Unit tests for search engines."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from penguincode_cli.config.settings import (
@@ -55,22 +57,52 @@ class TestDuckDuckGoEngine:
 
     @pytest.mark.asyncio
     async def test_search_basic(self):
-        """Test basic search functionality."""
+        """Test basic search functionality against a mocked DDGS response.
+
+        Regression: this test used to call the real ddgs.DDGS().text(), which
+        hits https://html.duckduckgo.com/html/ over the live internet and
+        intermittently timed out in CI. Mocking the DDGS client keeps this a
+        real unit test of the engine's parse/return behaviour with no socket.
+        """
         engine = DuckDuckGoEngine()
 
-        # Test search with a simple query
-        results = await engine.search("python programming", max_results=3)
+        canned_results = [
+            {
+                "title": "Python Programming Language",
+                "href": "https://www.python.org/",
+                "body": "Python is a programming language that lets you work quickly.",
+            },
+            {
+                "title": "Python (programming language) - Wikipedia",
+                "href": "https://en.wikipedia.org/wiki/Python_(programming_language)",
+                "body": "Python is a high-level, general-purpose programming language.",
+            },
+        ]
+        mock_ddgs_instance = MagicMock()
+        mock_ddgs_instance.text.return_value = canned_results
+
+        with patch(
+            "penguincode_cli.tools.engines.duckduckgo.DDGS", return_value=mock_ddgs_instance
+        ):
+            results = await engine.search("python programming", max_results=3)
+
+        mock_ddgs_instance.text.assert_called_once_with(
+            "python programming",
+            region=engine.region,
+            safesearch=engine.safesearch,
+            max_results=3,
+        )
 
         assert isinstance(results, list)
+        assert len(results) == len(canned_results)
         assert len(results) <= 3
 
-        if results:
-            result = results[0]
-            assert isinstance(result, SearchResult)
-            assert result.source == "duckduckgo"
-            assert result.title
-            assert result.url
-            assert result.snippet
+        result = results[0]
+        assert isinstance(result, SearchResult)
+        assert result.source == "duckduckgo"
+        assert result.title == "Python Programming Language"
+        assert result.url == "https://www.python.org/"
+        assert result.snippet == "Python is a programming language that lets you work quickly."
 
 
 class TestGoogleEngine:
