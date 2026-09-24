@@ -27,7 +27,9 @@ permanently wrong. The `running_app` fixture below forces a fresh
 regardless of import order -- see its docstring for the full mechanics.
 """
 
+import dataclasses
 import importlib
+import json
 import os
 import tempfile
 
@@ -44,6 +46,7 @@ from quart import Response  # noqa: E402
 from werkzeug.exceptions import HTTPException  # noqa: E402
 
 from proxy.apps.proxy_server import main as proxy_main  # noqa: E402
+from proxy.apps.proxy_server.grpc_server import CallerIdentity  # noqa: E402
 from proxy.apps.proxy_server.pipeline import PipelineContext  # noqa: E402
 from shared.auth.penguin_auth import verify_token  # noqa: E402
 from shared.auth.rbac import AuthenticationError, Role, UserContext  # noqa: E402
@@ -206,33 +209,47 @@ class TestBuildPipelineModeBranches:
 
 
 class TestFeatureFlagsHelper:
-    """The locally-defined FeatureFlagsHelper wraps feature_flags.is_feature_enabled()."""
+    """FeatureFlagsHelper resolves via the shared PostHog wrapper.
 
-    async def test_delegates_with_distinct_id_fallback_to_server(self, running_app, monkeypatch):
+    The distinct_id is passed through, falling back to the "server" identity
+    when None.
+
+    Rewritten for the caching/fail-closed helper (release-audit-2026-09-23):
+    resolution now goes through feature_flag_cache, not a direct delegation to
+    the module-level is_feature_enabled symbol.
+    """
+
+    async def test_distinct_id_fallback_to_server(self, running_app, monkeypatch):
         """A None distinct_id falls back to the literal "server" identity."""
-        calls = []
+        from proxy.apps.proxy_server import feature_flag_cache as ffc
 
-        def fake_is_feature_enabled(flag_key, distinct_id, default=False):
-            calls.append((flag_key, distinct_id, default))
-            return True
+        calls: list[tuple[str, str]] = []
 
-        monkeypatch.setattr(proxy_main, "is_feature_enabled", fake_is_feature_enabled)
-        result = proxy_main.proxy_server.features.is_feature_enabled("some.flag")
-        assert result is True
-        assert calls == [("some.flag", "server", False)]
+        class _Recorder:
+            def feature_enabled(self, flag_key, distinct_id):
+                calls.append((flag_key, distinct_id))
+                return True
 
-    async def test_delegates_with_explicit_distinct_id(self, running_app, monkeypatch):
+        monkeypatch.setattr(ffc, "_get_posthog_client", lambda: _Recorder())
+        helper = ffc.FeatureFlagsHelper()
+        assert helper.is_feature_enabled("some.flag") is True
+        assert calls == [("some.flag", "server")]
+
+    async def test_explicit_distinct_id(self, running_app, monkeypatch):
         """An explicit distinct_id is passed through untouched (no "server" fallback)."""
-        calls = []
+        from proxy.apps.proxy_server import feature_flag_cache as ffc
 
-        def fake_is_feature_enabled(flag_key, distinct_id, default=False):
-            calls.append((flag_key, distinct_id, default))
-            return False
+        calls: list[tuple[str, str]] = []
 
-        monkeypatch.setattr(proxy_main, "is_feature_enabled", fake_is_feature_enabled)
-        result = proxy_main.proxy_server.features.is_feature_enabled("flag.x", "user-42")
-        assert result is False
-        assert calls == [("flag.x", "user-42", False)]
+        class _Recorder:
+            def feature_enabled(self, flag_key, distinct_id):
+                calls.append((flag_key, distinct_id))
+                return False
+
+        monkeypatch.setattr(ffc, "_get_posthog_client", lambda: _Recorder())
+        helper = ffc.FeatureFlagsHelper()
+        assert helper.is_feature_enabled("flag.x", "user-42") is False
+        assert calls == [("flag.x", "user-42")]
 
 
 # ---------------------------------------------------------------------------
@@ -1644,3 +1661,149 @@ class TestCountTokensEndpoint:
             data=b"not-json",
         )
         assert resp.status_code == 500
+
+
+class TestReleaseAudit20260923Handlers:
+    """Handler-level regressions for the 2026-09-23 proxy data-plane audit."""
+
+    # regression: release-audit-2026-09-23
+    async def test_count_tokens_redacts_before_connector(self, running_app, monkeypatch):
+        """count_tokens routes the prompt through PII redaction before any provider call.
+
+        Some connectors' count_tokens make a real upstream network call, so raw
+        prompt text must be redacted first.
+        """
+        from shared.security.content_filter import FilterResult
+
+        async def fake_filter_input(text, user_id=None, org_id=None, ip=None):
+            return FilterResult(
+                allowed=True,
+                action="redact",
+                violations=[],
+                filtered_text="[REDACTED:SSN]",
+                auditor_used=False,
+            )
+
+        monkeypatch.setattr(
+            proxy_main.proxy_server.content_filter, "filter_input", fake_filter_input
+        )
+        monkeypatch.setattr(
+            proxy_main.proxy_server.request_router,
+            "select_provider",
+            lambda model: ("stub", model),
+        )
+
+        captured: dict = {}
+        stub = proxy_main.proxy_server.llm_manager.connectors["stub"]
+
+        async def capturing_count_tokens(messages, model=None, **kwargs):
+            captured["messages"] = messages
+            return 12
+
+        monkeypatch.setattr(stub, "count_tokens", capturing_count_tokens)
+
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages/count_tokens",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "my ssn is 123-45-6789"}],
+            },
+        )
+        assert resp.status_code == 200
+        sent = json.dumps(captured["messages"])
+        # The connector saw the REDACTED text, never the raw secret.
+        assert "123-45-6789" not in sent
+        assert "[REDACTED:SSN]" in sent
+
+    # regression: release-audit-2026-09-23
+    async def test_tokens_metric_carries_no_per_user_label(self, running_app, monkeypatch):
+        """waddleai_tokens_total must not be labelled by raw user_id (unbounded cardinality)."""
+        captured: dict = {}
+
+        def capturing_record_llm_request(provider, model, status, token_usage):
+            captured["token_usage"] = token_usage
+
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics, "record_llm_request", capturing_record_llm_request
+        )
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        assert "user" not in captured["token_usage"]  # per-user label removed
+        assert "organization" in captured["token_usage"]  # bounded org label kept
+
+    # regression: release-audit-2026-09-23
+    async def test_chat_error_log_uses_tokenized_identity_not_username(
+        self, running_app, monkeypatch
+    ):
+        """The chat error path logs the tokenized id/api_key_id, never the raw username."""
+        errors: list = []
+
+        def capture_error(event, **kw):
+            errors.append((event, kw))
+
+        async def boom(ctx):
+            raise RuntimeError("dispatch exploded")
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", boom)
+        monkeypatch.setattr(proxy_main.logger, "error", capture_error)
+
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 500
+        chat_err = [kw for ev, kw in errors if ev == "Chat completion failed"]
+        assert chat_err, "expected a 'Chat completion failed' error log"
+        kw = chat_err[0]
+        assert "username" not in kw and "user" not in kw  # no raw username field
+        assert "user_id" in kw
+
+    # regression: release-audit-2026-09-23
+    def test_caller_identity_has_no_username_field(self):
+        """The gRPC identity carries UUID/id only -- raw username never propagates."""
+        names = {f.name for f in dataclasses.fields(CallerIdentity)}
+        assert "username" not in names
+        assert {"user_id", "organization_id"} <= names
+
+    # regression: release-audit-2026-09-23
+    async def test_chat_completions_sheds_with_429_when_at_capacity(self, running_app, monkeypatch):
+        """A full concurrency limiter makes the dispatch endpoint return 429."""
+        from proxy.apps.proxy_server.main import ConcurrencyLimiter
+
+        # A limit of 1 that is already fully occupied: the next request is shed.
+        full = ConcurrencyLimiter(limit=1)
+        assert full.try_enter() is True  # occupy the only slot
+        monkeypatch.setattr(proxy_main.proxy_server, "request_limiter", full)
+
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 429
+        body = await resp.get_json()
+        assert body["error"]["type"] == "overloaded_error"
+
+    # regression: release-audit-2026-09-23
+    async def test_chat_completions_allows_within_capacity(self, running_app, monkeypatch):
+        """With free slots the endpoint serves normally and releases the slot."""
+        limiter = proxy_main.ConcurrencyLimiter(limit=5)
+        monkeypatch.setattr(proxy_main.proxy_server, "request_limiter", limiter)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        assert limiter.active == 0  # slot released in finally

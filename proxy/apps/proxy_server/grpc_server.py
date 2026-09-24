@@ -187,7 +187,6 @@ class CallerIdentity:
     user_id: int
     organization_id: int
     api_key_id: int | None = None
-    username: str = ""
 
 
 #: Verifies a raw credential string, returning the caller's identity and

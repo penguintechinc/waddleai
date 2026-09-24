@@ -18,6 +18,7 @@ queried and the request is unmodified.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -126,7 +127,10 @@ class KnowledgeInjectStage(Stage):
         if getattr(user, "memory_injection_enabled", True) is False:
             return ctx
 
-        enabled_sources = _resolve_enabled_sources(user, self.features)
+        # Flag lookups can block (PostHog HTTP) -- run the whole per-source gate
+        # off the event loop so it never stalls the request coroutine
+        # (release-audit-2026-09-23, ops O7).
+        enabled_sources = await asyncio.to_thread(_resolve_enabled_sources, user, self.features)
         if not enabled_sources:
             return ctx
 

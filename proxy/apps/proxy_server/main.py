@@ -62,6 +62,7 @@ from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
 
+from .feature_flag_cache import FeatureFlagsHelper
 from .grpc_server import CallerIdentity, ServerComponents, run_grpc_in_thread
 from .mcp_mount import MCPMount
 from .mem0_api import mem0_bp, set_memory_manager
@@ -397,11 +398,63 @@ def grpc_identity_resolver(credential: str) -> CallerIdentity:
     attacker-controlled request-body fields.
     """
     user_context = authenticate_credential(credential)
+    # Identity carried across the gRPC boundary is UUID/id-only -- the raw
+    # username is never propagated (release-audit-2026-09-23, G4 PII
+    # tokenization boundary).
     return CallerIdentity(
         user_id=user_context.user_id,
         organization_id=user_context.organization_id,
         api_key_id=user_context.api_key_id,
-        username=user_context.username,
+    )
+
+
+@dataclass(slots=True)
+class ConcurrencyLimiter:
+    """In-flight request gate for the data-plane proxy (release-audit-2026-09-23, ops O10).
+
+    ``proxy.max_concurrent_requests`` was read into config but never enforced, so
+    a burst could open unbounded upstream/DB work. This gate sheds load with a
+    429 rather than queueing unboundedly. Under a single asyncio event loop the
+    check-and-increment in :meth:`try_enter` never yields, so it is race-free
+    without a lock; ``limit <= 0`` disables the gate (unlimited).
+    """
+
+    limit: int
+    _active: int = 0
+
+    def try_enter(self) -> bool:
+        """Reserve a slot; return ``False`` (shed) when at capacity."""
+        if self.limit > 0 and self._active >= self.limit:
+            return False
+        self._active += 1
+        return True
+
+    def leave(self) -> None:
+        """Release a previously reserved slot."""
+        if self._active > 0:
+            self._active -= 1
+
+    @property
+    def active(self) -> int:
+        """Number of in-flight requests currently holding a slot."""
+        return self._active
+
+
+def _overloaded_response(endpoint: str, start_time: float) -> tuple[Any, int]:
+    """Shared 429 body + latency accounting for a shed (over-concurrency) request."""
+    proxy_server.metrics.record_request(
+        endpoint=endpoint, method="POST", status_code=429, duration=time.time() - start_time
+    )
+    return (
+        jsonify(
+            {
+                "error": {
+                    "message": "Too many concurrent requests; retry shortly",
+                    "type": "overloaded_error",
+                }
+            }
+        ),
+        429,
     )
 
 
@@ -446,6 +499,11 @@ class ProxyServer:
             "max_concurrent_requests": int(os.getenv("MAX_CONCURRENT_REQUESTS", "100")),
         }
 
+        # Enforce the configured in-flight ceiling on the data-plane dispatch
+        # endpoints (release-audit-2026-09-23, ops O10) -- previously read but
+        # never applied.
+        self.request_limiter = ConcurrencyLimiter(self.config["max_concurrent_requests"])
+
     async def startup(self):
         """Initialize server components."""
         logger.info("Starting WaddleAI Proxy Server")
@@ -487,14 +545,9 @@ class ProxyServer:
 
         # Feature flags (moved ahead of memory-manager construction below --
         # the §6A embedding/retrieval caches need self.features to resolve
-        # their startup-time enable gate).
-        class FeatureFlagsHelper:
-            """Simple wrapper to provide is_feature_enabled method for pipeline."""
-
-            @staticmethod
-            def is_feature_enabled(flag_key: str, distinct_id: str | None = None) -> bool:
-                return is_feature_enabled(flag_key, distinct_id or "server", default=False)
-
+        # their startup-time enable gate). FeatureFlagsHelper caches last-known
+        # values, resolves off the event loop, and fails CLOSED for security
+        # flags on a PostHog outage (release-audit-2026-09-23, ops O3/O7).
         self.features = FeatureFlagsHelper()
 
         self.security_scanner = create_security_scanner(self.db, self.config["security_policy"])
@@ -1691,6 +1744,11 @@ async def chat_completions():
     user_context = await get_current_user()
     x_preferred_model = request.headers.get("X-Preferred-Model")
 
+    # Concurrency gate AFTER auth (a 401 must not consume a slot) and BEFORE the
+    # try/finally that releases it, so every non-shed path releases exactly once.
+    if not proxy_server.request_limiter.try_enter():
+        return _overloaded_response("/v1/chat/completions", start_time)
+
     try:
         # Parse and validate the request body. silent=True yields None (not a
         # raised BadRequest) on non-JSON input, so malformed bodies return a
@@ -1791,7 +1849,11 @@ async def chat_completions():
                 "output_tokens": usage.get("output_tokens", 0),
                 "waddleai_tokens": token_usage.waddleai_tokens,
                 "organization": user_context.organization_id,
-                "user": user_context.user_id,
+                # Per-user `user` label dropped -- raw user_id is unbounded
+                # cardinality on a live per-completion counter
+                # (release-audit-2026-09-23, ops O1). `organization` stays
+                # (bounded by customer count); user attribution lives in the
+                # usage DB rows, not in a Prometheus label.
             },
         )
 
@@ -1866,10 +1928,14 @@ async def chat_completions():
         logger.error(
             "Chat completion failed",
             error=str(e),
-            user=getattr(user_context, "username", "unknown"),
+            # Log the tokenized identity, never the raw username/email
+            # (release-audit-2026-09-23, G4 PII minimization).
+            user_id=getattr(user_context, "user_id", "unknown"),
+            api_key_id=getattr(user_context, "api_key_id", None),
         )
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
     finally:
+        proxy_server.request_limiter.leave()
         duration = time.time() - start_time
         proxy_server.metrics.record_request(
             endpoint="/v1/chat/completions", method="POST", status_code=200, duration=duration
@@ -2030,6 +2096,11 @@ async def claude_messages():
     start_time = time.time()
     user_context = await get_current_user()
 
+    # Concurrency gate AFTER auth, BEFORE the try/finally that releases it
+    # (release-audit-2026-09-23, ops O10).
+    if not proxy_server.request_limiter.try_enter():
+        return _overloaded_response("/v1/messages", start_time)
+
     try:
         # Parse and validate the request body — preserve Anthropic format
         # entirely. silent=True yields None (not a raised BadRequest) on
@@ -2131,7 +2202,11 @@ async def claude_messages():
                 "output_tokens": usage_info.get("output_tokens", 0),
                 "waddleai_tokens": token_usage.waddleai_tokens,
                 "organization": user_context.organization_id,
-                "user": user_context.user_id,
+                # Per-user `user` label dropped -- raw user_id is unbounded
+                # cardinality on a live per-completion counter
+                # (release-audit-2026-09-23, ops O1). `organization` stays
+                # (bounded by customer count); user attribution lives in the
+                # usage DB rows, not in a Prometheus label.
             },
         )
 
@@ -2193,6 +2268,7 @@ async def claude_messages():
         logger.error("Claude messages API failed", error=str(e))
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
     finally:
+        proxy_server.request_limiter.leave()
         duration = time.time() - start_time
         proxy_server.metrics.record_request(
             endpoint="/v1/messages", method="POST", status_code=200, duration=duration
@@ -2217,6 +2293,43 @@ def _extract_text_from_claude_messages(messages: list) -> str:
     return "\n".join(texts)
 
 
+async def _redact_messages_for_upstream(messages: list, user_context: Any) -> list:
+    """Redact message text through the input content filter before an upstream call.
+
+    Returns a new messages list (string and multimodal content-array forms
+    preserved) with each text segment replaced by its filtered/redacted version.
+    ``ContentFilter.filter_input`` never raises -- it fails open/closed internally
+    to a ``FilterResult`` -- so this helper never breaks the caller.
+    """
+    user_id = getattr(user_context, "user_id", None)
+    org_id = getattr(user_context, "organization_id", None)
+    cf = proxy_server.content_filter
+
+    async def _redact(text: str) -> str:
+        result = await cf.filter_input(text, user_id=user_id, org_id=org_id)
+        return result.filtered_text
+
+    redacted: list = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            redacted.append(msg)
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            redacted.append({**msg, "content": await _redact(content)})
+        elif isinstance(content, list):
+            new_items: list = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    new_items.append({**item, "text": await _redact(item.get("text", ""))})
+                else:
+                    new_items.append(item)
+            redacted.append({**msg, "content": new_items})
+        else:
+            redacted.append(msg)
+    return redacted
+
+
 @app.route("/v1/messages/count_tokens", methods=["POST"])
 async def count_tokens():
     """Anthropic Messages API token counting endpoint.
@@ -2224,15 +2337,22 @@ async def count_tokens():
     Returns the number of input tokens for a given request, using the
     connector's count_tokens method if available, or a simple estimation.
     """
-    await get_current_user()  # Authenticate
+    user_context = await get_current_user()  # Authenticate
 
     try:
         body = await request.get_json()
         messages = body.get("messages", [])
         model = body.get("model", "claude-3-sonnet-20240229")
 
-        # Extract text for token counting
-        prompt_text = _extract_text_from_claude_messages(messages)
+        # Route the prompt through the SAME input PII redaction the dispatch
+        # pipeline applies, BEFORE any provider count_tokens call can transmit
+        # raw text to a commercial LLM (release-audit-2026-09-23, PII-egress:
+        # count_tokens previously bypassed the security pipeline entirely and
+        # some connectors' count_tokens make a real network call).
+        redacted_messages = await _redact_messages_for_upstream(messages, user_context)
+
+        # Extract text (already redacted) for the local fallback estimation.
+        prompt_text = _extract_text_from_claude_messages(redacted_messages)
 
         # Try to use connector's count_tokens if available
         try:
@@ -2244,7 +2364,9 @@ async def count_tokens():
             )
 
             if connector and hasattr(connector, "count_tokens"):
-                input_tokens = await connector.count_tokens(messages=messages, model=target_model)
+                input_tokens = await connector.count_tokens(
+                    messages=redacted_messages, model=target_model
+                )
             else:
                 # Fallback: simple estimation (~4 chars per token)
                 input_tokens = max(len(prompt_text) // 4, 1)
