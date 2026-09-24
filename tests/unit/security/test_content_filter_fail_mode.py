@@ -16,11 +16,16 @@ as before.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
 
-from shared.security.content_filter import ContentFilter, _content_filter_fail_total
+from shared.security.content_filter import (
+    ContentFilter,
+    FilterViolation,
+    _content_filter_fail_total,
+)
 
 
 def _counter_value(phase: str, mode: str) -> float:
@@ -341,3 +346,92 @@ class TestLogFilterEventNeverOverridesDecision:
 
         assert "code defect" in caplog.text
         assert "audit trail is silently not being written" in caplog.text
+
+
+class _CapturingAuditTable:
+    """Records content_filter_audit_log.insert() kwargs."""
+
+    def __init__(self, rows: list) -> None:
+        self.rows = rows
+
+    def insert(self, **kwargs: object) -> int:
+        self.rows.append(kwargs)
+        return len(self.rows)
+
+
+class _CapturingAuditDB:
+    """Minimal db exposing only content_filter_audit_log for audit-trail assertions."""
+
+    def __init__(self) -> None:
+        self.rows: list = []
+        self.content_filter_audit_log = _CapturingAuditTable(self.rows)
+
+
+_SSN = "123-45-6789"  # noqa: S105 -- test SSN fixture, not a credential
+
+
+class TestFailModeAuditTrail:
+    """release-audit-2026-09-23: both fail exits must audit-log PII types, never values."""
+
+    @pytest.mark.asyncio
+    # regression: release-audit-2026-09-23
+    async def test_fail_open_writes_audit_row_with_types_not_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An operational failure (fail-open) records the PII type, never the raw text."""
+        db = _CapturingAuditDB()
+        cf = ContentFilter(db=db, license_client=_LicensedForNER())
+
+        async def _one_violation(text: str, target: str, org_id: int | None = None) -> list:
+            return [
+                FilterViolation(
+                    rule_name="ssn",
+                    rule_type="builtin_pii",
+                    matched_text=_SSN,
+                    action="redact",
+                    confidence=0.99,
+                    full_matched_text=_SSN,
+                )
+            ]
+
+        async def _boom(text: str, target: str, org_id: int | None = None) -> list:
+            raise RuntimeError("DB unreachable mid-filter")
+
+        monkeypatch.setattr(cf, "_run_builtin_patterns", _one_violation)
+        monkeypatch.setattr(cf, "_run_custom_rules", _boom)
+
+        result = await cf.filter_input(f"my ssn is {_SSN}", user_id=7, org_id=3)
+
+        # Fail-open behaviour preserved (availability choice) ...
+        assert result.allowed is True
+        assert result.action == "allow"
+        # ... but now audit-logged.
+        assert len(db.rows) == 1
+        row = db.rows[0]
+        assert row["action_taken"] == "fail_open"
+        assert row["degraded"] is True
+        assert row["text_sample"] == ""  # never persist raw text on an error path
+        blob = json.dumps(row, default=str)
+        assert _SSN not in blob  # the raw value never reaches the audit trail
+        assert "builtin_pii" in row["violations_json"]  # the TYPE is recorded
+
+    @pytest.mark.asyncio
+    # regression: release-audit-2026-09-23
+    async def test_fail_closed_writes_audit_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A programming defect (fail-closed) is also audit-logged."""
+        db = _CapturingAuditDB()
+        cf = ContentFilter(db=db, license_client=_LicensedForNER())
+
+        async def _boom(text: str, target: str, org_id: int | None = None) -> list:
+            raise TypeError("bad call signature")
+
+        monkeypatch.setattr(cf, "_run_builtin_patterns", _boom)
+
+        result = await cf.filter_input(f"my ssn is {_SSN}", user_id=7, org_id=3)
+
+        assert result.allowed is False
+        assert result.action == "block"
+        assert len(db.rows) == 1
+        assert db.rows[0]["action_taken"] == "fail_closed"
+        assert db.rows[0]["text_sample"] == ""
+        assert _SSN not in json.dumps(db.rows[0], default=str)

@@ -46,7 +46,10 @@ def migration_module() -> ModuleType:
 def test_migrate_encrypts_plaintext_credential_in_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration_module: ModuleType
 ) -> None:
-    """A plaintext api_key is actually rewritten to its encrypted form in the DB."""
+    """A plaintext api_key is actually rewritten to its encrypted form in the DB.
+
+    regression: release-audit-2026-09-23 (finding #33)
+    """
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY)
 
     db = get_db(db_uri=f"sqlite:///{tmp_path / 'creds.db'}")
@@ -77,7 +80,10 @@ def test_migrate_encrypts_plaintext_credential_in_place(
 def test_migrate_skips_already_encrypted_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration_module: ModuleType
 ) -> None:
-    """An already-encrypted value is left untouched (idempotent re-run)."""
+    """An already-encrypted value is left untouched (idempotent re-run).
+
+    regression: release-audit-2026-09-23 (finding #33)
+    """
     from shared.security.credential_encryption import EncryptionConfig, encrypt_credential
 
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY)
@@ -99,3 +105,35 @@ def test_migrate_skips_already_encrypted_credentials(
 
     reloaded = db(db.connection_links.id == link_id).select().first()
     assert reloaded.api_key == already_encrypted
+
+
+def test_migrate_output_decrypts_back_to_original_plaintext(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration_module: ModuleType
+) -> None:
+    """After backfill, the proxy read path recovers the exact original credential.
+
+    Encryption at rest is only useful if it is reversible for the provider call:
+    prove decrypt_credential on the migrated value equals the pre-migration key.
+
+    regression: release-audit-2026-09-23 (finding #33)
+    """
+    from shared.security.credential_encryption import decrypt_credential
+
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY)
+
+    db = get_db(db_uri=f"sqlite:///{tmp_path / 'creds3.db'}")
+    link_id = db.connection_links.insert(
+        name="test-provider-3",
+        provider="openai",
+        endpoint_url="https://api.openai.com/v1",
+        api_key="sk-roundtrip-secret",
+        enabled=True,
+    )
+    db.commit()
+
+    monkeypatch.setattr(migration_module, "get_db", lambda: db)
+    migration_module.migrate()
+
+    reloaded = db(db.connection_links.id == link_id).select().first()
+    assert is_encrypted(reloaded.api_key)
+    assert decrypt_credential(reloaded.api_key) == "sk-roundtrip-secret"

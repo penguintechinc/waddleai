@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # pip-licenses OSI gate: fail if any third-party dependency carries forbidden/non-OSI license
 # Excludes first-party packages (names starting with waddleai or penguin, or in LICENSE_ALLOW_PACKAGES)
@@ -17,8 +18,14 @@ fi
 TEMP_JSON=$(mktemp)
 trap 'rm -f "$TEMP_JSON"' EXIT
 
+# Explicit set +e/-e bracket so this specific, expected-to-sometimes-fail
+# command doesn't trip `set -e` before the script can print a clear message
+# and exit 1 itself -- everything else in the script stays fail-fast.
+set +e
 pip-licenses --format=json --with-system 2>/dev/null > "$TEMP_JSON"
-if [ $? -ne 0 ]; then
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
     echo "Failed to run pip-licenses" >&2
     exit 1
 fi

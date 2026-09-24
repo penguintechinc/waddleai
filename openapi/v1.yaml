@@ -648,6 +648,29 @@ components:
       - name
       title: CurrentUserOrganization
       type: object
+    DataHoldingManifestEntry:
+      description: 'One row of the GDPR Art. 15 manifest: a table that holds data
+        about the subject.'
+      properties:
+        contains_pii:
+          title: Contains Pii
+          type: boolean
+        description:
+          title: Description
+          type: string
+        reference:
+          title: Reference
+          type: string
+        table:
+          title: Table
+          type: string
+      required:
+      - table
+      - description
+      - contains_pii
+      - reference
+      title: DataHoldingManifestEntry
+      type: object
     DecisionSummary:
       description: The aggregate summary payload -- mirrors the handler's ``summary``
         dict.
@@ -821,6 +844,101 @@ components:
       - persisted
       - timestamp
       title: DryRunMeta
+      type: object
+    ExportedIdentity:
+      description: 'The subject''s identity-table record, as disclosed by a DSAR access
+        export.
+
+
+        Every column held about the subject in ``users`` EXCEPT the password hash
+        --
+
+        a data subject is entitled to know a credential digest is stored (the
+
+        manifest says so), but returning the digest itself is a needless security
+
+        risk. Mirrors ``dsar.export_identity`` field-for-field.'
+      properties:
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        current_login_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Login At
+        current_login_ip:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Login Ip
+        default_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Default Model
+        email:
+          title: Email
+          type: string
+        enabled:
+          title: Enabled
+          type: boolean
+        id:
+          title: Id
+          type: integer
+        last_login_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Login At
+        last_login_ip:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Login Ip
+        login_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Login Count
+        organization_id:
+          title: Organization Id
+          type: integer
+        role:
+          title: Role
+          type: string
+        token_quota_daily:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Token Quota Daily
+        token_quota_monthly:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Token Quota Monthly
+        username:
+          title: Username
+          type: string
+      required:
+      - id
+      - username
+      - email
+      - role
+      - organization_id
+      - enabled
+      - default_model
+      - token_quota_daily
+      - token_quota_monthly
+      - created_at
+      - last_login_at
+      - current_login_at
+      - last_login_ip
+      - current_login_ip
+      - login_count
+      title: ExportedIdentity
       type: object
     FleetBackend:
       description: 'A ``fleet_backends`` row, exactly as ``_backend_to_dict`` serialises
@@ -11380,6 +11498,114 @@ paths:
                 type: object
           description: 'Generic ``{"message": str}`` envelope.'
       summary: Enable a disabled user.
+  /api/v1/users/{user_id}/erase:
+    post:
+      description: '
+
+        A user erases their own account; an org-admin (USER_MANAGE, own org) or an
+
+        admin (USER_CREATE, any org) may erase a user in scope. Every direct-PII
+
+        column is replaced with a non-reversible tombstone and the account disabled;
+
+        the row is retained so id references from other tables keep resolving
+
+        (PII-tokenization design). Statutory -- never gated on a licence tier.'
+      operationId: post_erase_user_data
+      parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /api/v1/users/<user_id>/erase
+                  (right to erasure).
+                properties:
+                  anonymized_fields:
+                    items:
+                      type: string
+                    title: Anonymized Fields
+                    type: array
+                  erased:
+                    title: Erased
+                    type: boolean
+                  message:
+                    title: Message
+                    type: string
+                  user_id:
+                    title: User Id
+                    type: integer
+                required:
+                - message
+                - user_id
+                - erased
+                - anonymized_fields
+                title: ErasureResponse
+                type: object
+          description: Response body for POST /api/v1/users/<user_id>/erase (right
+            to erasure).
+      summary: 'DSAR right to erasure (GDPR Art. 17): anonymize a user''s PII in place.'
+  /api/v1/users/{user_id}/export:
+    get:
+      description: '
+
+        A user exports their own record; an org-admin (USER_MANAGE, own org) or an
+
+        admin (USER_CREATE, any org) may export a user in scope. Returns the
+
+        identity record (minus the password hash) plus a manifest of every table
+
+        that holds data about the subject. Statutory -- authenticated + owned/scoped
+
+        only, never gated on a licence entitlement.'
+      operationId: get_export_user_data
+      parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/users/<user_id>/export
+                  (right of access).
+                properties:
+                  generated_at:
+                    title: Generated At
+                    type: string
+                  identity:
+                    $ref: '#/components/schemas/ExportedIdentity'
+                  manifest:
+                    items:
+                      $ref: '#/components/schemas/DataHoldingManifestEntry'
+                    title: Manifest
+                    type: array
+                  notice:
+                    title: Notice
+                    type: string
+                  subject_user_id:
+                    title: Subject User Id
+                    type: integer
+                required:
+                - subject_user_id
+                - generated_at
+                - identity
+                - manifest
+                - notice
+                title: UserDataExportResponse
+                type: object
+          description: Response body for GET /api/v1/users/<user_id>/export (right
+            of access).
+      summary: 'DSAR right of access (GDPR Art. 15): export the personal data held
+        about a user.'
   /healthz:
     get:
       description: ''

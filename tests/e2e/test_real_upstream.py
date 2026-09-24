@@ -297,7 +297,14 @@ def _seed_real_org(db_url: str, ollama_url: str) -> RealOrgSeed:
         api_access_level="proxy_api",
         created_at=now,
     )
-    link_id = db.connection_links.insert(
+    # Sanctioned write path (finding #33): insert_connection_link encrypts any
+    # api_key at rest. This ollama seed passes no key, so it is a no-op for
+    # encryption -- but routing through the helper keeps every connection_links
+    # creator on the one path that cannot accidentally persist plaintext.
+    from shared.database.models import insert_connection_link  # noqa: PLC0415
+
+    link_id = insert_connection_link(
+        db,
         name="ollama-real-upstream",
         provider="ollama",
         endpoint_url=ollama_url,
