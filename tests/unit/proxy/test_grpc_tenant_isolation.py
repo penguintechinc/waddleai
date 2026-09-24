@@ -177,10 +177,10 @@ class FakeMemoryManager:
 
 #: Identity that a valid credential resolves to. Every request body below
 #: carries a *different* user_id, so any test that still trusts the body fails.
-ALICE = CallerIdentity(user_id=11, organization_id=101, api_key_id=9001, username="alice")
+ALICE = CallerIdentity(user_id=11, organization_id=101, api_key_id=9001)
 
 #: A second tenant, used to prove one caller cannot reach the other's org.
-BOB = CallerIdentity(user_id=22, organization_id=202, api_key_id=9002, username="bob")
+BOB = CallerIdentity(user_id=22, organization_id=202, api_key_id=9002)
 
 _CREDENTIALS: dict[str, CallerIdentity] = {"wa-alice": ALICE, "wa-bob": BOB}
 

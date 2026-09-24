@@ -63,9 +63,7 @@ TEST_CREDENTIAL = "wa-test-credential"
 #: Identity the fake resolver derives from TEST_CREDENTIAL. Deliberately
 #: different from every user_id/organization_id the request bodies below
 #: carry, so any test that accidentally trusts the body fails loudly.
-TEST_IDENTITY = CallerIdentity(
-    user_id=7001, organization_id=4200, api_key_id=555, username="verified-caller"
-)
+TEST_IDENTITY = CallerIdentity(user_id=7001, organization_id=4200, api_key_id=555)
 
 
 def fake_identity_resolver(credential: str) -> CallerIdentity:

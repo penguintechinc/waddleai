@@ -1,6 +1,7 @@
 """ProxyPipeline stage execution framework with OpenTelemetry instrumentation."""
 
 from .stages import (
+    METERING_FLAG,
     AuthStage,
     CacheStage,
     DispatchStage,
@@ -15,6 +16,7 @@ from .stages import (
 )
 
 __all__ = [
+    "METERING_FLAG",
     "PipelineContext",
     "Stage",
     "ProxyPipeline",

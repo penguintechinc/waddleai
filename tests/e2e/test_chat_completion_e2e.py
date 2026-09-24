@@ -67,8 +67,8 @@ def test_chat_completion_full_pipeline_and_usage_recorded(
     # handler could return a plausible envelope without ever writing to the
     # DB, and only a direct DB read catches that.
     db = open_db(proxy_process.db_url)
-    key_row = db(db.api_keys.key_id == "contract-test-key").select().first()
-    assert key_row is not None, "expected the proxy's own seeded contract-test-key row"
+    key_row = db(db.api_keys.key_id == "contracttestkey").select().first()
+    assert key_row is not None, "expected the proxy's own seeded contracttestkey row"
 
     usage_row = (
         db((db.token_usage.api_key_id == key_row.id) & (db.token_usage.date == date.today()))

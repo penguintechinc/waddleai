@@ -38,6 +38,7 @@ Removed:
 """
 
 import asyncio
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -67,6 +68,41 @@ from shared.utils.request_router import LLMRequestRouter
 from shared.utils.token_limiter import TokenLimiter
 
 logger = logging.getLogger(__name__)
+
+# gh-216: MeterStage (and TokenBudgetStage) gate on ctx.user.vkey_id, which
+# UserContext never carries -- so both were permanently no-op "dead gates"
+# (a silent, undocumented disable). Per the #216 decision, MeterStage is now
+# explicitly gated OFF behind this flag (default OFF, non-security -> fails to
+# OFF on a flag-store outage) rather than silently no-op'd, so the disable is
+# visible in stage_log ("skipped:meter") and reversible from PostHog. The
+# underlying vkey_id wiring fix is deliberately deferred (still #216);
+# TokenBudgetStage shares the same root cause and is left as-is for now.
+METERING_FLAG = "waddleai.metering"
+
+
+async def _resolve_flag(
+    features: Any, flag_key: str, distinct_id: str | None, *, default: bool = False
+) -> bool:
+    """Resolve a feature flag off the event loop (release-audit-2026-09-23, ops O7).
+
+    Production ``features`` is
+    :class:`proxy.apps.proxy_server.feature_flag_cache.FeatureFlagsHelper`, whose
+    async ``resolve`` caches last-known values and fails CLOSED for security
+    flags on a flag-store outage. Test / other ``features`` stubs expose only a
+    synchronous ``is_feature_enabled`` -- that call is still moved off the loop
+    via a worker thread rather than blocking the request coroutine. A ``None``
+    ``features`` resolves to ``default``.
+    """
+    if features is None:
+        return default
+    resolve = getattr(features, "resolve", None)
+    if resolve is not None and inspect.iscoroutinefunction(resolve):
+        return bool(await resolve(flag_key, distinct_id, default=default))
+    # distinct_id as a keyword mirrors the pre-existing call convention that
+    # sync ``features`` stubs (``def is_feature_enabled(flag, **kw)``) expect.
+    return bool(
+        await asyncio.to_thread(features.is_feature_enabled, flag_key, distinct_id=distinct_id)
+    )
 
 
 @dataclass(slots=True)
@@ -209,9 +245,10 @@ class ProxyPipeline:
                     if hasattr(ctx.user, "id"):
                         distinct_id = str(ctx.user.id)
 
-                    is_enabled = self.features.is_feature_enabled(
+                    is_enabled = await _resolve_flag(
+                        self.features,
                         stage.flag,
-                        distinct_id=distinct_id,
+                        distinct_id,
                     )
                     if not is_enabled:
                         ctx.stage_log.append(f"skipped:{stage.name}")
@@ -436,7 +473,7 @@ class SecurityInStage(Stage):
             org_id = getattr(ctx.user, "tenant_id", None) or getattr(
                 ctx.user, "organization_id", None
             )
-            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+            if await _resolve_flag(self.features, "waddleai.security_v2", str(org_id)):
                 return await self._call_v2(ctx, org_id)
 
         # STEP 1: Prompt security scan (fail fast on injection attacks)
@@ -927,7 +964,7 @@ class DispatchStage(Stage):
             org_id = getattr(ctx.user, "tenant_id", None) or getattr(
                 ctx.user, "organization_id", None
             )
-            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+            if await _resolve_flag(self.features, "waddleai.security_v2", str(org_id)):
                 await self._apply_upstream_filter(ctx, org_id, provider, target_model)
 
         try:
@@ -1093,7 +1130,7 @@ class SecurityOutStage(Stage):
             org_id = getattr(ctx.user, "tenant_id", None) or getattr(
                 ctx.user, "organization_id", None
             )
-            if self.features.is_feature_enabled("waddleai.security_v2", distinct_id=str(org_id)):
+            if await _resolve_flag(self.features, "waddleai.security_v2", str(org_id)):
                 return await self._call_v2(ctx, org_id)
 
         # Support both id (generic) and user_id (WaddleAI UserContext)
@@ -1212,7 +1249,13 @@ class SecurityOutStage(Stage):
 
 
 class MeterStage(Stage):
-    """Record token usage to metering buffer and reconcile budget reservation."""
+    """Record token usage to metering buffer and reconcile budget reservation.
+
+    gh-216: gated OFF behind ``METERING_FLAG`` (``waddleai.metering``, default
+    OFF) by the pipeline builder. Until the vkey_id wiring is fixed the body
+    below still no-ops on the missing ``ctx.user.vkey_id``; the flag makes that
+    disable explicit and documented rather than a silent dead gate.
+    """
 
     def __init__(
         self,

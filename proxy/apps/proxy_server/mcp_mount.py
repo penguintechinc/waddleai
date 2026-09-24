@@ -191,7 +191,14 @@ class MCPMount:
             await _send_json(send, 403, {"error": "forbidden", "detail": "admin role required"})
             return
 
-        if not is_feature_enabled(MCP_V2_FLAG, distinct_id=str(user.organization_id)):
+        # Flag evaluation can make a blocking PostHog HTTP call; run it in a
+        # worker thread so it never stalls the ASGI event loop on the per-request
+        # /mcp* hot path (release-audit-2026-09-23, ops O7). Mirrors mem0_api's
+        # asyncio.to_thread wrapping of the same call.
+        mcp_v2_on = await asyncio.to_thread(
+            is_feature_enabled, MCP_V2_FLAG, str(user.organization_id), False
+        )
+        if not mcp_v2_on:
             await _send_json(send, 404, {"error": "not_found"})
             return
 

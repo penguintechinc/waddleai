@@ -587,6 +587,11 @@ class ContentFilter:
                 exc_info=True,
             )
             _record_fail_mode(phase, "fail_closed")
+            # Audit-trail the exit with the PII TYPES seen so far (never the
+            # values) so a fail-closed block is traceable (release-audit-2026-09-23).
+            self._log_fail_mode_event(
+                phase, "fail_closed", locals().get("violations", []), e, user_id, org_id, ip
+            )
             return FilterResult(
                 allowed=False,
                 action="block",
@@ -601,12 +606,78 @@ class ContentFilter:
             # (matches SecurityPolicyEngine's degrade-not-closed default).
             logger.error(f"Content filter error (phase={phase}): {e}", exc_info=True)
             _record_fail_mode(phase, "fail_open")
+            # A fail-open exit returns the ORIGINAL unfiltered text -- the mode
+            # most needing an audit trail. Log it with the PII TYPES detected
+            # before the failure, never the raw values (release-audit-2026-09-23,
+            # EU AI Act traceability / PII-egress).
+            self._log_fail_mode_event(
+                phase, "fail_open", locals().get("violations", []), e, user_id, org_id, ip
+            )
             return FilterResult(
                 allowed=True,
                 action="allow",
                 violations=[],
                 filtered_text=text,
                 auditor_used=False,
+            )
+
+    def _log_fail_mode_event(
+        self,
+        phase: str,
+        mode: str,
+        violations: list[FilterViolation],
+        error: BaseException,
+        user_id: int | None,
+        org_id: int | None,
+        ip: str | None,
+    ) -> None:
+        """Audit-trail a fail-open/fail-closed filter exit -- PII types only, never values.
+
+        Both exception exits of ``_filter`` previously produced zero audit rows,
+        so the failure mode most needing traceability (a fail-open exit returning
+        fully unredacted text) left no record (release-audit-2026-09-23,
+        G13/PII-egress). Records the *types* of PII detected before the failure
+        (rule name/type) and never a text sample, so the audit trail itself never
+        becomes a PII sink. Its own failure is swallowed and logged -- it must
+        never change or re-raise into the filtering decision.
+        """
+        pii_types = sorted({(v.rule_type or v.rule_name or "unknown") for v in violations})
+        logger.error(
+            "Content filter %s exit (phase=%s, user=%s, org=%s, ip=%s, pii_types=%s) after %s: %s",
+            mode,
+            phase,
+            user_id,
+            org_id,
+            ip,
+            pii_types,
+            type(error).__name__,
+            error,
+        )
+
+        if self.db is None:
+            return
+        try:
+            violations_json = json.dumps(
+                [{"rule_name": v.rule_name, "rule_type": v.rule_type} for v in violations]
+            )
+            self.db.content_filter_audit_log.insert(
+                phase=phase,
+                user_id=user_id,
+                organization_id=org_id,
+                ip_address=ip,
+                action_taken=mode,  # "fail_open" | "fail_closed"
+                violations_json=violations_json,
+                text_sample="",  # never persist raw text on an error path
+                auditor_used=False,
+                timestamp=datetime.utcnow(),
+                degraded=True,
+            )
+        except Exception as log_exc:  # noqa: BLE001 -- audit failure must not mask the exit
+            logger.error(
+                "content_filter_audit_log insert failed on %s path (phase=%s): %s",
+                mode,
+                phase,
+                log_exc,
             )
 
     async def _run_builtin_patterns(

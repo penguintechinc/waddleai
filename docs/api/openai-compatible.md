@@ -280,6 +280,8 @@ There is no `GET /api/security/threats` endpoint — no security-alerts API exis
 
 Per-org request-rate limiting is enforced at the network layer via a Cilium `CiliumEnvoyConfig` local-rate-limit filter (`services/management/app/services/cilium_policy.py`), not inside the application. The proxy does **not** emit `X-RateLimit-*` response headers — do not build client logic around them. Token budgets (daily/monthly, per key/user/org) are enforced in-app via `TokenBudgetStage` and surface as a `429` with `error.message` describing the exceeded limit (see Error Responses above); there is no dedicated requests-per-minute counter independent of Cilium's edge enforcement.
 
+> **Known gap (gh-216):** `TokenBudgetStage` and `MeterStage` both gate on `ctx.user.vkey_id`, which the current `UserContext` never carries, so token-budget enforcement and usage metering are effectively **inert** today. `MeterStage` is now explicitly gated OFF behind the `waddleai.metering` PostHog flag (default OFF) rather than left as a silent dead gate; `TokenBudgetStage` shares the same root cause and its fix is deferred under the same issue. Do not rely on in-app token-budget `429`s until gh-216 lands.
+
 ## Error Codes
 
 | Status | Meaning |

@@ -16,11 +16,13 @@ import logging
 import os
 from dataclasses import dataclass
 
-from opentelemetry import trace
+from opentelemetry import propagate, trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.propagators.textmap import CarrierT
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +105,23 @@ def init_tracing(config: TracingConfig | None = None) -> trace.Tracer:
         # Create OTLP exporter
         otlp_exporter = OTLPSpanExporter(endpoint=config.otlp_endpoint)
 
-        # Create TracerProvider
+        # Create TracerProvider. BatchSpanProcessor exports on a background
+        # thread (never SimpleSpanProcessor, which exports synchronously inside
+        # the span's context manager and would block every proxied request on
+        # the collector's round-trip -- release-audit-2026-09-23, ops O5). A
+        # dead/slow collector now backs up in the batch queue and is dropped,
+        # never stalling the request path.
         trace_provider = TracerProvider(resource=resource)
-        trace_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
+        trace_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 
         # Set as global provider
         trace.set_tracer_provider(trace_provider)
+
+        # W3C Trace Context is the wire format for cross-service propagation
+        # (ops O1: no inject/extract existed). Setting it globally makes
+        # inject_context/extract_context below carry `traceparent` across every
+        # service boundary that uses them.
+        propagate.set_global_textmap(TraceContextTextMapPropagator())
 
         _tracer = trace.get_tracer("waddleai")
         logger.info(f"OpenTelemetry initialized: endpoint={config.otlp_endpoint}")
@@ -138,3 +151,23 @@ def get_tracer(service_name: str = "waddleai") -> trace.Tracer:
 
     # Initialize on first call
     return init_tracing()
+
+
+def inject_context(carrier: CarrierT) -> CarrierT:
+    """Inject the current trace context (W3C ``traceparent``) into ``carrier``.
+
+    Call at every outbound service boundary (HTTP headers, gRPC metadata) so the
+    downstream service can continue the same trace. No-op with no active span.
+    """
+    propagate.inject(carrier)
+    return carrier
+
+
+def extract_context(carrier: CarrierT):
+    """Extract a trace context from an inbound ``carrier`` (headers/metadata).
+
+    Returns an OpenTelemetry ``Context`` to attach or pass as ``start_span``'s
+    ``context=`` so an inbound request continues its caller's trace instead of
+    starting a detached one.
+    """
+    return propagate.extract(carrier)
