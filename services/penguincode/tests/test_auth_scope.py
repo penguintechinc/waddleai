@@ -13,16 +13,12 @@ class TestScopeContextShape:
     """ScopeContext must match Shared Contracts exactly: frozen, slotted."""
 
     def test_is_frozen(self) -> None:
-        ctx = ScopeContext(
-            tenant_id="t1", org_id=None, team_ids=(), user_id="u1", scopes=()
-        )
+        ctx = ScopeContext(tenant_id="t1", org_id=None, team_ids=(), user_id="u1", scopes=())
         with pytest.raises(AttributeError):
             ctx.tenant_id = "other"  # type: ignore[misc]
 
     def test_has_slots_no_dict(self) -> None:
-        ctx = ScopeContext(
-            tenant_id="t1", org_id=None, team_ids=(), user_id="u1", scopes=()
-        )
+        ctx = ScopeContext(tenant_id="t1", org_id=None, team_ids=(), user_id="u1", scopes=())
         assert not hasattr(ctx, "__dict__")
 
     def test_field_names_and_defaults(self) -> None:

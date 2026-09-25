@@ -244,7 +244,9 @@ class MCPServerConfig:
     url: str = ""  # e.g., "http://localhost:8080"
     # Authentication and environment
     env: dict = field(default_factory=dict)  # Environment variables: {"API_KEY": "${MY_API_KEY}"}
-    headers: dict = field(default_factory=dict)  # HTTP headers for auth: {"Authorization": "Bearer ${TOKEN}"}
+    headers: dict = field(
+        default_factory=dict
+    )  # HTTP headers for auth: {"Authorization": "Bearer ${TOKEN}"}
     # Timeouts
     timeout: int = 30  # Request timeout in seconds
     startup_timeout: int = 10  # Time to wait for stdio server to start
