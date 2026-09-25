@@ -519,6 +519,31 @@ cilium:
       management: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": management }
       postgres: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": postgres }
       valkey: { "app.kubernetes.io/name": waddleai, "app.kubernetes.io/component": valkey }
+    # Cross-chart Ollama ingress for penguincode's server workload (blocker-2,
+    # kp-b2). penguincode's own chart already carries the matching egress rule
+    # (services/penguincode/k8s/helm/penguincode/values.yaml cilium.egress.ollama)
+    # -- this is the WaddleAI-side admit for that same flow, added as a second
+    # `ingress[]` entry on waddleai-allow-fleet-ingress alongside (never instead
+    # of) the existing AIProxy allow. Least privilege: scoped to the Ollama
+    # serving port only (never llamacpp) and to penguincode's `server` pods by
+    # namespace + label, never a namespace-wide allow. Default true -- the
+    # penguincode integration needs this the moment penguincode is deployed;
+    # set false to fall back to AIProxy-only Ollama ingress. `namespace` here
+    # must track penguincode's `global.namespace` for the target environment
+    # (values.yaml default here mirrors penguincode's own prod default) --
+    # override per env below (values-alpha.yaml/values-beta.yaml).
+    # NOTE: this only covers the bootstrap CiliumNetworkPolicy rendered by this
+    # chart. The runtime reconciler (services/management/app/services/
+    # cilium_policy.py) re-applies its own topology-derived policy set on every
+    # reconcile and does not yet model penguincode as a topology component --
+    # tracked separately, not covered by this change.
+    penguincodeIngress:
+      enabled: true
+      namespace: penguincode-prod
+      selector:
+        app.kubernetes.io/name: penguincode
+        app.kubernetes.io/component: server
+      ollamaPort: 11434
 
 # External / bare-metal fleet node access control (spec §10.3, Task 15).
 # Ollama/llama.cpp have no native auth, and CiliumNetworkPolicy only governs

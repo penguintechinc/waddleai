@@ -283,6 +283,10 @@ cilium:
   topology:
     gatewayName: shared
     gatewayNamespace: gateway
+    # penguincode's global.namespace override for beta (services/penguincode/
+    # k8s/helm/penguincode/values-beta.yaml).
+    penguincodeIngress:
+      namespace: penguincode
 
 # Tetragon + admission policies - Beta (spec §12.2)
 # AIProxy/Management exec allowlists already default to `enforce` in
