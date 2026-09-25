@@ -19,8 +19,8 @@ from collections.abc import Iterator
 import psycopg
 import pytest
 
-from db.migrate import run_migrations
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.stores.vector import PgVectorStore, VectorHit, VectorItem, VectorStore
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")

@@ -23,8 +23,8 @@ import httpx
 import psycopg
 import pytest
 
-from db.migrate import run_migrations
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.flags.client import (
     CODE_GRAPH_FLAG,
     KNOWLEDGE_GRAPH_FLAG,
@@ -184,7 +184,9 @@ class TestRagFlagOff:
     async def test_rag_flag_off_returns_empty_and_touches_nothing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: False)
+        monkeypatch.setattr(
+            "penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: False
+        )
         docs_store = _mock_vector_store()
         mem_store = _mock_vector_store()
         graph_store = _mock_graph_store()
@@ -337,7 +339,10 @@ class TestGraphFlagGating:
             _ctx("t1"),
             "q",
             embed_fn=_const_embed_fn(_ZERO_VECTOR),
-            vector_stores={"docs_vectors": _mock_vector_store(), "memory_vectors": _mock_vector_store()},
+            vector_stores={
+                "docs_vectors": _mock_vector_store(),
+                "memory_vectors": _mock_vector_store(),
+            },
             graph_store=graph_store,
         )
 
@@ -348,7 +353,9 @@ class TestGraphFlagGating:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         on = {RAG_FLAG, KNOWLEDGE_GRAPH_FLAG}
-        monkeypatch.setattr("penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: flag in on)
+        monkeypatch.setattr(
+            "penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: flag in on
+        )
         ctx = _ctx("t1")
         sub = Subgraph(nodes=[GraphNode(node_type="entity", key="x")], edges=[])
         graph_store = _mock_graph_store({"knowledge": sub})
@@ -373,7 +380,10 @@ class TestGraphFlagGating:
     ) -> None:
         monkeypatch.setattr("penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: True)
         graph_store = _mock_graph_store(
-            {k: Subgraph(nodes=[GraphNode(node_type="e", key=k)], edges=[]) for k in ("code", "knowledge", "memory")}
+            {
+                k: Subgraph(nodes=[GraphNode(node_type="e", key=k)], edges=[])
+                for k in ("code", "knowledge", "memory")
+            }
         )
 
         result = await retrieve(
@@ -598,7 +608,9 @@ class TestLiveHybridRetrieval:
     async def test_rag_flag_off_returns_empty_even_with_live_store_available(
         self, db_dsn: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: False)
+        monkeypatch.setattr(
+            "penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: False
+        )
         ctx = _ctx(tenant_id=str(uuid.uuid4()))
         graph_store = MagicMock(spec=GraphStore)
 

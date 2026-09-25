@@ -27,9 +27,9 @@ from unittest.mock import MagicMock, patch
 import psycopg
 import pytest
 
-from db.migrate import run_migrations
 from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.config.settings import MemoryConfig, MemoryStoresConfig, PGVectorStoreConfig
+from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.docs_rag.indexer import DocumentationIndexer
 from penguincode_cli.docs_rag.injector import ContextInjector
 from penguincode_cli.docs_rag.models import Language, Library, ProjectContext

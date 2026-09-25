@@ -24,8 +24,8 @@ from unittest.mock import patch
 import psycopg
 import pytest
 
-from db.migrate import run_migrations
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.docs_rag.indexer import DocumentationIndexer
 from penguincode_cli.docs_rag.models import Language, Library
 

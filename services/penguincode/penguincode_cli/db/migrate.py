@@ -11,7 +11,7 @@ gives an applied-history audit trail.
 penguincode has no Alembic and is intentionally not coupled to
 services/management's migration tooling (see docs/superpowers/specs/
 2026-09-25-penguincode-knowledge-platform-design.md section 9). This module
-is invoked by a Kubernetes init job as ``python3 -m db.migrate`` (or
+is invoked by a Kubernetes init job as ``python3 -m penguincode_cli.db.migrate`` (or
 ``python3 db/migrate.py``), reading the connection string from the
 ``PGVECTOR_URL`` env var (a passed DSN takes precedence for tests/tooling).
 """
@@ -120,7 +120,7 @@ def run_migrations(dsn: str | None = None, migrations_dir: Path | None = None) -
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entrypoint: ``python3 -m db.migrate [DSN]``, else `PGVECTOR_URL`."""
+    """CLI entrypoint: ``python3 -m penguincode_cli.db.migrate [DSN]``, else `PGVECTOR_URL`."""
     logging.basicConfig(level=logging.INFO)
     args = list(argv if argv is not None else sys.argv[1:])
     dsn = args[0] if args else None

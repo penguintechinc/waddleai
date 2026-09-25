@@ -24,8 +24,8 @@ import httpx
 import psycopg
 import pytest
 
-from db.migrate import run_migrations
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.graphs.knowledge import DEFAULT_VISIBILITY, extract_knowledge
 from penguincode_cli.ollama.types import ChatResponse, Message
 from penguincode_cli.stores.graph import GraphStore, PostgresGraphStore

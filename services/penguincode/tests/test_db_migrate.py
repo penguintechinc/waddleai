@@ -1,4 +1,4 @@
-"""Tests for db/migrate.py -- the penguincode pgvector schema runner.
+"""Tests for penguincode_cli/db/migrate.py -- the penguincode pgvector schema runner.
 
 Static tests (no DB needed) always run. The live-Postgres tests connect to
 `TEST_DATABASE_URL` and are skipped -- with an explicit reason, never
@@ -15,7 +15,7 @@ from typing import Any
 import psycopg
 import pytest
 
-from db.migrate import MIGRATIONS_DIR, MigrationResult, _resolve_dsn, run_migrations
+from penguincode_cli.db.migrate import MIGRATIONS_DIR, MigrationResult, _resolve_dsn, run_migrations
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -69,7 +69,7 @@ class TestMigrationDiscovery:
 
     def test_migration_files_sort_in_apply_order(self) -> None:
         """Glob + sort must yield the numeric prefix order, not lexical drift."""
-        from db.migrate import _discover_migrations
+        from penguincode_cli.db.migrate import _discover_migrations
 
         files = _discover_migrations(MIGRATIONS_DIR)
         assert [path.name for path in files] == sorted(path.name for path in files)
