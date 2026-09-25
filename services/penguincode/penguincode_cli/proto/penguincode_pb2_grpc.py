@@ -95,7 +95,9 @@ def add_AuthServiceServicer_to_server(servicer, server):
             response_serializer=penguincode__pb2.ValidateResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("penguincode.AuthService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "penguincode.AuthService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers("penguincode.AuthService", rpc_method_handlers)
 
@@ -281,7 +283,9 @@ def add_ChatServiceServicer_to_server(servicer, server):
             response_serializer=penguincode__pb2.CloseSessionResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("penguincode.ChatService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "penguincode.ChatService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers("penguincode.ChatService", rpc_method_handlers)
 
@@ -446,7 +450,9 @@ def add_ToolCallbackServiceServicer_to_server(servicer, server):
             response_serializer=penguincode__pb2.ToolRequest.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("penguincode.ToolCallbackService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "penguincode.ToolCallbackService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers("penguincode.ToolCallbackService", rpc_method_handlers)
 
@@ -521,7 +527,9 @@ def add_HealthServiceServicer_to_server(servicer, server):
             response_serializer=penguincode__pb2.HealthCheckResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("penguincode.HealthService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "penguincode.HealthService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers("penguincode.HealthService", rpc_method_handlers)
 
