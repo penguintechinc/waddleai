@@ -18,6 +18,18 @@ returns no results, never a crash. A caller with no ``ScopeContext`` yet
 ``core/repl.py``'s ``REPLSession.scope_ctx`` for the documented injection
 point) degrades identically: no tenant to scope to, so no store operation
 runs.
+
+**Knowledge-graph wiring (T-wire).** Immediately after a chunk's embedding
+is upserted into ``docs_vectors``, ``_embed_and_upsert`` also calls
+``graphs.knowledge.extract_knowledge`` for that same chunk's text
+(``source_id=chunk.id``, same ``visibility``/``team_id`` the vector row was
+stamped with). ``extract_knowledge`` self-gates on ``KNOWLEDGE_GRAPH_FLAG``
+and degrades its own Ollama-call failures internally, but a `GraphStore`
+write failure propagates by design (see that module's docstring) -- this
+call site wraps it in a broad ``try/except`` regardless, logged at WARNING,
+because knowledge-graph extraction is a best-effort enrichment layered on
+top of the primary vector write: one chunk's extraction failing must never
+abort or roll back the indexing pass that already wrote its vector.
 """
 
 from __future__ import annotations
@@ -32,6 +44,7 @@ from typing import Any
 
 from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.flags.client import RAG_FLAG, is_enabled
+from penguincode_cli.graphs.knowledge import extract_knowledge
 from penguincode_cli.stores.vector import PgVectorStore, VectorItem, VectorStore
 
 from .models import DocChunk, DocSearchResult, Language, Library
@@ -268,6 +281,21 @@ class DocumentationIndexer:
 
         if items:
             self._store.upsert(ctx, items, visibility=visibility, team_id=team_id)
+            for item in items:
+                try:
+                    await extract_knowledge(
+                        ctx,
+                        item.document,
+                        source_id=item.id,
+                        visibility=visibility,
+                        team_id=team_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- best-effort enrichment, never abort indexing
+                    logger.warning(
+                        "docs_rag: knowledge-graph extraction failed for chunk %s: %s",
+                        item.id,
+                        exc,
+                    )
         return [item.id for item in items]
 
     async def index_library(

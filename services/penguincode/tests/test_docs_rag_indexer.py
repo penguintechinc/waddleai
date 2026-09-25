@@ -19,6 +19,7 @@ import os
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import psycopg
 import pytest
@@ -100,7 +101,14 @@ class _FakeVectorStore:
 
     def upsert(self, ctx, items, *, visibility, team_id):  # type: ignore[no-untyped-def]
         for item in items:
-            self.rows[item.id] = (ctx, item.embedding, item.document, item.metadata, visibility, team_id)
+            self.rows[item.id] = (
+                ctx,
+                item.embedding,
+                item.document,
+                item.metadata,
+                visibility,
+                team_id,
+            )
 
     def query(self, ctx, embedding, *, n, where=None):  # type: ignore[no-untyped-def]
         from penguincode_cli.stores.vector import VectorHit
@@ -133,7 +141,9 @@ class TestDocumentationIndexerFlagGating:
         assert count == 0
         assert store.rows == {}
 
-    async def test_search_returns_empty_when_flag_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_search_returns_empty_when_flag_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         store = _FakeVectorStore()
         indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
         ctx = _ctx()
@@ -213,6 +223,64 @@ class TestDocumentationIndexerRoundTrip:
             assert "chromadb" not in f.read()
 
 
+class TestKnowledgeGraphWiring:
+    """T-wire: indexing a doc chunk's vector also triggers knowledge-graph extraction.
+
+    # regression: penguincode-knowledge-platform (T-wire -- docs-RAG -> knowledge graph)
+    """
+
+    async def test_indexing_a_chunk_triggers_knowledge_extraction(self) -> None:
+        from penguincode_cli.stores.graph import Subgraph
+
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+
+        calls: list[dict] = []
+
+        async def _spy(ctx_arg, text, *, source_id=None, visibility="tenant", team_id=None, **_kw):  # type: ignore[no-untyped-def]
+            calls.append(
+                {
+                    "ctx": ctx_arg,
+                    "text": text,
+                    "source_id": source_id,
+                    "visibility": visibility,
+                    "team_id": team_id,
+                }
+            )
+            return Subgraph(nodes=[], edges=[])
+
+        with patch("penguincode_cli.docs_rag.indexer.extract_knowledge", _spy):
+            await indexer.index_library(ctx, _library("fastapi"), ["fastapi routing docs content"])
+
+        assert len(calls) == 1
+        assert calls[0]["ctx"] is ctx
+        assert calls[0]["text"] == "fastapi routing docs content"
+        assert (
+            calls[0]["source_id"] in store.rows
+        )  # chunk id, same id the vector row was stored under
+        assert calls[0]["visibility"] == "tenant"
+        assert calls[0]["team_id"] is None
+
+    async def test_knowledge_extraction_failure_does_not_break_indexing(self) -> None:
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+
+        async def _boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("graph store outage")
+
+        with patch("penguincode_cli.docs_rag.indexer.extract_knowledge", _boom):
+            count = await indexer.index_library(
+                ctx, _library("fastapi"), ["fastapi routing docs content"]
+            )
+
+        # The vector write (primary path) must have succeeded despite the
+        # extractor raising.
+        assert count == 1
+        assert len(store.rows) == 1
+
+
 # ---------------------------------------------------------------------------
 # Live-Postgres tests: require TEST_DATABASE_URL (pgvector/pgvector image).
 # ---------------------------------------------------------------------------
@@ -233,21 +301,31 @@ class TestDocumentationIndexerLivePgvector:
     async def test_index_then_search_round_trip_via_pgvector(
         self, live_dsn: str, tmp_path: Path
     ) -> None:
-        indexer = DocumentationIndexer(dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path))
+        indexer = DocumentationIndexer(
+            dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path)
+        )
         ctx = _ctx()
-        count = await indexer.index_library(ctx, _library("fastapi"), ["fastapi routing guide content"])
+        count = await indexer.index_library(
+            ctx, _library("fastapi"), ["fastapi routing guide content"]
+        )
         assert count >= 1
 
         results = await indexer.search(ctx, "fastapi routing guide content")
         assert results
         assert results[0].library == "fastapi"
 
-    async def test_metadata_filter_library_language_live(self, live_dsn: str, tmp_path: Path) -> None:
-        indexer = DocumentationIndexer(dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path))
+    async def test_metadata_filter_library_language_live(
+        self, live_dsn: str, tmp_path: Path
+    ) -> None:
+        indexer = DocumentationIndexer(
+            dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path)
+        )
         ctx = _ctx()
         await indexer.index_library(ctx, _library("fastapi"), ["fastapi alpha content"])
         await indexer.index_library(
-            ctx, Library(name="ferris", language=Language.RUST, version="1.0"), ["rust ferris content"]
+            ctx,
+            Library(name="ferris", language=Language.RUST, version="1.0"),
+            ["rust ferris content"],
         )
 
         by_library = await indexer.search(ctx, "content", libraries=["fastapi"], limit=10)
@@ -259,11 +337,15 @@ class TestDocumentationIndexerLivePgvector:
         assert all(r.language == "rust" for r in by_language)
 
     async def test_cross_tenant_isolation(self, live_dsn: str, tmp_path: Path) -> None:
-        indexer = DocumentationIndexer(dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path))
+        indexer = DocumentationIndexer(
+            dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path)
+        )
         tenant_a = _ctx()
         tenant_b = _ctx()
 
-        await indexer.index_library(tenant_a, _library("fastapi"), ["tenant a private docs content"])
+        await indexer.index_library(
+            tenant_a, _library("fastapi"), ["tenant a private docs content"]
+        )
 
         results_for_b = await indexer.search(tenant_b, "tenant a private docs content")
         assert results_for_b == []
@@ -272,7 +354,9 @@ class TestDocumentationIndexerLivePgvector:
         assert results_for_a
 
     async def test_clear_library_index_removes_rows(self, live_dsn: str, tmp_path: Path) -> None:
-        indexer = DocumentationIndexer(dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path))
+        indexer = DocumentationIndexer(
+            dsn=live_dsn, embed_fn=_fake_embed, metadata_dir=str(tmp_path)
+        )
         ctx = _ctx()
         await indexer.index_library(ctx, _library("fastapi"), ["fastapi clear-me content"])
         assert await indexer.search(ctx, "fastapi clear-me content")
