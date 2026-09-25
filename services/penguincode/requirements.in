@@ -39,6 +39,7 @@ mem0ai==2.2.0
 chromadb==1.5.9
 qdrant-client==1.19.1
 psycopg2-binary==2.9.13
+psycopg[binary]==3.3.6
 
 # Server Mode (Flask/Quart per CLAUDE.md standards)
 quart==0.23.1

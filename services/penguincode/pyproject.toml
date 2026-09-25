@@ -67,6 +67,10 @@ dependencies = [
     "chromadb==1.5.9",
     "qdrant-client==1.19.1",
     "psycopg2-binary==2.9.13",
+    # psycopg v3 (preferred per CLAUDE.md standards) -- used by db/migrate.py
+    # for the pgvector schema migration runner; psycopg2-binary above remains
+    # for the existing chromadb/mem0 code paths until T9 removes chromadb.
+    "psycopg[binary]==3.3.6",
 
     # Server Mode (Flask/Quart per CLAUDE.md standards)
     "quart==0.23.1",  # Async Flask-compatible framework
