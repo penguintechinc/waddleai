@@ -10,6 +10,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from rich.table import Table
 
+from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.config.settings import (
     Settings,
     get_config_value,
@@ -68,6 +69,20 @@ class REPLSession:
         self.docs_fetcher = None
         self.docs_indexer = None
         self.context_injector = None
+
+        # ScopeContext injection point (penguincode-knowledge-platform T7/T2):
+        # the interactive CLI REPL has no WaddleAI JWT auth flow yet, so
+        # there is no real tenant/org/team/user to scope docs-RAG reads and
+        # writes to. `DocumentationIndexer`/`ContextInjector` accept
+        # `ctx: ScopeContext | None` precisely for this reason -- `None`
+        # degrades gracefully (no results, no writes) rather than stamping
+        # a fabricated tenant. Once CLI-local auth exists (see
+        # `auth/middleware.py`'s own "Integration Point" note for the
+        # server-side equivalent), build a real `ScopeContext` here via
+        # `auth.scope.scope_from_claims()` from the authenticated session's
+        # validated claims and assign it to `self.scope_ctx` before
+        # `_init_docs_rag()` runs.
+        self.scope_ctx: ScopeContext | None = None
 
         # Memory manager for cross-session persistence (initialized in async context)
         self.memory_manager: MemoryManager | None = None
@@ -242,7 +257,6 @@ class REPLSession:
             )
 
             self.docs_indexer = DocumentationIndexer(
-                collection_name=self.settings.docs_rag.collection,
                 embedding_model=self.settings.memory.embedding_model,
                 chunk_size=self.settings.docs_rag.chunk_size,
                 chunk_overlap=self.settings.docs_rag.chunk_overlap,
@@ -285,7 +299,7 @@ class REPLSession:
         indexed_count = 0
         for lang in self.project_context.languages:
             # Check if already indexed (fresh)
-            if self.docs_indexer.is_language_indexed(lang.value):
+            if self.docs_indexer.is_language_indexed(self.scope_ctx, lang.value):
                 continue
 
             # Get doc source for language
@@ -299,7 +313,7 @@ class REPLSession:
                 # Fetch language docs
                 docs = await self.docs_fetcher.fetch_language_docs(lang)
                 if docs:
-                    chunks = await self.docs_indexer.index_language(lang, docs)
+                    chunks = await self.docs_indexer.index_language(self.scope_ctx, lang, docs)
                     indexed_count += chunks
                     console.print(f"[dim]  Indexed {chunks} chunks for {lang.value}[/dim]")
             except Exception as e:
@@ -323,7 +337,7 @@ class REPLSession:
         from penguincode_cli.docs_rag import Language, get_language_doc_source
 
         # Check if already indexed
-        if self.docs_indexer.is_language_indexed(language):
+        if self.docs_indexer.is_language_indexed(self.scope_ctx, language):
             return True
 
         # Get Language enum
@@ -342,7 +356,7 @@ class REPLSession:
         try:
             docs = await self.docs_fetcher.fetch_language_docs(lang_enum)
             if docs:
-                chunks = await self.docs_indexer.index_language(lang_enum, docs)
+                chunks = await self.docs_indexer.index_language(self.scope_ctx, lang_enum, docs)
                 console.print(f"[dim]  Indexed {chunks} chunks[/dim]")
                 return True
         except Exception as e:
@@ -771,7 +785,7 @@ class REPLSession:
         # Index status
         if self.docs_indexer:
             console.print("\n[yellow]Index Status:[/yellow]")
-            status = self.docs_indexer.get_index_status()
+            status = self.docs_indexer.get_index_status(self.scope_ctx)
 
             if status["libraries"]:
                 table = Table(show_header=True)
@@ -871,7 +885,7 @@ class REPLSession:
 
             if docs:
                 # Index docs
-                chunks = await self.docs_indexer.index_library(lib, docs)
+                chunks = await self.docs_indexer.index_library(self.scope_ctx, lib, docs)
                 total_chunks += chunks
                 console.print(f"    Indexed {chunks} chunks")
             else:
@@ -895,7 +909,8 @@ class REPLSession:
         library_names = self.project_context.library_names if self.project_context else None
 
         results = await self.docs_indexer.search(
-            query=query,
+            self.scope_ctx,
+            query,
             libraries=library_names,
             limit=5,
         )
@@ -916,14 +931,14 @@ class REPLSession:
             return
 
         if library_name:
-            count = await self.docs_indexer.clear_library_index(library_name)
+            count = await self.docs_indexer.clear_library_index(self.scope_ctx, library_name)
             print_success(f"Cleared {count} chunks for {library_name}")
         else:
             # Clear all
-            status = self.docs_indexer.get_index_status()
+            status = self.docs_indexer.get_index_status(self.scope_ctx)
             total = 0
             for lib in list(status["libraries"].keys()):
-                count = await self.docs_indexer.clear_library_index(lib)
+                count = await self.docs_indexer.clear_library_index(self.scope_ctx, lib)
                 total += count
             print_success(f"Cleared {total} total chunks")
 
@@ -938,6 +953,7 @@ class REPLSession:
 
         # Cleanup index
         index_removed = await self.docs_indexer.cleanup_unused(
+            self.scope_ctx,
             self.project_context.libraries,
             self.project_context.languages,
         )
@@ -1009,7 +1025,7 @@ class REPLSession:
             if self.context_injector and self.project_context:
                 should_inject = await self.context_injector.should_inject_context(message, self.project_context)
                 if should_inject:
-                    context = await self.context_injector.get_relevant_context(message, self.project_context)
+                    context = await self.context_injector.get_relevant_context(self.scope_ctx, message, self.project_context)
                     if context:
                         # Augment the chat agent's system prompt temporarily
                         original_prompt = self.chat_agent.system_prompt

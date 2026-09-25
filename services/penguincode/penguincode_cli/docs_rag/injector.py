@@ -5,6 +5,8 @@ injection into agent prompts. Only injects relevant docs
 for libraries actually used in the project.
 """
 
+from penguincode_cli.auth.scope import ScopeContext
+
 from .indexer import DocumentationIndexer
 from .models import DocSearchResult, ProjectContext
 
@@ -27,6 +29,7 @@ class ContextInjector:
 
     async def get_relevant_context(
         self,
+        ctx: ScopeContext | None,
         query: str,
         project_context: ProjectContext,
     ) -> str:
@@ -37,6 +40,11 @@ class ContextInjector:
         preventing injection of irrelevant documentation.
 
         Args:
+            ctx: Caller's scope, threaded straight through to
+                ``DocumentationIndexer.search`` -- ``None`` degrades to no
+                results (see ``docs_rag/indexer.py``'s ``ctx=None`` handling
+                and ``core/repl.py``'s ``REPLSession.scope_ctx`` injection
+                point), never a crash.
             query: User query to find relevant docs for
             project_context: Detected project languages and libraries
 
@@ -52,7 +60,8 @@ class ContextInjector:
 
         # Search with filters
         results = await self.indexer.search(
-            query=query,
+            ctx,
+            query,
             libraries=library_names if library_names else None,
             languages=language_names if language_names else None,
             limit=self.max_chunks,
