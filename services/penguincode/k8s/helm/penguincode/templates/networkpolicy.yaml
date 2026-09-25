@@ -1,0 +1,107 @@
+{{/*
+Cross-namespace egress CiliumNetworkPolicy (spec §9; security.md Kubernetes
+Network Security). Scoped to egress only -- no `ingress` key is set, so
+Cilium leaves ingress enforcement to whatever other policy governs this
+namespace and does not touch it here. Every pod in the penguincode namespace
+gets a default-deny-egress posture with an explicit allowlist: the shared
+WaddleAI Postgres (pgvector + graph store), optionally the shared WaddleAI
+Ollama fleet, and any operator-configured in-cluster/external destinations
+(OTel collector, PostHog CE, etc).
+
+Guarded by BOTH the values toggle (cilium.enabled + cilium.networkPolicy.enabled)
+AND a live capability check, so non-Cilium clusters (e.g. plain kind/MicroK8s
+in alpha) still render/install this chart cleanly and simply skip this
+object, matching the k8s/helm/waddleai chart's own convention.
+*/}}
+{{- if and .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") -}}
+{{- $ns := .Values.global.namespace }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "penguincode.fullname" . }}-allow-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "penguincode.labels" . | nindent 4 }}
+spec:
+  # Applies to every pod in the namespace (server, migration Job, test hook)
+  # -- all of them need at least DNS + Postgres egress.
+  endpointSelector: {}
+  egress:
+    # DNS resolution -- required for the cross-namespace Postgres/Ollama
+    # Service DNS names and for the toFQDNs rules below.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Shared WaddleAI Postgres (spec §9) -- cross-namespace, single DSN for
+    # the vector store and the graph store.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": {{ .Values.postgres.namespace | quote }}
+            app.kubernetes.io/name: waddleai
+            app.kubernetes.io/component: postgres
+      toPorts:
+        - ports:
+            - port: {{ .Values.postgres.port | quote }}
+              protocol: TCP
+    {{- if .Values.cilium.egress.ollama.enabled }}
+    # Shared WaddleAI Ollama fleet (embeddings/LLM), cross-namespace. NOTE:
+    # the waddleai chart's `waddleai-allow-fleet-ingress` CiliumNetworkPolicy
+    # admits ingress from the AIProxy component only today -- this egress
+    # rule is necessary but not sufficient until that ingress policy is
+    # extended to admit penguincode too (tracked separately; not owned by
+    # this chart -- see k8s/helm/waddleai/templates/cilium-network-policy.yaml).
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": {{ .Values.cilium.egress.ollama.namespace | quote }}
+            {{- range $k, $v := .Values.cilium.egress.ollama.labels }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.cilium.egress.ollama.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- if .Values.ollama.enabled }}
+    # The chart's own optional in-namespace Ollama Deployment.
+    - toEndpoints:
+        - matchLabels:
+            {{- include "penguincode.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: ollama
+      toPorts:
+        - ports:
+            - port: {{ .Values.ollama.service.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- range .Values.cilium.egress.extraEndpoints }}
+    # Operator-configured in-cluster destination (values.yaml cilium.egress.extraEndpoints).
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": {{ .namespace | quote }}
+            {{- range $k, $v := .matchLabels }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+      toPorts:
+        - ports:
+            {{- range .ports }}
+            - port: {{ . | quote }}
+              protocol: TCP
+            {{- end }}
+    {{- end }}
+    {{- range .Values.cilium.egress.extraFQDNs }}
+    # Operator-configured external destination (values.yaml cilium.egress.extraFQDNs)
+    # -- e.g. PostHog CE, an external OTLP backend.
+    - toFQDNs:
+        - matchName: {{ .matchName | quote }}
+      toPorts:
+        - ports:
+            - port: {{ .port | default 443 | quote }}
+              protocol: TCP
+    {{- end }}
+{{- end }}

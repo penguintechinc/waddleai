@@ -10,4 +10,21 @@ data:
   {{- range $key, $value := .Values.server.env }}
   {{ $key }}: {{ $value | quote }}
   {{- end }}
+
+  # PostHog feature-flag client (flags/client.py) -- host only; POSTHOG_KEY
+  # is secret-sourced (see templates/secret.yaml / server-deployment.yaml).
+  POSTHOG_HOST: {{ .Values.flags.posthog.host | quote }}
+
+  # Knowledge-platform flags (spec §10) -- default OFF, ship dark.
+  PENGUINCODE_FLAG_RAG: {{ .Values.flags.rag | quote }}
+  PENGUINCODE_FLAG_CODE_GRAPH: {{ .Values.flags.codeGraph | quote }}
+  PENGUINCODE_FLAG_KNOWLEDGE_GRAPH: {{ .Values.flags.knowledgeGraph | quote }}
+  PENGUINCODE_FLAG_MEMORY_GRAPH: {{ .Values.flags.memoryGraph | quote }}
+
+  # OpenTelemetry (observability/otel.py) -- endpoint is env-configurable,
+  # never hardcoded; empty = no-op providers (critical-rules.md Observability).
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
+  OTEL_EXPORTER_OTLP_PROTOCOL: {{ .Values.otel.protocol | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
+  OTEL_DEPLOYMENT_ENVIRONMENT: {{ .Values.otel.deploymentEnvironment | quote }}
 {{- end }}
