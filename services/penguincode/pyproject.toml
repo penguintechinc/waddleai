@@ -99,6 +99,15 @@ dependencies = [
     "opentelemetry-api==1.44.0",
     "opentelemetry-sdk==1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc==1.44.0",
+
+    # Code graph (T11) - penguincode_cli/graphs/code.py. Not a prior dependency
+    # despite the platform plan's Tech Stack line claiming otherwise (verified
+    # 2026-09-25: no tree_sitter import anywhere in penguincode_cli/). Both
+    # packages are MIT-licensed (verified via PyPI classifiers), matching the
+    # Global Constraints' permissive-license-only rule. tree-sitter-python is
+    # the only grammar shipped today; see graphs/code.py's Extensibility note.
+    "tree-sitter==0.26.0",
+    "tree-sitter-python==0.25.0",
 ]
 
 [project.optional-dependencies]
