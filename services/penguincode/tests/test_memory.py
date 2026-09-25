@@ -605,6 +605,83 @@ class TestScopedMemoryManager:
         assert isinstance(scoped, ScopedMemoryManager)
 
 
+class TestMemoryGraphWiring:
+    """T-wire: ``ScopedMemoryManager.add()`` triggers memory-graph extraction.
+
+    # regression: penguincode-knowledge-platform (T-wire -- memory write -> memory graph)
+    """
+
+    @pytest.mark.asyncio
+    async def test_add_triggers_memory_graph_extraction_with_scope_stamp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from penguincode_cli.stores.graph import Subgraph
+
+        _rag_on(monkeypatch)
+        fake = _FakeMem0Memory()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        ctx = _ctx(tenant_id="t8-tenant-a", org_id="org-1", team_ids=("team-1",), user_id="user-1")
+
+        calls: list[dict[str, Any]] = []
+
+        async def _spy(ctx_arg, content, *, source_metadata=None, **_kw):  # type: ignore[no-untyped-def]
+            calls.append({"ctx": ctx_arg, "content": content, "source_metadata": source_metadata})
+            return Subgraph(nodes=[], edges=[])
+
+        with patch("penguincode_cli.tools.memory.extract_memory_graph", _spy):
+            result = await scoped.add(
+                ctx, "I prefer dark mode", visibility="team", team_id="team-1"
+            )
+
+        assert result is not None
+        assert len(calls) == 1
+        assert calls[0]["ctx"] is ctx
+        assert calls[0]["content"] == "I prefer dark mode"
+        # source_metadata is the exact scope stamp T8 wrote to mem0 -- the
+        # identical write-time metadata, not independently re-derived.
+        stamp = calls[0]["source_metadata"]
+        assert stamp["tenant_id"] == "t8-tenant-a"
+        assert stamp["visibility"] == "team"
+        assert stamp["team_id"] == "team-1"
+        assert stamp["owner_user_id"] == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_memory_graph_extraction_failure_does_not_break_the_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _rag_on(monkeypatch)
+        fake = _FakeMem0Memory()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        ctx = _ctx(tenant_id="t8-tenant-a")
+
+        async def _boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("graph store outage")
+
+        with patch("penguincode_cli.tools.memory.extract_memory_graph", _boom):
+            result = await scoped.add(ctx, "still gets written", visibility="tenant", team_id=None)
+
+        # The memory write (primary path) must have succeeded despite the
+        # extractor raising.
+        assert result is not None
+        assert fake.add_calls[-1]["metadata"]["tenant_id"] == "t8-tenant-a"
+
+    @pytest.mark.asyncio
+    async def test_flag_off_add_never_calls_extractor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`add()` returns `None` before the extraction hook when RAG is off."""
+        _rag_off(monkeypatch)
+        fake = _FakeMem0Memory()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        ctx = _ctx(tenant_id="t8-tenant-a")
+
+        with patch("penguincode_cli.tools.memory.extract_memory_graph") as mock_extract:
+            result = await scoped.add(ctx, "never written", visibility="tenant", team_id=None)
+
+        assert result is None
+        mock_extract.assert_not_called()
+
+
 class TestMemoryManagerFactory:
     """Test memory manager factory function."""
 
