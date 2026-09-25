@@ -73,7 +73,7 @@ dependencies = [
     "flask-security-too==5.8.2",  # Auth, RBAC, sessions (mandatory)
     "hypercorn==0.18.0",  # ASGI server for Quart
     "websockets==17.1",
-    "pyjwt==2.15.0",
+    "pyjwt[crypto]==2.15.0",  # [crypto] pulls cryptography, required for RS256 verification (auth/middleware.py, WaddleAI-issued JWTs)
 
     # gRPC (Client-Server Mode)
     # Held at the 1.69.x/5.29.x line to match the runtime version validated

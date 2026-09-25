@@ -45,7 +45,7 @@ quart==0.23.1
 flask-security-too==5.8.2
 hypercorn==0.18.0
 websockets==17.1
-pyjwt==2.15.0
+pyjwt[crypto]==2.15.0
 
 # gRPC (Client-Server Mode) - held at 1.69.x/5.29.x to match the runtime
 # version validated by the checked-in generated proto stubs.
