@@ -86,7 +86,12 @@ class GraphStore(Protocol):
     def neighbors(self, ctx: ScopeContext, kind: str, node_key: str, *, depth: int, rel_types: list[str] | None = None) -> Subgraph: ...
     def subgraph(self, ctx: ScopeContext, kind: str, seed_keys: list[str], *, depth: int) -> Subgraph: ...
     def delete_by_scope(self, ctx: ScopeContext, kind: str, *, node_keys: list[str] | None = None) -> None: ...
-# GraphNode(node_type:str, key:str, props:dict); GraphEdge(src_key:str, dst_key:str, rel_type:str, props:dict)
+# GraphNode(node_type:str, key:str, props:dict)
+# GraphEdge(src_type:str, src_key:str, dst_type:str, dst_key:str, rel_type:str, props:dict)
+#   endpoints resolve to graph_nodes.id via (tenant_id, graph_kind, node_type, key); edges MUST carry
+#   src_type/dst_type because (node_type, key) — not key alone — is unique per (tenant, graph_kind)
+#   (T1 schema: UNIQUE(tenant_id, graph_kind, node_type, key)). Upserting an edge auto-creates missing
+#   endpoint nodes (type+key) if absent, so producers may emit edges without a prior node upsert.
 # kind in {"code","knowledge","memory"}; Subgraph(nodes:list[GraphNode], edges:list[GraphEdge])
 ```
 
