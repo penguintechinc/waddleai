@@ -90,6 +90,15 @@ dependencies = [
     "grpcio==1.69.0",
     "grpcio-tools==1.69.0",
     "protobuf==5.29.6",
+
+    # Observability (OTel) - pinned to the same 1.44.0 line as the root
+    # repo's requirements.in so both trees resolve one consistent OTel SDK
+    # version. Declared directly (not left as a chromadb transitive) so
+    # `penguincode_cli/observability/otel.py` keeps a resolvable pin once
+    # chromadb is removed.
+    "opentelemetry-api==1.44.0",
+    "opentelemetry-sdk==1.44.0",
+    "opentelemetry-exporter-otlp-proto-grpc==1.44.0",
 ]
 
 [project.optional-dependencies]
