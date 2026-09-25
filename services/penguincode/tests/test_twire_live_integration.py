@@ -21,13 +21,18 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import psycopg
 import pytest
 
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.client.knowledge_client import GraphEdge as ClientGraphEdge
+from penguincode_cli.client.knowledge_client import GraphNode as ClientGraphNode
+from penguincode_cli.client.knowledge_client import QueryResult
+from penguincode_cli.client.knowledge_client import Subgraph as ClientSubgraph
+from penguincode_cli.client.knowledge_client import VectorHit as ClientVectorHit
 from penguincode_cli.config.settings import MemoryConfig, MemoryStoresConfig, PGVectorStoreConfig
 from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.docs_rag.indexer import DocumentationIndexer
@@ -38,6 +43,9 @@ from penguincode_cli.retrieval.graphrag import retrieve as graphrag_retrieve
 from penguincode_cli.stores.graph import GraphEdge, PostgresGraphStore
 from penguincode_cli.stores.vector import PgVectorStore, VectorItem
 from penguincode_cli.tools.memory import MemoryManager, ScopedMemoryManager
+
+if TYPE_CHECKING:
+    from penguincode_cli.client.knowledge_client import KnowledgeClient
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -231,7 +239,18 @@ class TestLiveMemoryAddTriggersMemoryGraphExtraction:
 
 @requires_postgres
 class TestLiveHybridRetrieval:
-    """T-wire wiring 4: `ContextInjector.get_relevant_context` -> `graphrag.retrieve`."""
+    """T-wire wiring 4: `ContextInjector.get_relevant_context` -> a live hybrid retrieval.
+
+    Updated for F3 (`penguincode_cli/docs_rag/injector.py`'s "Thin client" note):
+    `ContextInjector` no longer calls `graphrag.retrieve` directly -- it now goes
+    through the server's `Query` RPC via a `KnowledgeClient`-shaped `query_fn`
+    seam, and operates on the *client-side* `QueryResult`/`Subgraph` dataclasses,
+    never the store-layer `RetrievalResult`/`stores.graph.Subgraph` this test
+    originally asserted against. `query_fn` here still drives a real
+    `graphrag.retrieve` call against live pgvector Postgres (only its LLM-shaped
+    return value is adapted to the client's dataclasses), so this remains a
+    live-DB test of the same wiring, not a mock of the whole retrieval path.
+    """
 
     async def test_get_relevant_context_returns_vector_and_graph_content(
         self, live_dsn: str, monkeypatch: pytest.MonkeyPatch
@@ -277,11 +296,51 @@ class TestLiveHybridRetrieval:
             team_id=None,
         )
 
-        async def _retrieve_live(ctx_arg, q, **kwargs):  # type: ignore[no-untyped-def]
-            return await graphrag_retrieve(ctx_arg, q, embed_fn=_fake_embed, dsn=live_dsn, **kwargs)
+        async def _query_fn(*, query: str, **kwargs: Any) -> QueryResult:
+            # Drives a real `graphrag.retrieve` call against the live DB (the
+            # actual wiring under test), then adapts its store-layer
+            # `RetrievalResult`/`stores.graph.Subgraph` into the client-side
+            # `QueryResult`/`Subgraph` dataclasses `ContextInjector` now
+            # consumes post-F3 -- see class docstring.
+            n_vector = kwargs.get("n_vector", 8)
+            result = await graphrag_retrieve(
+                ctx, query, embed_fn=_fake_embed, dsn=live_dsn, n_vector=n_vector
+            )
+            return QueryResult(
+                vector_hits=[
+                    ClientVectorHit(
+                        id=hit.id, document=hit.document, metadata=hit.metadata, score=hit.score
+                    )
+                    for hit in result.vector_hits
+                ],
+                subgraphs={
+                    kind: ClientSubgraph(
+                        nodes=[
+                            ClientGraphNode(node_type=n.node_type, key=n.key, props=n.props)
+                            for n in subgraph.nodes
+                        ],
+                        edges=[
+                            ClientGraphEdge(
+                                src_type=e.src_type,
+                                src_key=e.src_key,
+                                dst_type=e.dst_type,
+                                dst_key=e.dst_key,
+                                rel_type=e.rel_type,
+                                props=e.props,
+                            )
+                            for e in subgraph.edges
+                        ],
+                    )
+                    for kind, subgraph in result.subgraphs.items()
+                },
+                context=result.context,
+            )
 
-        indexer = DocumentationIndexer.__new__(DocumentationIndexer)
-        injector = ContextInjector(indexer=indexer, retrieve_fn=_retrieve_live)
+        # `client` is never touched once `query_fn=` is supplied (see
+        # `ContextInjector.__init__`/`get_relevant_context`) -- a real
+        # `KnowledgeClient` would require a live gRPC channel this test has no
+        # need for.
+        injector = ContextInjector(client=cast("KnowledgeClient", None), query_fn=_query_fn)
         project_context = ProjectContext(
             languages=[Language.PYTHON],
             libraries=[Library(name="fastapi", language=Language.PYTHON)],
@@ -291,4 +350,4 @@ class TestLiveHybridRetrieval:
 
         assert "FastAPI supports async routes" in context
         assert "Related Knowledge Graph" in context
-        assert f"{chunk_id} --describes--> entity:async-routing" in context
+        assert f"entity:{chunk_id} --describes--> entity:async-routing" in context
