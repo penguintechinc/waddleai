@@ -416,6 +416,8 @@ class REPLSession:
             print_info("Conversation reset")
         elif cmd == "/docs":
             await self.handle_docs_command(args)
+        elif cmd == "/index-code":
+            await self.handle_index_code(args)
         elif cmd in ("/skill", "/skills"):
             self.handle_skill_command(args)
         elif cmd == "/config":
@@ -451,6 +453,11 @@ class REPLSession:
   /docs search <q>   Search indexed documentation
   /docs clear [lib]  Clear index (all or specific library)
   /docs cleanup      Remove docs for unused libraries
+
+[yellow]Code Graph:[/yellow]
+  /index-code [path] Build the code graph for a local source tree
+                     (default: project dir; requires an authenticated
+                     ScopeContext and the penguincode.code-graph flag)
 
 [yellow]Skills:[/yellow]
   /skill             List available skills
@@ -729,6 +736,50 @@ class REPLSession:
             print_success("Task completed")
         else:
             print_error(result.error or "Execution failed")
+
+    async def handle_index_code(self, path_arg: str) -> None:
+        """Handle `/index-code [path]`: build the tree-sitter code graph for a source tree.
+
+        Drives `graphs.code.index_code` (T11), penguincode's only code-repo
+        indexer. Requires `self.scope_ctx` -- the interactive CLI REPL has
+        no WaddleAI JWT auth flow yet (see the `ScopeContext` injection-point
+        note on its definition above), so a missing scope degrades to a
+        clear, logged no-op rather than fabricating a tenant, mirroring
+        docs-RAG's own `ctx=None` handling (`docs_rag/indexer.py`).
+        """
+        if self.scope_ctx is None:
+            print_info(
+                "Code-graph indexing requires an authenticated ScopeContext "
+                "(the CLI has no auth flow yet) -- skipping"
+            )
+            return
+
+        target = Path(path_arg).expanduser().resolve() if path_arg else self.project_dir
+        if not target.exists():
+            print_error(f"Path not found: {target}")
+            return
+        if not target.is_dir():
+            print_error(f"Not a directory: {target}")
+            return
+
+        from penguincode_cli.graphs.code import index_code
+
+        console.print(f"\n[cyan]Indexing code graph for {target}...[/cyan]\n")
+        try:
+            # `index_code` issues synchronous psycopg calls -- run off the
+            # event loop, same pattern as `retrieval.graphrag`'s store calls.
+            result = await asyncio.to_thread(
+                index_code, self.scope_ctx, target, config=self.settings.graph
+            )
+        except Exception as e:  # noqa: BLE001 -- surface any store/parse failure, don't crash the REPL
+            print_error(f"Code-graph indexing failed: {e}")
+            return
+
+        if result is None:
+            print_info("Code-graph indexing is disabled (penguincode.code-graph flag is off)")
+            return
+
+        print_success(f"Code graph: {len(result.nodes)} node(s), {len(result.edges)} edge(s)")
 
     async def handle_docs_command(self, args: str) -> None:
         """Handle /docs subcommands."""

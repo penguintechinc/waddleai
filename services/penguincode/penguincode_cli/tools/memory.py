@@ -19,6 +19,7 @@ Two layers live here:
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Final
 
 from mem0 import Memory  # type: ignore[import-untyped]  # mem0ai ships no py.typed marker
@@ -26,7 +27,10 @@ from mem0 import Memory  # type: ignore[import-untyped]  # mem0ai ships no py.ty
 from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.config.settings import MemoryConfig
 from penguincode_cli.flags.client import RAG_FLAG, is_enabled
+from penguincode_cli.graphs.memory import extract_memory_graph
 from penguincode_cli.observability.otel import timed_store_operation
+
+logger = logging.getLogger(__name__)
 
 #: nomic-embed-text's fixed output dimensionality (Global Constraint: 768-dim,
 #: cosine, everywhere -- do not change). mem0's pgvector provider needs this
@@ -448,6 +452,21 @@ class ScopedMemoryManager:
                 metadata=merged_metadata,
                 infer=False,
             )
+
+        if result is not None:
+            # Memory-graph extraction (T13 hook) -- best-effort enrichment
+            # layered on top of the memory write that already succeeded.
+            # `source_metadata` is this exact write's scope stamp (never
+            # re-derived), see `graphs.memory`'s module docstring. Never let
+            # an extraction failure (LLM outage, GraphStore error) surface
+            # as a failure of the memory write itself.
+            try:
+                results = result.get("results") or []
+                source_metadata = results[0].get("metadata", {}) if results else scope_meta
+                await extract_memory_graph(ctx, content, source_metadata=source_metadata)
+            except Exception as exc:  # noqa: BLE001 -- best-effort enrichment, never break the write
+                logger.warning("tools.memory: memory-graph extraction failed: %s", exc)
+
         return result
 
     async def search(
