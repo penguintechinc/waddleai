@@ -124,14 +124,6 @@ class ResearchConfig:
 
 
 @dataclass
-class ChromaStoreConfig:
-    """Chroma vector store configuration."""
-
-    path: str = "./.penguincode/memory"
-    collection: str = "penguincode_memory"
-
-
-@dataclass
 class QdrantStoreConfig:
     """Qdrant vector store configuration."""
 
@@ -139,19 +131,24 @@ class QdrantStoreConfig:
     collection: str = "penguincode_memory"
 
 
-@dataclass
+@dataclass(slots=True)
 class PGVectorStoreConfig:
-    """PostgreSQL PGVector store configuration."""
+    """PostgreSQL pgvector store configuration (shared WaddleAI Postgres).
 
-    connection_string: str = ""
-    table: str = "penguincode_memory"
+    `url` is the shared-Postgres DSN and defaults from the `PGVECTOR_URL` env
+    var when not set explicitly in config.yaml, so pgvector works out of the
+    box in every environment that wires that variable (see docker-entrypoint.sh
+    / k8s/helm/penguincode Secret, owned by T9/T15).
+    """
+
+    url: str = field(default_factory=lambda: os.environ.get("PGVECTOR_URL", ""))
+    table_name: str = "penguincode_memory"
 
 
 @dataclass
 class MemoryStoresConfig:
     """Memory vector store configurations."""
 
-    chroma: ChromaStoreConfig = field(default_factory=ChromaStoreConfig)
     qdrant: QdrantStoreConfig = field(default_factory=QdrantStoreConfig)
     pgvector: PGVectorStoreConfig = field(default_factory=PGVectorStoreConfig)
 
@@ -161,9 +158,37 @@ class MemoryConfig:
     """mem0 memory layer configuration."""
 
     enabled: bool = True
-    vector_store: str = "chroma"  # chroma | qdrant | pgvector
+    vector_store: str = "pgvector"  # qdrant | pgvector
     embedding_model: str = "nomic-embed-text"
     stores: MemoryStoresConfig = field(default_factory=MemoryStoresConfig)
+
+
+@dataclass(slots=True)
+class PostgresGraphStoreConfig:
+    """Postgres graph store configuration (shared WaddleAI Postgres, `penguincode` schema).
+
+    Reuses the same shared-Postgres DSN as `PGVectorStoreConfig` (`PGVECTOR_URL`)
+    rather than a separate connection setting -- the vector and graph tables
+    live in the same database. `graph_nodes`/`graph_edges` are created in the
+    `penguincode` schema by penguincode's own idempotent SQL migrations.
+    """
+
+    url: str = field(default_factory=lambda: os.environ.get("PGVECTOR_URL", ""))
+    schema: str = "penguincode"
+
+
+@dataclass(slots=True)
+class GraphConfig:
+    """GraphStore driver configuration for the code/knowledge/memory graphs.
+
+    `backend` selects the GraphStore implementation: `postgres` (default, the
+    only implemented driver today) or `kuzu` (a recognized value -- the
+    GraphStore factory raises NotImplementedError for it until a Kuzu driver
+    is built, per the platform plan's explicit stub).
+    """
+
+    backend: str = "postgres"  # postgres | kuzu
+    postgres: PostgresGraphStoreConfig = field(default_factory=PostgresGraphStoreConfig)
 
 
 @dataclass
@@ -385,6 +410,7 @@ class Settings:
     history: HistoryConfig = field(default_factory=HistoryConfig)
     research: ResearchConfig = field(default_factory=ResearchConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    graph: GraphConfig = field(default_factory=GraphConfig)
     regulators: RegulatorsConfig = field(default_factory=RegulatorsConfig)
     usage_api: UsageAPIConfig = field(default_factory=UsageAPIConfig)
     docs_rag: DocsRagConfig = field(default_factory=DocsRagConfig)
@@ -413,6 +439,7 @@ class Settings:
             history=HistoryConfig(**data.get("history", {})),
             research=cls._parse_research_config(data.get("research", {})),
             memory=cls._parse_memory_config(data.get("memory", {})),
+            graph=cls._parse_graph_config(data.get("graph", {})),
             regulators=RegulatorsConfig(**data.get("regulators", {})),
             usage_api=UsageAPIConfig(**data.get("usage_api", {})),
             docs_rag=cls._parse_docs_rag_config(data.get("docs_rag", {})),
@@ -467,15 +494,27 @@ class Settings:
         """Parse memory configuration with nested stores."""
         stores_data = data.get("stores", {})
         stores = MemoryStoresConfig(
-            chroma=ChromaStoreConfig(**stores_data.get("chroma", {})),
             qdrant=QdrantStoreConfig(**stores_data.get("qdrant", {})),
             pgvector=PGVectorStoreConfig(**stores_data.get("pgvector", {})),
         )
         return MemoryConfig(
             enabled=data.get("enabled", True),
-            vector_store=data.get("vector_store", "chroma"),
+            vector_store=data.get("vector_store", "pgvector"),
             embedding_model=data.get("embedding_model", "nomic-embed-text"),
             stores=stores,
+        )
+
+    @staticmethod
+    def _parse_graph_config(data: dict[str, Any]) -> GraphConfig:
+        """Parse GraphStore driver configuration.
+
+        `backend` selects the driver (`postgres` default, `kuzu` recognized
+        but not yet implemented); `postgres` config reuses the shared
+        `PGVECTOR_URL` DSN via `PostgresGraphStoreConfig`'s own default.
+        """
+        return GraphConfig(
+            backend=data.get("backend", "postgres"),
+            postgres=PostgresGraphStoreConfig(**data.get("postgres", {})),
         )
 
     @staticmethod
