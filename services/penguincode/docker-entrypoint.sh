@@ -103,14 +103,10 @@ research:
 # Memory Configuration (mem0)
 memory:
   enabled: ${PENGUINCODE_MEMORY_ENABLED:-true}
-  vector_store: "${PENGUINCODE_MEMORY_STORE:-chroma}"
+  vector_store: "${PENGUINCODE_MEMORY_STORE:-pgvector}"
   embedding_model: "${PENGUINCODE_EMBEDDING_MODEL:-nomic-embed-text}"
 
   stores:
-    chroma:
-      path: "${PENGUINCODE_CHROMA_PATH:-./.penguincode/memory}"
-      collection: "${PENGUINCODE_CHROMA_COLLECTION:-penguincode_memory}"
-
     qdrant:
       url: "${QDRANT_URL:-http://localhost:6333}"
       collection: "${QDRANT_COLLECTION:-penguincode_memory}"

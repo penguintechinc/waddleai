@@ -640,6 +640,19 @@ class TestNoChromadbReference:
         source = inspect.getsource(memory_module)
         assert "chroma" not in source.lower()
 
+    def test_chromadb_not_installed(self) -> None:
+        """# regression: penguincode-knowledge-platform -- chromadb dropped (T9, 4 open CVEs, no patched release).
+
+        chromadb must not resolve as an installed distribution in this
+        environment -- it was removed from pyproject.toml/requirements.in
+        entirely (not just unimported), so the CVE-affected package is never
+        present on disk, not merely dead code.
+        """
+        import importlib.metadata
+
+        with pytest.raises(importlib.metadata.PackageNotFoundError):
+            importlib.metadata.distribution("chromadb")
+
 
 # ---------------------------------------------------------------------------
 # Live pgvector + Ollama tests.

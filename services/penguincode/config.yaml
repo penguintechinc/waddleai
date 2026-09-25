@@ -98,16 +98,12 @@ research:
 # Memory configuration (mem0)
 memory:
   enabled: true
-  vector_store: "chroma"  # chroma | qdrant | pgvector
+  vector_store: "pgvector"  # qdrant | pgvector
 
   # Uses Ollama models from 'models' section for LLM/embeddings
   embedding_model: "nomic-embed-text"
 
   stores:
-    chroma:
-      path: "./.penguincode/memory"
-      collection: "penguincode_memory"
-
     qdrant:
       url: "http://localhost:6333"
       collection: "penguincode_memory"
