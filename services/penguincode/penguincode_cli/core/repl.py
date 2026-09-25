@@ -11,6 +11,11 @@ from prompt_toolkit.styles import Style
 from rich.table import Table
 
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.client.knowledge_client import (
+    KnowledgeClient,
+    KnowledgeClientError,
+    RemoteMemoryManager,
+)
 from penguincode_cli.config.settings import (
     Settings,
     get_config_value,
@@ -28,7 +33,6 @@ from .session import SessionManager
 # Lazy imports to avoid circular dependency
 if TYPE_CHECKING:
     from penguincode_cli.agents import ChatAgent
-    from penguincode_cli.tools.memory import MemoryManager
 
 
 class REPLSession:
@@ -64,28 +68,30 @@ class REPLSession:
         self.chat_agent: ChatAgent | None = None
         self.agents = {}
 
-        # Docs RAG components (initialized if enabled)
+        # Thin gRPC client (F3): the CLI's only path to the server-side knowledge
+        # platform -- docs-RAG indexing, hybrid GraphRAG retrieval, scoped memory, and the
+        # code graph all live server-side now (see `client.knowledge_client`'s module
+        # docstring). Constructed once per session in `__aenter__`, closed in `__aexit__`.
+        self.knowledge_client: KnowledgeClient | None = None
+
+        # Docs RAG components (initialized if enabled) -- `docs_fetcher` still fetches raw
+        # doc text/HTML client-side; the embedding + vector-store write happens server-side
+        # via `knowledge_client.index()`.
         self.project_context = None
         self.docs_fetcher = None
-        self.docs_indexer = None
         self.context_injector = None
 
-        # ScopeContext injection point (penguincode-knowledge-platform T7/T2):
-        # the interactive CLI REPL has no WaddleAI JWT auth flow yet, so
-        # there is no real tenant/org/team/user to scope docs-RAG reads and
-        # writes to. `DocumentationIndexer`/`ContextInjector` accept
-        # `ctx: ScopeContext | None` precisely for this reason -- `None`
-        # degrades gracefully (no results, no writes) rather than stamping
-        # a fabricated tenant. Once CLI-local auth exists (see
-        # `auth/middleware.py`'s own "Integration Point" note for the
-        # server-side equivalent), build a real `ScopeContext` here via
-        # `auth.scope.scope_from_claims()` from the authenticated session's
-        # validated claims and assign it to `self.scope_ctx` before
-        # `_init_docs_rag()` runs.
+        # Vestigial (penguincode-knowledge-platform F3): docs-RAG/index-code/memory identity
+        # now comes exclusively from the WaddleAI JWT `self.knowledge_client` attaches to
+        # every call (F4's `WaddleAITokenProvider`), never a client-constructed
+        # `ScopeContext` -- the interactive CLI REPL still has no local auth flow of its own.
+        # Kept only as a placeholder for a possible future CLI-local scope use.
         self.scope_ctx: ScopeContext | None = None
 
-        # Memory manager for cross-session persistence (initialized in async context)
-        self.memory_manager: MemoryManager | None = None
+        # Memory manager for cross-session persistence -- a `RemoteMemoryManager` facade
+        # over `self.knowledge_client` (initialized in async context), never a local
+        # `tools.memory.MemoryManager` (no local mem0/pgvector instance).
+        self.memory_manager: RemoteMemoryManager | None = None
 
         # Skill system
         self.skill_loader = SkillLoader()
@@ -96,7 +102,6 @@ class REPLSession:
         """Async context manager entry."""
         # Lazy import agents to avoid circular import
         from penguincode_cli.agents import ChatAgent, ExecutorAgent, ExplorerAgent
-        from penguincode_cli.tools.memory import MemoryManager
 
         # Initialize Ollama client
         self.ollama_client = OllamaClient(
@@ -105,19 +110,17 @@ class REPLSession:
         )
         await self.ollama_client.__aenter__()
 
-        # Initialize memory manager for cross-session persistence
+        # Thin gRPC client (F3): shared for the whole session -- docs-RAG, memory, and
+        # code-graph all route through this one `KnowledgeClient`. Construction never fails
+        # (the channel is lazy; a WaddleAI token is only acquired on first real call), so
+        # server-unreachable is discovered -- and reported -- at first use, not here.
+        self.knowledge_client = KnowledgeClient(self.settings.server)
+
+        # Memory manager for cross-session persistence -- a thin facade over
+        # `self.knowledge_client`'s `MemoryAdd`/`MemorySearch` RPCs.
         if self.settings.memory.enabled:
-            try:
-                self.memory_manager = MemoryManager(
-                    config=self.settings.memory,
-                    ollama_url=self.settings.ollama.api_url,
-                    llm_model=self.settings.models.orchestration,
-                )
-                if self.memory_manager.is_enabled():
-                    print_info("Memory layer initialized")
-            except Exception as e:
-                print_info(f"Memory layer unavailable: {e}")
-                self.memory_manager = None
+            self.memory_manager = RemoteMemoryManager(self.knowledge_client)
+            print_info("Memory layer initialized (server-side)")
 
         # Fetch organizational config from server (if configured)
         await self._fetch_org_config()
@@ -216,7 +219,6 @@ class REPLSession:
             from penguincode_cli.docs_rag import (
                 ContextInjector,
                 DocumentationFetcher,
-                DocumentationIndexer,
                 Language,
                 ProjectContext,
                 ProjectDetector,
@@ -256,15 +258,11 @@ class REPLSession:
                 cache_max_age_days=self.settings.docs_rag.cache_max_age_days,
             )
 
-            self.docs_indexer = DocumentationIndexer(
-                embedding_model=self.settings.memory.embedding_model,
-                chunk_size=self.settings.docs_rag.chunk_size,
-                chunk_overlap=self.settings.docs_rag.chunk_overlap,
-                ollama_base_url=self.settings.ollama.api_url,
-            )
-
+            # Embedding + vector-store indexing is server-side now (F3) -- the injector
+            # queries `self.knowledge_client` directly, no local `DocumentationIndexer`.
+            assert self.knowledge_client is not None  # set in __aenter__ before this call
             self.context_injector = ContextInjector(
-                indexer=self.docs_indexer,
+                self.knowledge_client,
                 max_context_tokens=self.settings.docs_rag.max_context_tokens,
                 max_chunks=self.settings.docs_rag.max_chunks_per_query,
             )
@@ -290,18 +288,20 @@ class REPLSession:
             print_error(f"Docs RAG init failed: {e}")
 
     async def _auto_index_languages(self) -> None:
-        """Auto-index documentation for detected/configured languages."""
-        if not self.project_context or not self.docs_fetcher or not self.docs_indexer:
+        """Auto-index documentation for detected/configured languages.
+
+        Freshness/dedup (skip already-indexed languages) is the server's own
+        responsibility now (`DocumentationIndexer.index_language`'s local cache moved
+        server-side with it, F3) -- this loop simply calls `Index` for every detected
+        language on every session start; the server decides whether there's real work to do.
+        """
+        if not self.project_context or not self.docs_fetcher or self.knowledge_client is None:
             return
 
         from penguincode_cli.docs_rag import get_language_doc_source
 
         indexed_count = 0
         for lang in self.project_context.languages:
-            # Check if already indexed (fresh)
-            if self.docs_indexer.is_language_indexed(self.scope_ctx, lang.value):
-                continue
-
             # Get doc source for language
             doc_source = get_language_doc_source(lang)
             if not doc_source:
@@ -313,32 +313,33 @@ class REPLSession:
                 # Fetch language docs
                 docs = await self.docs_fetcher.fetch_language_docs(lang)
                 if docs:
-                    chunks = await self.docs_indexer.index_language(self.scope_ctx, lang, docs)
+                    chunks = await self.knowledge_client.index(
+                        language=lang.value, doc_contents=docs
+                    )
                     indexed_count += chunks
                     console.print(f"[dim]  Indexed {chunks} chunks for {lang.value}[/dim]")
-            except Exception as e:
+            except KnowledgeClientError as e:
                 console.print(f"[dim]  Failed to index {lang.value}: {e}[/dim]")
 
         if indexed_count > 0:
             print_info(f"Auto-indexed {indexed_count} documentation chunks")
 
     async def _ensure_language_indexed(self, language: str) -> bool:
-        """Ensure a language's documentation is indexed (on-demand).
+        """Ensure a language's documentation is indexed (on-demand), via the `Index` RPC.
 
         Args:
             language: Language name (e.g., "python", "javascript")
 
         Returns:
-            True if indexed successfully or already indexed
+            True if indexed successfully
+
+        Freshness/dedup is the server's responsibility now (F3, see
+        `_auto_index_languages`'s own note) -- no local "already indexed" check.
         """
-        if not self.docs_fetcher or not self.docs_indexer:
+        if not self.docs_fetcher or self.knowledge_client is None:
             return False
 
         from penguincode_cli.docs_rag import Language, get_language_doc_source
-
-        # Check if already indexed
-        if self.docs_indexer.is_language_indexed(self.scope_ctx, language):
-            return True
 
         # Get Language enum
         try:
@@ -356,10 +357,12 @@ class REPLSession:
         try:
             docs = await self.docs_fetcher.fetch_language_docs(lang_enum)
             if docs:
-                chunks = await self.docs_indexer.index_language(self.scope_ctx, lang_enum, docs)
+                chunks = await self.knowledge_client.index(
+                    language=lang_enum.value, doc_contents=docs
+                )
                 console.print(f"[dim]  Indexed {chunks} chunks[/dim]")
                 return True
-        except Exception as e:
+        except KnowledgeClientError as e:
             console.print(f"[dim]  Failed: {e}[/dim]")
 
         return False
@@ -376,6 +379,10 @@ class REPLSession:
         # Close Ollama client
         if self.ollama_client:
             await self.ollama_client.__aexit__(exc_type, exc_val, exc_tb)
+
+        # Close the gRPC channel to the penguincode server (F3)
+        if self.knowledge_client:
+            await self.knowledge_client.close()
 
     async def handle_command(self, command: str) -> bool:
         """
@@ -740,18 +747,12 @@ class REPLSession:
     async def handle_index_code(self, path_arg: str) -> None:
         """Handle `/index-code [path]`: build the tree-sitter code graph for a source tree.
 
-        Drives `graphs.code.index_code` (T11), penguincode's only code-repo
-        indexer. Requires `self.scope_ctx` -- the interactive CLI REPL has
-        no WaddleAI JWT auth flow yet (see the `ScopeContext` injection-point
-        note on its definition above), so a missing scope degrades to a
-        clear, logged no-op rather than fabricating a tenant, mirroring
-        docs-RAG's own `ctx=None` handling (`docs_rag/indexer.py`).
+        Drives the server's `IndexCode` RPC (F3) -- `graphs.code.index_code` (T11) itself
+        now runs entirely server-side. Identity comes from the WaddleAI JWT
+        `self.knowledge_client` attaches to the call, never a local `ScopeContext`.
         """
-        if self.scope_ctx is None:
-            print_info(
-                "Code-graph indexing requires an authenticated ScopeContext "
-                "(the CLI has no auth flow yet) -- skipping"
-            )
+        if self.knowledge_client is None:
+            print_info("Code-graph indexing requires the penguincode server -- not connected")
             return
 
         target = Path(path_arg).expanduser().resolve() if path_arg else self.project_dir
@@ -762,16 +763,10 @@ class REPLSession:
             print_error(f"Not a directory: {target}")
             return
 
-        from penguincode_cli.graphs.code import index_code
-
         console.print(f"\n[cyan]Indexing code graph for {target}...[/cyan]\n")
         try:
-            # `index_code` issues synchronous psycopg calls -- run off the
-            # event loop, same pattern as `retrieval.graphrag`'s store calls.
-            result = await asyncio.to_thread(
-                index_code, self.scope_ctx, target, config=self.settings.graph
-            )
-        except Exception as e:  # noqa: BLE001 -- surface any store/parse failure, don't crash the REPL
+            result = await self.knowledge_client.index_code(root_path=str(target))
+        except KnowledgeClientError as e:
             print_error(f"Code-graph indexing failed: {e}")
             return
 
@@ -779,7 +774,8 @@ class REPLSession:
             print_info("Code-graph indexing is disabled (penguincode.code-graph flag is off)")
             return
 
-        print_success(f"Code graph: {len(result.nodes)} node(s), {len(result.edges)} edge(s)")
+        node_count, edge_count = result
+        print_success(f"Code graph: {node_count} node(s), {edge_count} edge(s)")
 
     async def handle_docs_command(self, args: str) -> None:
         """Handle /docs subcommands."""
@@ -833,31 +829,16 @@ class REPLSession:
         else:
             print_info("No project context (run /docs detect)")
 
-        # Index status
-        if self.docs_indexer:
+        # Index status: server-side now (F3) -- `KnowledgeService` has no status RPC yet
+        # (only Index/Query/MemoryAdd/MemorySearch/IndexCode/CodeGraphStatus), so per-library
+        # chunk counts/freshness can no longer be shown from the CLI. Use `/docs search` to
+        # confirm indexed content is retrievable.
+        if self.knowledge_client is not None:
             console.print("\n[yellow]Index Status:[/yellow]")
-            status = self.docs_indexer.get_index_status(self.scope_ctx)
-
-            if status["libraries"]:
-                table = Table(show_header=True)
-                table.add_column("Library")
-                table.add_column("Chunks")
-                table.add_column("Indexed")
-                table.add_column("Status")
-
-                for lib, info in status["libraries"].items():
-                    status_str = "[red]expired[/red]" if info["is_expired"] else "[green]valid[/green]"
-                    table.add_row(
-                        lib,
-                        str(info["chunk_count"]),
-                        info["indexed_at"][:10],
-                        status_str,
-                    )
-                console.print(table)
-            else:
-                print_info("No libraries indexed")
-
-            console.print(f"\nTotal chunks: {status['total_chunks']}")
+            print_info(
+                "Per-library index status is managed server-side (no status RPC yet) -- "
+                "use /docs search to confirm indexed content is retrievable"
+            )
 
         # Cache status
         if self.docs_fetcher:
@@ -895,9 +876,12 @@ class REPLSession:
         console.print()
 
     async def _docs_index(self, library_name: str = "") -> None:
-        """Index documentation for libraries."""
+        """Index documentation for libraries via the server's `Index` RPC (F3)."""
         if not self.project_context:
             print_error("Run /docs detect first")
+            return
+        if self.knowledge_client is None:
+            print_error("Not connected to the penguincode server")
             return
 
         from penguincode_cli.docs_rag import get_priority_docs_for_project
@@ -935,8 +919,17 @@ class REPLSession:
             docs = await self.docs_fetcher.fetch_library_docs(lib)
 
             if docs:
-                # Index docs
-                chunks = await self.docs_indexer.index_library(self.scope_ctx, lib, docs)
+                # Index docs via the server
+                try:
+                    chunks = await self.knowledge_client.index(
+                        library_name=lib.name,
+                        library_version=lib.version or "",
+                        language=lib.language.value,
+                        doc_contents=docs,
+                    )
+                except KnowledgeClientError as e:
+                    console.print(f"    [red]Failed: {e}[/red]")
+                    continue
                 total_chunks += chunks
                 console.print(f"    Indexed {chunks} chunks")
             else:
@@ -945,79 +938,84 @@ class REPLSession:
         print_success(f"Indexed {total_chunks} total chunks")
 
     async def _docs_search(self, query: str) -> None:
-        """Search indexed documentation."""
+        """Search indexed documentation via the server's `Query` RPC (F3)."""
         if not query:
             print_error("Usage: /docs search <query>")
             return
 
-        if not self.docs_indexer:
-            print_error("Docs indexer not initialized")
+        if self.knowledge_client is None:
+            print_error("Not connected to the penguincode server")
             return
 
         console.print(f"\n[cyan]Searching:[/cyan] {query}\n")
 
-        # Filter to project libraries only
-        library_names = self.project_context.library_names if self.project_context else None
-
-        results = await self.docs_indexer.search(
-            self.scope_ctx,
-            query,
-            libraries=library_names,
-            limit=5,
+        # Filter to project libraries only -- the `Query` RPC has no `where=` filter of its
+        # own (same as the local `search()` it replaces), so filtering stays client-side.
+        library_names = (
+            {name.lower() for name in self.project_context.library_names}
+            if self.project_context
+            else None
         )
 
-        if results:
-            for i, result in enumerate(results, 1):
-                console.print(f"[bold]{i}. [{result.library}][/bold] (score: {result.relevance_score:.2f})")
+        try:
+            result = await self.knowledge_client.query(query=query, n_vector=5)
+        except KnowledgeClientError as e:
+            print_error(f"Search failed: {e}")
+            return
+
+        hits = [
+            hit
+            for hit in result.vector_hits
+            if not library_names or str(hit.metadata.get("library", "")).lower() in library_names
+        ]
+
+        if hits:
+            for i, hit in enumerate(hits, 1):
+                library = hit.metadata.get("library", "?")
+                console.print(f"[bold]{i}. [{library}][/bold] (score: {hit.score:.2f})")
                 # Truncate long content
-                content = result.content[:300] + "..." if len(result.content) > 300 else result.content
+                content = hit.document[:300] + "..." if len(hit.document) > 300 else hit.document
                 console.print(f"   {content}\n")
         else:
             print_info("No results found")
 
     async def _docs_clear(self, library_name: str = "") -> None:
-        """Clear indexed documentation."""
-        if not self.docs_indexer:
-            print_error("Docs indexer not initialized")
-            return
+        """Clear indexed documentation.
 
-        if library_name:
-            count = await self.docs_indexer.clear_library_index(self.scope_ctx, library_name)
-            print_success(f"Cleared {count} chunks for {library_name}")
-        else:
-            # Clear all
-            status = self.docs_indexer.get_index_status(self.scope_ctx)
-            total = 0
-            for lib in list(status["libraries"].keys()):
-                count = await self.docs_indexer.clear_library_index(self.scope_ctx, lib)
-                total += count
-            print_success(f"Cleared {total} total chunks")
+        No server RPC exists for this yet (`KnowledgeService` exposes Index/Query/
+        MemoryAdd/MemorySearch/IndexCode/CodeGraphStatus only) -- index management now lives
+        entirely server-side, so this degrades to a clear, logged no-op rather than
+        attempting a local store operation the CLI no longer has access to.
+        """
+        if self.knowledge_client is None:
+            print_error("Not connected to the penguincode server")
+            return
+        print_info(
+            "Clearing the documentation index is managed server-side (no clear RPC yet) -- "
+            "not available from the CLI"
+        )
 
     async def _docs_cleanup(self) -> None:
-        """Remove docs for libraries no longer in project."""
+        """Remove docs for libraries no longer in project.
+
+        Only the local doc-fetch cache is cleaned up here now (F3) -- server-side index
+        cleanup has no RPC yet (see `_docs_clear`'s own note), so `index_removed` always
+        reports empty rather than attempting a local store operation the CLI no longer has
+        access to.
+        """
         if not self.project_context:
             print_error("Run /docs detect first")
             return
 
-        # Cleanup cache
+        # Cleanup cache (still client-side -- raw doc fetch cache, not the vector index)
         cache_removed = self.docs_fetcher.cleanup_unused_libraries(self.project_context.libraries)
 
-        # Cleanup index
-        index_removed = await self.docs_indexer.cleanup_unused(
-            self.scope_ctx,
-            self.project_context.libraries,
-            self.project_context.languages,
-        )
-
-        if cache_removed or index_removed:
+        if cache_removed:
             console.print("\n[cyan]Cleanup Results:[/cyan]")
-            if cache_removed:
-                for lib, count in cache_removed.items():
-                    console.print(f"  Cache: removed {count} pages for {lib}")
-            if index_removed:
-                for lib, count in index_removed.items():
-                    console.print(f"  Index: removed {count} chunks for {lib}")
+            for lib, count in cache_removed.items():
+                console.print(f"  Cache: removed {count} pages for {lib}")
             console.print()
+            print_info("Server-side index cleanup is not available yet (no RPC)")
         else:
             print_info("Nothing to clean up")
 
