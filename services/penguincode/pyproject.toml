@@ -55,26 +55,25 @@ dependencies = [
     # Memory Layer (mem0)
     "ollama==0.6.2",  # Required by mem0 OllamaEmbedding
     "mem0ai==2.2.0",
-    # chromadb has 4 open CVEs with no patched release as of 2026-09-23
-    # (GHSA-f4j7-r4q5-qw2c/CVE-2026-45829 critical pre-auth RCE,
-    # GHSA-36p7-vc44-83pf/CVE-2026-45833 critical, GHSA-2wm9-hf6c-p5cr and
-    # GHSA-xph7-9rjv-w5fr high) - every release from 0.4.17 through the
-    # current latest (1.5.9) is affected. All four are exploitable only
-    # through chromadb's own HTTP server (/api/v2/tenants/.../collections
-    # REST API, multi-tenant RBAC). This service never starts that server or
-    # uses HttpClient/trust_remote_code - it only ever calls the embedded,
-    # in-process chromadb.PersistentClient (see
-    # penguincode_cli/docs_rag/indexer.py and the mem0 "chroma" provider in
-    # penguincode_cli/tools/memory.py), so the vulnerable network surface is
-    # never reachable. Pinned to the latest release pending an upstream fix;
-    # re-evaluate on every dependency bump.
-    "chromadb==1.5.9",
+    # The Chroma vector-store package was removed (T9, 2026-09-25): it
+    # carried 4 open CVEs (GHSA-f4j7-r4q5-qw2c/CVE-2026-45829,
+    # GHSA-36p7-vc44-83pf/CVE-2026-45833, GHSA-2wm9-hf6c-p5cr,
+    # GHSA-xph7-9rjv-w5fr) with no patched release. The docs-RAG indexer (T7)
+    # and mem0 memory store (T8) were migrated off it to pgvector/qdrant
+    # first, so it was an unused dependency by the time it was dropped.
     "qdrant-client==1.19.1",
-    "psycopg2-binary==2.9.13",
     # psycopg v3 (preferred per CLAUDE.md standards) -- used by db/migrate.py
-    # for the pgvector schema migration runner; psycopg2-binary above remains
-    # for the existing chromadb/mem0 code paths until T9 removes chromadb.
+    # for the pgvector schema migration runner and by mem0ai's pgvector
+    # store (penguincode_cli/stores/vector.py, stores/graph.py). psycopg2
+    # is never imported directly by this codebase; psycopg2-binary was only
+    # kept as mem0ai's pgvector fallback for the old Chroma-backed mem0 code
+    # path and is dropped alongside that package (T9).
     "psycopg[binary]==3.3.6",
+    # mem0ai's pgvector store (mem0/vector_stores/pgvector.py) imports
+    # psycopg_pool.ConnectionPool directly; without it, its psycopg3 branch
+    # ImportErrors and it falls back to psycopg2 (removed above, T9). Added
+    # as an explicit direct dep so the psycopg3-only path fully resolves.
+    "psycopg-pool==3.3.3",
 
     # Server Mode (Flask/Quart per CLAUDE.md standards)
     "quart==0.23.1",  # Async Flask-compatible framework
@@ -93,9 +92,9 @@ dependencies = [
 
     # Observability (OTel) - pinned to the same 1.44.0 line as the root
     # repo's requirements.in so both trees resolve one consistent OTel SDK
-    # version. Declared directly (not left as a chromadb transitive) so
-    # `penguincode_cli/observability/otel.py` keeps a resolvable pin once
-    # chromadb is removed.
+    # version. Declared directly (not left as a transitive of the now-removed
+    # Chroma vector-store package, T9) so
+    # `penguincode_cli/observability/otel.py` keeps a resolvable pin.
     "opentelemetry-api==1.44.0",
     "opentelemetry-sdk==1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc==1.44.0",

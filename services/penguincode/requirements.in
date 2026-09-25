@@ -36,13 +36,11 @@ beautifulsoup4==4.15.0
 # Memory Layer (mem0)
 ollama==0.6.2
 mem0ai==2.2.0
-# See pyproject.toml for the chromadb CVE risk-acceptance note
-# (GHSA-f4j7-r4q5-qw2c and related - no patched release exists; the
-# vulnerable HTTP-server surface is never started by this service).
-chromadb==1.5.9
+# The Chroma vector-store package was removed (T9) - see pyproject.toml for the CVE/removal note.
 qdrant-client==1.19.1
-psycopg2-binary==2.9.13
 psycopg[binary]==3.3.6
+# See pyproject.toml for why this is needed directly (mem0ai pgvector store).
+psycopg-pool==3.3.3
 
 # Server Mode (Flask/Quart per CLAUDE.md standards)
 quart==0.23.1
