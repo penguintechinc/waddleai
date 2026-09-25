@@ -62,6 +62,11 @@ opentelemetry-api==1.44.0
 opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp-proto-grpc==1.44.0
 
+# Code graph (T11) - penguincode_cli/graphs/code.py. MIT-licensed; see
+# pyproject.toml for the "not already present" note and license verification.
+tree-sitter==0.26.0
+tree-sitter-python==0.25.0
+
 # Dev / test dependencies (pyproject.toml [project.optional-dependencies.dev])
 pytest==9.1.1
 pytest-asyncio==1.4.0
