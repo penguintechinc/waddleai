@@ -25,6 +25,9 @@ aiosqlite==0.22.1
 pyyaml==6.0.3
 markdown-it-py==4.2.0
 
+# Feature Flags (PostHog CE) - penguincode_cli/flags/client.py
+posthog==7.60.1
+
 # Search & Tools
 ddgs==9.16.0
 pathspec==1.1.1
