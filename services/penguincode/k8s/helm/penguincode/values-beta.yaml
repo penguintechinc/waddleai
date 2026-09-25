@@ -35,13 +35,17 @@ server:
 ollama:
   enabled: false
 
-persistence:
-  enabled: true
-  size: 10Gi
-  storageClass: longhorn
-
 secrets:
   enabled: true
+
+# Shared WaddleAI Postgres DSN -- created out-of-band by CI/CD (External
+# Secrets Operator / sealed-secrets), never inline plaintext, never a
+# `--set`/`--set-string` CLI arg (token/secret hygiene).
+postgres:
+  existingSecret: penguincode-postgres-beta
+
+# Flags stay OFF in beta too (ship dark; flip on per environment only after
+# validation -- spec §14 Rollout).
 
 ingress:
   enabled: true
