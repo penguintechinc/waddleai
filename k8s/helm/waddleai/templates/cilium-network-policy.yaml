@@ -116,7 +116,15 @@ spec:
             - port: {{ $t.valkeyPort | quote }}
               protocol: TCP
 ---
-# §10.3: fleet pods (ollama, llamacpp) admit ingress exclusively from AIProxy.
+# §10.3: fleet pods (ollama, llamacpp) admit ingress exclusively from AIProxy,
+# plus (opt-in, default-on) penguincode's server workload for Ollama-only
+# embeddings/extraction traffic (blocker-2, kp-b2). The penguincode rule is a
+# second, independent `ingress[]` entry alongside the AIProxy one below --
+# never merged into it -- so it stays least-privilege: scoped to the Ollama
+# serving port only (never llamacpp/fleetPorts) and to penguincode's `server`
+# pods by namespace + label, not a namespace-wide allow. penguincode's
+# matching egress rule lives in services/penguincode/k8s/helm/penguincode/
+# values.yaml (cilium.egress.ollama).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -143,6 +151,18 @@ spec:
             - port: {{ . | quote }}
               protocol: TCP
             {{- end }}
+    {{- if $t.penguincodeIngress.enabled }}
+    - fromEndpoints:
+        - matchLabels:
+            {{- range $k, $v := $t.penguincodeIngress.selector }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+            "k8s:io.kubernetes.pod.namespace": {{ $t.penguincodeIngress.namespace | quote }}
+      toPorts:
+        - ports:
+            - port: {{ $t.penguincodeIngress.ollamaPort | quote }}
+              protocol: TCP
+    {{- end }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
