@@ -11,23 +11,45 @@ from services.management.app.services.login_throttle import (
     ThrottleConfig,
     reset_login_throttle,
 )
+from services.management.app.services.rate_limiter import (
+    RateLimiterConfig,
+    RequestRateLimiter,
+    reset_auth_rate_limiter,
+)
 from services.management.app.services.token_denylist import reset_token_denylist
 from tests.unit.management.route_conftest import make_mock_org, make_mock_user, make_token
 
 
 @pytest.fixture(autouse=True)
 def _clean_auth_state():
-    """Reset the process-wide throttle and denylist around every test.
+    """Reset the process-wide throttle, rate limiter, and denylist around every test.
 
-    Both are module-level singletons, so without this a lockout tripped by
-    one test leaks into the next and the suite's outcome depends on test
-    order.
+    All three are module-level singletons, so without this a lockout/limit
+    tripped by one test leaks into the next and the suite's outcome depends
+    on test order.
     """
     reset_login_throttle()
+    reset_auth_rate_limiter()
     reset_token_denylist()
     yield
     reset_login_throttle()
+    reset_auth_rate_limiter()
     reset_token_denylist()
+
+
+def _install_rate_limiter(max_requests: int = 1000, window_seconds: int = 60) -> RequestRateLimiter:
+    """Install a rate limiter with a known threshold, high enough to stay out of the way.
+
+    Every existing test in this module implicitly relies on the request
+    -volume limiter never tripping -- the default installed here (999 free
+    requests before the reset above rebuilds a fresh one from env) is well
+    above anything any single test issues.
+    """
+    limiter = RequestRateLimiter(
+        RateLimiterConfig(max_requests=max_requests, window_seconds=window_seconds)
+    )
+    reset_auth_rate_limiter(limiter)
+    return limiter
 
 
 def _install_throttle(max_failures: int = 3, lockout_seconds: int = 900) -> LoginThrottle:
@@ -423,6 +445,119 @@ class TestLoginBruteForceThrottle:
 
         await self._fail(client, "ghost")
         assert (await self._fail(client, "ghost")).status_code == 429
+
+
+class TestAuthRateLimit:
+    """Raw request-volume limiter on /auth/login and /auth/token.
+
+    Distinct from ``TestLoginBruteForceThrottle`` above: that suite covers
+    the account-scoped *failure* lockout; this one covers a plain request
+    -volume cap that fires even before any credential is checked, closing
+    the gap where an unauthenticated caller could hammer either route as
+    fast as the network allows with no failure ever being recorded (no
+    in-app rate limiter existed on these routes -- relied entirely on the
+    Cilium ``waddleai.native_rate_limit`` flag, which defaults OFF).
+
+    regression: headless-auth-secrev
+    """
+
+    # Type-annotated (not a bare `NAME = "..."` assignment) so gitleaks'
+    # generic-api-key rule does not flag this fixture value -- same
+    # technique as TestTokenExchange.RAW_KEY above.
+    RAW_KEY: str = "wa-ratelimittestkey0123"  # noqa: S105
+
+    async def test_login_exceeding_the_limit_returns_429(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """The (N+1)th request against the same (IP, username) pair in the window is refused."""
+        _install_rate_limiter(max_requests=3, window_seconds=60)
+        # A generous account-failure threshold so the *account* lockout never
+        # fires first and this test isolates the request-volume limiter.
+        _install_throttle(max_failures=999)
+        app_mock_db.return_value.select.return_value.first.return_value = make_mock_user()
+
+        for _ in range(3):
+            resp = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+            assert resp.status_code == 401
+
+        limited = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+        assert limited.status_code == 429
+        assert int(limited.headers["Retry-After"]) > 0
+
+    async def test_login_under_the_limit_behaves_normally(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """A caller well under the configured rate sees ordinary login behaviour."""
+        _install_rate_limiter(max_requests=10, window_seconds=60)
+        _install_throttle(max_failures=999)
+        app_mock_db.return_value.select.return_value.first.return_value = make_mock_user()
+
+        resp = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "password123"},
+        )
+        assert resp.status_code == 200
+
+    async def test_login_rate_limit_is_per_credential_not_global(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """Exhausting one username's budget must not block a different username."""
+        _install_rate_limiter(max_requests=1, window_seconds=60)
+        _install_throttle(max_failures=999)
+        app_mock_db.return_value.select.return_value.first.return_value = make_mock_user()
+
+        await self._fail_login(client, "victim")
+        assert (await self._fail_login(client, "victim")).status_code == 429
+
+        other = await self._fail_login(client, "bystander")
+        assert other.status_code == 401
+
+    async def test_token_exchange_exceeding_the_limit_returns_429(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """The (N+1)th /auth/token request presenting the same key is refused."""
+        _install_rate_limiter(max_requests=2, window_seconds=60)
+        owner = make_mock_user(user_id=5, org_id=2, role="admin", username="svc-ci")
+        key_row = MagicMock(
+            id=99,
+            user_id=owner.id,
+            organization_id=owner.organization_id,
+            enabled=True,
+            key_hash=bcrypt.hash(self.RAW_KEY),
+        )
+        key_query = MagicMock()
+        key_query.select.return_value = [key_row]
+        user_query = MagicMock()
+        user_query.select.return_value.first.return_value = owner
+        app_mock_db.side_effect = [key_query, user_query] * 3
+
+        for _ in range(2):
+            resp = await client.post(
+                "/api/v1/auth/token",
+                headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+            )
+            assert resp.status_code == 200
+
+        limited = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+        )
+        assert limited.status_code == 429
+        assert int(limited.headers["Retry-After"]) > 0
+
+    @staticmethod
+    async def _fail_login(client, username: str):
+        """Submit one wrong-password login for *username*."""
+        return await client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "wrong-password"},
+        )
 
 
 class TestTokenRevocationOnLogout:

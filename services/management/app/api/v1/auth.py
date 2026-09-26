@@ -22,6 +22,11 @@ from shared.auth.rbac import ROLE_PERMISSIONS, Permission, Role, UserContext
 
 from ...extensions import db
 from ...services.login_throttle import ThrottleDecision, account_key, get_login_throttle
+from ...services.rate_limiter import (
+    RateLimitDecision,
+    client_rate_limit_key,
+    get_auth_rate_limiter,
+)
 from ...services.token_denylist import get_token_denylist
 from . import api_v1_bp
 
@@ -692,6 +697,21 @@ def _throttled_response(decision: ThrottleDecision) -> Response:
     return response
 
 
+def _rate_limited_response(decision: RateLimitDecision) -> Response:
+    """Return the generic 429 issued when the request-volume limiter trips.
+
+    Distinct from :func:`_throttled_response`: this guards raw request
+    *volume* on an unauthenticated credential-verification route (headless-
+    auth-secrev M2), independent of whether any individual request went on
+    to fail credential checks.
+    """
+    retry_after = max(1, decision.retry_after_seconds)
+    response = jsonify({"error": "Too many requests. Try again later."})
+    response.status_code = 429
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
 @api_v1_bp.route("/auth/login", methods=["POST"])
 @tag(["Auth"])
 @validate_response(LoginResponse, 200)
@@ -722,6 +742,18 @@ async def login(data: LoginRequest):
 
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
+
+    # M2 (headless-auth-secrev): raw request-volume limiter, independent of
+    # (and checked before) the account-scoped failure lockout below -- see
+    # rate_limiter.py's module docstring for why the two controls coexist.
+    limiter = get_auth_rate_limiter()
+    rate_decision = limiter.check(client_rate_limit_key(request.remote_addr, username))
+    if not rate_decision.allowed:
+        logger.warning(
+            "auth: login refused, rate limit exceeded (account_hash=%s)",
+            account_key(username)[:12],
+        )
+        return _rate_limited_response(rate_decision)
 
     throttle = get_login_throttle()
     decision = await asyncio.to_thread(throttle.check, username)
@@ -828,6 +860,16 @@ async def token_exchange():
         return jsonify({"error": "Authorization header required"}), 401
 
     api_key = auth_header.split(" ", 1)[1]
+
+    # M2 (headless-auth-secrev): raw request-volume limiter, same control as
+    # /auth/login above -- keyed on the presented key (hashed, never stored
+    # or logged raw) so a guessed-key sweep is throttled regardless of which
+    # source IP it comes from.
+    limiter = get_auth_rate_limiter()
+    rate_decision = limiter.check(client_rate_limit_key(request.remote_addr, api_key))
+    if not rate_decision.allowed:
+        logger.warning("auth: token exchange refused, rate limit exceeded")
+        return _rate_limited_response(rate_decision)
 
     # Same generic 401 and log line regardless of *why* the key was refused
     # (unknown, disabled, wrong org) -- mirrors /auth/login's refusal to
