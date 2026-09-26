@@ -138,6 +138,16 @@ def _assert_credential_encryption_configured(app) -> None:
 
 def create_app(config_class=Config):
     """Quart application factory."""
+    # This service publishes /.well-known/jwks.json (well_known.py) for
+    # every other validator to consume, so an ephemeral, per-replica signing
+    # keystore is a real outage here, not a tolerable dev default -- opt into
+    # shared.auth.penguin_auth.create_oidc_provider()'s hard-fail guard
+    # instead of its (backward-compatible, proxy-preserving) warn-only
+    # default. setdefault, not a plain assignment, so an operator/test
+    # harness can still force it off explicitly. Set before anything else so
+    # it is in place before the first lazily-created OIDC provider call.
+    os.environ.setdefault("OIDC_REQUIRE_DURABLE_KEYSTORE", "true")
+
     app = Quart(__name__)
     app.config.from_object(config_class)
 
@@ -307,9 +317,11 @@ def register_blueprints(app):
     from .api.v1.routing_policies import routing_policies_bp
     from .api.v1.routing_rules import routing_rules_bp
     from .api.v1.security_policies import security_policies_bp
+    from .api.v1.well_known import well_known_bp
 
     app.register_blueprint(api_v1_bp, url_prefix="/api/v1")
     app.register_blueprint(openapi_bp)
+    app.register_blueprint(well_known_bp)
     app.register_blueprint(routing_assignments_bp)
     app.register_blueprint(routing_policies_bp)
     app.register_blueprint(routing_rules_bp)
