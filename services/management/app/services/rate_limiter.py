@@ -15,7 +15,7 @@ mirrors ``login_throttle``'s own defense-in-depth rationale for why an
 in-app control exists alongside (not instead of) the network layer.
 
 A single, bounded, thread-safe, in-process token bucket per client, keyed by
-source IP plus a hashed, truncated *non-secret* identifier -- the submitted
+source IP plus a bounded, plain-text *non-secret* identifier -- the submitted
 username for ``/auth/login``, or the presented key's public ``key_prefix``
 lookup handle for ``/auth/token`` (see ``client_rate_limit_key``) -- so that
 one IP cannot be starved by another tenant's traffic and a single guessed
@@ -24,18 +24,22 @@ which source IP it comes from. Bounded like ``login_throttle._LocalCounter``:
 the key space is attacker-controlled, so entries are capped and the
 least-recently-touched ones evicted, never allowed to grow without limit.
 
-CodeQL (``py/weak-sensitive-data-hashing``) flagged an earlier revision that
-hashed the raw presented credential (including the password on ``/login``
-and the full secret on ``/token``) with SHA-256 -- a fast hash, cheaply
-brute-forceable offline if a leaked in-memory bucket map exposed it. The
-identifier passed to ``client_rate_limit_key`` MUST NEVER be a password or
-any part of an API key's secret material; callers in ``auth.py`` parse out a
-non-secret handle first (username, or ``_virtual_key_prefix``'s result).
+CodeQL (``py/weak-sensitive-data-hashing``) flagged two revisions in a row:
+first, hashing the raw presented credential (the password on ``/login``, the
+full secret on ``/token``) with SHA-256; then, after that was fixed to hash
+only a non-secret *derived* handle (the key's public ``key_prefix``), CodeQL's
+taint tracker still flagged it -- it treats anything reachable from a
+credential-parsing call as sensitive, non-secret or not. The fix is to never
+hash the identifier at all: the key derivation below is a plain string
+concatenation, bounded by slicing rather than digesting. The identifier
+passed to ``client_rate_limit_key`` MUST STILL NEVER be a password or any
+part of an API key's secret material; callers in ``auth.py`` parse out a
+non-secret handle first (username, or ``_virtual_key_prefix``'s result) --
+that contract is unchanged, only the no-longer-hashed key construction is.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 import os
@@ -179,25 +183,39 @@ class RequestRateLimiter:
             return RateLimitDecision(allowed=True)
 
 
+_MAX_IDENTIFIER_CHARS: int = 64
+"""Upper bound on the identifier portion of a bucket key.
+
+Boundedness for the (attacker-controlled) key space comes from slicing, not
+hashing -- see ``client_rate_limit_key``. Usernames and key prefixes are both
+far shorter than this in practice; it exists purely as a hard ceiling.
+"""
+
+
 def client_rate_limit_key(remote_addr: str | None, identifier: str | None) -> str:
     """Return a stable, bounded, secret-free key for (client IP, non-secret identifier).
 
     *identifier* MUST already be non-secret by the time it reaches this
     function -- a username, or an API key's public ``key_prefix`` lookup
     handle (see ``auth._virtual_key_prefix``). It must never be a password or
-    any part of a key's secret material: this function hashes it (bounded,
-    fixed-length key; only the client IP is ever kept in the clear, since it
-    is already routinely logged elsewhere), and SHA-256 is fine for
-    non-secret input but is not a defense if the input were secret. A missing
-    or unparseable identifier (``None``/empty) collapses the bucket to
-    per-IP only -- still throttled, just without a per-account/key
-    component.
+    any part of a key's secret material.
+
+    This deliberately does NOT hash the identifier. An earlier revision
+    hashed it with SHA-256 for a fixed-length key; CodeQL
+    (``py/weak-sensitive-data-hashing``) still flagged that as "sensitive
+    data hashing" because its taint tracker treats anything derived from a
+    credential-parsing call as sensitive, regardless of whether the derived
+    value is itself a secret. Since the identifier is genuinely non-secret,
+    the correct fix is to stop hashing it at all: the key is a plain string
+    concatenation of the IP and a length-bounded slice of the identifier,
+    with boundedness coming from the slice, not a digest. A missing or
+    unparseable identifier (``None``/empty) collapses the bucket to per-IP
+    only -- still throttled, just without a per-account/key component.
     """
     ip = remote_addr or "unknown"
     if not identifier:
         return ip
-    ident_hash = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
-    return f"{ip}:{ident_hash}"
+    return f"{ip}:{identifier[:_MAX_IDENTIFIER_CHARS]}"
 
 
 _limiter: RequestRateLimiter | None = None

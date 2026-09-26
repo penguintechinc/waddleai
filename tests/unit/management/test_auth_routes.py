@@ -710,6 +710,33 @@ class TestAuthRateLimit:
         assert limited.status_code == 429
         assert int(limited.headers["Retry-After"]) > 0
 
+    def test_client_rate_limit_key_never_hashes_the_identifier(self) -> None:
+        """The bucket key derivation must never call a hash function at all.
+
+        CodeQL (``py/weak-sensitive-data-hashing``) still flagged the key
+        derivation after the prior fix hashed only the non-secret
+        ``key_prefix`` handle -- its taint tracker treats anything reachable
+        from a credential-parsing call as sensitive, hashed or not. The real
+        fix removes hashing from ``client_rate_limit_key`` entirely; this
+        proves it stays removed by making the standard-library hash
+        constructor raise if the implementation ever reaches for it again.
+
+        regression: headless-auth-codeql
+        """
+        with patch("hashlib.sha256", side_effect=AssertionError("must not hash the identifier")):
+            key = client_rate_limit_key("203.0.113.5", "wa-abcd1234")
+        assert key == "203.0.113.5:wa-abcd1234"
+
+    def test_client_rate_limit_key_bounds_a_long_identifier_by_slicing(self) -> None:
+        """A pathologically long identifier is bounded by slicing, not hashing.
+
+        regression: headless-auth-codeql
+        """
+        long_identifier = "x" * 500
+        key = client_rate_limit_key("203.0.113.5", long_identifier)
+        assert key == "203.0.113.5:" + "x" * 64
+        assert len(key) < len(long_identifier)
+
 
 class TestTokenRevocationOnLogout:
     """Server-side token revocation.
