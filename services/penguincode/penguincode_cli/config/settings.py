@@ -191,6 +191,32 @@ class GraphConfig:
     postgres: PostgresGraphStoreConfig = field(default_factory=PostgresGraphStoreConfig)
 
 
+@dataclass(slots=True)
+class LessonsConfig:
+    """Lessons-promotion confidentiality-verifier configuration (F2+F3, security review).
+
+    `known_identifiers` is an operator-configured, per-deployment list of
+    client/org/person/project names to always check for in
+    `lessons.scrub.verify_scrubbed` -- a server-authoritative supplement to
+    the tenant's graph-store entities (see
+    `server.services.lessons._known_tenant_identifier_names`) for names that
+    never made it into the graph at all. Defaults from the
+    `LESSONS_KNOWN_IDENTIFIERS` env var (comma-separated) so it works without
+    a `config.yaml` entry, mirroring `PGVectorStoreConfig.url`'s
+    `PGVECTOR_URL`-default pattern; a YAML `lessons.known_identifiers` list
+    is appended to (never replaces) the env-var list -- see
+    `Settings._parse_lessons_config`.
+    """
+
+    known_identifiers: list[str] = field(
+        default_factory=lambda: [
+            term.strip()
+            for term in os.environ.get("LESSONS_KNOWN_IDENTIFIERS", "").split(",")
+            if term.strip()
+        ]
+    )
+
+
 @dataclass
 class RegulatorsConfig:
     """GPU rate limiting and agent concurrency configuration."""
@@ -413,6 +439,7 @@ class Settings:
     research: ResearchConfig = field(default_factory=ResearchConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    lessons: LessonsConfig = field(default_factory=LessonsConfig)
     regulators: RegulatorsConfig = field(default_factory=RegulatorsConfig)
     usage_api: UsageAPIConfig = field(default_factory=UsageAPIConfig)
     docs_rag: DocsRagConfig = field(default_factory=DocsRagConfig)
@@ -442,6 +469,7 @@ class Settings:
             research=cls._parse_research_config(data.get("research", {})),
             memory=cls._parse_memory_config(data.get("memory", {})),
             graph=cls._parse_graph_config(data.get("graph", {})),
+            lessons=cls._parse_lessons_config(data.get("lessons", {})),
             regulators=RegulatorsConfig(**data.get("regulators", {})),
             usage_api=UsageAPIConfig(**data.get("usage_api", {})),
             docs_rag=cls._parse_docs_rag_config(data.get("docs_rag", {})),
@@ -518,6 +546,26 @@ class Settings:
             backend=data.get("backend", "postgres"),
             postgres=PostgresGraphStoreConfig(**data.get("postgres", {})),
         )
+
+    @staticmethod
+    def _parse_lessons_config(data: dict[str, Any]) -> LessonsConfig:
+        """Parse lessons-promotion configuration.
+
+        `known_identifiers` in YAML is APPENDED to (never replaces) the
+        `LESSONS_KNOWN_IDENTIFIERS` env-var list already in `LessonsConfig`'s
+        own default -- both sources are additive operator input, so there is
+        no reason a YAML entry should silently drop an env-configured one.
+        """
+        default = LessonsConfig()
+        yaml_identifiers = data.get("known_identifiers")
+        if not isinstance(yaml_identifiers, list):
+            return default
+
+        merged = list(default.known_identifiers)
+        for item in yaml_identifiers:
+            if isinstance(item, str) and item.strip() and item.strip() not in merged:
+                merged.append(item.strip())
+        return LessonsConfig(known_identifiers=merged)
 
     @staticmethod
     def _parse_docs_rag_config(data: dict[str, Any]) -> DocsRagConfig:

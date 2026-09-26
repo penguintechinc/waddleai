@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+// LessonsService: the server-side contract for penguincode's
+// lessons-learned promotion review workflow (T-L2a; see
+// penguincode_cli/lessons/scrub.py, T-L1, for the safety pipeline this
+// service fronts). Consulting-firm analogy: a "lesson learned" recorded
+// during one client engagement (team visibility) may be proposed for
+// firm-wide sharing (tenant visibility) -- but only after
+// `generalize_and_scrub`/`verify_scrubbed` confirms it carries no
+// client-confidential specifics, and only after a human reviewer
+// approves it. This contract is T-L2a's scope only: T-L2b wires the
+// server handlers (calling into `lessons/scrub.py` + `lessons/store.py`)
+// and the CLI-facing client.
+//
+// Scope model (security-critical, do not change casually): every request
+// below carries operation parameters ONLY. Tenant/org/user identity is
+// NEVER a request field -- the server derives its ScopeContext exclusively
+// from the caller's validated JWT (see penguincode_cli/auth/scope.py),
+// exactly as knowledge.proto's KnowledgeService and every store
+// (VectorStore/GraphStore/PendingLessonStore) already require. The one
+// caller-supplied exception is `team_id` on `PromoteLessonRequest` --
+// naming *which of the caller's own teams* proposed the source lesson,
+// not an arbitrary tenant/org/team/user; the server still validates
+// `team_id` against the JWT's own team list before ever using it (mirrors
+// stores/vector.py's `_validate_team_id`). Review (List/Approve/Reject) is
+// a tenant-wide administrative action, never team-scoped -- a pending
+// lesson belongs to the whole firm awaiting review, not to its proposing
+// team (see lessons/store.py's `PendingLessonStore` module docstring).
+package penguincode.lessons.v1;
+
+import "google/protobuf/struct.proto";
+
+// ==================== Shared messages ====================
+
+// One residual confidentiality issue -- mirrors lessons/scrub.py's
+// `Finding` dataclass exactly: `kind` is one of `IssueKind`'s closed set
+// of string values (e.g. "email", "client_identifier"), `detail` is a
+// static, human-readable description that NEVER contains the offending
+// value itself (see `Finding`'s docstring -- this is a hard confidentiality
+// invariant, not a formatting preference).
+message Finding {
+  string kind = 1;
+  string detail = 2;
+}
+
+// One lesson awaiting (or having completed) firm-wide-sharing review --
+// mirrors lessons/store.py's `PendingLessonRecord`. `findings` is normally
+// empty (only a CLEAN `ScrubResult` -- see lessons/scrub.py -- is ever
+// persisted as pending in the first place); it is carried here as an
+// audit trail column, not a live rejection gate.
+message PendingLesson {
+  string id = 1;
+  string generalized_text = 2;
+  // One of "pending" / "approved" / "rejected" -- mirrors the
+  // `pending_lessons.status` CHECK constraint (db/migrations).
+  string status = 3;
+  repeated Finding findings = 4;
+  // The proposing user's id (opaque, never raw PII -- see the platform's
+  // PII-tokenization rule: penguincode never carries names/emails outside
+  // its own generalized-text content).
+  string proposer = 5;
+  // The proposing team's id, or empty if the lesson was proposed outside
+  // any team context.
+  string source_team = 6;
+  // RFC 3339 timestamp string (mirrors this codebase's existing convention
+  // of stringly-typed timestamps at the proto boundary -- see
+  // knowledge.proto's lack of a native timestamp type; avoids pulling in
+  // google.protobuf.Timestamp for a single extra well-known-type import).
+  string created_at = 7;
+  // The reviewing user's id, or empty while still "pending".
+  string reviewer = 8;
+  string reviewed_at = 9;
+}
+
+// ==================== LessonsService ====================
+
+service LessonsService {
+  // Propose a team-visibility lesson for firm-wide (tenant) sharing. Runs
+  // T-L1's scrub + verify pipeline server-side; a CLEAN result is
+  // persisted as a new PENDING lesson (`pending_id` returned), a non-clean
+  // result is rejected outright (`blocked=true` + the verifier's
+  // `findings`) and nothing is persisted -- see `PromoteLessonResponse`.
+  rpc PromoteLesson(PromoteLessonRequest) returns (PromoteLessonResponse);
+
+  // List pending lessons in the caller's tenant (never team-scoped --
+  // review is a firm-wide administrative action). Defaults to
+  // `status = "pending"` when the request leaves `status` empty.
+  rpc ListPendingLessons(ListPendingLessonsRequest) returns (ListPendingLessonsResponse);
+
+  // Approve a pending lesson: the only path to firm-wide (tenant)
+  // visibility. T-L2b's handler is the sole caller responsible for then
+  // actually writing the lesson tenant-wide (e.g. into `memory_vectors`);
+  // this RPC's own effect is limited to the `pending_lessons` row's status.
+  rpc ApproveLesson(ApproveLessonRequest) returns (ApproveLessonResponse);
+
+  // Reject a pending lesson with a human-readable reason. Never promoted;
+  // the row stays in `pending_lessons` for audit history (status
+  // "rejected"), it is not deleted.
+  rpc RejectLesson(RejectLessonRequest) returns (RejectLessonResponse);
+}
+
+// ---- PromoteLesson ----
+
+message PromoteLessonRequest {
+  string api_version = 1;
+
+  // The source memory's raw content to generalize + scrub. The CLI/caller
+  // is responsible for resolving whatever it already holds (e.g. a
+  // team-visibility memory row's text) into this field -- this service
+  // never fetches a memory by reference itself (T-L2b's client concern).
+  string source_content = 2;
+
+  // Which of the caller's own teams the source lesson came from -- see
+  // this file's module-level scope-model comment. Empty means "no team
+  // context" (e.g. a user-visibility memory).
+  string team_id = 3;
+
+  // Optional free-form context (e.g. `tenant_name`/`org_name`/`team_name`)
+  // consumed by `verify_scrubbed`'s client-identifier check -- mirrors
+  // that function's `source_metadata` parameter exactly, and mirrors
+  // knowledge.proto's `MemoryAddRequest.metadata` convention for
+  // caller-supplied structured context.
+  google.protobuf.Struct source_metadata = 4;
+}
+
+message PromoteLessonResponse {
+  // True when the verifier rejected the source content outright -- no
+  // `pending_lessons` row was created, `findings` explains why, and
+  // `pending_id` is empty. False means the scrub was clean and
+  // `pending_id` names the new pending row.
+  bool blocked = 1;
+  string pending_id = 2;
+  repeated Finding findings = 3;
+}
+
+// ---- ListPendingLessons ----
+
+message ListPendingLessonsRequest {
+  string api_version = 1;
+  // One of "pending" / "approved" / "rejected"; empty defaults to "pending".
+  string status = 2;
+}
+
+message ListPendingLessonsResponse {
+  repeated PendingLesson pending_lessons = 1;
+}
+
+// ---- ApproveLesson ----
+
+message ApproveLessonRequest {
+  string api_version = 1;
+  string pending_id = 2;
+}
+
+message ApproveLessonResponse {
+  bool approved = 1;
+}
+
+// ---- RejectLesson ----
+
+message RejectLessonRequest {
+  string api_version = 1;
+  string pending_id = 2;
+  string reason = 3;
+}
+
+message RejectLessonResponse {
+  bool rejected = 1;
+}

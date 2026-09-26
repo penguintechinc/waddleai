@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -472,6 +472,11 @@ class _FakeGraphStore:
     def delete_by_scope(
         self, ctx: ScopeContext, kind: str, *, node_keys: list[str] | None = None
     ) -> None:
+        raise NotImplementedError
+
+    def list_node_keys(
+        self, ctx: ScopeContext, kind: str, node_types: Sequence[str]
+    ) -> list[str]:
         raise NotImplementedError
 
 

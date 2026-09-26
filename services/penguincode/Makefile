@@ -52,7 +52,7 @@ helm-template:
 # confirm this target is deterministic; see tests/test_proto_knowledge.py
 # for the corresponding import/message smoke test.
 PROTO_DIR := penguincode_cli/proto
-PROTO_FILES := $(PROTO_DIR)/penguincode.proto $(PROTO_DIR)/knowledge/v1/knowledge.proto
+PROTO_FILES := $(PROTO_DIR)/penguincode.proto $(PROTO_DIR)/knowledge/v1/knowledge.proto $(PROTO_DIR)/lessons/v1/lessons.proto
 
 proto:
 	@echo "=== Regenerating gRPC stubs (grpcio-tools) ==="

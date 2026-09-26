@@ -51,6 +51,7 @@ overwrites an existing endpoint's `props`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
@@ -145,6 +146,10 @@ class GraphStore(Protocol):
     def delete_by_scope(
         self, ctx: ScopeContext, kind: str, *, node_keys: list[str] | None = None
     ) -> None: ...
+
+    def list_node_keys(
+        self, ctx: ScopeContext, kind: str, node_types: Sequence[str]
+    ) -> list[str]: ...
 
 
 def _validate_kind(kind: str) -> None:
@@ -583,6 +588,56 @@ class PostgresGraphStore:
                         },
                     )
                 conn.commit()
+
+    def list_node_keys(
+        self, ctx: ScopeContext, kind: str, node_types: Sequence[str]
+    ) -> list[str]:
+        """All distinct node keys of `node_types` anywhere in `ctx`'s tenant.
+
+        Deliberately **tenant-wide** -- unlike every other read method in
+        this class, this one does NOT apply the usual visibility/team/user
+        read filter (`_scope_predicate`); it filters on `tenant_id` alone.
+        This is a narrow, server-internal exception: the sole caller is
+        `server.services.lessons`' confidentiality re-verification, which
+        needs every known person/org/client/project entity name anywhere in
+        the tenant's graph -- including a different team's engagement than
+        the one the caller belongs to -- so a client name can never leak
+        firm-wide merely because the approving reviewer's own team-scoped
+        visibility wouldn't otherwise surface that node. Returns bare `key`
+        strings only, never `props`, keeping the exposure to exactly what
+        that check needs (a name to substring-match against) and nothing
+        else -- this is not a general-purpose read API and must not be used
+        for anything display-facing.
+        """
+        _validate_kind(kind)
+        if not node_types:
+            return []
+
+        query = sql.SQL(
+            """
+            SELECT DISTINCT key
+            FROM {nodes}
+            WHERE tenant_id = %(tenant_id)s AND graph_kind = %(kind)s
+              AND lower(node_type) = ANY(%(node_types)s::text[])
+            """
+        ).format(nodes=self._table("graph_nodes"))
+
+        with timed_store_operation(
+            "graph_query", "graph.list_node_keys", backend="postgres", graph_kind=kind
+        ):
+            with psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        query,
+                        {
+                            "tenant_id": ctx.tenant_id,
+                            "kind": kind,
+                            "node_types": [t.lower() for t in node_types],
+                        },
+                    )
+                    rows = cur.fetchall()
+
+        return [str(row[0]) for row in rows]
 
 
 def create_graph_store(config: GraphConfig) -> GraphStore:

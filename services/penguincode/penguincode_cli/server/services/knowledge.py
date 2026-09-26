@@ -63,6 +63,7 @@ from penguincode_cli.proto import GraphNode as ProtoGraphNode
 from penguincode_cli.proto import Language as ProtoLanguage
 from penguincode_cli.proto import VectorHit as ProtoVectorHit
 from penguincode_cli.retrieval.graphrag import retrieve
+from penguincode_cli.server.services.lessons import LESSONS_APPROVE_SCOPE
 from penguincode_cli.stores.graph import GraphEdge, GraphNode
 from penguincode_cli.stores.vector import TableName
 from penguincode_cli.tools.memory import (
@@ -384,9 +385,30 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
         the SAME `_resolve_default_team_scope` single/multiple/zero-team
         rules on it (see `tools/memory.py`) -- there is no separate
         resolution to duplicate here.
+
+        **`"tenant"`-visibility writes require `LESSONS_APPROVE_SCOPE`**
+        (security review F1): without this gate, ANY authenticated caller
+        could pass `visibility=tenant` here and write arbitrary,
+        never-scrubbed content firm-wide, completely bypassing
+        `lessons.scrub`'s generalize-and-verify pipeline and
+        `LessonsService`'s propose -> review workflow. Reusing the same
+        scope `ApproveLesson`/`RejectLesson` require (rather than minting a
+        second one) means there is exactly one elevated privilege that
+        grants firm-wide-visibility write access, held by the same
+        reviewers, everywhere in the codebase. Team/user-visibility writes
+        are completely unaffected by this check.
         """
         ctx = await _require_scope(context)
         visibility = _visibility_from_proto(request.visibility, default=DEFAULT_VISIBILITY)
+        if visibility == "tenant" and LESSONS_APPROVE_SCOPE not in ctx.scopes:
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                f"tenant-visibility memory writes require the {LESSONS_APPROVE_SCOPE!r} scope -- "
+                "use the lessons-promotion pipeline instead "
+                "(LessonsService.PromoteLesson then LessonsService.ApproveLesson) to share "
+                "content firm-wide",
+            )
+            raise AssertionError("unreachable")  # abort() always raises
         team_id = request.team_id or None
         metadata = dict(request.metadata)
 
