@@ -170,6 +170,35 @@ class _FakeMem0Memory:
         self._rows = [row for row in self._rows if row["user_id"] != user_id]
 
 
+class _FakeMem0MemoryNoMetadataEcho(_FakeMem0Memory):
+    """``_FakeMem0Memory``, but matching mem0ai==2.2.0's REAL ``add(infer=False)`` envelope shape.
+
+    The real library's sync ``_add_to_vector_store`` (verified against the
+    installed ``mem0/memory/main.py``) returns
+    ``{"id", "memory", "event", "actor_id", "role"}`` per result -- no
+    ``"metadata"`` key at all, unlike ``_FakeMem0Memory``'s convenience echo.
+    Used to prove ``ScopedMemoryManager.add()`` doesn't rely on mem0 echoing
+    metadata back (# regression: penguincode-memory-team-default, GAP 2 --
+    scope propagation to the memory-graph extractor).
+    """
+
+    def add(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        infer: bool = True,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        full = super().add(messages, user_id=user_id, metadata=metadata, infer=infer, **_kwargs)
+        return {
+            "results": [
+                {k: v for k, v in row.items() if k != "metadata"} for row in full["results"]
+            ]
+        }
+
+
 def _enabled_manager_with_fake_mem0(fake: _FakeMem0Memory) -> MemoryManager:
     """Build a real, enabled ``MemoryManager`` with ``Memory.from_config`` faked out.
 
@@ -776,6 +805,56 @@ class TestMemoryGraphWiring:
         assert stamp["tenant_id"] == "t8-tenant-a"
         assert stamp["visibility"] == "team"
         assert stamp["team_id"] == "team-1"
+        assert stamp["owner_user_id"] == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_extraction_receives_actual_write_scope_not_mem0_echo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GAP 2: source_metadata must be the write's OWN resolved scope, never mem0's echo.
+
+        Real mem0ai==2.2.0 doesn't echo ``metadata`` back in ``add()``'s
+        return envelope (``_FakeMem0MemoryNoMetadataEcho`` mirrors that
+        exactly). Before this fix, ``ScopedMemoryManager.add()`` read
+        ``result["results"][0].get("metadata", {})`` -- always ``{}``
+        against the real envelope -- so the extractor silently fell back to
+        its OWN keyword default (``"team"``) instead of this write's actual
+        explicit ``"tenant"`` visibility. Proven failing-first: reverting
+        ``add()`` to the old ``results[0].get("metadata", {})`` line
+        reproduces ``stamp == {}`` -> extractor defaults to "team" here.
+
+        # regression: penguincode-memory-team-default (GAP 2 -- scope propagation)
+        """
+        from penguincode_cli.stores.graph import Subgraph
+
+        _rag_on(monkeypatch)
+        fake = _FakeMem0MemoryNoMetadataEcho()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        ctx = _ctx(tenant_id="t8-tenant-a", org_id="org-1", team_ids=("team-1",), user_id="user-1")
+
+        calls: list[dict[str, Any]] = []
+
+        async def _spy(ctx_arg, content, *, source_metadata=None, **_kw):  # type: ignore[no-untyped-def]
+            calls.append({"source_metadata": source_metadata})
+            return Subgraph(nodes=[], edges=[])
+
+        with patch("penguincode_cli.tools.memory.extract_memory_graph", _spy):
+            # Explicit NON-default visibility -- "tenant", not "team" (this
+            # module's DEFAULT_VISIBILITY) -- so a wrongly-re-derived
+            # source_metadata (falling back to the extractor's own keyword
+            # default) would be caught red-handed as "team" here.
+            result = await scoped.add(
+                ctx, "the release runbook lives in docs/runbook.md", visibility="tenant"
+            )
+
+        assert result is not None
+        assert len(calls) == 1
+        stamp = calls[0]["source_metadata"]
+        assert stamp is not None
+        assert stamp != {}  # the pre-fix bug: mem0's real envelope forced this to {}
+        assert stamp["visibility"] == "tenant"
+        assert stamp["team_id"] is None
+        assert stamp["tenant_id"] == "t8-tenant-a"
         assert stamp["owner_user_id"] == "user-1"
 
     @pytest.mark.asyncio
