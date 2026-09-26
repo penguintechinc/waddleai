@@ -1,0 +1,183 @@
+{{/*
+One-time least-privilege Postgres role bootstrap (spec §9, security.md
+Encryption + PII Tokenization posture: least-privilege DB roles). Runs as a
+Helm pre-install/pre-upgrade hook BEFORE the migration Job (hook-weight -10
+vs. the migration Job's -5), using the ADMIN DSN (postgres.adminExistingSecret)
+-- never the app-role DSN.
+
+Idempotent (every statement is IF-NOT-EXISTS/conditional-guarded, safe to
+re-run on every install/upgrade):
+  1. CREATE EXTENSION IF NOT EXISTS vector -- requires admin/superuser, so it
+     happens here and ONLY here, never in the app-role migration path.
+  2. CREATE ROLE penguincode_app LOGIN PASSWORD <from Secret> if it doesn't
+     already exist; otherwise ALTER ROLE ... PASSWORD to keep it in sync with
+     the operator-provisioned app DSN.
+  3. CREATE SCHEMA penguincode AUTHORIZATION penguincode_app + GRANT USAGE +
+     REVOKE ALL ... FROM PUBLIC.
+  4. ALTER DEFAULT PRIVILEGES (scoped to CURRENT_USER, i.e. this same admin
+     connection, which is also the connection the migration Job uses) so
+     tables/sequences the (admin-run) migration Job creates inside the
+     `penguincode` schema are GRANTed to penguincode_app -- plus an immediate
+     GRANT on any objects that already exist (upgrade path).
+
+Disable via postgres.bootstrapRole.enabled: false for DBAs who pre-provision
+the role/schema/extension manually out-of-band -- the app (postgres.existingSecret)
+and admin (postgres.adminExistingSecret) DSN Secrets must still exist either way,
+since the migration Job and server Deployment both read them unconditionally.
+*/}}
+{{- if .Values.postgres.bootstrapRole.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "penguincode.fullname" . }}-role-bootstrap
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.labels" . | nindent 4 }}
+    app.kubernetes.io/component: role-bootstrap
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.postgres.bootstrapRole.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.postgres.bootstrapRole.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "penguincode.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: role-bootstrap
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "penguincode.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: role-bootstrap
+          image: {{ include "penguincode.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            # ADMIN DSN only -- CREATE ROLE/CREATE EXTENSION/ALTER DEFAULT
+            # PRIVILEGES all require elevated privileges the app role never
+            # holds. Required: secretKeyRef only, never inline plaintext,
+            # never a CLI arg (token/secret hygiene).
+            - name: PGVECTOR_ADMIN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "penguincode.postgresAdminSecretName" . }}
+                  key: {{ .Values.postgres.adminSecretKey }}
+            - name: PENGUINCODE_APP_ROLE_NAME
+              value: {{ .Values.postgres.bootstrapRole.appRoleName | quote }}
+            - name: PENGUINCODE_APP_ROLE_SCHEMA
+              value: {{ .Values.postgres.bootstrapRole.schema | quote }}
+            # Password for the CREATE ROLE/ALTER ROLE statement -- must match
+            # the password embedded in postgres.existingSecret's app DSN.
+            - name: PENGUINCODE_APP_ROLE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "penguincode.appRolePasswordSecretName" . }}
+                  key: {{ .Values.postgres.bootstrapRole.passwordSecretKey }}
+          command: ["python3", "-c"]
+          args:
+            - |
+              import os
+              import sys
+
+              import psycopg
+              from psycopg import sql
+
+              admin_dsn = os.environ["PGVECTOR_ADMIN_URL"]
+              app_role = os.environ["PENGUINCODE_APP_ROLE_NAME"]
+              app_password = os.environ["PENGUINCODE_APP_ROLE_PASSWORD"]
+              schema = os.environ["PENGUINCODE_APP_ROLE_SCHEMA"]
+
+              print(f"penguincode role-bootstrap: role={app_role} schema={schema}", file=sys.stderr)
+
+              with psycopg.connect(admin_dsn, autocommit=True) as conn:
+                  with conn.cursor() as cur:
+                      # 1. vector extension -- admin/superuser only.
+                      cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+                      # 2. idempotent role creation/refresh (CREATE ROLE has
+                      # no IF NOT EXISTS clause in Postgres).
+                      cur.execute(
+                          "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %s",
+                          (app_role,),
+                      )
+                      if cur.fetchone() is None:
+                          cur.execute(
+                              sql.SQL("CREATE ROLE {} LOGIN PASSWORD %s").format(
+                                  sql.Identifier(app_role)
+                              ),
+                              (app_password,),
+                          )
+                      else:
+                          cur.execute(
+                              sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD %s").format(
+                                  sql.Identifier(app_role)
+                              ),
+                              (app_password,),
+                          )
+
+                      # 3. schema owned by the least-privilege app role only.
+                      cur.execute(
+                          sql.SQL("CREATE SCHEMA IF NOT EXISTS {} AUTHORIZATION {}").format(
+                              sql.Identifier(schema), sql.Identifier(app_role)
+                          )
+                      )
+                      cur.execute(
+                          sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
+                              sql.Identifier(schema), sql.Identifier(app_role)
+                          )
+                      )
+                      cur.execute(
+                          sql.SQL("REVOKE ALL ON SCHEMA {} FROM PUBLIC").format(
+                              sql.Identifier(schema)
+                          )
+                      )
+
+                      # 4. default privileges for objects the (admin-run)
+                      # migration Job creates inside this schema, scoped to
+                      # this same admin connection's role -- plus an
+                      # immediate grant covering objects that already exist
+                      # (upgrade path).
+                      cur.execute(
+                          sql.SQL(
+                              "ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA {} "
+                              "GRANT ALL PRIVILEGES ON TABLES TO {}"
+                          ).format(sql.Identifier(schema), sql.Identifier(app_role))
+                      )
+                      cur.execute(
+                          sql.SQL(
+                              "ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA {} "
+                              "GRANT ALL PRIVILEGES ON SEQUENCES TO {}"
+                          ).format(sql.Identifier(schema), sql.Identifier(app_role))
+                      )
+                      cur.execute(
+                          sql.SQL("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA {} TO {}").format(
+                              sql.Identifier(schema), sql.Identifier(app_role)
+                          )
+                      )
+                      cur.execute(
+                          sql.SQL("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {} TO {}").format(
+                              sql.Identifier(schema), sql.Identifier(app_role)
+                          )
+                      )
+
+              print("penguincode role-bootstrap: OK", file=sys.stderr)
+          resources:
+            {{- toYaml .Values.postgres.bootstrapRole.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
