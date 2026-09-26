@@ -33,7 +33,7 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import grpc
 import psycopg
@@ -412,9 +412,12 @@ class TestMemoryAdd:
 
         assert response.stored is False
         assert list(response.results) == []
-        # Default visibility (UNSPECIFIED) -> "user", per ScopedMemoryManager.add's own default.
+        # Default visibility (UNSPECIFIED) -> "team", per ScopedMemoryManager.add's own
+        # default (the shared-team-brain product intent) -- this handler must never
+        # hardcode a different default than the library it wraps.
+        # regression: penguincode-memory-team-default (GAP 1 -- gRPC-facing default)
         scoped_memory.add.assert_awaited_once_with(
-            scope_ctx, "x", visibility="user", team_id=None, metadata={}
+            scope_ctx, "x", visibility="team", team_id=None, metadata={}
         )
 
 
@@ -443,6 +446,152 @@ class TestMemorySearch:
         await service.MemorySearch(MemorySearchRequest(api_version="v1", query="q"), _FakeContext())
 
         scoped_memory.search.assert_awaited_once_with(scope_ctx, "q", limit=5)
+
+
+# ---------------------------------------------------------------------------
+# GAP 1: unspecified-visibility MemoryAdd requests share with same-team
+# teammates by default, through a REAL ScopedMemoryManager (not the
+# handler-level AsyncMock double above) -- proves the gRPC-facing default
+# actually resolves and enforces team sharing end to end, not just that the
+# right string gets forwarded to a mock.
+#
+# # regression: penguincode-memory-team-default (GAP 1 -- gRPC-facing default)
+# ---------------------------------------------------------------------------
+
+
+class _FakeMem0ForGrpcDefault:
+    """Minimal mem0 ``Memory`` double -- just the ``add``/``search`` surface this test needs.
+
+    Deliberately local (not imported from ``tests/test_memory.py``'s own
+    ``_FakeMem0Memory`` -- no cross-test-module import precedent in this
+    codebase; ``tests/test_admin_api.py``'s ``from tests.conftest import
+    ...`` is the only exception, for shared fixtures, not test-local fakes).
+    Mirrors mem0ai==2.2.0's real ``add(infer=False)`` envelope shape (no
+    ``"metadata"`` key in the returned row -- see GAP 2 above) so this test
+    exercises the same real-world shape ``ScopedMemoryManager.add()`` must
+    handle without relying on mem0 echoing scope back.
+    """
+
+    def __init__(self) -> None:
+        self._rows: list[dict[str, Any]] = []
+        self._next_id = 0
+
+    def add(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        infer: bool = True,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        self._next_id += 1
+        row = {
+            "id": str(self._next_id),
+            "memory": messages[0]["content"],
+            "user_id": user_id,
+            "metadata": dict(metadata or {}),
+        }
+        self._rows.append(row)
+        return {"results": [{"id": row["id"], "memory": row["memory"], "event": "ADD"}]}
+
+    def search(
+        self, query: str, *, filters: dict[str, Any] | None = None, top_k: int = 20, **_kwargs: Any
+    ) -> dict[str, Any]:
+        user_id = (filters or {}).get("user_id")
+        hits = [row for row in self._rows if row["user_id"] == user_id]
+        return {
+            "results": [
+                {
+                    "id": row["id"],
+                    "memory": row["memory"],
+                    "metadata": row["metadata"],
+                    "score": 1.0,
+                }
+                for row in hits[:top_k]
+            ]
+        }
+
+
+def _real_scoped_memory(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Build a real ``ScopedMemoryManager`` with mem0 mocked at its own library boundary."""
+    from penguincode_cli.config.settings import (
+        MemoryConfig,
+        MemoryStoresConfig,
+        PGVectorStoreConfig,
+    )
+    from penguincode_cli.tools.memory import (
+        MemoryManager,
+        create_scoped_memory_manager,
+    )
+
+    monkeypatch.setenv("PENGUINCODE_FLAG_RAG", "1")
+    config = MemoryConfig(
+        enabled=True,
+        vector_store="pgvector",
+        stores=MemoryStoresConfig(
+            pgvector=PGVectorStoreConfig(
+                url="postgresql://localhost/testdb", table_name="test_memory"
+            )
+        ),
+    )
+    fake = _FakeMem0ForGrpcDefault()
+    with patch("penguincode_cli.tools.memory.Memory") as mock_memory_cls:
+        mock_memory_cls.from_config.return_value = fake
+        manager = MemoryManager(config, ollama_url="http://localhost:11434")
+    return create_scoped_memory_manager(manager)
+
+
+class TestMemoryAddDefaultVisibilitySharing:
+    """An unspecified-visibility gRPC ``MemoryAdd`` request shares with a same-team teammate.
+
+    Before the GAP 1 fix, ``_visibility_from_proto(..., default="user")``
+    made every unspecified-visibility write private, so the teammate's
+    search below returned nothing -- see the commit history for the
+    failing-first run against the pre-fix ``default="user"``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unspecified_visibility_shares_with_same_team_teammate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scoped_memory = _real_scoped_memory(monkeypatch)
+        service = _service(scoped_memory=scoped_memory)
+
+        writer = _ctx(tenant_id="t-grpc-share", team_ids=("team-1",), user_id="user-a")
+        teammate = _ctx(tenant_id="t-grpc-share", team_ids=("team-1",), user_id="user-b")
+        stranger = _ctx(tenant_id="t-grpc-share", team_ids=("team-2",), user_id="user-c")
+
+        # No `visibility` field set on the request at all -- proto default
+        # (VISIBILITY_UNSPECIFIED, value 0) -- the actual "did the caller's
+        # agent just write a memory with no opinion on sharing" case.
+        token = auth_middleware._current_scope.set(writer)
+        try:
+            add_response = await service.MemoryAdd(
+                MemoryAddRequest(api_version="v1", content="the client kickoff is Monday"),
+                _FakeContext(),
+            )
+        finally:
+            auth_middleware._current_scope.reset(token)
+        assert add_response.stored is True
+
+        token = auth_middleware._current_scope.set(teammate)
+        try:
+            teammate_response = await service.MemorySearch(
+                MemorySearchRequest(api_version="v1", query="client kickoff"), _FakeContext()
+            )
+        finally:
+            auth_middleware._current_scope.reset(token)
+        assert any("client kickoff" in r.memory for r in teammate_response.results)
+
+        token = auth_middleware._current_scope.set(stranger)
+        try:
+            stranger_response = await service.MemorySearch(
+                MemorySearchRequest(api_version="v1", query="client kickoff"), _FakeContext()
+            )
+        finally:
+            auth_middleware._current_scope.reset(token)
+        assert not any("client kickoff" in r.memory for r in stranger_response.results)
 
 
 # ---------------------------------------------------------------------------

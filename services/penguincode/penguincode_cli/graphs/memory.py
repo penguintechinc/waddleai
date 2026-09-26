@@ -29,24 +29,34 @@ counts (chars in, triples extracted/skipped, node/edge counts) are ever
 logged or passed as span/metric attributes -- never the memory text, the raw
 LLM response, or any extracted entity/relation value.
 
-**Default `visibility="user"`** (unlike T12's `"tenant"` default for shared
-docs): a memory is inherently personal, recorded by one user about their own
-context -- `ScopedMemoryManager.add()` itself defaults to `visibility="user"`
-(see `tools/memory.py`) -- so the graph fragment describing it inherits that
-same personal-by-default scope unless the memory's own recorded scope stamp
-(`source_metadata`, see next) says otherwise.
+**Default `visibility="team"`** (unlike T12's `"tenant"` default for shared
+docs): the memory layer is a shared team brain by product intent -- a
+teammate's memory should be visible to the rest of their team (client
+engagement) by default -- `ScopedMemoryManager.add()` itself defaults to
+`visibility="team"` (see `tools/memory.py`), so the graph fragment
+describing it inherits that same team-shared-by-default scope unless the
+memory's own recorded scope stamp (`source_metadata`, see next) says
+otherwise. As in `tools/memory.py`, defaulting to `"team"` with no explicit
+`team_id` resolves the caller's own team from `ctx.team_ids`
+(`_resolve_default_team_scope`): exactly one team resolves unambiguously,
+more than one raises rather than guessing across client engagements, and
+zero teams degrades to private `"user"` visibility.
 
 **`source_metadata` carries T8's exact scope stamp and takes precedence
 over the `visibility`/`team_id` keyword defaults.** The intended caller
-(`ScopedMemoryManager.add()`) passes its own return value's
-`result["results"][0]["metadata"]` -- T8's `_scope_metadata()` output
-(`tenant_id`/`org_id`/`team_id`/`owner_user_id`/`visibility`) -- as
-`source_metadata`, so the extracted triples land in the *identical*
-tenant/org/team/user/visibility bucket as the memory they came from, never a
-value independently re-derived from `ctx` that could drift from what the
-memory itself was actually stamped with (e.g. a caller passing an explicit
-`visibility="team"` for the memory write but forgetting to also pass it
-here). `tenant_id`/`org_id`/`owner_user_id` are deliberately never read out
+(`ScopedMemoryManager.add()`) passes its own `scope_meta` -- T8's
+`_scope_metadata()` output (`tenant_id`/`org_id`/`team_id`/`owner_user_id`/
+`visibility`), computed once at write time -- directly as `source_metadata`,
+so the extracted triples land in the *identical* tenant/org/team/user/
+visibility bucket as the memory they came from, never a value independently
+re-derived from `ctx` that could drift from what the memory itself was
+actually stamped with (e.g. a caller passing an explicit `visibility="team"`
+for the memory write but forgetting to also pass it here). This is deliberately
+NOT read back out of mem0's own `add()` return envelope: mem0ai==2.2.0's real
+`add(infer=False)` doesn't echo `metadata` in `result["results"][0]`, so doing
+that would have silently fallen through to this function's own keyword
+defaults for any non-default visibility, extracting into the wrong scope
+bucket. `tenant_id`/`org_id`/`owner_user_id` are deliberately never read out
 of `source_metadata`: `GraphStore.upsert_nodes`/`upsert_edges` always derive
 those three from `ctx` directly (see `stores/graph.py`'s `_scope_columns`),
 so untrusted caller-supplied metadata can never be used to widen `ctx`'s own
@@ -87,10 +97,13 @@ from penguincode_cli.stores.graph import (
 
 logger = logging.getLogger(__name__)
 
-#: Documented default per the module docstring -- a memory is personal by
-#: default unless `source_metadata` (or an explicit `visibility=`) says
-#: otherwise.
-DEFAULT_VISIBILITY = "user"
+#: Documented default per the module docstring -- a memory is team-shared by
+#: default (the "we all learn" model) unless `source_metadata` (or an
+#: explicit `visibility=`) says otherwise. Mirrors `tools.memory
+#: .DEFAULT_VISIBILITY` -- kept as a separate constant (not imported) to
+#: avoid a `tools.memory` <-> `graphs.memory` import cycle (`tools.memory`
+#: already imports `extract_memory_graph` from this module).
+DEFAULT_VISIBILITY = "team"
 
 #: Fallback node type when the LLM omits/blanks `subject_type`/`object_type`.
 _DEFAULT_NODE_TYPE = "entity"
@@ -154,7 +167,9 @@ async def extract_memory_graph(
     if not content or not content.strip():
         return Subgraph(nodes=[], edges=[])
 
-    write_visibility, write_team_id = _resolve_write_scope(source_metadata, visibility, team_id)
+    write_visibility, write_team_id = _resolve_write_scope(
+        ctx, source_metadata, visibility, team_id
+    )
 
     cfg = settings or Settings()
     store = graph_store or create_graph_store(cfg.graph)
@@ -213,8 +228,45 @@ async def extract_memory_graph(
     return subgraph
 
 
+def _resolve_default_team_scope(
+    ctx: ScopeContext, visibility: str, team_id: str | None
+) -> tuple[str, str | None]:
+    """Derive an effective `team_id` for a `"team"`-visibility write with none given.
+
+    Mirrors `tools.memory._resolve_default_team_scope` exactly (duplicated
+    rather than imported -- see `DEFAULT_VISIBILITY`'s comment on the import
+    cycle). Only engages when `visibility == "team"` and no `team_id` was
+    already supplied. A caller on exactly one team resolves to it
+    unambiguously; a caller on multiple teams is never silently guessed into
+    one (would risk leaking a memory-graph fragment across client
+    engagements) -- this raises `ValueError`, requiring an explicit
+    `team_id`. A caller on no team at all can't share to a team that doesn't
+    exist, so this degrades to private `"user"` visibility (logged at
+    DEBUG).
+    """
+    if visibility != "team" or team_id is not None:
+        return visibility, team_id
+
+    if len(ctx.team_ids) == 1:
+        return "team", ctx.team_ids[0]
+
+    if len(ctx.team_ids) > 1:
+        raise ValueError(
+            "cannot default to 'team' visibility: caller belongs to multiple teams "
+            f"{ctx.team_ids!r} -- pass an explicit team_id"
+        )
+
+    logger.debug(
+        "graphs.memory: defaulting 'team'-visibility write to 'user' -- caller has no team_ids"
+    )
+    return "user", None
+
+
 def _resolve_write_scope(
-    source_metadata: dict[str, Any] | None, visibility: str, team_id: str | None
+    ctx: ScopeContext,
+    source_metadata: dict[str, Any] | None,
+    visibility: str,
+    team_id: str | None,
 ) -> tuple[str, str | None]:
     """Prefer T8's exact scope stamp over the `visibility`/`team_id` keyword defaults.
 
@@ -224,13 +276,17 @@ def _resolve_write_scope(
     `tenant`/`user` visibility) replace the keyword defaults wholesale --
     partial overrides aren't meaningful here since the two travel together
     as one scope stamp. `tenant_id`/`org_id`/`owner_user_id` are
-    deliberately never read from here -- see module docstring.
+    deliberately never read from here -- see module docstring. When no
+    usable `source_metadata` is present, the keyword `visibility`/`team_id`
+    go through `_resolve_default_team_scope` so a defaulted `"team"` write
+    (the common case: a direct `extract_memory_graph()` call with no
+    `team_id`) resolves the caller's own team before `GraphStore` sees it.
     """
     if source_metadata:
         meta_visibility = source_metadata.get("visibility")
         if isinstance(meta_visibility, str) and meta_visibility:
             return meta_visibility, source_metadata.get("team_id")
-    return visibility, team_id
+    return _resolve_default_team_scope(ctx, visibility, team_id)
 
 
 async def _call_llm(client: OllamaClient, model: str, text: str) -> str:

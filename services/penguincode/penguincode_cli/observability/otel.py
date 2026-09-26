@@ -18,6 +18,12 @@ store/extraction operations. Attributes passed to any helper here MUST be
 bounded, non-sensitive values (operation kind, backend name, ``graph_kind``,
 counts, booleans) -- never raw query text, usernames, tenant identifiers, or
 any other PII/secret. See spec S12 and the org's OTel observability rule.
+
+Also bridges stdlib log RECORDS to OTLP (completing the mandatory
+logs+metrics+traces triad), mirroring the ``LoggerProvider`` +
+``LoggingHandler`` pattern in ``services/management/app/observability.py``.
+The bridge is additive only -- it never replaces or reconfigures existing
+stdlib logging, it just adds a handler that also forwards records to OTLP.
 """
 
 import logging
@@ -28,9 +34,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from opentelemetry import metrics, trace
+from opentelemetry import _logs, metrics, trace
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
@@ -41,6 +50,16 @@ from opentelemetry.util.types import AttributeValue
 logger = logging.getLogger(__name__)
 
 _SERVICE_NAME: Final = "penguincode"
+
+#: ``penguincode_cli/core/debug.py`` creates a dedicated ``"penguincode"``
+#: logger with ``propagate = False`` (its own file handler, deliberately kept
+#: off the root logger to avoid duplicate console output). Every other module
+#: logs via ``logging.getLogger(__name__)`` under ``"penguincode_cli.*"``,
+#: which propagates to root normally. A handler installed on the root logger
+#: alone would therefore silently miss every record routed through
+#: ``core.debug``'s ``log.info()``/``log.warning()``/etc. helpers -- the
+#: bridge is installed on both loggers so nothing is missed either way.
+_DEBUG_LOGGER_NAME: Final = "penguincode"
 
 STORE_DURATION_HISTOGRAM_NAME: Final = "penguincode.store.duration"
 STORE_EVENTS_COUNTER_NAME: Final = "penguincode.store.events"
@@ -58,6 +77,12 @@ _initialized = False
 
 _duration_histogram: metrics.Histogram | None = None
 _events_counter: metrics.Counter | None = None
+
+#: Handler bridging stdlib logging to OTLP, installed on the root logger by
+#: ``init_observability()`` when a log pipeline is active. Never replaces
+#: penguin/stdlib logging -- it is an additional handler alongside whatever
+#: handlers a caller (CLI, server) already configured.
+_log_handler: logging.Handler | None = None
 
 
 @dataclass(slots=True)
@@ -89,16 +114,32 @@ def _validate_op_kind(op_kind: str) -> None:
         raise ValueError(f"op_kind must be one of {sorted(_VALID_OP_KINDS)}, got {op_kind!r}")
 
 
-def init_observability(config: ObservabilityConfig | None = None) -> None:
-    """Idempotently install the tracer + meter providers from OTLP env vars.
+def build_logging_handler(logger_provider: _logs.LoggerProvider) -> logging.Handler:
+    """Return an OTel ``LoggingHandler`` bridging stdlib logs to ``logger_provider``.
 
-    No-op (leaves the OTel API's default no-op tracer/meter in place) when
-    ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset. Never raises: a misconfigured or
-    unreachable collector at construction time falls back to the no-op
-    providers for that signal, logged as a warning, instead of taking the
-    store/extraction call path down with it.
+    Factored out (mirrors ``services/management/app/observability.py``'s helper
+    of the same name) so a test can attach it to an in-memory provider and
+    prove a log record actually flows, rather than asserting a handler merely
+    exists. Typed against the API-level ``_logs.LoggerProvider`` (not the SDK's
+    concrete subclass) since ``init_observability()`` passes whatever
+    ``_logs.get_logger_provider()`` resolves to, which is API-typed.
     """
-    global _initialized, _tracer, _meter
+    return LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+
+
+def init_observability(config: ObservabilityConfig | None = None) -> None:
+    """Idempotently install the tracer + meter + logger providers from OTLP env vars.
+
+    No-op (leaves the OTel API's default no-op tracer/meter in place, and
+    installs no logging handler at all) when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is
+    unset. Never raises: a misconfigured or unreachable collector at
+    construction time falls back to the no-op providers for that signal,
+    logged as a warning, instead of taking the store/extraction call path down
+    with it. The stdlib ``LoggingHandler`` installed here is additive -- it
+    never replaces or reconfigures whatever logging (penguin/stdlib) a caller
+    already has set up.
+    """
+    global _initialized, _tracer, _meter, _log_handler
     if _initialized:
         return
     cfg = config or ObservabilityConfig.from_env()
@@ -134,6 +175,25 @@ def init_observability(config: ObservabilityConfig | None = None) -> None:
         metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
     except Exception as exc:  # pragma: no cover - exporter/collector setup failure
         logger.warning("penguincode OTel metric init failed, continuing without export: %s", exc)
+
+    try:
+        logger_provider = LoggerProvider(resource=resource)
+        logger_provider.add_log_record_processor(
+            BatchLogRecordProcessor(OTLPLogExporter(endpoint=cfg.otlp_endpoint))
+        )
+        _logs.set_logger_provider(logger_provider)
+    except Exception as exc:  # pragma: no cover - exporter/collector setup failure
+        logger.warning("penguincode OTel log init failed, continuing without export: %s", exc)
+
+    # Resolved via the global accessor (like get_tracer()/get_meter() below),
+    # not the local `logger_provider`, so a run-once latch already tripped by
+    # something else installing the global first (e.g. a host app, or a test
+    # fixture) is respected rather than silently overridden.
+    _log_handler = build_logging_handler(_logs.get_logger_provider())
+    logging.getLogger().addHandler(_log_handler)
+    # core.debug's dedicated "penguincode" logger has propagate=False, so it
+    # needs the bridge attached directly -- see _DEBUG_LOGGER_NAME above.
+    logging.getLogger(_DEBUG_LOGGER_NAME).addHandler(_log_handler)
 
     _tracer = trace.get_tracer(cfg.service_name)
     _meter = metrics.get_meter(cfg.service_name)
@@ -181,13 +241,23 @@ def _events_counter_instrument() -> metrics.Counter:
 
 
 def reset_for_testing() -> None:
-    """Drop cached tracer/meter/instruments so a test can install its own providers."""
-    global _tracer, _meter, _initialized, _duration_histogram, _events_counter
+    """Drop cached tracer/meter/instruments so a test can install its own providers.
+
+    Also detaches the OTLP logging handler (if one was installed) from the
+    root logger -- without this, a handler bound to a previous test's
+    in-memory provider would keep receiving every subsequent test's log
+    records after that provider has gone out of scope.
+    """
+    global _tracer, _meter, _initialized, _duration_histogram, _events_counter, _log_handler
+    if _log_handler is not None:
+        logging.getLogger().removeHandler(_log_handler)
+        logging.getLogger(_DEBUG_LOGGER_NAME).removeHandler(_log_handler)
     _tracer = None
     _meter = None
     _initialized = False
     _duration_histogram = None
     _events_counter = None
+    _log_handler = None
 
 
 @contextmanager

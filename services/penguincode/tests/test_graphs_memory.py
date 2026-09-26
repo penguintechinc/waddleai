@@ -144,7 +144,10 @@ class TestHappyPath:
         monkeypatch.setattr("penguincode_cli.graphs.memory.is_enabled", lambda *a, **kw: True)
         client = _mock_ollama_client(TRIPLES_JSON)
         store = _fake_graph_store()
-        ctx = _ctx()
+        # A caller with exactly one team resolves DEFAULT_VISIBILITY="team"
+        # unambiguously to it -- see TestDefaultTeamScopeResolution for the
+        # zero/multiple-team edge cases.
+        ctx = _ctx(team_ids=("team-1",))
 
         result = await extract_memory_graph(
             ctx,
@@ -168,14 +171,48 @@ class TestHappyPath:
         }
 
         store.upsert_nodes.assert_called_once_with(
-            ctx, "memory", result.nodes, visibility=DEFAULT_VISIBILITY, team_id=None
+            ctx, "memory", result.nodes, visibility=DEFAULT_VISIBILITY, team_id="team-1"
         )
         store.upsert_edges.assert_called_once_with(
-            ctx, "memory", result.edges, visibility=DEFAULT_VISIBILITY, team_id=None
+            ctx, "memory", result.edges, visibility=DEFAULT_VISIBILITY, team_id="team-1"
         )
 
-    async def test_default_visibility_is_user(self) -> None:
-        assert DEFAULT_VISIBILITY == "user"
+    async def test_default_visibility_is_team(self) -> None:
+        """# regression: penguincode-memory-team-default (shared-team-brain product intent)."""
+        assert DEFAULT_VISIBILITY == "team"
+
+    async def test_default_team_visibility_falls_back_to_user_with_no_team_ids(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A caller on no team at all can't share to a team that doesn't exist.
+
+        # regression: penguincode-memory-team-default
+        """
+        monkeypatch.setattr("penguincode_cli.graphs.memory.is_enabled", lambda *a, **kw: True)
+        client = _mock_ollama_client(TRIPLES_JSON)
+        store = _fake_graph_store()
+        ctx = _ctx(team_ids=())
+
+        await extract_memory_graph(ctx, "text", ollama_client=client, graph_store=store)
+
+        _, kwargs = store.upsert_nodes.call_args
+        assert kwargs["visibility"] == "user"
+        assert kwargs["team_id"] is None
+
+    async def test_default_team_visibility_raises_with_multiple_team_ids(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A consultant on multiple engagements must be explicit, never guessed.
+
+        # regression: penguincode-memory-team-default
+        """
+        monkeypatch.setattr("penguincode_cli.graphs.memory.is_enabled", lambda *a, **kw: True)
+        client = _mock_ollama_client(TRIPLES_JSON)
+        store = _fake_graph_store()
+        ctx = _ctx(team_ids=("team-1", "team-2"))
+
+        with pytest.raises(ValueError, match="multiple teams"):
+            await extract_memory_graph(ctx, "text", ollama_client=client, graph_store=store)
 
     async def test_explicit_visibility_and_team_id_passed_through(
         self, monkeypatch: pytest.MonkeyPatch
@@ -336,7 +373,9 @@ class TestSourceMetadataScopeReuse:
         monkeypatch.setattr("penguincode_cli.graphs.memory.is_enabled", lambda *a, **kw: True)
         client = _mock_ollama_client(TRIPLES_JSON)
         store = _fake_graph_store()
-        ctx = _ctx()
+        # One team so the keyword DEFAULT_VISIBILITY="team" resolves
+        # unambiguously instead of falling back to "user" (empty team_ids).
+        ctx = _ctx(team_ids=("team-1",))
 
         await extract_memory_graph(
             ctx,
@@ -348,7 +387,7 @@ class TestSourceMetadataScopeReuse:
 
         _, kwargs = store.upsert_nodes.call_args
         assert kwargs["visibility"] == DEFAULT_VISIBILITY
-        assert kwargs["team_id"] is None
+        assert kwargs["team_id"] == "team-1"
 
 
 # ---------------------------------------------------------------------------
