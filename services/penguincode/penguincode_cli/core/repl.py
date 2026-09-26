@@ -16,6 +16,11 @@ from penguincode_cli.client.knowledge_client import (
     KnowledgeClientError,
     RemoteMemoryManager,
 )
+from penguincode_cli.client.lessons_client import (
+    LessonsClient,
+    LessonsClientError,
+    LessonsPermissionDeniedError,
+)
 from penguincode_cli.config.settings import (
     Settings,
     get_config_value,
@@ -74,6 +79,12 @@ class REPLSession:
         # docstring). Constructed once per session in `__aenter__`, closed in `__aexit__`.
         self.knowledge_client: KnowledgeClient | None = None
 
+        # Thin gRPC client (T-L2b): the CLI's only path to the server-side lessons-learned
+        # promotion review workflow -- propose/list/approve/reject all live server-side (see
+        # `client.lessons_client`'s module docstring). Constructed once per session in
+        # `__aenter__`, closed in `__aexit__`, same lifecycle as `knowledge_client`.
+        self.lessons_client: LessonsClient | None = None
+
         # Docs RAG components (initialized if enabled) -- `docs_fetcher` still fetches raw
         # doc text/HTML client-side; the embedding + vector-store write happens server-side
         # via `knowledge_client.index()`.
@@ -115,6 +126,7 @@ class REPLSession:
         # (the channel is lazy; a WaddleAI token is only acquired on first real call), so
         # server-unreachable is discovered -- and reported -- at first use, not here.
         self.knowledge_client = KnowledgeClient(self.settings.server)
+        self.lessons_client = LessonsClient(self.settings.server)
 
         # Memory manager for cross-session persistence -- a thin facade over
         # `self.knowledge_client`'s `MemoryAdd`/`MemorySearch` RPCs.
@@ -384,6 +396,10 @@ class REPLSession:
         if self.knowledge_client:
             await self.knowledge_client.close()
 
+        # Close the gRPC channel used by the lessons-promotion review workflow (T-L2b)
+        if self.lessons_client:
+            await self.lessons_client.close()
+
     async def handle_command(self, command: str) -> bool:
         """
         Handle REPL commands.
@@ -425,6 +441,8 @@ class REPLSession:
             await self.handle_docs_command(args)
         elif cmd == "/index-code":
             await self.handle_index_code(args)
+        elif cmd == "/lesson":
+            await self.handle_lesson_command(args)
         elif cmd in ("/skill", "/skills"):
             self.handle_skill_command(args)
         elif cmd == "/config":
@@ -465,6 +483,12 @@ class REPLSession:
   /index-code [path] Build the code graph for a local source tree
                      (default: project dir; requires an authenticated
                      ScopeContext and the penguincode.code-graph flag)
+
+[yellow]Lessons-Learned Promotion:[/yellow]
+  /lesson promote <text>   Propose <text> as a firm-wide lesson (scrub+verify)
+  /lesson pending [status] List the review queue (default: pending)
+  /lesson approve <id>     Approve a pending lesson (requires approval scope)
+  /lesson reject <id> [reason]  Reject a pending lesson (requires approval scope)
 
 [yellow]Skills:[/yellow]
   /skill             List available skills
@@ -776,6 +800,142 @@ class REPLSession:
 
         node_count, edge_count = result
         print_success(f"Code graph: {node_count} node(s), {edge_count} edge(s)")
+
+    async def handle_lesson_command(self, args: str) -> None:
+        """Handle `/lesson <subcommand>`: the lessons-learned promotion review workflow
+        (T-L2b) -- propose a lesson, list the review queue, approve, or reject.
+
+        Identity comes exclusively from the WaddleAI JWT `self.lessons_client` attaches to
+        every call, never a local `ScopeContext`. Every subcommand degrades cleanly (a clear
+        message, never a crash) when the server isn't connected, a call fails
+        (`LessonsClientError`, e.g. unreachable server), or -- for `approve`/`reject` --
+        the caller lacks the elevated approval scope (`LessonsPermissionDeniedError`).
+        """
+        if self.lessons_client is None:
+            print_info("Lessons-promotion requires the penguincode server -- not connected")
+            return
+
+        parts = args.split(maxsplit=1)
+        if not parts:
+            print_error("Usage: /lesson <promote|pending|approve|reject> ...")
+            return
+        subcmd = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+
+        if subcmd == "promote":
+            await self._handle_lesson_promote(rest)
+        elif subcmd == "pending":
+            await self._handle_lesson_pending(rest)
+        elif subcmd == "approve":
+            await self._handle_lesson_approve(rest)
+        elif subcmd == "reject":
+            await self._handle_lesson_reject(rest)
+        else:
+            print_error(f"Unknown /lesson subcommand: {subcmd}")
+            print_info("Usage: /lesson <promote|pending|approve|reject> ...")
+
+    async def _handle_lesson_promote(self, text: str) -> None:
+        """`/lesson promote <text>`: propose `text` as a firm-wide lesson.
+
+        Runs the server's scrub+verify pipeline; a blocked result reports every residual
+        confidentiality finding, a clean result reports the new pending review id.
+        """
+        text = text.strip()
+        if not text:
+            print_error("Usage: /lesson promote <text>")
+            return
+
+        assert self.lessons_client is not None  # guarded by handle_lesson_command
+        try:
+            result = await self.lessons_client.promote(source_content=text)
+        except LessonsClientError as e:
+            print_error(f"Lesson promotion failed: {e}")
+            return
+
+        if result.blocked:
+            print_error("Lesson blocked -- residual confidentiality issue(s) found:")
+            for finding in result.findings:
+                console.print(f"  [red]-[/red] {finding.kind}: {finding.detail}")
+            return
+
+        print_success(f"Lesson proposed for firm-wide review (pending id: {result.pending_id})")
+
+    async def _handle_lesson_pending(self, status: str) -> None:
+        """`/lesson pending [status]`: list the caller's tenant's review queue."""
+        status = status.strip()
+        assert self.lessons_client is not None  # guarded by handle_lesson_command
+        try:
+            items = await self.lessons_client.list_pending(status=status)
+        except LessonsClientError as e:
+            print_error(f"Could not list pending lessons: {e}")
+            return
+
+        if not items:
+            suffix = f" with status {status!r}" if status else ""
+            print_info(f"No pending lessons{suffix}")
+            return
+
+        table = Table(show_header=True, title="Lessons Review Queue")
+        table.add_column("ID", style="green")
+        table.add_column("Status", style="yellow")
+        table.add_column("Lesson", style="dim")
+        table.add_column("Proposer", style="cyan")
+        table.add_column("Team", style="cyan")
+        for item in items:
+            preview = (
+                item.generalized_text[:60] + "..."
+                if len(item.generalized_text) > 60
+                else item.generalized_text
+            )
+            table.add_row(item.id, item.status, preview, item.proposer, item.source_team)
+        console.print(table)
+
+    async def _handle_lesson_approve(self, pending_id: str) -> None:
+        """`/lesson approve <id>`: approve a pending lesson (requires the approval scope)."""
+        pending_id = pending_id.strip()
+        if not pending_id:
+            print_error("Usage: /lesson approve <id>")
+            return
+
+        assert self.lessons_client is not None  # guarded by handle_lesson_command
+        try:
+            approved = await self.lessons_client.approve(pending_id)
+        except LessonsPermissionDeniedError as e:
+            print_error(f"You do not have permission to approve lessons: {e}")
+            return
+        except LessonsClientError as e:
+            print_error(f"Approval failed: {e}")
+            return
+
+        if approved:
+            print_success(f"Lesson {pending_id} approved and shared firm-wide")
+        else:
+            print_error(f"Lesson {pending_id} was not approved")
+
+    async def _handle_lesson_reject(self, args: str) -> None:
+        """`/lesson reject <id> [reason]`: reject a pending lesson (requires the approval
+        scope)."""
+        parts = args.split(maxsplit=1)
+        if not parts or not parts[0]:
+            print_error("Usage: /lesson reject <id> [reason]")
+            return
+        pending_id = parts[0]
+        reason = parts[1] if len(parts) > 1 else ""
+
+        assert self.lessons_client is not None  # guarded by handle_lesson_command
+        try:
+            rejected = await self.lessons_client.reject(pending_id, reason=reason)
+        except LessonsPermissionDeniedError as e:
+            print_error(f"You do not have permission to reject lessons: {e}")
+            return
+        except LessonsClientError as e:
+            print_error(f"Rejection failed: {e}")
+            return
+
+        if rejected:
+            print_success(f"Lesson {pending_id} rejected")
+        else:
+            print_error(f"Lesson {pending_id} was not rejected")
 
     async def handle_docs_command(self, args: str) -> None:
         """Handle /docs subcommands."""
