@@ -625,17 +625,19 @@ mem0 stores conversation context and learnings in a vector database for semantic
 
 ### Vector Stores
 
-**ChromaDB (Default)**:
+**PGVector (Default)**:
 ```yaml
 memory:
   vector_store: "pgvector"
   stores:
-      collection: "penguincode_memory"
+    pgvector:
+      connection_string: "${PGVECTOR_URL}"
+      table: "penguincode_memory"
 ```
 
-✅ No external services needed
-✅ Simple file-based storage
-❌ Single-machine only
+✅ Platform default — uses shared WaddleAI PostgreSQL
+✅ Multi-tenant scoped, ACID compliance
+✅ Persistent across restarts
 
 **Qdrant**:
 ```yaml
@@ -648,24 +650,11 @@ memory:
 ```
 
 ✅ High performance
-✅ Scalable
-❌ Requires Qdrant server
-
-**PGVector**:
-```yaml
-memory:
-  vector_store: "pgvector"
-  stores:
-    pgvector:
-      connection_string: "${PGVECTOR_URL}"
-      table: "penguincode_memory"
-```
-
-✅ Uses existing PostgreSQL
-✅ ACID compliance
-❌ Requires PostgreSQL with pgvector extension
+✅ Scalable, multi-instance ready
+❌ Requires Qdrant server (standalone only)
 
 ### Programmatic Usage
+
 
 ```python
 from penguincode.tools.memory import create_memory_manager
@@ -835,9 +824,9 @@ penguincode setup
 penguincode chat --config /path/to/config.yaml
 ```
 
-### Memory/ChromaDB Issues
+### Memory Issues
 
-**Error**: `ChromaDB collection not found`
+**Error**: `Memory database connection or collection not found`
 
 ```bash
 # Reset memory database

@@ -22,7 +22,7 @@ PenguinCode's Documentation RAG (Retrieval-Augmented Generation) system automati
 **Key Features**:
 - **Automatic Detection** - Scans dependency files to find languages and libraries
 - **Smart Caching** - TTL-based cache with configurable expiration (default 7 days)
-- **Vector Search** - Uses ChromaDB for semantic document retrieval
+- **Vector Search** - Uses PGVector for semantic document retrieval
 - **Seamless Integration** - Auto-indexes docs on startup or on-demand
 - **Multi-Language Support** - Python, JavaScript, TypeScript, Go, Rust, HCL, Ansible
 
@@ -274,7 +274,7 @@ docs_rag:
    └─ Async embedding generation
    └─ Handle errors gracefully
 
-5. Store in ChromaDB
+5. Store in PGVector
    └─ Cosine similarity metric
    └─ Track metadata (library, version, url)
    └─ Update index metadata
@@ -314,7 +314,7 @@ Metadata Per Entry:
 Index Storage:
 ./.penguincode/docs_index/
 ├── index_metadata.json       # Libraries/languages indexed
-└── [ChromaDB vector storage]
+└── [PGVector vector storage]
 
 Metadata Tracks:
 - Library name + version
@@ -341,7 +341,7 @@ When you ask a question:
    └─ Send to Ollama embedding model
 
 3. Vector Search
-   └─ Search ChromaDB for similar chunks
+   └─ Search PGVector for similar chunks
    └─ Use cosine similarity metric
    └─ Return top 5 results (default)
 
@@ -453,9 +453,9 @@ docs_rag:
     - your-custom-library        # Add to manual list
 ```
 
-### ChromaDB Initialization Error
+### Vector Store Initialization Error
 
-**Problem**: `Failed to initialize ChromaDB`
+**Problem**: `Failed to initialize vector store`
 
 **Solution**:
 ```bash
@@ -534,7 +534,7 @@ docs_rag/
 ├── detector.py    # Project detection from dependency files
 ├── sources.py     # Documentation URL mappings
 ├── fetcher.py     # HTTP fetching with TTL cache
-├── indexer.py     # ChromaDB vector storage
+├── indexer.py     # PGVector vector storage
 └── injector.py    # Context injection for prompts
 ```
 
@@ -552,7 +552,7 @@ docs_rag/
 **Indexer**: Stores documentation in vector database
 - Chunks text into overlapping segments
 - Generates embeddings via Ollama
-- Stores in ChromaDB for semantic search
+- Stores in PGVector for semantic search
 - Tracks indexing metadata
 
 **Sources**: Maps libraries to documentation URLs
@@ -578,7 +578,7 @@ Cache Layer
 DocumentationIndexer
     │ (chunks, embeds, stores)
     ▼
-ChromaDB
+PGVector
     │ (vector storage)
     ▼
 Vector Search
