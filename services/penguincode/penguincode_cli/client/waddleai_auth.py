@@ -56,7 +56,6 @@ import getpass
 import json
 import logging
 import os
-import stat
 import sys
 import time
 from collections.abc import Callable
@@ -104,6 +103,34 @@ def _mask_key(key: str) -> str:
     """
     tail = key[-4:] if len(key) >= 4 else "*" * len(key)
     return f"wa-****{tail}"
+
+
+def _write_owner_only(path: Path, content: str) -> None:
+    """Write *content* to *path* with owner-only (0600) permissions, atomically.
+
+    regression: headless-auth-secrev (L1+L2) -- the previous pattern
+    (``path.write_text(...)`` followed by a separate ``os.chmod(path, 0o600)``)
+    created the file first under the process umask (commonly world- or
+    group-readable) and only narrowed its permissions in a second syscall,
+    leaving a window in which another local user could read the token cache
+    or the dev RSA private key (a classic TOCTOU). Passing the final mode
+    directly to ``os.open``'s ``O_CREAT`` is atomic: the kernel can only
+    *remove* bits from the requested mode via umask, never add any, so a
+    0o600 request can never result in a more permissive file at any point --
+    there is no intermediate state to race. The parent directory is created
+    the same way: ``Path.mkdir``'s ``mode`` is subject to the same umask-can
+    -only-remove-bits rule, and 0o700 has no group/other bits to remove, so
+    a freshly-created directory is atomically 0o700 with no follow-up
+    ``chmod`` needed either. (A directory that already existed with looser
+    permissions from before this fix is not retrofitted here -- that would
+    reintroduce the very "create loose, chmod tight" race this function
+    exists to remove, and the file within it is unreadable regardless.)
+    """
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(content)
 
 
 class WaddleAIAuthError(Exception):
@@ -270,10 +297,8 @@ class WaddleAITokenStore:
             return None
 
     def save(self, token: _CachedToken) -> None:
-        """Persist *token*, creating the parent directory and restricting permissions to owner-only."""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(token.to_json()), encoding="utf-8")
-        os.chmod(self._path, stat.S_IRUSR | stat.S_IWUSR)
+        """Persist *token* atomically, with owner-only permissions from the moment it exists."""
+        _write_owner_only(self._path, json.dumps(token.to_json()))
 
     def clear(self) -> None:
         """Delete the cache file, if present."""
@@ -663,7 +688,5 @@ class WaddleAITokenProvider:
 
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
-        self._dev_key_path.parent.mkdir(parents=True, exist_ok=True)
-        self._dev_key_path.write_text(pem, encoding="utf-8")
-        os.chmod(self._dev_key_path, stat.S_IRUSR | stat.S_IWUSR)
+        _write_owner_only(self._dev_key_path, pem)
         return pem

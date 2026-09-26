@@ -13,6 +13,8 @@ H5 adds the headless/machine-key mode (``TestMachineConfigFromEnv``,
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -158,6 +160,77 @@ class TestWaddleAITokenStore:
         loaded = store.load()
         assert loaded is not None
         assert loaded.is_machine is False
+
+
+class TestAtomicOwnerOnlyFileCreation:
+    """regression: headless-auth-secrev (L1+L2) -- TOCTOU on 0600 file creation.
+
+    The vulnerable pattern wrote the token cache / dev RSA key under the
+    process's default umask and only narrowed permissions with a *separate*
+    ``os.chmod`` call afterwards -- a window in which another local user
+    could read the file. The end-state mode (0600) is identical in both the
+    vulnerable and fixed implementations, so these tests assert the
+    *mechanism* -- no separate ``os.chmod`` call exists on the write path --
+    rather than only the final mode, which the vulnerable code already
+    passed.
+    """
+
+    def test_token_cache_save_never_calls_chmod(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from penguincode_cli.client.waddleai_auth import _CachedToken
+
+        def _fail_chmod(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError(
+                "save() must not narrow permissions with a separate os.chmod call "
+                "after creation -- the file must be created with 0600 directly"
+            )
+
+        monkeypatch.setattr(os, "chmod", _fail_chmod)
+
+        store = WaddleAITokenStore(str(tmp_path / "token.json"))
+        store.save(
+            _CachedToken(
+                access_token="tok", expires_at=1.0, issuer=ISSUER, audience=AUDIENCE, is_dev=False
+            )
+        )
+
+        mode = (tmp_path / "token.json").stat().st_mode
+        assert stat.S_IMODE(mode) == 0o600
+
+    @pytest.mark.asyncio
+    async def test_dev_key_creation_never_calls_chmod(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _fail_chmod(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError(
+                "dev key creation must not narrow permissions with a separate "
+                "os.chmod call after creation"
+            )
+
+        monkeypatch.setattr(os, "chmod", _fail_chmod)
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path, issuer_url=None, username=None, password=None),
+            dev_key_path=tmp_path / "dev_key.pem",
+        )
+        await provider.get_access_token()
+
+        mode = (tmp_path / "dev_key.pem").stat().st_mode
+        assert stat.S_IMODE(mode) == 0o600
+
+    def test_token_cache_parent_directory_is_owner_only(self, tmp_path: Path) -> None:
+        from penguincode_cli.client.waddleai_auth import _CachedToken
+
+        nested = tmp_path / "sub" / "dir" / "token.json"
+        store = WaddleAITokenStore(str(nested))
+        store.save(
+            _CachedToken(
+                access_token="tok", expires_at=1.0, issuer=ISSUER, audience=AUDIENCE, is_dev=False
+            )
+        )
+        parent_mode = nested.parent.stat().st_mode
+        assert stat.S_IMODE(parent_mode) == 0o700
 
 
 class TestLogin:
