@@ -71,6 +71,24 @@ class KnowledgeServiceStub:
             response_deserializer=knowledge_dot_v1_dot_knowledge__pb2.CodeGraphStatusResponse.FromString,
             _registered_method=True,
         )
+        self.IndexStatus = channel.unary_unary(
+            "/penguincode.knowledge.v1.KnowledgeService/IndexStatus",
+            request_serializer=knowledge_dot_v1_dot_knowledge__pb2.IndexStatusRequest.SerializeToString,
+            response_deserializer=knowledge_dot_v1_dot_knowledge__pb2.IndexStatusResponse.FromString,
+            _registered_method=True,
+        )
+        self.ClearIndex = channel.unary_unary(
+            "/penguincode.knowledge.v1.KnowledgeService/ClearIndex",
+            request_serializer=knowledge_dot_v1_dot_knowledge__pb2.ClearIndexRequest.SerializeToString,
+            response_deserializer=knowledge_dot_v1_dot_knowledge__pb2.ClearIndexResponse.FromString,
+            _registered_method=True,
+        )
+        self.CleanupIndex = channel.unary_unary(
+            "/penguincode.knowledge.v1.KnowledgeService/CleanupIndex",
+            request_serializer=knowledge_dot_v1_dot_knowledge__pb2.CleanupIndexRequest.SerializeToString,
+            response_deserializer=knowledge_dot_v1_dot_knowledge__pb2.CleanupIndexResponse.FromString,
+            _registered_method=True,
+        )
 
 
 class KnowledgeServiceServicer:
@@ -126,6 +144,32 @@ class KnowledgeServiceServicer:
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def IndexStatus(self, request, context):
+        """Report the caller-scoped docs index's current status (what's indexed,
+        chunk counts, freshness). Mirrors
+        `docs_rag.indexer.DocumentationIndexer.get_index_status`.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ClearIndex(self, request, context):
+        """Clear one library's or one language's indexed docs, scoped to the
+        caller. Mirrors `docs_rag.indexer.DocumentationIndexer
+        .clear_library_index`/`.clear_language_index`.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def CleanupIndex(self, request, context):
+        """Remove indexed docs no longer referenced by the caller's current
+        project. Mirrors `docs_rag.indexer.DocumentationIndexer.cleanup_unused`.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
 
 def add_KnowledgeServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -158,6 +202,21 @@ def add_KnowledgeServiceServicer_to_server(servicer, server):
             servicer.CodeGraphStatus,
             request_deserializer=knowledge_dot_v1_dot_knowledge__pb2.CodeGraphStatusRequest.FromString,
             response_serializer=knowledge_dot_v1_dot_knowledge__pb2.CodeGraphStatusResponse.SerializeToString,
+        ),
+        "IndexStatus": grpc.unary_unary_rpc_method_handler(
+            servicer.IndexStatus,
+            request_deserializer=knowledge_dot_v1_dot_knowledge__pb2.IndexStatusRequest.FromString,
+            response_serializer=knowledge_dot_v1_dot_knowledge__pb2.IndexStatusResponse.SerializeToString,
+        ),
+        "ClearIndex": grpc.unary_unary_rpc_method_handler(
+            servicer.ClearIndex,
+            request_deserializer=knowledge_dot_v1_dot_knowledge__pb2.ClearIndexRequest.FromString,
+            response_serializer=knowledge_dot_v1_dot_knowledge__pb2.ClearIndexResponse.SerializeToString,
+        ),
+        "CleanupIndex": grpc.unary_unary_rpc_method_handler(
+            servicer.CleanupIndex,
+            request_deserializer=knowledge_dot_v1_dot_knowledge__pb2.CleanupIndexRequest.FromString,
+            response_serializer=knowledge_dot_v1_dot_knowledge__pb2.CleanupIndexResponse.SerializeToString,
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -342,6 +401,96 @@ class KnowledgeService:
             "/penguincode.knowledge.v1.KnowledgeService/CodeGraphStatus",
             knowledge_dot_v1_dot_knowledge__pb2.CodeGraphStatusRequest.SerializeToString,
             knowledge_dot_v1_dot_knowledge__pb2.CodeGraphStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def IndexStatus(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/penguincode.knowledge.v1.KnowledgeService/IndexStatus",
+            knowledge_dot_v1_dot_knowledge__pb2.IndexStatusRequest.SerializeToString,
+            knowledge_dot_v1_dot_knowledge__pb2.IndexStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def ClearIndex(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/penguincode.knowledge.v1.KnowledgeService/ClearIndex",
+            knowledge_dot_v1_dot_knowledge__pb2.ClearIndexRequest.SerializeToString,
+            knowledge_dot_v1_dot_knowledge__pb2.ClearIndexResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def CleanupIndex(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/penguincode.knowledge.v1.KnowledgeService/CleanupIndex",
+            knowledge_dot_v1_dot_knowledge__pb2.CleanupIndexRequest.SerializeToString,
+            knowledge_dot_v1_dot_knowledge__pb2.CleanupIndexResponse.FromString,
             options,
             channel_credentials,
             insecure,
