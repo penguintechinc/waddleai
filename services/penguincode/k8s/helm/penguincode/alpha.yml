@@ -1,0 +1,79 @@
+# Alpha environment values for penguincode
+# Minimal resources, local images, debug enabled
+
+global:
+  namespace: penguincode
+
+image:
+  repository: penguincode/server
+  pullPolicy: IfNotPresent
+  # Local alpha build+push, e.g. `alpha-1727308800` (epoch64) -- set by the
+  # alpha deploy script/CI (see devops.md CI/CD Tag Naming), never `latest`.
+  tag: "alpha-0000000000"
+
+server:
+  replicas: 1
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  env:
+    PENGUINCODE_SERVER_MODE: "standalone"
+    PENGUINCODE_AUTH_ENABLED: "false"
+    PENGUINCODE_SECURITY_LEVEL: "1"
+    PENGUINCODE_VRAM_MB: "4096"
+    PENGUINCODE_MAX_CONCURRENT: "1"
+    PENGUINCODE_MAX_MODELS: "1"
+    PENGUINCODE_USE_ENV_CONFIG: "true"
+    OLLAMA_HOST: "localhost:11434"
+
+ollama:
+  enabled: false
+
+secrets:
+  enabled: false
+
+# Local alpha Postgres, least-privilege role (spec §9; see values.yaml
+# postgres RUNBOOK comment for the full 3-secret contract) -- operator
+# creates these Secrets out-of-band before `helm install`:
+#
+#   # 1. Admin DSN -- role-bootstrap + migration Jobs only.
+#   kubectl create secret generic penguincode-postgres-admin-alpha \
+#     --namespace penguincode \
+#     --from-literal=PGVECTOR_ADMIN_URL=postgresql://<admin-role>:...@waddleai-postgres.waddleai.svc.cluster.local:5432/waddleai
+#
+#   # 2. App-role bootstrap password -- must match the password in (3).
+#   kubectl create secret generic penguincode-approle-password-alpha \
+#     --namespace penguincode \
+#     --from-literal=PENGUINCODE_APP_ROLE_PASSWORD=<same-password-as-below>
+#
+#   # 3. App-role DSN -- server Deployment only.
+#   kubectl create secret generic penguincode-postgres-alpha \
+#     --namespace penguincode \
+#     --from-literal=PGVECTOR_URL=postgresql://penguincode_app:<same-password-as-above>@waddleai-postgres.waddleai.svc.cluster.local:5432/waddleai
+postgres:
+  adminExistingSecret: penguincode-postgres-admin-alpha
+  bootstrapRole:
+    passwordExistingSecret: penguincode-approle-password-alpha
+  existingSecret: penguincode-postgres-alpha
+
+# Flags stay OFF in alpha too (ship dark; flip on per environment only after
+# validation -- spec §14 Rollout). POSTHOG_KEY is optional; leave unset to
+# fall back to env overrides / OFF (flags/client.py graceful degradation).
+
+migration:
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+ingress:
+  enabled: false

@@ -1,0 +1,78 @@
+# Production environment values for penguincode
+# DigitalOcean, upgrade-in-place. Flags stay OFF by default (ship dark; flip
+# on per environment only after validation -- spec §14 Rollout).
+
+global:
+  namespace: penguincode
+
+image:
+  repository: ghcr.io/penguintechinc/penguincode
+  pullPolicy: IfNotPresent
+  # Production requires an immutable SHA256 digest pin, never a mutable tag
+  # (critical-rules.md Dependency Pinning). `digest` takes precedence over
+  # `tag` (see templates/_helpers.tpl penguincode.image) -- replace
+  # `<digest>` below with the digest of the release this values file ships
+  # before installing; the placeholder is intentionally invalid so an
+  # un-pinned production install fails closed instead of silently pulling
+  # `latest`/AppVersion.
+  tag: ""
+  digest: "sha256:<digest>"
+
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
+server:
+  replicas: 3
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  env:
+    PENGUINCODE_SERVER_MODE: "standalone"
+    PENGUINCODE_AUTH_ENABLED: "true"
+    PENGUINCODE_SECURITY_LEVEL: "2"
+    PENGUINCODE_VRAM_MB: "8192"
+    PENGUINCODE_MAX_CONCURRENT: "2"
+    PENGUINCODE_MAX_MODELS: "1"
+    PENGUINCODE_USE_ENV_CONFIG: "true"
+
+ollama:
+  enabled: false
+
+secrets:
+  enabled: true
+
+# Shared WaddleAI Postgres, least-privilege role (spec §9; see values.yaml
+# postgres RUNBOOK comment for the full 3-secret contract) -- all three
+# created out-of-band by CI/CD (External Secrets Operator / sealed-secrets),
+# never inline plaintext, never a `--set`/`--set-string` CLI arg (token/secret
+# hygiene).
+postgres:
+  adminExistingSecret: penguincode-postgres-admin-prod
+  bootstrapRole:
+    passwordExistingSecret: penguincode-approle-password-prod
+  existingSecret: penguincode-postgres-prod
+
+# Flags stay OFF in production by default -- flip on per environment only
+# after validation (spec §14 Rollout).
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  hosts:
+    - host: penguincode.app
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: penguincode-prod-tls
+      hosts:
+        - penguincode.app

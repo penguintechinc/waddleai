@@ -6,16 +6,14 @@ Quick command reference for common Kubernetes operations with PenguinCode.
 
 ### Deploy to Alpha (Testing)
 ```bash
-# Using Kustomize (recommended)
-kubectl apply -k k8s/kustomize/overlays/alpha
-
-# Using Helm
 helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-alpha.yaml \
+  -f k8s/helm/penguincode/alpha.yml \
   -n penguincode --create-namespace
 
 # Dry-run first
-kubectl apply -k k8s/kustomize/overlays/alpha --dry-run=client -o yaml
+helm install penguincode k8s/helm/penguincode \
+  -f k8s/helm/penguincode/alpha.yml \
+  -n penguincode --create-namespace --dry-run --debug
 ```
 
 ### Deploy to Beta (Production-like)
@@ -23,16 +21,15 @@ kubectl apply -k k8s/kustomize/overlays/alpha --dry-run=client -o yaml
 # Using deploy script (recommended, includes build/push)
 ./scripts/deploy-beta.sh
 
-# Using Kustomize
-kubectl apply -k k8s/kustomize/overlays/beta
-
 # Using Helm
 helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   -n penguincode --create-namespace
 
 # Dry-run first
-kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml
+helm install penguincode k8s/helm/penguincode \
+  -f k8s/helm/penguincode/beta.yml \
+  -n penguincode --create-namespace --dry-run --debug
 ```
 
 ### Deploy with Custom Tag
@@ -43,7 +40,7 @@ kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml
 
 # Using Helm
 helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   -n penguincode --create-namespace \
   --set image.tag=v1.2.3
 ```
@@ -57,7 +54,7 @@ helm install penguincode k8s/helm/penguincode \
 ### Dry-Run (Preview Without Applying)
 ```bash
 ./scripts/deploy-beta.sh --dry-run
-kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml
+helm install penguincode k8s/helm/penguincode -f k8s/helm/penguincode/beta.yml -n penguincode --dry-run --debug
 ```
 
 ## Status and Information Commands
@@ -65,6 +62,7 @@ kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml
 ### Check Deployment Status
 ```bash
 # Check if pods are running
+kubectl get pods -n penguincode
 kubectl get pods -n penguincode
 
 # Watch deployment progress
@@ -255,7 +253,7 @@ kubectl get pods -n penguincode -o jsonpath='{.items[*].spec.containers[*].image
 ```bash
 # Set new image
 kubectl set image deployment/penguincode-server \
-  penguincode-server=ghcr.io/penguintechinc/penguincode:new-tag \
+  penguincode-server=registry-dal2.penguintech.io/penguincode:new-tag \
   -n penguincode
 
 # Watch rollout
@@ -263,7 +261,7 @@ kubectl rollout status deployment/penguincode-server -n penguincode -w
 
 # Update via Helm
 helm upgrade penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   -n penguincode
 
 # Scale replicas
@@ -319,9 +317,6 @@ helm history penguincode -n penguincode
 
 ### Delete Deployments
 ```bash
-# Delete using Kustomize
-kubectl delete -k k8s/kustomize/overlays/beta
-
 # Delete using Helm
 helm uninstall penguincode -n penguincode
 
@@ -355,18 +350,6 @@ kubectl delete namespace penguincode --grace-period=0 --force
 
 ## Configuration and Template Commands
 
-### Kustomize
-```bash
-# Build Kustomize configuration (show YAML without applying)
-kubectl kustomize k8s/kustomize/overlays/beta
-
-# Build and save to file
-kubectl kustomize k8s/kustomize/overlays/beta > release.yaml
-
-# Validate output
-kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client --validate=true
-```
-
 ### Helm
 ```bash
 # Lint chart for errors
@@ -374,17 +357,17 @@ helm lint k8s/helm/penguincode
 
 # Template render (show rendered YAML)
 helm template penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml
+  -f k8s/helm/penguincode/beta.yml
 
 # Dry-run install
 helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   -n penguincode \
   --dry-run --debug
 
 # Show differences
 helm diff upgrade penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   -n penguincode
 ```
 
@@ -548,6 +531,4 @@ kubectl logs -n penguincode --previous <pod-name> 2>/dev/null || echo "No previo
 
 ---
 
-All commands use the `penguincode` namespace — it is the same in every cluster (alpha,
-beta, prod); only the `--context`/cluster changes between environments, never the
-namespace suffix.
+All commands use the penguincode namespace. Update namespace names (penguincode, penguincode) as needed for your environment.

@@ -25,7 +25,9 @@ echo "Repo Root: $REPO_ROOT"
 echo "Helm Chart: $HELM_DIR"
 echo ""
 
-NAMESPACE="${PROJECT_NAME}-alpha"
+# Namespace = product name only, never env-suffixed (env lives in the values
+# filename, not the namespace) -- see devops-kubernetes.md Core Rules.
+NAMESPACE="${PROJECT_NAME}"
 RELEASE_NAME="$PROJECT_NAME"
 
 # Cleanup function
@@ -46,7 +48,7 @@ echo "Step 2: Installing Helm chart (alpha environment)..."
 helm upgrade --install "$RELEASE_NAME" "$REPO_ROOT/$HELM_DIR" \
     --namespace "$NAMESPACE" \
     --create-namespace \
-    --values "$REPO_ROOT/$HELM_DIR/values-alpha.yaml" \
+    --values "$REPO_ROOT/$HELM_DIR/alpha.yml" \
     --wait \
     --timeout 5m
 

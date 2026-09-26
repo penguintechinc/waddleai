@@ -1,0 +1,74 @@
+# Gamma environment values for penguincode
+# Upgrade-in-place validation tier (DigitalOcean) -- the only tier that
+# exercises the upgrade path before a release is cut. Production-like
+# resources; flags stay OFF (ship dark; flip on per environment only after
+# validation -- spec §14 Rollout).
+
+global:
+  namespace: penguincode
+
+image:
+  repository: ghcr.io/penguintechinc/penguincode
+  pullPolicy: IfNotPresent
+  # CI-set on every GitHub pre-release, e.g. `gamma-1727308800` (epoch64) --
+  # see devops.md CI/CD Tag Naming. Never `latest`.
+  tag: "gamma-0000000000"
+
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
+server:
+  replicas: 2
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  env:
+    PENGUINCODE_SERVER_MODE: "standalone"
+    PENGUINCODE_AUTH_ENABLED: "true"
+    PENGUINCODE_SECURITY_LEVEL: "2"
+    PENGUINCODE_VRAM_MB: "8192"
+    PENGUINCODE_MAX_CONCURRENT: "2"
+    PENGUINCODE_MAX_MODELS: "1"
+    PENGUINCODE_USE_ENV_CONFIG: "true"
+
+ollama:
+  enabled: false
+
+secrets:
+  enabled: true
+
+# Shared WaddleAI Postgres, least-privilege role (spec §9; see values.yaml
+# postgres RUNBOOK comment for the full 3-secret contract) -- all three
+# created out-of-band by CI/CD (External Secrets Operator / sealed-secrets),
+# never inline plaintext, never a `--set`/`--set-string` CLI arg (token/secret
+# hygiene).
+postgres:
+  adminExistingSecret: penguincode-postgres-admin-gamma
+  bootstrapRole:
+    passwordExistingSecret: penguincode-approle-password-gamma
+  existingSecret: penguincode-postgres-gamma
+
+# Flags stay OFF in gamma too (ship dark; flip on per environment only after
+# validation -- spec §14 Rollout).
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  hosts:
+    - host: penguincode-gamma.penguintech.cloud
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: penguincode-gamma-tls
+      hosts:
+        - penguincode-gamma.penguintech.cloud

@@ -60,6 +60,21 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
+Full image reference. Prefers an immutable SHA256 digest
+(image.digest, e.g. "sha256:<digest>") over a mutable tag when both are set
+-- production/gamma values files pin by digest (critical-rules.md Dependency
+Pinning); alpha/beta use the tier tag pattern instead. Falls back to
+image.tag, then Chart.AppVersion, matching Helm convention.
+*/}}
+{{- define "penguincode.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Server labels
 */}}
 {{- define "penguincode.server.labels" -}}
@@ -76,11 +91,34 @@ app.kubernetes.io/component: server
 {{- end }}
 
 {{/*
-Name of the Secret holding PGVECTOR_URL -- an existingSecret reference wins
-over the chart-managed Secret (see templates/secret.yaml, values.yaml postgres.*).
+Name of the Secret holding the LEAST-PRIVILEGE app-role PGVECTOR_URL -- used
+by the server Deployment only. An existingSecret reference wins over the
+chart-managed Secret (see templates/secret.yaml, values.yaml postgres.*).
 */}}
 {{- define "penguincode.postgresSecretName" -}}
 {{- default (printf "%s-secrets" (include "penguincode.fullname" .)) .Values.postgres.existingSecret -}}
+{{- end }}
+
+{{/*
+Name of the Secret holding the ADMIN-privileged Postgres DSN -- used ONLY by
+the role-bootstrap Job and the migration Job (CREATE ROLE / CREATE EXTENSION /
+DDL all need elevated privileges). NEVER referenced by the server Deployment.
+An existingSecret reference wins over the chart-managed Secret (see
+templates/secret.yaml, values.yaml postgres.adminExistingSecret).
+*/}}
+{{- define "penguincode.postgresAdminSecretName" -}}
+{{- default (printf "%s-secrets" (include "penguincode.fullname" .)) .Values.postgres.adminExistingSecret -}}
+{{- end }}
+
+{{/*
+Name of the Secret holding the password used by the role-bootstrap Job's
+`CREATE ROLE penguincode_app ... PASSWORD` / `ALTER ROLE ... PASSWORD`
+statements -- must match the password embedded in the app-role DSN
+(postgres.existingSecret). An existingSecret reference wins over the
+chart-managed Secret.
+*/}}
+{{- define "penguincode.appRolePasswordSecretName" -}}
+{{- default (printf "%s-secrets" (include "penguincode.fullname" .)) .Values.postgres.bootstrapRole.passwordExistingSecret -}}
 {{- end }}
 
 {{/*

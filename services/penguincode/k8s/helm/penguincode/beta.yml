@@ -7,7 +7,9 @@ global:
 image:
   repository: ghcr.io/penguintechinc/penguincode
   pullPolicy: IfNotPresent
-  tag: latest
+  # CI-set on every merge to main, e.g. `beta-1727308800` (epoch64) -- see
+  # devops.md CI/CD Tag Naming. Never `latest`.
+  tag: "beta-0000000000"
 
 imagePullSecrets:
   - name: ghcr-pull-secret
@@ -38,10 +40,15 @@ ollama:
 secrets:
   enabled: true
 
-# Shared WaddleAI Postgres DSN -- created out-of-band by CI/CD (External
-# Secrets Operator / sealed-secrets), never inline plaintext, never a
-# `--set`/`--set-string` CLI arg (token/secret hygiene).
+# Shared WaddleAI Postgres, least-privilege role (spec §9; see values.yaml
+# postgres RUNBOOK comment for the full 3-secret contract) -- all three
+# created out-of-band by CI/CD (External Secrets Operator / sealed-secrets),
+# never inline plaintext, never a `--set`/`--set-string` CLI arg (token/secret
+# hygiene).
 postgres:
+  adminExistingSecret: penguincode-postgres-admin-beta
+  bootstrapRole:
+    passwordExistingSecret: penguincode-approle-password-beta
   existingSecret: penguincode-postgres-beta
 
 # Flags stay OFF in beta too (ship dark; flip on per environment only after

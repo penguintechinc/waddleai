@@ -10,7 +10,7 @@ k8s-beta-deploy:
 
 k8s-prod-deploy:
 	@read -p "Deploy to PRODUCTION? (yes/NO): " c && [ "$$c" = "yes" ]
-	@helm upgrade --install $(PROJECT_NAME) ./$(HELM_DIR) --namespace $(PROJECT_NAME)-prod --create-namespace --values ./$(HELM_DIR)/values.yaml --wait --timeout 10m
+	@helm upgrade --install $(PROJECT_NAME) ./$(HELM_DIR) --namespace $(PROJECT_NAME) --create-namespace --values ./$(HELM_DIR)/production.yml --wait --timeout 10m
 
 k8s-alpha-test:
 	@./tests/k8s/alpha/run-all-alpha.sh
@@ -18,17 +18,17 @@ k8s-alpha-test:
 k8s-beta-test:
 	@./tests/k8s/beta/run-all-beta.sh
 
+# Namespace = product name only, never env-suffixed (env lives in the values
+# filename, not the namespace) -- see devops-kubernetes.md Core Rules.
 k8s-cleanup:
-	@helm uninstall $(PROJECT_NAME) -n $(PROJECT_NAME)-alpha 2>/dev/null || true
-	@helm uninstall $(PROJECT_NAME) -n $(PROJECT_NAME)-beta 2>/dev/null || true
-	@kubectl delete namespace $(PROJECT_NAME)-alpha 2>/dev/null || true
-	@kubectl delete namespace $(PROJECT_NAME)-beta 2>/dev/null || true
+	@helm uninstall $(PROJECT_NAME) -n $(PROJECT_NAME) 2>/dev/null || true
+	@kubectl delete namespace $(PROJECT_NAME) 2>/dev/null || true
 
 helm-lint:
 	@helm lint ./$(HELM_DIR)
 
 helm-template:
-	@helm template $(PROJECT_NAME) ./$(HELM_DIR) --values ./$(HELM_DIR)/values-alpha.yaml
+	@helm template $(PROJECT_NAME) ./$(HELM_DIR) --values ./$(HELM_DIR)/alpha.yml
 
 # === gRPC Proto Codegen ===
 # Regenerates every penguincode .proto (existing + new) into its committed
@@ -69,8 +69,10 @@ proto:
 	@echo "=== proto regeneration complete ==="
 
 # === Standard Development Commands ===
+# Docker Compose is DEPRECATED for all environments (devops.md) -- local dev
+# runs on Kubernetes via the alpha Helm values (see tests/k8s/alpha/run-all-alpha.sh).
 dev:
-	@docker-compose up
+	@$(MAKE) k8s-alpha-deploy
 
 test:
 	@$(MAKE) test-unit
@@ -113,16 +115,16 @@ build:
 	@pip3 install -e .
 
 docker-build:
-	@docker-compose build
+	@docker build -f Dockerfile.server -t penguincode/server:local .
 
 docker-push:
 	@echo "Push images - use CI pipeline"
 
 deploy-dev:
-	@echo "Deploy to dev - see k8s/kustomize/overlays/alpha"
+	@echo "Deploy to dev - see k8s/helm/penguincode (make k8s-alpha-deploy)"
 
 deploy-prod:
-	@echo "Deploy to prod - see k8s/helm/"
+	@echo "Deploy to prod - see k8s/helm/penguincode (make k8s-prod-deploy)"
 
 seed-mock-data:
 	@echo "No mock data seeding defined"
