@@ -350,6 +350,38 @@ class TestPromoteLesson:
 
         store.create_pending.assert_called_once_with(scope_ctx, "clean", [], None)
 
+    @pytest.mark.asyncio
+    async def test_forwards_graph_store_sourced_identifiers_to_generalize_and_scrub(
+        self, scope_ctx: ScopeContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F2+F3 (security review): server-authoritative identifiers -- sourced from
+        the tenant's graph store here -- must reach generalize_and_scrub's
+        extra_identifier_terms, not just source_metadata.
+
+        # regression: lessons-promotion-secrev
+        """
+        captured: dict[str, Any] = {}
+
+        async def _fake_scrub(ctx: ScopeContext, content: str, **kwargs: Any) -> ScrubResult:
+            captured.update(kwargs)
+            return ScrubResult(generalized_text="clean", redactions=[], verdict=Verdict(clean=True))
+
+        monkeypatch.setattr(lessons_module, "generalize_and_scrub", _fake_scrub)
+        graph_store = _FakeGraphStoreForApprove(names=["Acme Corp"])
+        service = LessonsServiceImpl(
+            Settings(),
+            store=_FakeStore(),
+            scoped_memory=_FakeScopedMemory(),
+            graph_store=graph_store,
+        )
+
+        await service.PromoteLesson(
+            PromoteLessonRequest(api_version="v1", source_content="x"), _FakeContext()
+        )
+
+        assert "Acme Corp" in captured["extra_identifier_terms"]
+        assert graph_store.calls  # list_node_keys was actually invoked
+
 
 class TestPromoteLessonEndToEnd:
     """No mocked `generalize_and_scrub` -- the real scrub + verify pipeline runs, with only
@@ -705,7 +737,8 @@ class TestApproveLesson:
             record = _record(proposer_user_id="proposer-1")
             store = _FakeStore(get_result=record)
             store.set_status.side_effect = LookupError("already reviewed")
-            service = _service(store=store)
+            scoped_memory = _FakeScopedMemory()
+            service = _service(store=store, scoped_memory=scoped_memory)
             context = _FakeContext()
 
             with pytest.raises(AbortCalledError):
@@ -713,6 +746,179 @@ class TestApproveLesson:
                     ApproveLessonRequest(api_version="v1", pending_id="pending-1"), context
                 )
             assert context.aborted_with[0] == grpc.StatusCode.FAILED_PRECONDITION  # type: ignore[index]
+            # F5 (security review): the loser of the race must never write --
+            # the atomic status flip is checked BEFORE the memory write, not
+            # after. Pre-fix, this write already happened before set_status
+            # was ever called.
+            # regression: lessons-promotion-secrev
+            scoped_memory.add.assert_not_awaited()
+        finally:
+            auth_middleware._current_scope.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# F5 (security review, LOW -- race): status flip must happen BEFORE the
+# tenant-visibility write, and the write must run only when that flip
+# actually affected the row.
+#
+# # regression: lessons-promotion-secrev
+# ---------------------------------------------------------------------------
+
+
+class TestApproveLessonWriteOrdering:
+    @pytest.mark.asyncio
+    async def test_set_status_is_called_before_the_memory_write(self) -> None:
+        """Explicit ordering proof, independent of the race-abort path above:
+        even on the successful-approval path, `set_status` must run to completion
+        before `scoped_memory.add` is ever awaited."""
+        ctx = _ctx(scopes=(LESSONS_APPROVE_SCOPE,), user_id="approver-1")
+        token = auth_middleware._current_scope.set(ctx)
+        call_order: list[str] = []
+        try:
+            record = _record(proposer_user_id="proposer-1", generalized_text="the lesson text")
+            store = _FakeStore(get_result=record)
+            store.set_status.side_effect = lambda *a, **kw: call_order.append("set_status")
+            scoped_memory = _FakeScopedMemory()
+
+            async def _record_add(*_a: Any, **_kw: Any) -> dict[str, Any]:
+                call_order.append("memory_add")
+                return {"results": []}
+
+            scoped_memory.add = AsyncMock(side_effect=_record_add)
+            service = _service(store=store, scoped_memory=scoped_memory)
+
+            response = await service.ApproveLesson(
+                ApproveLessonRequest(api_version="v1", pending_id="pending-1"), _FakeContext()
+            )
+
+            assert response.approved is True
+            assert call_order == ["set_status", "memory_add"]
+        finally:
+            auth_middleware._current_scope.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# F6 (security review, defense in depth): re-run verify_scrubbed on the
+# pending generalized_text, with the server-authoritative identifier set,
+# right before the tenant write -- abort if not clean.
+#
+# # regression: lessons-promotion-secrev
+# ---------------------------------------------------------------------------
+
+
+class _FakeGraphStoreForApprove:
+    """Records `list_node_keys` calls; returns configured names per graph kind."""
+
+    def __init__(self, *, names: list[str] | None = None) -> None:
+        self.names = names or []
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def list_node_keys(self, ctx: ScopeContext, kind: str, node_types: Any) -> list[str]:
+        self.calls.append((kind, tuple(node_types)))
+        return list(self.names)
+
+
+def _service_with_graph(
+    *,
+    store: _FakeStore | None = None,
+    scoped_memory: _FakeScopedMemory | None = None,
+    graph_store: Any = None,
+) -> LessonsServiceImpl:
+    return LessonsServiceImpl(
+        Settings(),
+        store=store or _FakeStore(),
+        scoped_memory=scoped_memory or _FakeScopedMemory(),
+        graph_store=graph_store if graph_store is not None else _FakeGraphStoreForApprove(),
+    )
+
+
+class TestApproveLessonReverification:
+    @pytest.mark.asyncio
+    async def test_client_name_only_known_via_graph_store_blocks_approval(self) -> None:
+        """The pending row's generalized_text still names a client the proposer's
+        source_metadata never mentioned -- but that name IS recorded in the
+        tenant's graph store. Without F6, ApproveLesson would happily approve
+        and write it firm-wide."""
+        ctx = _ctx(scopes=(LESSONS_APPROVE_SCOPE,), user_id="approver-1")
+        token = auth_middleware._current_scope.set(ctx)
+        try:
+            record = _record(
+                proposer_user_id="proposer-1",
+                generalized_text="The rollout at Acme Corp took three extra days.",
+            )
+            store = _FakeStore(get_result=record)
+            scoped_memory = _FakeScopedMemory()
+            graph_store = _FakeGraphStoreForApprove(names=["Acme Corp"])
+            service = _service_with_graph(
+                store=store, scoped_memory=scoped_memory, graph_store=graph_store
+            )
+            context = _FakeContext()
+
+            with pytest.raises(AbortCalledError):
+                await service.ApproveLesson(
+                    ApproveLessonRequest(api_version="v1", pending_id="pending-1"), context
+                )
+
+            assert context.aborted_with[0] == grpc.StatusCode.FAILED_PRECONDITION  # type: ignore[index]
+            store.set_status.assert_not_called()
+            scoped_memory.add.assert_not_awaited()
+        finally:
+            auth_middleware._current_scope.reset(token)
+
+    @pytest.mark.asyncio
+    async def test_genuinely_clean_text_still_approves(self) -> None:
+        ctx = _ctx(scopes=(LESSONS_APPROVE_SCOPE,), user_id="approver-1")
+        token = auth_middleware._current_scope.set(ctx)
+        try:
+            record = _record(
+                proposer_user_id="proposer-1",
+                generalized_text="Always validate schema compatibility before a migration.",
+            )
+            store = _FakeStore(get_result=record)
+            scoped_memory = _FakeScopedMemory()
+            graph_store = _FakeGraphStoreForApprove(names=["Acme Corp"])
+            service = _service_with_graph(
+                store=store, scoped_memory=scoped_memory, graph_store=graph_store
+            )
+
+            response = await service.ApproveLesson(
+                ApproveLessonRequest(api_version="v1", pending_id="pending-1"), _FakeContext()
+            )
+
+            assert response.approved is True
+            store.set_status.assert_called_once()
+            scoped_memory.add.assert_awaited_once()
+        finally:
+            auth_middleware._current_scope.reset(token)
+
+    @pytest.mark.asyncio
+    async def test_graph_store_failure_degrades_gracefully_and_still_approves(self) -> None:
+        """A graph-store outage during the re-verification lookup must never block
+        review -- it degrades to "no extra terms from the graph", not an abort."""
+        ctx = _ctx(scopes=(LESSONS_APPROVE_SCOPE,), user_id="approver-1")
+        token = auth_middleware._current_scope.set(ctx)
+        try:
+            record = _record(
+                proposer_user_id="proposer-1", generalized_text="a clean, generalized lesson"
+            )
+            store = _FakeStore(get_result=record)
+            scoped_memory = _FakeScopedMemory()
+
+            class _RaisingGraphStore:
+                def list_node_keys(
+                    self, ctx: ScopeContext, kind: str, node_types: Any
+                ) -> list[str]:
+                    raise RuntimeError("graph store unreachable")
+
+            service = _service_with_graph(
+                store=store, scoped_memory=scoped_memory, graph_store=_RaisingGraphStore()
+            )
+
+            response = await service.ApproveLesson(
+                ApproveLessonRequest(api_version="v1", pending_id="pending-1"), _FakeContext()
+            )
+
+            assert response.approved is True
         finally:
             auth_middleware._current_scope.reset(token)
 

@@ -19,6 +19,7 @@ import yaml
 
 from penguincode_cli.config.settings import (
     GraphConfig,
+    LessonsConfig,
     MemoryConfig,
     MemoryStoresConfig,
     PGVectorStoreConfig,
@@ -164,6 +165,61 @@ class TestPostgresGraphStoreConfig:
     def test_parse_graph_config_explicit_schema_override(self) -> None:
         parsed = Settings._parse_graph_config({"postgres": {"schema": "custom_schema"}})
         assert parsed.postgres.schema == "custom_schema"
+
+
+@pytest.fixture
+def clean_lessons_identifiers_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure LESSONS_KNOWN_IDENTIFIERS is unset so default-value tests are deterministic."""
+    monkeypatch.delenv("LESSONS_KNOWN_IDENTIFIERS", raising=False)
+
+
+class TestLessonsConfig:
+    """F2+F3 (lessons-promotion security review): the operator-configured
+    per-tenant identifier list `server.services.lessons` feeds into
+    `verify_scrubbed`'s `extra_identifier_terms`.
+
+    # regression: lessons-promotion-secrev
+    """
+
+    def test_defaults_to_empty_without_env(self, clean_lessons_identifiers_env: None) -> None:
+        assert LessonsConfig().known_identifiers == []
+
+    def test_settings_default_lessons_is_empty(self, clean_lessons_identifiers_env: None) -> None:
+        assert Settings().lessons.known_identifiers == []
+
+    def test_reads_comma_separated_env_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LESSONS_KNOWN_IDENTIFIERS", "Acme Corp, Widgets Inc,3M")
+        assert LessonsConfig().known_identifiers == ["Acme Corp", "Widgets Inc", "3M"]
+
+    def test_blank_entries_in_env_list_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LESSONS_KNOWN_IDENTIFIERS", "Acme Corp,, ,")
+        assert LessonsConfig().known_identifiers == ["Acme Corp"]
+
+    def test_parse_lessons_config_default_is_empty(
+        self, clean_lessons_identifiers_env: None
+    ) -> None:
+        parsed = Settings._parse_lessons_config({})
+        assert parsed.known_identifiers == []
+
+    def test_parse_lessons_config_yaml_list_is_appended_to_env_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LESSONS_KNOWN_IDENTIFIERS", "Acme Corp")
+        parsed = Settings._parse_lessons_config({"known_identifiers": ["Widgets Inc"]})
+        assert parsed.known_identifiers == ["Acme Corp", "Widgets Inc"]
+
+    def test_parse_lessons_config_deduplicates_across_sources(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LESSONS_KNOWN_IDENTIFIERS", "Acme Corp")
+        parsed = Settings._parse_lessons_config({"known_identifiers": ["Acme Corp"]})
+        assert parsed.known_identifiers == ["Acme Corp"]
+
+    def test_parse_lessons_config_ignores_non_list_yaml_value(
+        self, clean_lessons_identifiers_env: None
+    ) -> None:
+        parsed = Settings._parse_lessons_config({"known_identifiers": "not-a-list"})
+        assert parsed.known_identifiers == []
 
 
 class TestFromYamlEndToEnd:

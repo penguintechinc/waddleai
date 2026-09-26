@@ -722,6 +722,86 @@ class TestDeleteByScope:
         assert {row[0] for row in remaining} == {"not-mine.py"}
 
 
+# ---------------------------------------------------------------------------
+# list_node_keys (F2+F3, lessons-promotion security review): the one
+# deliberately tenant-wide (not team/user-scoped) read in this module -- see
+# its own docstring for why (server-side confidentiality re-verification
+# must see every team's client/org/person/project entities, not just the
+# caller's own).
+#
+# # regression: lessons-promotion-secrev
+# ---------------------------------------------------------------------------
+
+
+@requires_postgres
+class TestListNodeKeys:
+    def test_matches_node_type_case_insensitively(self, store: PostgresGraphStore) -> None:
+        tenant = _new_tenant()
+        ctx = _ctx(tenant)
+        store.upsert_nodes(
+            ctx,
+            "knowledge",
+            [GraphNode(node_type="Organization", key="Acme Corp")],
+            visibility="tenant",
+            team_id=None,
+        )
+
+        result = store.list_node_keys(ctx, "knowledge", ["organization"])
+
+        assert result == ["Acme Corp"]
+
+    def test_returns_keys_from_a_different_team_in_the_same_tenant(
+        self, store: PostgresGraphStore
+    ) -> None:
+        # The key security property: a reviewer's own ScopeContext (team_ids
+        # here is empty) must still surface a client name recorded under a
+        # DIFFERENT team's engagement in the same tenant -- this is what lets
+        # ApproveLesson catch a client name from an engagement the approving
+        # reviewer never touched.
+        tenant = _new_tenant()
+        other_team = str(uuid.uuid4())
+        store.upsert_nodes(
+            _ctx(tenant, team_ids=(other_team,)),
+            "knowledge",
+            [GraphNode(node_type="client", key="Widgets Inc")],
+            visibility="team",
+            team_id=other_team,
+        )
+        reviewer_ctx = _ctx(tenant, team_ids=())
+
+        result = store.list_node_keys(reviewer_ctx, "knowledge", ["client"])
+
+        assert result == ["Widgets Inc"]
+
+    def test_never_crosses_tenants(self, store: PostgresGraphStore) -> None:
+        tenant_a = _new_tenant()
+        tenant_b = _new_tenant()
+        store.upsert_nodes(
+            _ctx(tenant_a),
+            "knowledge",
+            [GraphNode(node_type="client", key="TenantAClient")],
+            visibility="tenant",
+            team_id=None,
+        )
+
+        result = store.list_node_keys(_ctx(tenant_b), "knowledge", ["client"])
+
+        assert result == []
+
+    def test_unmatched_node_type_returns_empty(self, store: PostgresGraphStore) -> None:
+        tenant = _new_tenant()
+        ctx = _ctx(tenant)
+        store.upsert_nodes(
+            ctx,
+            "knowledge",
+            [GraphNode(node_type="concept", key="idempotency")],
+            visibility="tenant",
+            team_id=None,
+        )
+
+        assert store.list_node_keys(ctx, "knowledge", ["client", "person"]) == []
+
+
 @requires_postgres
 class TestFactoryLive:
     def test_factory_built_store_round_trips(self, graph_dsn: str) -> None:

@@ -27,9 +27,38 @@ that module's ``_is_visible``), which is exactly "shared firm-wide" in the
 consulting analogy ``lessons.scrub``'s module docstring sets up. The write is
 best-effort (mirrors ``ScopedMemoryManager.add`` returning ``None`` when
 memory is disabled or the ``penguincode.rag`` flag is off elsewhere in this
-codebase -- a degraded memory layer is an operational state, not a failure);
-the ``pending_lessons`` row's status transition is this RPC's authoritative,
-always-attempted effect.
+codebase -- a degraded memory layer is an operational state, not a failure).
+
+**Approve's ordering (security review F5/F6).** Three things happen in this
+exact order, never any other: (1) :func:`verify_scrubbed` re-runs on the
+pending row's ``generalized_text`` with the server-authoritative identifier
+set (see :func:`_known_tenant_identifier_names`) -- a failing re-verification
+aborts ``FAILED_PRECONDITION`` with no status change and no write, leaving
+the row `pending` for a human to reject or re-review; (2) the row's status
+flips PENDING -> APPROVED via the single atomic
+``UPDATE ... WHERE status = 'pending'`` (:meth:`PendingLessonStore.set_status`);
+(3) the tenant-visibility memory write happens ONLY if that update actually
+affected the row (no ``LookupError``) -- never before, and never
+unconditionally. Reversing (2) and (3) is exactly the race two concurrent
+approvers could hit: both would see the row `pending`, both would write, and
+only the loser would then fail on the status flip -- after having already
+written. Doing the atomic flip first and gating the write on its result
+makes "write is safe to run" and "row this write is for is now `approved`"
+the same fact, checked once.
+
+**identifiers used by the F6 re-verification, and by `PromoteLesson`'s own
+verification, come from three sources -- see
+:func:`_known_tenant_identifier_names`:** ``ctx``'s ids (always present),
+``source_metadata``'s names (proposer-supplied, may be omitted -- only used
+by `PromoteLesson`, a pending row has no `source_metadata` of its own to
+re-check at approval time), and this module's server-authoritative
+supplement: every person/org/client/project entity name already recorded
+anywhere in the tenant's graph store (queried tenant-wide, not just the
+caller's own teams -- see ``stores.graph.GraphStore.list_node_keys``'s own
+docstring for why), plus an operator-configured
+``settings.lessons.known_identifiers`` list. Neither of those last two is
+something a proposer -- or a prompt-injected LLM steered into omitting a
+name -- can suppress.
 
 **Flag-gated** on :data:`LESSONS_PROMOTION_FLAG`: ``PromoteLesson`` gets this
 for free from ``generalize_and_scrub`` (a disabled flag degrades to a
@@ -57,7 +86,11 @@ from penguincode_cli.auth.middleware import current_scope_context
 from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.config.settings import MemoryConfig, Settings
 from penguincode_cli.flags import is_enabled
-from penguincode_cli.lessons.scrub import LESSONS_PROMOTION_FLAG, generalize_and_scrub
+from penguincode_cli.lessons.scrub import (
+    LESSONS_PROMOTION_FLAG,
+    generalize_and_scrub,
+    verify_scrubbed,
+)
 from penguincode_cli.lessons.scrub import Finding as ScrubFinding
 from penguincode_cli.lessons.store import PendingLessonRecord, PendingLessonStore
 from penguincode_cli.observability.otel import store_span
@@ -74,6 +107,7 @@ from penguincode_cli.proto import (
     RejectLessonResponse,
 )
 from penguincode_cli.proto import Finding as ProtoFinding
+from penguincode_cli.stores.graph import VALID_GRAPH_KINDS, create_graph_store
 from penguincode_cli.tools.memory import (
     MemoryManager,
     ScopedMemoryManager,
@@ -82,6 +116,31 @@ from penguincode_cli.tools.memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Node types the T11-T13 graph extractors' LLM-driven categorization uses
+#: for identifying entities (the extraction prompts' own vocabulary example
+#: includes "person"/"organization" -- see `graphs.knowledge`/`graphs.memory`)
+#: plus lessons-specific synonyms a human-curated node or a different
+#: extraction pass might use. Matched case-insensitively against
+#: `graph_nodes.node_type` by `stores.graph.GraphStore.list_node_keys` --
+#: see `_known_tenant_identifier_names`.
+_IDENTIFYING_NODE_TYPES: tuple[str, ...] = (
+    "person",
+    "organization",
+    "org",
+    "company",
+    "client",
+    "customer",
+    "project",
+    "engagement",
+)
+
+#: `stores.graph.VALID_GRAPH_KINDS`, sorted into a fixed, deterministic
+#: order -- `_known_tenant_identifier_names` iterates this rather than the
+#: frozenset directly, since frozenset iteration order over `str` members is
+#: not stable across processes (CPython's per-process string hash
+#: randomization), which would make test assertions on call order flaky.
+_GRAPH_KINDS_CHECKED: tuple[str, ...] = tuple(sorted(VALID_GRAPH_KINDS))
 
 #: The elevated scope `ApproveLesson`/`RejectLesson` require, per security.md's
 #: OIDC-scopes-only authz rule ("never branch on role names"). Distinct from
@@ -138,6 +197,21 @@ class _ScopedMemoryLike(Protocol):
         team_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None: ...
+
+
+@runtime_checkable
+class _GraphStoreLike(Protocol):
+    """Structural match for the one `GraphStore` method this servicer calls.
+
+    See `stores.graph.GraphStore.list_node_keys`'s own docstring for why this
+    is the one deliberately tenant-wide (not team/user-scoped) read in that
+    module -- this servicer's `_known_tenant_identifier_names` is its sole
+    caller.
+    """
+
+    def list_node_keys(
+        self, ctx: ScopeContext, kind: str, node_types: Sequence[str]
+    ) -> list[str]: ...
 
 
 async def _require_scope(context: grpc.aio.ServicerContext) -> ScopeContext:
@@ -227,12 +301,46 @@ def _build_scoped_memory_manager(settings: Settings) -> ScopedMemoryManager:
     return create_scoped_memory_manager(manager)
 
 
+def _known_tenant_identifier_names(
+    ctx: ScopeContext, graph_store: _GraphStoreLike, settings: Settings
+) -> list[str]:
+    """Server-authoritative identifier NAME terms a proposer cannot omit or suppress (F2+F3).
+
+    Union of (a) `settings.lessons.known_identifiers` -- an operator-
+    configured per-tenant list for names that never made it into the graph
+    at all -- and (b) every person/org/client/project entity name already
+    recorded anywhere in `ctx`'s tenant, across all three graph kinds
+    (`code`/`knowledge`/`memory`), queried **tenant-wide** via
+    `GraphStore.list_node_keys` (not scoped to the caller's own teams -- see
+    that method's docstring for why this check must see every team's
+    engagement, not just the caller's own).
+
+    This is `verify_scrubbed`'s server-side counterpart to `source_metadata`:
+    unlike that dict (which the proposer supplies and can omit, or a
+    prompt-injected LLM can be steered into omitting), neither source here is
+    under the proposer's control. A graph lookup failure for one `kind`
+    degrades to "no extra terms from that kind" (logged, never raised) -- a
+    graph-store outage must never block the review pipeline; the
+    deterministic + ctx-id + metadata-name checks in `verify_scrubbed` still
+    run regardless.
+    """
+    names: list[str] = list(settings.lessons.known_identifiers)
+    for kind in _GRAPH_KINDS_CHECKED:
+        try:
+            names.extend(graph_store.list_node_keys(ctx, kind, _IDENTIFYING_NODE_TYPES))
+        except Exception as exc:  # noqa: BLE001 -- a graph outage must not block lesson review
+            logger.warning(
+                "lessons: known-identifier graph lookup failed for kind=%s: %s", kind, exc
+            )
+    return names
+
+
 class LessonsServiceImpl(LessonsServiceServicer):
     """Server-side implementation of all four `LessonsService` RPCs.
 
-    `store`/`scoped_memory` are constructed from `settings` by default but
-    keyword-only injectable for tests, mirroring `KnowledgeServiceImpl`'s own
-    seams.
+    `store`/`scoped_memory`/`graph_store` are constructed from `settings` by
+    default but keyword-only injectable for tests, mirroring
+    `KnowledgeServiceImpl`'s own seams.
     """
 
     def __init__(
@@ -241,6 +349,7 @@ class LessonsServiceImpl(LessonsServiceServicer):
         *,
         store: _PendingLessonStoreLike | None = None,
         scoped_memory: _ScopedMemoryLike | None = None,
+        graph_store: _GraphStoreLike | None = None,
     ) -> None:
         self._settings = settings
         self._store: _PendingLessonStoreLike = (
@@ -249,6 +358,14 @@ class LessonsServiceImpl(LessonsServiceServicer):
         self._scoped_memory = (
             scoped_memory if scoped_memory is not None else _build_scoped_memory_manager(settings)
         )
+        self._graph_store: _GraphStoreLike = (
+            graph_store if graph_store is not None else create_graph_store(settings.graph)
+        )
+
+    def _known_identifiers(self, ctx: ScopeContext) -> list[str]:
+        """Thin instance wrapper around `_known_tenant_identifier_names` -- see that
+        function's docstring for the identifier sources and degradation contract."""
+        return _known_tenant_identifier_names(ctx, self._graph_store, self._settings)
 
     async def PromoteLesson(
         self, request: PromoteLessonRequest, context: grpc.aio.ServicerContext
@@ -260,14 +377,23 @@ class LessonsServiceImpl(LessonsServiceServicer):
         caller's own teams; `PendingLessonStore.create_pending` enforces that
         (mirrors `stores.vector._validate_team_id`) and this handler maps its
         `ValueError` to `INVALID_ARGUMENT`.
+
+        `extra_identifier_terms` (F2+F3, security review) is gathered from
+        `_known_tenant_identifier_names` -- server-authoritative names the
+        proposer cannot omit from `source_metadata` -- and forwarded into
+        `generalize_and_scrub`'s own `verify_scrubbed` call.
         """
         ctx = await _require_scope(context)
         team_id = request.team_id or None
         source_metadata = dict(request.source_metadata)
 
         with store_span("lessons.PromoteLesson", has_team=bool(team_id)):
+            extra_identifier_terms = await asyncio.to_thread(self._known_identifiers, ctx)
             result = await generalize_and_scrub(
-                ctx, request.source_content, source_metadata=source_metadata
+                ctx,
+                request.source_content,
+                source_metadata=source_metadata,
+                extra_identifier_terms=extra_identifier_terms,
             )
 
             if not result.verdict.clean:
@@ -316,11 +442,16 @@ class LessonsServiceImpl(LessonsServiceServicer):
     async def ApproveLesson(
         self, request: ApproveLessonRequest, context: grpc.aio.ServicerContext
     ) -> ApproveLessonResponse:
-        """Approve a pending lesson: writes it firm-wide (tenant visibility), then marks approved.
+        """Approve a pending lesson: verify, flip status, THEN write firm-wide.
 
         Requires `LESSONS_APPROVE_SCOPE` and enforces separation of duties --
-        see this module's docstring. The memory write is best-effort (see
-        docstring); the `pending_lessons` status transition always runs.
+        see this module's docstring. Ordering is deliberate and load-bearing
+        (F5/F6, security review -- see this module's docstring for the full
+        rationale): a failing confidentiality re-verification aborts before
+        any write or status change; the atomic PENDING -> APPROVED status
+        flip runs before, and gates, the tenant-visibility memory write --
+        never the reverse, which is exactly the race two concurrent
+        approvers could otherwise hit.
         """
         ctx = await _require_scope(context)
         await _require_flag_enabled(ctx, context)
@@ -344,6 +475,44 @@ class LessonsServiceImpl(LessonsServiceServicer):
                 )
                 raise AssertionError("unreachable")  # abort() always raises
 
+            # F6: re-verify with the server-authoritative identifier set --
+            # advisory-backstop defense in depth right before this content
+            # would go firm-wide. No status change, no write, on failure.
+            extra_identifier_terms = await asyncio.to_thread(self._known_identifiers, ctx)
+            reverify = verify_scrubbed(
+                ctx, record.generalized_text, extra_identifier_terms=extra_identifier_terms
+            )
+            if not reverify.clean:
+                logger.warning(
+                    "lessons.ApproveLesson: confidentiality re-verification failed for "
+                    "pending_id=%s (%d finding(s)) -- aborting, no status change, no write",
+                    record.id,
+                    len(reverify.findings),
+                )
+                await context.abort(
+                    grpc.StatusCode.FAILED_PRECONDITION,
+                    "confidentiality re-verification failed -- reject this lesson and have "
+                    "it re-proposed",
+                )
+                raise AssertionError("unreachable")  # abort() always raises
+
+            # F5: flip status FIRST, atomically (store.set_status's own
+            # `UPDATE ... WHERE status = 'pending'`) -- the memory write
+            # below only ever runs if this update actually affected the row.
+            try:
+                await asyncio.to_thread(
+                    self._store.set_status,
+                    ctx,
+                    request.pending_id,
+                    "approved",
+                    reviewer=ctx.user_id,
+                )
+            except LookupError as exc:
+                # Lost the race to a concurrent approver (or the row was
+                # otherwise no longer `pending`) -- no write happens.
+                await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+                raise AssertionError("unreachable") from exc  # abort() always raises
+
             write_result = await self._scoped_memory.add(
                 ctx,
                 record.generalized_text,
@@ -356,18 +525,6 @@ class LessonsServiceImpl(LessonsServiceServicer):
                     "or the penguincode.rag flag is off) for pending_id=%s",
                     record.id,
                 )
-
-            try:
-                await asyncio.to_thread(
-                    self._store.set_status,
-                    ctx,
-                    request.pending_id,
-                    "approved",
-                    reviewer=ctx.user_id,
-                )
-            except LookupError as exc:
-                await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
-                raise AssertionError("unreachable") from exc  # abort() always raises
 
         return ApproveLessonResponse(approved=True)
 
