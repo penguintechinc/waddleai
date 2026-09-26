@@ -88,6 +88,45 @@ def _require_https_or_localhost(url: str, field_name: str) -> None:
         )
 
 
+#: Asymmetric-only signing algorithms this validator will ever accept.
+#: Standalone duplicate of ``penguin_aaa.authn.types.ALLOWED_RP_ALGORITHMS``
+#: (penguincode imports neither ``penguin_aaa`` nor ``shared.auth`` -- see
+#: module docstring).
+_ALLOWED_JWT_ALGORITHMS = frozenset(
+    {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"}
+)
+
+
+def _validate_algorithm_allowlist(algorithms: Sequence[str]) -> None:
+    """Reject any algorithm outside the asymmetric allowlist -- always refuses ``none``/``HS*``.
+
+    Standalone duplicate of ``penguin_aaa.hardening.validators.validate_algorithm``
+    (same reason as ``_require_https_or_localhost`` above): an operator
+    setting ``WADDLEAI_JWT_ALGORITHMS`` to include a symmetric algorithm
+    (``HS256``/``HS384``/``HS512``) alongside a static
+    ``WADDLEAI_JWT_PUBLIC_KEY`` enables an RS256-to-HS256 key-confusion
+    forgery -- the RSA *public* key, which is not secret, is accepted by
+    ``jwt.decode`` as a valid HMAC secret, letting anyone who can read the
+    public key mint a token this validator will accept. ``none`` disables
+    signature verification entirely. Both are refused unconditionally
+    (checked ahead of, not merely absent from, the allowlist) so the error
+    names the specific reason rather than reading like a typo'd algorithm.
+    """
+    forbidden = {"none", "HS256", "HS384", "HS512"}
+    for alg in algorithms:
+        if alg in forbidden:
+            raise ValueError(
+                f"algorithm {alg!r} is explicitly forbidden for WADDLEAI_JWT_ALGORITHMS "
+                "-- symmetric/none algorithms enable key-confusion or signature-bypass "
+                "attacks against this asymmetric-only verifier"
+            )
+        if alg not in _ALLOWED_JWT_ALGORITHMS:
+            raise ValueError(
+                f"algorithm {alg!r} is not in the permitted asymmetric set: "
+                f"{sorted(_ALLOWED_JWT_ALGORITHMS)}"
+            )
+
+
 class TokenValidationError(Exception):
     """Raised when a bearer token fails extraction, signature, claims, or scope validation.
 
@@ -115,9 +154,10 @@ class JWTValidatorConfig:
     jwks_http_timeout_seconds: float = _DEFAULT_JWKS_HTTP_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
-        """Reject a plaintext-HTTP ``jwks_url`` against a non-local host."""
+        """Reject a plaintext-HTTP ``jwks_url`` against a non-local host, or a forbidden algorithm."""
         if self.jwks_url:
             _require_https_or_localhost(self.jwks_url, "jwks_url")
+        _validate_algorithm_allowlist(self.algorithms)
 
     @classmethod
     def from_env(cls) -> JWTValidatorConfig:

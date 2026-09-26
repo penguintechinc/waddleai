@@ -185,6 +185,92 @@ class TestJWTValidatorConfig:
             algorithms=("RS256",),
         )
 
+    # regression: headless-auth-secrev (M1) -- RS256-to-HS256 key-confusion
+    # forgery: an operator setting WADDLEAI_JWT_ALGORITHMS to include HS256
+    # alongside a static WADDLEAI_JWT_PUBLIC_KEY would let anyone who can
+    # read the (non-secret) RSA public key mint a token this validator
+    # accepts, by re-signing it HS256 using the public key as the HMAC
+    # secret. Construction must fail closed before that config is ever used.
+
+    def test_hs256_alongside_asymmetric_algorithms_rejected(self) -> None:
+        with pytest.raises(ValueError, match="HS256"):
+            JWTValidatorConfig(
+                public_key=PUBLIC_PEM,
+                jwks_url=None,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                algorithms=("RS256", "HS256"),
+            )
+
+    def test_hs384_and_hs512_also_rejected(self) -> None:
+        for alg in ("HS384", "HS512"):
+            with pytest.raises(ValueError, match=alg):
+                JWTValidatorConfig(
+                    public_key=PUBLIC_PEM,
+                    jwks_url=None,
+                    issuer=ISSUER,
+                    audience=AUDIENCE,
+                    algorithms=(alg,),
+                )
+
+    def test_none_algorithm_rejected(self) -> None:
+        with pytest.raises(ValueError, match="none"):
+            JWTValidatorConfig(
+                public_key=PUBLIC_PEM,
+                jwks_url=None,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                algorithms=("none",),
+            )
+
+    def test_unknown_algorithm_outside_allowlist_rejected(self) -> None:
+        with pytest.raises(ValueError, match="permitted asymmetric set"):
+            JWTValidatorConfig(
+                public_key=PUBLIC_PEM,
+                jwks_url=None,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                algorithms=("EdDSA",),
+            )
+
+    def test_rs256_default_still_constructs(self) -> None:
+        # Should not raise -- RS256 alone is the documented default.
+        JWTValidatorConfig(
+            public_key=PUBLIC_PEM,
+            jwks_url=None,
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            algorithms=("RS256",),
+        )
+
+    def test_full_asymmetric_allowlist_constructs(self) -> None:
+        # Should not raise -- every algorithm in the documented allowlist.
+        JWTValidatorConfig(
+            public_key=PUBLIC_PEM,
+            jwks_url=None,
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            algorithms=(
+                "RS256",
+                "RS384",
+                "RS512",
+                "ES256",
+                "ES384",
+                "ES512",
+                "PS256",
+                "PS384",
+                "PS512",
+            ),
+        )
+
+    def test_from_env_hs256_algorithm_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An operator misconfiguring the env var fails at startup, not silently."""
+        monkeypatch.setenv("WADDLEAI_JWT_PUBLIC_KEY", PUBLIC_PEM)
+        monkeypatch.setenv("WADDLEAI_JWT_ALGORITHMS", "RS256,HS256")
+
+        with pytest.raises(ValueError, match="HS256"):
+            JWTValidatorConfig.from_env()
+
 
 class TestWaddleAIJWTValidator:
     def test_valid_token_returns_claims(self, validator: WaddleAIJWTValidator) -> None:
