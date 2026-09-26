@@ -525,6 +525,38 @@ auth:
 
 ---
 
+## WaddleAI Authentication (`penguincode_cli/client/waddleai_auth.py`)
+
+Separate from the shared-key auth above -- this is the RS256 JWT the CLI
+attaches to gRPC calls when talking to a WaddleAI deployment, acquired and
+cached by `WaddleAITokenProvider`. All configuration is via `WADDLEAI_*`
+environment variables only, never CLI flags (see `security.md` Token &
+Secret Hygiene).
+
+| Variable | Description |
+|----------|--------------|
+| `WADDLEAI_ISSUER_URL` | Base URL of the WaddleAI management service. Unset -> local-dev fallback. |
+| `WADDLEAI_API_KEY` | Service-account key (`wa-...`) for headless/CI auth -- exchanged for a JWT via `POST /api/v1/auth/token`. Never pass as a CLI arg. |
+| `WADDLEAI_API_KEY_FILE` | Path to a file containing the service-account key (mounted K8s Secret, CI secret file). Ignored if `WADDLEAI_API_KEY` is also set. |
+| `WADDLEAI_USERNAME` / `WADDLEAI_PASSWORD` | Interactive human credentials (`POST /api/v1/auth/login`). Password prompted interactively (TTY only) if unset. |
+| `WADDLEAI_JWT_AUDIENCE` | Expected `aud` claim, client-side validated. Default: `waddleai-api`. |
+| `WADDLEAI_TOKEN_PATH` | Cache file path (owner-only permissions). Default: `~/.penguincode/waddleai_token.json`. |
+| `WADDLEAI_DEV_MODE` | Explicit opt-in to a locally self-signed token; fail-closed against non-local/PenguinTech domains. |
+| `WADDLEAI_AUTH_TIMEOUT_SECONDS` | HTTP request timeout. Default: `10`. |
+| `WADDLEAI_REFRESH_LEEWAY_SECONDS` | Renew this many seconds before expiry. Default: `60`. |
+
+**Mode precedence** (first match wins, no prompts/network calls for the modes below it):
+
+1. **Headless/machine** -- `WADDLEAI_API_KEY`/`WADDLEAI_API_KEY_FILE` set. Re-exchanges the key on renewal (no `refresh_token` in this flow); a `401` clears the cache and raises. CI-safe, no TTY required.
+2. **Interactive login** -- `WADDLEAI_USERNAME` set, no machine key. Renews via `POST /api/v1/auth/refresh` while the cached token is still unexpired.
+3. **Local-dev fallback** -- no issuer configured, or explicit `WADDLEAI_DEV_MODE=true` against a recognised local/PenguinTech domain. Never valid against a real deployment.
+
+The service-account key itself is never cached, never logged, and never
+appears unmasked in an error message (masked as `wa-****1234`) -- only the
+short-lived JWT it is exchanged for is persisted.
+
+---
+
 ## Client Configuration
 
 ```yaml
