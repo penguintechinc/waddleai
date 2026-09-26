@@ -175,6 +175,12 @@ class JWKSVerifier:
                 audience=self._config.audience,
                 issuer=self._config.issuer,
                 leeway=skew_seconds,
+                # regression: headless-auth-secrev (I1) -- without an
+                # explicit `require`, PyJWT only validates a claim *if
+                # present*; a token missing `exp` (or `iss`/`aud`/`sub`)
+                # would otherwise decode successfully instead of being
+                # rejected as malformed/incomplete.
+                options={"require": ["exp", "iss", "aud", "sub"]},
             )
         except jwt.PyJWTError as exc:
             raise JWKSVerificationError(f"Token verification failed: {exc}") from exc

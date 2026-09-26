@@ -310,6 +310,33 @@ class TestWaddleAIJWTValidator:
         with pytest.raises(TokenValidationError):
             validator.validate(token)
 
+    # regression: headless-auth-secrev (I1) -- without an explicit
+    # options={"require": [...]}, PyJWT validates a claim only when it is
+    # present, so a well-formed, correctly-signed token that simply omits
+    # `exp` would decode successfully and skip expiry checking entirely
+    # (likewise `sub`) rather than being rejected as incomplete.
+
+    @pytest.mark.parametrize("omit", ["exp", "iss", "aud", "sub"])
+    def test_token_missing_a_critical_claim_is_rejected(
+        self, validator: WaddleAIJWTValidator, omit: str
+    ) -> None:
+        now = datetime.now(UTC)
+        claims: dict[str, Any] = {
+            "sub": "user-123",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "iat": now,
+            "exp": now + timedelta(hours=1),
+            "tenant": "tenant-abc",
+            "teams": [],
+            "scope": ["widgets:read"],
+        }
+        del claims[omit]
+        token = jwt.encode(claims, PRIVATE_PEM, algorithm="RS256")
+
+        with pytest.raises(TokenValidationError):
+            validator.validate(token)
+
     def test_missing_tenant_claim_rejected_as_token_error(
         self, validator: WaddleAIJWTValidator
     ) -> None:

@@ -271,6 +271,87 @@ class TestFailClosedOnBadToken:
             verifier.verify_token(token)
 
 
+def _make_token_missing_claim(private_key: RSAPrivateKey, kid: str, *, omit: str) -> str:
+    """Sign an otherwise-valid RS256 token with *omit* dropped from its claims.
+
+    Used to prove PyJWT only validates a claim if it is present -- a
+    well-formed, correctly-signed token that simply never carries ``exp``
+    (or ``iss``/``aud``/``sub``) would decode successfully without
+    ``options={"require": [...]}``.
+    """
+    now = datetime.now(UTC)
+    claims = {
+        "sub": "user-123",
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "iat": now,
+        "exp": now + timedelta(hours=1),
+        "tenant": "tenant-abc",
+        "scope": ["widgets:read"],
+        "teams": [],
+    }
+    del claims[omit]
+    return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": kid})
+
+
+class TestRequiredClaims:
+    """A signature-valid token missing a critical claim is still rejected.
+
+    regression: headless-auth-secrev (I1) -- without an explicit
+    ``options={"require": [...]}``, PyJWT validates a claim only when it is
+    present, so a token that simply omits ``exp`` would skip expiry
+    checking entirely (and likewise for ``iss``/``aud``/``sub``) rather
+    than being rejected as incomplete.
+    """
+
+    @pytest.mark.parametrize("omit", ["exp", "iss", "aud", "sub"])
+    def test_token_missing_a_critical_claim_is_rejected(
+        self, jwks_server: _JWKSTestServer, omit: str
+    ) -> None:
+        """A signature-valid token that simply omits *omit* is still rejected."""
+        key = _rsa_keypair()
+        jwks_server.set_keys({"kid-a": _jwk_for(key, "kid-a")})
+        verifier = JWKSVerifier(_config(jwks_server.url))
+
+        token = _make_token_missing_claim(key, "kid-a", omit=omit)
+        with pytest.raises(JWKSVerificationError):
+            verifier.verify_token(token)
+
+    def test_decode_is_called_with_the_required_claims_option(
+        self, jwks_server: _JWKSTestServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Assert the fix mechanism directly, not just the outcome.
+
+        The downstream ``Claims`` pydantic model (``sub``/``iss``/``aud``/
+        ``exp`` are all non-Optional fields) already rejects a payload
+        missing any of them, which is why the behavioural test above passes
+        even without this module's own ``options={"require": [...]}`` --
+        that safety net is specific to this file and does not exist in
+        ``penguincode``'s independent validator (see
+        ``test_auth_middleware.py``'s equivalent test, where omitting
+        ``exp``/``sub`` previously decoded successfully). This test pins the
+        ``jwt.decode`` call itself so a future edit cannot silently drop the
+        option and rely on the pydantic model alone.
+        """
+        key = _rsa_keypair()
+        jwks_server.set_keys({"kid-a": _jwk_for(key, "kid-a")})
+        verifier = JWKSVerifier(_config(jwks_server.url))
+        token = _make_token(key, "kid-a")
+
+        real_decode = jwt.decode
+        captured: dict[str, Any] = {}
+
+        def _spy_decode(*args: Any, **kwargs: Any) -> Any:
+            captured.update(kwargs)
+            return real_decode(*args, **kwargs)
+
+        monkeypatch.setattr(jwt, "decode", _spy_decode)
+        verifier.verify_token(token)
+
+        required = set((captured.get("options") or {}).get("require", []))
+        assert {"exp", "iss", "aud", "sub"} <= required
+
+
 class TestJWKSAvailability:
     """Cached-vs-uncached behavior when the JWKS endpoint is unreachable."""
 
