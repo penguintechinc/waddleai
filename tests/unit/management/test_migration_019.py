@@ -192,4 +192,4 @@ def test_single_alembic_head_no_divergent_branches() -> None:
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "021_audit_log"
+    assert heads[0] == "022_service_account_fields"
