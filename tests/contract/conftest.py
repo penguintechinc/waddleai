@@ -119,6 +119,18 @@ def management_url(tmp_path_factory):
         "ADMIN_INITIAL_PASSWORD": "admin123",
         "WEBHOOK_SECRET": "contract-webhook-secret",
         "CREDENTIAL_ENCRYPTION_KEY": CONTRACT_ONLY_ENCRYPTION_KEY,
+        # AUTH_RATE_LIMIT_ENABLED=false: the session-scoped process above is
+        # shared across every test in the module, and the contract suite logs
+        # in via /auth/login on nearly every test to get a fresh token, which
+        # trips the (correct, production-default 10/min) in-app rate limiter
+        # (services/management/app/services/rate_limiter.py) partway through
+        # the module and starts returning 429s with no access_token. The
+        # limiter itself is covered by services.management's own unit suite
+        # (TestAuthRateLimit in tests/unit/management/test_auth_routes.py);
+        # this harness verifies API *shape*, not request-volume throttling, so
+        # disabling it here does not weaken the control -- the production
+        # default (enabled, 10/min) is untouched.
+        "AUTH_RATE_LIMIT_ENABLED": "false",
     }
     proc = _launch(
         entry,
