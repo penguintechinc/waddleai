@@ -15,6 +15,10 @@ from __future__ import annotations
 import pytest
 
 from penguincode_cli.proto import (
+    CleanupIndexRequest,
+    CleanupIndexResponse,
+    ClearIndexRequest,
+    ClearIndexResponse,
     CodeGraphStatusRequest,
     CodeGraphStatusResponse,
     GraphEdge,
@@ -23,9 +27,13 @@ from penguincode_cli.proto import (
     IndexCodeResponse,
     IndexRequest,
     IndexResponse,
+    IndexStatusRequest,
+    IndexStatusResponse,
     KnowledgeServiceServicer,
     KnowledgeServiceStub,
     Language,
+    LanguageIndexStatus,
+    LibraryIndexStatus,
     LibraryTarget,
     MemoryAddRequest,
     MemoryAddResponse,
@@ -51,6 +59,9 @@ _REQUEST_MESSAGE_TYPES = (
     MemorySearchRequest,
     IndexCodeRequest,
     CodeGraphStatusRequest,
+    IndexStatusRequest,
+    ClearIndexRequest,
+    CleanupIndexRequest,
 )
 
 #: Field names that would leak client-supplied identity into the scope
@@ -76,15 +87,25 @@ def test_request_never_carries_forbidden_scope_fields(message_type: type) -> Non
     assert not leaked, f"{message_type.__name__} leaks scope field(s): {leaked}"
 
 
-def test_knowledge_service_stub_has_all_six_rpcs() -> None:
-    """`KnowledgeServiceStub` wires exactly the six RPCs F1 defines.
+def test_knowledge_service_stub_has_all_nine_rpcs() -> None:
+    """`KnowledgeServiceStub` wires exactly the nine RPCs F1+C1 define.
 
     A stub's RPC attributes are only set on `channel.unary_unary(...)` calls
     inside `__init__` (a real `grpc.Channel` is F2/F3's concern, not F1's) --
     verified here via the servicer instead, which declares each RPC as a
     plain method, introspectable with no channel at all.
     """
-    expected = {"Index", "Query", "MemoryAdd", "MemorySearch", "IndexCode", "CodeGraphStatus"}
+    expected = {
+        "Index",
+        "Query",
+        "MemoryAdd",
+        "MemorySearch",
+        "IndexCode",
+        "CodeGraphStatus",
+        "IndexStatus",
+        "ClearIndex",
+        "CleanupIndex",
+    }
     methods = {name for name in vars(KnowledgeServiceServicer) if not name.startswith("_")}
     assert methods == expected
     assert KnowledgeServiceStub.__init__.__code__.co_argcount == 2  # (self, channel)
@@ -173,3 +194,68 @@ def test_index_code_and_code_graph_status_shapes() -> None:
     status_response = CodeGraphStatusResponse(enabled=True, node_count=12, edge_count=30)
     assert status_request.api_version == "v1"
     assert status_response.enabled is True
+
+
+# regression: docs-index-mgmt (C1 -- IndexStatus/ClearIndex/CleanupIndex proto contract)
+
+
+def test_index_status_response_mirrors_get_index_status_shape() -> None:
+    """`IndexStatusResponse` mirrors `DocumentationIndexer.get_index_status`'s dict shape:
+    per-library/language status maps + a total chunk count.
+    """
+    request = IndexStatusRequest(api_version="v1")
+    response = IndexStatusResponse(total_chunks=10)
+    response.libraries["fastapi"].CopyFrom(
+        LibraryIndexStatus(
+            chunk_count=7,
+            indexed_at="2026-09-25T00:00:00",
+            expires_at="2026-10-02T00:00:00",
+            is_expired=False,
+            language="python",
+        )
+    )
+    response.languages["rust"].CopyFrom(
+        LanguageIndexStatus(
+            chunk_count=3,
+            indexed_at="2026-09-25T00:00:00",
+            expires_at="2026-10-02T00:00:00",
+            is_expired=True,
+        )
+    )
+
+    assert request.api_version == "v1"
+    assert response.total_chunks == 10
+    assert response.libraries["fastapi"].chunk_count == 7
+    assert response.libraries["fastapi"].language == "python"
+    assert response.languages["rust"].is_expired is True
+
+
+def test_clear_index_request_oneof_target() -> None:
+    """`ClearIndexRequest.target` accepts either a bare library name or a `Language`."""
+    by_library = ClearIndexRequest(api_version="v1", library_name="fastapi")
+    assert by_library.WhichOneof("target") == "library_name"
+    assert by_library.library_name == "fastapi"
+
+    by_language = ClearIndexRequest(api_version="v1", language=Language.LANGUAGE_RUST)
+    assert by_language.WhichOneof("target") == "language"
+    assert by_language.language == Language.LANGUAGE_RUST
+
+    response = ClearIndexResponse(chunks_removed=5)
+    assert response.chunks_removed == 5
+
+
+def test_cleanup_index_request_and_response_shapes() -> None:
+    """`CleanupIndexRequest` carries the caller's current project state;
+    `CleanupIndexResponse` mirrors `cleanup_unused`'s `{name: chunks_removed}` shape.
+    """
+    request = CleanupIndexRequest(
+        api_version="v1",
+        current_libraries=[LibraryTarget(name="fastapi", language=Language.LANGUAGE_PYTHON)],
+        current_languages=[Language.LANGUAGE_RUST],
+    )
+    response = CleanupIndexResponse(removed={"old-lib": 4, "_lang_go": 2})
+
+    assert request.current_libraries[0].name == "fastapi"
+    assert request.current_languages[0] == Language.LANGUAGE_RUST
+    assert response.removed["old-lib"] == 4
+    assert response.removed["_lang_go"] == 2
