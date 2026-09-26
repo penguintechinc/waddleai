@@ -3010,6 +3010,42 @@ info:
   version: '1'
 openapi: 3.1.0
 paths:
+  /.well-known/jwks.json:
+    get:
+      description: '
+
+        ``OIDCProvider.jwks()`` delegates to the keystore''s ``get_jwks()``, which
+
+        serialises ``private_key.public_key()`` for every active key -- private
+
+        key material is never constructed for, or reachable from, this response.'
+      operationId: get_jwks
+      parameters: []
+      responses:
+        '200': &id001
+          description: Response schema not yet annotated with @validate_response --
+            see docs/APP_STANDARDS.md OpenAPI coverage notes. The endpoint itself
+            is real and reachable; only its documented shape is pending.
+      summary: Return the JSON Web Key Set of this process's active PUBLIC signing
+        keys.
+  /.well-known/openid-configuration:
+    get:
+      description: '
+
+        ``issuer``/``jwks_uri``/``*_endpoint`` are all derived from
+
+        ``OIDC_ISSUER_URL`` (see ``shared.auth.penguin_auth.create_oidc_provider``),
+
+        so they resolve to this service''s real, externally-reachable base URL as
+
+        long as that env var is set to it -- required for any external validator
+
+        (H4) to be able to follow ``jwks_uri`` back to the route above.'
+      operationId: get_discovery
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Return the OIDC discovery document for this issuer.
   /api/v1/auth/change-password:
     post:
       description: ''
@@ -3251,6 +3287,67 @@ paths:
       security:
       - bearerAuth: []
       summary: Refresh JWT token.
+      tags:
+      - Auth
+  /api/v1/auth/token:
+    post:
+      description: '
+
+        The headless/CI/service-to-service equivalent of ``/auth/login``:
+
+        unauthenticated at the middleware layer (no ``@require_auth``) because the
+
+        credential being exchanged -- a ``wa-`` virtual key presented as
+
+        ``Authorization: Bearer wa-...`` -- *is* the authentication, exactly like
+        a
+
+        username/password pair on ``/auth/login``. Never a query parameter: query
+
+        strings land in access logs and browser history, which is the opposite of
+
+        what a short-lived credential exchange needs.
+
+
+        Scope, role and organization all come from the key owner''s row via
+
+        ``verify_api_key`` -- nothing here is caller-supplied. A service-account
+
+        owner (H1''s ``is_service_account``) yields the same claim shape as a human
+
+        owner and works identically; there is no separate machine-token claim
+
+        shape for validators to special-case.'
+      operationId: post_token_exchange
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /api/v1/auth/token (headless API-key
+                  exchange).
+                properties:
+                  access_token:
+                    title: Access Token
+                    type: string
+                  expires_in:
+                    title: Expires In
+                    type: integer
+                  token_type:
+                    title: Token Type
+                    type: string
+                required:
+                - access_token
+                - token_type
+                - expires_in
+                title: TokenExchangeResponse
+                type: object
+          description: Response body for POST /api/v1/auth/token (headless API-key
+            exchange).
+      security:
+      - bearerAuth: []
+      summary: Exchange a service-account API key for a short-lived bearer JWT.
       tags:
       - Auth
   /api/v1/auth/verify:
@@ -3598,10 +3695,7 @@ paths:
       operationId: get_swagger_docs_ui
       parameters: []
       responses:
-        '200': &id001
-          description: Response schema not yet annotated with @validate_response --
-            see docs/APP_STANDARDS.md OpenAPI coverage notes. The endpoint itself
-            is real and reachable; only its documented shape is pending.
+        '200': *id001
       summary: Authenticated Swagger UI, rendered against the gated full spec.
   /api/v1/embedding-config:
     get:
@@ -10950,6 +11044,45 @@ paths:
                 type: object
           description: Response body for PUT /<id>.
       summary: Update selected fields of an existing security policy.
+  /api/v1/system/signing-key/rotate:
+    post:
+      description: '
+
+        Gated in-handler on ``Permission.SYSTEM_CONFIG`` (admin-exclusive, see
+
+        ``shared/auth/rbac.py``) rather than the ``@require_scope`` decorator,
+
+        matching this codebase''s convention for operational/self-service routes
+
+        that must not be swept into ``test_scope_authz.py``''s audited
+
+        ``@require_scope`` route count.'
+      operationId: post_rotate_signing_key_route
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /api/v1/system/signing-key/rotate.
+                properties:
+                  active_kid:
+                    title: Active Kid
+                    type: string
+                  published_key_count:
+                    title: Published Key Count
+                    type: integer
+                  rotated:
+                    title: Rotated
+                    type: boolean
+                required:
+                - rotated
+                - active_kid
+                - published_key_count
+                title: SigningKeyRotateResponse
+                type: object
+          description: Response body for POST /api/v1/system/signing-key/rotate.
+      summary: Rotate the OIDC signing keystore's active key (admin only).
   /api/v1/usage/by-key:
     get:
       description: ''

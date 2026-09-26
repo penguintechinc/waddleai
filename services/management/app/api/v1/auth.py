@@ -22,6 +22,11 @@ from shared.auth.rbac import ROLE_PERMISSIONS, Permission, Role, UserContext
 
 from ...extensions import db
 from ...services.login_throttle import ThrottleDecision, account_key, get_login_throttle
+from ...services.rate_limiter import (
+    RateLimitDecision,
+    client_rate_limit_key,
+    get_auth_rate_limiter,
+)
 from ...services.token_denylist import get_token_denylist
 from . import api_v1_bp
 
@@ -200,6 +205,15 @@ class MessageResponse:
 @dataclass(slots=True)
 class RefreshTokenResponse:
     """Response body for a successful token refresh."""
+
+    access_token: str
+    token_type: str
+    expires_in: int
+
+
+@dataclass(slots=True)
+class TokenExchangeResponse:
+    """Response body for POST /api/v1/auth/token (headless API-key exchange)."""
 
     access_token: str
     token_type: str
@@ -683,6 +697,21 @@ def _throttled_response(decision: ThrottleDecision) -> Response:
     return response
 
 
+def _rate_limited_response(decision: RateLimitDecision) -> Response:
+    """Return the generic 429 issued when the request-volume limiter trips.
+
+    Distinct from :func:`_throttled_response`: this guards raw request
+    *volume* on an unauthenticated credential-verification route (headless-
+    auth-secrev M2), independent of whether any individual request went on
+    to fail credential checks.
+    """
+    retry_after = max(1, decision.retry_after_seconds)
+    response = jsonify({"error": "Too many requests. Try again later."})
+    response.status_code = 429
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
 @api_v1_bp.route("/auth/login", methods=["POST"])
 @tag(["Auth"])
 @validate_response(LoginResponse, 200)
@@ -713,6 +742,20 @@ async def login(data: LoginRequest):
 
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
+
+    # M2 (headless-auth-secrev): raw request-volume limiter, independent of
+    # (and checked before) the account-scoped failure lockout below -- see
+    # rate_limiter.py's module docstring for why the two controls coexist.
+    # Keyed on the submitted *username* -- a non-secret identifier -- never
+    # the password (CodeQL py/weak-sensitive-data-hashing).
+    limiter = get_auth_rate_limiter()
+    rate_decision = limiter.check(client_rate_limit_key(request.remote_addr, username))
+    if not rate_decision.allowed:
+        logger.warning(
+            "auth: login refused, rate limit exceeded (account_hash=%s)",
+            account_key(username)[:12],
+        )
+        return _rate_limited_response(rate_decision)
 
     throttle = get_login_throttle()
     decision = await asyncio.to_thread(throttle.check, username)
@@ -790,6 +833,74 @@ async def login(data: LoginRequest):
             "role": user.role,
             "organization_id": user.organization_id,
         },
+    }
+
+
+@api_v1_bp.route("/auth/token", methods=["POST"])
+@tag(["Auth"])
+@security_scheme(_BEARER_AUTH)
+@validate_response(TokenExchangeResponse, 200)
+async def token_exchange():
+    """Exchange a service-account API key for a short-lived bearer JWT.
+
+    The headless/CI/service-to-service equivalent of ``/auth/login``:
+    unauthenticated at the middleware layer (no ``@require_auth``) because the
+    credential being exchanged -- a ``wa-`` virtual key presented as
+    ``Authorization: Bearer wa-...`` -- *is* the authentication, exactly like a
+    username/password pair on ``/auth/login``. Never a query parameter: query
+    strings land in access logs and browser history, which is the opposite of
+    what a short-lived credential exchange needs.
+
+    Scope, role and organization all come from the key owner's row via
+    ``verify_api_key`` -- nothing here is caller-supplied. A service-account
+    owner (H1's ``is_service_account``) yields the same claim shape as a human
+    owner and works identically; there is no separate machine-token claim
+    shape for validators to special-case.
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Authorization header required"}), 401
+
+    api_key = auth_header.split(" ", 1)[1]
+
+    # M2 (headless-auth-secrev): raw request-volume limiter, same control as
+    # /auth/login above -- keyed on the key's public `key_prefix` lookup
+    # handle (parsed the same way `verify_api_key` narrows its DB query,
+    # below), never the raw presented key, which still carries the secret.
+    # `key_prefix` is already treated as non-secret elsewhere in this
+    # service (returned verbatim in `keys.py` list/create responses), so
+    # hashing it here does not run afoul of CodeQL's
+    # py/weak-sensitive-data-hashing check the way hashing the full secret
+    # did. An unparseable key collapses to an IP-only bucket rather than
+    # skipping the limiter.
+    limiter = get_auth_rate_limiter()
+    rate_decision = limiter.check(
+        client_rate_limit_key(request.remote_addr, _virtual_key_prefix(api_key))
+    )
+    if not rate_decision.allowed:
+        logger.warning("auth: token exchange refused, rate limit exceeded")
+        return _rate_limited_response(rate_decision)
+
+    # Same generic 401 and log line regardless of *why* the key was refused
+    # (unknown, disabled, wrong org) -- mirrors /auth/login's refusal to
+    # distinguish failure modes, and the key value itself never appears in
+    # the log or the response.
+    user_ctx = await asyncio.to_thread(verify_api_key, api_key)
+    if user_ctx is None:
+        logger.info("auth: token exchange refused for an invalid or disabled API key")
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    issued = issue_access_token(
+        user_id=user_ctx["user_id"],
+        username=user_ctx["username"],
+        role=user_ctx["role"],
+        organization_id=user_ctx["organization_id"],
+    )
+
+    return {
+        "access_token": issued.access_token,
+        "token_type": "bearer",
+        "expires_in": issued.expires_in,
     }
 
 

@@ -81,6 +81,20 @@ class User(Base):
     last_login_ip = Column(String(50))
     current_login_ip = Column(String(50))
     login_count = Column(Integer, default=0)
+    # Headless/service-account auth (H1, docs/superpowers/specs/2026-07-09-
+    # waddleai-platform-spec.md §14.6). A service-account owner still yields
+    # the same (role, organization_id, managed_orgs) claim shape --
+    # shared/auth/rbac.py::_build_user_context never reads either field, so
+    # scope derivation is unaffected. Both exist purely for seat-metering
+    # exclusion (shared/licensing/seats.py) and audit display.
+    is_service_account = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Free-form but documented: "ci", "agent" are customer-provisioned
+    # machine identities (billable seats); "health-check", "migration-runner"
+    # are WaddleAI's own internal plumbing (see
+    # shared/licensing/seats.py::INTERNAL_SERVICE_KINDS) and never a seat.
+    service_kind = Column(String(50), nullable=True)
 
 
 class APIKey(Base):
@@ -1440,10 +1454,27 @@ def init_schema(database_url: str):
                     "WITH (lists = 100)"
                 )
             )
+            # regression: headless-auth (H1) -- these two CREATE INDEX
+            # statements were previously concatenated into a single `text()`
+            # call with no statement separator ("...vector_cosine_ops)CREATE
+            # INDEX..."), which psycopg2 rejects outright as a syntax error.
+            # init_schema() is the sole schema-bootstrap path on a genuinely
+            # fresh database (gh-207 defect 4), so this raised on every real
+            # first-time deploy with pgvector available, aborting init_schema()
+            # before it returned -- caught here only because this branch's
+            # live-Postgres regression test (tests/integration/
+            # test_ha_h1_service_account_seats.py) actually calls init_schema()
+            # against a real Postgres container; every other caller either
+            # mocks the engine or runs against sqlite (vector_available=False,
+            # so this block never executed).
             conn.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS idx_rce_prompt_embedding_hnsw "
                     "ON response_cache_entries USING hnsw (prompt_embedding vector_cosine_ops)"
+                )
+            )
+            conn.execute(
+                text(
                     "CREATE INDEX IF NOT EXISTS docs_cache_pages_emb_idx "
                     "ON docs_cache_pages USING ivfflat (embedding vector_cosine_ops) "
                     "WITH (lists = 100)"

@@ -3,6 +3,8 @@
 Provides OIDC token issuance, validation, and scope-based authorization.
 """
 
+import asyncio
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,15 +21,71 @@ from penguin_aaa.authz.rbac import RBACEnforcer
 from penguin_aaa.authz.rbac import Role as AAARole
 from penguin_aaa.crypto.keystore import FileKeyStore, KeyStore, MemoryKeyStore
 
+from shared.auth.jwks_verifier import JWKSVerificationError, JWKSVerifier, create_jwks_verifier
 from shared.auth.rbac import ROLE_PERMISSIONS, AuthenticationError, Role, UserContext
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Factory helpers
 # ---------------------------------------------------------------------------
 
+# Environments where an ephemeral, per-process signing keystore is tolerable.
+# Mirrors services/management/{asgi,wsgi}.py's own FLASK_ENV switch (default
+# "production" -- unset means production, fail closed), so this guard always
+# agrees with which Config class the service actually booted with.
+_DEV_ENVIRONMENTS = frozenset({"development", "testing"})
+
+# Opt-in: raise instead of warn when falling back to an ephemeral keystore
+# outside development/testing. Off by default so this function stays a
+# no-op for every *existing* caller. services/management opts in (see
+# app/__init__.py) because it is the service responsible for publishing a
+# JWKS other validators rely on (H3's /.well-known/jwks.json), where a
+# per-replica keypair is a real outage, not a tolerable default. The proxy
+# (H4) now validates against that published JWKS via JWKSOIDCRelyingParty
+# below rather than this process's own keystore, but still calls
+# create_oidc_provider() to mint its WADDLEAI_STUB_UPSTREAM=1 contract-test
+# tokens -- see main.py's ProxyServer.startup()/_seed_contract_test_data().
+_STRICT_KEYSTORE_ENV_VAR = "OIDC_REQUIRE_DURABLE_KEYSTORE"
+
+
+class OIDCKeystoreMisconfiguredError(RuntimeError):
+    """Raised when create_oidc_provider() cannot build a durable signing keystore.
+
+    ``MemoryKeyStore`` generates a fresh RSA keypair per process and never
+    persists it. In a single-process dev/test run that is harmless; outside
+    one, it silently desyncs every replica's (and every restart's) signing
+    key from the JWKS this service publishes at ``/.well-known/jwks.json``,
+    so a token signed by one pod fails verification everywhere the pod's
+    key was never published (regression: headless-auth H3).
+    """
+
+
+def _running_in_dev_environment() -> bool:
+    """True when ``FLASK_ENV`` names a non-production environment."""
+    return os.getenv("FLASK_ENV", "production").lower() in _DEV_ENVIRONMENTS
+
+
+def _durable_keystore_required() -> bool:
+    """True when the caller has opted into refusing an ephemeral keystore fallback."""
+    return os.getenv(_STRICT_KEYSTORE_ENV_VAR, "false").lower() == "true"
+
 
 def create_oidc_provider() -> OIDCProvider:
-    """Create OIDC token provider for WaddleAI."""
+    """Create OIDC token provider for WaddleAI.
+
+    Outside development/testing, the signing keystore should be durable and
+    identical across every replica -- ``SIGNING_KEY_FILE`` pointing at a path
+    every pod mounts from the same Secret/PVC is the only supported option
+    today. A caller that sets ``OIDC_REQUIRE_DURABLE_KEYSTORE=true`` (see
+    ``services/management/app/__init__.py``, the service this task makes
+    responsible for publishing a JWKS other validators rely on) gets a hard
+    failure instead of a fallback: an ephemeral, per-process keypair there is
+    a deployment misconfiguration that surfaces later as intermittent 401s
+    spread across replicas, not a condition to discover in production (see
+    ``OIDCKeystoreMisconfiguredError``). Every other caller gets a loud
+    warning and keeps working exactly as before.
+    """
     issuer = os.getenv("OIDC_ISSUER_URL", "https://waddleai.localhost.local")
     config = OIDCProviderConfig(
         issuer=issuer,
@@ -41,10 +99,61 @@ def create_oidc_provider() -> OIDCProvider:
     keystore: KeyStore
     if key_file and os.path.exists(key_file):
         keystore = FileKeyStore(path=Path(key_file))
-    else:
+    elif _running_in_dev_environment():
         keystore = MemoryKeyStore(algorithm="RS256")
+    elif not _durable_keystore_required():
+        flask_env = os.getenv("FLASK_ENV", "production")
+        logger.warning(
+            "OIDC signing keystore is an ephemeral MemoryKeyStore outside a "
+            "development/testing environment (FLASK_ENV=%r) -- each replica "
+            "mints its own keypair, so a token signed by one pod can fail "
+            "verification anywhere that pod's key was never published. Set "
+            "SIGNING_KEY_FILE to a path backed by a Secret/PVC shared by "
+            "every replica.",
+            flask_env,
+        )
+        keystore = MemoryKeyStore(algorithm="RS256")
+    else:
+        flask_env = os.getenv("FLASK_ENV", "production")
+        raise OIDCKeystoreMisconfiguredError(
+            "SIGNING_KEY_FILE is not set (or its path does not exist), "
+            f"FLASK_ENV={flask_env!r} is not development/testing, and "
+            f"{_STRICT_KEYSTORE_ENV_VAR}=true. Refusing to fall back to an "
+            "in-memory signing key: every replica would mint its own "
+            "keypair, and the JWKS this service publishes would never match "
+            "the key that actually signed a given token. Set "
+            "SIGNING_KEY_FILE to a path backed by a Secret/PVC shared by "
+            "every replica, or set FLASK_ENV=development for a "
+            "single-process local run."
+        )
 
     return OIDCProvider(config, keystore)
+
+
+def rotate_signing_key(provider: OIDCProvider) -> None:
+    """Rotate *provider*'s active signing key.
+
+    The keystore (``MemoryKeyStore``/``FileKeyStore``, both cap at 3 keys)
+    retains prior keys in its published JWKS until they age out, so
+    validators mid-rotation still accept tokens signed moments earlier under
+    the old ``kid``. ``provider._keystore`` is accessed directly because
+    ``OIDCProvider`` does not expose keystore mutation publicly -- the same
+    precedent ``verify_token()`` below already relies on to fetch the
+    signing key for local verification.
+    """
+    provider._keystore.rotate_key()
+
+
+def active_signing_kid(provider: OIDCProvider) -> str:
+    """Return the ``kid`` of *provider*'s current signing key.
+
+    Same private-attribute precedent as ``rotate_signing_key()``/
+    ``verify_token()`` above -- centralised here so callers (e.g. the
+    signing-key rotation route) never need to reach into
+    ``provider._keystore`` themselves.
+    """
+    _, kid = provider._keystore.get_signing_key()
+    return kid
 
 
 def create_oidc_rp() -> OIDCRelyingParty:
@@ -62,45 +171,73 @@ def create_oidc_rp() -> OIDCRelyingParty:
     return OIDCRelyingParty(config)
 
 
-class LocalOIDCRelyingParty:
-    """Relying party for WaddleAI's own self-issued RS256 tokens.
+def verify_token_via_jwks(token: str, verifier: JWKSVerifier) -> UserContext:
+    """Verify a WaddleAI-issued RS256 token via a published JWKS; return UserContext.
 
-    WaddleAI's proxy is self-contained: ``create_oidc_provider()`` builds an
-    in-memory/file keystore that both issues (``issue_token``) and validates
-    (``verify_token``) tokens for this same process -- there is no external
-    OIDC issuer and no published JWKS endpoint. ``penguin_aaa.authn.oidc_rp
-    .OIDCRelyingParty`` validates tokens by fetching JWKS from an external
-    issuer's discovery document over HTTP, which cannot work against a
-    self-issued token: there is nothing to discover. This class gives
-    ``penguin_aaa.middleware.asgi.OIDCAuthMiddleware`` (which requires an
-    object exposing ``async def verify_token(raw_token) -> Claims``) a
-    relying party that validates self-issued tokens the same way
-    ``get_current_user()``'s Bearer-JWT path already does, against the same
-    provider keystore -- no network call, no external issuer.
+    The JWKS-backed counterpart to ``verify_token()`` above -- same
+    ``claims_to_user_context`` conversion, so every downstream consumer
+    (RBAC checks, audit logging, MCP tool context) is identical regardless
+    of whether the signing key was resolved from this process's own
+    keystore or fetched from an external issuer's JWKS by ``kid``.
 
-    ``create_oidc_rp()``/``OIDCRelyingParty`` remain available for a future
-    external-IdP/SSO integration (Pro tier, enterprise-only, license-gated)
-    but are not wired into the proxy's ASGI middleware.
+    Raises:
+        AuthenticationError: The token failed JWKS-backed verification for
+            any reason (bad signature, expired, wrong issuer/audience,
+            unknown ``kid``, or the JWKS endpoint being unreachable with
+            nothing usable cached) -- see JWKSVerifier.verify_token.
+    """
+    try:
+        claims = verifier.verify_token(token)
+    except JWKSVerificationError as exc:
+        raise AuthenticationError(str(exc)) from exc
+    return claims_to_user_context(claims)
+
+
+class JWKSOIDCRelyingParty:
+    """Relying party validating WaddleAI RS256 tokens against a published JWKS.
+
+    Headless-auth H4: replaces the proxy's former ``LocalOIDCRelyingParty``
+    (which validated only against this same process's own keystore, and so
+    silently desynced across replicas without a shared ``SIGNING_KEY_FILE``
+    mount). This relying party instead fetches the issuer's *public* keys
+    from its JWKS endpoint (management's ``/.well-known/jwks.json``, H3) and
+    selects the verification key by the token's ``kid`` header -- any
+    process holding the private key can issue a token this validates,
+    without ever sharing key material. See ``shared.auth.jwks_verifier``
+    for the caching/rotation/fail-closed contract.
+
+    Gives ``penguin_aaa.middleware.asgi.OIDCAuthMiddleware`` (which requires
+    an object exposing ``async def verify_token(raw_token) -> Claims``) a
+    relying party returning the same claims-dict shape
+    ``LocalOIDCRelyingParty`` did, so ``AuditMiddleware``/``get_current_user``
+    ``.get("sub")``-style consumers are unaffected by the swap.
     """
 
-    def __init__(self, provider: OIDCProvider) -> None:
-        """Bind this relying party to the process-local self-issuing *provider*."""
-        self._provider = provider
+    def __init__(self, verifier: JWKSVerifier) -> None:
+        """Bind this relying party to *verifier* (see create_jwks_verifier())."""
+        self._verifier = verifier
 
     async def verify_token(self, raw_token: str) -> dict:
-        """Validate a self-issued token; raises AuthenticationError on failure.
+        """Validate *raw_token* against the JWKS; raises AuthenticationError on failure.
 
-        Returns a full claims dict (see user_context_to_claims_dict) carrying
-        the complete user context, enabling downstream code to reconstruct
-        the UserContext without re-running token verification.
+        ``JWKSVerifier.verify_token`` does blocking network I/O on a JWKS
+        cache miss (``jwt.PyJWKClient`` uses ``urllib``, not an async HTTP
+        client) -- offloaded to a worker thread so a cache-cold request
+        never blocks the event loop from servicing other connections.
         """
-        user_context = verify_token(raw_token, self._provider)
+        user_context = await asyncio.to_thread(verify_token_via_jwks, raw_token, self._verifier)
         return user_context_to_claims_dict(user_context)
 
 
-def create_local_oidc_rp(provider: OIDCProvider) -> LocalOIDCRelyingParty:
-    """Create the relying party used by the proxy's ASGI OIDC middleware."""
-    return LocalOIDCRelyingParty(provider)
+def create_jwks_oidc_rp(verifier: JWKSVerifier | None = None) -> JWKSOIDCRelyingParty:
+    """Create the relying party used by the proxy's ASGI OIDC middleware.
+
+    *verifier* defaults to ``create_jwks_verifier()`` (env-configured, real
+    HTTP JWKS fetch); callers with no live external JWKS endpoint to fetch
+    from (the contract-test harness -- see main.py's ProxyServer.startup())
+    may inject one built around an in-process signing-key resolver instead.
+    """
+    return JWKSOIDCRelyingParty(verifier or create_jwks_verifier())
 
 
 def build_rbac_enforcer() -> RBACEnforcer:

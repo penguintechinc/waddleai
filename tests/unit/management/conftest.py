@@ -422,6 +422,15 @@ def app_mock_db(flask_app) -> MagicMock:
 
 @lru_cache(maxsize=1)
 def _test_oidc_provider():
+    """Build the shared test OIDC provider under a dev-tier FLASK_ENV.
+
+    ``create_oidc_provider()`` refuses a ``MemoryKeyStore`` fallback outside
+    development/testing (see ``shared.auth.penguin_auth
+    .OIDCKeystoreMisconfiguredError``); unit tests never set ``FLASK_ENV`` in
+    the real process environment, so ``setdefault`` here is what keeps this
+    call from being treated as a production boot with no ``SIGNING_KEY_FILE``.
+    """
+    os.environ.setdefault("FLASK_ENV", "testing")
     return create_oidc_provider()
 
 
