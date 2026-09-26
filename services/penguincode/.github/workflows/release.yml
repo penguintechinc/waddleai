@@ -62,7 +62,7 @@ jobs:
           Edit `config.yaml` to configure:
           - Ollama models and endpoints
           - Research engine selection
-          - Memory layer (ChromaDB, Qdrant, or PGVector)
+          - Memory layer (PGVector -- the shared WaddleAI Postgres pgvector store; ChromaDB was removed platform-wide, T9)
           - GPU settings and rate limiting
 
           ### Requirements

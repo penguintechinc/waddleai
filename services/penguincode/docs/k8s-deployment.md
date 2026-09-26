@@ -1,6 +1,9 @@
 # PenguinCode Kubernetes Deployment Guide
 
-Complete guide for deploying PenguinCode to Kubernetes clusters using both Helm and Kustomize.
+Complete guide for deploying PenguinCode to Kubernetes clusters using Helm.
+**Helm v4 is the only supported deployment method** -- Kustomize and raw
+manifest directories were retired; Docker Compose is deprecated for every
+environment (local dev included).
 
 ## Table of Contents
 
@@ -8,25 +11,24 @@ Complete guide for deploying PenguinCode to Kubernetes clusters using both Helm 
 2. [Understanding the Architecture](#understanding-the-architecture)
 3. [Quick Deployment](#quick-deployment)
 4. [Using Helm](#using-helm)
-5. [Using Kustomize](#using-kustomize)
-6. [Using the Deploy Script](#using-the-deploy-script)
-7. [Environment Configurations](#environment-configurations)
-8. [Advanced Usage](#advanced-usage)
-9. [Troubleshooting](#troubleshooting)
+5. [Using the Deploy Script](#using-the-deploy-script)
+6. [Environment Configurations](#environment-configurations)
+7. [Advanced Usage](#advanced-usage)
+8. [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
 
 ### Required Tools
 - `kubectl` (v1.24+) - Kubernetes command-line tool
-- `helm` (v3.10+) - Package manager for Kubernetes
+- `helm` (v3.10+, v4 preferred) - Package manager for Kubernetes
 - `docker` - Container engine for building images
-- `kustomize` (v4.0+) - Template-free customization tool (optional, kubectl has built-in support)
 
 ### Cluster Requirements
 - Kubernetes v1.24+
-- Access to a container registry (for beta: `registry-dal2.penguintech.io`)
+- Access to a container registry (beta/gamma/prod: `ghcr.io/penguintechinc/penguincode`)
 - Appropriate RBAC permissions
-- Storage provisioner (for persistence, if enabled)
+- A shared WaddleAI Postgres instance reachable from the cluster (see
+  Postgres Role Bootstrap below)
 
 ### Check Prerequisites
 ```bash
@@ -59,61 +61,66 @@ kubectl cluster-info
 ### Configuration Hierarchy
 
 ```
-Helm Templates (templates/)
-        ↓
-    ↓ values.yaml (defaults)
-    ↓ values-alpha.yaml (overrides)
-    ↓ values-beta.yaml (overrides)
-        ↓
-Kustomize Base (manifests/)
-        ↓
-    ↓ Namespace
-    ↓ ServiceAccount
-    ↓ Deployment
-    ↓ Service
-        ↓
-Kustomize Overlays (overlays/)
-    ↓ alpha/
-    ↓ beta/
-        ↓
-Applied Resources
+Helm Templates (k8s/helm/penguincode/templates/)
+        |
+    values.yaml (Helm-implicit default, prod-safe baseline)
+        |
+    alpha.yml / beta.yml / gamma.yml / production.yml (env overrides)
+        |
+Applied Resources (namespace: penguincode, in every environment)
 ```
+
+The namespace is always `penguincode` -- the environment lives in the
+values filename, never in the namespace name.
+
+### Postgres Role Bootstrap (spec §9)
+
+Every environment runs two Helm pre-install/pre-upgrade hook Jobs before the
+server Deployment rolls out:
+
+1. **role-bootstrap** (`templates/role-bootstrap-job.yaml`, hook-weight -10) --
+   idempotently creates the least-privilege `penguincode_app` Postgres role,
+   the `penguincode` schema owned by it, and the `vector` extension, using an
+   ADMIN DSN.
+2. **migrate** (`templates/migration-job.yaml`, hook-weight -5) -- applies
+   `penguincode_cli/db/migrations/*.sql` using the same ADMIN DSN (DDL/`CREATE
+   EXTENSION` need elevated privileges the app role never holds).
+
+The server Deployment itself uses only the least-privilege app-role DSN. See
+`k8s/helm/penguincode/values.yaml` (`postgres:` block) for the full 3-secret
+runbook operators must provision before `helm install`.
 
 ## Quick Deployment
 
 ### Deploy to Alpha (Testing)
 
 ```bash
-# Option 1: Using Kustomize (Recommended)
-kubectl apply -k k8s/kustomize/overlays/alpha
-
-# Option 2: Using Helm
-helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-alpha.yaml \
-  --namespace penguincode-alpha --create-namespace
+helm upgrade --install penguincode k8s/helm/penguincode \
+  -f k8s/helm/penguincode/alpha.yml \
+  --namespace penguincode --create-namespace
 
 # Verify deployment
-kubectl get pods -n penguincode-alpha
-kubectl logs -n penguincode-alpha -l app=penguincode
+kubectl get pods -n penguincode
+kubectl logs -n penguincode -l app.kubernetes.io/name=penguincode
 ```
+
+Or via the smoke-test wrapper: `make k8s-alpha-deploy` (see
+`tests/k8s/alpha/run-all-alpha.sh`).
 
 ### Deploy to Beta (Production-like)
 
 ```bash
-# Option 1: Using Kustomize (Recommended)
-kubectl apply -k k8s/kustomize/overlays/beta
-
-# Option 2: Using the deploy script
+# Option 1: Using the deploy script (CI/CD)
 ./scripts/deploy-beta.sh
 
-# Option 3: Using Helm
-helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
-  --namespace penguincode-beta --create-namespace
+# Option 2: Using Helm directly
+helm upgrade --install penguincode k8s/helm/penguincode \
+  -f k8s/helm/penguincode/beta.yml \
+  --namespace penguincode --create-namespace
 
 # Verify deployment
-kubectl get pods -n penguincode-beta
-kubectl logs -n penguincode-beta -l app=penguincode
+kubectl get pods -n penguincode
+kubectl logs -n penguincode -l app.kubernetes.io/name=penguincode
 ```
 
 ## Using Helm
@@ -122,22 +129,17 @@ kubectl logs -n penguincode-beta -l app=penguincode
 
 #### Install
 ```bash
-# Install with default values
+# Install with default (prod-safe baseline) values
 helm install penguincode k8s/helm/penguincode
 
-# Install with specific values file
+# Install with a specific environment values file
 helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml
-
-# Install with namespace creation
-helm install penguincode k8s/helm/penguincode \
-  --namespace penguincode-beta \
-  --create-namespace
+  -f k8s/helm/penguincode/beta.yml \
+  --namespace penguincode --create-namespace
 
 # Install with additional overrides
 helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
-  --set image.tag=v1.2.3 \
+  -f k8s/helm/penguincode/beta.yml \
   --set server.replicas=3
 ```
 
@@ -145,16 +147,16 @@ helm install penguincode k8s/helm/penguincode \
 ```bash
 # Upgrade to new version
 helm upgrade penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml
+  -f k8s/helm/penguincode/beta.yml
 
 # Upgrade with wait for ready
 helm upgrade penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   --wait --timeout 5m
 
 # Upgrade with atomic rollback on failure
 helm upgrade penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   --atomic
 ```
 
@@ -188,90 +190,39 @@ helm lint k8s/helm/penguincode
 ### Helm Values
 
 #### Default Values (values.yaml)
-- Namespace: `penguincode-prod`
+- Namespace: `penguincode`
 - Replicas: 2
 - CPU request/limit: 500m / 1000m
 - Memory request/limit: 1Gi / 2Gi
-- Image: `penguincode/server:latest`
+- Image: `penguincode/server:latest` (placeholder -- every real environment
+  values file overrides this with a pinned tier tag or SHA256 digest)
 
-#### Alpha Values Override (values-alpha.yaml)
-- Namespace: `penguincode-alpha`
+#### Alpha Values Override (alpha.yml)
+- Namespace: `penguincode`
 - Replicas: 1
 - CPU request/limit: 100m / 200m
 - Memory request/limit: 128Mi / 256Mi
-- Image pull policy: Never (local)
+- Image pull policy: `IfNotPresent`; tag: `alpha-<epoch64>` (local build)
 - SECURITY_LEVEL: 1
 - VRAM: 4096 MB
 
-#### Beta Values Override (values-beta.yaml)
-- Namespace: `penguincode-beta`
+#### Beta Values Override (beta.yml)
+- Namespace: `penguincode`
 - Replicas: 2
 - CPU request/limit: 500m / 1000m
 - Memory request/limit: 1Gi / 2Gi
-- Image pull policy: Always (registry)
-- Image repository: `registry-dal2.penguintech.io/penguincode`
-- Image tag: `beta-latest`
+- Image repository: `ghcr.io/penguintechinc/penguincode`
+- Image tag: `beta-<epoch64>` (CI-set on merge to `main`)
 - SECURITY_LEVEL: 2
 - VRAM: 8192 MB
 
-## Using Kustomize
+#### Gamma Values Override (gamma.yml)
+- Same shape as beta -- upgrade-in-place validation tier on DigitalOcean
+- Image tag: `gamma-<epoch64>` (CI-set on GitHub pre-release)
 
-### Basic Kustomize Commands
-
-#### Apply
-```bash
-# Apply alpha overlay
-kubectl apply -k k8s/kustomize/overlays/alpha
-
-# Apply beta overlay
-kubectl apply -k k8s/kustomize/overlays/beta
-
-# Dry-run to see what will be applied
-kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml
-
-# Build and output to file
-kubectl kustomize k8s/kustomize/overlays/beta > release.yaml
-```
-
-#### Update
-```bash
-# Update alpha deployment
-kubectl apply -k k8s/kustomize/overlays/alpha
-
-# Replace instead of merge
-kubectl replace -k k8s/kustomize/overlays/beta
-```
-
-#### Delete
-```bash
-# Delete alpha resources
-kubectl delete -k k8s/kustomize/overlays/alpha
-
-# Delete beta resources
-kubectl delete -k k8s/kustomize/overlays/beta
-```
-
-### Kustomize Structure
-
-#### Base (k8s/kustomize/base/)
-Common resources shared by all environments:
-- `kustomization.yaml` - References manifests
-- Applies common labels
-- Sets base namespace
-
-#### Overlays
-Environment-specific customizations:
-- `alpha/` - Testing environment (1 replica, debug logs)
-- `beta/` - Production-like (2 replicas, info logs)
-
-#### Customizations Applied
-- `namePrefix` - Adds prefix to resource names (e.g., `alpha-`, `beta-`)
-- `namespace` - Sets/overrides namespace
-- `replicas` - Adjusts deployment replicas
-- `images` - Updates image registry and tags
-- `patches` - Modifies specific fields (resources, env vars)
-- `commonLabels` - Adds labels to all resources
-- `commonAnnotations` - Adds annotations to all resources
+#### Production Values Override (production.yml)
+- Replicas: 3
+- Image pinned by SHA256 digest (`image.digest`), never a mutable tag
 
 ## Using the Deploy Script
 
@@ -288,14 +239,11 @@ The `scripts/deploy-beta.sh` script provides automated deployment with:
 
 #### Basic Deployment
 ```bash
-# Deploy with auto-generated tag (beta-YYYYMMDD-HHMMSS)
+# Deploy with auto-generated tag (beta-<epoch64>)
 ./scripts/deploy-beta.sh
 
 # Deploy with specific tag
-./scripts/deploy-beta.sh --tag v1.2.3
-
-# Deploy with specific tag and registry
-./scripts/deploy-beta.sh --tag beta-2024-01-15
+./scripts/deploy-beta.sh --tag beta-1727308800
 ```
 
 #### Advanced Options
@@ -327,31 +275,14 @@ The `scripts/deploy-beta.sh` script provides automated deployment with:
 
 ### Script Workflow
 
-1. **Prerequisite Check**
-   - Verifies docker, kubectl, helm are installed
-   - Confirms Kubernetes context (dal2-beta)
-   - Checks namespace existence
-   - Validates project structure
-
-2. **Generate Tag**
-   - Uses provided tag or generates: `beta-YYYYMMDD-HHMMSS`
-
-3. **Build and Push**
-   - Builds Docker image with tag
-   - Pushes to `registry-dal2.penguintech.io`
-   - Tags and pushes `beta-latest`
-
-4. **Deploy with Helm**
-   - Creates namespace if needed
-   - Installs/upgrades Helm release
-   - Uses `values-beta.yaml` overrides
-   - Waits for deployment ready
-
-5. **Verify**
-   - Checks rollout status
-   - Displays pod information
-   - Performs health check
-   - Shows deployment summary
+1. **Prerequisite Check** -- verifies docker, kubectl, helm are installed;
+   confirms Kubernetes context; checks namespace existence.
+2. **Generate Tag** -- uses provided tag or generates `beta-<epoch64>`.
+3. **Build and Push** -- builds the Docker image, pushes to
+   `ghcr.io/penguintechinc/penguincode`.
+4. **Deploy with Helm** -- creates namespace if needed, installs/upgrades
+   using `beta.yml` overrides, waits for deployment ready.
+5. **Verify** -- checks rollout status, pod info, health check.
 
 ### Configuration Constants
 
@@ -359,9 +290,8 @@ The `scripts/deploy-beta.sh` script provides automated deployment with:
 RELEASE_NAME="penguincode"
 NAMESPACE="penguincode"
 CHART_PATH="./k8s/helm/penguincode"
-IMAGE_REGISTRY="registry-dal2.penguintech.io"
+IMAGE_REGISTRY="ghcr.io/penguintechinc"
 KUBE_CONTEXT="dal2-beta"
-APP_HOST="penguincode.penguintech.io"
 ```
 
 ## Environment Configurations
@@ -369,29 +299,23 @@ APP_HOST="penguincode.penguintech.io"
 ### Alpha Environment
 
 **Purpose**: Development and testing
-**Cluster**: Local development or alpha cluster
+**Cluster**: Local development (MicroK8s/Docker Desktop)
 
 **Configuration**:
 ```yaml
-Namespace: penguincode-alpha
+Namespace: penguincode
 Replicas: 1
 CPU Request: 100m
 CPU Limit: 200m
 Memory Request: 128Mi
 Memory Limit: 256Mi
-Image: penguincode/server:latest (local)
-Image Pull Policy: Never
+Image: penguincode/server:alpha-<epoch64> (local build)
+Image Pull Policy: IfNotPresent
 Log Level: DEBUG
 Security Level: 1
 VRAM: 4096 MB
 Max Concurrent: 1
 ```
-
-**Use Cases**:
-- Feature development
-- Testing changes locally
-- Debugging issues
-- CI/CD testing
 
 ### Beta Environment
 
@@ -400,139 +324,86 @@ Max Concurrent: 1
 
 **Configuration**:
 ```yaml
-Namespace: penguincode-beta
+Namespace: penguincode
 Replicas: 2
 CPU Request: 500m
 CPU Limit: 1000m
 Memory Request: 1Gi
 Memory Limit: 2Gi
-Image: registry-dal2.penguintech.io/penguincode:beta-latest
-Image Pull Policy: Always
+Image: ghcr.io/penguintechinc/penguincode:beta-<epoch64>
+Image Pull Policy: IfNotPresent
 Log Level: INFO
 Security Level: 2
 VRAM: 8192 MB
 Max Concurrent: 2
 Auth: Enabled
-Ingress: Enabled (penguincode.penguintech.io)
+Ingress: Enabled (penguincode.penguintech.cloud)
 ```
 
-**Use Cases**:
-- Pre-production validation
-- Load testing
-- Integration testing
-- Staging deployments
+### Gamma Environment
+
+**Purpose**: Upgrade-in-place validation before a release is cut
+**Cluster**: DigitalOcean
+
+Same resource shape as beta; image tag `gamma-<epoch64>`, host
+`penguincode-gamma.penguintech.cloud`.
+
+### Production Environment
+
+**Purpose**: Live traffic
+**Cluster**: DigitalOcean (separate cluster from gamma)
+
+3 replicas, image pinned by SHA256 digest, flags OFF by default.
 
 ### Adding New Environments
 
-To add a new environment (e.g., `prod`):
-
-1. **Create Helm values file**:
-   ```bash
-   cp k8s/helm/penguincode/values-beta.yaml k8s/helm/penguincode/values-prod.yaml
-   # Edit values-prod.yaml with production settings
-   ```
-
-2. **Create Kustomize overlay**:
-   ```bash
-   cp -r k8s/kustomize/overlays/beta k8s/kustomize/overlays/prod
-   # Edit kustomization.yaml and env.yaml
-   ```
-
-3. **Deploy**:
-   ```bash
-   # Using Kustomize
-   kubectl apply -k k8s/kustomize/overlays/prod
-
-   # Or using Helm
-   helm install penguincode k8s/helm/penguincode \
-     -f k8s/helm/penguincode/values-prod.yaml \
-     --namespace penguincode-prod --create-namespace
-   ```
+Copy the closest existing values file (e.g. `beta.yml`) to a new bare
+`<env>.yml` (no `values-` prefix), edit it for the new environment, and
+deploy with `helm upgrade --install ... -f k8s/helm/penguincode/<env>.yml`.
+Never create a Kustomize overlay -- Helm v4 is the only supported deployment
+method.
 
 ## Advanced Usage
 
 ### Custom Configuration
 
-#### Override at Deploy Time
 ```bash
-# Using Helm
 helm install penguincode k8s/helm/penguincode \
-  -f k8s/helm/penguincode/values-beta.yaml \
+  -f k8s/helm/penguincode/beta.yml \
   --set server.replicas=3 \
   --set image.tag=custom-tag \
   --set server.env.LOG_LEVEL=DEBUG
-
-# Using deploy script
-./scripts/deploy-beta.sh --tag custom-tag
-```
-
-#### Kustomize Strategic Merge Patch
-```yaml
-# k8s/kustomize/overlays/custom/kustomization.yaml
-bases:
-- ../../base
-
-patches:
-- target:
-    kind: Deployment
-    name: penguincode-server
-  patch: |-
-    - op: replace
-      path: /spec/replicas
-      value: 5
 ```
 
 ### Multi-Cluster Deployment
 
-Deploy to multiple clusters:
 ```bash
-# Deploy to alpha
-kubectl config use-context alpha-cluster
-kubectl apply -k k8s/kustomize/overlays/alpha
+# Deploy to alpha (local context)
+kubectl config use-context local-prealpha
+helm upgrade --install penguincode k8s/helm/penguincode -f k8s/helm/penguincode/alpha.yml -n penguincode --create-namespace
 
 # Deploy to beta
 kubectl config use-context dal2-beta
 ./scripts/deploy-beta.sh
-
-# Deploy to production
-kubectl config use-context prod-cluster
-kubectl apply -k k8s/kustomize/overlays/prod
-```
-
-### Canary Deployments
-
-Using Kustomize for staged rollout:
-```bash
-# Create canary overlay
-mkdir k8s/kustomize/overlays/canary
-
-# Deploy canary (1 replica)
-kubectl apply -k k8s/kustomize/overlays/canary
-
-# Monitor metrics
-
-# Scale to production (update replicas)
-kubectl apply -k k8s/kustomize/overlays/beta
 ```
 
 ### Secret Management
 
-Store secrets separately (not in git):
+Never commit secrets to git -- use `kubectl create secret`, sealed-secrets,
+External Secrets Operator, or Vault. See `k8s/helm/penguincode/values.yaml`
+(`postgres:` block) for the 3-secret Postgres role-bootstrap contract
+(admin DSN, app-role password, app DSN).
+
 ```bash
-# Create secret manually
 kubectl create secret generic penguincode-secrets \
   --from-literal=JWT_SECRET=your-secret \
   --from-literal=API_KEY=your-key \
   -n penguincode
-
-# Or use sealed-secrets, external-secrets, or Vault
 ```
 
 ### Resource Limits and Requests
 
-Adjust for your cluster capacity:
 ```bash
-# For high-performance deployment
 kubectl set resources deployment penguincode-server \
   -n penguincode \
   --limits=cpu=2000m,memory=4Gi \
@@ -545,74 +416,50 @@ kubectl set resources deployment penguincode-server \
 
 #### Pods not starting
 ```bash
-# Check pod status
 kubectl get pods -n penguincode -o wide
-
-# Describe pod for events
 kubectl describe pod <pod-name> -n penguincode
-
-# Check logs
 kubectl logs -n penguincode <pod-name>
-
-# Check events
 kubectl get events -n penguincode --sort-by='.lastTimestamp'
+```
+
+#### Role-bootstrap or migration Job failing
+```bash
+# Check the bootstrap/migration hook Jobs specifically
+kubectl get jobs -n penguincode
+kubectl logs -n penguincode job/penguincode-role-bootstrap
+kubectl logs -n penguincode job/penguincode-migrate
 ```
 
 #### Image pull errors
 ```bash
-# Check image registry access
 kubectl get nodes -o wide
-
-# Check image pull secrets
 kubectl get secrets -n penguincode
-
-# Verify image exists in registry
-docker pull registry-dal2.penguintech.io/penguincode:beta-latest
+docker pull ghcr.io/penguintechinc/penguincode:beta-<epoch64>
 ```
 
 #### Resource constraints
 ```bash
-# Check node resources
 kubectl top nodes
-
-# Check pod resource usage
 kubectl top pod -n penguincode
-
-# Check requests vs available
 kubectl describe nodes
 ```
 
 ### Service Connectivity
 
-#### Test service connectivity
 ```bash
-# Get service details
 kubectl get svc -n penguincode
-
-# Port forward for local testing
 kubectl port-forward -n penguincode svc/penguincode-server 50051:50051
-
-# Test with grpcurl
 grpcurl -plaintext localhost:50051 list
-```
-
-#### Check endpoints
-```bash
-# Verify endpoints exist
 kubectl get endpoints -n penguincode
-
-# Check service selector matches pods
-kubectl get pods -n penguincode -l app=penguincode
 ```
 
 ### Helm Troubleshooting
 
-#### Debug Helm install
 ```bash
 # Dry-run to see manifests
 helm install penguincode k8s/helm/penguincode \
   --dry-run --debug \
-  -f k8s/helm/penguincode/values-beta.yaml
+  -f k8s/helm/penguincode/beta.yml
 
 # Check template rendering
 helm template penguincode k8s/helm/penguincode
@@ -621,39 +468,17 @@ helm template penguincode k8s/helm/penguincode
 helm lint k8s/helm/penguincode
 ```
 
-### Kustomize Troubleshooting
-
-#### Debug Kustomize build
-```bash
-# Build and output manifests
-kubectl kustomize k8s/kustomize/overlays/beta
-
-# Dry-run apply
-kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml
-
-# Check if resources are valid
-kubectl apply -k k8s/kustomize/overlays/beta --validate=true
-```
-
 ### Performance Issues
 
-#### Monitor deployment
 ```bash
-# Watch pod deployment
 kubectl get pods -n penguincode -w
-
-# Monitor resource usage
 kubectl top pod -n penguincode
-
-# Check logs for errors
-kubectl logs -n penguincode -l app=penguincode --all-containers=true -f
+kubectl logs -n penguincode -l app.kubernetes.io/name=penguincode --all-containers=true -f
 ```
 
 ## Next Steps
 
-- Review the [k8s README](../k8s/README.md) for quick reference
 - Check [Helm documentation](https://helm.sh/docs/)
-- Explore [Kustomize guide](https://kustomize.io/)
 - Set up monitoring and logging
 - Configure automatic scaling
 - Implement GitOps workflow
