@@ -42,6 +42,16 @@ _EMBEDDING_DIMS: Final = 768
 #: The three visibility levels from the platform plan's Shared Contracts.
 _VALID_VISIBILITIES: Final[frozenset[str]] = frozenset({"user", "team", "tenant"})
 
+#: Product intent: the memory layer is a shared team brain -- like
+#: consultants sharing lessons learned with each other -- so a memory a
+#: teammate writes should be visible to the rest of their team (client
+#: engagement) by default, not locked to the writer alone. ``user``
+#: (private) and ``tenant`` (firm-wide) remain explicit opt-ins the caller
+#: can still pass. See ``_resolve_default_team_scope`` for how the actual
+#: ``team_id`` is derived from the caller's ``ScopeContext`` when this
+#: default applies.
+DEFAULT_VISIBILITY: Final = "team"
+
 
 class MemoryManager:
     """Manages persistent memory using mem0 open-source."""
@@ -332,6 +342,48 @@ def _validate_team_id(ctx: ScopeContext, team_id: str | None) -> None:
         raise ValueError(f"team_id {team_id!r} is not one of the caller's own teams")
 
 
+def _resolve_default_team_scope(
+    ctx: ScopeContext, visibility: str, team_id: str | None
+) -> tuple[str, str | None]:
+    """Derive an effective ``team_id`` for a ``"team"``-visibility write with none given.
+
+    Only engages when ``visibility == "team"`` and the caller didn't already
+    pass a ``team_id`` -- an explicit ``team_id`` (whatever ``visibility``)
+    passes straight through untouched and is still checked by
+    ``_validate_team_id`` afterwards. This is what makes ``DEFAULT_VISIBILITY
+    = "team"`` actually resolvable: a bare ``add(ctx, content)`` call carries
+    no ``team_id`` at all, so it lands here.
+
+    Client engagements are an ethical-wall boundary, not just an
+    organizational grouping -- a consultant on exactly one team (the common
+    case) resolves unambiguously to that team. A consultant on MULTIPLE
+    teams is never silently guessed into one of them: a wrong guess would
+    leak notes across client engagements, which is strictly worse than
+    making the caller be explicit, so this raises ``ValueError`` instead of
+    picking (documented behavior -- callers on multiple teams must pass an
+    explicit ``team_id``). A caller on NO team at all can't share to a team
+    that doesn't exist, so this degrades to private ``"user"`` visibility
+    (logged at DEBUG -- not a caller-visible error, matching this module's
+    existing graceful-degradation posture).
+    """
+    if visibility != "team" or team_id is not None:
+        return visibility, team_id
+
+    if len(ctx.team_ids) == 1:
+        return "team", ctx.team_ids[0]
+
+    if len(ctx.team_ids) > 1:
+        raise ValueError(
+            "cannot default to 'team' visibility: caller belongs to multiple teams "
+            f"{ctx.team_ids!r} -- pass an explicit team_id"
+        )
+
+    logger.debug(
+        "tools.memory: defaulting 'team'-visibility write to 'user' -- caller has no team_ids"
+    )
+    return "user", None
+
+
 def _scope_metadata(ctx: ScopeContext, *, visibility: str, team_id: str | None) -> dict[str, Any]:
     """Build the scope stamp injected into every mem0 memory's metadata on write.
 
@@ -340,7 +392,12 @@ def _scope_metadata(ctx: ScopeContext, *, visibility: str, team_id: str | None) 
     ``visibility``) -- ``_is_visible`` below reads these same keys back out
     of mem0's stored metadata on search. ``tenant_id``/``org_id``/
     ``owner_user_id`` come from ``ctx`` alone, never from caller input.
+    ``visibility``/``team_id`` are first passed through
+    ``_resolve_default_team_scope`` so a defaulted ``"team"`` write (no
+    explicit ``team_id``) resolves to the caller's own team before
+    validation.
     """
+    visibility, team_id = _resolve_default_team_scope(ctx, visibility, team_id)
     _validate_visibility(visibility)
     _validate_team_id(ctx, team_id)
     return {
@@ -424,11 +481,21 @@ class ScopedMemoryManager:
         ctx: ScopeContext,
         content: str,
         *,
-        visibility: str = "user",
+        visibility: str = DEFAULT_VISIBILITY,
         team_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Write one memory, scope-stamped from ``ctx``. See class docstring for the T13 hook.
+
+        Defaults to ``"team"`` visibility (the shared-team-brain product
+        intent: a teammate's memory is visible to the rest of their team by
+        default) -- pass ``visibility="user"`` for a private note or
+        ``visibility="tenant"`` to share firm-wide; both remain explicit
+        opt-ins. When defaulting to ``"team"`` with no ``team_id``, the
+        caller's own team is resolved from ``ctx.team_ids`` -- see
+        ``_resolve_default_team_scope`` for the single/multiple/zero-team
+        rules (multiple teams raises rather than guessing; zero teams falls
+        back to ``"user"``).
 
         Returns ``None`` (never raises) when memory is disabled or the
         ``penguincode.rag`` flag is off for ``ctx`` -- graceful degradation,
