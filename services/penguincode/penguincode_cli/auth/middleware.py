@@ -46,16 +46,46 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from urllib.parse import urlparse
 
 import grpc
 import jwt
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 from penguincode_cli.auth.scope import ScopeContext, ScopeValidationError, scope_from_claims
 
 _DEFAULT_ISSUER = "https://waddleai.localhost.local"
 _DEFAULT_AUDIENCE = "waddleai-api"
 _DEFAULT_ALGORITHMS = ("RS256",)
+#: JWK Set cache TTL / HTTP timeout defaults (headless-auth H4). "Sane" per
+#: spec: long enough that a hot validation path almost never touches the
+#: network (a cache hit never does -- see WaddleAIJWTValidator docstring),
+#: short enough that a rotation propagates within a few minutes. Matches
+#: shared/auth/jwks_verifier.py's proxy-side defaults so the two
+#: independently-implemented (penguincode stays standalone -- see module
+#: docstring) validators behave identically in production.
+_DEFAULT_JWKS_CACHE_TTL_SECONDS = 300.0
+_DEFAULT_JWKS_HTTP_TIMEOUT_SECONDS = 10.0
+
+
+def _require_https_or_localhost(url: str, field_name: str) -> None:
+    """Reject a non-HTTPS JWKS URL, except for localhost (local dev/tests).
+
+    Standalone duplicate of ``penguin_aaa.hardening.validators.
+    validate_https_url`` (penguincode imports neither ``penguin_aaa`` nor
+    ``shared.auth`` -- see module docstring) enforcing the same rule: a
+    validator fetching signing keys over plaintext HTTP to a non-local host
+    is a MITM/spoofing risk, so it fails at config-construction time rather
+    than silently degrading transport security.
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    is_localhost = hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".localhost")
+    if not is_localhost and parsed.scheme != "https":
+        raise ValueError(
+            f"{field_name} must use HTTPS for non-localhost URLs, got scheme: {parsed.scheme!r}"
+        )
 
 
 class TokenValidationError(Exception):
@@ -81,6 +111,13 @@ class JWTValidatorConfig:
     issuer: str
     audience: str
     algorithms: tuple[str, ...]
+    jwks_cache_ttl_seconds: float = _DEFAULT_JWKS_CACHE_TTL_SECONDS
+    jwks_http_timeout_seconds: float = _DEFAULT_JWKS_HTTP_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        """Reject a plaintext-HTTP ``jwks_url`` against a non-local host."""
+        if self.jwks_url:
+            _require_https_or_localhost(self.jwks_url, "jwks_url")
 
     @classmethod
     def from_env(cls) -> JWTValidatorConfig:
@@ -101,12 +138,25 @@ class JWTValidatorConfig:
             else _DEFAULT_ALGORITHMS
         )
 
+        jwks_cache_ttl_seconds = float(
+            os.environ.get(
+                "WADDLEAI_JWT_JWKS_CACHE_TTL_SECONDS", str(_DEFAULT_JWKS_CACHE_TTL_SECONDS)
+            )
+        )
+        jwks_http_timeout_seconds = float(
+            os.environ.get(
+                "WADDLEAI_JWT_JWKS_TIMEOUT_SECONDS", str(_DEFAULT_JWKS_HTTP_TIMEOUT_SECONDS)
+            )
+        )
+
         return cls(
             public_key=public_key or None,
             jwks_url=jwks_url,
             issuer=issuer,
             audience=audience,
             algorithms=algorithms,
+            jwks_cache_ttl_seconds=jwks_cache_ttl_seconds,
+            jwks_http_timeout_seconds=jwks_http_timeout_seconds,
         )
 
 
@@ -116,17 +166,73 @@ class WaddleAIJWTValidator:
     Self-contained: verification key comes from ``JWTValidatorConfig``
     (public key or JWKS, both env-sourced) -- no import of
     ``penguin_aaa``/``shared.auth`` so penguincode stays standalone.
+
+    JWKS mode (headless-auth H4) constructs a single ``jwt.PyJWKClient``
+    for this validator's lifetime rather than per ``validate()`` call, so
+    the JWK Set is fetched at most once per
+    ``config.jwks_cache_ttl_seconds`` and reused across every request:
+
+    * **Caching** -- a request for an already-cached ``kid`` never touches
+      the network, so a JWKS outage entirely inside the cache window is
+      invisible to callers.
+    * **Rotation** -- an unrecognised ``kid`` triggers exactly one forced
+      refetch before giving up (``PyJWKClient.get_signing_key``), so a key
+      rotated in after the last fetch is picked up on the next token that
+      uses it.
+    * **Fail-closed** -- if the JWKS endpoint cannot be reached and no
+      cached key resolves the token's ``kid``, ``PyJWKClient`` raises;
+      ``validate()`` below turns that into ``TokenValidationError`` like
+      every other failure, never a silently-accepted token.
+
+    Static-key mode (``public_key``) is unchanged and remains the local-dev
+    fallback: no network involved at all, used whenever ``jwks_url`` is
+    unset (``jwks_url`` still takes precedence when both are configured).
     """
 
     def __init__(self, config: JWTValidatorConfig | None = None) -> None:
         """Bind this validator to *config* (defaults to ``JWTValidatorConfig.from_env()``)."""
         self._config = config or JWTValidatorConfig.from_env()
+        self._jwks_client: jwt.PyJWKClient | None = None
 
-    def _signing_key(self, token: str) -> str:
-        """Resolve the key to verify *token* with: JWKS first, else the static public key."""
+    def _get_jwks_client(self) -> jwt.PyJWKClient:
+        """Return this validator's persistent ``PyJWKClient``, building it on first use.
+
+        Built lazily (not in ``__init__``) so constructing a validator never
+        requires ``jwks_url`` to already be reachable; the JWK Set itself is
+        still only ever fetched from ``validate()``/``_signing_key()``.
+        """
+        if self._jwks_client is None:
+            if self._config.jwks_url is None:
+                # Only ever called from _signing_key()'s `if self._config.jwks_url:`
+                # branch; a bare `assert` here would both vanish under
+                # optimised bytecode (-O) and trip bandit B101, so guard
+                # explicitly instead.
+                raise TokenValidationError("jwks_url is not configured")
+            self._jwks_client = jwt.PyJWKClient(
+                self._config.jwks_url,
+                lifespan=self._config.jwks_cache_ttl_seconds,
+                timeout=self._config.jwks_http_timeout_seconds,
+            )
+        return self._jwks_client
+
+    def _signing_key(self, token: str) -> str | RSAPublicKey:
+        """Resolve the key to verify *token* with: JWKS first, else the static public key.
+
+        A ``PyJWK``'s ``.key`` is a ``cryptography`` key object, not PEM
+        text -- ``str()``-wrapping it here (as a prior version of this
+        method did) produces a Python repr, not a usable key, and
+        ``jwt.decode()`` silently fails to parse it (regression: this was
+        never caught because the only previous test faked ``PyJWKClient``
+        with a ``.key`` that was already a PEM string). ``jwt.decode()``
+        accepts either a PEM string (static-key mode) or a raw key object
+        (JWKS mode) directly, so neither path needs converting.
+        """
         if self._config.jwks_url:
-            jwks_client = jwt.PyJWKClient(self._config.jwks_url)
-            return str(jwks_client.get_signing_key_from_jwt(token).key)
+            # PyJWK.key is typed Any upstream (jwt.algorithms.Algorithm.from_jwk
+            # has no return annotation); cast documents the actual runtime
+            # type this codebase relies on (RSA keys only -- see
+            # ALLOWED_ALGORITHMS-equivalent RS256-only default above).
+            return cast("RSAPublicKey", self._get_jwks_client().get_signing_key_from_jwt(token).key)
         if self._config.public_key:
             return self._config.public_key
         raise TokenValidationError(
@@ -138,9 +244,21 @@ class WaddleAIJWTValidator:
         """Decode and verify *token* (signature, ``exp``, ``iss``, ``aud``); return raw claims.
 
         Raises ``TokenValidationError`` on any failure -- expired, bad
-        signature, wrong issuer/audience, or no key configured.
+        signature, wrong issuer/audience, no key configured, an unknown
+        ``kid`` (even after JWKS's one forced refetch), or the JWKS
+        endpoint being unreachable with nothing usable cached. There is no
+        fail-open path: a key-resolution failure always rejects the token.
         """
-        key = self._signing_key(token)
+        try:
+            key = self._signing_key(token)
+        except TokenValidationError:
+            raise
+        except jwt.PyJWTError as exc:
+            # jwt.PyJWKClient.get_signing_key_from_jwt raises PyJWKClientError
+            # (unknown kid after refetch) or PyJWKClientConnectionError
+            # (endpoint unreachable) -- both are PyJWTError subclasses, not
+            # InvalidTokenError, so they need their own catch here.
+            raise TokenValidationError(f"unable to resolve a signing key: {exc}") from exc
         try:
             claims: dict[str, Any] = jwt.decode(
                 token,

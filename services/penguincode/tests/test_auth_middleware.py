@@ -145,6 +145,46 @@ class TestJWTValidatorConfig:
         with pytest.raises(AttributeError):
             config.issuer = "other"  # type: ignore[misc]
 
+    def test_jwks_default_cache_ttl_and_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("WADDLEAI_JWT_JWKS_URL", "https://waddleai.test/jwks.json")
+        monkeypatch.delenv("WADDLEAI_JWT_JWKS_CACHE_TTL_SECONDS", raising=False)
+        monkeypatch.delenv("WADDLEAI_JWT_JWKS_TIMEOUT_SECONDS", raising=False)
+
+        config = JWTValidatorConfig.from_env()
+
+        assert config.jwks_cache_ttl_seconds == 300.0
+        assert config.jwks_http_timeout_seconds == 10.0
+
+    def test_jwks_cache_ttl_and_timeout_overridable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("WADDLEAI_JWT_JWKS_URL", "https://waddleai.test/jwks.json")
+        monkeypatch.setenv("WADDLEAI_JWT_JWKS_CACHE_TTL_SECONDS", "60")
+        monkeypatch.setenv("WADDLEAI_JWT_JWKS_TIMEOUT_SECONDS", "3")
+
+        config = JWTValidatorConfig.from_env()
+
+        assert config.jwks_cache_ttl_seconds == 60.0
+        assert config.jwks_http_timeout_seconds == 3.0
+
+    def test_non_https_non_localhost_jwks_url_rejected(self) -> None:
+        with pytest.raises(ValueError, match="HTTPS"):
+            JWTValidatorConfig(
+                public_key=None,
+                jwks_url="http://evil.example/jwks.json",
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                algorithms=("RS256",),
+            )
+
+    def test_localhost_jwks_url_allowed_over_http(self) -> None:
+        # Should not raise -- local dev/tests only.
+        JWTValidatorConfig(
+            public_key=None,
+            jwks_url="http://127.0.0.1:8080/.well-known/jwks.json",
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            algorithms=("RS256",),
+        )
+
 
 class TestWaddleAIJWTValidator:
     def test_valid_token_returns_claims(self, validator: WaddleAIJWTValidator) -> None:
@@ -209,7 +249,10 @@ class TestWaddleAIJWTValidator:
         )
 
         class _FakeJWKClient:
-            def __init__(self, uri: str) -> None:
+            # **kwargs: headless-auth H4 added lifespan/timeout kwargs to the
+            # real jwt.PyJWKClient(...) call (see _get_jwks_client) -- this
+            # fake only needs to prove the URI it was built with.
+            def __init__(self, uri: str, **kwargs: Any) -> None:
                 self.uri = uri
 
             def get_signing_key_from_jwt(self, token: str) -> SimpleNamespace:
@@ -221,6 +264,58 @@ class TestWaddleAIJWTValidator:
         token = _make_token()
         claims = jwks_validator.validate(token)
         assert claims["sub"] == "user-123"
+
+    def test_jwks_client_constructed_once_and_reused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """regression: headless-auth H4 -- no per-call PyJWKClient (no per-request JWKS fetch)."""
+        config = JWTValidatorConfig(
+            public_key=None,
+            jwks_url="https://waddleai.test/.well-known/jwks.json",
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            algorithms=("RS256",),
+        )
+        construction_count = {"n": 0}
+
+        class _FakeJWKClient:
+            def __init__(self, uri: str, **kwargs: Any) -> None:
+                construction_count["n"] += 1
+
+            def get_signing_key_from_jwt(self, token: str) -> SimpleNamespace:
+                return SimpleNamespace(key=PUBLIC_PEM)
+
+        monkeypatch.setattr(jwt, "PyJWKClient", _FakeJWKClient)
+
+        jwks_validator = WaddleAIJWTValidator(config)
+        jwks_validator.validate(_make_token())
+        jwks_validator.validate(_make_token())
+        jwks_validator.validate(_make_token())
+
+        assert construction_count["n"] == 1
+
+    def test_jwks_key_resolution_failure_raises_token_validation_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreachable/unresolvable JWKS surfaces as TokenValidationError, never a raw PyJWTError."""
+        config = JWTValidatorConfig(
+            public_key=None,
+            jwks_url="https://waddleai.test/.well-known/jwks.json",
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            algorithms=("RS256",),
+        )
+
+        class _UnreachableJWKClient:
+            def __init__(self, uri: str, **kwargs: Any) -> None:
+                pass
+
+            def get_signing_key_from_jwt(self, token: str) -> SimpleNamespace:
+                raise jwt.PyJWKClientConnectionError("connection refused")
+
+        monkeypatch.setattr(jwt, "PyJWKClient", _UnreachableJWKClient)
+
+        jwks_validator = WaddleAIJWTValidator(config)
+        with pytest.raises(TokenValidationError):
+            jwks_validator.validate(_make_token())
 
 
 class TestTokenExtraction:
