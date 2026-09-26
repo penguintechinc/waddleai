@@ -85,14 +85,14 @@ def _decode_headers(scope: dict) -> dict[str, str]:
 
 
 async def _authenticate_from_scope(
-    scope: dict, rbac: RBACManager, oidc_provider: Any
+    scope: dict, rbac: RBACManager, jwks_verifier: Any
 ) -> UserContext:
     """Resolve the caller's ``UserContext`` from raw ASGI headers.
 
-    Mirrors ``main.py::get_current_user``'s wa-/sk- and Bearer-JWT paths
-    (same underlying ``rbac``/``verify_token`` calls), but operates on the
-    ASGI ``scope`` directly since this middleware runs *before* Quart
-    builds its ``request`` object.
+    Mirrors ``main.py::authenticate_credential``'s wa-/sk- and Bearer-JWT
+    paths (same underlying ``rbac``/``verify_token_via_jwks`` calls), but
+    operates on the ASGI ``scope`` directly since this middleware runs
+    *before* Quart builds its ``request`` object.
     """
     headers = _decode_headers(scope)
     authorization = headers.get("authorization")
@@ -102,9 +102,13 @@ async def _authenticate_from_scope(
     if authorization.startswith("sk-") or authorization.startswith("wa-"):
         return await asyncio.to_thread(rbac.authenticate_api_key, authorization)
     if authorization.startswith("Bearer "):
-        from shared.auth.penguin_auth import verify_token
+        from shared.auth.penguin_auth import verify_token_via_jwks
 
-        return verify_token(authorization[7:], oidc_provider)
+        # JWKS-backed (headless-auth H4): resolves the signing key by the
+        # token's `kid` from the issuer's published JWKS, never this
+        # process's own keystore. Offloaded to a thread since a JWKS cache
+        # miss does blocking network I/O (jwt.PyJWKClient uses urllib).
+        return await asyncio.to_thread(verify_token_via_jwks, authorization[7:], jwks_verifier)
     raise AuthenticationError("Invalid authorization format")
 
 
@@ -155,13 +159,13 @@ class MCPMount:
         app: ASGIApp,
         *,
         rbac: RBACManager,
-        oidc_provider: Any,
+        jwks_verifier: Any,
         service_factory: McpServiceFactory | None = None,
     ) -> None:
-        """Wrap ``app``, resolving `/mcp*` auth via ``rbac``/``oidc_provider``."""
+        """Wrap ``app``, resolving `/mcp*` auth via ``rbac``/``jwks_verifier``."""
         self._app = app
         self._rbac = rbac
-        self._oidc_provider = oidc_provider
+        self._jwks_verifier = jwks_verifier
         self._service_factory = service_factory or McpServiceFactory()
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
@@ -173,7 +177,7 @@ class MCPMount:
         is_admin_path = scope["path"] == MCP_ADMIN_PATH
 
         try:
-            user = await _authenticate_from_scope(scope, self._rbac, self._oidc_provider)
+            user = await _authenticate_from_scope(scope, self._rbac, self._jwks_verifier)
         except AuthenticationError as exc:
             logger.info("mcp_mount auth failed", extra={"path": scope["path"]})
             await _send_json(send, 401, {"error": "unauthorized", "detail": str(exc)})

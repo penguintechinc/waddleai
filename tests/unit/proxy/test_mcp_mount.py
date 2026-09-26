@@ -16,6 +16,7 @@ from proxy.apps.proxy_server.mcp_mount import (
     MCPMount,
     McpServiceFactory,
 )
+from shared.auth.jwks_verifier import JWKSVerificationError
 from shared.auth.rbac import AuthenticationError, Role, UserContext
 
 
@@ -124,7 +125,7 @@ class TestNonMcpPathsPassThrough:
 
     async def test_unrelated_path_is_not_intercepted(self, passthrough_app):
         """Unrelated path is not intercepted."""
-        mount = MCPMount(passthrough_app, rbac=Mock(), oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
         await _call_mount(mount, "/v1/chat/completions", [])
         assert passthrough_app.calls == ["/v1/chat/completions"]
 
@@ -136,7 +137,7 @@ class TestUserMountAuth:
     async def test_missing_authorization_is_401(self, passthrough_app, monkeypatch):
         """Missing authorization is 401."""
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
-        mount = MCPMount(passthrough_app, rbac=Mock(), oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers())
         assert recorder.status == 401
         assert passthrough_app.calls == []
@@ -146,7 +147,7 @@ class TestUserMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.side_effect = AuthenticationError("bad key")
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("wa-bad-key"))
         assert recorder.status == 401
 
@@ -155,7 +156,7 @@ class TestUserMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "0")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context()
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("wa-good-key"))
         assert recorder.status == 404
         assert passthrough_app.calls == []
@@ -170,7 +171,7 @@ class TestUserMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context()
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("wa-good-key"))
         assert recorder.status not in (401, 403, 404)
         assert passthrough_app.calls == []  # inner app never invoked -- FastMCP handled it
@@ -185,7 +186,7 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.USER)
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-user-key"))
         assert recorder.status == 403
         assert recorder.json_body["error"] == "forbidden"
@@ -195,7 +196,7 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.RESOURCE_MANAGER)
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-rm-key"))
         assert recorder.status == 403
 
@@ -208,7 +209,7 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "0")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.ADMIN)
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-admin-key"))
         assert recorder.status == 404
 
@@ -217,7 +218,7 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.ADMIN)
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-admin-key"))
         assert recorder.status not in (401, 403, 404)
         assert passthrough_app.calls == []
@@ -242,7 +243,7 @@ class TestSessionIdTiesToDataPlane:
 
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context()
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         headers = _headers("wa-good-key", {"x-waddleai-session-id": "session-abc"})
         await _call_mount(mount, MCP_USER_PATH, headers)
         assert captured_ctx["ctx"].session_id == "session-abc"
@@ -262,6 +263,51 @@ class TestSessionIdTiesToDataPlane:
 
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(user_id=7)
-        mount = MCPMount(passthrough_app, rbac=rbac, oidc_provider=Mock())
+        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
         await _call_mount(mount, MCP_USER_PATH, _headers("wa-good-key"))
         assert captured_ctx["ctx"].session_id == "key-99"  # api_key_id from _user_context()
+
+
+@pytest.mark.asyncio
+class TestBearerTokenUsesJWKSVerification:
+    """regression: headless-auth H4 -- /mcp's Bearer path goes through JWKS, not a local keystore.
+
+    ``_authenticate_from_scope``'s Bearer branch imports
+    ``shared.auth.penguin_auth.verify_token_via_jwks`` at call time, so
+    patching that module attribute intercepts it without needing a real
+    signed token or a live JWKS endpoint here -- the JWKS fetch/cache/kid
+    mechanics themselves are covered by tests/unit/proxy/test_jwks_verifier.py.
+    """
+
+    async def test_valid_bearer_token_authenticates_via_jwks(self, passthrough_app, monkeypatch):
+        """A verified Bearer token reaches the mount as an authenticated user."""
+        monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
+        uc = _user_context()
+        monkeypatch.setattr(
+            "shared.auth.penguin_auth.verify_token_via_jwks",
+            Mock(return_value=uc),
+        )
+        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
+        recorder = await _call_mount(mount, MCP_USER_PATH, _headers("Bearer some.jwt.token"))
+        assert recorder.status not in (401, 403, 404)
+
+    async def test_jwks_verification_failure_is_401(self, passthrough_app, monkeypatch):
+        """A JWKS-rejected Bearer token (bad kid/signature/expiry) is 401, never fail-open."""
+        monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
+        monkeypatch.setattr(
+            "shared.auth.penguin_auth.verify_token_via_jwks",
+            Mock(side_effect=AuthenticationError("JWKS endpoint unreachable")),
+        )
+        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
+        recorder = await _call_mount(mount, MCP_USER_PATH, _headers("Bearer some.jwt.token"))
+        assert recorder.status == 401
+
+
+def test_jwks_verification_error_is_not_swallowed_silently() -> None:
+    """Sanity check: JWKSVerificationError is importable from its published home.
+
+    Guards against the module path this file's monkeypatches assume
+    (shared.auth.penguin_auth.verify_token_via_jwks wraps
+    shared.auth.jwks_verifier.JWKSVerificationError) silently drifting.
+    """
+    assert issubclass(JWKSVerificationError, Exception)

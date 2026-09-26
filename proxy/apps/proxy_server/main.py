@@ -22,7 +22,9 @@ from datetime import datetime
 from typing import Any
 
 import aiohttp
+import jwt
 import structlog
+from jwt import PyJWKClientError, PyJWKSet
 from penguin_aaa.audit.emitter import Emitter
 from penguin_aaa.audit.sinks import StdoutSink
 from penguin_aaa.middleware import AuditMiddleware, OIDCAuthMiddleware
@@ -30,14 +32,15 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from quart import Quart, Response, abort, jsonify, request
 
 from shared.agents import SecurityAgent, UsageTracker
+from shared.auth.jwks_verifier import JWKSVerifier, JWKSVerifierConfig, create_jwks_verifier
 from shared.auth.penguin_auth import (
     build_rbac_enforcer,
     claims_dict_to_user_context,
-    create_local_oidc_rp,
+    create_jwks_oidc_rp,
     create_oidc_provider,
     issue_token,
     user_context_to_claims_dict,
-    verify_token,
+    verify_token_via_jwks,
 )
 from shared.auth.rbac import (
     ROLE_PERMISSIONS,
@@ -144,6 +147,36 @@ _TEST_AUTH_ROUTE = "/_contract_test/token"
 # via split("-")[1] for O(1) API-key auth, so a dashed middle segment breaks it.
 _TEST_API_KEY_VALUE = "wa-contracttestkey-secretvalue"
 _STUB_COMPLETION_TEXT = "This is a deterministic stub completion for WaddleAI contract tests."
+
+
+class _InProcessJWKSClient:
+    """Adapts an in-process ``OIDCProvider``'s JWKS document to ``PyJWKClient``'s interface.
+
+    WADDLEAI_STUB_UPSTREAM=1 only (see ``ProxyServer.startup()``): the proxy
+    is both issuer and validator for its own seeded contract-test tokens,
+    with no live external JWKS endpoint to fetch from. Reads
+    ``OIDCProvider.jwks()`` directly -- the exact same document management's
+    ``/.well-known/jwks.json`` route serves in production (both delegate to
+    the same ``KeyStore.get_jwks()``) -- instead of making an HTTP round
+    trip back to this same single-worker hypercorn process, which would
+    block the only event-loop thread on the very connection it is waiting
+    to accept.
+    """
+
+    def __init__(self, provider: Any) -> None:
+        """Bind this adapter to *provider* (the process's own OIDCProvider)."""
+        self._provider = provider
+
+    def get_signing_key_from_jwt(self, token: str) -> Any:
+        """Return the ``PyJWK`` matching *token*'s ``kid`` header, or raise."""
+        try:
+            kid = jwt.get_unverified_header(token).get("kid")
+        except jwt.PyJWTError as exc:
+            raise PyJWKClientError(f"Malformed token header: {exc}") from exc
+        for jwk in self._provider.jwks().get("keys", []):
+            if jwk.get("kid") == kid:
+                return PyJWKSet.from_dict({"keys": [jwk]}).keys[0]
+        raise PyJWKClientError(f'Unable to find a signing key that matches: "{kid}"')
 
 
 def _stub_llm_response(model: str, messages: list) -> tuple:
@@ -389,8 +422,9 @@ def authenticate_credential(credential: str) -> UserContext:
         # proven behavior.
         return proxy_server.rbac.authenticate_api_key(credential)
     if credential.startswith("Bearer "):
-        # RS256 JWT via penguin-aaa.
-        return verify_token(credential[7:], proxy_server.oidc_provider)
+        # RS256 JWT, verified against the issuer's published JWKS by `kid`
+        # (headless-auth H4) -- never against this process's own keystore.
+        return verify_token_via_jwks(credential[7:], proxy_server.jwks_verifier)
     raise AuthenticationError("Invalid authorization format")
 
 
@@ -489,6 +523,7 @@ class ProxyServer:
         # penguin-aaa components
         self.oidc_provider = None
         self.oidc_rp = None
+        self.jwks_verifier = None
         self.rbac_enforcer = None
 
         # Contract-test only (WADDLEAI_STUB_UPSTREAM=1) -- see _seed_contract_test_data()
@@ -535,17 +570,42 @@ class ProxyServer:
 
         # Initialize penguin-aaa OIDC provider, relying party, and RBAC enforcer
         #
-        # WaddleAI issues and validates its own RS256 tokens (self-contained
-        # keystore, no external issuer/JWKS), so the ASGI middleware's RP is
-        # a LocalOIDCRelyingParty validating against this same provider --
-        # see shared.auth.penguin_auth.LocalOIDCRelyingParty docstring.
-        # create_oidc_rp()/OIDCRelyingParty (external-issuer JWKS discovery)
-        # remain available for a future external-IdP/SSO integration
-        # (Pro tier, enterprise-only, license-gated) but are not wired in here.
+        # headless-auth H4: the ASGI middleware's RP validates Bearer tokens
+        # against the issuer's *published JWKS* (kid-selected, cached,
+        # rotation-safe -- see shared.auth.jwks_verifier.JWKSVerifier), not
+        # against this process's own keystore. `self.oidc_provider` is still
+        # constructed unconditionally: WADDLEAI_STUB_UPSTREAM=1 uses it to
+        # both mint (issue_token) and locally rotate contract-test tokens
+        # (see _seed_contract_test_data()); a durable-keystore-backed
+        # instance would additionally be needed if this process ever issues
+        # tokens outside of tests (it does not today -- management does).
         self.oidc_provider = create_oidc_provider()
-        self.oidc_rp = create_local_oidc_rp(self.oidc_provider)
+        if _TEST_MODE:
+            # No live external JWKS endpoint reachable in the contract-test
+            # subprocess harness (tests/contract/conftest.py boots the proxy
+            # and management as independent processes on independent,
+            # dynamically-chosen ports with no shared OIDC_ISSUER_URL) --
+            # this process is both issuer and validator for its own seeded
+            # tokens (_seed_contract_test_data()). Read this same process's
+            # OIDCProvider.jwks() directly through _InProcessJWKSClient
+            # rather than looping an HTTP fetch back to itself: hypercorn
+            # runs a single worker here, so a blocking self-directed fetch
+            # on the only event-loop thread would stall waiting on the very
+            # connection it needs that thread free to accept.
+            issuer = os.getenv("OIDC_ISSUER_URL", "https://waddleai.localhost.local")
+            self.jwks_verifier = JWKSVerifier(
+                JWKSVerifierConfig(
+                    issuer=issuer,
+                    audience=os.getenv("OIDC_CLIENT_ID", "waddleai-api"),
+                    jwks_url=issuer.rstrip("/") + "/.well-known/jwks.json",
+                ),
+                jwks_client=_InProcessJWKSClient(self.oidc_provider),
+            )
+        else:
+            self.jwks_verifier = create_jwks_verifier()
+        self.oidc_rp = create_jwks_oidc_rp(self.jwks_verifier)
         self.rbac_enforcer = build_rbac_enforcer()
-        logger.info("penguin-aaa OIDC provider and RP initialized")
+        logger.info("penguin-aaa OIDC provider and JWKS-backed RP initialized")
 
         # Feature flags (moved ahead of memory-manager construction below --
         # the §6A embedding/retrieval caches need self.features to resolve
@@ -1433,7 +1493,7 @@ async def on_startup():
     # Neither path is in _PUBLIC_PATHS; unauthenticated/non-admin callers
     # never reach a FastMCP app, so no tool list is ever advertised to them.
     app.asgi_app = MCPMount(
-        app.asgi_app, rbac=proxy_server.rbac, oidc_provider=proxy_server.oidc_provider
+        app.asgi_app, rbac=proxy_server.rbac, jwks_verifier=proxy_server.jwks_verifier
     )
     logger.info("MCP /mcp and /mcp/admin mounted (flag-gated: waddleai.mcp_v2)")
 
