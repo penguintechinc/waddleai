@@ -14,16 +14,27 @@ it does not own:
 
 - `JWTValidationInterceptor` (HS256, penguincode's own local client-server
   secret) continues gating every legacy RPC (Chat/Auth/Tool/Health) exactly
-  as before, and is now told to skip every `KnowledgeService` method.
+  as before, and is now told to skip every `KnowledgeService`/`LessonsService`
+  method.
 - `WaddleAIAuthInterceptor` (RS256, WaddleAI-issued JWTs -> `ScopeContext`)
-  gates only `KnowledgeService` methods -- it is told to skip every legacy
-  method, so it never interferes with the existing HS256 path.
+  gates `KnowledgeService` and `LessonsService` methods -- it is told to skip
+  every legacy method, so it never interferes with the existing HS256 path.
 
 Both interceptors' `excluded_methods` are therefore complementary sets over
 the *same* method universe -- one method is always authenticated by exactly
-one interceptor, never both, never neither. `KnowledgeService`'s client
-(F3) MUST present a WaddleAI-issued RS256 JWT, never penguincode's local
-HS256 token -- the two are not interchangeable.
+one interceptor, never both, never neither. `KnowledgeService`/
+`LessonsService` clients (F3, T-L2b) MUST present a WaddleAI-issued RS256
+JWT, never penguincode's local HS256 token -- the two are not interchangeable.
+
+**T-L2b addendum.** `LessonsService` (the lessons-learned promotion review
+workflow) needs the identical RS256/`ScopeContext` gate `KnowledgeService`
+already has -- rather than teaching `MethodPrefixRoutingInterceptor` a
+multi-prefix routing table, two of them are nested: the outer router
+dispatches `KnowledgeService` calls to `WaddleAIAuthInterceptor` and
+everything else to an inner router, which in turn dispatches `LessonsService`
+calls to that *same* `WaddleAIAuthInterceptor` instance (stateless per-call
+validation, safe to share) and everything else to the legacy interceptor. A
+future third RS256-gated service would nest one router deeper the same way.
 """
 
 import asyncio
@@ -42,6 +53,7 @@ from penguincode_cli.proto import (
     add_ChatServiceServicer_to_server,
     add_HealthServiceServicer_to_server,
     add_KnowledgeServiceServicer_to_server,
+    add_LessonsServiceServicer_to_server,
     add_ToolCallbackServiceServicer_to_server,
 )
 
@@ -56,9 +68,16 @@ from .services.auth import AuthServiceImpl
 from .services.chat import ChatServiceImpl
 from .services.health import HealthServiceImpl
 from .services.knowledge import KnowledgeServiceImpl
+from .services.lessons import LessonsServiceImpl
 from .services.tools import ToolCallbackServiceImpl
 
 logger = logging.getLogger(__name__)
+
+#: Method path prefix for every `LessonsService` RPC (see
+#: `proto/lessons/v1/lessons.proto`'s `package penguincode.lessons.v1`,
+#: T-L2b). Routed through the identical RS256/`ScopeContext` gate as
+#: `KnowledgeService` -- see this module's docstring addendum.
+_LESSONS_SERVICE_METHOD_PREFIX = "/penguincode.lessons.v1.LessonsService/"
 
 #: Method path prefix for every `KnowledgeService` RPC (see
 #: `proto/knowledge/v1/knowledge.proto`'s `package penguincode.knowledge.v1`).
@@ -96,6 +115,7 @@ class PenguinCodeServer:
         self.tool_service: ToolCallbackServiceImpl | None = None
         self.health_service: HealthServiceImpl | None = None
         self.knowledge_service: KnowledgeServiceImpl | None = None
+        self.lessons_service: LessonsServiceImpl | None = None
 
     async def start(self) -> None:
         """Start both gRPC and REST servers."""
@@ -117,17 +137,25 @@ class PenguinCodeServer:
         else:
             legacy_interceptor = PassthroughInterceptor()
 
-        # KnowledgeService's RS256/ScopeContext gate is installed
-        # unconditionally -- independent of `settings.auth.enabled` (that
-        # flag only ever toggled penguincode's own legacy HS256 gate). See
-        # the module docstring's "Interceptor reconciliation" note.
-        knowledge_interceptor = WaddleAIAuthInterceptor(WaddleAIJWTValidator())
+        # KnowledgeService/LessonsService's shared RS256/ScopeContext gate is
+        # installed unconditionally -- independent of `settings.auth.enabled`
+        # (that flag only ever toggled penguincode's own legacy HS256 gate).
+        # See the module docstring's "Interceptor reconciliation" note.
+        waddleai_interceptor = WaddleAIAuthInterceptor(WaddleAIJWTValidator())
 
+        # Nested routers: KnowledgeService -> RS256 gate; LessonsService ->
+        # the same RS256 gate; everything else -> the legacy HS256 gate. See
+        # the module docstring's "T-L2b addendum" for why this nests rather
+        # than teaching MethodPrefixRoutingInterceptor a multi-prefix table.
         interceptors = [
             MethodPrefixRoutingInterceptor(
                 _KNOWLEDGE_SERVICE_METHOD_PREFIX,
-                matched=knowledge_interceptor,
-                unmatched=legacy_interceptor,
+                matched=waddleai_interceptor,
+                unmatched=MethodPrefixRoutingInterceptor(
+                    _LESSONS_SERVICE_METHOD_PREFIX,
+                    matched=waddleai_interceptor,
+                    unmatched=legacy_interceptor,
+                ),
             )
         ]
 
@@ -142,6 +170,7 @@ class PenguinCodeServer:
         self.tool_service = ToolCallbackServiceImpl()
         self.health_service = HealthServiceImpl(self.settings)
         self.knowledge_service = KnowledgeServiceImpl(self.settings)
+        self.lessons_service = LessonsServiceImpl(self.settings)
 
         # Register services
         add_AuthServiceServicer_to_server(self.auth_service, self.server)
@@ -154,6 +183,9 @@ class PenguinCodeServer:
         # so this new call site does not add to mypy's untyped-call count.
         add_KnowledgeServiceServicer_to_server(  # type: ignore[no-untyped-call]
             self.knowledge_service, self.server
+        )
+        add_LessonsServiceServicer_to_server(  # type: ignore[no-untyped-call]
+            self.lessons_service, self.server
         )
 
         # Configure TLS if enabled
