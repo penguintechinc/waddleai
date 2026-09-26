@@ -241,21 +241,17 @@ research:
 ```yaml
 memory:
   enabled: true
-  vector_store: "chroma"
+  vector_store: "pgvector"           # Platform default; pgvector (shared WaddleAI Postgres)
   embedding_model: "nomic-embed-text"
 
   stores:
-    chroma:
-      path: "./.penguincode/memory"
+    pgvector:
+      connection_string: "${PGVECTOR_URL}"
       collection: "penguincode_memory"
 
     qdrant:
       url: "http://localhost:6333"
       collection: "penguincode_memory"
-
-    pgvector:
-      connection_string: "${PGVECTOR_URL}"
-      table: "penguincode_memory"
 ```
 
 ### Main Memory Options
@@ -263,37 +259,29 @@ memory:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | boolean | `true` | Enable/disable persistent memory. |
-| `vector_store` | string | `chroma` | Vector database backend. |
+| `vector_store` | string | `pgvector` | Vector database backend: `pgvector` (default, shared platform), `qdrant` (standalone). |
 | `embedding_model` | string | `nomic-embed-text` | Ollama model for embeddings. |
 
 ### Vector Store Options
 
 | Store | Requirements | Best For |
 |-------|--------------|----------|
-| `chroma` | None (local) | Development, single-user deployments. |
-| `qdrant` | Qdrant server | Production, distributed deployments. |
-| `pgvector` | PostgreSQL + pgvector | Existing PostgreSQL infrastructure. |
-
-### ChromaDB Options
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `path` | string | Local storage directory. |
-| `collection` | string | Collection name for memories. |
-
-### Qdrant Options
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `url` | string | Qdrant server URL. |
-| `collection` | string | Collection name for memories. |
+| `pgvector` | PostgreSQL 15+ with pgvector extension | **Platform default** — shared WaddleAI infrastructure, multi-tenant scoped. |
+| `qdrant` | Qdrant server (local or managed) | Standalone deployments, scalability. |
 
 ### PGVector Options
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `connection_string` | string | PostgreSQL connection URL with pgvector extension. |
-| `table` | string | Table name for storing vectors. |
+| `connection_string` | string | PostgreSQL connection URL with pgvector extension (e.g., `postgres://user:pass@host:5432/waddleai`). |
+| `collection` | string | Collection name for memories (e.g., `penguincode_memory`). |
+
+### Qdrant Options
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `url` | string | Qdrant server URL (e.g., `http://localhost:6333`). |
+| `collection` | string | Collection name for memories. |
 
 ---
 
@@ -669,7 +657,7 @@ services:
 | Variable | Default | Config Equivalent | Description |
 |----------|---------|-------------------|-------------|
 | `PENGUINCODE_MEMORY_ENABLED` | `true` | `memory.enabled` | Enable persistent memory. |
-| `PENGUINCODE_MEMORY_STORE` | `chroma` | `memory.vector_store` | Vector store: `chroma`, `qdrant`, `pgvector`. |
+| `PENGUINCODE_MEMORY_STORE` | `pgvector` | `memory.vector_store` | Vector store: `pgvector` (default), `qdrant`. |
 | `PENGUINCODE_EMBEDDING_MODEL` | `nomic-embed-text` | `memory.embedding_model` | Embedding model name. |
 | `QDRANT_URL` | `http://localhost:6333` | `memory.stores.qdrant.url` | Qdrant server URL. |
 | `PGVECTOR_URL` | - | `memory.stores.pgvector.connection_string` | PostgreSQL connection string. |
@@ -856,7 +844,7 @@ security:
 
 memory:
   enabled: true
-  vector_store: "chroma"
+  vector_store: "pgvector"
 
 server:
   mode: "local"

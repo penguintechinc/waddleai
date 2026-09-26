@@ -464,7 +464,7 @@ defaults:
 ```yaml
 memory:
   enabled: true                 # Long-term memory
-  vector_store: "chroma"        # Storage backend
+  vector_store: "pgvector"        # Storage backend
   embedding_model: "nomic-embed-text"
 ```
 

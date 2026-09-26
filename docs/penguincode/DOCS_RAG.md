@@ -461,7 +461,6 @@ docs_rag:
 ```bash
 # Delete index and rebuild
 rm -rf ./.penguincode/docs_index/
-pip install --upgrade chromadb
 ```
 
 ### Out of Memory During Indexing

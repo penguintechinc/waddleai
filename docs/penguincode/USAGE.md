@@ -235,12 +235,10 @@ research:
 ```yaml
 memory:
   enabled: true
-  vector_store: "chroma"  # chroma | qdrant | pgvector
+  vector_store: "pgvector"  # pgvector (default) | qdrant
   embedding_model: "nomic-embed-text"  # Required for indexing
 
   stores:
-    chroma:
-      path: "./.penguincode/memory"
       collection: "penguincode_memory"
 ```
 
@@ -630,10 +628,8 @@ mem0 stores conversation context and learnings in a vector database for semantic
 **ChromaDB (Default)**:
 ```yaml
 memory:
-  vector_store: "chroma"
+  vector_store: "pgvector"
   stores:
-    chroma:
-      path: "./.penguincode/memory"
       collection: "penguincode_memory"
 ```
 

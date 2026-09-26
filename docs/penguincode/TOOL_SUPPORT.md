@@ -402,7 +402,7 @@ research:
 # Memory (persistent context)
 memory:
   enabled: true
-  vector_store: "chroma"
+  vector_store: "pgvector"
   embedding_model: "nomic-embed-text"
 
 # MCP Servers (extend tools)
