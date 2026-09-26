@@ -4,9 +4,14 @@ Product model (consulting analogy): a *tenant* is the firm, a *team* is a
 client engagement. A "lesson learned" recorded at team visibility (scoped to
 one client engagement) may be promoted to *tenant* visibility -- shared
 firm-wide -- but ONLY after every client-confidential specific has been
-removed. This module is that guarantee. It is the safety core of the whole
-lessons-promotion feature: a false "clean" verdict here is a client-
-confidentiality breach, not a cosmetic bug.
+removed. This module is an **advisory backstop, not a guarantee**: it is
+automated best-effort defense in depth, catching what it can, but the
+actual control that gates anything ever reaching tenant visibility is a
+human holding the ``lessons:approve`` scope reviewing the pending lesson
+(see ``server.services.lessons.ApproveLesson``). A false "clean" verdict
+here should never happen, but if it does, human review is still the last
+line of defense before a client-confidentiality breach -- never assume this
+module alone is sufficient.
 
 Pipeline, per :func:`generalize_and_scrub`:
 
@@ -35,12 +40,21 @@ Pipeline, per :func:`generalize_and_scrub`:
    :func:`verify_scrubbed` below as the backstop when it fails).
 3. **Confidentiality verification** (:func:`verify_scrubbed`) re-scans the
    redacted text with the same detection primitives PLUS an explicit check
-   for the source tenant/org/team's own name(s)/id(s) (from ``ctx`` and, if
-   present, ``source_metadata``). This is the independent safety net for
+   for the source tenant/org/team's own name(s)/id(s), drawn from THREE
+   sources: ``ctx`` (ids, always present), ``source_metadata`` (proposer-
+   supplied names, may be omitted), and ``extra_identifier_terms`` (server-
+   authoritative names the proposer cannot omit or have an LLM steered into
+   dropping -- see ``server.services.lessons``' callers, which source this
+   from the tenant's own graph-store entities plus an operator-configured
+   identifier list). This is an **advisory backstop**, not a guarantee, for
    the one thing regex redaction cannot reliably do on its own: catch a
-   client name the LLM's semantic generalization step failed to strip. Any
-   residual finding -> ``clean=False``. Fail-closed: empty/unparseable input
-   is NOT clean; only a positive, evidence-based scan result is clean.
+   client name the LLM's semantic generalization step failed to strip (or a
+   prompt-injected LLM was steered into keeping). Any residual finding ->
+   ``clean=False``. Fail-closed: empty/unparseable input is NOT clean; only
+   a positive, evidence-based scan result is clean. The actual control
+   gating firm-wide visibility is a human holding the ``lessons:approve``
+   scope (see ``server.services.lessons.ApproveLesson``), never this
+   function alone.
 
 **Flag-gated**: :data:`LESSONS_PROMOTION_FLAG` (default OFF) is checked
 first, before any LLM call -- off means a blocked, no-op result, never a
@@ -65,6 +79,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -87,10 +103,18 @@ LESSONS_PROMOTION_FLAG = "penguincode.lessons-promotion"
 #: Defensive cap on prompt size, mirroring `graphs.knowledge`/`graphs.memory`.
 _MAX_INPUT_CHARS = 6000
 
-#: Identifiers shorter than this are skipped by the client-identifier checks
-#: -- a 1-2 char tenant/org id (common in tests/fixtures) would otherwise
-#: match almost any text, making the check meaningless. Real tenant/org/team
-#: ids are UUIDs, far longer than this floor.
+#: ID-shaped terms (``ctx.tenant_id``/``user_id``/``org_id``/``team_ids``)
+#: shorter than this are skipped by the client-identifier checks -- a 1-2
+#: char tenant/org id (common in tests/fixtures) would otherwise match
+#: almost any text, making the check meaningless. Real tenant/org/team ids
+#: are UUIDs, far longer than this floor.
+#:
+#: Deliberately NEVER applied to NAME terms (``source_metadata``'s
+#: ``*_name`` keys, or the server-authoritative ``extra_identifier_terms``)
+#: -- a floor there would silently drop genuinely short, real client names
+#: ("BP", "GE", "3M") from the check, exactly the false-negative gap this
+#: constant must not create for the terms that are actual company names,
+#: not synthetic ids.
 _MIN_IDENTIFIER_LEN = 3
 
 _METADATA_NAME_KEYS = (
@@ -259,38 +283,82 @@ _DETECTION_PATTERNS: tuple[tuple[IssueKind, re.Pattern[str], str], ...] = (
 )
 
 
+def _normalize_for_match(text: str) -> str:
+    """Canonicalize `text` for identifier substring matching (F4, security review).
+
+    NFKC-normalization folds Unicode compatibility/width variants (e.g. a
+    full-width Latin letter, or an accented character typed as a combining
+    sequence) into one canonical form; `casefold()` then removes case
+    differences more thoroughly than `.lower()`. Applied identically to both
+    the text being scanned and every identifier term it is compared against
+    (`_collect_identifier_terms`), so neither a cosmetic Unicode
+    representation difference nor a case difference can defeat the check.
+    """
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
 def _collect_identifier_terms(
-    ctx: ScopeContext, source_metadata: dict[str, Any] | None
+    ctx: ScopeContext,
+    source_metadata: dict[str, Any] | None,
+    *,
+    extra_name_terms: Sequence[str] | None = None,
 ) -> list[str]:
     """Source tenant/org/team/user identifiers (ids + any known names) to check for.
 
-    Ids come straight from `ctx` (the hard-boundary scope handle every
-    caller already has); names, when available, come from `source_metadata`
-    under a small set of conventional keys. Terms shorter than
-    `_MIN_IDENTIFIER_LEN` are dropped -- see that constant's docstring.
+    Two categories, treated differently (F4, security review):
+
+    - **ID terms** (`ctx.tenant_id`/`user_id`/`org_id`/`team_ids`) are
+      subject to `_MIN_IDENTIFIER_LEN` -- see that constant's docstring:
+      real ids are UUIDs, so the floor only ever screens out synthetic
+      short test/fixture ids, never a real one.
+    - **NAME terms** (`source_metadata`'s conventional `*_name` keys, plus
+      any caller-supplied `extra_name_terms` -- see `verify_scrubbed`'s
+      `extra_identifier_terms` parameter, sourced server-side from the
+      tenant's own graph entities and an operator-configured identifier
+      list) are NEVER subject to the length floor: a real client name can
+      legitimately be as short as "BP"/"GE"/"3M", and dropping those would
+      recreate exactly the false-negative gap this constant must not cause
+      for genuine names.
+
+    Every retained term comes back `_normalize_for_match`-ed, so every
+    caller compares against the same canonical form.
     """
-    raw_terms: list[Any] = [ctx.tenant_id, ctx.user_id, ctx.org_id, *ctx.team_ids]
+    id_terms: list[Any] = [ctx.tenant_id, ctx.user_id, ctx.org_id, *ctx.team_ids]
+    name_terms: list[Any] = []
     if source_metadata:
         for key in _METADATA_NAME_KEYS:
-            raw_terms.append(source_metadata.get(key))
+            name_terms.append(source_metadata.get(key))
+    if extra_name_terms:
+        name_terms.extend(extra_name_terms)
 
     seen: set[str] = set()
     terms: list[str] = []
-    for term in raw_terms:
-        cleaned = term.strip() if isinstance(term, str) else ""
-        if len(cleaned) < _MIN_IDENTIFIER_LEN:
-            continue
-        dedup_key = cleaned.lower()
-        if dedup_key in seen:
-            continue
-        seen.add(dedup_key)
-        terms.append(cleaned)
+
+    def _add(raw: Any, *, apply_len_floor: bool) -> None:
+        if not isinstance(raw, str):
+            return
+        cleaned = raw.strip()
+        if not cleaned:
+            return
+        if apply_len_floor and len(cleaned) < _MIN_IDENTIFIER_LEN:
+            return
+        normalized = _normalize_for_match(cleaned)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        terms.append(normalized)
+
+    for term in id_terms:
+        _add(term, apply_len_floor=True)
+    for term in name_terms:
+        _add(term, apply_len_floor=False)
     return terms
 
 
 def _contains_any_identifier(text: str, terms: list[str]) -> bool:
-    lowered = text.lower()
-    return any(term.lower() in lowered for term in terms)
+    """`terms` are already `_normalize_for_match`-ed; only `text` needs it here."""
+    normalized_text = _normalize_for_match(text)
+    return any(term in normalized_text for term in terms)
 
 
 def _redact_all(
@@ -308,15 +376,19 @@ def _redact_all(
 
 
 def _redact_client_urls(text: str, terms: list[str]) -> tuple[str, list[Redaction]]:
-    """Redact whole URLs that embed a known source tenant/org/team identifier."""
+    """Redact whole URLs that embed a known source tenant/org/team identifier.
+
+    `terms` are already `_normalize_for_match`-ed (`_collect_identifier_terms`);
+    only each candidate URL needs normalizing here before the substring check.
+    """
     if not terms:
         return text, []
-    lowered_terms = [t.lower() for t in terms]
     redactions: list[Redaction] = []
 
     def _sub(match: re.Match[str]) -> str:
         url = match.group(0)
-        if any(term in url.lower() for term in lowered_terms):
+        normalized_url = _normalize_for_match(url)
+        if any(term in normalized_url for term in terms):
             redactions.append(Redaction(kind=IssueKind.URL, label="client_identifying_url"))
             return "[URL]"
         return url
@@ -370,15 +442,23 @@ def verify_scrubbed(
     text: str,
     *,
     source_metadata: dict[str, Any] | None = None,
+    extra_identifier_terms: Sequence[str] | None = None,
 ) -> Verdict:
-    """The confidentiality verifier -- the final gate before firm-wide sharing.
+    """The confidentiality verifier -- an advisory backstop before firm-wide sharing.
 
     Re-scans `text` for every deterministic-redaction category (PII,
     secrets/keys) PLUS an explicit check for the source tenant/org/team's
-    own identifiers (ids from `ctx`; names, if available, from
-    `source_metadata`) -- this second check is what catches a client name
-    the LLM generalization step failed to strip, which regex redaction
-    alone cannot reliably do for free-form prose.
+    own identifiers, drawn from three sources: ids from `ctx` (always
+    present), names from `source_metadata` (proposer-supplied, may be
+    omitted), and `extra_identifier_terms` (server-authoritative names the
+    proposer cannot omit or have an LLM steered into dropping -- callers
+    should source this from the tenant's own graph-store entities plus an
+    operator-configured identifier list; see `server.services.lessons`).
+    This check is what catches a client name the LLM generalization step
+    failed to strip (or was prompt-injected into keeping), which regex
+    redaction alone cannot reliably do for free-form prose. It is defense in
+    depth, not the control: the actual gate on firm-wide visibility is a
+    human holding the `lessons:approve` scope reviewing the pending lesson.
 
     Fail-closed: empty/whitespace-only `text` is NOT clean (nothing was
     actually verified, so there is no basis to call it clean). This
@@ -401,7 +481,9 @@ def verify_scrubbed(
         if pattern.search(text):
             findings.append(Finding(kind=kind, detail=f"residual {label} detected"))
 
-    terms = _collect_identifier_terms(ctx, source_metadata)
+    terms = _collect_identifier_terms(
+        ctx, source_metadata, extra_name_terms=extra_identifier_terms
+    )
     if _contains_any_identifier(text, terms):
         findings.append(
             Finding(
@@ -512,6 +594,7 @@ async def generalize_and_scrub(
     content: str,
     *,
     source_metadata: dict[str, Any] | None = None,
+    extra_identifier_terms: Sequence[str] | None = None,
     ollama_client: OllamaClient | None = None,
     settings: Settings | None = None,
 ) -> ScrubResult:
@@ -527,8 +610,11 @@ async def generalize_and_scrub(
     pass-through of the raw, un-generalized `content`. `source_metadata`,
     when given, supplies human-readable client-identifying names (e.g.
     `org_name`/`client_name`) alongside the ids already available on `ctx`,
-    for both the deterministic redaction pass and the final
-    `verify_scrubbed` call.
+    for the final `verify_scrubbed` call. `extra_identifier_terms` (F2+F3,
+    security review) supplies server-authoritative names the proposer
+    cannot omit -- forwarded to that same `verify_scrubbed` call, never to
+    the deterministic redaction pass (which stays keyed on `ctx`/
+    `source_metadata` only, per this module's docstring).
     """
     if not is_enabled(LESSONS_PROMOTION_FLAG, ctx):
         logger.info("lessons-promotion scrub blocked: %s is off", LESSONS_PROMOTION_FLAG)
@@ -566,7 +652,12 @@ async def generalize_and_scrub(
         scrubbed_text, redactions = _apply_deterministic_redactions(
             generalized, ctx, source_metadata
         )
-        verdict = verify_scrubbed(ctx, scrubbed_text, source_metadata=source_metadata)
+        verdict = verify_scrubbed(
+            ctx,
+            scrubbed_text,
+            source_metadata=source_metadata,
+            extra_identifier_terms=extra_identifier_terms,
+        )
 
         logger.info(
             "lessons-promotion scrub complete: %d redaction(s), verdict.clean=%s, %d finding(s)",

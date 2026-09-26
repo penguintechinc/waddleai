@@ -287,6 +287,126 @@ class TestVerifyScrubbed:
 
 
 # ---------------------------------------------------------------------------
+# F2+F3 (security review, MED): identifier terms must be server-authoritative
+# -- a client name the proposer omitted from source_metadata (or a
+# prompt-injected LLM was steered into keeping) must still be caught when it
+# is supplied via `extra_identifier_terms`, independent of source_metadata.
+#
+# # regression: lessons-promotion-secrev
+# ---------------------------------------------------------------------------
+
+
+class TestServerAuthoritativeIdentifiers:
+    def test_client_name_omitted_from_metadata_but_supplied_as_extra_term_is_caught(
+        self,
+    ) -> None:
+        """The proposer never mentioned "Acme Corp" in source_metadata -- only the
+        server-side extra_identifier_terms (e.g. sourced from the tenant's graph
+        store) knows about it. Without F2+F3, this would false-`clean`."""
+        ctx = _ctx()
+        verdict = verify_scrubbed(
+            ctx,
+            "The rollout at Acme Corp took three extra days due to a config drift.",
+            source_metadata=None,
+            extra_identifier_terms=["Acme Corp"],
+        )
+
+        assert verdict.clean is False
+        assert any(f.kind is IssueKind.CLIENT_IDENTIFIER for f in verdict.findings)
+
+    def test_extra_identifier_terms_alone_do_not_false_positive_on_clean_text(self) -> None:
+        ctx = _ctx()
+        verdict = verify_scrubbed(
+            ctx,
+            "Always validate schema compatibility before a cross-region migration.",
+            extra_identifier_terms=["Acme Corp", "Widgets Inc"],
+        )
+
+        assert verdict == Verdict(clean=True, findings=[])
+
+    async def test_generalize_and_scrub_forwards_extra_identifier_terms_to_verify(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`generalize_and_scrub` (the pipeline `PromoteLesson` actually calls) must
+        thread extra_identifier_terms through to its internal verify_scrubbed call,
+        not just the standalone `verify_scrubbed` function."""
+        monkeypatch.setattr("penguincode_cli.lessons.scrub.is_enabled", lambda *a, **kw: True)
+        client = _mock_ollama_client(
+            _generalized("The rollout at Acme Corp took three extra days.")
+        )
+
+        result = await generalize_and_scrub(
+            _ctx(),
+            "lesson content",
+            ollama_client=client,
+            extra_identifier_terms=["Acme Corp"],
+        )
+
+        assert result.verdict.clean is False
+        assert any(f.kind is IssueKind.CLIENT_IDENTIFIER for f in result.verdict.findings)
+
+
+# ---------------------------------------------------------------------------
+# F4 (security review, LOW): the length floor must never apply to NAME terms
+# (only ID-shaped terms), and matching must be NFKC-normalized + casefolded
+# so a cosmetic Unicode representation difference can't defeat it.
+#
+# # regression: lessons-promotion-secrev
+# ---------------------------------------------------------------------------
+
+
+class TestUnicodeAndShortNameMatching:
+    def test_short_real_client_name_is_still_caught(self) -> None:
+        # "3M" is a genuine two-character company name -- must NOT be dropped
+        # by _MIN_IDENTIFIER_LEN the way a short synthetic id is.
+        ctx = _ctx()
+        verdict = verify_scrubbed(
+            ctx,
+            "3M's procurement policy required dual sign-off on every change order.",
+            extra_identifier_terms=["3M"],
+        )
+
+        assert verdict.clean is False
+        assert any(f.kind is IssueKind.CLIENT_IDENTIFIER for f in verdict.findings)
+
+    def test_short_id_shaped_term_from_ctx_is_still_floored(self) -> None:
+        # Unlike a NAME term, an actual ctx id shorter than the floor must
+        # still be skipped -- F4 only changes NAME-term treatment.
+        ctx = _ctx(tenant_id="t1")
+        verdict = verify_scrubbed(ctx, "The t1 rollout finished on schedule.")
+
+        assert verdict.clean is True
+
+    def test_fullwidth_unicode_variant_is_caught(self) -> None:
+        # A full-width Latin rendering of "ACME" is a distinct Unicode
+        # sequence from ASCII "ACME" until NFKC-normalized -- a classic
+        # homoglyph-style evasion a plain .lower() substring check misses.
+        ctx = _ctx()
+        verdict = verify_scrubbed(
+            ctx,
+            "The ＡＣＭＥ integration required a custom connector.",
+            extra_identifier_terms=["ACME"],
+        )
+
+        assert verdict.clean is False
+        assert any(f.kind is IssueKind.CLIENT_IDENTIFIER for f in verdict.findings)
+
+    def test_combining_accent_variant_is_caught(self) -> None:
+        # The term is stored precomposed ("Acmé"); the text spells the
+        # same visual name with a decomposed base letter + combining accent
+        # ("Acmé"). NFKC canonically composes both to the same form.
+        ctx = _ctx()
+        verdict = verify_scrubbed(
+            ctx,
+            "The Acmé Corp contract renewal is due next quarter.",
+            extra_identifier_terms=["Acmé Corp"],
+        )
+
+        assert verdict.clean is False
+        assert any(f.kind is IssueKind.CLIENT_IDENTIFIER for f in verdict.findings)
+
+
+# ---------------------------------------------------------------------------
 # Adversarial cases.
 # ---------------------------------------------------------------------------
 
