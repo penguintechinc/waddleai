@@ -14,6 +14,7 @@ from services.management.app.services.login_throttle import (
 from services.management.app.services.rate_limiter import (
     RateLimiterConfig,
     RequestRateLimiter,
+    client_rate_limit_key,
     reset_auth_rate_limiter,
 )
 from services.management.app.services.token_denylist import reset_token_denylist
@@ -558,6 +559,156 @@ class TestAuthRateLimit:
             "/api/v1/auth/login",
             json={"username": username, "password": "wrong-password"},
         )
+
+    async def test_login_rate_limit_key_excludes_password(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """The bucket key derivation is never handed the password.
+
+        CodeQL (``py/weak-sensitive-data-hashing``) flagged an earlier
+        revision that fed the password straight into SHA-256 -- a fast
+        hash, cheaply brute-forceable offline if a leaked in-memory bucket
+        map exposed it. Spies on the real key-derivation call and asserts
+        the known password never reaches it, whole or as a substring.
+
+        regression: headless-auth-codeql
+        """
+        _install_rate_limiter(max_requests=1000, window_seconds=60)
+        _install_throttle(max_failures=999)
+        app_mock_db.return_value.select.return_value.first.return_value = make_mock_user()
+
+        known_password = "S3cr3t-Should-Never-Be-Hashed!"  # noqa: S105
+        with patch(
+            "services.management.app.api.v1.auth.client_rate_limit_key",
+            wraps=client_rate_limit_key,
+        ) as spy:
+            resp = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "admin", "password": known_password},
+            )
+        assert resp.status_code in (200, 401)
+        assert spy.call_count == 1
+        _remote_addr, identifier = spy.call_args.args
+        assert identifier != known_password
+        assert known_password not in (identifier or "")
+
+    async def test_login_same_username_shares_bucket_regardless_of_password(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """Two different passwords for the same username/IP share one bucket.
+
+        Proves the rate-limit key is a pure function of (ip, username) --
+        varying only the password must never widen or reset the bucket.
+
+        regression: headless-auth-codeql
+        """
+        _install_rate_limiter(max_requests=1, window_seconds=60)
+        _install_throttle(max_failures=999)
+        app_mock_db.return_value.select.return_value.first.return_value = make_mock_user()
+
+        first = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "shared-user", "password": "password-one"},
+        )
+        assert first.status_code == 401
+
+        second = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "shared-user", "password": "totally-different-password"},
+        )
+        assert second.status_code == 429
+
+    async def test_token_exchange_rate_limit_key_excludes_secret(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """The bucket key derivation is never handed the raw key or its secret tail.
+
+        Mirrors the /login password case: the presented key is mostly
+        secret material beyond its public ``key_prefix``, and that secret
+        material must never reach the key-derivation hash.
+
+        regression: headless-auth-codeql
+        """
+        _install_rate_limiter(max_requests=1000, window_seconds=60)
+        owner = make_mock_user(user_id=5, org_id=2, role="admin", username="svc-ci")
+        key_row = MagicMock(
+            id=99,
+            user_id=owner.id,
+            organization_id=owner.organization_id,
+            enabled=True,
+            key_hash=bcrypt.hash(self.RAW_KEY),
+        )
+        key_query = MagicMock()
+        key_query.select.return_value = [key_row]
+        user_query = MagicMock()
+        user_query.select.return_value.first.return_value = owner
+        app_mock_db.side_effect = [key_query, user_query]
+
+        with patch(
+            "services.management.app.api.v1.auth.client_rate_limit_key",
+            wraps=client_rate_limit_key,
+        ) as spy:
+            resp = await client.post(
+                "/api/v1/auth/token",
+                headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+            )
+        assert resp.status_code == 200
+        assert spy.call_count == 1
+        _remote_addr, identifier = spy.call_args.args
+        assert identifier != self.RAW_KEY
+        # Only the public "wa-<8 secret chars>..." prefix may feed the hash --
+        # the remaining secret tail must never reach it.
+        secret_tail = self.RAW_KEY[11:]
+        assert secret_tail not in (identifier or "")
+
+    async def test_token_exchange_same_key_prefix_shares_bucket(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """Two keys sharing a public key_prefix but differing secret share one bucket.
+
+        Demonstrates the rate-limit key is a pure function of the
+        non-secret key_prefix -- varying only the secret tail (same
+        account's key, same lookup handle) must never change or widen the
+        bucket, matching the /login same-username-different-password
+        invariant above.
+
+        regression: headless-auth-codeql
+        """
+        _install_rate_limiter(max_requests=1, window_seconds=60)
+        key_a = self.RAW_KEY
+        key_b = self.RAW_KEY[:11] + "differentSecretTail99"
+        assert key_a[:11] == key_b[:11]
+        assert key_a != key_b
+
+        owner = make_mock_user(user_id=5, org_id=2, role="admin", username="svc-ci")
+
+        def _key_row_for(raw_key: str) -> MagicMock:
+            return MagicMock(
+                id=99,
+                user_id=owner.id,
+                organization_id=owner.organization_id,
+                enabled=True,
+                key_hash=bcrypt.hash(raw_key),
+            )
+
+        key_query_a = MagicMock()
+        key_query_a.select.return_value = [_key_row_for(key_a)]
+        user_query = MagicMock()
+        user_query.select.return_value.first.return_value = owner
+        app_mock_db.side_effect = [key_query_a, user_query]
+
+        first = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {key_a}"},
+        )
+        assert first.status_code == 200
+
+        limited = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {key_b}"},
+        )
+        assert limited.status_code == 429
+        assert int(limited.headers["Retry-After"]) > 0
 
 
 class TestTokenRevocationOnLogout:

@@ -746,6 +746,8 @@ async def login(data: LoginRequest):
     # M2 (headless-auth-secrev): raw request-volume limiter, independent of
     # (and checked before) the account-scoped failure lockout below -- see
     # rate_limiter.py's module docstring for why the two controls coexist.
+    # Keyed on the submitted *username* -- a non-secret identifier -- never
+    # the password (CodeQL py/weak-sensitive-data-hashing).
     limiter = get_auth_rate_limiter()
     rate_decision = limiter.check(client_rate_limit_key(request.remote_addr, username))
     if not rate_decision.allowed:
@@ -862,11 +864,19 @@ async def token_exchange():
     api_key = auth_header.split(" ", 1)[1]
 
     # M2 (headless-auth-secrev): raw request-volume limiter, same control as
-    # /auth/login above -- keyed on the presented key (hashed, never stored
-    # or logged raw) so a guessed-key sweep is throttled regardless of which
-    # source IP it comes from.
+    # /auth/login above -- keyed on the key's public `key_prefix` lookup
+    # handle (parsed the same way `verify_api_key` narrows its DB query,
+    # below), never the raw presented key, which still carries the secret.
+    # `key_prefix` is already treated as non-secret elsewhere in this
+    # service (returned verbatim in `keys.py` list/create responses), so
+    # hashing it here does not run afoul of CodeQL's
+    # py/weak-sensitive-data-hashing check the way hashing the full secret
+    # did. An unparseable key collapses to an IP-only bucket rather than
+    # skipping the limiter.
     limiter = get_auth_rate_limiter()
-    rate_decision = limiter.check(client_rate_limit_key(request.remote_addr, api_key))
+    rate_decision = limiter.check(
+        client_rate_limit_key(request.remote_addr, _virtual_key_prefix(api_key))
+    )
     if not rate_decision.allowed:
         logger.warning("auth: token exchange refused, rate limit exceeded")
         return _rate_limited_response(rate_decision)

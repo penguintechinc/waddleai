@@ -15,13 +15,22 @@ mirrors ``login_throttle``'s own defense-in-depth rationale for why an
 in-app control exists alongside (not instead of) the network layer.
 
 A single, bounded, thread-safe, in-process token bucket per client, keyed by
-source IP plus a hashed, truncated fragment of the presented credential
-(never the raw secret -- see ``client_rate_limit_key``) so that one IP
-cannot be starved by another tenant's traffic and a single guessed
+source IP plus a hashed, truncated *non-secret* identifier -- the submitted
+username for ``/auth/login``, or the presented key's public ``key_prefix``
+lookup handle for ``/auth/token`` (see ``client_rate_limit_key``) -- so that
+one IP cannot be starved by another tenant's traffic and a single guessed
 key/username cannot be retried faster than the configured rate regardless of
 which source IP it comes from. Bounded like ``login_throttle._LocalCounter``:
 the key space is attacker-controlled, so entries are capped and the
 least-recently-touched ones evicted, never allowed to grow without limit.
+
+CodeQL (``py/weak-sensitive-data-hashing``) flagged an earlier revision that
+hashed the raw presented credential (including the password on ``/login``
+and the full secret on ``/token``) with SHA-256 -- a fast hash, cheaply
+brute-forceable offline if a leaked in-memory bucket map exposed it. The
+identifier passed to ``client_rate_limit_key`` MUST NEVER be a password or
+any part of an API key's secret material; callers in ``auth.py`` parse out a
+non-secret handle first (username, or ``_virtual_key_prefix``'s result).
 """
 
 from __future__ import annotations
@@ -50,9 +59,10 @@ class RateLimitDecision:
 class RateLimiterConfig:
     """Tunables for the auth request-volume limiter, overridable from the environment.
 
-    Default of 10 requests per 60-second window per (IP, credential-fragment)
-    pair is deliberately conservative -- a legitimate CLI/CI caller retries a
-    single credential far less often than that; a brute-force sweep does not.
+    Default of 10 requests per 60-second window per (IP, non-secret
+    identifier) pair is deliberately conservative -- a legitimate CLI/CI
+    caller retries a single credential far less often than that; a
+    brute-force sweep does not.
     """
 
     max_requests: int = 10
@@ -169,16 +179,25 @@ class RequestRateLimiter:
             return RateLimitDecision(allowed=True)
 
 
-def client_rate_limit_key(remote_addr: str | None, credential: str) -> str:
-    """Return a stable, bounded, secret-free key for (client IP, credential fragment).
+def client_rate_limit_key(remote_addr: str | None, identifier: str | None) -> str:
+    """Return a stable, bounded, secret-free key for (client IP, non-secret identifier).
 
-    *credential* (a username or a presented API key) is hashed and truncated
-    -- only the client IP is ever kept in the clear, since it is already
-    routinely logged elsewhere; a credential value never is.
+    *identifier* MUST already be non-secret by the time it reaches this
+    function -- a username, or an API key's public ``key_prefix`` lookup
+    handle (see ``auth._virtual_key_prefix``). It must never be a password or
+    any part of a key's secret material: this function hashes it (bounded,
+    fixed-length key; only the client IP is ever kept in the clear, since it
+    is already routinely logged elsewhere), and SHA-256 is fine for
+    non-secret input but is not a defense if the input were secret. A missing
+    or unparseable identifier (``None``/empty) collapses the bucket to
+    per-IP only -- still throttled, just without a per-account/key
+    component.
     """
     ip = remote_addr or "unknown"
-    cred_hash = hashlib.sha256(credential.encode("utf-8")).hexdigest()[:16]
-    return f"{ip}:{cred_hash}"
+    if not identifier:
+        return ip
+    ident_hash = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
+    return f"{ip}:{ident_hash}"
 
 
 _limiter: RequestRateLimiter | None = None
