@@ -421,6 +421,95 @@ class TestMemoryAdd:
         )
 
 
+# ---------------------------------------------------------------------------
+# F1 (security review, lessons-promotion HIGH): a tenant-visibility MemoryAdd
+# is the promotion pipeline's back door -- it must require the same elevated
+# scope ApproveLesson does, never be reachable by a plain-scoped caller.
+#
+# # regression: lessons-promotion-secrev
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryAddTenantVisibilityGate:
+    @pytest.mark.asyncio
+    async def test_plain_scoped_caller_requesting_tenant_visibility_is_denied(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        scoped_memory = _FakeScopedMemory()
+        service = _service(scoped_memory=scoped_memory)
+        request = MemoryAddRequest(
+            api_version="v1",
+            content="the client's Q3 migration plan is...",
+            visibility=Visibility.VISIBILITY_TENANT,
+        )
+
+        with pytest.raises(AbortCalledError):
+            await service.MemoryAdd(request, _FakeContext())
+
+        scoped_memory.add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_plain_scoped_caller_denial_is_permission_denied(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        service = _service()
+        context = _FakeContext()
+        request = MemoryAddRequest(
+            api_version="v1", content="x", visibility=Visibility.VISIBILITY_TENANT
+        )
+
+        with pytest.raises(AbortCalledError):
+            await service.MemoryAdd(request, context)
+
+        assert context.aborted_with is not None
+        assert context.aborted_with[0] == grpc.StatusCode.PERMISSION_DENIED
+
+    @pytest.mark.asyncio
+    async def test_approver_scoped_caller_may_write_tenant_visibility(self) -> None:
+        from penguincode_cli.server.services.lessons import LESSONS_APPROVE_SCOPE
+
+        ctx = _ctx(scopes=("knowledge:read", "knowledge:write", LESSONS_APPROVE_SCOPE))
+        token = auth_middleware._current_scope.set(ctx)
+        try:
+            scoped_memory = _FakeScopedMemory()
+            scoped_memory.add.return_value = {"results": []}
+            service = _service(scoped_memory=scoped_memory)
+            request = MemoryAddRequest(
+                api_version="v1", content="a generalized lesson", visibility=Visibility.VISIBILITY_TENANT
+            )
+
+            response = await service.MemoryAdd(request, _FakeContext())
+
+            assert response.stored is True
+            scoped_memory.add.assert_awaited_once_with(
+                ctx, "a generalized lesson", visibility="tenant", team_id=None, metadata={}
+            )
+        finally:
+            auth_middleware._current_scope.reset(token)
+
+    @pytest.mark.asyncio
+    async def test_team_visibility_write_still_works_for_a_plain_scoped_caller(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        """Unaffected by the tenant-visibility gate -- team/user writes are unchanged."""
+        scoped_memory = _FakeScopedMemory()
+        scoped_memory.add.return_value = {"results": []}
+        service = _service(scoped_memory=scoped_memory)
+        request = MemoryAddRequest(
+            api_version="v1",
+            content="the user likes dark mode",
+            visibility=Visibility.VISIBILITY_TEAM,
+            team_id="team-a",
+        )
+
+        response = await service.MemoryAdd(request, _FakeContext())
+
+        assert response.stored is True
+        scoped_memory.add.assert_awaited_once_with(
+            scope_ctx, "the user likes dark mode", visibility="team", team_id="team-a", metadata={}
+        )
+
+
 class TestMemorySearch:
     @pytest.mark.asyncio
     async def test_calls_search_and_maps_results(self, scope_ctx: ScopeContext) -> None:
