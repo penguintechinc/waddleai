@@ -1,5 +1,8 @@
-# Beta environment values for penguincode
-# Production-like setup with registry images
+# Gamma environment values for penguincode
+# Upgrade-in-place validation tier (DigitalOcean) -- the only tier that
+# exercises the upgrade path before a release is cut. Production-like
+# resources; flags stay OFF (ship dark; flip on per environment only after
+# validation -- spec §14 Rollout).
 
 global:
   namespace: penguincode
@@ -7,9 +10,9 @@ global:
 image:
   repository: ghcr.io/penguintechinc/penguincode
   pullPolicy: IfNotPresent
-  # CI-set on every merge to main, e.g. `beta-1727308800` (epoch64) -- see
-  # devops.md CI/CD Tag Naming. Never `latest`.
-  tag: "beta-0000000000"
+  # CI-set on every GitHub pre-release, e.g. `gamma-1727308800` (epoch64) --
+  # see devops.md CI/CD Tag Naming. Never `latest`.
+  tag: "gamma-0000000000"
 
 imagePullSecrets:
   - name: ghcr-pull-secret
@@ -46,12 +49,12 @@ secrets:
 # never inline plaintext, never a `--set`/`--set-string` CLI arg (token/secret
 # hygiene).
 postgres:
-  adminExistingSecret: penguincode-postgres-admin-beta
+  adminExistingSecret: penguincode-postgres-admin-gamma
   bootstrapRole:
-    passwordExistingSecret: penguincode-approle-password-beta
-  existingSecret: penguincode-postgres-beta
+    passwordExistingSecret: penguincode-approle-password-gamma
+  existingSecret: penguincode-postgres-gamma
 
-# Flags stay OFF in beta too (ship dark; flip on per environment only after
+# Flags stay OFF in gamma too (ship dark; flip on per environment only after
 # validation -- spec §14 Rollout).
 
 ingress:
@@ -61,11 +64,11 @@ ingress:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
   hosts:
-    - host: penguincode.penguintech.cloud
+    - host: penguincode-gamma.penguintech.cloud
       paths:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: penguincode-beta-tls
+    - secretName: penguincode-gamma-tls
       hosts:
-        - penguincode.penguintech.cloud
+        - penguincode-gamma.penguintech.cloud

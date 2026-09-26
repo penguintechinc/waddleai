@@ -1,5 +1,6 @@
-# Beta environment values for penguincode
-# Production-like setup with registry images
+# Production environment values for penguincode
+# DigitalOcean, upgrade-in-place. Flags stay OFF by default (ship dark; flip
+# on per environment only after validation -- spec §14 Rollout).
 
 global:
   namespace: penguincode
@@ -7,15 +8,21 @@ global:
 image:
   repository: ghcr.io/penguintechinc/penguincode
   pullPolicy: IfNotPresent
-  # CI-set on every merge to main, e.g. `beta-1727308800` (epoch64) -- see
-  # devops.md CI/CD Tag Naming. Never `latest`.
-  tag: "beta-0000000000"
+  # Production requires an immutable SHA256 digest pin, never a mutable tag
+  # (critical-rules.md Dependency Pinning). `digest` takes precedence over
+  # `tag` (see templates/_helpers.tpl penguincode.image) -- replace
+  # `<digest>` below with the digest of the release this values file ships
+  # before installing; the placeholder is intentionally invalid so an
+  # un-pinned production install fails closed instead of silently pulling
+  # `latest`/AppVersion.
+  tag: ""
+  digest: "sha256:<digest>"
 
 imagePullSecrets:
   - name: ghcr-pull-secret
 
 server:
-  replicas: 2
+  replicas: 3
 
   resources:
     limits:
@@ -46,13 +53,13 @@ secrets:
 # never inline plaintext, never a `--set`/`--set-string` CLI arg (token/secret
 # hygiene).
 postgres:
-  adminExistingSecret: penguincode-postgres-admin-beta
+  adminExistingSecret: penguincode-postgres-admin-prod
   bootstrapRole:
-    passwordExistingSecret: penguincode-approle-password-beta
-  existingSecret: penguincode-postgres-beta
+    passwordExistingSecret: penguincode-approle-password-prod
+  existingSecret: penguincode-postgres-prod
 
-# Flags stay OFF in beta too (ship dark; flip on per environment only after
-# validation -- spec §14 Rollout).
+# Flags stay OFF in production by default -- flip on per environment only
+# after validation (spec §14 Rollout).
 
 ingress:
   enabled: true
@@ -61,11 +68,11 @@ ingress:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
   hosts:
-    - host: penguincode.penguintech.cloud
+    - host: penguincode.app
       paths:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: penguincode-beta-tls
+    - secretName: penguincode-prod-tls
       hosts:
-        - penguincode.penguintech.cloud
+        - penguincode.app
