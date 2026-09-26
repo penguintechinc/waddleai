@@ -5,6 +5,25 @@ Runs both the gRPC server (agent communication) and the Quart REST API
 
 Usage:
     python -m penguincode.server [--host HOST] [--port PORT] [--rest-port PORT]
+
+**Interceptor reconciliation (F2, resolves `auth/middleware.py`'s deferred
+Integration Point note).** Two gRPC interceptors both read the same
+`authorization` invocation-metadata key for two different token kinds, so
+they cannot simply run as an unconditional chain -- each must skip methods
+it does not own:
+
+- `JWTValidationInterceptor` (HS256, penguincode's own local client-server
+  secret) continues gating every legacy RPC (Chat/Auth/Tool/Health) exactly
+  as before, and is now told to skip every `KnowledgeService` method.
+- `WaddleAIAuthInterceptor` (RS256, WaddleAI-issued JWTs -> `ScopeContext`)
+  gates only `KnowledgeService` methods -- it is told to skip every legacy
+  method, so it never interferes with the existing HS256 path.
+
+Both interceptors' `excluded_methods` are therefore complementary sets over
+the *same* method universe -- one method is always authenticated by exactly
+one interceptor, never both, never neither. `KnowledgeService`'s client
+(F3) MUST present a WaddleAI-issued RS256 JWT, never penguincode's local
+HS256 token -- the two are not interchangeable.
 """
 
 import asyncio
@@ -16,23 +35,39 @@ from concurrent import futures
 
 import grpc
 
+from penguincode_cli.auth.middleware import WaddleAIAuthInterceptor, WaddleAIJWTValidator
 from penguincode_cli.config.settings import Settings, load_settings
 from penguincode_cli.proto import (
     add_AuthServiceServicer_to_server,
     add_ChatServiceServicer_to_server,
     add_HealthServiceServicer_to_server,
+    add_KnowledgeServiceServicer_to_server,
     add_ToolCallbackServiceServicer_to_server,
 )
 
-from .interceptors import JWTValidationInterceptor
+from .interceptors import (
+    JWTValidationInterceptor,
+    MethodPrefixRoutingInterceptor,
+    PassthroughInterceptor,
+)
 from .models.config_store import ConfigStore
 from .rest_app import create_rest_app
 from .services.auth import AuthServiceImpl
 from .services.chat import ChatServiceImpl
 from .services.health import HealthServiceImpl
+from .services.knowledge import KnowledgeServiceImpl
 from .services.tools import ToolCallbackServiceImpl
 
 logger = logging.getLogger(__name__)
+
+#: Method path prefix for every `KnowledgeService` RPC (see
+#: `proto/knowledge/v1/knowledge.proto`'s `package penguincode.knowledge.v1`).
+#: `MethodPrefixRoutingInterceptor` (below) uses this to route KnowledgeService
+#: calls to `WaddleAIAuthInterceptor` (RS256, WaddleAI-issued JWTs -> a
+#: `ScopeContext`) and every other (legacy) call to the existing local
+#: `JWTValidationInterceptor` (HS256, penguincode's own client-server secret)
+#: -- see the module docstring above for why the two are not interchangeable.
+_KNOWLEDGE_SERVICE_METHOD_PREFIX = "/penguincode.knowledge.v1.KnowledgeService/"
 
 
 class PenguinCodeServer:
@@ -60,6 +95,7 @@ class PenguinCodeServer:
         self.chat_service: ChatServiceImpl | None = None
         self.tool_service: ToolCallbackServiceImpl | None = None
         self.health_service: HealthServiceImpl | None = None
+        self.knowledge_service: KnowledgeServiceImpl | None = None
 
     async def start(self) -> None:
         """Start both gRPC and REST servers."""
@@ -69,16 +105,31 @@ class PenguinCodeServer:
         await self.config_store.seed_defaults()
 
         # --- gRPC server ----------------------------------------------------
-        interceptors = []
+        legacy_interceptor: grpc.aio.ServerInterceptor
         if self.settings.auth.enabled:
-            jwt_interceptor = JWTValidationInterceptor(
+            legacy_interceptor = JWTValidationInterceptor(
                 jwt_secret=self.settings.auth.jwt_secret,
                 excluded_methods=[
                     "/penguincode.AuthService/Authenticate",
                     "/penguincode.HealthService/Check",
                 ],
             )
-            interceptors.append(jwt_interceptor)
+        else:
+            legacy_interceptor = PassthroughInterceptor()
+
+        # KnowledgeService's RS256/ScopeContext gate is installed
+        # unconditionally -- independent of `settings.auth.enabled` (that
+        # flag only ever toggled penguincode's own legacy HS256 gate). See
+        # the module docstring's "Interceptor reconciliation" note.
+        knowledge_interceptor = WaddleAIAuthInterceptor(WaddleAIJWTValidator())
+
+        interceptors = [
+            MethodPrefixRoutingInterceptor(
+                _KNOWLEDGE_SERVICE_METHOD_PREFIX,
+                matched=knowledge_interceptor,
+                unmatched=legacy_interceptor,
+            )
+        ]
 
         self.server = grpc.aio.server(
             futures.ThreadPoolExecutor(max_workers=10),
@@ -90,12 +141,20 @@ class PenguinCodeServer:
         self.chat_service = ChatServiceImpl(self.settings)
         self.tool_service = ToolCallbackServiceImpl()
         self.health_service = HealthServiceImpl(self.settings)
+        self.knowledge_service = KnowledgeServiceImpl(self.settings)
 
         # Register services
         add_AuthServiceServicer_to_server(self.auth_service, self.server)
         add_ChatServiceServicer_to_server(self.chat_service, self.server)
         add_ToolCallbackServiceServicer_to_server(self.tool_service, self.server)
         add_HealthServiceServicer_to_server(self.health_service, self.server)
+        # Generated proto code ships no return-type annotation (same
+        # pre-existing gap as the four `add_*Servicer_to_server` calls
+        # above) -- suppressed explicitly here rather than left unannotated,
+        # so this new call site does not add to mypy's untyped-call count.
+        add_KnowledgeServiceServicer_to_server(  # type: ignore[no-untyped-call]
+            self.knowledge_service, self.server
+        )
 
         # Configure TLS if enabled
         if self.settings.server.tls_enabled:

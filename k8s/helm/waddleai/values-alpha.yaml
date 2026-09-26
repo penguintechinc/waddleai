@@ -144,6 +144,10 @@ cilium:
     enabled: true
   topology:
     gatewayNamespace: gateway
+    # penguincode's global.namespace override for alpha (services/penguincode/
+    # k8s/helm/penguincode/values-alpha.yaml).
+    penguincodeIngress:
+      namespace: penguincode-alpha
 
 # External fleet node auth mode - Alpha (spec §10.3, Q#4, Task 15).
 # fleet.external.enabled stays false (opt-in, inherited from values.yaml) —

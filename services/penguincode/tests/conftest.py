@@ -1,13 +1,84 @@
 """Shared pytest fixtures for PenguinCode tests."""
 
+import os
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import jwt as pyjwt
 import pytest
 
 from penguincode_cli.server.models.config_store import ConfigStore
 from penguincode_cli.server.rest_app import create_rest_app
+
+# ============================================================================
+# Shared live-Ollama availability probe
+# ============================================================================
+#
+# T16's `tests/integration/conftest.py` originally defined this check for its
+# own `ollama_ready` fixture only. `tests/test_memory.py`'s
+# `TestLiveScopedMemoryPgvector` needs the exact same probe (it was gated on
+# `TEST_DATABASE_URL` alone, which meant CI's new Postgres service container
+# -- added alongside `TEST_DATABASE_URL` -- let it run unconditionally and
+# error with a raw `ConnectionError` when Ollama isn't reachable, instead of
+# skipping cleanly). Defined once here, at the top-level `tests/conftest.py`,
+# so both `tests/integration/*.py` (via pytest's normal conftest inheritance
+# down the directory tree) and `tests/test_memory.py` share one
+# implementation instead of two independent copies drifting apart.
+_OLLAMA_BASE_URL = "http://localhost:11434"
+_OLLAMA_EMBED_MODEL = "nomic-embed-text"
+
+
+def _ollama_unavailable_reason(
+    base_url: str | None = None, model: str = _OLLAMA_EMBED_MODEL
+) -> str | None:
+    """Return a human-readable skip reason if `model` isn't ready at `base_url`,
+    or `None` when Ollama is reachable and has the model pulled.
+
+    `base_url` defaults to the `OLLAMA_URL` env var (falling back to the
+    standard local port) -- looked up at call time, not import time -- so
+    this probes the exact endpoint `tests/test_memory.py`'s `MemoryManager`
+    construction and `tests/test_retrieval_graphrag.py`'s own probe will
+    actually use, letting a test simulate "Ollama unreachable" by pointing
+    `OLLAMA_URL` at a dead port instead of needing a real outage.
+    """
+    if base_url is None:
+        base_url = os.environ.get("OLLAMA_URL", _OLLAMA_BASE_URL)
+    try:
+        response = httpx.get(f"{base_url}/api/tags", timeout=5)
+        response.raise_for_status()
+        models = [m.get("name", "") for m in response.json().get("models", [])]
+    except Exception as exc:  # noqa: BLE001 -- any failure means "treat as unreachable"
+        return (
+            f"Ollama not reachable at {base_url} ({exc}) -- "
+            "embedding-dependent live test skipped, not the whole suite"
+        )
+    if not any(model in m for m in models):
+        return (
+            f"{model} is not pulled in this Ollama instance -- "
+            "embedding-dependent live test skipped, not the whole suite"
+        )
+    return None
+
+
+@pytest.fixture(scope="session")
+def ollama_ready() -> None:
+    """Documented, per-test skip (never a silent whole-module skip) for any live
+    scenario that needs a real `nomic-embed-text` embedding call.
+
+    Session-scoped: pytest caches a fixture's raised exception (`Skipped`
+    included) and replays it for every other test requesting the same
+    fixture in this session, so this check runs the live HTTP probe once,
+    not once per test, while still skipping each dependent test individually.
+    Request this fixture directly (or depend on it from another fixture that
+    needs to run *before* a network call happens, e.g. a fixture that
+    constructs a client against Ollama at setup time) so the skip fires
+    before any real connection attempt, not after.
+    """
+    reason = _ollama_unavailable_reason()
+    if reason is not None:
+        pytest.skip(reason)
+
 
 # ============================================================================
 # Common Mock Response Types

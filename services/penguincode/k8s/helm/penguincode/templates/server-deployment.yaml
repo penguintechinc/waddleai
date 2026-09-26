@@ -41,6 +41,31 @@ spec:
         - name: rest
           containerPort: 8080
           protocol: TCP
+        env:
+        # Shared WaddleAI Postgres DSN (spec §9) -- single source for the
+        # vector store and the graph store. Required: secretKeyRef only,
+        # never inline plaintext, never a CLI arg (token/secret hygiene).
+        - name: PGVECTOR_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "penguincode.postgresSecretName" . }}
+              key: {{ .Values.postgres.secretKey }}
+        # PostHog feature-flag API key (flags/client.py) -- optional: absent
+        # POSTHOG_KEY is a deliberate "flags default OFF" state, not an outage.
+        - name: POSTHOG_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "penguincode.posthogSecretName" . }}
+              key: {{ .Values.flags.posthog.secretKey }}
+              optional: true
+        # OTLP exporter auth headers (observability/otel.py) -- optional; most
+        # in-cluster collectors need no auth header.
+        - name: OTEL_EXPORTER_OTLP_HEADERS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "penguincode.otelHeadersSecretName" . }}
+              key: {{ .Values.otel.headers.secretKey }}
+              optional: true
         envFrom:
         {{- if .Values.configMap.enabled }}
         - configMapRef:
@@ -78,17 +103,6 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.server.resources | nindent 12 }}
-        volumeMounts:
-        {{- if .Values.persistence.enabled }}
-        - name: data
-          mountPath: /app/.penguincode
-        {{- end }}
-      volumes:
-      {{- if .Values.persistence.enabled }}
-      - name: data
-        persistentVolumeClaim:
-          claimName: {{ include "penguincode.fullname" . }}-data
-      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -126,23 +140,4 @@ spec:
     name: rest
   selector:
     {{- include "penguincode.server.selectorLabels" . | nindent 4 }}
-{{- if .Values.persistence.enabled }}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "penguincode.fullname" . }}-data
-  namespace: {{ .Values.global.namespace }}
-  labels:
-    {{- include "penguincode.labels" . | nindent 4 }}
-spec:
-  accessModes:
-    - {{ .Values.persistence.accessMode }}
-  {{- if .Values.persistence.storageClass }}
-  storageClassName: {{ .Values.persistence.storageClass }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ .Values.persistence.size }}
-{{- end }}
 {{- end }}

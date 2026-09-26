@@ -603,6 +603,27 @@ jobs:
   # keeps the tested dependency set and the shipped one in step.
   test-penguincode:
     runs-on: ubuntu-latest
+    # T16: a real pgvector-enabled Postgres for the live vector/graph/knowledge-
+    # platform tests (tests/test_stores_*.py, tests/test_twire_live_integration.py,
+    # tests/integration/**) -- all gated on `TEST_DATABASE_URL` and previously
+    # CI-skipped for lack of one (see each file's own `requires_postgres` mark).
+    # `tests/integration/`'s own `pgvector_dsn` fixture prefers this exact env
+    # var over spinning up its own local-dev container, so the two never race.
+    services:
+      pgvector:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: penguincode-ci  # nosec B105 -- ephemeral CI service-container password, never real
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:penguincode-ci@localhost:5432/postgres
     defaults:
       run:
         working-directory: services/penguincode

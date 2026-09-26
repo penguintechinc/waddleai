@@ -30,6 +30,44 @@ helm-lint:
 helm-template:
 	@helm template $(PROJECT_NAME) ./$(HELM_DIR) --values ./$(HELM_DIR)/values-alpha.yaml
 
+# === gRPC Proto Codegen ===
+# Regenerates every penguincode .proto (existing + new) into its committed
+# location, deterministically: grpc_tools.protoc's raw codegen needs two
+# fixups before it's importable as part of this package / ruff-clean (see
+# scripts/fix_proto_codegen.py's module docstring for the full why):
+#   1. *_pb2_grpc.py's own-module import made package-relative
+#      (`from . import X_pb2 as ...`) -- protoc emits an absolute import in
+#      both the flat (penguincode.proto) and nested (knowledge/v1/*) cases.
+#   2. *_pb2.py's cross-proto dependency imports (e.g. importing
+#      google/protobuf/struct.proto) relocated to the top import block and
+#      `# noqa: F401`-tagged -- otherwise `ruff check --fix` deletes them as
+#      "unused" (the alias is only referenced by the descriptor pool's own
+#      import graph), silently breaking the module at import time.
+# `ruff check --fix` + `ruff format` then bring the generated files in line
+# with this repo's canonical (and only) lint/format tool -- protoc's raw
+# output on its own is not ruff-clean (unused `import warnings`,
+# `class Foo(object):`, stray f-string prefixes all trip `ruff check`).
+#
+# Run twice with no diff (`git diff --stat` empty on the second run) to
+# confirm this target is deterministic; see tests/test_proto_knowledge.py
+# for the corresponding import/message smoke test.
+PROTO_DIR := penguincode_cli/proto
+PROTO_FILES := $(PROTO_DIR)/penguincode.proto $(PROTO_DIR)/knowledge/v1/knowledge.proto
+
+proto:
+	@echo "=== Regenerating gRPC stubs (grpcio-tools) ==="
+	python3 -m grpc_tools.protoc \
+		-I $(PROTO_DIR) \
+		--python_out=$(PROTO_DIR) \
+		--grpc_python_out=$(PROTO_DIR) \
+		$(PROTO_FILES)
+	@echo "-- fixing package-relative + dependency imports in generated code --"
+	python3 scripts/fix_proto_codegen.py $(PROTO_DIR)
+	@echo "-- ruff check --fix + ruff format (this repo's sole lint/format tool) --"
+	ruff check --fix --quiet $(PROTO_DIR)
+	ruff format --quiet $(PROTO_DIR)
+	@echo "=== proto regeneration complete ==="
+
 # === Standard Development Commands ===
 dev:
 	@docker-compose up

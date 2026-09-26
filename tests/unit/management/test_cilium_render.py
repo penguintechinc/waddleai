@@ -160,16 +160,86 @@ class TestRenderNetworkPolicies:
         valkey_rule = egress[2]
         assert valkey_rule["toPorts"] == [{"ports": [{"port": "6379", "protocol": "TCP"}]}]
 
-    def test_fleet_ingress_admits_aiproxy_only(self):
-        """Fleet pods admit ingress from exactly one source: the AIProxy selector (§10.3)."""
+    def test_fleet_ingress_admits_aiproxy_on_all_fleet_ports(self):
+        """The AIProxy ingress[] entry still admits AIProxy on every fleet port (§10.3)."""
         policies = render_network_policies(TOPOLOGY)
         flow = _by_name(policies, "waddleai-allow-fleet-ingress")
         ingress = flow["spec"]["ingress"]
+        aiproxy_entry = next(
+            i
+            for i in ingress
+            if i["fromEndpoints"][0]["matchLabels"].get("app.kubernetes.io/component") == "proxy"
+        )
+        assert len(aiproxy_entry["fromEndpoints"]) == 1
+        assert {p["port"] for p in aiproxy_entry["toPorts"][0]["ports"]} == {"8080", "11434"}
+
+    def test_fleet_ingress_admits_penguincode_on_ollama_port_only(self):
+        """Penguincode's server workload is admitted as a second, independent ingress[] entry.
+
+        Ollama (11434) only, never llamacpp/other fleet ports — matching the Helm
+        bootstrap CNP (waddleai-allow-fleet-ingress penguincodeIngress block,
+        blocker-2/kp-b2b) so a runtime reconcile is consistent with, not a fight
+        against, the day-0 bootstrap allow.
+        """
+        policies = render_network_policies(TOPOLOGY)
+        flow = _by_name(policies, "waddleai-allow-fleet-ingress")
+        ingress = flow["spec"]["ingress"]
+        penguincode_entry = next(
+            i
+            for i in ingress
+            if i["fromEndpoints"][0]["matchLabels"].get("app.kubernetes.io/name") == "penguincode"
+        )
+        labels = penguincode_entry["fromEndpoints"][0]["matchLabels"]
+        assert labels["app.kubernetes.io/component"] == "server"
+        assert labels["k8s:io.kubernetes.pod.namespace"] == "penguincode-prod"
+        assert penguincode_entry["toPorts"] == [{"ports": [{"port": "11434", "protocol": "TCP"}]}]
+
+    def test_fleet_ingress_penguincode_entry_independent_of_aiproxy(self):
+        """Penguincode's allow is a separate ingress[] entry, never merged into AIProxy's."""
+        policies = render_network_policies(TOPOLOGY)
+        flow = _by_name(policies, "waddleai-allow-fleet-ingress")
+        ingress = flow["spec"]["ingress"]
+        assert len(ingress) == 2
+        for entry in ingress:
+            assert len(entry["fromEndpoints"]) == 1
+
+    def test_fleet_ingress_penguincode_disabled_via_topology_toggle(self):
+        """penguincode_ingress.enabled=False drops the entry, leaving AIProxy-only (§10.3)."""
+        topology = {**TOPOLOGY, "penguincode_ingress": {"enabled": False}}
+        policies = render_network_policies(topology)
+        flow = _by_name(policies, "waddleai-allow-fleet-ingress")
+        ingress = flow["spec"]["ingress"]
         assert len(ingress) == 1
-        from_endpoints = ingress[0]["fromEndpoints"]
-        # §10.3: exactly one source permitted, and it must be the AIProxy selector.
-        assert len(from_endpoints) == 1
-        assert from_endpoints[0]["matchLabels"]["app.kubernetes.io/component"] == "proxy"
+        assert ingress[0]["fromEndpoints"][0]["matchLabels"]["app.kubernetes.io/component"] == (
+            "proxy"
+        )
+
+    def test_fleet_ingress_penguincode_topology_overrides_respected(self):
+        """A supplied selector/namespace/port for penguincode overrides the literal defaults."""
+        topology = {
+            **TOPOLOGY,
+            "selectors": {
+                **TOPOLOGY["selectors"],
+                "penguincode": {
+                    "app.kubernetes.io/name": "penguincode",
+                    "app.kubernetes.io/component": "server",
+                },
+            },
+            "penguincode_ingress": {
+                "enabled": True,
+                "namespace": "penguincode-alpha",
+                "ollama_port": 11434,
+            },
+        }
+        policies = render_network_policies(topology)
+        flow = _by_name(policies, "waddleai-allow-fleet-ingress")
+        penguincode_entry = next(
+            i
+            for i in flow["spec"]["ingress"]
+            if i["fromEndpoints"][0]["matchLabels"].get("app.kubernetes.io/name") == "penguincode"
+        )
+        labels = penguincode_entry["fromEndpoints"][0]["matchLabels"]
+        assert labels["k8s:io.kubernetes.pod.namespace"] == "penguincode-alpha"
 
     def test_postgres_ingress_from_aiproxy_and_management(self):
         """Postgres admits ingress from exactly AIProxy and Management, on port 5432."""

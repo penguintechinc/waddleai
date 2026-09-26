@@ -74,3 +74,28 @@ Server selector labels
 {{ include "penguincode.selectorLabels" . }}
 app.kubernetes.io/component: server
 {{- end }}
+
+{{/*
+Name of the Secret holding PGVECTOR_URL -- an existingSecret reference wins
+over the chart-managed Secret (see templates/secret.yaml, values.yaml postgres.*).
+*/}}
+{{- define "penguincode.postgresSecretName" -}}
+{{- default (printf "%s-secrets" (include "penguincode.fullname" .)) .Values.postgres.existingSecret -}}
+{{- end }}
+
+{{/*
+Name of the Secret holding POSTHOG_KEY -- an existingSecret reference wins
+over the chart-managed Secret (see templates/secret.yaml, values.yaml flags.posthog.*).
+*/}}
+{{- define "penguincode.posthogSecretName" -}}
+{{- default (printf "%s-secrets" (include "penguincode.fullname" .)) .Values.flags.posthog.existingSecret -}}
+{{- end }}
+
+{{/*
+Name of the Secret holding OTEL_EXPORTER_OTLP_HEADERS -- an existingSecret
+reference wins over the chart-managed Secret (see templates/secret.yaml,
+values.yaml otel.headers.*).
+*/}}
+{{- define "penguincode.otelHeadersSecretName" -}}
+{{- default (printf "%s-secrets" (include "penguincode.fullname" .)) .Values.otel.headers.existingSecret -}}
+{{- end }}

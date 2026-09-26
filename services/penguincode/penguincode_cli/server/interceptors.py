@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from typing import Any
 
 import grpc
 import jwt
@@ -79,6 +80,73 @@ class JWTValidationInterceptor(grpc.aio.ServerInterceptor):
             )
 
         return grpc.unary_unary_rpc_method_handler(abort_handler)
+
+
+class PassthroughInterceptor(grpc.aio.ServerInterceptor):  # type: ignore[misc]
+    # grpc ships no type stubs (no types-grpcio pin here), so ServerInterceptor
+    # resolves to Any -- identical to every other subclass in this file.
+    """No-op interceptor: every call goes straight through to its real handler.
+
+    Used as `MethodPrefixRoutingInterceptor`'s "unmatched" branch (see below)
+    when penguincode's local HS256 auth is disabled
+    (``settings.auth.enabled=False``) but `KnowledgeService`'s RS256 gate must
+    still be installed unconditionally -- see ``server/main.py``'s module
+    docstring ("Interceptor reconciliation").
+    """
+
+    async def intercept_service(
+        self,
+        continuation: Callable[[grpc.HandlerCallDetails], Any],
+        handler_call_details: grpc.HandlerCallDetails,
+    ) -> Any:
+        """Delegate unconditionally to *continuation* -- no auth check at all."""
+        return await continuation(handler_call_details)
+
+
+class MethodPrefixRoutingInterceptor(grpc.aio.ServerInterceptor):  # type: ignore[misc]
+    # grpc ships no type stubs (no types-grpcio pin here), so ServerInterceptor
+    # resolves to Any -- identical to every other subclass in this file.
+    """Routes each call to one of two interceptors, chosen by its method path's prefix.
+
+    Reconciles two interceptors that would otherwise both claim the same
+    ``authorization`` invocation-metadata key for two different token kinds --
+    penguincode's local HS256 client-server secret (`JWTValidationInterceptor`)
+    vs. a WaddleAI-issued RS256 JWT (`auth.middleware.WaddleAIAuthInterceptor`)
+    -- see ``server/main.py``'s "Interceptor reconciliation" module docstring
+    note for the full rationale.
+
+    A call whose method starts with *prefix* is gated by *matched*; every
+    other call is gated by *unmatched*. Exactly one interceptor ever sees a
+    given call, so neither needs its own ``excluded_methods`` to enumerate
+    the other's methods -- new RPCs on either side of the split need no
+    change here as long as their method path keeps the same prefix
+    convention.
+    """
+
+    def __init__(
+        self,
+        prefix: str,
+        *,
+        matched: grpc.aio.ServerInterceptor,
+        unmatched: grpc.aio.ServerInterceptor,
+    ) -> None:
+        """Bind this router to *prefix*, dispatching to *matched*/*unmatched* accordingly."""
+        self._prefix = prefix
+        self._matched = matched
+        self._unmatched = unmatched
+
+    async def intercept_service(
+        self,
+        continuation: Callable[[grpc.HandlerCallDetails], Any],
+        handler_call_details: grpc.HandlerCallDetails,
+    ) -> Any:
+        """Dispatch to whichever interceptor owns *handler_call_details*'s method."""
+        target = (
+            self._matched
+            if handler_call_details.method.startswith(self._prefix)
+            else self._unmatched
+        )
+        return await target.intercept_service(continuation, handler_call_details)
 
 
 class LoggingInterceptor(grpc.aio.ServerInterceptor):

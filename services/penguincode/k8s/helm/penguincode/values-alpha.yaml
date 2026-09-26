@@ -33,11 +33,29 @@ server:
 ollama:
   enabled: false
 
-persistence:
-  enabled: false
-
 secrets:
   enabled: false
+
+# Local alpha Postgres (same shared-schema contract as beta/prod) --
+# operator creates this Secret out-of-band before `helm install`:
+#   kubectl create secret generic penguincode-postgres-alpha \
+#     --namespace penguincode-alpha \
+#     --from-literal=PGVECTOR_URL=postgresql://penguincode:...@waddleai-postgres.waddleai.svc.cluster.local:5432/waddleai
+postgres:
+  existingSecret: penguincode-postgres-alpha
+
+# Flags stay OFF in alpha too (ship dark; flip on per environment only after
+# validation -- spec §14 Rollout). POSTHOG_KEY is optional; leave unset to
+# fall back to env overrides / OFF (flags/client.py graceful degradation).
+
+migration:
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
 
 ingress:
   enabled: false

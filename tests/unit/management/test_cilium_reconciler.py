@@ -242,6 +242,50 @@ class TestReconcile:
         # No duplicate create on the replace path.
         assert not client.create_cluster_custom_object.called
 
+    def test_second_reconcile_preserves_penguincode_fleet_ingress_entry(self, monkeypatch):
+        """A second reconcile (replace path) still carries the penguincode fleet-ingress allow.
+
+        Proves the reconciler is idempotent w.r.t. the Helm bootstrap CNP rather than
+        dropping the entry on a repeat reconcile (blocker-2/kp-b2b).
+        """
+        from kubernetes.client.rest import ApiException
+
+        client = MagicMock()
+        client.get_namespaced_custom_object.side_effect = ApiException(status=404)
+        client.get_cluster_custom_object.side_effect = ApiException(status=404)
+        monkeypatch.setattr(cp, "get_k8s_custom_objects_client", lambda: client)
+
+        reconciler = cp.CiliumPolicyReconciler(_mock_db(), topology=TOPOLOGY)
+        reconciler.reconcile()
+
+        def _fleet_ingress_obj(call_args_list, obj_index):
+            return next(
+                call.args[obj_index]
+                for call in call_args_list
+                if call.args[obj_index]["metadata"]["name"] == "waddleai-allow-fleet-ingress"
+            )
+
+        # create_namespaced_custom_object(group, version, namespace, plural, obj).
+        first = _fleet_ingress_obj(client.create_namespaced_custom_object.call_args_list, 4)
+        assert len(first["spec"]["ingress"]) == 2
+
+        # Second reconcile: everything now "exists" -> replace path for every object.
+        client.reset_mock()
+        client.get_namespaced_custom_object.side_effect = None
+        client.get_namespaced_custom_object.return_value = {"metadata": {"resourceVersion": "1"}}
+        client.get_cluster_custom_object.return_value = {"metadata": {"resourceVersion": "1"}}
+
+        reconciler.reconcile()
+
+        # replace_namespaced_custom_object(group, version, namespace, plural, name, obj).
+        second = _fleet_ingress_obj(client.replace_namespaced_custom_object.call_args_list, 5)
+        penguincode_entries = [
+            i
+            for i in second["spec"]["ingress"]
+            if i["fromEndpoints"][0]["matchLabels"].get("app.kubernetes.io/name") == "penguincode"
+        ]
+        assert len(penguincode_entries) == 1
+
     def test_partial_capability_only_cnp_applies_cnp_skips_cec(self, monkeypatch):
         """CNP CRD present but not CEC applies only CNP/CCNP objects, skips the CEC entirely."""
         monkeypatch.setattr(

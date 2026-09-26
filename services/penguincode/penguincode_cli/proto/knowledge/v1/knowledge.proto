@@ -1,0 +1,242 @@
+syntax = "proto3";
+
+// KnowledgeService: the server-side contract for penguincode's knowledge
+// platform (docs-RAG indexing, hybrid GraphRAG retrieval, scoped memory,
+// and the code graph). The CLI is a thin client of this service -- ALL
+// vector/graph/memory work happens server-side (see
+// docs/superpowers/plans/2026-09-25-penguincode-knowledge-platform.md).
+//
+// Scope model (security-critical, do not change casually): every request
+// below carries operation parameters ONLY. Tenant/org/team/user identity is
+// NEVER a request field -- the server derives its ScopeContext exclusively
+// from the caller's validated JWT (see penguincode_cli/auth/scope.py),
+// exactly as every store (VectorStore/GraphStore/ScopedMemoryManager)
+// already requires. The one caller-supplied exception is `Visibility` (+ a
+// `team_id` naming *which of the caller's own teams* to scope a write to)
+// on the three write RPCs (Index/MemoryAdd/IndexCode) -- this is the
+// caller choosing among its own already-established memberships, not
+// supplying an arbitrary tenant/org/team/user; the server still validates
+// `team_id` against the JWT's own team list before ever using it (see
+// stores/vector.py's `_validate_team_id`, stores/graph.py's
+// `_scope_columns`, tools/memory.py's `_validate_team_id`).
+package penguincode.knowledge.v1;
+
+import "google/protobuf/struct.proto";
+
+// ==================== Shared enums/messages ====================
+
+// Row/write visibility -- mirrors the three levels enforced by every store
+// (VectorStore, GraphStore, ScopedMemoryManager): user < team < tenant.
+enum Visibility {
+  VISIBILITY_UNSPECIFIED = 0;
+  VISIBILITY_USER = 1;
+  VISIBILITY_TEAM = 2;
+  VISIBILITY_TENANT = 3;
+}
+
+// Supported documentation/code languages -- mirrors
+// penguincode_cli/docs_rag/models.py's `Language` enum, verbatim set.
+enum Language {
+  LANGUAGE_UNSPECIFIED = 0;
+  LANGUAGE_PYTHON = 1;
+  LANGUAGE_JAVASCRIPT = 2;
+  LANGUAGE_TYPESCRIPT = 3;
+  LANGUAGE_GO = 4;
+  LANGUAGE_RUST = 5;
+  LANGUAGE_HCL = 6;
+  LANGUAGE_ANSIBLE = 7;
+  LANGUAGE_RUBY = 8;
+  LANGUAGE_PHP = 9;
+  LANGUAGE_DART = 10;
+}
+
+// One scored vector-search result -- mirrors stores/vector.py's `VectorHit`.
+message VectorHit {
+  string id = 1;
+  string document = 2;
+  google.protobuf.Struct metadata = 3;
+  double score = 4;
+}
+
+// One graph node -- mirrors stores/graph.py's `GraphNode`.
+message GraphNode {
+  string node_type = 1;
+  string key = 2;
+  google.protobuf.Struct props = 3;
+}
+
+// One directed graph edge -- mirrors stores/graph.py's `GraphEdge`.
+message GraphEdge {
+  string src_type = 1;
+  string src_key = 2;
+  string dst_type = 3;
+  string dst_key = 4;
+  string rel_type = 5;
+  google.protobuf.Struct props = 6;
+}
+
+// One graph-kind expansion result -- mirrors stores/graph.py's `Subgraph`.
+message Subgraph {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
+}
+
+// ==================== KnowledgeService ====================
+
+service KnowledgeService {
+  // Index documentation for a library or a language's core docs. Mirrors
+  // `docs_rag.indexer.DocumentationIndexer.index_library` /
+  // `.index_language` -- the server embeds + upserts into `docs_vectors`
+  // and best-effort extracts a knowledge-graph enrichment alongside the
+  // vector write.
+  rpc Index(IndexRequest) returns (IndexResponse);
+
+  // Hybrid GraphRAG retrieval: scoped vector top-k + flag-gated graph
+  // expansion, assembled into one bounded context string. Mirrors
+  // `retrieval.graphrag.retrieve` / its `RetrievalResult`.
+  rpc Query(QueryRequest) returns (QueryResponse);
+
+  // Write one scope-stamped memory. Mirrors
+  // `tools.memory.ScopedMemoryManager.add`.
+  rpc MemoryAdd(MemoryAddRequest) returns (MemoryAddResponse);
+
+  // Search memories within the caller's scope. Mirrors
+  // `tools.memory.ScopedMemoryManager.search`.
+  rpc MemorySearch(MemorySearchRequest) returns (MemorySearchResponse);
+
+  // (Re)build the code graph for a source tree. Mirrors
+  // `graphs.code.index_code`.
+  rpc IndexCode(IndexCodeRequest) returns (IndexCodeResponse);
+
+  // Report the caller-scoped code graph's current availability/size.
+  rpc CodeGraphStatus(CodeGraphStatusRequest) returns (CodeGraphStatusResponse);
+}
+
+// ---- Index ----
+
+// A library-indexing target -- mirrors `docs_rag.models.Library` (name +
+// language are required; `version` empty means "latest", matching the
+// dataclass's `None` default).
+message LibraryTarget {
+  string name = 1;
+  Language language = 2;
+  string version = 3;
+}
+
+message IndexRequest {
+  string api_version = 1;
+
+  // Exactly one of a library target or a bare language target -- mirrors
+  // the two distinct indexer entry points (`index_library`/`index_language`);
+  // `doc_contents` below are the explicit document strings indexed under
+  // whichever target is set.
+  oneof target {
+    LibraryTarget library = 2;
+    Language language = 3;
+  }
+
+  repeated string doc_contents = 4;
+  bool force_reindex = 5;
+  Visibility visibility = 6;
+  string team_id = 7;
+}
+
+message IndexResponse {
+  int32 chunks_indexed = 1;
+}
+
+// ---- Query ----
+
+message QueryRequest {
+  string api_version = 1;
+  string query = 2;
+  int32 n_vector = 3;
+  int32 graph_depth = 4;
+  // Vector tables to search -- e.g. "docs_vectors", "memory_vectors"
+  // (stores/vector.py's `TableName` allow-list).
+  repeated string vector_tables = 5;
+}
+
+message QueryResponse {
+  repeated VectorHit vector_hits = 1;
+  // Keyed by graph kind ("code" / "knowledge" / "memory") -- a kind absent
+  // from this map means its flag was off for this call, mirroring
+  // `RetrievalResult.subgraphs`' "absent, not empty" contract.
+  map<string, Subgraph> subgraphs = 2;
+  string context = 3;
+}
+
+// ---- MemoryAdd ----
+
+message MemoryAddRequest {
+  string api_version = 1;
+  string content = 2;
+  Visibility visibility = 3;
+  string team_id = 4;
+  google.protobuf.Struct metadata = 5;
+}
+
+// One mem0 write result -- mirrors mem0's raw
+// `{"results": [{"id", "memory", "event"}]}` envelope entry.
+message MemoryAddResult {
+  string id = 1;
+  string memory = 2;
+  string event = 3;
+}
+
+message MemoryAddResponse {
+  // False when memory is disabled or the caller's RAG flag is off --
+  // mirrors `ScopedMemoryManager.add` returning `None`.
+  bool stored = 1;
+  repeated MemoryAddResult results = 2;
+}
+
+// ---- MemorySearch ----
+
+message MemorySearchRequest {
+  string api_version = 1;
+  string query = 2;
+  int32 limit = 3;
+}
+
+// One scope-visible memory row -- mirrors the dicts returned by
+// `ScopedMemoryManager.search` (mem0's row shape, already scope-filtered).
+message MemoryItem {
+  string id = 1;
+  string memory = 2;
+  google.protobuf.Struct metadata = 3;
+  double score = 4;
+}
+
+message MemorySearchResponse {
+  repeated MemoryItem results = 1;
+}
+
+// ---- IndexCode ----
+
+message IndexCodeRequest {
+  string api_version = 1;
+  string root_path = 2;
+  Visibility visibility = 3;
+  string team_id = 4;
+}
+
+message IndexCodeResponse {
+  // False when the `penguincode.code-graph` flag is off for the caller --
+  // mirrors `graphs.code.index_code` returning `None`.
+  bool indexed = 1;
+  int32 node_count = 2;
+  int32 edge_count = 3;
+}
+
+// ---- CodeGraphStatus ----
+
+message CodeGraphStatusRequest {
+  string api_version = 1;
+}
+
+message CodeGraphStatusResponse {
+  bool enabled = 1;
+  int32 node_count = 2;
+  int32 edge_count = 3;
+}

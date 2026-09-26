@@ -25,6 +25,9 @@ aiosqlite==0.22.1
 pyyaml==6.0.3
 markdown-it-py==4.2.0
 
+# Feature Flags (PostHog CE) - penguincode_cli/flags/client.py
+posthog==7.60.1
+
 # Search & Tools
 ddgs==9.16.0
 pathspec==1.1.1
@@ -33,25 +36,34 @@ beautifulsoup4==4.15.0
 # Memory Layer (mem0)
 ollama==0.6.2
 mem0ai==2.2.0
-# See pyproject.toml for the chromadb CVE risk-acceptance note
-# (GHSA-f4j7-r4q5-qw2c and related - no patched release exists; the
-# vulnerable HTTP-server surface is never started by this service).
-chromadb==1.5.9
+# The Chroma vector-store package was removed (T9) - see pyproject.toml for the CVE/removal note.
 qdrant-client==1.19.1
-psycopg2-binary==2.9.13
+psycopg[binary]==3.3.6
+# See pyproject.toml for why this is needed directly (mem0ai pgvector store).
+psycopg-pool==3.3.3
 
 # Server Mode (Flask/Quart per CLAUDE.md standards)
 quart==0.23.1
 flask-security-too==5.8.2
 hypercorn==0.18.0
 websockets==17.1
-pyjwt==2.15.0
+pyjwt[crypto]==2.15.0
 
 # gRPC (Client-Server Mode) - held at 1.69.x/5.29.x to match the runtime
 # version validated by the checked-in generated proto stubs.
 grpcio==1.69.0
 grpcio-tools==1.69.0
 protobuf==5.29.6
+
+# Observability (OTel) - see pyproject.toml for the direct-pin rationale.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+
+# Code graph (T11) - penguincode_cli/graphs/code.py. MIT-licensed; see
+# pyproject.toml for the "not already present" note and license verification.
+tree-sitter==0.26.0
+tree-sitter-python==0.25.0
 
 # Dev / test dependencies (pyproject.toml [project.optional-dependencies.dev])
 pytest==9.1.1

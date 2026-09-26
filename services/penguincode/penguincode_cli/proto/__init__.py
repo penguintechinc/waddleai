@@ -1,5 +1,38 @@
 """Generated gRPC code for PenguinCode client-server communication."""
 
+# KnowledgeService (F1): the server-side knowledge-platform contract --
+# docs-RAG indexing, hybrid GraphRAG retrieval, scoped memory, code graph.
+# See penguincode_cli/proto/knowledge/v1/knowledge.proto for the scope-model
+# contract every request/response below MUST honor (api_version field 1 on
+# every request; tenant/org/team/user are never client-set).
+from .knowledge.v1.knowledge_pb2 import (  # Shared enums/types; Index; Query; MemoryAdd; MemorySearch; IndexCode; CodeGraphStatus
+    CodeGraphStatusRequest,
+    CodeGraphStatusResponse,
+    GraphEdge,
+    GraphNode,
+    IndexCodeRequest,
+    IndexCodeResponse,
+    IndexRequest,
+    IndexResponse,
+    Language,
+    LibraryTarget,
+    MemoryAddRequest,
+    MemoryAddResponse,
+    MemoryAddResult,
+    MemoryItem,
+    MemorySearchRequest,
+    MemorySearchResponse,
+    QueryRequest,
+    QueryResponse,
+    Subgraph,
+    VectorHit,
+    Visibility,
+)
+from .knowledge.v1.knowledge_pb2_grpc import (
+    KnowledgeServiceServicer,
+    KnowledgeServiceStub,
+    add_KnowledgeServiceServicer_to_server,
+)
 from .penguincode_pb2 import (  # Auth messages; Chat messages; Health messages; Tool messages
     AgentResult,
     AgentSpawn,
@@ -87,4 +120,36 @@ __all__ = [
     "add_ChatServiceServicer_to_server",
     "add_ToolCallbackServiceServicer_to_server",
     "add_HealthServiceServicer_to_server",
+    # KnowledgeService -- shared enums/types
+    "Visibility",
+    "Language",
+    "VectorHit",
+    "GraphNode",
+    "GraphEdge",
+    "Subgraph",
+    # KnowledgeService -- Index
+    "LibraryTarget",
+    "IndexRequest",
+    "IndexResponse",
+    # KnowledgeService -- Query
+    "QueryRequest",
+    "QueryResponse",
+    # KnowledgeService -- MemoryAdd
+    "MemoryAddRequest",
+    "MemoryAddResult",
+    "MemoryAddResponse",
+    # KnowledgeService -- MemorySearch
+    "MemorySearchRequest",
+    "MemoryItem",
+    "MemorySearchResponse",
+    # KnowledgeService -- IndexCode
+    "IndexCodeRequest",
+    "IndexCodeResponse",
+    # KnowledgeService -- CodeGraphStatus
+    "CodeGraphStatusRequest",
+    "CodeGraphStatusResponse",
+    # KnowledgeService -- stub/servicer/registration
+    "KnowledgeServiceStub",
+    "KnowledgeServiceServicer",
+    "add_KnowledgeServiceServicer_to_server",
 ]

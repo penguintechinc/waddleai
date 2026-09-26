@@ -1,0 +1,66 @@
+{{/*
+Idempotent schema/migration init Job (penguincode_cli/db/migrate.py, T1 -- spec §9, §11).
+Runs as a Helm pre-install/pre-upgrade hook so the `penguincode` Postgres
+schema, extension guard, tables, and indexes exist in the shared WaddleAI
+Postgres BEFORE the server Deployment rolls out. penguincode has no Alembic
+and is intentionally not coupled to services/management's migration tooling
+-- every migration file under penguincode_cli/db/migrations/ is itself idempotent, and
+penguincode_cli/db/migrate.py tracks applied versions in penguincode.schema_migrations, so
+re-running this Job on every upgrade is always safe.
+*/}}
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "penguincode.fullname" . }}-migrate
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "penguincode.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "penguincode.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["python3", "-m", "penguincode_cli.db.migrate"]
+          env:
+            # Required: secretKeyRef only, never inline plaintext, never a
+            # CLI arg (token/secret hygiene). Same DSN the server uses.
+            - name: PGVECTOR_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "penguincode.postgresSecretName" . }}
+                  key: {{ .Values.postgres.secretKey }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

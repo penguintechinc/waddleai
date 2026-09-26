@@ -62,9 +62,10 @@ server:
     PENGUINCODE_MODEL_EXPLORATION: "gemma4:12b-it-qat"
     PENGUINCODE_MODEL_RESEARCH: "gemma4:e4b"
 
-    # Memory configuration
+    # Memory configuration -- pgvector is the platform default (chromadb removed
+    # platform-wide, T9: 4 open CVEs, no patched release; spec §11).
     PENGUINCODE_MEMORY_ENABLED: "true"
-    PENGUINCODE_MEMORY_STORE: "chroma"
+    PENGUINCODE_MEMORY_STORE: "pgvector"
     PENGUINCODE_EMBEDDING_MODEL: "nomic-embed-text"
 
     # GPU regulators
@@ -82,6 +83,110 @@ server:
 
     # Generate config from ENV
     PENGUINCODE_USE_ENV_CONFIG: "true"
+
+# PostHog feature-flag client (flags/client.py). POSTHOG_KEY is secret-sourced
+# (see `flags.posthog` secret wiring + templates/secret.yaml), never placed
+# here in plaintext. Host is not sensitive (a URL), rendered into the
+# ConfigMap by templates/configmap.yaml.
+#
+# Knowledge-platform flags (spec §10): default OFF, ship dark -- flip on per
+# environment only after validation. Env override name derived by
+# flags/client.py: PENGUINCODE_FLAG_<NAME>.
+flags:
+  posthog:
+    host: "https://license.penguintech.io"
+    # Preferred: reference a Secret created out-of-band (kubectl/External
+    # Secrets Operator). Leave apiKey empty when set.
+    existingSecret: ""
+    secretKey: POSTHOG_KEY
+    # Dev-only convenience fallback -- NEVER commit a real key here, and
+    # never pass one via `--set`/`--set-string` (shell history). Use
+    # existingSecret in every shared environment.
+    apiKey: ""
+  rag: false
+  codeGraph: false
+  knowledgeGraph: false
+  memoryGraph: false
+
+# OpenTelemetry (observability/otel.py) -- endpoint is env-configurable, never
+# hardcoded (critical-rules.md Observability); empty = no-op providers, never
+# crashes (see otel.py). Rendered into the ConfigMap by templates/configmap.yaml.
+otel:
+  endpoint: ""
+  protocol: "grpc"
+  serviceName: "penguincode"
+  deploymentEnvironment: "production"
+  # Optional: auth headers for the OTLP exporter, secret-sourced only (never
+  # inline). Leave both existingSecret and value empty to omit the env var
+  # entirely (most collectors need no auth header in-cluster).
+  headers:
+    existingSecret: ""
+    secretKey: OTEL_EXPORTER_OTLP_HEADERS
+    # Dev-only convenience fallback -- NEVER commit a real header value here,
+    # and never pass one via `--set`/`--set-string` (shell history).
+    value: ""
+
+# Shared WaddleAI Postgres (pgvector) -- the single DSN used by both the
+# vector store and the graph store (spec §9, §11; T3 config). Cross-namespace:
+# the WaddleAI Postgres Service lives in the `waddleai` namespace
+# (k8s/helm/waddleai/templates/postgres-service.yaml).
+postgres:
+  namespace: waddleai
+  serviceName: waddleai-postgres
+  port: 5432
+  # Preferred: reference a Secret created out-of-band (kubectl/External
+  # Secrets Operator/sealed-secrets) holding the connection DSN.
+  existingSecret: ""
+  secretKey: PGVECTOR_URL
+  # Dev-only convenience fallback -- NEVER commit a real DSN here, and never
+  # pass one via `--set`/`--set-string` (shell history, token/secret
+  # hygiene). Use existingSecret in every shared environment.
+  dsn: ""
+
+# Idempotent schema/migration init Job (db/migrate.py, T1) -- runs as a Helm
+# pre-install/pre-upgrade hook before the server rolls out (spec §9, §11).
+migration:
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Cross-namespace CiliumNetworkPolicy egress (spec §9; security.md Kubernetes
+# Network Security). Guarded by a live capability check so non-Cilium
+# clusters still render/install cleanly (see templates/networkpolicy.yaml).
+cilium:
+  enabled: true
+  networkPolicy:
+    enabled: true
+  egress:
+    # Shared WaddleAI Ollama fleet (embeddings/LLM), cross-namespace. NOTE:
+    # the waddleai chart's own `waddleai-allow-fleet-ingress` CiliumNetworkPolicy
+    # admits ingress from the AIProxy component only today -- this egress
+    # rule is necessary but not sufficient until that ingress policy is
+    # extended to admit penguincode too (tracked separately; not owned by
+    # this chart).
+    ollama:
+      enabled: true
+      namespace: waddleai
+      labels:
+        app.kubernetes.io/name: waddleai
+        app.kubernetes.io/component: ollama
+      port: 11434
+    # Additional in-cluster, cross-namespace destinations (e.g. an in-cluster
+    # OTel collector Service) as {namespace, matchLabels, ports}.
+    extraEndpoints: []
+    # External destinations (e.g. a hosted OTLP backend) as {matchName, port}.
+    # PostHog CE's default host is allowlisted here; add the OTLP collector's
+    # FQDN per environment once OTEL_EXPORTER_OTLP_ENDPOINT is set.
+    extraFQDNs:
+      - matchName: license.penguintech.io
+        port: 443
 
 # Optional Ollama service (disabled by default in production)
 ollama:
@@ -133,11 +238,25 @@ serviceAccount:
 # Pod annotations
 podAnnotations: {}
 
-# Pod security context
-podSecurityContext: {}
+# Pod security context (PenguinTech baseline; image already runs as a
+# non-root `penguin` user -- see Dockerfile.server -- so runAsNonRoot is
+# satisfied by the image default without pinning a numeric UID here).
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
 
-# Security context
-securityContext: {}
+# Security context (PenguinTech baseline). readOnlyRootFilesystem is left
+# false: docker-entrypoint.sh writes /app/config.yaml at container start and
+# the docs-RAG page cache defaults under /app/.penguincode (PENGUINCODE_DOCS_CACHE_DIR) --
+# flipping this to true needs an emptyDir mount for both paths first
+# (tracked as a follow-up, out of T15 scope).
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
 
 # Node selector
 nodeSelector: {}
@@ -164,12 +283,11 @@ ingress:
       hosts:
         - penguincode.example.com
 
-# Persistence for data
-persistence:
-  enabled: true
-  size: 10Gi
-  storageClass: ""
-  accessMode: ReadWriteOnce
+# NOTE: the chroma-backed data PVC (persistence:, volumeMounts, and
+# PENGUINCODE_CHROMA_PATH/COLLECTION env) has been removed -- penguincode no
+# longer stores vectors on a local volume; the shared WaddleAI Postgres
+# (`postgres:` above) is the vector + graph store for every environment
+# (spec §9, §11).
 
 # Autoscaling
 autoscaling:

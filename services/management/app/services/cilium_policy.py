@@ -41,6 +41,25 @@ _ORG_HEADER = "x-waddleai-org-id"
 _CEC_NAME = "waddleai-org-ratelimit"
 _NATIVE_RATE_LIMIT_FLAG = "waddleai.native_rate_limit"
 
+# penguincode's server-workload selector and Ollama-ingress defaults
+# (blocker-2/kp-b2b). Mirrors the Helm bootstrap CNP's own literal defaults
+# (k8s/helm/waddleai/templates/cilium-network-policy.yaml
+# waddleai-allow-fleet-ingress penguincodeIngress block +
+# k8s/helm/waddleai/values.yaml cilium.topology.penguincodeIngress) so the
+# runtime reconciler stays consistent with the day-0 bootstrap even before the
+# `waddleai.cilium.topology` Helm helper is updated to emit these fields
+# explicitly via CILIUM_TOPOLOGY (tracked separately, out of scope here — see
+# render_network_policies docstring). Used as `.get(...)` fallbacks so a
+# present-but-incomplete topology dict (e.g. today's real CILIUM_TOPOLOGY
+# payload, which doesn't carry these keys yet) still resolves to the same
+# values the Helm chart ships, not to "penguincode disabled".
+_PENGUINCODE_SELECTOR_DEFAULT: dict[str, str] = {
+    "app.kubernetes.io/name": "penguincode",
+    "app.kubernetes.io/component": "server",
+}
+_PENGUINCODE_NAMESPACE_DEFAULT = "penguincode-prod"
+_PENGUINCODE_OLLAMA_PORT_DEFAULT = 11434
+
 # Default topology — mirrors the JSON emitted by the Helm
 # `waddleai.cilium.topology` helper (k8s/helm/waddleai/templates/_helpers.tpl)
 # and consumed via the CILIUM_TOPOLOGY env var. Used whenever that env var is
@@ -73,6 +92,12 @@ DEFAULT_TOPOLOGY: dict[str, Any] = {
             "app.kubernetes.io/name": "waddleai",
             "app.kubernetes.io/component": "valkey",
         },
+        "penguincode": dict(_PENGUINCODE_SELECTOR_DEFAULT),
+    },
+    "penguincode_ingress": {
+        "enabled": True,
+        "namespace": _PENGUINCODE_NAMESPACE_DEFAULT,
+        "ollama_port": _PENGUINCODE_OLLAMA_PORT_DEFAULT,
     },
 }
 
@@ -245,7 +270,11 @@ def render_network_policies(topology: dict[str, Any]) -> list[dict[str, Any]]:
         than namespaced — see judgment-call note below)
       - Gateway -> AIProxy
       - AIProxy -> fleet / Postgres / Valkey (egress)
-      - fleet admits ingress ONLY from AIProxy (§10.3)
+      - fleet admits ingress from AIProxy (§10.3) on every fleet port, plus a
+        second, independent allow for penguincode's server workload scoped to
+        the Ollama port only (never llamacpp) — blocker-2/kp-b2b, consistent
+        with the Helm bootstrap CNP's own penguincodeIngress rule so a
+        reconcile never overwrites/removes it
       - Postgres / Valkey admit ingress from AIProxy + Management
       - Management -> Postgres / Valkey / kube-apiserver (egress)
 
@@ -272,6 +301,14 @@ def render_network_policies(topology: dict[str, Any]) -> list[dict[str, Any]]:
     postgres_port = topology.get("postgres_port", 5432)
     valkey_port = topology.get("valkey_port", 6379)
     fleet_ports = topology.get("fleet_ports", [8080, 11434])
+
+    penguincode_sel = selectors.get("penguincode") or _PENGUINCODE_SELECTOR_DEFAULT
+    penguincode_ingress_cfg = topology.get("penguincode_ingress", {})
+    penguincode_enabled = bool(penguincode_ingress_cfg.get("enabled", True))
+    penguincode_namespace = penguincode_ingress_cfg.get("namespace", _PENGUINCODE_NAMESPACE_DEFAULT)
+    penguincode_ollama_port = penguincode_ingress_cfg.get(
+        "ollama_port", _PENGUINCODE_OLLAMA_PORT_DEFAULT
+    )
 
     policies: list[dict[str, Any]] = []
 
@@ -335,8 +372,27 @@ def render_network_policies(topology: dict[str, Any]) -> list[dict[str, Any]]:
         }
     )
 
-    # §10.3: fleet pods admit ingress exclusively from AIProxy — exactly one
-    # fromEndpoints entry, no other source.
+    # §10.3: fleet pods admit ingress from AIProxy on every fleet port, plus
+    # (opt-in, default-on) a second and INDEPENDENT ingress[] entry for
+    # penguincode's server workload — Ollama port only, never llamacpp/other
+    # fleet ports, never merged into the AIProxy entry. Mirrors the Helm
+    # bootstrap CNP's own penguincodeIngress rule exactly (same selector
+    # shape, same port) so a runtime reconcile is idempotent with — never a
+    # fight against — the day-0 bootstrap allow (blocker-2/kp-b2b).
+    fleet_ingress: list[dict[str, Any]] = [
+        {
+            "fromEndpoints": [_namespaced_labels(aiproxy_sel)],
+            "toPorts": _to_ports(fleet_ports),
+        }
+    ]
+    if penguincode_enabled:
+        fleet_ingress.append(
+            {
+                "fromEndpoints": [_namespaced_labels(penguincode_sel, penguincode_namespace)],
+                "toPorts": _to_ports([penguincode_ollama_port]),
+            }
+        )
+
     policies.append(
         {
             "apiVersion": f"{CILIUM_GROUP}/{CILIUM_VERSION}",
@@ -344,12 +400,7 @@ def render_network_policies(topology: dict[str, Any]) -> list[dict[str, Any]]:
             "metadata": {"name": "waddleai-allow-fleet-ingress", "namespace": namespace},
             "spec": {
                 "endpointSelector": fleet_sel,
-                "ingress": [
-                    {
-                        "fromEndpoints": [_namespaced_labels(aiproxy_sel)],
-                        "toPorts": _to_ports(fleet_ports),
-                    }
-                ],
+                "ingress": fleet_ingress,
             },
         }
     )
