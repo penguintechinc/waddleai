@@ -49,6 +49,18 @@ def test_no_require_role_outside_tests() -> None:
             rel = path.relative_to(REPO_ROOT).as_posix()
             if "/tests/" in f"/{rel}" or "penguincode" in rel:
                 continue
+            # Per-worktree/per-service venvs (services/*/.venv, per
+            # backend-python.md) live under services/ and contain
+            # third-party source that is not this project's app code -- a
+            # venv is gitignored and never present in a clean checkout, but
+            # any local run following the documented "create a fresh venv
+            # per worktree" workflow puts one here, and third-party test
+            # fixtures (e.g. joblib's intentionally-non-UTF-8 encoding
+            # fixtures) would otherwise crash this scan with a
+            # UnicodeDecodeError unrelated to anything this test checks.
+            _venv_dirs = {".venv", "venv", "site-packages", "node_modules"}
+            if any(part in _venv_dirs for part in path.parts):
+                continue
             for lineno, line in enumerate(path.read_text().splitlines(), start=1):
                 if decorator_re.match(line) or import_re.match(line) or def_re.match(line):
                     hits.append(f"{rel}:{lineno}: {line.strip()}")
