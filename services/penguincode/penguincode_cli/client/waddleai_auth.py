@@ -34,6 +34,20 @@ caveat worth flagging: WaddleAI tokens carry no separate ``org`` claim today
 (``tenant`` is the user's ``organization_id``; ``teams`` is their
 ``managed_orgs``) -- this module does not paper over that, it just passes
 whatever claims the server issues through unmodified.
+
+**H5 addendum** -- the server-side gap flagged above is closed: WaddleAI now
+exposes ``POST /api/v1/auth/token`` (H2), a client-credentials-shaped
+exchange for a service-account ``wa-`` API key -- no body, credential only
+via ``Authorization: Bearer wa-<key>``, returning the same
+``{access_token, token_type, expires_in}`` shape as login/refresh. This adds
+a **headless/machine mode** to :class:`WaddleAITokenProvider`: when
+``WADDLEAI_API_KEY``/``WADDLEAI_API_KEY_FILE`` names a service-account key,
+it takes precedence over interactive login and the local-dev fallback alike
+(no prompts, no TTY required -- CI-safe). There is no ``refresh_token`` in
+this flow either, so renewal re-exchanges the key rather than calling
+``/auth/refresh`` (a machine-issued token cannot be rotated that way -- only
+a real login-issued token can). The key itself is never cached, never
+logged, and never appears in an error message unmasked.
 """
 
 from __future__ import annotations
@@ -66,6 +80,9 @@ _DEFAULT_AUDIENCE = "waddleai-api"
 _LOGIN_PATH = "/api/v1/auth/login"
 _REFRESH_PATH = "/api/v1/auth/refresh"
 _LOGOUT_PATH = "/api/v1/auth/logout"
+_TOKEN_EXCHANGE_PATH = "/api/v1/auth/token"
+_API_KEY_ENV = "WADDLEAI_API_KEY"  # nosec B105 -- an env var name, not a credential
+_API_KEY_FILE_ENV = "WADDLEAI_API_KEY_FILE"  # nosec B105 -- an env var name, not a credential
 _DEFAULT_TOKEN_PATH = "~/.penguincode/waddleai_token.json"  # nosec B105 -- a file path, not a credential
 _DEFAULT_DEV_KEY_PATH = "~/.penguincode/waddleai_dev_key.pem"
 
@@ -77,6 +94,16 @@ _DEV_SAFE_SUFFIXES = (".localhost.local", ".penguintech.cloud", ".penguincloud.i
 _DEV_SAFE_HOSTS = ("localhost", "127.0.0.1")
 
 _TRUTHY = ("1", "true", "yes", "on")
+
+
+def _mask_key(key: str) -> str:
+    """Mask a service-account key for logs/error messages -- e.g. ``wa-****1234``.
+
+    Never returns enough of the key to be reused; used everywhere a machine
+    key might otherwise leak into a log record or an exception message.
+    """
+    tail = key[-4:] if len(key) >= 4 else "*" * len(key)
+    return f"wa-****{tail}"
 
 
 class WaddleAIAuthError(Exception):
@@ -118,6 +145,7 @@ class WaddleAIAuthConfig:
     issuer_url: str | None
     username: str | None
     password: str | None
+    machine_key: str | None
     audience: str
     token_path: str
     dev_mode: bool
@@ -137,12 +165,41 @@ class WaddleAIAuthConfig:
             issuer_url=issuer.rstrip("/") if issuer else None,
             username=os.environ.get("WADDLEAI_USERNAME") or None,
             password=os.environ.get("WADDLEAI_PASSWORD") or None,
+            machine_key=cls._load_machine_key(),
             audience=os.environ.get("WADDLEAI_JWT_AUDIENCE", _DEFAULT_AUDIENCE),
             token_path=os.environ.get("WADDLEAI_TOKEN_PATH", _DEFAULT_TOKEN_PATH),
             dev_mode=dev_mode or env_dev,
             request_timeout=float(os.environ.get("WADDLEAI_AUTH_TIMEOUT_SECONDS", "10")),
             refresh_leeway_seconds=int(os.environ.get("WADDLEAI_REFRESH_LEEWAY_SECONDS", "60")),
         )
+
+    @staticmethod
+    def _load_machine_key() -> str | None:
+        """Load a service-account key from env or a mounted-secret file -- never a CLI arg.
+
+        ``WADDLEAI_API_KEY`` wins if both are set; ``WADDLEAI_API_KEY_FILE``
+        covers the mounted-secret case (K8s Secret volume, CI secret file).
+        A configured-but-unreadable/empty file is a hard misconfiguration --
+        this fails fast rather than silently falling through to an
+        interactive login prompt that would simply hang with no TTY (CI).
+        """
+        env_key = os.environ.get(_API_KEY_ENV, "").strip()
+        if env_key:
+            return env_key
+
+        key_file = os.environ.get(_API_KEY_FILE_ENV, "").strip()
+        if not key_file:
+            return None
+
+        try:
+            contents = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise WaddleAICredentialsError(
+                f"{_API_KEY_FILE_ENV}={key_file!r} could not be read: {exc}"
+            ) from exc
+        if not contents:
+            raise WaddleAICredentialsError(f"{_API_KEY_FILE_ENV}={key_file!r} is empty")
+        return contents
 
 
 @dataclass(slots=True)
@@ -154,6 +211,7 @@ class _CachedToken:
     issuer: str
     audience: str
     is_dev: bool
+    is_machine: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """Serialize for ``WaddleAITokenStore.save`` -- never includes anything beyond these fields."""
@@ -163,17 +221,24 @@ class _CachedToken:
             "issuer": self.issuer,
             "audience": self.audience,
             "is_dev": self.is_dev,
+            "is_machine": self.is_machine,
         }
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> _CachedToken:
-        """Rebuild from a parsed cache file; raises on a shape the cache never wrote (see ``load``)."""
+        """Rebuild from a parsed cache file; raises on a shape the cache never wrote (see ``load``).
+
+        ``is_machine`` defaults to ``False`` for a cache file written before
+        H5 -- an older cache never set the key, and it must be treated as a
+        non-machine (login/dev) token, never crash on the missing field.
+        """
         return cls(
             access_token=str(data["access_token"]),
             expires_at=float(data["expires_at"]),
             issuer=str(data.get("issuer") or ""),
             audience=str(data.get("audience") or ""),
             is_dev=bool(data.get("is_dev", False)),
+            is_machine=bool(data.get("is_machine", False)),
         )
 
 
@@ -222,17 +287,23 @@ class WaddleAITokenProvider:
     Consumed by F3's gRPC client via :meth:`get_access_token` or
     :meth:`get_authorization_header` to populate the ``authorization``
     invocation-metadata entry that ``penguincode_cli.auth.middleware``
-    validates server-side. Resolution order in :meth:`get_access_token`:
+    validates server-side. Mode precedence in :meth:`get_access_token`:
 
     1. A cached token, reused as-is until within ``refresh_leeway_seconds``
-       of its own ``expires_at``.
-    2. ``POST {issuer}/api/v1/auth/refresh`` -- only while the cached token
-       is still unexpired (WaddleAI's refresh endpoint rejects an already-
-       expired bearer token outright, so this is skipped once truly expired
-       rather than wasting a guaranteed-401 round trip).
-    3. ``POST {issuer}/api/v1/auth/login`` with ``username``/``password`` --
-       today's only initial-acquisition path (see module docstring).
-    4. :meth:`_issue_dev_token` -- a locally self-signed fallback, used only
+       of its own ``expires_at`` (checked regardless of mode).
+    2. ``POST {issuer}/api/v1/auth/refresh`` -- only for a still-unexpired,
+       *non-machine*, non-dev cached token (WaddleAI's refresh endpoint
+       rejects an already-expired bearer token outright, so this is skipped
+       once truly expired rather than wasting a guaranteed-401 round trip;
+       a machine-issued token is never refreshed this way -- see step 3).
+    3. **Headless/machine mode** -- :meth:`_exchange_machine_key`, taken
+       whenever ``config.machine_key`` is set (``WADDLEAI_API_KEY``/
+       ``WADDLEAI_API_KEY_FILE``). Wins over interactive login and the
+       local-dev fallback alike, no prompts, no TTY required. Renewal
+       re-exchanges the key (step 2 never applies to a machine token).
+    4. ``POST {issuer}/api/v1/auth/login`` with ``username``/``password`` --
+       the interactive initial-acquisition path (see module docstring).
+    5. :meth:`_issue_dev_token` -- a locally self-signed fallback, used only
        when no real issuer is configured or ``dev_mode`` is explicitly set
        (and, in that explicit case, only against a domain the fail-closed
        gate recognises as local/PenguinTech-controlled).
@@ -276,11 +347,14 @@ class WaddleAITokenProvider:
             if now < cached.expires_at - self._config.refresh_leeway_seconds:
                 self._validate_claims(cached.access_token)
                 return cached.access_token
-            if now < cached.expires_at and not cached.is_dev:
+            if now < cached.expires_at and not cached.is_dev and not cached.is_machine:
                 try:
                     return await self._refresh(cached.access_token)
                 except WaddleAIAuthError as exc:
                     logger.info("waddleai_auth: refresh failed, re-acquiring: %s", exc)
+
+        if self._config.machine_key:
+            return await self._exchange_machine_key()
 
         if self._should_use_dev_fallback():
             return self._issue_dev_token()
@@ -324,6 +398,7 @@ class WaddleAITokenProvider:
             cached.issuer == (self._config.issuer_url or "")
             and cached.audience == self._config.audience
             and cached.is_dev == self._effective_dev_mode()
+            and cached.is_machine == bool(self._config.machine_key)
         )
 
     def _effective_dev_mode(self) -> bool:
@@ -333,8 +408,13 @@ class WaddleAITokenProvider:
         when no issuer is configured at all -- the latter implies dev mode
         even though ``config.dev_mode`` itself is left at its default
         ``False``, and cache-reuse must agree with that or every call would
-        re-mint a fresh dev token.
+        re-mint a fresh dev token. A configured machine key always wins --
+        headless mode is checked first in :meth:`get_access_token`, so dev
+        mode is never actually entered while one is set, but this keeps
+        :meth:`_cache_matches_current_config` consistent either way.
         """
+        if self._config.machine_key:
+            return False
         return self._config.dev_mode or not self._config.issuer_url
 
     def _effective_issuer(self) -> str:
@@ -393,6 +473,56 @@ class WaddleAITokenProvider:
         logger.info("waddleai_auth: refreshed token (expires_in=%ss)", expires_in)
         return token
 
+    async def _exchange_machine_key(self) -> str:
+        """Exchange the configured service-account key for a fresh JWT (H2's ``/auth/token``).
+
+        No body, no username/password -- the key travels only as a bearer
+        credential (``Authorization: Bearer wa-<key>``), matching H2's
+        contract. There is no refresh grant for a machine-issued token, so
+        this same method is also how :meth:`get_access_token` renews one
+        near/at expiry -- a re-exchange, never ``/auth/refresh``. A ``401``
+        means the key is invalid or disabled: the cache is cleared so a
+        stale/bad key is never silently retried, and a clear
+        :class:`WaddleAIAuthError` is raised (never a raw traceback, never
+        the unmasked key).
+        """
+        key = self._config.machine_key
+        if not key:
+            raise WaddleAICredentialsError(
+                "no WaddleAI machine key configured -- set WADDLEAI_API_KEY or "
+                "WADDLEAI_API_KEY_FILE for headless/CI authentication"
+            )
+
+        issuer = self._effective_issuer()
+        try:
+            async with self._client_factory() as client:
+                response = await client.post(
+                    f"{issuer}{_TOKEN_EXCHANGE_PATH}",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+        except httpx.HTTPError as exc:
+            raise WaddleAIAuthError(f"WaddleAI machine-key exchange request failed: {exc}") from exc
+
+        if response.status_code == 401:
+            self._store.clear()
+            raise WaddleAIAuthError(
+                f"WaddleAI machine key rejected (invalid or disabled): {_mask_key(key)}"
+            )
+        if response.status_code != 200:
+            raise WaddleAIAuthError(
+                f"WaddleAI machine-key exchange rejected (HTTP {response.status_code})"
+            )
+
+        token, expires_in = self._parse_token_response(response, context="machine-key exchange")
+        self._validate_claims(token)
+        self._cache(token, expires_in, is_dev=False, is_machine=True)
+        logger.info(
+            "waddleai_auth: acquired token via machine-key exchange (key=%s, expires_in=%ss)",
+            _mask_key(key),
+            expires_in,
+        )
+        return token
+
     @staticmethod
     def _parse_token_response(response: httpx.Response, *, context: str) -> tuple[str, float]:
         """Extract ``(access_token, expires_in)`` from a login/refresh response body."""
@@ -403,7 +533,9 @@ class WaddleAITokenProvider:
             raise WaddleAIAuthError(f"WaddleAI {context} response missing access_token/expires_in")
         return str(token), float(expires_in)
 
-    def _cache(self, token: str, expires_in: float, *, is_dev: bool) -> None:
+    def _cache(
+        self, token: str, expires_in: float, *, is_dev: bool, is_machine: bool = False
+    ) -> None:
         self._store.save(
             _CachedToken(
                 access_token=token,
@@ -411,6 +543,7 @@ class WaddleAITokenProvider:
                 issuer=self._config.issuer_url or "",
                 audience=self._config.audience,
                 is_dev=is_dev,
+                is_machine=is_machine,
             )
         )
 

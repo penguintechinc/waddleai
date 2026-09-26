@@ -1,9 +1,13 @@
-"""Tests for ``penguincode_cli.client.waddleai_auth`` -- CLI WaddleAI JWT acquisition (F4).
+"""Tests for ``penguincode_cli.client.waddleai_auth`` -- CLI WaddleAI JWT acquisition (F4/H5).
 
 TDD: written before ``penguincode_cli/client/waddleai_auth.py`` exists; must fail
 with an ImportError/ModuleNotFoundError until the module is implemented. No live
 network -- ``httpx.MockTransport`` stands in for the WaddleAI management REST API,
 and a real (but test-only) RSA keypair stands in for local-dev signing.
+
+H5 adds the headless/machine-key mode (``TestMachineConfigFromEnv``,
+``TestMachineHeadlessMode``) -- a service-account ``wa-`` key exchanged via
+``POST /api/v1/auth/token``, tagged ``# regression: headless-auth``.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ def _make_config(tmp_path: Path, **overrides: Any) -> WaddleAIAuthConfig:
         "issuer_url": ISSUER,
         "username": "alice",
         "password": "hunter2",  # noqa: S106 -- test fixture credential, not a real secret
+        "machine_key": None,
         "audience": AUDIENCE,
         "token_path": str(tmp_path / "waddleai_token.json"),
         "dev_mode": False,
@@ -114,6 +119,45 @@ class TestWaddleAITokenStore:
         path.write_text("not json", encoding="utf-8")
         store = WaddleAITokenStore(str(path))
         assert store.load() is None
+
+    def test_is_machine_round_trips(self, tmp_path: Path) -> None:
+        from penguincode_cli.client.waddleai_auth import _CachedToken
+
+        path = tmp_path / "token.json"
+        store = WaddleAITokenStore(str(path))
+        store.save(
+            _CachedToken(
+                access_token="tok",
+                expires_at=1.0,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                is_dev=False,
+                is_machine=True,
+            )
+        )
+        loaded = store.load()
+        assert loaded is not None
+        assert loaded.is_machine is True
+
+    def test_is_machine_defaults_false_for_legacy_cache(self, tmp_path: Path) -> None:
+        """A pre-H5 cache file never wrote ``is_machine`` -- must default False, never crash."""
+        path = tmp_path / "token.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "access_token": "tok",
+                    "expires_at": 123.0,
+                    "issuer": ISSUER,
+                    "audience": AUDIENCE,
+                    "is_dev": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = WaddleAITokenStore(str(path))
+        loaded = store.load()
+        assert loaded is not None
+        assert loaded.is_machine is False
 
 
 class TestLogin:
@@ -443,3 +487,387 @@ class TestNeverLogsToken:
 
         for record in caplog.records:
             assert issued not in record.getMessage()
+
+
+class TestMachineConfigFromEnv:
+    """H5: ``WaddleAIAuthConfig.from_env()`` loading a service-account key."""
+
+    def test_no_machine_key_configured_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("WADDLEAI_API_KEY", raising=False)
+        monkeypatch.delenv("WADDLEAI_API_KEY_FILE", raising=False)
+        config = WaddleAIAuthConfig.from_env()
+        assert config.machine_key is None
+
+    def test_api_key_env_var_loaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """# regression: headless-auth"""
+        monkeypatch.setenv("WADDLEAI_API_KEY", "wa-secret-key-1234")
+        monkeypatch.delenv("WADDLEAI_API_KEY_FILE", raising=False)
+        config = WaddleAIAuthConfig.from_env()
+        assert config.machine_key == "wa-secret-key-1234"
+
+    def test_api_key_file_env_var_loaded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """# regression: headless-auth -- WADDLEAI_API_KEY_FILE covers a mounted secret."""
+        key_file = tmp_path / "wa.key"
+        key_file.write_text("wa-from-file-5678\n", encoding="utf-8")
+        monkeypatch.delenv("WADDLEAI_API_KEY", raising=False)
+        monkeypatch.setenv("WADDLEAI_API_KEY_FILE", str(key_file))
+        config = WaddleAIAuthConfig.from_env()
+        assert config.machine_key == "wa-from-file-5678"
+
+    def test_api_key_env_wins_over_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key_file = tmp_path / "wa.key"
+        key_file.write_text("wa-from-file", encoding="utf-8")
+        monkeypatch.setenv("WADDLEAI_API_KEY", "wa-from-env")
+        monkeypatch.setenv("WADDLEAI_API_KEY_FILE", str(key_file))
+        config = WaddleAIAuthConfig.from_env()
+        assert config.machine_key == "wa-from-env"
+
+    def test_missing_api_key_file_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """# regression: headless-auth -- a misconfigured mounted-secret path fails fast."""
+        monkeypatch.delenv("WADDLEAI_API_KEY", raising=False)
+        monkeypatch.setenv("WADDLEAI_API_KEY_FILE", str(tmp_path / "does-not-exist.key"))
+        with pytest.raises(WaddleAICredentialsError):
+            WaddleAIAuthConfig.from_env()
+
+    def test_empty_api_key_file_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key_file = tmp_path / "wa.key"
+        key_file.write_text("   \n", encoding="utf-8")
+        monkeypatch.delenv("WADDLEAI_API_KEY", raising=False)
+        monkeypatch.setenv("WADDLEAI_API_KEY_FILE", str(key_file))
+        with pytest.raises(WaddleAICredentialsError):
+            WaddleAIAuthConfig.from_env()
+
+
+class TestMachineHeadlessMode:
+    """H5: service-account key -> ``POST /api/v1/auth/token`` exchange, no TTY required."""
+
+    @pytest.mark.asyncio
+    async def test_machine_key_exchanged_for_token(self, tmp_path: Path) -> None:
+        """# regression: headless-auth"""
+        issued = _login_response_token()
+        calls: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            assert request.url.path == "/api/v1/auth/token"
+            assert request.method == "POST"
+            assert request.headers["authorization"] == "Bearer wa-svc-key-1234"
+            assert request.content == b"", "the exchange must send no request body"
+            return httpx.Response(
+                200, json={"access_token": issued, "token_type": "bearer", "expires_in": 3600}
+            )
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path, machine_key="wa-svc-key-1234", username=None, password=None),
+            client_factory=_client_factory_for(handler),
+        )
+        token = await provider.get_access_token()
+
+        assert token == issued
+        assert len(calls) == 1
+        cached = provider._store.load()
+        assert cached is not None
+        assert cached.access_token == issued
+        assert cached.is_machine is True
+
+    @pytest.mark.asyncio
+    async def test_machine_key_beats_interactive_credentials(self, tmp_path: Path) -> None:
+        """# regression: headless-auth -- a machine key wins even if username/password are also set."""
+        issued = _login_response_token()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/api/v1/auth/token", (
+                "must not hit /auth/login when a machine key is configured"
+            )
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path, machine_key="wa-svc-key"),
+            client_factory=_client_factory_for(handler),
+        )
+        token = await provider.get_access_token()
+        assert token == issued
+
+    @pytest.mark.asyncio
+    async def test_machine_key_beats_dev_fallback_when_no_issuer(self, tmp_path: Path) -> None:
+        """# regression: headless-auth -- wins even with no issuer configured (dev-fallback trigger)."""
+        # No issuer_url configured -> _effective_issuer() falls back to the module
+        # default ("https://waddleai.localhost.local"), so the response token's
+        # iss claim must match that, not the ISSUER test constant.
+        now = int(time.time())
+        issued = jwt.encode(
+            {
+                "sub": "svc",
+                "iss": "https://waddleai.localhost.local",
+                "aud": AUDIENCE,
+                "iat": now,
+                "exp": now + 3600,
+                "tenant": "tenant-abc",
+                "teams": [],
+                "scope": ["widgets:read"],
+            },
+            "test-signing-secret-at-least-32-bytes-long",
+            algorithm="HS256",
+        )
+        paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        provider = WaddleAITokenProvider(
+            _make_config(
+                tmp_path, machine_key="wa-svc-key", issuer_url=None, username=None, password=None
+            ),
+            client_factory=_client_factory_for(handler),
+            dev_key_path=tmp_path / "dev_key.pem",
+        )
+        token = await provider.get_access_token()
+        assert token == issued
+        assert paths == ["/api/v1/auth/token"]
+
+    @pytest.mark.asyncio
+    async def test_cached_machine_token_reused_without_network_call(self, tmp_path: Path) -> None:
+        issued = _login_response_token(exp_delta=3600)
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path, machine_key="wa-svc-key"),
+            client_factory=_client_factory_for(handler),
+        )
+        first = await provider.get_access_token()
+        second = await provider.get_access_token()
+        assert first == second
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_stale_non_machine_cache_ignored_when_machine_key_configured(
+        self, tmp_path: Path
+    ) -> None:
+        """# regression: headless-auth -- a login-acquired cache must never be reused for headless mode."""
+        from penguincode_cli.client.waddleai_auth import _CachedToken
+
+        stale = _login_response_token(exp_delta=3600)
+        issued = _login_response_token(exp_delta=3600, sub="svc")
+        paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        config = _make_config(tmp_path, machine_key="wa-svc-key")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        provider._store.save(
+            _CachedToken(
+                access_token=stale,
+                expires_at=time.time() + 3600,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                is_dev=False,
+                is_machine=False,
+            )
+        )
+
+        token = await provider.get_access_token()
+        assert token == issued
+        assert paths == ["/api/v1/auth/token"]
+
+    @pytest.mark.asyncio
+    async def test_near_expiry_machine_token_is_reexchanged_not_refreshed(
+        self, tmp_path: Path
+    ) -> None:
+        """# regression: headless-auth -- there is no refresh_token in this flow; renewal re-exchanges the key."""
+        from penguincode_cli.client.waddleai_auth import _CachedToken
+
+        old_token = _login_response_token(exp_delta=30)  # inside the 60s leeway
+        new_token = _login_response_token(exp_delta=3600, sub="svc-refreshed")
+        seen_paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_paths.append(request.url.path)
+            assert request.url.path == "/api/v1/auth/token", "must re-exchange, never /auth/refresh"
+            assert request.headers["authorization"] == "Bearer wa-svc-key"
+            return httpx.Response(200, json={"access_token": new_token, "expires_in": 3600})
+
+        config = _make_config(tmp_path, machine_key="wa-svc-key")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        provider._store.save(
+            _CachedToken(
+                access_token=old_token,
+                expires_at=time.time() + 30,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                is_dev=False,
+                is_machine=True,
+            )
+        )
+
+        token = await provider.get_access_token()
+
+        assert token == new_token
+        assert seen_paths == ["/api/v1/auth/token"]
+
+    @pytest.mark.asyncio
+    async def test_expired_machine_token_skips_refresh_reexchanges(self, tmp_path: Path) -> None:
+        from penguincode_cli.client.waddleai_auth import _CachedToken
+
+        old_token = _login_response_token(exp_delta=-10)  # already expired
+        new_token = _login_response_token(exp_delta=3600)
+        paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            return httpx.Response(200, json={"access_token": new_token, "expires_in": 3600})
+
+        config = _make_config(tmp_path, machine_key="wa-svc-key")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        provider._store.save(
+            _CachedToken(
+                access_token=old_token,
+                expires_at=time.time() - 10,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                is_dev=False,
+                is_machine=True,
+            )
+        )
+
+        token = await provider.get_access_token()
+        assert token == new_token
+        assert paths == ["/api/v1/auth/token"], "must not waste a call on a token already expired"
+
+    @pytest.mark.asyncio
+    async def test_401_clears_cache_and_raises(self, tmp_path: Path) -> None:
+        """# regression: headless-auth -- a disabled/invalid key clears the cache, never a traceback."""
+        from penguincode_cli.client.waddleai_auth import _CachedToken
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"error": "Invalid or expired token"})
+
+        config = _make_config(tmp_path, machine_key="wa-bad-key")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        provider._store.save(
+            _CachedToken(
+                access_token="stale",
+                expires_at=time.time() - 10,
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                is_dev=False,
+                is_machine=True,
+            )
+        )
+
+        with pytest.raises(WaddleAIAuthError):
+            await provider.get_access_token()
+
+        assert provider._store.load() is None
+
+    @pytest.mark.asyncio
+    async def test_401_error_message_masks_key(self, tmp_path: Path) -> None:
+        """# regression: headless-auth -- the raw key must never appear in an exception message."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"error": "Invalid or expired token"})
+
+        config = _make_config(tmp_path, machine_key="wa-supersecretkey1234")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+
+        with pytest.raises(WaddleAIAuthError) as excinfo:
+            await provider.get_access_token()
+
+        assert "wa-supersecretkey1234" not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_exchange_network_error_raises_auth_error(self, tmp_path: Path) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("boom")
+
+        config = _make_config(tmp_path, machine_key="wa-svc-key")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        with pytest.raises(WaddleAIAuthError):
+            await provider.get_access_token()
+
+    @pytest.mark.asyncio
+    async def test_machine_key_never_appears_in_cache_file(self, tmp_path: Path) -> None:
+        """# regression: headless-auth -- the key itself must never be persisted, only the JWT."""
+        issued = _login_response_token()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        config = _make_config(tmp_path, machine_key="wa-supersecretkey1234")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        await provider.get_access_token()
+
+        raw = Path(config.token_path).read_text(encoding="utf-8")
+        assert "wa-supersecretkey1234" not in raw
+
+    @pytest.mark.asyncio
+    async def test_machine_key_never_appears_in_log_records(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """# regression: headless-auth -- the key must be masked in every log record, at any level."""
+        issued = _login_response_token()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        caplog.set_level("DEBUG")
+        config = _make_config(tmp_path, machine_key="wa-supersecretkey1234")
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        await provider.get_access_token()
+
+        for record in caplog.records:
+            assert "wa-supersecretkey1234" not in record.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_headless_mode_works_with_no_tty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """# regression: headless-auth -- CI has no TTY; headless mode must never touch stdin."""
+        issued = _login_response_token()
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        config = _make_config(tmp_path, machine_key="wa-svc-key", username=None, password=None)
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        token = await provider.get_access_token()
+        assert token == issued
+
+    @pytest.mark.asyncio
+    async def test_machine_key_from_file_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """# regression: headless-auth -- WADDLEAI_API_KEY_FILE flows through from_env() to the exchange."""
+        issued = _login_response_token()
+        key_file = tmp_path / "wa.key"
+        key_file.write_text("wa-file-key-9999\n", encoding="utf-8")
+        monkeypatch.delenv("WADDLEAI_API_KEY", raising=False)
+        monkeypatch.setenv("WADDLEAI_API_KEY_FILE", str(key_file))
+        monkeypatch.setenv("WADDLEAI_ISSUER_URL", ISSUER)
+        monkeypatch.setenv("WADDLEAI_JWT_AUDIENCE", AUDIENCE)
+        monkeypatch.setenv("WADDLEAI_TOKEN_PATH", str(tmp_path / "token.json"))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["authorization"] == "Bearer wa-file-key-9999"
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        config = WaddleAIAuthConfig.from_env()
+        provider = WaddleAITokenProvider(config, client_factory=_client_factory_for(handler))
+        token = await provider.get_access_token()
+        assert token == issued
