@@ -98,8 +98,20 @@ test-security:
 	@find . -name "package.json" -not -path "*/.git/*" -not -path "*/node_modules/*" -maxdepth 3 | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && npm audit 2>/dev/null || true'
 	@if command -v gitleaks >/dev/null 2>&1; then echo "-- gitleaks --"; gitleaks detect --source . --no-git 2>/dev/null || true; fi
 
+# Real smoke gate (S1 fix -- was `echo "No smoke tests defined"`, an
+# unconditional-pass stub that meant the org's every-commit smoke gate never
+# actually ran for penguincode). `scripts/smoke_test.py` import-smokes the
+# package + generated protos, starts a real gRPC server against an ephemeral
+# pgvector container, exercises Health + one KnowledgeService RPC with a
+# WaddleAI dev token, and asserts real OTel spans/metrics/logs were emitted --
+# see that script's module docstring for the full gate list. `bash -euo
+# pipefail` (not the Makefile's default `/bin/sh` recipe shell) so a failure
+# anywhere in the pipeline is never masked; `timeout 110` keeps this under the
+# <2min smoke-test budget even if a container/RPC hangs instead of failing
+# outright. No `|| true` anywhere in this chain -- a non-zero exit here must
+# fail `make smoke-test`.
 smoke-test:
-	@echo "No smoke tests defined"
+	@bash -euo pipefail -c 'timeout 110 python3 scripts/smoke_test.py'
 
 lint:
 	@echo "=== Linting ==="
@@ -136,5 +148,6 @@ pre-commit:
 	@echo "=== Pre-commit checks ==="
 	@$(MAKE) lint
 	@$(MAKE) test-security
+	@$(MAKE) smoke-test
 	@$(MAKE) test
 	@echo "=== Pre-commit complete ==="

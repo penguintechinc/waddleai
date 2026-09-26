@@ -18,9 +18,10 @@ fake `grpc.aio.ServicerContext`. This module is the first to drive the real
   result).
 - RS256 dev tokens are accepted; HS256 legacy tokens and missing tokens are
   both rejected `UNAUTHENTICATED`.
-- The server actually emits OTel spans + metrics (and, since penguincode has
-  no OTel *Logs* SDK pipeline today -- see conftest/otel.py -- stdlib log
-  records via `caplog`, the closest available proxy for "logging occurred").
+- The server actually emits OTel spans + metrics + log records, the log
+  records flowing through the real OTel Logs SDK pipeline (`observability/otel.py`'s
+  `LoggerProvider`/`build_logging_handler`), not merely captured via stdlib
+  `caplog` as a proxy.
 
 The LLM boundary (triple extraction) is mocked throughout, mirroring
 `test_twire_live_integration.py`'s established convention -- the orchestration
@@ -38,6 +39,7 @@ default (unmocked) embedding path.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -497,7 +499,7 @@ class TestAuthRejection:
 
 
 class TestTelemetryEmission:
-    """The server must emit real OTel spans + metrics (and stdlib log records) during these ops."""
+    """The server must emit real OTel spans + metrics + log records during these ops."""
 
     async def test_index_and_query_emit_otel_spans_metrics_and_log_records(
         self,
@@ -505,41 +507,59 @@ class TestTelemetryEmission:
         dev_keypair: DevKeypair,
         monkeypatch: pytest.MonkeyPatch,
         otel_sink: TelemetrySink,
-        caplog: pytest.LogCaptureFixture,
         ollama_ready: None,
     ) -> None:
         monkeypatch.setenv("PENGUINCODE_FLAG_RAG", "true")
         monkeypatch.setenv("PENGUINCODE_FLAG_KNOWLEDGE_GRAPH", "true")
-        caplog.set_level("INFO", logger="penguincode_cli")
+        # `otel_sink` attaches its logging handler at the current logger levels;
+        # `penguincode_cli.*` modules log at INFO, so the logger must be raised
+        # from its default (WARNING) for those records to reach the handler at
+        # all -- restored automatically once the test's logger object is GC'd
+        # is not guaranteed, so this is undone explicitly like `caplog` would.
+        penguincode_logger = logging.getLogger("penguincode_cli")
+        prev_level = penguincode_logger.level
+        penguincode_logger.setLevel(logging.INFO)
 
-        tenant = str(uuid.uuid4())
-        client = knowledge_server.client_for_tenant(dev_keypair, tenant=tenant)
+        try:
+            tenant = str(uuid.uuid4())
+            client = knowledge_server.client_for_tenant(dev_keypair, tenant=tenant)
 
-        llm_client = _mock_ollama_client(_triples_json("penguincode", "uses", "otel"))
+            llm_client = _mock_ollama_client(_triples_json("penguincode", "uses", "otel"))
 
-        async def _wired_extract_knowledge(ctx_arg: ScopeContext, text: str, **kwargs: Any) -> Any:
-            return await real_extract_knowledge(ctx_arg, text, ollama_client=llm_client, **kwargs)
+            async def _wired_extract_knowledge(
+                ctx_arg: ScopeContext, text: str, **kwargs: Any
+            ) -> Any:
+                return await real_extract_knowledge(
+                    ctx_arg, text, ollama_client=llm_client, **kwargs
+                )
 
-        with patch("penguincode_cli.docs_rag.indexer.extract_knowledge", _wired_extract_knowledge):
-            chunks_indexed = await client.index(
-                doc_contents=["penguincode uses otel for telemetry."], language="python"
+            with patch(
+                "penguincode_cli.docs_rag.indexer.extract_knowledge", _wired_extract_knowledge
+            ):
+                chunks_indexed = await client.index(
+                    doc_contents=["penguincode uses otel for telemetry."], language="python"
+                )
+            assert chunks_indexed >= 1
+
+            query_result = await client.query(
+                query="penguincode uses otel for telemetry.", n_vector=5
             )
-        assert chunks_indexed >= 1
+            assert len(query_result.vector_hits) >= 1
 
-        query_result = await client.query(query="penguincode uses otel for telemetry.", n_vector=5)
-        assert len(query_result.vector_hits) >= 1
-
-        spans = otel_sink.spans.get_finished_spans()
-        metric_points = _count_metric_points(otel_sink.metrics.get_metrics_data())
-        log_records = [r for r in caplog.records if r.name.startswith("penguincode_cli")]
+            spans = otel_sink.spans.get_finished_spans()
+            metric_points = _count_metric_points(otel_sink.metrics.get_metrics_data())
+            log_records = otel_sink.logs.get_finished_logs()
+        finally:
+            penguincode_logger.setLevel(prev_level)
 
         print(
             f"T16 telemetry: {len(spans)} span(s), {metric_points} metric data point(s), "
-            f"{len(log_records)} stdlib log record(s) "
-            "(no OTel Logs SDK pipeline exists in penguincode yet -- see observability/otel.py; "
-            "stdlib logging via caplog is the closest available proxy for 'logging occurred')"
+            f"{len(log_records)} OTel log record(s) (real Logs SDK pipeline, "
+            "not a stdlib caplog proxy)"
         )
 
         assert len(spans) >= 1, "expected at least one span across Index/Query"
         assert metric_points >= 1, "expected at least one metric data point recorded"
-        assert len(log_records) >= 1, "expected at least one stdlib log record captured"
+        assert len(log_records) >= 1, (
+            "expected at least one log record to flow through the OTel Logs SDK pipeline"
+        )

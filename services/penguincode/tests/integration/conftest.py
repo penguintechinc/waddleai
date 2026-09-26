@@ -24,6 +24,7 @@ test module in this repo combines:
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import time
@@ -46,8 +47,11 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
     PublicFormat,
 )
+from opentelemetry import _logs as otel_logs
 from opentelemetry import metrics as otel_metrics
 from opentelemetry import trace as otel_trace
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import InMemoryLogExporter, SimpleLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
@@ -343,10 +347,11 @@ async def knowledge_server(
 
 @dataclass(slots=True, frozen=True)
 class TelemetrySink:
-    """In-memory OTel span/metric capture, installed as penguincode's global providers."""
+    """In-memory OTel span/metric/log capture, installed as penguincode's global providers."""
 
     spans: InMemorySpanExporter
     metrics: InMemoryMetricReader
+    logs: InMemoryLogExporter
 
 
 @pytest.fixture
@@ -354,12 +359,20 @@ def otel_sink() -> Iterator[TelemetrySink]:
     """Install in-memory OTel providers and reset penguincode's own tracer/meter cache.
 
     Copies `tests/test_observability_otel.py::in_memory_exporters`' exact technique
-    (OTel's global TracerProvider/MeterProvider are each guarded by a run-once
-    latch; both latches plus the previous provider are captured and restored so
-    this never leaks into another test module) and additionally calls
-    `otel.reset_for_testing()` so `store_span`/`timed_store_operation` -- called
-    from deep inside the RPC handlers this suite drives -- pick up the freshly
-    installed providers on their very first call.
+    (OTel's global TracerProvider/MeterProvider/LoggerProvider are each guarded
+    by a run-once latch; every latch plus the previous provider is captured and
+    restored so this never leaks into another test module) and additionally
+    calls `otel.reset_for_testing()` so `store_span`/`timed_store_operation` --
+    called from deep inside the RPC handlers this suite drives -- pick up the
+    freshly installed providers on their very first call.
+
+    The log side additionally installs `otel.build_logging_handler()` on the
+    root logger (and penguincode's dedicated `"penguincode"` debug logger,
+    same reasoning as `init_observability()`'s own installation) so that a
+    real `logging.getLogger(__name__).info(...)` call made anywhere in the
+    server's call path -- not a synthetic record -- actually flows through the
+    OTel Logs SDK pipeline into `logs`, mirroring how production wires this
+    bridge in `init_observability()`.
     """
     otel.reset_for_testing()
 
@@ -367,6 +380,8 @@ def otel_sink() -> Iterator[TelemetrySink]:
     prev_tracer_once = otel_trace._TRACER_PROVIDER_SET_ONCE
     prev_meter_provider = otel_metrics._internal._METER_PROVIDER
     prev_meter_once = otel_metrics._internal._METER_PROVIDER_SET_ONCE
+    prev_logger_provider = otel_logs._internal._LOGGER_PROVIDER
+    prev_logger_once = otel_logs._internal._LOGGER_PROVIDER_SET_ONCE
 
     span_exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider()
@@ -380,11 +395,26 @@ def otel_sink() -> Iterator[TelemetrySink]:
     otel_metrics._internal._METER_PROVIDER_SET_ONCE = Once()
     otel_metrics.set_meter_provider(MeterProvider(metric_readers=[metric_reader]))
 
+    # SDK ctor is unannotated upstream (logs API not yet stable) -- no fix available.
+    log_exporter = InMemoryLogExporter()  # type: ignore[no-untyped-call]
+    logger_provider = LoggerProvider()
+    logger_provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
+    otel_logs._internal._LOGGER_PROVIDER = None
+    otel_logs._internal._LOGGER_PROVIDER_SET_ONCE = Once()
+    otel_logs.set_logger_provider(logger_provider)
+    log_handler = otel.build_logging_handler(logger_provider)
+    logging.getLogger().addHandler(log_handler)
+    logging.getLogger("penguincode").addHandler(log_handler)
+
     try:
-        yield TelemetrySink(spans=span_exporter, metrics=metric_reader)
+        yield TelemetrySink(spans=span_exporter, metrics=metric_reader, logs=log_exporter)
     finally:
+        logging.getLogger().removeHandler(log_handler)
+        logging.getLogger("penguincode").removeHandler(log_handler)
         otel_trace._TRACER_PROVIDER = prev_tracer_provider
         otel_trace._TRACER_PROVIDER_SET_ONCE = prev_tracer_once
         otel_metrics._internal._METER_PROVIDER = prev_meter_provider
         otel_metrics._internal._METER_PROVIDER_SET_ONCE = prev_meter_once
+        otel_logs._internal._LOGGER_PROVIDER = prev_logger_provider
+        otel_logs._internal._LOGGER_PROVIDER_SET_ONCE = prev_logger_once
         otel.reset_for_testing()
