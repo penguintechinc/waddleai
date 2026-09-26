@@ -29,12 +29,18 @@ from google.protobuf import struct_pb2
 from penguincode_cli.client.waddleai_auth import WaddleAIAuthError, WaddleAITokenProvider
 from penguincode_cli.config.settings import ServerConfig
 from penguincode_cli.proto import (
+    CleanupIndexRequest,
+    CleanupIndexResponse,
+    ClearIndexRequest,
+    ClearIndexResponse,
     CodeGraphStatusRequest,
     CodeGraphStatusResponse,
     IndexCodeRequest,
     IndexCodeResponse,
     IndexRequest,
     IndexResponse,
+    IndexStatusRequest,
+    IndexStatusResponse,
     KnowledgeServiceStub,
     LibraryTarget,
     MemoryAddRequest,
@@ -143,6 +149,52 @@ class MemoryItem:
     score: float
 
 
+@dataclass(slots=True, frozen=True)
+class LibraryIndexStatus:
+    """One library's docs index status -- decoded from the proto `LibraryIndexStatus`."""
+
+    chunk_count: int
+    indexed_at: str
+    expires_at: str
+    is_expired: bool
+    language: str
+
+
+@dataclass(slots=True, frozen=True)
+class LanguageIndexStatus:
+    """One language's docs index status -- decoded from the proto `LanguageIndexStatus`."""
+
+    chunk_count: int
+    indexed_at: str
+    expires_at: str
+    is_expired: bool
+
+
+@dataclass(slots=True, frozen=True)
+class IndexStatus:
+    """Adapted `IndexStatusResponse`: mirrors `DocumentationIndexer.get_index_status`'s
+    `{"libraries": {...}, "languages": {...}, "total_chunks": N}` shape verbatim.
+    """
+
+    libraries: dict[str, LibraryIndexStatus]
+    languages: dict[str, LanguageIndexStatus]
+    total_chunks: int
+
+
+@dataclass(slots=True, frozen=True)
+class LibraryRef:
+    """A caller-supplied library reference (name + language + version) for
+    `cleanup_index`'s `current_libraries` -- deliberately independent of
+    `docs_rag.models.Library` so this module still never needs to import anything beyond
+    plain strings for its wire-facing calls (same reason `index()`'s `language` param is a
+    plain `str`, never a `docs_rag.models.Language`).
+    """
+
+    name: str
+    language: str
+    version: str = ""
+
+
 # ==================== Enum adaptation ====================
 
 _VISIBILITY_TO_PROTO: dict[str, Visibility.ValueType] = {
@@ -215,7 +267,7 @@ def _adapt_query_response(response: QueryResponse) -> QueryResult:
 
 
 class KnowledgeClient:
-    """Thin gRPC client for all six `KnowledgeService` RPCs.
+    """Thin gRPC client for all nine `KnowledgeService` RPCs.
 
     A single instance is meant to be shared for a CLI session's lifetime (constructed in
     `core.repl.REPLSession.__aenter__`, closed in `__aexit__`) -- the underlying
@@ -447,6 +499,89 @@ class KnowledgeClient:
         request = CodeGraphStatusRequest(api_version=_API_VERSION)
         response: CodeGraphStatusResponse = await self._call(stub.CodeGraphStatus, request)
         return response.enabled, response.node_count, response.edge_count
+
+    async def index_status(self) -> IndexStatus:
+        """Report the caller's docs index status via the `IndexStatus` RPC.
+
+        Mirrors `docs_rag.indexer.DocumentationIndexer.get_index_status` -- the CLI's only
+        remaining way to see per-library/language chunk counts and freshness now that
+        indexing is entirely server-side (F3).
+        """
+        stub = self._ensure_stub()
+        request = IndexStatusRequest(api_version=_API_VERSION)
+        response: IndexStatusResponse = await self._call(stub.IndexStatus, request)
+        return IndexStatus(
+            libraries={
+                key: LibraryIndexStatus(
+                    chunk_count=info.chunk_count,
+                    indexed_at=info.indexed_at,
+                    expires_at=info.expires_at,
+                    is_expired=info.is_expired,
+                    language=info.language,
+                )
+                for key, info in response.libraries.items()
+            },
+            languages={
+                key: LanguageIndexStatus(
+                    chunk_count=info.chunk_count,
+                    indexed_at=info.indexed_at,
+                    expires_at=info.expires_at,
+                    is_expired=info.is_expired,
+                )
+                for key, info in response.languages.items()
+            },
+            total_chunks=response.total_chunks,
+        )
+
+    async def clear_index(
+        self, *, library_name: str | None = None, language: str | None = None
+    ) -> int:
+        """Clear one library's or one language's docs index via the `ClearIndex` RPC.
+
+        Exactly one of `library_name` or `language` must be given, matching the proto's
+        `oneof target`. Returns the number of chunks removed.
+        """
+        stub = self._ensure_stub()
+        if library_name is not None:
+            request = ClearIndexRequest(api_version=_API_VERSION, library_name=library_name)
+        elif language is not None:
+            request = ClearIndexRequest(
+                api_version=_API_VERSION, language=_language_to_proto(language)
+            )
+        else:
+            raise ValueError("clear_index() requires either library_name or language")
+
+        response: ClearIndexResponse = await self._call(stub.ClearIndex, request)
+        return int(response.chunks_removed)
+
+    async def cleanup_index(
+        self,
+        *,
+        current_libraries: list[LibraryRef] | None = None,
+        current_languages: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Remove indexed docs no longer referenced by the caller's current project via the
+        `CleanupIndex` RPC.
+
+        Mirrors `docs_rag.indexer.DocumentationIndexer.cleanup_unused` -- the server has no
+        independent way to know what a project still references, so this forwards the CLI's
+        own already-detected project state (`ProjectContext.libraries`/`.languages`).
+        Returns the same `{name: chunks_removed}` shape (a language key carries the
+        `_lang_` prefix `cleanup_unused` itself already applies).
+        """
+        stub = self._ensure_stub()
+        request = CleanupIndexRequest(
+            api_version=_API_VERSION,
+            current_libraries=[
+                LibraryTarget(
+                    name=lib.name, language=_language_to_proto(lib.language), version=lib.version
+                )
+                for lib in (current_libraries or [])
+            ],
+            current_languages=[_language_to_proto(lang) for lang in (current_languages or [])],
+        )
+        response: CleanupIndexResponse = await self._call(stub.CleanupIndex, request)
+        return dict(response.removed)
 
 
 class RemoteMemoryManager:
