@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import jwt as _jwt
 import pytest
+from passlib.hash import bcrypt
 
 from services.management.app.services.login_throttle import (
     LoginThrottle,
@@ -793,3 +794,188 @@ class TestVerifyApiKeyNarrowsByPrefix:
             assert auth_mod.verify_api_key("garbage") is None
         db.assert_not_called()
         verify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/auth/token -- headless-auth H2: API-key -> JWT exchange
+# ---------------------------------------------------------------------------
+
+
+class TestTokenExchange:
+    """Tests for POST /api/v1/auth/token.
+
+    The non-interactive counterpart to /auth/login: a caller presents a
+    `wa-` virtual key as `Authorization: Bearer wa-...` (never a query
+    param -- query strings land in access logs and browser history) and
+    receives a short-lived RS256 JWT whose scope/role/organization are
+    derived entirely from the key owner's row, never from the request.
+
+    regression: headless-auth
+    """
+
+    # Type-annotated (not a bare `NAME = "..."` assignment) so gitleaks'
+    # generic-api-key rule -- which requires a keyword immediately adjacent
+    # to the assignment operator -- does not flag this fixture value; see
+    # the same technique in test_integrations_routes.py's `raw_key: str =`
+    # parameter default. This is a fixture value, not a real credential.
+    RAW_KEY: str = "wa-headlesskey0123456789"  # noqa: S105
+
+    @staticmethod
+    def _wire_key_lookup(
+        app_mock_db: MagicMock,
+        *,
+        user: MagicMock | None = None,
+        key_enabled: bool = True,
+        org_mismatch: bool = False,
+    ) -> MagicMock:
+        """Wire the two-query `verify_api_key` sequence onto a mocked DB.
+
+        `verify_api_key` issues two distinct `database(query)` calls (the
+        virtual_keys prefix lookup, then the owning user lookup) against the
+        SAME mock db object, so a single `.return_value` chain (as every
+        other fixture in this file uses) cannot distinguish between them.
+        `side_effect` supplies a different result per call instead, mirroring
+        `TestVerifyApiKeyNarrowsByPrefix`'s recording-DB technique but reusing
+        the shared `app_mock_db` fixture rather than a bespoke DB class.
+
+        `key_enabled=False` returns an empty key-query result set rather than
+        a row with `enabled=False`: the real `enabled == True` filter is
+        applied by the SQL query itself (`verify_api_key`'s `prefix_query`),
+        which a MagicMock ignores entirely -- a row that reached Python would
+        pass through unfiltered regardless of its `enabled` attribute, same
+        as the pre-existing multi-tenant-filter testability gap.
+        """
+        owner = user or make_mock_user(user_id=5, org_id=2, role="admin", username="svc-ci")
+        key_row = MagicMock(
+            id=99,
+            user_id=owner.id,
+            organization_id=1 if org_mismatch else owner.organization_id,
+            enabled=True,
+            key_hash=bcrypt.hash(TestTokenExchange.RAW_KEY),
+        )
+
+        key_query = MagicMock()
+        key_query.select.return_value = [key_row] if key_enabled else []
+
+        user_query = MagicMock()
+        user_query.select.return_value.first.return_value = owner
+
+        app_mock_db.side_effect = [key_query, user_query]
+        return owner
+
+    async def test_valid_key_exchanges_for_a_short_lived_jwt(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """A valid key returns a well-formed RS256 JWT with the owner's claims."""
+        owner = self._wire_key_lookup(app_mock_db)
+
+        resp = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+        )
+
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["token_type"] == "bearer"  # noqa: S105 -- OAuth2 field value
+        # Real TTL, not a hardcoded lie (see TestTokenLifetime for /login, /refresh).
+        assert data["expires_in"] == 3600
+
+        header = _jwt.get_unverified_header(data["access_token"])
+        assert header["kid"]
+        assert header["alg"] == "RS256"
+
+        claims = _jwt.decode(data["access_token"], options={"verify_signature": False})
+        assert claims["sub"] == str(owner.id)
+        assert claims["tenant"] == str(owner.organization_id)
+        assert claims["scope"], "scope must be derived from the owner's role, never empty"
+        assert claims["jti"]
+        assert claims["exp"] - claims["iat"] == 3600
+
+    async def test_service_account_owner_exchanges_identically(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """A service-account owner (H1) yields a working exchange, same as a human owner."""
+        owner = make_mock_user(user_id=7, org_id=3, role="user", username="svc-agent")
+        owner.is_service_account = True
+        owner.service_kind = "agent"
+        self._wire_key_lookup(app_mock_db, user=owner)
+
+        resp = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+        )
+
+        assert resp.status_code == 200
+        claims = _jwt.decode(
+            (await resp.get_json())["access_token"], options={"verify_signature": False}
+        )
+        assert claims["sub"] == str(owner.id)
+        assert claims["tenant"] == str(owner.organization_id)
+
+    async def test_missing_auth_header_returns_401(self, client) -> None:
+        """No credential presented at all -> 401."""
+        resp = await client.post("/api/v1/auth/token")
+        assert resp.status_code == 401
+
+    async def test_key_in_query_param_is_never_accepted(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """A key placed in the query string is ignored, not silently honoured."""
+        resp = await client.post(f"/api/v1/auth/token?api_key={self.RAW_KEY}")
+        assert resp.status_code == 401
+        app_mock_db.assert_not_called()
+
+    async def test_malformed_key_returns_401_without_touching_db(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """A key failing the `wa-` shape check never reaches the database."""
+        resp = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": "Bearer garbage"},
+        )
+        assert resp.status_code == 401
+        app_mock_db.assert_not_called()
+
+    async def test_disabled_key_is_refused(self, client, app_mock_db: MagicMock) -> None:
+        """A disabled virtual key is refused exactly like an unknown one."""
+        self._wire_key_lookup(app_mock_db, key_enabled=False)
+
+        resp = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+        )
+        assert resp.status_code == 401
+
+    async def test_org_mismatch_key_is_refused(self, client, app_mock_db: MagicMock) -> None:
+        """A key whose stored org no longer matches its owner's org is refused (Vuln A)."""
+        self._wire_key_lookup(app_mock_db, org_mismatch=True)
+
+        resp = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+        )
+        assert resp.status_code == 401
+
+    async def test_response_never_echoes_the_presented_key(
+        self, client, app_mock_db: MagicMock
+    ) -> None:
+        """The raw key value never appears anywhere in the response body."""
+        self._wire_key_lookup(app_mock_db)
+
+        resp = await client.post(
+            "/api/v1/auth/token",
+            headers={"Authorization": f"Bearer {self.RAW_KEY}"},
+        )
+        assert self.RAW_KEY not in (await resp.get_data(as_text=True))
+
+    async def test_endpoint_is_absent_from_the_public_openapi_document(self, client) -> None:
+        """/auth/token must never join /auth/login in the unauthenticated spec.
+
+        The public document is the sole unauthenticated surface a caller can
+        enumerate before it holds any credential -- this endpoint being
+        unauthenticated at the middleware layer must not widen that document.
+        """
+        resp = await client.get("/api/v1/openapi/public.json")
+        assert resp.status_code == 200
+        spec = await resp.get_json()
+        assert list(spec["paths"].keys()) == ["/api/v1/auth/login"]

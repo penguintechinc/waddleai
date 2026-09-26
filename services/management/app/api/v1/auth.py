@@ -207,6 +207,15 @@ class RefreshTokenResponse:
 
 
 @dataclass(slots=True)
+class TokenExchangeResponse:
+    """Response body for POST /api/v1/auth/token (headless API-key exchange)."""
+
+    access_token: str
+    token_type: str
+    expires_in: int
+
+
+@dataclass(slots=True)
 class VerifyUser:
     """User summary embedded in the auth-verify response."""
 
@@ -790,6 +799,56 @@ async def login(data: LoginRequest):
             "role": user.role,
             "organization_id": user.organization_id,
         },
+    }
+
+
+@api_v1_bp.route("/auth/token", methods=["POST"])
+@tag(["Auth"])
+@security_scheme(_BEARER_AUTH)
+@validate_response(TokenExchangeResponse, 200)
+async def token_exchange():
+    """Exchange a service-account API key for a short-lived bearer JWT.
+
+    The headless/CI/service-to-service equivalent of ``/auth/login``:
+    unauthenticated at the middleware layer (no ``@require_auth``) because the
+    credential being exchanged -- a ``wa-`` virtual key presented as
+    ``Authorization: Bearer wa-...`` -- *is* the authentication, exactly like a
+    username/password pair on ``/auth/login``. Never a query parameter: query
+    strings land in access logs and browser history, which is the opposite of
+    what a short-lived credential exchange needs.
+
+    Scope, role and organization all come from the key owner's row via
+    ``verify_api_key`` -- nothing here is caller-supplied. A service-account
+    owner (H1's ``is_service_account``) yields the same claim shape as a human
+    owner and works identically; there is no separate machine-token claim
+    shape for validators to special-case.
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Authorization header required"}), 401
+
+    api_key = auth_header.split(" ", 1)[1]
+
+    # Same generic 401 and log line regardless of *why* the key was refused
+    # (unknown, disabled, wrong org) -- mirrors /auth/login's refusal to
+    # distinguish failure modes, and the key value itself never appears in
+    # the log or the response.
+    user_ctx = await asyncio.to_thread(verify_api_key, api_key)
+    if user_ctx is None:
+        logger.info("auth: token exchange refused for an invalid or disabled API key")
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    issued = issue_access_token(
+        user_id=user_ctx["user_id"],
+        username=user_ctx["username"],
+        role=user_ctx["role"],
+        organization_id=user_ctx["organization_id"],
+    )
+
+    return {
+        "access_token": issued.access_token,
+        "token_type": "bearer",
+        "expires_in": issued.expires_in,
     }
 
 
