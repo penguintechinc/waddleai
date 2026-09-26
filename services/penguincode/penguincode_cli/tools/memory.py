@@ -441,11 +441,15 @@ class ScopedMemoryManager:
     surface) callers -- ``add()`` is the exact hook the memory-graph
     extractor (T13, ``graphs/memory.py``, flag ``penguincode.memory-graph``)
     should call right after: invoke the extractor with the same
-    ``(ctx, content)`` plus the scope stamp embedded in the returned dict's
-    mem0 metadata (``result["results"][0]["metadata"]``) immediately after
-    ``add()`` returns a non-``None`` result, so extracted triples carry the
-    identical tenant/org/team/user/visibility stamp as the memory they came
-    from.
+    ``(ctx, content)`` plus ``scope_meta`` -- the scope stamp ``add()``
+    itself resolved and wrote to mem0's metadata, computed once at write
+    time -- immediately after ``add()`` returns a non-``None`` result, so
+    extracted triples carry the identical tenant/org/team/user/visibility
+    stamp as the memory they came from. This is passed directly, never read
+    back out of mem0's own return envelope: mem0ai==2.2.0's real
+    ``add(infer=False)`` doesn't echo ``metadata`` back in
+    ``result["results"][0]``, so relying on that would have silently lost
+    the resolved scope for any non-default visibility.
 
     Design notes (spec S16):
     - mem0's own ``user_id`` partition is set to ``ctx.tenant_id`` (the same
@@ -523,14 +527,21 @@ class ScopedMemoryManager:
         if result is not None:
             # Memory-graph extraction (T13 hook) -- best-effort enrichment
             # layered on top of the memory write that already succeeded.
-            # `source_metadata` is this exact write's scope stamp (never
-            # re-derived), see `graphs.memory`'s module docstring. Never let
-            # an extraction failure (LLM outage, GraphStore error) surface
-            # as a failure of the memory write itself.
+            # `source_metadata` is `scope_meta` -- the exact scope this
+            # write itself resolved and stamped into mem0's metadata above --
+            # NEVER re-derived from `result`. mem0ai==2.2.0's real
+            # `add(infer=False)` does not echo `metadata` back in its
+            # `{"results": [...]}` envelope (only `id`/`memory`/`event`/
+            # `actor_id`/`role`), so reading it back out of `result` here
+            # silently lost the resolved team_id/visibility whenever it
+            # differed from the extractor's own keyword defaults (any
+            # non-default visibility). `scope_meta` is always correct
+            # because it is the same dict this method just wrote, computed
+            # once at write time. Never let an extraction failure (LLM
+            # outage, GraphStore error) surface as a failure of the memory
+            # write itself.
             try:
-                results = result.get("results") or []
-                source_metadata = results[0].get("metadata", {}) if results else scope_meta
-                await extract_memory_graph(ctx, content, source_metadata=source_metadata)
+                await extract_memory_graph(ctx, content, source_metadata=scope_meta)
             except Exception as exc:  # noqa: BLE001 -- best-effort enrichment, never break the write
                 logger.warning("tools.memory: memory-graph extraction failed: %s", exc)
 

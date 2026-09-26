@@ -44,15 +44,19 @@ zero teams degrades to private `"user"` visibility.
 
 **`source_metadata` carries T8's exact scope stamp and takes precedence
 over the `visibility`/`team_id` keyword defaults.** The intended caller
-(`ScopedMemoryManager.add()`) passes its own return value's
-`result["results"][0]["metadata"]` -- T8's `_scope_metadata()` output
-(`tenant_id`/`org_id`/`team_id`/`owner_user_id`/`visibility`) -- as
-`source_metadata`, so the extracted triples land in the *identical*
-tenant/org/team/user/visibility bucket as the memory they came from, never a
-value independently re-derived from `ctx` that could drift from what the
-memory itself was actually stamped with (e.g. a caller passing an explicit
-`visibility="team"` for the memory write but forgetting to also pass it
-here). `tenant_id`/`org_id`/`owner_user_id` are deliberately never read out
+(`ScopedMemoryManager.add()`) passes its own `scope_meta` -- T8's
+`_scope_metadata()` output (`tenant_id`/`org_id`/`team_id`/`owner_user_id`/
+`visibility`), computed once at write time -- directly as `source_metadata`,
+so the extracted triples land in the *identical* tenant/org/team/user/
+visibility bucket as the memory they came from, never a value independently
+re-derived from `ctx` that could drift from what the memory itself was
+actually stamped with (e.g. a caller passing an explicit `visibility="team"`
+for the memory write but forgetting to also pass it here). This is deliberately
+NOT read back out of mem0's own `add()` return envelope: mem0ai==2.2.0's real
+`add(infer=False)` doesn't echo `metadata` in `result["results"][0]`, so doing
+that would have silently fallen through to this function's own keyword
+defaults for any non-default visibility, extracting into the wrong scope
+bucket. `tenant_id`/`org_id`/`owner_user_id` are deliberately never read out
 of `source_metadata`: `GraphStore.upsert_nodes`/`upsert_edges` always derive
 those three from `ctx` directly (see `stores/graph.py`'s `_scope_columns`),
 so untrusted caller-supplied metadata can never be used to widen `ctx`'s own
