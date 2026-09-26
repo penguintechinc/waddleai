@@ -66,6 +66,7 @@ from penguincode_cli.retrieval.graphrag import retrieve
 from penguincode_cli.stores.graph import GraphEdge, GraphNode
 from penguincode_cli.stores.vector import TableName
 from penguincode_cli.tools.memory import (
+    DEFAULT_VISIBILITY,
     MemoryManager,
     ScopedMemoryManager,
     create_memory_manager,
@@ -117,7 +118,7 @@ class _ScopedMemoryLike(Protocol):
         ctx: ScopeContext,
         content: str,
         *,
-        visibility: str = "user",
+        visibility: str = DEFAULT_VISIBILITY,
         team_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None: ...
@@ -371,9 +372,21 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
     async def MemoryAdd(
         self, request: MemoryAddRequest, context: grpc.aio.ServicerContext
     ) -> MemoryAddResponse:
-        """Write one scope-stamped memory via `ScopedMemoryManager.add`."""
+        """Write one scope-stamped memory via `ScopedMemoryManager.add`.
+
+        `VISIBILITY_UNSPECIFIED` (a client that didn't set the field at all)
+        maps to `DEFAULT_VISIBILITY` ("team" -- the shared-team-brain
+        product intent), matching `ScopedMemoryManager.add()`'s own default
+        exactly -- this handler must never hardcode a different default than
+        the library it wraps. `team_id` is resolved the identical way: this
+        just forwards whatever `team_id` the request carries (`None` when
+        unset) straight through to `ScopedMemoryManager.add()`, which runs
+        the SAME `_resolve_default_team_scope` single/multiple/zero-team
+        rules on it (see `tools/memory.py`) -- there is no separate
+        resolution to duplicate here.
+        """
         ctx = await _require_scope(context)
-        visibility = _visibility_from_proto(request.visibility, default="user")
+        visibility = _visibility_from_proto(request.visibility, default=DEFAULT_VISIBILITY)
         team_id = request.team_id or None
         metadata = dict(request.metadata)
 

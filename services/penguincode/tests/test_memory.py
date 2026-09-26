@@ -33,6 +33,7 @@ from penguincode_cli.config.settings import (
     QdrantStoreConfig,
 )
 from penguincode_cli.tools.memory import (
+    DEFAULT_VISIBILITY,
     MemoryManager,
     ScopedMemoryManager,
     create_memory_manager,
@@ -167,6 +168,35 @@ class _FakeMem0Memory:
 
     def delete_all(self, user_id: str | None = None, **_kwargs: Any) -> None:
         self._rows = [row for row in self._rows if row["user_id"] != user_id]
+
+
+class _FakeMem0MemoryNoMetadataEcho(_FakeMem0Memory):
+    """``_FakeMem0Memory``, but matching mem0ai==2.2.0's REAL ``add(infer=False)`` envelope shape.
+
+    The real library's sync ``_add_to_vector_store`` (verified against the
+    installed ``mem0/memory/main.py``) returns
+    ``{"id", "memory", "event", "actor_id", "role"}`` per result -- no
+    ``"metadata"`` key at all, unlike ``_FakeMem0Memory``'s convenience echo.
+    Used to prove ``ScopedMemoryManager.add()`` doesn't rely on mem0 echoing
+    metadata back (# regression: penguincode-memory-team-default, GAP 2 --
+    scope propagation to the memory-graph extractor).
+    """
+
+    def add(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        infer: bool = True,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        full = super().add(messages, user_id=user_id, metadata=metadata, infer=infer, **_kwargs)
+        return {
+            "results": [
+                {k: v for k, v in row.items() if k != "metadata"} for row in full["results"]
+            ]
+        }
 
 
 def _enabled_manager_with_fake_mem0(fake: _FakeMem0Memory) -> MemoryManager:
@@ -419,6 +449,64 @@ class TestScopeMetadata:
         with pytest.raises(ValueError, match="not one of the caller's own teams"):
             _scope_metadata(ctx, visibility="team", team_id="team-99")
 
+    def test_default_team_visibility_resolves_callers_single_team(self) -> None:
+        """# regression: penguincode-memory-team-default (single-team resolution)."""
+        from penguincode_cli.tools.memory import _scope_metadata
+
+        ctx = _ctx(tenant_id="tenant-a", team_ids=("team-1",), user_id="user-1")
+        meta = _scope_metadata(ctx, visibility=DEFAULT_VISIBILITY, team_id=None)
+
+        assert meta["visibility"] == "team"
+        assert meta["team_id"] == "team-1"
+
+    def test_default_team_visibility_falls_back_to_user_with_no_teams(self) -> None:
+        """A caller on no team at all can't share to a team that doesn't exist.
+
+        # regression: penguincode-memory-team-default (zero-team fallback)
+        """
+        from penguincode_cli.tools.memory import _scope_metadata
+
+        ctx = _ctx(tenant_id="tenant-a", team_ids=())
+        meta = _scope_metadata(ctx, visibility=DEFAULT_VISIBILITY, team_id=None)
+
+        assert meta["visibility"] == "user"
+        assert meta["team_id"] is None
+
+    def test_default_team_visibility_raises_with_multiple_teams(self) -> None:
+        """A consultant on multiple client engagements must be explicit, never guessed.
+
+        # regression: penguincode-memory-team-default (multi-team ambiguity)
+        """
+        from penguincode_cli.tools.memory import _scope_metadata
+
+        ctx = _ctx(tenant_id="tenant-a", team_ids=("team-1", "team-2"))
+        with pytest.raises(ValueError, match="multiple teams"):
+            _scope_metadata(ctx, visibility=DEFAULT_VISIBILITY, team_id=None)
+
+    def test_explicit_team_id_bypasses_default_resolution(self) -> None:
+        """An explicit ``team_id`` short-circuits resolution even with multiple teams."""
+        from penguincode_cli.tools.memory import _scope_metadata
+
+        ctx = _ctx(tenant_id="tenant-a", team_ids=("team-1", "team-2"))
+        meta = _scope_metadata(ctx, visibility=DEFAULT_VISIBILITY, team_id="team-2")
+
+        assert meta["visibility"] == "team"
+        assert meta["team_id"] == "team-2"
+
+    def test_explicit_user_and_tenant_visibility_still_opt_in(self) -> None:
+        """``user``/``tenant`` remain explicit opt-ins, unaffected by team resolution."""
+        from penguincode_cli.tools.memory import _scope_metadata
+
+        ctx = _ctx(tenant_id="tenant-a", team_ids=("team-1", "team-2"), user_id="user-1")
+
+        user_meta = _scope_metadata(ctx, visibility="user", team_id=None)
+        assert user_meta["visibility"] == "user"
+        assert user_meta["team_id"] is None
+
+        tenant_meta = _scope_metadata(ctx, visibility="tenant", team_id=None)
+        assert tenant_meta["visibility"] == "tenant"
+        assert tenant_meta["team_id"] is None
+
 
 class TestIsVisible:
     """Test ``_is_visible`` -- the read-side Shared-Contracts filter, in isolation."""
@@ -612,6 +700,73 @@ class TestScopedMemoryManager:
         assert isinstance(scoped, ScopedMemoryManager)
 
 
+class TestDefaultVisibilitySharing:
+    """``ScopedMemoryManager.add()`` with NO explicit ``visibility`` -- the "we all learn" default.
+
+    Mocked-mem0-boundary proof that a bare ``add(ctx, content)`` call (no
+    ``visibility=``/``team_id=`` kwargs at all) shares by default with a
+    teammate on the same team, and still enforces the documented
+    multi-team/zero-team edge cases end to end through ``add()``, not just
+    through ``_scope_metadata()`` directly (see ``TestScopeMetadata`` above).
+
+    # regression: penguincode-memory-team-default (we-all-learn default)
+    """
+
+    @pytest.mark.asyncio
+    async def test_bare_add_shares_with_same_team_teammate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _rag_on(monkeypatch)
+        fake = _FakeMem0Memory()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        writer = _ctx(tenant_id="t-shared", team_ids=("team-1",), user_id="user-1")
+        teammate = _ctx(tenant_id="t-shared", team_ids=("team-1",), user_id="user-2")
+        stranger = _ctx(tenant_id="t-shared", team_ids=("team-2",), user_id="user-3")
+
+        # No visibility=/team_id= kwargs -- exercises the actual default.
+        result = await scoped.add(writer, "the client prefers async status updates")
+
+        assert result is not None
+        stored_meta = fake.add_calls[-1]["metadata"]
+        assert stored_meta["visibility"] == "team"
+        assert stored_meta["team_id"] == "team-1"
+
+        teammate_hits = await scoped.search(teammate, "status updates")
+        assert len(teammate_hits) == 1
+
+        stranger_hits = await scoped.search(stranger, "status updates")
+        assert stranger_hits == []
+
+    @pytest.mark.asyncio
+    async def test_bare_add_falls_back_to_private_with_no_team(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _rag_on(monkeypatch)
+        fake = _FakeMem0Memory()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        ctx = _ctx(tenant_id="t-solo", team_ids=(), user_id="user-1")
+
+        result = await scoped.add(ctx, "solo consultant note")
+
+        assert result is not None
+        assert fake.add_calls[-1]["metadata"]["visibility"] == "user"
+        assert fake.add_calls[-1]["metadata"]["team_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_bare_add_raises_for_multi_team_caller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _rag_on(monkeypatch)
+        fake = _FakeMem0Memory()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        ctx = _ctx(tenant_id="t-multi", team_ids=("team-1", "team-2"), user_id="user-1")
+
+        with pytest.raises(ValueError, match="multiple teams"):
+            await scoped.add(ctx, "which engagement is this note about?")
+
+        assert fake.add_calls == []  # never reached mem0 -- rejected before the write
+
+
 class TestMemoryGraphWiring:
     """T-wire: ``ScopedMemoryManager.add()`` triggers memory-graph extraction.
 
@@ -650,6 +805,56 @@ class TestMemoryGraphWiring:
         assert stamp["tenant_id"] == "t8-tenant-a"
         assert stamp["visibility"] == "team"
         assert stamp["team_id"] == "team-1"
+        assert stamp["owner_user_id"] == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_extraction_receives_actual_write_scope_not_mem0_echo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GAP 2: source_metadata must be the write's OWN resolved scope, never mem0's echo.
+
+        Real mem0ai==2.2.0 doesn't echo ``metadata`` back in ``add()``'s
+        return envelope (``_FakeMem0MemoryNoMetadataEcho`` mirrors that
+        exactly). Before this fix, ``ScopedMemoryManager.add()`` read
+        ``result["results"][0].get("metadata", {})`` -- always ``{}``
+        against the real envelope -- so the extractor silently fell back to
+        its OWN keyword default (``"team"``) instead of this write's actual
+        explicit ``"tenant"`` visibility. Proven failing-first: reverting
+        ``add()`` to the old ``results[0].get("metadata", {})`` line
+        reproduces ``stamp == {}`` -> extractor defaults to "team" here.
+
+        # regression: penguincode-memory-team-default (GAP 2 -- scope propagation)
+        """
+        from penguincode_cli.stores.graph import Subgraph
+
+        _rag_on(monkeypatch)
+        fake = _FakeMem0MemoryNoMetadataEcho()
+        scoped = ScopedMemoryManager(_enabled_manager_with_fake_mem0(fake))
+        ctx = _ctx(tenant_id="t8-tenant-a", org_id="org-1", team_ids=("team-1",), user_id="user-1")
+
+        calls: list[dict[str, Any]] = []
+
+        async def _spy(ctx_arg, content, *, source_metadata=None, **_kw):  # type: ignore[no-untyped-def]
+            calls.append({"source_metadata": source_metadata})
+            return Subgraph(nodes=[], edges=[])
+
+        with patch("penguincode_cli.tools.memory.extract_memory_graph", _spy):
+            # Explicit NON-default visibility -- "tenant", not "team" (this
+            # module's DEFAULT_VISIBILITY) -- so a wrongly-re-derived
+            # source_metadata (falling back to the extractor's own keyword
+            # default) would be caught red-handed as "team" here.
+            result = await scoped.add(
+                ctx, "the release runbook lives in docs/runbook.md", visibility="tenant"
+            )
+
+        assert result is not None
+        assert len(calls) == 1
+        stamp = calls[0]["source_metadata"]
+        assert stamp is not None
+        assert stamp != {}  # the pre-fix bug: mem0's real envelope forced this to {}
+        assert stamp["visibility"] == "tenant"
+        assert stamp["team_id"] is None
+        assert stamp["tenant_id"] == "t8-tenant-a"
         assert stamp["owner_user_id"] == "user-1"
 
     @pytest.mark.asyncio
@@ -802,3 +1007,68 @@ class TestLiveScopedMemoryPgvector:
 
         hits_b = await scoped_manager.search(ctx_b, "runbook")
         assert hits_b == []
+
+    @pytest.mark.asyncio
+    async def test_live_default_visibility_shares_across_same_team_teammate(
+        self, scoped_manager: ScopedMemoryManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cross-teammate sharing end to end, through the real mem0+pgvector store.
+
+        Proves the "we all learn" product intent for real: user A on team T
+        writes a memory with NO explicit visibility (the actual default);
+        user B, a different user on the SAME team T and tenant, can read it.
+        A ``user``-visibility write from A is NOT readable by B. A different
+        team T2 in the SAME tenant cannot read team T's memory either. A
+        multi-team caller writing with no explicit ``team_id`` is rejected
+        rather than guessed.
+
+        Before this fix (default ``"user"``), the first assertion below
+        failed: B's search returned ``[]`` because A's bare ``add()`` was
+        stamped ``visibility="user", owner_user_id="user-a"``, invisible to
+        anyone but A.
+
+        # regression: penguincode-memory-team-default (shared-memory, live pgvector)
+        """
+        _rag_on(monkeypatch)
+        tenant = f"live-team-share-{os.getpid()}"
+        team_t = f"team-t-{os.getpid()}"
+        team_t2 = f"team-t2-{os.getpid()}"
+        user_a = _ctx(tenant_id=tenant, team_ids=(team_t,), user_id="user-a")
+        user_b = _ctx(tenant_id=tenant, team_ids=(team_t,), user_id="user-b")
+        user_c_other_team = _ctx(tenant_id=tenant, team_ids=(team_t2,), user_id="user-c")
+        user_multi_team = _ctx(tenant_id=tenant, team_ids=(team_t, team_t2), user_id="user-d")
+
+        # 1. Default-visibility write from A -- no visibility=/team_id= kwargs.
+        # (mem0's real `add(infer=False)` return envelope doesn't echo the
+        # stored metadata back -- unlike the mocked-boundary tests above --
+        # so the scope stamp itself is verified via `TestScopeMetadata`; this
+        # live test proves the actual read-side behavior it produces.)
+        write_result = await scoped_manager.add(
+            user_a, "onboarding checklist lives in the shared drive"
+        )
+        assert write_result is not None
+
+        # Same-team teammate CAN read the default-visibility memory.
+        b_hits = await scoped_manager.search(user_b, "onboarding checklist")
+        assert any("onboarding checklist" in h["memory"] for h in b_hits)
+
+        # A different team in the SAME tenant CANNOT.
+        # (mem0's similarity search can surface other, still-legitimately-visible
+        # rows in a small test corpus regardless of query text -- assert on
+        # absence of THIS memory's content, not an empty result set.)
+        other_team_hits = await scoped_manager.search(user_c_other_team, "onboarding checklist")
+        assert not any("onboarding checklist" in h["memory"] for h in other_team_hits)
+
+        # 2. An explicit `user`-visibility write from A is NOT readable by B.
+        private_result = await scoped_manager.add(
+            user_a, "user-a's private scratch note", visibility="user", team_id=None
+        )
+        assert private_result is not None
+        b_private_hits = await scoped_manager.search(user_b, "private scratch note")
+        assert not any("private scratch note" in h["memory"] for h in b_private_hits)
+        a_private_hits = await scoped_manager.search(user_a, "private scratch note")
+        assert any("private scratch note" in h["memory"] for h in a_private_hits)
+
+        # 3. A multi-team caller defaulting (no team_id) is rejected, not guessed.
+        with pytest.raises(ValueError, match="multiple teams"):
+            await scoped_manager.add(user_multi_team, "which engagement is this?")
