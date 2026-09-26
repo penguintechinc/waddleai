@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import Any
 
 import grpc
-import httpx
 import jwt
 import psycopg
 import pytest
@@ -164,39 +163,18 @@ def live_dsn(pgvector_dsn: str, monkeypatch: pytest.MonkeyPatch) -> str:
     return pgvector_dsn
 
 
-@pytest.fixture(scope="session")
-def ollama_ready() -> None:
-    """Documented, per-test skip (never a silent whole-module skip) for any T16
-    scenario that needs a real `nomic-embed-text` embedding call.
-
-    `Index`/`Query`/`MemoryAdd` all call the platform's *default*, unmocked
-    embedding path (`DocumentationIndexer._get_embedding`, `graphrag.retrieve`,
-    mem0's own Ollama embedder) -- T16 deliberately does not fake that
-    boundary (see module docstring), so those specific tests depend on this
-    fixture and are individually reported as SKIPPED with a clear reason when
-    Ollama isn't reachable in CI. Tests needing no embedding at all (auth
-    rejection, `IndexCode`/`CodeGraphStatus` -- tree-sitter only, no LLM)
-    never request this fixture and always run regardless.
-
-    Session-scoped: pytest caches a fixture's raised exception (`Skipped`
-    included) and replays it for every other test requesting the same
-    fixture in this session, so this check runs the live HTTP probe once,
-    not once per test, while still skipping each dependent test individually.
-    """
-    try:
-        response = httpx.get("http://localhost:11434/api/tags", timeout=5)
-        response.raise_for_status()
-        models = [m.get("name", "") for m in response.json().get("models", [])]
-    except Exception as exc:  # noqa: BLE001 -- any failure means "treat as unreachable"
-        pytest.skip(
-            f"Ollama not reachable at localhost:11434 ({exc}) -- "
-            "embedding-dependent T16 scenario skipped, not the whole suite"
-        )
-    if not any("nomic-embed-text" in m for m in models):
-        pytest.skip(
-            "nomic-embed-text is not pulled in this Ollama instance -- "
-            "embedding-dependent T16 scenario skipped, not the whole suite"
-        )
+# `ollama_ready` (session-scoped, per-test-skip Ollama availability probe) is
+# defined once in the top-level `tests/conftest.py` and inherited here via
+# pytest's normal conftest resolution up the directory tree -- see that
+# file's docstring for why. `Index`/`Query`/`MemoryAdd` all call the
+# platform's *default*, unmocked embedding path
+# (`DocumentationIndexer._get_embedding`, `graphrag.retrieve`, mem0's own
+# Ollama embedder) -- T16 deliberately does not fake that boundary (see
+# module docstring), so those specific tests depend on this fixture and are
+# individually reported as SKIPPED with a clear reason when Ollama isn't
+# reachable in CI. Tests needing no embedding at all (auth rejection,
+# `IndexCode`/`CodeGraphStatus` -- tree-sitter only, no LLM) never request
+# this fixture and always run regardless.
 
 
 @dataclass(slots=True, frozen=True)

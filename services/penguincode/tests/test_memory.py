@@ -41,7 +41,14 @@ from penguincode_cli.tools.memory import (
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
-requires_postgres_and_ollama = pytest.mark.skipif(
+#: Only gates on Postgres -- the Ollama half of "live pgvector+Ollama" is
+#: gated separately, per-test, by the shared `ollama_ready` fixture
+#: (`tests/conftest.py`). This used to be named `requires_postgres_and_ollama`
+#: while only ever checking `TEST_DATABASE_URL`; CI adding a Postgres service
+#: container (without also providing Ollama) let `TestLiveScopedMemoryPgvector`
+#: run unconditionally and error at fixture setup with a raw `ConnectionError`
+#: instead of skipping cleanly.
+requires_postgres = pytest.mark.skipif(
     not TEST_DATABASE_URL,
     reason="TEST_DATABASE_URL is not set -- live pgvector+Ollama memory tests are CI-pending (T16)",
 )
@@ -747,12 +754,19 @@ class TestNoChromadbReference:
 # ---------------------------------------------------------------------------
 
 
-@requires_postgres_and_ollama
+@requires_postgres
 class TestLiveScopedMemoryPgvector:
-    """``ScopedMemoryManager`` against a real mem0 + pgvector + Ollama stack."""
+    """``ScopedMemoryManager`` against a real mem0 + pgvector + Ollama stack.
+
+    Requesting `ollama_ready` as a `scoped_manager` fixture dependency (not
+    just a class-level marker) matters here: `MemoryManager.__init__` calls
+    mem0's `Memory.from_config`, which reaches out to Ollama immediately --
+    before the test body ever runs -- so the skip must happen during fixture
+    setup, ahead of that call, not inside the test.
+    """
 
     @pytest.fixture
-    def scoped_manager(self) -> ScopedMemoryManager:
+    def scoped_manager(self, ollama_ready: None) -> ScopedMemoryManager:
         assert TEST_DATABASE_URL is not None  # narrows type for mypy; skipif already guards this
         config = MemoryConfig(
             enabled=True,
