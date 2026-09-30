@@ -40,7 +40,10 @@ class _Ctx:
 
     token_scopes: tuple[str, ...] = field(default_factory=tuple)
     user_id: int | None = None
-    vkey_id: str | None = None
+    # regression: gh-212 -- BypassResolver.resolve() used to read `vkey_id`,
+    # matching what UserContext (shared/auth/rbac.py) never had; api_key_id
+    # is the real field the sole production caller's ctx.user exposes.
+    api_key_id: str | None = None
     now: datetime | None = None
 
 
@@ -116,7 +119,7 @@ class TestModes:
         """A skip grant resolves active with mode='skip' and is audit-logged."""
         grant = BypassGrant(id=3, subject_type="vkey", subject_ref="wa-123", mode="skip")
         store.add("vkey", "wa-123", grant)
-        ctx = _Ctx(token_scopes=(BYPASS_SCOPE,), vkey_id="wa-123")
+        ctx = _Ctx(token_scopes=(BYPASS_SCOPE,), api_key_id="wa-123")
 
         decision = await resolver.resolve(ctx)
 

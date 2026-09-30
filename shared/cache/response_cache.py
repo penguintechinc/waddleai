@@ -108,11 +108,15 @@ class ResponseCache:
         if org_id is None:
             return CacheLookupResult(status="miss")
 
-        vkey_id = getattr(ctx.user, "vkey_id", None)
+        # regression: gh-212 -- UserContext (shared/auth/rbac.py) has no
+        # `vkey_id` field; this always resolved to None, silently falling
+        # back to org/global cache-config scope instead of the intended
+        # per-key override. api_key_id is the real field.
+        api_key_id = getattr(ctx.user, "api_key_id", None)
         body = ctx.body or {}
         messages = ctx.messages or []
         model_class = _model_class(ctx)
-        cfg = await self.resolver.resolve(org_id, vkey_id)
+        cfg = await self.resolver.resolve(org_id, api_key_id)
 
         eligibility_body = {**body, "messages": messages}
         write_back: Callable[[dict, dict], Awaitable[None]] | None = None
@@ -178,8 +182,9 @@ class ResponseCache:
         org_id = _org_id(ctx.user)
         if org_id is None:
             return
-        vkey_id = getattr(ctx.user, "vkey_id", None)
-        cfg = await self.resolver.resolve(org_id, vkey_id)
+        # regression: gh-212 -- see lookup() above; api_key_id is the real field.
+        api_key_id = getattr(ctx.user, "api_key_id", None)
+        cfg = await self.resolver.resolve(org_id, api_key_id)
 
         model = (ctx.model or "").lower()
         if self.upstream is not None and model.startswith("claude"):
@@ -190,7 +195,7 @@ class ResponseCache:
             # importing shared.cache.config just for a type hint -- cast documents
             # that intentional cross-module duck-typing for mypy.
             annotated = await self.upstream.annotate_request(
-                body, vkey_id or 0, cast(_AnthropicCacheConfigLike, cfg)
+                body, api_key_id or 0, cast(_AnthropicCacheConfigLike, cfg)
             )
             if annotated is not body:
                 ctx.messages = annotated["messages"]

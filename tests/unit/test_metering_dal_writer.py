@@ -32,7 +32,7 @@ def _make_db(tmp_path: Path) -> DAL:
     db = DAL(f"sqlite:///{tmp_path / 'metering.db'}")
     db.define_table(
         "token_usage",
-        Field("virtual_key_id", "integer"),
+        Field("api_key_id", "integer"),
         Field("user_id", "integer"),
         Field("organization_id", "integer"),
         Field("date", "date"),
@@ -53,7 +53,7 @@ def _make_db(tmp_path: Path) -> DAL:
 
 def _agg(**overrides: object) -> AggregatedMetrics:
     defaults: dict[str, object] = dict(
-        virtual_key_id=1,
+        api_key_id=1,
         model="gpt-4",
         provider="openai",
         minute_bucket=datetime(2026, 1, 1, 12, 0),
@@ -68,7 +68,7 @@ def _agg(**overrides: object) -> AggregatedMetrics:
 def test_write_aggregated_row_updates_existing_row_in_place(tmp_path: Path) -> None:
     """Verify the write path actually accumulates across flushes.
 
-    The second flush for the same (vkey, day) must accumulate onto the
+    The second flush for the same (api_key_id, day) must accumulate onto the
     existing row via db(condition).update() -- not silently no-op like the
     old Row.update_record() call did.
     """
@@ -78,7 +78,7 @@ def test_write_aggregated_row_updates_existing_row_in_place(tmp_path: Path) -> N
     writer.write_aggregated_row(_agg(total_input_tokens=10, total_output_tokens=5, request_count=1))
     writer.write_aggregated_row(_agg(total_input_tokens=7, total_output_tokens=3, request_count=2))
 
-    rows = db(db.token_usage.virtual_key_id == 1).select()
+    rows = db(db.token_usage.api_key_id == 1).select()
     assert len(rows) == 1  # accumulated onto one row, not a second insert
     row = rows.first()
     assert row is not None
@@ -97,7 +97,7 @@ def test_write_aggregated_row_merges_llm_breakdown_across_flushes(tmp_path: Path
     writer.write_aggregated_row(_agg(total_input_tokens=10, total_output_tokens=5))
     writer.write_aggregated_row(_agg(total_input_tokens=7, total_output_tokens=3))
 
-    row = db(db.token_usage.virtual_key_id == 1).select().first()
+    row = db(db.token_usage.api_key_id == 1).select().first()
     assert row is not None
     breakdown = json.loads(row.llm_tokens)
     assert breakdown["openai_gpt_4"]["input"] == 17
@@ -126,3 +126,40 @@ def test_write_aggregated_row_does_not_swallow_db_errors(
 
     with pytest.raises(RuntimeError, match="simulated db failure"):
         writer.write_aggregated_row(_agg())
+
+
+def test_write_aggregated_row_against_real_production_schema(tmp_path: Path) -> None:
+    """# regression: gh-212.
+
+    All the tests above build their own hand-rolled `token_usage` table via
+    `DAL(...).define_table(...)` -- a minimal, test-authored field list that
+    happily "succeeds" regardless of whether it matches production, the same
+    way a `Mock`'s attribute access always succeeds regardless of whether the
+    attribute is real. That is exactly how `shared/utils/metering.py` shipped
+    for so long querying/inserting a `virtual_key_id` field that never
+    existed in production: this file's own `_make_db()` used to declare
+    `Field("virtual_key_id", "integer")` too, silently matching the bug
+    instead of catching it.
+
+    This test instead builds the DB via `shared.database.models.get_db()` --
+    the actual module that defines the real `token_usage` table for every
+    proxy/shared runtime query (`shared/utils/token_manager.py` included) --
+    with `migrate=True` so the real field list is what actually gets created.
+    A wrong field name here raises `AttributeError` from penguin_dal's own
+    table-proxy, not a silently-accepted Mock/hand-authored-schema attribute.
+    """
+    from shared.database import models
+
+    db = models.get_db(f"sqlite:///{tmp_path / 'real_schema_metering.db'}", migrate=True)
+    writer = PenguinDALUsageWriter(db=db)
+
+    writer.write_aggregated_row(_agg(api_key_id=77, total_input_tokens=10, total_output_tokens=5))
+    writer.write_aggregated_row(_agg(api_key_id=77, total_input_tokens=7, total_output_tokens=3))
+
+    rows = db(db.token_usage.api_key_id == 77).select()
+    assert len(rows) == 1  # accumulated onto one row, not a second insert
+    row = rows.first()
+    assert row is not None
+    assert row.tokens_input_total == 17
+    assert row.tokens_output_total == 8
+    assert row.request_count == 2

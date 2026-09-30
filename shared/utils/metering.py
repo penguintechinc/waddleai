@@ -1,8 +1,20 @@
 """Batched metering writer for token usage aggregation.
 
 MeteringBuffer batches token usage events per-second at scale, aggregating
-by (virtual_key, model, provider, minute-bucket) to reduce write load on the
+by (api_key, model, provider, minute-bucket) to reduce write load on the
 database. The AIProxy is the sole writer to token_usage.
+
+# regression: gh-212 -- every field/query below used to be named
+# `virtual_key_id`, mirroring MeterStage's own (pre-fix) `ctx.user.vkey_id`
+# read. Neither name ever matched reality: UserContext (shared/auth/rbac.py)
+# has no `vkey_id` field, and `token_usage` has no `virtual_key_id` column --
+# only `api_key_id` (shared/database/models.py; also added to the
+# Alembic-authoritative schema by gh-207/PR #214's migration 020). This
+# writer was therefore doubly broken: MeterStage's identity bug meant it
+# never ran, and even after that fix it would have raised AttributeError
+# on every flush against the real `token_usage` table (empirically
+# confirmed: `db.token_usage.virtual_key_id` raises `AttributeError`).
+# Renamed throughout to the real field.
 
 The buffer uses a pluggable writer seam to abstract the database layer,
 allowing tests to substitute without coupling to penguin-dal or PyDAL.
@@ -26,7 +38,7 @@ class MeteringEvent:
     """A single token usage event from an LLM request.
 
     Attributes:
-        virtual_key_id: ID of the virtual API key used
+        api_key_id: ID of the API key used
         model: Model name (e.g., "gpt-4")
         provider: Provider name (e.g., "openai")
         usage: Optional dict with input_tokens/output_tokens; None if provider
@@ -36,7 +48,7 @@ class MeteringEvent:
 
     """
 
-    virtual_key_id: int
+    api_key_id: int
     model: str
     provider: str
     usage: dict[str, int] | None
@@ -50,9 +62,9 @@ class MeteringEvent:
 
 @dataclass(slots=True)
 class AggregatedMetrics:
-    """Aggregated metrics for a (vkey, model, provider, minute) bucket."""
+    """Aggregated metrics for a (api_key_id, model, provider, minute) bucket."""
 
-    virtual_key_id: int
+    api_key_id: int
     model: str
     provider: str
     minute_bucket: datetime
@@ -63,7 +75,7 @@ class AggregatedMetrics:
     events: list = field(default_factory=list)
     # Response cache accounting (spec §6.4): summed tokens_saved across every
     # event in this bucket; cache_status is the bucket's last non-None
-    # status (a bucket is 1 minute of one vkey/model/provider, so mixed
+    # status (a bucket is 1 minute of one api_key_id/model/provider, so mixed
     # statuses within it are rare and last-write-wins is an acceptable
     # simplification for a dashboard-level aggregate).
     total_tokens_saved: int = 0
@@ -109,7 +121,7 @@ class PenguinDALUsageWriter:
     def write_aggregated_row(self, agg: AggregatedMetrics) -> None:
         """Write aggregated metrics to token_usage table.
 
-        Creates new row or updates existing row for the (vkey, date) pair.
+        Creates new row or updates existing row for the (api_key_id, date) pair.
         Marks row as estimated=True if usage was missing from provider.
 
         Raises:
@@ -126,7 +138,7 @@ class PenguinDALUsageWriter:
         # For simplicity, we'll upsert based on the day
         existing_row = (
             self.db(
-                (self.db.token_usage.virtual_key_id == agg.virtual_key_id)
+                (self.db.token_usage.api_key_id == agg.api_key_id)
                 & (self.db.token_usage.date == agg.minute_bucket.date())
             )
             .select()
@@ -156,7 +168,7 @@ class PenguinDALUsageWriter:
             # identical fix in shared/auth/rbac.py and
             # shared/utils/token_manager.py. This previously raised
             # AttributeError on every *second* flush of the same
-            # (virtual_key_id, day) pair, which was caught by this method's
+            # (api_key_id, day) pair, which was caught by this method's
             # own broad `except Exception` below and only logged -- so
             # flush()'s retry queue never saw the failure either, and the
             # aggregated tokens for that flush were dropped for good rather
@@ -175,8 +187,8 @@ class PenguinDALUsageWriter:
                 cache_status=agg.cache_status or existing_row.cache_status,
             )
             logger.debug(
-                "Updated token_usage row for vkey=%s model=%s requests=%s",
-                agg.virtual_key_id,
+                "Updated token_usage row for api_key_id=%s model=%s requests=%s",
+                agg.api_key_id,
                 agg.model,
                 agg.request_count,
             )
@@ -188,7 +200,7 @@ class PenguinDALUsageWriter:
             }
 
             self.db.token_usage.insert(
-                virtual_key_id=agg.virtual_key_id,
+                api_key_id=agg.api_key_id,
                 user_id=None,  # Will be populated by management layer
                 organization_id=None,  # Will be populated by management layer
                 date=agg.minute_bucket.date(),
@@ -204,8 +216,8 @@ class PenguinDALUsageWriter:
                 cache_status=agg.cache_status,
             )
             logger.debug(
-                "Inserted token_usage row for vkey=%s model=%s requests=%s",
-                agg.virtual_key_id,
+                "Inserted token_usage row for api_key_id=%s model=%s requests=%s",
+                agg.api_key_id,
                 agg.model,
                 agg.request_count,
             )
@@ -214,7 +226,7 @@ class PenguinDALUsageWriter:
 class MeteringBuffer:
     """Batches token usage events and flushes aggregated metrics to the database.
 
-    Aggregation key: (virtual_key_id, model, provider, minute_bucket)
+    Aggregation key: (api_key_id, model, provider, minute_bucket)
     Flush interval: configurable (default 1.0 second)
     Writer: pluggable UsageWriter instance (abstracts DB layer)
 
@@ -258,7 +270,7 @@ class MeteringBuffer:
         Thread-safe. Events are buffered in memory and flushed asynchronously.
 
         Args:
-            event: MeteringEvent with virtual_key_id, model, provider, usage, timestamp
+            event: MeteringEvent with api_key_id, model, provider, usage, timestamp
 
         """
         with self._lock:
@@ -301,7 +313,7 @@ class MeteringBuffer:
     async def flush(self) -> None:
         """Flush buffered events to the database.
 
-        Aggregates events by (virtual_key_id, model, provider, minute_bucket),
+        Aggregates events by (api_key_id, model, provider, minute_bucket),
         estimates missing usage, and writes/updates rows in token_usage table.
 
         Atomically swaps the buffer under a lock to prevent losing events
@@ -331,8 +343,8 @@ class MeteringBuffer:
                 await asyncio.to_thread(self.writer.write_aggregated_row, agg)
             except Exception as e:
                 logger.error(
-                    "Metering write failed for vkey=%s model=%s; re-queueing (%s)",
-                    agg.virtual_key_id,
+                    "Metering write failed for api_key_id=%s model=%s; re-queueing (%s)",
+                    agg.api_key_id,
                     agg.model,
                     e,
                 )
@@ -355,7 +367,7 @@ class MeteringBuffer:
                     )
 
     def _aggregate_events(self, events: list[MeteringEvent]) -> dict[tuple, AggregatedMetrics]:
-        """Aggregate events by (virtual_key_id, model, provider, minute_bucket).
+        """Aggregate events by (api_key_id, model, provider, minute_bucket).
 
         Estimates missing usage using tiktoken.
 
@@ -370,7 +382,7 @@ class MeteringBuffer:
 
             if key not in aggregates:
                 aggregates[key] = AggregatedMetrics(
-                    virtual_key_id=event.virtual_key_id,
+                    api_key_id=event.api_key_id,
                     model=event.model,
                     provider=event.provider,
                     minute_bucket=key[3],
@@ -400,12 +412,12 @@ class MeteringBuffer:
         return aggregates
 
     def _get_aggregation_key(self, event: MeteringEvent) -> tuple:
-        """Get aggregation key: (vkey, model, provider, minute_bucket).
+        """Get aggregation key: (api_key_id, model, provider, minute_bucket).
 
         Rounds timestamp to minute precision (second/microsecond = 0).
         """
         minute_bucket = event.timestamp.replace(second=0, microsecond=0)
-        return (event.virtual_key_id, event.model, event.provider, minute_bucket)
+        return (event.api_key_id, event.model, event.provider, minute_bucket)
 
     def _estimate_tokens(self, event: MeteringEvent) -> dict[str, int]:
         """Estimate token counts using tiktoken (fallback for missing usage).
