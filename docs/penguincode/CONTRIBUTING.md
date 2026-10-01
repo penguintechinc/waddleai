@@ -106,6 +106,39 @@ pytest -k "test_agent_execution"
 
 Async tests use `pytest-asyncio` with auto mode enabled.
 
+### Coverage Gate
+
+`make test-coverage` (what CI's `test-penguincode` job runs) enforces two
+independent thresholds against the same coverage data file, via
+`scripts/coverage_gate.py`:
+
+- **Tier A — platform modules, 90% line + 90% branch.** Scope is an
+  explicit file list in `TIER_A_PATHS` (top of `scripts/coverage_gate.py`),
+  not a directory glob: `stores/`, `graphs/`, `retrieval/`, `lessons/`,
+  `auth/`, `flags/`, `observability/`, `db/` (whole subtrees), plus
+  `docs_rag/{indexer,injector}.py`,
+  `server/{interceptors.py,services/knowledge.py,services/lessons.py}`,
+  `client/{knowledge_client,lessons_client,waddleai_auth}.py`, and
+  `tools/memory.py`. A directory-glob version of this list was tried first
+  and rejected — `server/**`/`client/**`/`docs_rag/**` pull in legacy,
+  non-platform modules (`server/main.py`, `server/services/chat.py`,
+  `client/grpc_client.py`, `docs_rag/fetcher.py`, etc.) that aren't this
+  cycle's work and understate the real number. **Adding a new
+  knowledge-platform module requires adding it to `TIER_A_PATHS`
+  explicitly** — this is the real quality bar for that work, and a PR
+  touching these modules must keep them at 90%+.
+- **Tier B — whole-package ratchet floor.** Everything else (including
+  legacy modules like `core/repl.py` that predate this policy), gated
+  against the value in `.coverage-floor`. That file records today's
+  achievable whole-package number and can only move **up**, never down —
+  raise it in the same PR that adds coverage to a legacy module, never lower
+  it to make a regression pass.
+
+Both tiers print the files/statements examined and fail hard on a zero
+denominator — a scanner pointed at the wrong path reports clean otherwise.
+`pytest --cov=penguincode` above is for local iteration; `make test-coverage`
+is the actual CI gate.
+
 ## Adding New Agents
 
 1. **Create Agent Module** in `penguincode/agents/your_agent.py`

@@ -75,10 +75,23 @@ dev:
 	@$(MAKE) k8s-alpha-deploy
 
 test:
-	@$(MAKE) test-unit
+	@$(MAKE) test-coverage
 
 test-unit:
 	@python3 -m pytest tests/ -v
+
+# Coverage-gated test run (CI's test-penguincode job and pre-commit both call
+# this -- `--no-cov` must never appear anywhere in this chain again, see
+# .github/workflows/docker-build.yml test-penguincode). Two sequential
+# recipe lines, each a separate make-invoked shell: pytest's own non-zero
+# exit already fails `make` on its own (no pipe to mask it), then
+# coverage_gate.py enforces two independent thresholds against the data
+# file pytest left behind: 90% line+branch on the knowledge-platform
+# modules (Tier A), and the whole-package ratchet floor in
+# .coverage-floor (Tier B) -- see that script's module docstring.
+test-coverage:
+	python3 -m pytest tests/ -v --cov --cov-branch --cov-report=term-missing
+	python3 scripts/coverage_gate.py
 
 test-integration:
 	@echo "No integration tests defined"
