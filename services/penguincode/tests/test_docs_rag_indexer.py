@@ -15,9 +15,12 @@ when that env var is unset, mirroring ``tests/test_stores_vector.py``.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -279,6 +282,691 @@ class TestKnowledgeGraphWiring:
         # extractor raising.
         assert count == 1
         assert len(store.rows) == 1
+
+
+class TestLoadJsonMetadataFallback:
+    """``_load_json_metadata`` must degrade to the empty default, never crash."""
+
+    def test_corrupt_metadata_file_falls_back_to_empty_default(self, tmp_path: Path) -> None:
+        """A corrupt ``index_metadata.json`` is logged and ignored, not raised."""
+        metadata_dir = tmp_path / "docs_index"
+        metadata_dir.mkdir()
+        (metadata_dir / "index_metadata.json").write_text("{not valid json")
+
+        indexer = DocumentationIndexer(
+            store=_FakeVectorStore(), embed_fn=_fake_embed, metadata_dir=str(metadata_dir)
+        )
+        assert indexer.index_metadata == {"libraries": {}, "languages": {}}
+
+    def test_valid_existing_metadata_file_is_loaded(self, tmp_path: Path) -> None:
+        """A well-formed on-disk cache is loaded as-is, not replaced with the default."""
+        metadata_dir = tmp_path / "docs_index"
+        metadata_dir.mkdir()
+        payload = {"libraries": {"tenant:fastapi": {"chunk_count": 3}}, "languages": {}}
+        (metadata_dir / "index_metadata.json").write_text(json.dumps(payload))
+
+        indexer = DocumentationIndexer(
+            store=_FakeVectorStore(), embed_fn=_fake_embed, metadata_dir=str(metadata_dir)
+        )
+        assert indexer.index_metadata == payload
+
+
+class TestFreshnessChecks:
+    """``is_library_indexed``/``is_language_indexed`` branch coverage."""
+
+    def test_is_library_indexed_none_ctx_is_false(self) -> None:
+        """No ``ScopeContext`` means there is no tenant cache entry to check."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert indexer.is_library_indexed(None, "fastapi") is False
+
+    def test_is_library_indexed_never_indexed_is_false(self) -> None:
+        """A library with no cache entry at all is reported as not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert indexer.is_library_indexed(_ctx(), "fastapi") is False
+
+    def test_is_library_indexed_fresh_entry_is_true(self) -> None:
+        """An entry indexed just now is within the freshness window."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        indexer.index_metadata.setdefault("libraries", {})[meta_key] = {
+            "indexed_at": datetime.now().isoformat()
+        }
+        assert indexer.is_library_indexed(ctx, "fastapi") is True
+
+    def test_is_library_indexed_stale_entry_is_false(self) -> None:
+        """An entry older than the freshness window is reported as not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        stale = datetime.now() - timedelta(days=30)
+        indexer.index_metadata.setdefault("libraries", {})[meta_key] = {
+            "indexed_at": stale.isoformat()
+        }
+        assert indexer.is_library_indexed(ctx, "fastapi") is False
+
+    def test_is_library_indexed_malformed_entry_missing_key_is_false(self) -> None:
+        """A cache entry missing ``indexed_at`` is a KeyError, caught -> not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        indexer.index_metadata.setdefault("libraries", {})[meta_key] = {}
+        assert indexer.is_library_indexed(ctx, "fastapi") is False
+
+    def test_is_library_indexed_malformed_entry_bad_date_is_false(self) -> None:
+        """A cache entry with an unparsable date is a ValueError, caught -> not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        indexer.index_metadata.setdefault("libraries", {})[meta_key] = {"indexed_at": "not-a-date"}
+        assert indexer.is_library_indexed(ctx, "fastapi") is False
+
+    def test_is_language_indexed_none_ctx_is_false(self) -> None:
+        """No ``ScopeContext`` means there is no tenant cache entry to check."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert indexer.is_language_indexed(None, "python") is False
+
+    def test_is_language_indexed_never_indexed_is_false(self) -> None:
+        """A language with no cache entry at all is reported as not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert indexer.is_language_indexed(_ctx(), "python") is False
+
+    def test_is_language_indexed_fresh_entry_is_true(self) -> None:
+        """An entry indexed just now is within the freshness window."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "python")
+        indexer.index_metadata.setdefault("languages", {})[meta_key] = {
+            "indexed_at": datetime.now().isoformat()
+        }
+        assert indexer.is_language_indexed(ctx, "python") is True
+
+    def test_is_language_indexed_stale_entry_is_false(self) -> None:
+        """An entry older than the freshness window is reported as not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "python")
+        stale = datetime.now() - timedelta(days=30)
+        indexer.index_metadata.setdefault("languages", {})[meta_key] = {
+            "indexed_at": stale.isoformat()
+        }
+        assert indexer.is_language_indexed(ctx, "python") is False
+
+    def test_is_language_indexed_malformed_entry_missing_key_is_false(self) -> None:
+        """A cache entry missing ``indexed_at`` is a KeyError, caught -> not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "python")
+        indexer.index_metadata.setdefault("languages", {})[meta_key] = {}
+        assert indexer.is_language_indexed(ctx, "python") is False
+
+    def test_is_language_indexed_malformed_entry_bad_date_is_false(self) -> None:
+        """A cache entry with an unparsable date is a ValueError, caught -> not indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "python")
+        indexer.index_metadata.setdefault("languages", {})[meta_key] = {"indexed_at": "nope"}
+        assert indexer.is_language_indexed(ctx, "python") is False
+
+
+class TestEmbeddingErrorHandling:
+    """``_embed_and_upsert`` degrades per-chunk embedding failures, never crashes."""
+
+    async def test_embed_and_upsert_skips_failed_chunks_and_logs_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A flaky embed_fn only logs the hint once per indexing pass, not per chunk."""
+        calls = {"n": 0}
+
+        async def _flaky(text: str) -> list[float]:
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise RuntimeError("ollama down")
+            return await _fake_embed(text)
+
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_flaky)
+        ctx = _ctx()
+        long_text = " ".join(f"word{i}" for i in range(600))
+
+        with caplog.at_level(logging.WARNING, logger="penguincode_cli.docs_rag.indexer"):
+            count = await indexer.index_library(ctx, _library(), [long_text])
+
+        assert count == len(store.rows)
+        assert count >= 1
+        warnings = [r for r in caplog.records if "embedding failed" in r.message]
+        assert len(warnings) == 1
+
+    async def test_all_chunks_failing_embedding_yields_zero_and_skips_upsert(self) -> None:
+        """When every chunk fails embedding, ``items`` stays empty: no upsert, no extraction."""
+
+        async def _always_fail(_text: str) -> list[float]:
+            raise RuntimeError("ollama down")
+
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_always_fail)
+        ctx = _ctx()
+        count = await indexer.index_library(ctx, _library(), ["some content here"])
+        assert count == 0
+        assert store.rows == {}
+
+
+class _FakeAiohttpResponse:
+    """Minimal async-context-manager double for ``aiohttp``'s response object."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    async def __aenter__(self) -> _FakeAiohttpResponse:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    async def json(self) -> dict:  # type: ignore[type-arg]
+        return {"embedding": [0.1]}
+
+
+class _FakeAiohttpSession:
+    """Minimal async-context-manager double for ``aiohttp.ClientSession``."""
+
+    def __init__(self, status: int) -> None:
+        self._status = status
+
+    async def __aenter__(self) -> _FakeAiohttpSession:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    def post(self, *_args: object, **_kwargs: object) -> _FakeAiohttpResponse:
+        return _FakeAiohttpResponse(self._status)
+
+
+class TestGetEmbeddingLiveAiohttpFailure:
+    """``_get_embedding``'s real (non-test-double) Ollama HTTP path."""
+
+    async def test_raises_runtime_error_on_non_200(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-200 Ollama response raises, so the caller's try/except can degrade."""
+        import aiohttp
+
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: _FakeAiohttpSession(500))
+        indexer = DocumentationIndexer(store=_FakeVectorStore())
+        with pytest.raises(RuntimeError, match="Embedding failed: 500"):
+            await indexer._get_embedding("hello world")
+
+    async def test_returns_embedding_on_200(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 200 Ollama response returns its ``embedding`` field."""
+        import aiohttp
+
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: _FakeAiohttpSession(200))
+        indexer = DocumentationIndexer(store=_FakeVectorStore())
+        result = await indexer._get_embedding("hello world")
+        assert result == [0.1]
+
+
+class TestChunkTextEdgeCases:
+    """``_chunk_text``'s empty-input short circuit."""
+
+    async def test_index_library_with_empty_content_produces_zero_chunks(self) -> None:
+        """Whitespace-only/empty doc content yields no chunks and no vector rows."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        count = await indexer.index_library(ctx, _library(), [""])
+        assert count == 0
+        assert store.rows == {}
+
+
+class TestIndexLibraryFreshnessAndForceReindex:
+    """``index_library``'s cache-hit short circuit and ``force_reindex`` clear-then-write."""
+
+    async def test_returns_cached_count_when_fresh_and_not_forced(self) -> None:
+        """A second call within the freshness window skips re-embedding entirely."""
+        store = _FakeVectorStore()
+        embed_calls = {"n": 0}
+
+        async def _counting_embed(text: str) -> list[float]:
+            embed_calls["n"] += 1
+            return await _fake_embed(text)
+
+        indexer = DocumentationIndexer(store=store, embed_fn=_counting_embed)
+        ctx = _ctx()
+        lib = _library("fastapi")
+
+        first = await indexer.index_library(ctx, lib, ["fastapi content one"])
+        assert first >= 1
+        calls_after_first = embed_calls["n"]
+
+        second = await indexer.index_library(ctx, lib, ["fastapi content one"])
+        assert second == first
+        assert embed_calls["n"] == calls_after_first
+
+    async def test_force_reindex_calls_clear_library_index(self) -> None:
+        """``force_reindex=True`` clears the existing index before re-embedding."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        lib = _library("fastapi")
+        await indexer.index_library(ctx, lib, ["fastapi content one"])
+
+        with patch.object(indexer, "clear_library_index", wraps=indexer.clear_library_index) as spy:
+            await indexer.index_library(ctx, lib, ["fastapi content two"], force_reindex=True)
+        spy.assert_awaited_once_with(ctx, lib.name)
+
+    async def test_stale_cache_entry_without_force_reindex_falls_through_to_reembed(self) -> None:
+        """A stale (expired) cache entry is not returned early -- re-embedding proceeds
+        even without ``force_reindex``."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        lib = _library("fastapi")
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        stale = datetime.now() - timedelta(days=30)
+        indexer.index_metadata.setdefault("libraries", {})[meta_key] = {
+            "indexed_at": stale.isoformat(),
+            "chunk_count": 99,
+            "chunk_ids": [],
+        }
+
+        count = await indexer.index_library(ctx, lib, ["fastapi content one"])
+        assert count == 1
+        assert count != 99
+        assert store.rows
+
+
+class TestIndexLanguageFreshnessAndForceReindex:
+    """``index_language``'s cache-hit short circuit and ``force_reindex`` clear-then-write."""
+
+    async def test_returns_cached_count_when_fresh_and_not_forced(self) -> None:
+        """A second call within the freshness window skips re-embedding entirely."""
+        store = _FakeVectorStore()
+        embed_calls = {"n": 0}
+
+        async def _counting_embed(text: str) -> list[float]:
+            embed_calls["n"] += 1
+            return await _fake_embed(text)
+
+        indexer = DocumentationIndexer(store=store, embed_fn=_counting_embed)
+        ctx = _ctx()
+
+        first = await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+        assert first >= 1
+        calls_after_first = embed_calls["n"]
+
+        second = await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+        assert second == first
+        assert embed_calls["n"] == calls_after_first
+
+    async def test_force_reindex_calls_clear_language_index(self) -> None:
+        """``force_reindex=True`` clears the existing index before re-embedding."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+
+        with patch.object(
+            indexer, "clear_language_index", wraps=indexer.clear_language_index
+        ) as spy:
+            await indexer.index_language(
+                ctx, Language.PYTHON, ["python core docs content v2"], force_reindex=True
+            )
+        spy.assert_awaited_once_with(ctx, Language.PYTHON)
+
+    async def test_noop_when_flag_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``penguincode.rag`` OFF makes ``index_language`` a no-op, mirroring ``index_library``."""
+        monkeypatch.setenv("PENGUINCODE_FLAG_RAG", "false")
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        count = await indexer.index_language(_ctx(), Language.PYTHON, ["python docs content"])
+        assert count == 0
+        assert store.rows == {}
+
+    async def test_stale_cache_entry_without_force_reindex_falls_through_to_reembed(self) -> None:
+        """A stale (expired) cache entry is not returned early -- re-embedding proceeds
+        even without ``force_reindex``."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, Language.PYTHON.value)
+        stale = datetime.now() - timedelta(days=30)
+        indexer.index_metadata.setdefault("languages", {})[meta_key] = {
+            "indexed_at": stale.isoformat(),
+            "chunk_count": 99,
+            "chunk_ids": [],
+        }
+
+        count = await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+        assert count == 1
+        assert count != 99
+        assert store.rows
+
+
+class _RaisingQueryStore(_FakeVectorStore):
+    """``_FakeVectorStore`` whose ``query`` always raises, to exercise ``search``'s guard."""
+
+    def query(self, ctx, embedding, *, n, where=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("pgvector outage")
+
+
+class TestSearchWhereVariantsAndErrors:
+    """``search``'s where-variant construction, error degradation, and dedup."""
+
+    async def test_filters_by_language_only(self) -> None:
+        """A ``languages``-only filter (no ``libraries``) still builds a where-variant."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_library(ctx, _library("fastapi"), ["python web framework content"])
+        await indexer.index_library(
+            ctx, Library(name="ferris", language=Language.RUST, version="1.0"), ["rust content"]
+        )
+
+        results = await indexer.search(ctx, "python web framework content", languages=["python"])
+        assert results
+        assert all(r.language == "python" for r in results)
+
+    async def test_returns_empty_when_embedding_fails(self) -> None:
+        """A query-embedding failure degrades to no results, not a crash."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_library(ctx, _library("fastapi"), ["fastapi content"])
+
+        async def _boom(_text: str) -> list[float]:
+            raise RuntimeError("ollama outage")
+
+        indexer._embed_fn = _boom
+        results = await indexer.search(ctx, "fastapi content")
+        assert results == []
+
+    async def test_returns_empty_when_store_query_raises(self) -> None:
+        """A store outage on ``query`` is logged and degrades to no results."""
+        store = _RaisingQueryStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        results = await indexer.search(ctx, "anything")
+        assert results == []
+
+    async def test_dedup_keeps_first_when_scores_tie_across_filters(self) -> None:
+        """The same chunk hit by two where-variants with an equal score is not duplicated."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_library(ctx, _library("fastapi"), ["fastapi python content"])
+
+        results = await indexer.search(
+            ctx,
+            "fastapi python content",
+            libraries=["fastapi"],
+            languages=["python"],
+            limit=10,
+        )
+        assert len(results) == 1
+
+
+class TestClearLibraryIndex:
+    """``clear_library_index`` branch coverage."""
+
+    async def test_none_ctx_is_noop(self) -> None:
+        """No ``ScopeContext`` means there is nothing tenant-scoped to clear."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert await indexer.clear_library_index(None, "fastapi") == 0
+
+    async def test_never_indexed_returns_zero(self) -> None:
+        """A library with no cache entry has nothing to clear."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert await indexer.clear_library_index(_ctx(), "nope") == 0
+
+    async def test_removes_rows_and_metadata_entry(self) -> None:
+        """A successful clear deletes both the vector rows and the freshness cache entry."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_library(ctx, _library("fastapi"), ["fastapi content"])
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        assert meta_key in indexer.index_metadata["libraries"]
+
+        removed = await indexer.clear_library_index(ctx, "fastapi")
+        assert removed >= 1
+        assert store.rows == {}
+        assert meta_key not in indexer.index_metadata["libraries"]
+
+    async def test_store_delete_failure_preserves_metadata_and_returns_zero(self) -> None:
+        """A store outage on delete leaves the cache entry intact and reports 0 removed."""
+
+        class _BoomStore(_FakeVectorStore):
+            def delete(self, ctx, ids):  # type: ignore[no-untyped-def]
+                raise RuntimeError("pgvector outage")
+
+        store = _BoomStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_library(ctx, _library("fastapi"), ["fastapi content"])
+        meta_key = indexer._meta_key(ctx, "fastapi")
+
+        removed = await indexer.clear_library_index(ctx, "fastapi")
+        assert removed == 0
+        assert meta_key in indexer.index_metadata["libraries"]
+
+    async def test_entry_with_no_chunk_ids_still_removes_metadata(self) -> None:
+        """An entry with an empty ``chunk_ids`` list skips the delete call but still clears."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        indexer.index_metadata.setdefault("libraries", {})[meta_key] = {
+            "indexed_at": datetime.now().isoformat(),
+            "chunk_count": 0,
+            "chunk_ids": [],
+        }
+
+        removed = await indexer.clear_library_index(ctx, "fastapi")
+        assert removed == 0
+        assert meta_key not in indexer.index_metadata["libraries"]
+
+
+class TestClearLanguageIndex:
+    """``clear_language_index`` branch coverage (mirrors ``TestClearLibraryIndex``)."""
+
+    async def test_none_ctx_is_noop(self) -> None:
+        """No ``ScopeContext`` means there is nothing tenant-scoped to clear."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert await indexer.clear_language_index(None, Language.PYTHON) == 0
+
+    async def test_never_indexed_returns_zero(self) -> None:
+        """A language with no cache entry has nothing to clear."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert await indexer.clear_language_index(_ctx(), Language.PYTHON) == 0
+
+    async def test_removes_rows_and_metadata_entry(self) -> None:
+        """A successful clear deletes both the vector rows and the freshness cache entry."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+        meta_key = indexer._meta_key(ctx, Language.PYTHON.value)
+        assert meta_key in indexer.index_metadata["languages"]
+
+        removed = await indexer.clear_language_index(ctx, Language.PYTHON)
+        assert removed >= 1
+        assert store.rows == {}
+        assert meta_key not in indexer.index_metadata["languages"]
+
+    async def test_store_delete_failure_preserves_metadata_and_returns_zero(self) -> None:
+        """A store outage on delete leaves the cache entry intact and reports 0 removed."""
+
+        class _BoomStore(_FakeVectorStore):
+            def delete(self, ctx, ids):  # type: ignore[no-untyped-def]
+                raise RuntimeError("pgvector outage")
+
+        store = _BoomStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+        meta_key = indexer._meta_key(ctx, Language.PYTHON.value)
+
+        removed = await indexer.clear_language_index(ctx, Language.PYTHON)
+        assert removed == 0
+        assert meta_key in indexer.index_metadata["languages"]
+
+    async def test_entry_with_no_chunk_ids_still_removes_metadata(self) -> None:
+        """An entry with an empty ``chunk_ids`` list skips the delete call but still clears."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, Language.PYTHON.value)
+        indexer.index_metadata.setdefault("languages", {})[meta_key] = {
+            "indexed_at": datetime.now().isoformat(),
+            "chunk_count": 0,
+            "chunk_ids": [],
+        }
+
+        removed = await indexer.clear_language_index(ctx, Language.PYTHON)
+        assert removed == 0
+        assert meta_key not in indexer.index_metadata["languages"]
+
+
+class TestCleanupUnused:
+    """``cleanup_unused`` branch coverage."""
+
+    async def test_none_ctx_returns_empty_dict(self) -> None:
+        """No ``ScopeContext`` means there is nothing tenant-scoped to clean up."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        assert await indexer.cleanup_unused(None, [], []) == {}
+
+    async def test_removes_libraries_and_languages_no_longer_present(self) -> None:
+        """Libraries/languages absent from the current project are cleared and reported."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_library(ctx, _library("fastapi"), ["fastapi content"])
+        await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+
+        removed = await indexer.cleanup_unused(ctx, [], [])
+        assert removed == {"fastapi": 1, "_lang_python": 1}
+        assert store.rows == {}
+
+    async def test_keeps_libraries_and_languages_still_present(self) -> None:
+        """Libraries/languages still in the current project are left untouched."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        lib = _library("fastapi")
+        await indexer.index_library(ctx, lib, ["fastapi content"])
+        await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+
+        removed = await indexer.cleanup_unused(ctx, [lib], [Language.PYTHON])
+        assert removed == {}
+        assert store.rows
+
+    async def test_ignores_other_tenants_metadata_entries(self) -> None:
+        """A cleanup run scoped to tenant B never touches tenant A's cache entries
+        (library or language)."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx_a = _ctx()
+        ctx_b = _ctx()
+        await indexer.index_library(ctx_a, _library("fastapi"), ["fastapi content a"])
+        await indexer.index_language(ctx_a, Language.PYTHON, ["python docs content a"])
+
+        removed = await indexer.cleanup_unused(ctx_b, [], [])
+        assert removed == {}
+        assert indexer._meta_key(ctx_a, "fastapi") in indexer.index_metadata["libraries"]
+        assert (
+            indexer._meta_key(ctx_a, Language.PYTHON.value) in indexer.index_metadata["languages"]
+        )
+
+    async def test_zero_count_clears_are_not_reported_as_removed(self) -> None:
+        """A library/language whose cache entry has no ``chunk_ids`` clears to 0 and
+        is omitted from the ``removed`` dict (the ``count > 0`` guard)."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        lib_key = indexer._meta_key(ctx, "fastapi")
+        lang_key = indexer._meta_key(ctx, Language.PYTHON.value)
+        indexer.index_metadata.setdefault("libraries", {})[lib_key] = {
+            "indexed_at": datetime.now().isoformat(),
+            "chunk_count": 0,
+            "chunk_ids": [],
+        }
+        indexer.index_metadata.setdefault("languages", {})[lang_key] = {
+            "indexed_at": datetime.now().isoformat(),
+            "chunk_count": 0,
+            "chunk_ids": [],
+        }
+
+        removed = await indexer.cleanup_unused(ctx, [], [])
+        assert removed == {}
+        assert lib_key not in indexer.index_metadata.get("libraries", {})
+        assert lang_key not in indexer.index_metadata.get("languages", {})
+
+    async def test_invalid_cached_language_value_is_skipped(self) -> None:
+        """A cache key that no longer maps to a valid ``Language`` is skipped, not raised."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        bad_key = indexer._meta_key(ctx, "not-a-real-language")
+        indexer.index_metadata.setdefault("languages", {})[bad_key] = {
+            "indexed_at": datetime.now().isoformat(),
+            "chunk_count": 1,
+            "chunk_ids": ["x"],
+        }
+
+        removed = await indexer.cleanup_unused(ctx, [], [])
+        assert removed == {}
+
+
+class TestGetIndexStatus:
+    """``get_index_status`` branch coverage."""
+
+    def test_none_ctx_returns_empty_status(self) -> None:
+        """No ``ScopeContext`` returns the same empty shape as a tenant with nothing indexed."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        status = indexer.get_index_status(None)
+        assert status == {"libraries": {}, "languages": {}, "total_chunks": 0}
+
+    async def test_reports_indexed_libraries_and_languages_for_this_tenant(self) -> None:
+        """Both library and language entries contribute to ``total_chunks``."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx = _ctx()
+        await indexer.index_library(ctx, _library("fastapi"), ["fastapi content"])
+        await indexer.index_language(ctx, Language.PYTHON, ["python core docs content"])
+
+        status = indexer.get_index_status(ctx)
+        assert status["libraries"]["fastapi"]["chunk_count"] == 1
+        assert status["libraries"]["fastapi"]["is_expired"] is False
+        assert status["languages"]["python"]["chunk_count"] == 1
+        assert status["total_chunks"] == 2
+
+    async def test_excludes_other_tenants_entries(self) -> None:
+        """Status scoped to tenant B never reports tenant A's indexed libraries
+        or languages."""
+        store = _FakeVectorStore()
+        indexer = DocumentationIndexer(store=store, embed_fn=_fake_embed)
+        ctx_a = _ctx()
+        ctx_b = _ctx()
+        await indexer.index_library(ctx_a, _library("fastapi"), ["fastapi content"])
+        await indexer.index_language(ctx_a, Language.PYTHON, ["python docs content"])
+
+        status = indexer.get_index_status(ctx_b)
+        assert status == {"libraries": {}, "languages": {}, "total_chunks": 0}
+
+    def test_marks_stale_entries_as_expired(self) -> None:
+        """An entry past the freshness window is reported with ``is_expired=True``."""
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        ctx = _ctx()
+        meta_key = indexer._meta_key(ctx, "fastapi")
+        stale = datetime.now() - timedelta(days=30)
+        indexer.index_metadata.setdefault("libraries", {})[meta_key] = {
+            "indexed_at": stale.isoformat(),
+            "chunk_count": 3,
+            "chunk_ids": ["a", "b", "c"],
+            "language": "python",
+        }
+
+        status = indexer.get_index_status(ctx)
+        assert status["libraries"]["fastapi"]["is_expired"] is True
 
 
 # ---------------------------------------------------------------------------
