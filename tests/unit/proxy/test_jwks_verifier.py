@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from unittest.mock import Mock
 
 import jwt
 import pytest
@@ -164,6 +165,18 @@ class TestJWKSVerifierConfig:
                 issuer=ISSUER, audience=AUDIENCE, jwks_url=ISSUER, cache_ttl_seconds=0
             )
 
+    def test_rejects_empty_algorithms_list(self) -> None:
+        """An empty `algorithms` list is rejected -- there is nothing to verify with."""
+        with pytest.raises(ValueError, match="algorithms"):
+            JWKSVerifierConfig(issuer=ISSUER, audience=AUDIENCE, jwks_url=ISSUER, algorithms=[])
+
+    def test_rejects_non_positive_http_timeout(self) -> None:
+        """A zero or negative HTTP timeout is rejected."""
+        with pytest.raises(ValueError, match="http_timeout_seconds"):
+            JWKSVerifierConfig(
+                issuer=ISSUER, audience=AUDIENCE, jwks_url=ISSUER, http_timeout_seconds=0
+            )
+
 
 class TestJWKSVerifierHappyPath:
     """A token signed with a kid published in the JWKS validates."""
@@ -198,6 +211,42 @@ class TestUnknownKid:
         # the same document (still only kid-a), and gives up.
         token = _make_token(unknown_key, "kid-b")
         with pytest.raises(JWKSVerificationError):
+            verifier.verify_token(token)
+
+
+class TestUnexpectedKeyResolutionError:
+    """A key resolver raising something other than the two known exception types."""
+
+    def test_unexpected_exception_during_key_resolution_fails_closed(self) -> None:
+        """A non-PyJWTError/non-connection-error failure still fails closed, never fail-open."""
+        resolver = Mock()
+        resolver.get_signing_key_from_jwt.side_effect = RuntimeError("boom")
+        verifier = JWKSVerifier(_config("https://unused.test"), jwks_client=resolver)
+
+        key = _rsa_keypair()
+        token = _make_token(key, "kid-a")
+        with pytest.raises(JWKSVerificationError, match="unreachable"):
+            verifier.verify_token(token)
+
+
+class TestClaimsNormalizationAndValidation:
+    """Post-decode claim normalisation and the Claims pydantic validation gate."""
+
+    def test_token_missing_iat_fails_claims_validation(self, jwks_server: _JWKSTestServer) -> None:
+        """A token omitting `iat` skips datetime conversion for it, then fails Claims validation.
+
+        `iat` is not in the `options={"require": [...]}` set PyJWT enforces
+        (only exp/iss/aud/sub are), so this token decodes successfully and
+        reaches the iat/exp normalisation loop with `iat` absent -- exercising
+        the "not an int/float" skip branch -- before Claims (which declares
+        `iat` as a required field) rejects the payload.
+        """
+        key = _rsa_keypair()
+        jwks_server.set_keys({"kid-a": _jwk_for(key, "kid-a")})
+        verifier = JWKSVerifier(_config(jwks_server.url))
+
+        token = _make_token_missing_claim(key, "kid-a", omit="iat")
+        with pytest.raises(JWKSVerificationError, match="Claims validation failed"):
             verifier.verify_token(token)
 
 
