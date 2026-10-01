@@ -1,15 +1,25 @@
 # Default values for penguincode
 # This is a YAML-formatted file.
 
-# Global settings
+# Global settings. Namespace = product name only, never env-suffixed (the
+# environment lives in the context and the values filename, e.g. alpha.yml /
+# beta.yml / gamma.yml / production.yml -- never here).
 global:
-  namespace: penguincode-prod
+  namespace: penguincode
 
-# Image configuration
+# Image configuration. `tag: latest` is the Helm-implicit-default placeholder
+# only -- every real environment values file (alpha.yml/beta.yml/gamma.yml/
+# production.yml) overrides this with its own pinned reference (tier tag or
+# SHA256 digest; see critical-rules.md Dependency Pinning).
 image:
   repository: penguincode/server
   pullPolicy: IfNotPresent
   tag: latest
+  # Immutable SHA256 digest (e.g. "sha256:<digest>") -- takes precedence over
+  # `tag` when set (see templates/_helpers.tpl penguincode.image). Required
+  # in production (critical-rules.md Dependency Pinning); left empty
+  # everywhere else so `tag` is used.
+  digest: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -126,14 +136,34 @@ otel:
     # and never pass one via `--set`/`--set-string` (shell history).
     value: ""
 
-# Shared WaddleAI Postgres (pgvector) -- the single DSN used by both the
-# vector store and the graph store (spec §9, §11; T3 config). Cross-namespace:
+# Shared WaddleAI Postgres (pgvector) -- penguincode uses its OWN
+# least-privilege role (`penguincode_app`), owning ONLY the `penguincode`
+# schema -- NEVER the `waddleai` app role/schema (spec §9). Cross-namespace:
 # the WaddleAI Postgres Service lives in the `waddleai` namespace
 # (k8s/helm/waddleai/templates/postgres-service.yaml).
+#
+# RUNBOOK -- what an operator must provision before `helm install`:
+#   1. Once per cluster/DB (or let bootstrapRole below do it): an ADMIN
+#      Secret (postgres.adminExistingSecret) holding a DSN for a role with
+#      CREATEROLE + the ability to CREATE EXTENSION (superuser, or a role
+#      granted pg_create_subscription/superuser-equivalent on managed PG).
+#      Used ONLY by templates/role-bootstrap-job.yaml and
+#      templates/migration-job.yaml -- never the server.
+#   2. An app-role password Secret (postgres.bootstrapRole.passwordExistingSecret)
+#      holding the plaintext password the bootstrap Job uses in its
+#      `CREATE ROLE penguincode_app ... PASSWORD` statement.
+#   3. An app DSN Secret (postgres.existingSecret) holding the
+#      `penguincode_app` role's connection string, with the SAME password as
+#      (2) -- e.g. postgresql://penguincode_app:<same-password>@waddleai-postgres.waddleai.svc.cluster.local:5432/waddleai.
+#      Used by the server Deployment only.
+#   DBAs who pre-create the role/schema/extension manually out-of-band can
+#   set postgres.bootstrapRole.enabled: false and skip (2) -- (1) and (3)
+#   are still required (the migration Job always uses the admin DSN).
 postgres:
   namespace: waddleai
   serviceName: waddleai-postgres
   port: 5432
+  # LEAST-PRIVILEGE app-role DSN -- used by the server Deployment only.
   # Preferred: reference a Secret created out-of-band (kubectl/External
   # Secrets Operator/sealed-secrets) holding the connection DSN.
   existingSecret: ""
@@ -142,6 +172,45 @@ postgres:
   # pass one via `--set`/`--set-string` (shell history, token/secret
   # hygiene). Use existingSecret in every shared environment.
   dsn: ""
+
+  # ADMIN DSN -- used ONLY by the role-bootstrap Job and the migration Job
+  # (CREATE ROLE / CREATE EXTENSION / DDL all need elevated privileges).
+  # NEVER used by the server Deployment. Preferred: existingSecret created
+  # out-of-band, pointing at a superuser/admin-privileged Postgres role on
+  # the shared WaddleAI instance (NOT the waddleai app role).
+  adminExistingSecret: ""
+  adminSecretKey: PGVECTOR_ADMIN_URL
+  # Dev-only convenience fallback -- NEVER commit a real DSN here, and never
+  # pass one via `--set`/`--set-string` (shell history, token/secret
+  # hygiene). Use adminExistingSecret in every shared environment.
+  adminDsn: ""
+
+  # One-time least-privilege role bootstrap (templates/role-bootstrap-job.yaml)
+  # -- creates the `penguincode_app` role, the `penguincode` schema owned by
+  # it, and the `vector` extension (admin-only). Runs as a Helm pre-install
+  # hook before the migration Job. Idempotent -- safe on every install/upgrade.
+  bootstrapRole:
+    enabled: true
+    backoffLimit: 3
+    activeDeadlineSeconds: 120
+    appRoleName: penguincode_app
+    schema: penguincode
+    # Preferred: reference a Secret created out-of-band holding the
+    # plaintext password used in the CREATE ROLE/ALTER ROLE statement --
+    # MUST match the password embedded in postgres.existingSecret's app DSN.
+    passwordExistingSecret: ""
+    passwordSecretKey: PENGUINCODE_APP_ROLE_PASSWORD
+    # Dev-only convenience fallback -- NEVER commit a real password here, and
+    # never pass one via `--set`/`--set-string` (shell history, token/secret
+    # hygiene). Use passwordExistingSecret in every shared environment.
+    password: ""
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
 
 # Idempotent schema/migration init Job (db/migrate.py, T1) -- runs as a Helm
 # pre-install/pre-upgrade hook before the server rolls out (spec §9, §11).
@@ -188,7 +257,11 @@ cilium:
       - matchName: license.penguintech.io
         port: 443
 
-# Optional Ollama service (disabled by default in production)
+# Optional Ollama service (disabled by default in production). `tag: latest`
+# is the Helm-implicit-default placeholder only -- see the `image:` block
+# above; no environment values file should ever enable this with a mutable
+# tag (external image -- SHA256 digest required in every environment per
+# critical-rules.md Dependency Pinning once enabled).
 ollama:
   enabled: false
   name: ollama

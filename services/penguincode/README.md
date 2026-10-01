@@ -107,7 +107,7 @@ docker compose up -d
 penguincode chat --server localhost:50051
 ```
 
-See [Architecture Documentation](docs/ARCHITECTURE.md) for remote deployment with TLS and authentication.
+See [Architecture Documentation](../../docs/penguincode/ARCHITECTURE.md) for remote deployment with TLS and authentication.
 
 ### MCP Tool Integration
 
@@ -143,16 +143,16 @@ The client exchanges this key for a JWT automatically. No API key distribution n
 
 ## Documentation
 
-- **[Usage Guide](docs/USAGE.md)** - Installation, configuration, and usage
-- **[Configuration Reference](docs/CONFIGURATION.md)** - Complete config.yaml reference
-- **[Architecture](docs/ARCHITECTURE.md)** - Client-server architecture and deployment modes
-- **[Agent Architecture](docs/AGENTS.md)** - ChatAgent, Explorer, Executor, Planner
-- **[Tool Support](docs/TOOL_SUPPORT.md)** - Ollama models with native tool calling
-- **[MCP Integration](docs/MCP.md)** - Extend with N8N, Flowise, and custom servers
-- **[Memory](docs/MEMORY.md)** - Persistent memory with mem0 integration
-- **[Documentation RAG](docs/DOCS_RAG.md)** - Project-aware documentation indexing
-- **[Security](docs/SECURITY.md)** - Authentication, TLS, and secure code generation
-- **[Contributing](docs/CONTRIBUTING.md)** - How to contribute
+- **[Usage Guide](../../docs/penguincode/USAGE.md)** - Installation, configuration, and usage
+- **[Configuration Reference](../../docs/penguincode/CONFIGURATION.md)** - Complete config.yaml reference
+- **[Architecture](../../docs/penguincode/ARCHITECTURE.md)** - Client-server architecture and deployment modes
+- **[Agent Architecture](../../docs/penguincode/AGENTS.md)** - ChatAgent, Explorer, Executor, Planner
+- **[Tool Support](../../docs/penguincode/TOOL_SUPPORT.md)** - Ollama models with native tool calling
+- **[MCP Integration](../../docs/penguincode/MCP.md)** - Extend with N8N, Flowise, and custom servers
+- **[Memory](../../docs/penguincode/MEMORY.md)** - Persistent memory with mem0 integration
+- **[Documentation RAG](../../docs/penguincode/DOCS_RAG.md)** - Project-aware documentation indexing
+- **[Security](../../docs/penguincode/SECURITY.md)** - Authentication, TLS, and secure code generation
+- **[Contributing](../../docs/penguincode/CONTRIBUTING.md)** - How to contribute
 
 ## License
 

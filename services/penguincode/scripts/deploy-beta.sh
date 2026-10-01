@@ -282,7 +282,7 @@ deploy_helm() {
         "${CHART_PATH}"
         "--namespace" "${NAMESPACE}"
         "--values" "${CHART_PATH}/values.yaml"
-        "--values" "${CHART_PATH}/values-beta.yaml"
+        "--values" "${CHART_PATH}/beta.yml"
         "--set" "image.tag=${TAG}"
         "--set" "image.repository=${IMAGE_REGISTRY}/penguincode"
         "--set" "global.namespace=${NAMESPACE}"

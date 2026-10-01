@@ -33,7 +33,7 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import grpc
 import psycopg
@@ -44,13 +44,17 @@ import penguincode_cli.server.services.knowledge as knowledge_module
 from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.config.settings import GraphConfig, PostgresGraphStoreConfig, Settings
 from penguincode_cli.db.migrate import run_migrations
+from penguincode_cli.docs_rag.indexer import DocumentationIndexer
 from penguincode_cli.docs_rag.models import Language as ModelLanguage
 from penguincode_cli.docs_rag.models import Library
 from penguincode_cli.graphs.code import ExtractionResult
 from penguincode_cli.proto import (
+    CleanupIndexRequest,
+    ClearIndexRequest,
     CodeGraphStatusRequest,
     IndexCodeRequest,
     IndexRequest,
+    IndexStatusRequest,
     LibraryTarget,
     MemoryAddRequest,
     MemorySearchRequest,
@@ -63,7 +67,7 @@ from penguincode_cli.proto import (
 from penguincode_cli.retrieval.graphrag import RetrievalResult
 from penguincode_cli.server.services.knowledge import KnowledgeServiceImpl
 from penguincode_cli.stores.graph import GraphEdge, GraphNode, PostgresGraphStore, Subgraph
-from penguincode_cli.stores.vector import VectorHit
+from penguincode_cli.stores.vector import PgVectorStore, VectorHit
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -118,11 +122,23 @@ def _no_leftover_scope() -> Iterator[None]:
 
 
 class _FakeIndexer:
-    """Records `index_library`/`index_language` calls; returns a fixed chunk count."""
+    """Records `index_library`/`index_language` calls; returns a fixed chunk count.
+
+    Also records the four docs-index-management calls (C1) --
+    `get_index_status`/`clear_library_index`/`clear_language_index`/
+    `cleanup_unused` -- each defaulting to an empty/zero result, overridable
+    per test via the `Mock`/`AsyncMock`'s own `return_value`.
+    """
 
     def __init__(self, *, chunks: int = 3) -> None:
         self.index_library = AsyncMock(return_value=chunks)
         self.index_language = AsyncMock(return_value=chunks)
+        self.get_index_status = Mock(
+            return_value={"libraries": {}, "languages": {}, "total_chunks": 0}
+        )
+        self.clear_library_index = AsyncMock(return_value=0)
+        self.clear_language_index = AsyncMock(return_value=0)
+        self.cleanup_unused = AsyncMock(return_value={})
 
 
 class _FakeScopedMemory:
@@ -135,7 +151,7 @@ class _FakeScopedMemory:
 
 def _service(
     *,
-    indexer: _FakeIndexer | None = None,
+    indexer: _FakeIndexer | DocumentationIndexer | None = None,
     scoped_memory: _FakeScopedMemory | None = None,
     graph_config: GraphConfig | None = None,
 ) -> KnowledgeServiceImpl:
@@ -202,6 +218,32 @@ class TestRequireScope:
         context = _FakeContext()
         with pytest.raises(AbortCalledError):
             await service.CodeGraphStatus(CodeGraphStatusRequest(api_version="v1"), context)
+        assert context.aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED  # type: ignore[index]
+
+    @pytest.mark.asyncio
+    async def test_index_status_without_scope_aborts_unauthenticated(self) -> None:
+        service = _service()
+        context = _FakeContext()
+        with pytest.raises(AbortCalledError):
+            await service.IndexStatus(IndexStatusRequest(api_version="v1"), context)
+        assert context.aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED  # type: ignore[index]
+
+    @pytest.mark.asyncio
+    async def test_clear_index_without_scope_aborts_unauthenticated(self) -> None:
+        service = _service()
+        context = _FakeContext()
+        with pytest.raises(AbortCalledError):
+            await service.ClearIndex(
+                ClearIndexRequest(api_version="v1", library_name="fastapi"), context
+            )
+        assert context.aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED  # type: ignore[index]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_index_without_scope_aborts_unauthenticated(self) -> None:
+        service = _service()
+        context = _FakeContext()
+        with pytest.raises(AbortCalledError):
+            await service.CleanupIndex(CleanupIndexRequest(api_version="v1"), context)
         assert context.aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED  # type: ignore[index]
 
 
@@ -475,7 +517,9 @@ class TestMemoryAddTenantVisibilityGate:
             scoped_memory.add.return_value = {"results": []}
             service = _service(scoped_memory=scoped_memory)
             request = MemoryAddRequest(
-                api_version="v1", content="a generalized lesson", visibility=Visibility.VISIBILITY_TENANT
+                api_version="v1",
+                content="a generalized lesson",
+                visibility=Visibility.VISIBILITY_TENANT,
             )
 
             response = await service.MemoryAdd(request, _FakeContext())
@@ -805,6 +849,145 @@ class TestIndexCodeAndStatus:
 
 
 # ---------------------------------------------------------------------------
+# IndexStatus/ClearIndex/CleanupIndex -> DocumentationIndexer's docs-index-
+# management methods (C1: un-degrading the CLI's `/docs status|clear|cleanup`)
+#
+# # regression: docs-index-mgmt (C1 -- IndexStatus/ClearIndex/CleanupIndex handlers)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexStatus:
+    @pytest.mark.asyncio
+    async def test_calls_get_index_status_with_ctx_and_maps_response(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        indexer = _FakeIndexer()
+        indexer.get_index_status.return_value = {
+            "libraries": {
+                "fastapi": {
+                    "chunk_count": 7,
+                    "indexed_at": "2026-09-25T00:00:00",
+                    "expires_at": "2026-10-02T00:00:00",
+                    "is_expired": False,
+                    "language": "python",
+                }
+            },
+            "languages": {
+                "rust": {
+                    "chunk_count": 3,
+                    "indexed_at": "2026-09-25T00:00:00",
+                    "expires_at": "2026-10-02T00:00:00",
+                    "is_expired": True,
+                }
+            },
+            "total_chunks": 10,
+        }
+        service = _service(indexer=indexer)
+
+        response = await service.IndexStatus(IndexStatusRequest(api_version="v1"), _FakeContext())
+
+        indexer.get_index_status.assert_called_once_with(scope_ctx)
+        assert response.total_chunks == 10
+        assert response.libraries["fastapi"].chunk_count == 7
+        assert response.libraries["fastapi"].language == "python"
+        assert response.languages["rust"].is_expired is True
+
+    @pytest.mark.asyncio
+    async def test_empty_status_maps_to_empty_response(self, scope_ctx: ScopeContext) -> None:
+        service = _service()  # default _FakeIndexer: empty status
+
+        response = await service.IndexStatus(IndexStatusRequest(api_version="v1"), _FakeContext())
+
+        assert response.total_chunks == 0
+        assert dict(response.libraries) == {}
+        assert dict(response.languages) == {}
+
+
+class TestClearIndex:
+    @pytest.mark.asyncio
+    async def test_library_target_calls_clear_library_index_with_ctx(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        indexer = _FakeIndexer()
+        indexer.clear_library_index.return_value = 5
+        service = _service(indexer=indexer)
+
+        response = await service.ClearIndex(
+            ClearIndexRequest(api_version="v1", library_name="fastapi"), _FakeContext()
+        )
+
+        assert response.chunks_removed == 5
+        indexer.clear_library_index.assert_awaited_once_with(scope_ctx, "fastapi")
+        indexer.clear_language_index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_language_target_calls_clear_language_index_with_ctx(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        indexer = _FakeIndexer()
+        indexer.clear_language_index.return_value = 2
+        service = _service(indexer=indexer)
+
+        response = await service.ClearIndex(
+            ClearIndexRequest(api_version="v1", language=ProtoLanguage.LANGUAGE_RUST),
+            _FakeContext(),
+        )
+
+        assert response.chunks_removed == 2
+        indexer.clear_language_index.assert_awaited_once_with(scope_ctx, ModelLanguage.RUST)
+        indexer.clear_library_index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_target_aborts_invalid_argument(self, scope_ctx: ScopeContext) -> None:
+        service = _service()
+        context = _FakeContext()
+
+        with pytest.raises(AbortCalledError):
+            await service.ClearIndex(ClearIndexRequest(api_version="v1"), context)
+
+        assert context.aborted_with is not None
+        assert context.aborted_with[0] == grpc.StatusCode.INVALID_ARGUMENT
+
+
+class TestCleanupIndex:
+    @pytest.mark.asyncio
+    async def test_calls_cleanup_unused_with_ctx_and_mapped_targets(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        indexer = _FakeIndexer()
+        indexer.cleanup_unused.return_value = {"old-lib": 4, "_lang_go": 2}
+        service = _service(indexer=indexer)
+
+        request = CleanupIndexRequest(
+            api_version="v1",
+            current_libraries=[
+                LibraryTarget(name="fastapi", language=ProtoLanguage.LANGUAGE_PYTHON, version="1.0")
+            ],
+            current_languages=[ProtoLanguage.LANGUAGE_RUST],
+        )
+
+        response = await service.CleanupIndex(request, _FakeContext())
+
+        assert dict(response.removed) == {"old-lib": 4, "_lang_go": 2}
+        indexer.cleanup_unused.assert_awaited_once_with(
+            scope_ctx,
+            [Library(name="fastapi", language=ModelLanguage.PYTHON, version="1.0")],
+            [ModelLanguage.RUST],
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_project_state_calls_cleanup_unused_with_empty_lists(
+        self, scope_ctx: ScopeContext
+    ) -> None:
+        indexer = _FakeIndexer()
+        service = _service(indexer=indexer)
+
+        await service.CleanupIndex(CleanupIndexRequest(api_version="v1"), _FakeContext())
+
+        indexer.cleanup_unused.assert_awaited_once_with(scope_ctx, [], [])
+
+
+# ---------------------------------------------------------------------------
 # Live-Postgres: proves scope isolation the mocks above cannot -- tenant B's
 # ScopeContext can never read tenant A's IndexCode write, through a real RPC
 # call into a real store.
@@ -866,3 +1049,81 @@ class TestIndexCodeLiveScopeIsolation:
 
         subgraph_a = store.subgraph(ctx_a, "code", seed_keys=["a.py"], depth=0)
         assert any(n.key == "a.py" for n in subgraph_a.nodes)
+
+
+# ---------------------------------------------------------------------------
+# Live-Postgres, end-to-end through the RPC handlers: index a library via a
+# real DocumentationIndexer/PgVectorStore, confirm IndexStatus reports it,
+# ClearIndex removes it, confirm IndexStatus reports empty again -- the C1
+# "un-degrade /docs status|clear|cleanup" gate.
+#
+# # regression: docs-index-mgmt (C1 -- IndexStatus/ClearIndex live end-to-end)
+# ---------------------------------------------------------------------------
+
+
+async def _fake_embed_768(text: str) -> list[float]:
+    """Deterministic 768-dim embedding -- mirrors `test_docs_rag_indexer.py`'s own fake;
+    a real Ollama round trip isn't needed to prove the index/status/clear wiring.
+    """
+    vec = [0.0] * 768
+    vec[0] = float((hash(text) % 1000) + 1)
+    vec[1] = 1.0
+    return vec
+
+
+@requires_postgres
+class TestDocsIndexManagementLiveEndToEnd:
+    @pytest.mark.asyncio
+    async def test_index_then_status_shows_it_then_clear_then_status_empty(
+        self, knowledge_live_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PENGUINCODE_FLAG_RAG", "true")
+        indexer = DocumentationIndexer(
+            store=PgVectorStore(dsn=knowledge_live_dsn, table="docs_vectors"),
+            embed_fn=_fake_embed_768,
+            metadata_dir=str(tmp_path / "docs_index"),
+        )
+        service = _service(indexer=indexer)
+
+        tenant = str(uuid.uuid4())
+        ctx = _ctx(tenant_id=tenant, org_id=None, team_ids=(), user_id=str(uuid.uuid4()))
+        token = auth_middleware._current_scope.set(ctx)
+        try:
+            index_response = await service.Index(
+                IndexRequest(
+                    api_version="v1",
+                    library=LibraryTarget(
+                        name="fastapi", language=ProtoLanguage.LANGUAGE_PYTHON, version="1.0"
+                    ),
+                    doc_contents=["# FastAPI docs\nFastAPI is a modern async web framework."],
+                    visibility=Visibility.VISIBILITY_TENANT,
+                ),
+                _FakeContext(),
+            )
+            assert index_response.chunks_indexed > 0
+
+            # IndexStatus shows the freshly-indexed library.
+            status_after_index = await service.IndexStatus(
+                IndexStatusRequest(api_version="v1"), _FakeContext()
+            )
+            assert "fastapi" in status_after_index.libraries
+            assert (
+                status_after_index.libraries["fastapi"].chunk_count == index_response.chunks_indexed
+            )
+            assert status_after_index.libraries["fastapi"].language == "python"
+            assert status_after_index.total_chunks == index_response.chunks_indexed
+
+            # ClearIndex removes it.
+            clear_response = await service.ClearIndex(
+                ClearIndexRequest(api_version="v1", library_name="fastapi"), _FakeContext()
+            )
+            assert clear_response.chunks_removed == index_response.chunks_indexed
+
+            # IndexStatus now reports empty again.
+            status_after_clear = await service.IndexStatus(
+                IndexStatusRequest(api_version="v1"), _FakeContext()
+            )
+            assert "fastapi" not in status_after_clear.libraries
+            assert status_after_clear.total_chunks == 0
+        finally:
+            auth_middleware._current_scope.reset(token)

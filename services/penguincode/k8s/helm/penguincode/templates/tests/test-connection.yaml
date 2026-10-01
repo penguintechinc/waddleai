@@ -10,7 +10,7 @@ metadata:
 spec:
   containers:
   - name: grpc-test
-    image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+    image: {{ include "penguincode.image" . | quote }}
     command: ['sh', '-c']
     args:
     - |

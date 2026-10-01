@@ -110,6 +110,20 @@ service KnowledgeService {
 
   // Report the caller-scoped code graph's current availability/size.
   rpc CodeGraphStatus(CodeGraphStatusRequest) returns (CodeGraphStatusResponse);
+
+  // Report the caller-scoped docs index's current status (what's indexed,
+  // chunk counts, freshness). Mirrors
+  // `docs_rag.indexer.DocumentationIndexer.get_index_status`.
+  rpc IndexStatus(IndexStatusRequest) returns (IndexStatusResponse);
+
+  // Clear one library's or one language's indexed docs, scoped to the
+  // caller. Mirrors `docs_rag.indexer.DocumentationIndexer
+  // .clear_library_index`/`.clear_language_index`.
+  rpc ClearIndex(ClearIndexRequest) returns (ClearIndexResponse);
+
+  // Remove indexed docs no longer referenced by the caller's current
+  // project. Mirrors `docs_rag.indexer.DocumentationIndexer.cleanup_unused`.
+  rpc CleanupIndex(CleanupIndexRequest) returns (CleanupIndexResponse);
 }
 
 // ---- Index ----
@@ -239,4 +253,76 @@ message CodeGraphStatusResponse {
   bool enabled = 1;
   int32 node_count = 2;
   int32 edge_count = 3;
+}
+
+// ---- IndexStatus ----
+
+// Per-library index status -- mirrors one entry of
+// `DocumentationIndexer.get_index_status`'s "libraries" dict.
+message LibraryIndexStatus {
+  int32 chunk_count = 1;
+  string indexed_at = 2;
+  string expires_at = 3;
+  bool is_expired = 4;
+  string language = 5;
+}
+
+// Per-language index status -- mirrors one entry of
+// `DocumentationIndexer.get_index_status`'s "languages" dict.
+message LanguageIndexStatus {
+  int32 chunk_count = 1;
+  string indexed_at = 2;
+  string expires_at = 3;
+  bool is_expired = 4;
+}
+
+message IndexStatusRequest {
+  string api_version = 1;
+}
+
+message IndexStatusResponse {
+  map<string, LibraryIndexStatus> libraries = 1;
+  map<string, LanguageIndexStatus> languages = 2;
+  int32 total_chunks = 3;
+}
+
+// ---- ClearIndex ----
+
+message ClearIndexRequest {
+  string api_version = 1;
+
+  // Exactly one of a library name or a bare language -- mirrors the
+  // indexer's two distinct entry points (`clear_library_index` takes a
+  // plain name string; `clear_language_index` takes a `Language`).
+  oneof target {
+    string library_name = 2;
+    Language language = 3;
+  }
+}
+
+message ClearIndexResponse {
+  int32 chunks_removed = 1;
+}
+
+// ---- CleanupIndex ----
+
+message CleanupIndexRequest {
+  string api_version = 1;
+
+  // The caller's current project state -- mirrors `cleanup_unused`'s
+  // `current_libraries`/`current_languages` params verbatim. The server has
+  // no independent way to know what a given project still references
+  // (project detection is a client-side file-tree scan, see
+  // `docs_rag.detector.ProjectDetector`), so the CLI supplies its own
+  // already-detected state here, the same way `Index`'s `target` is always
+  // caller-supplied.
+  repeated LibraryTarget current_libraries = 2;
+  repeated Language current_languages = 3;
+}
+
+message CleanupIndexResponse {
+  // Keyed by library/language name, mirrors `cleanup_unused`'s
+  // `{name: chunks_removed}` return shape verbatim (a language key carries
+  // the "_lang_" prefix `cleanup_unused` itself already applies).
+  map<string, int32> removed = 1;
 }

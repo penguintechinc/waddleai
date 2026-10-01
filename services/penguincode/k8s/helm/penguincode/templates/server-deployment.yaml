@@ -32,7 +32,7 @@ spec:
       - name: server
         securityContext:
           {{- toYaml .Values.securityContext | nindent 12 }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        image: {{ include "penguincode.image" . | quote }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - name: grpc
@@ -42,8 +42,11 @@ spec:
           containerPort: 8080
           protocol: TCP
         env:
-        # Shared WaddleAI Postgres DSN (spec §9) -- single source for the
-        # vector store and the graph store. Required: secretKeyRef only,
+        # LEAST-PRIVILEGE app-role DSN (spec §9) -- the `penguincode_app` role
+        # created by templates/role-bootstrap-job.yaml, scoped to ONLY the
+        # `penguincode` schema on the shared WaddleAI Postgres. NEVER the
+        # admin DSN (that's migration/bootstrap-only, see those templates)
+        # and NEVER the `waddleai` app role. Required: secretKeyRef only,
         # never inline plaintext, never a CLI arg (token/secret hygiene).
         - name: PGVECTOR_URL
           valueFrom:

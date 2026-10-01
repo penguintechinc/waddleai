@@ -1,6 +1,7 @@
 """KnowledgeService gRPC servicer (F2): server-side docs-RAG, GraphRAG, memory, code graph.
 
-Implements F1's six `KnowledgeService` RPCs by deriving each request's
+Implements F1's `KnowledgeService` RPCs (plus C1's three docs-index-management
+additions -- `IndexStatus`/`ClearIndex`/`CleanupIndex`) by deriving each request's
 `ScopeContext` exclusively from the caller's validated WaddleAI JWT
 (`auth.middleware.current_scope_context()`, populated by
 `WaddleAIAuthInterceptor` -- see `server/main.py`'s interceptor-reconciliation
@@ -41,13 +42,21 @@ from penguincode_cli.flags import CODE_GRAPH_FLAG, is_enabled
 from penguincode_cli.graphs.code import index_code
 from penguincode_cli.observability.otel import store_span
 from penguincode_cli.proto import (
+    CleanupIndexRequest,
+    CleanupIndexResponse,
+    ClearIndexRequest,
+    ClearIndexResponse,
     CodeGraphStatusRequest,
     CodeGraphStatusResponse,
     IndexCodeRequest,
     IndexCodeResponse,
     IndexRequest,
     IndexResponse,
+    IndexStatusRequest,
+    IndexStatusResponse,
     KnowledgeServiceServicer,
+    LanguageIndexStatus,
+    LibraryIndexStatus,
     MemoryAddRequest,
     MemoryAddResponse,
     MemoryAddResult,
@@ -108,6 +117,21 @@ class _IndexerLike(Protocol):
         visibility: str = "tenant",
         team_id: str | None = None,
     ) -> int: ...
+
+    def get_index_status(self, ctx: ScopeContext | None) -> dict[str, Any]: ...
+
+    async def clear_library_index(self, ctx: ScopeContext | None, library_name: str) -> int: ...
+
+    async def clear_language_index(
+        self, ctx: ScopeContext | None, language: ModelLanguage
+    ) -> int: ...
+
+    async def cleanup_unused(
+        self,
+        ctx: ScopeContext | None,
+        current_libraries: list[Library],
+        current_languages: list[ModelLanguage],
+    ) -> dict[str, int]: ...
 
 
 @runtime_checkable
@@ -245,7 +269,7 @@ def _build_scoped_memory_manager(settings: Settings) -> ScopedMemoryManager:
 
 
 class KnowledgeServiceImpl(KnowledgeServiceServicer):
-    """Server-side implementation of all six `KnowledgeService` RPCs.
+    """Server-side implementation of all nine `KnowledgeService` RPCs.
 
     Every knowledge-module dependency is constructed from `settings` by
     default but keyword-only injectable for tests, mirroring the seams those
@@ -498,6 +522,119 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
         return CodeGraphStatusResponse(
             enabled=enabled, node_count=node_count, edge_count=edge_count
         )
+
+    async def IndexStatus(
+        self, request: IndexStatusRequest, context: grpc.aio.ServicerContext
+    ) -> IndexStatusResponse:
+        """Report the caller's docs index status via `DocumentationIndexer.get_index_status`.
+
+        Read-only -- no elevated scope beyond `_require_scope`'s baseline
+        authentication is required, mirroring `CodeGraphStatus`.
+        """
+        ctx = await _require_scope(context)
+
+        with store_span("knowledge.IndexStatus"):
+            status = self._indexer.get_index_status(ctx)
+
+        response = IndexStatusResponse(total_chunks=int(status.get("total_chunks", 0)))
+        for lib_key, info in status.get("libraries", {}).items():
+            response.libraries[lib_key].CopyFrom(
+                LibraryIndexStatus(
+                    chunk_count=int(info.get("chunk_count", 0)),
+                    indexed_at=str(info.get("indexed_at", "")),
+                    expires_at=str(info.get("expires_at", "")),
+                    is_expired=bool(info.get("is_expired", False)),
+                    language=str(info.get("language", "unknown")),
+                )
+            )
+        for lang_key, info in status.get("languages", {}).items():
+            response.languages[lang_key].CopyFrom(
+                LanguageIndexStatus(
+                    chunk_count=int(info.get("chunk_count", 0)),
+                    indexed_at=str(info.get("indexed_at", "")),
+                    expires_at=str(info.get("expires_at", "")),
+                    is_expired=bool(info.get("is_expired", False)),
+                )
+            )
+        return response
+
+    async def ClearIndex(
+        self, request: ClearIndexRequest, context: grpc.aio.ServicerContext
+    ) -> ClearIndexResponse:
+        """Clear one library's or one language's docs index, scoped to the caller.
+
+        A mutating call, but requires no additional elevated scope beyond
+        `_require_scope`'s baseline authentication -- unlike `MemoryAdd`'s
+        `tenant`-visibility gate, there is no broader-than-caller target to
+        guard against here: `DocumentationIndexer.clear_library_index`/
+        `.clear_language_index` delegate the actual row deletion to
+        `stores.vector.PgVectorStore.delete`, which already restricts every
+        delete to rows visible to `ctx` (`visibility = 'tenant' OR (visibility
+        = 'team' AND team_id = ANY(ctx.team_ids)) OR (visibility = 'user' AND
+        owner_user_id = ctx.user_id)`, see that module's `delete()`) -- a
+        caller can never clear another team's or another user's
+        docs, even within the same tenant, regardless of which library/
+        language name they pass here.
+        """
+        ctx = await _require_scope(context)
+        target = request.WhichOneof("target")
+
+        with store_span("knowledge.ClearIndex", target=target or "none"):
+            if target == "library_name":
+                removed = await self._indexer.clear_library_index(ctx, request.library_name)
+            elif target == "language":
+                doc_language = _PROTO_LANGUAGE_TO_MODEL.get(request.language)
+                if doc_language is None:
+                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "language is required")
+                    raise AssertionError("unreachable")  # abort() always raises
+                removed = await self._indexer.clear_language_index(ctx, doc_language)
+            else:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "target (library_name or language) is required",
+                )
+                raise AssertionError("unreachable")  # abort() always raises
+
+        return ClearIndexResponse(chunks_removed=removed)
+
+    async def CleanupIndex(
+        self, request: CleanupIndexRequest, context: grpc.aio.ServicerContext
+    ) -> CleanupIndexResponse:
+        """Remove indexed docs no longer referenced by the caller's project.
+
+        Mirrors `DocumentationIndexer.cleanup_unused`; the caller's current
+        project state is supplied on the request (the server has no
+        independent way to know what a project still references -- project
+        detection is a client-side file-tree scan, see
+        `docs_rag.detector.ProjectDetector`), the same caller-supplied-target
+        pattern `Index` already uses. Same no-additional-scope rationale as
+        `ClearIndex` -- `cleanup_unused` deletes exclusively through
+        `clear_library_index`/`.clear_language_index`, so it inherits the
+        identical store-layer visibility restriction.
+        """
+        ctx = await _require_scope(context)
+        current_libraries: list[Library] = []
+        for target in request.current_libraries:
+            library_language = _PROTO_LANGUAGE_TO_MODEL.get(target.language)
+            if library_language is None:
+                continue
+            current_libraries.append(
+                Library(name=target.name, language=library_language, version=target.version or None)
+            )
+        current_languages = [
+            mapped
+            for proto_lang in request.current_languages
+            if (mapped := _PROTO_LANGUAGE_TO_MODEL.get(proto_lang)) is not None
+        ]
+
+        with store_span(
+            "knowledge.CleanupIndex",
+            library_count=len(current_libraries),
+            language_count=len(current_languages),
+        ):
+            removed = await self._indexer.cleanup_unused(ctx, current_libraries, current_languages)
+
+        return CleanupIndexResponse(removed=dict(removed))
 
 
 __all__ = ["KnowledgeServiceImpl"]

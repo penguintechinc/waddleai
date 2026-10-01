@@ -23,9 +23,11 @@ jobs:
           sudo microk8s config > "$HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
       - name: Build server image and import into microk8s
+        # Tag must match k8s/helm/penguincode/alpha.yml's image.tag placeholder
+        # (never `latest` -- see devops.md CI/CD Tag Naming).
         run: |
-          docker build -f Dockerfile.server -t penguincode/server:latest .
-          docker save penguincode/server:latest > /tmp/server-image.tar
+          docker build -f Dockerfile.server -t penguincode/server:alpha-0000000000 .
+          docker save penguincode/server:alpha-0000000000 > /tmp/server-image.tar
           sudo microk8s ctr image import /tmp/server-image.tar
           rm /tmp/server-image.tar
       - uses: azure/setup-helm@v3

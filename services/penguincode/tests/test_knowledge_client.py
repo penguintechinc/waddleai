@@ -28,14 +28,20 @@ from penguincode_cli.client.knowledge_client import (
     KnowledgeClient,
     KnowledgeClientError,
     KnowledgeServerUnavailableError,
+    LibraryRef,
     RemoteMemoryManager,
 )
 from penguincode_cli.client.waddleai_auth import WaddleAIAuthError
 from penguincode_cli.config.settings import ServerConfig
 from penguincode_cli.proto import (
+    CleanupIndexResponse,
+    ClearIndexResponse,
     CodeGraphStatusResponse,
     IndexCodeResponse,
     IndexResponse,
+    IndexStatusResponse,
+    LanguageIndexStatus,
+    LibraryIndexStatus,
     MemoryAddResponse,
     MemoryAddResult,
     MemoryItem,
@@ -63,6 +69,9 @@ class _FakeStub:
         self.MemorySearch = AsyncMock()
         self.IndexCode = AsyncMock()
         self.CodeGraphStatus = AsyncMock()
+        self.IndexStatus = AsyncMock()
+        self.ClearIndex = AsyncMock()
+        self.CleanupIndex = AsyncMock()
 
 
 def _rpc_error(code: grpc.StatusCode, details: str = "boom") -> grpc.aio.AioRpcError:
@@ -263,6 +272,116 @@ class TestCodeGraphStatus:
         result = await client.code_graph_status()
 
         assert result == (True, 10, 20)
+
+
+# regression: docs-index-mgmt (C1 -- IndexStatus/ClearIndex/CleanupIndex client methods)
+
+
+class TestIndexStatus:
+    async def test_adapts_response_into_index_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub = _FakeStub()
+        response = IndexStatusResponse(total_chunks=10)
+        response.libraries["fastapi"].CopyFrom(
+            LibraryIndexStatus(
+                chunk_count=7,
+                indexed_at="2026-09-25T00:00:00",
+                expires_at="2026-10-02T00:00:00",
+                is_expired=False,
+                language="python",
+            )
+        )
+        response.languages["rust"].CopyFrom(
+            LanguageIndexStatus(
+                chunk_count=3,
+                indexed_at="2026-09-25T00:00:00",
+                expires_at="2026-10-02T00:00:00",
+                is_expired=True,
+            )
+        )
+        stub.IndexStatus.return_value = response
+        client = _client(monkeypatch, stub)
+
+        status = await client.index_status()
+
+        assert status.total_chunks == 10
+        assert status.libraries["fastapi"].chunk_count == 7
+        assert status.libraries["fastapi"].language == "python"
+        assert status.languages["rust"].is_expired is True
+        request, kwargs = stub.IndexStatus.call_args.args[0], stub.IndexStatus.call_args.kwargs
+        assert request.api_version == "v1"
+        assert kwargs["metadata"] == _AUTH_METADATA
+
+
+class TestClearIndex:
+    async def test_library_name_sets_oneof_and_returns_chunks_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub = _FakeStub()
+        stub.ClearIndex.return_value = ClearIndexResponse(chunks_removed=5)
+        client = _client(monkeypatch, stub)
+
+        removed = await client.clear_index(library_name="fastapi")
+
+        assert removed == 5
+        request, kwargs = stub.ClearIndex.call_args.args[0], stub.ClearIndex.call_args.kwargs
+        assert request.api_version == "v1"
+        assert request.WhichOneof("target") == "library_name"
+        assert request.library_name == "fastapi"
+        assert kwargs["metadata"] == _AUTH_METADATA
+
+    async def test_language_sets_oneof(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub = _FakeStub()
+        stub.ClearIndex.return_value = ClearIndexResponse(chunks_removed=2)
+        client = _client(monkeypatch, stub)
+
+        removed = await client.clear_index(language="rust")
+
+        assert removed == 2
+        request = stub.ClearIndex.call_args.args[0]
+        assert request.WhichOneof("target") == "language"
+        assert request.language == ProtoLanguage.LANGUAGE_RUST
+
+    async def test_neither_library_name_nor_language_raises_value_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _client(monkeypatch, _FakeStub())
+
+        with pytest.raises(ValueError, match="library_name or language"):
+            await client.clear_index()
+
+
+class TestCleanupIndex:
+    async def test_sends_current_project_state_and_returns_removed_map(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub = _FakeStub()
+        stub.CleanupIndex.return_value = CleanupIndexResponse(removed={"old-lib": 4, "_lang_go": 2})
+        client = _client(monkeypatch, stub)
+
+        removed = await client.cleanup_index(
+            current_libraries=[LibraryRef(name="fastapi", language="python", version="1.0")],
+            current_languages=["rust"],
+        )
+
+        assert removed == {"old-lib": 4, "_lang_go": 2}
+        request, kwargs = stub.CleanupIndex.call_args.args[0], stub.CleanupIndex.call_args.kwargs
+        assert request.api_version == "v1"
+        assert request.current_libraries[0].name == "fastapi"
+        assert request.current_libraries[0].language == ProtoLanguage.LANGUAGE_PYTHON
+        assert list(request.current_languages) == [ProtoLanguage.LANGUAGE_RUST]
+        assert kwargs["metadata"] == _AUTH_METADATA
+
+    async def test_defaults_to_empty_project_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub = _FakeStub()
+        stub.CleanupIndex.return_value = CleanupIndexResponse(removed={})
+        client = _client(monkeypatch, stub)
+
+        removed = await client.cleanup_index()
+
+        assert removed == {}
+        request = stub.CleanupIndex.call_args.args[0]
+        assert list(request.current_libraries) == []
+        assert list(request.current_languages) == []
 
 
 class TestErrorTranslation:

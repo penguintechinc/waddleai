@@ -14,6 +14,7 @@ from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.client.knowledge_client import (
     KnowledgeClient,
     KnowledgeClientError,
+    LibraryRef,
     RemoteMemoryManager,
 )
 from penguincode_cli.client.lessons_client import (
@@ -151,7 +152,9 @@ class REPLSession:
             try:
                 mcp_tools = await self.chat_agent._get_mcp_tools()
                 if mcp_tools:
-                    print_info(f"MCP: {len(mcp_tools[0])} tool(s) from {len(self.settings.mcp.servers)} server(s)")
+                    print_info(
+                        f"MCP: {len(mcp_tools[0])} tool(s) from {len(self.settings.mcp.servers)} server(s)"
+                    )
             except Exception as e:
                 print_info(f"MCP discovery skipped: {e}")
 
@@ -537,7 +540,8 @@ class REPLSession:
         console.print("\n[bold cyan]Available Agents:[/bold cyan]\n")
         for name, agent in self.agents.items():
             console.print(
-                f"  [green]{name}[/green]: {agent.config.description} " f"[dim](model: {agent.config.model})[/dim]"
+                f"  [green]{name}[/green]: {agent.config.description} "
+                f"[dim](model: {agent.config.model})[/dim]"
             )
         console.print()
 
@@ -559,7 +563,11 @@ class REPLSession:
             for name, info in sorted(skills.items()):
                 refs = ", ".join(info.references[:3]) if info.references else "-"
                 # Truncate description to 60 chars
-                desc = info.description[:60] + "..." if len(info.description) > 60 else info.description
+                desc = (
+                    info.description[:60] + "..."
+                    if len(info.description) > 60
+                    else info.description
+                )
                 active = " [bold yellow]*[/bold yellow]" if name == self.active_skill else ""
                 model_str = info.model or "default"
                 table.add_row(f"{name}{active}", desc, refs, model_str)
@@ -694,10 +702,16 @@ class REPLSession:
         console.print(f"[yellow]Context window:[/yellow] {s.defaults.context_window}")
         console.print(f"[yellow]Max agents:[/yellow]     {s.regulators.max_concurrent_agents}")
         console.print(f"[yellow]Agent timeout:[/yellow]  {s.regulators.agent_timeout_seconds}s")
-        console.print(f"[yellow]Memory:[/yellow]         {'enabled' if s.memory.enabled else 'disabled'}")
-        console.print(f"[yellow]Docs RAG:[/yellow]       {'enabled' if s.docs_rag.enabled else 'disabled'}")
+        console.print(
+            f"[yellow]Memory:[/yellow]         {'enabled' if s.memory.enabled else 'disabled'}"
+        )
+        console.print(
+            f"[yellow]Docs RAG:[/yellow]       {'enabled' if s.docs_rag.enabled else 'disabled'}"
+        )
         console.print()
-        console.print("[dim]Use /config show for full config, /config set <key> <value> to modify[/dim]")
+        console.print(
+            "[dim]Use /config show for full config, /config set <key> <value> to modify[/dim]"
+        )
         console.print()
 
     def _show_config_full(self) -> None:
@@ -711,7 +725,9 @@ class REPLSession:
 
         def _mask(d):
             if isinstance(d, dict):
-                return {k: ("****" if k in sensitive_keys and v else _mask(v)) for k, v in d.items()}
+                return {
+                    k: ("****" if k in sensitive_keys and v else _mask(v)) for k, v in d.items()
+                }
             if isinstance(d, list):
                 return [_mask(item) for item in d]
             return d
@@ -973,7 +989,9 @@ class REPLSession:
             for lang in self.project_context.languages:
                 console.print(f"  - {lang.value}")
 
-            console.print(f"\n[yellow]Detected Libraries ({len(self.project_context.libraries)}):[/yellow]")
+            console.print(
+                f"\n[yellow]Detected Libraries ({len(self.project_context.libraries)}):[/yellow]"
+            )
             # Group by language
             by_lang = {}
             for lib in self.project_context.libraries[:20]:  # Show first 20
@@ -989,16 +1007,31 @@ class REPLSession:
         else:
             print_info("No project context (run /docs detect)")
 
-        # Index status: server-side now (F3) -- `KnowledgeService` has no status RPC yet
-        # (only Index/Query/MemoryAdd/MemorySearch/IndexCode/CodeGraphStatus), so per-library
-        # chunk counts/freshness can no longer be shown from the CLI. Use `/docs search` to
-        # confirm indexed content is retrievable.
+        # Index status: server-side now (F3/C1), via the `IndexStatus` RPC --
+        # `DocumentationIndexer.get_index_status` is the source of truth, the CLI just
+        # renders it.
         if self.knowledge_client is not None:
             console.print("\n[yellow]Index Status:[/yellow]")
-            print_info(
-                "Per-library index status is managed server-side (no status RPC yet) -- "
-                "use /docs search to confirm indexed content is retrievable"
-            )
+            try:
+                status = await self.knowledge_client.index_status()
+            except KnowledgeClientError as e:
+                print_error(f"Failed to fetch index status: {e}")
+            else:
+                if not status.libraries and not status.languages:
+                    print_info("Nothing indexed yet")
+                else:
+                    for lib_key, lib_status in status.libraries.items():
+                        expired = " [red](expired)[/red]" if lib_status.is_expired else ""
+                        console.print(
+                            f"  [{lib_status.language}] {lib_key}: "
+                            f"{lib_status.chunk_count} chunks{expired}"
+                        )
+                    for lang_key, lang_status in status.languages.items():
+                        expired = " [red](expired)[/red]" if lang_status.is_expired else ""
+                        console.print(
+                            f"  [_lang_] {lang_key}: {lang_status.chunk_count} chunks{expired}"
+                        )
+                    console.print(f"  Total chunks: {status.total_chunks}")
 
         # Cache status
         if self.docs_fetcher:
@@ -1140,44 +1173,74 @@ class REPLSession:
             print_info("No results found")
 
     async def _docs_clear(self, library_name: str = "") -> None:
-        """Clear indexed documentation.
+        """Clear indexed documentation for one library, via the server's `ClearIndex` RPC (C1).
 
-        No server RPC exists for this yet (`KnowledgeService` exposes Index/Query/
-        MemoryAdd/MemorySearch/IndexCode/CodeGraphStatus only) -- index management now lives
-        entirely server-side, so this degrades to a clear, logged no-op rather than
-        attempting a local store operation the CLI no longer has access to.
+        Usage: `/docs clear <library_name>` -- a bare language-only clear isn't exposed as a
+        REPL subcommand (the CLI has no ambiguity-free way to distinguish a language name from
+        a library name here); use `KnowledgeClient.clear_index(language=...)` directly for that.
         """
         if self.knowledge_client is None:
             print_error("Not connected to the penguincode server")
             return
-        print_info(
-            "Clearing the documentation index is managed server-side (no clear RPC yet) -- "
-            "not available from the CLI"
-        )
+        if not library_name:
+            print_error("Usage: /docs clear <library_name>")
+            return
+
+        try:
+            removed = await self.knowledge_client.clear_index(library_name=library_name)
+        except KnowledgeClientError as e:
+            print_error(f"Failed to clear index: {e}")
+            return
+
+        if removed:
+            print_success(f"Cleared {removed} chunks for '{library_name}'")
+        else:
+            print_info(f"Nothing indexed for '{library_name}'")
 
     async def _docs_cleanup(self) -> None:
         """Remove docs for libraries no longer in project.
 
-        Only the local doc-fetch cache is cleaned up here now (F3) -- server-side index
-        cleanup has no RPC yet (see `_docs_clear`'s own note), so `index_removed` always
-        reports empty rather than attempting a local store operation the CLI no longer has
-        access to.
+        Cleans up both the local doc-fetch cache (client-side) and the server-side docs
+        index (via the `CleanupIndex` RPC, C1), which is told the CLI's own already-detected
+        project state (`self.project_context`) -- the server has no independent way to know
+        what a project still references.
         """
         if not self.project_context:
             print_error("Run /docs detect first")
             return
 
-        # Cleanup cache (still client-side -- raw doc fetch cache, not the vector index)
+        # Cleanup cache (client-side -- raw doc fetch cache, not the vector index)
         cache_removed = self.docs_fetcher.cleanup_unused_libraries(self.project_context.libraries)
 
         if cache_removed:
             console.print("\n[cyan]Cleanup Results:[/cyan]")
             for lib, count in cache_removed.items():
                 console.print(f"  Cache: removed {count} pages for {lib}")
-            console.print()
-            print_info("Server-side index cleanup is not available yet (no RPC)")
-        else:
+
+        index_removed: dict[str, int] = {}
+        if self.knowledge_client is not None:
+            try:
+                index_removed = await self.knowledge_client.cleanup_index(
+                    current_libraries=[
+                        LibraryRef(
+                            name=lib.name, language=lib.language.value, version=lib.version or ""
+                        )
+                        for lib in self.project_context.libraries
+                    ],
+                    current_languages=[lang.value for lang in self.project_context.languages],
+                )
+            except KnowledgeClientError as e:
+                print_error(f"Failed to clean up server-side index: {e}")
+
+        if index_removed:
+            console.print("\n[cyan]Server-side Index Cleanup:[/cyan]")
+            for name, count in index_removed.items():
+                console.print(f"  Index: removed {count} chunks for {name}")
+
+        if not cache_removed and not index_removed:
             print_info("Nothing to clean up")
+        else:
+            console.print()
 
     def _detect_languages_in_message(self, message: str) -> list:
         """Detect programming languages mentioned in user message.
@@ -1199,7 +1262,13 @@ class REPLSession:
             "go": [" go ", "golang", ".go", "go mod", "go build"],
             "rust": ["rust", ".rs", "cargo ", "rustc"],
             "hcl": ["terraform", "opentofu", "tofu ", ".tf", "hcl"],
-            "ansible": ["ansible", "playbook", "ansible-playbook", ".yml playbook", ".yaml playbook"],
+            "ansible": [
+                "ansible",
+                "playbook",
+                "ansible-playbook",
+                ".yml playbook",
+                ".yaml playbook",
+            ],
             "ruby": ["ruby", "rails", "gem ", "rake", "bundler", "sinatra", "rspec", "erb"],
             "php": ["php", "laravel", "symfony", "composer", "artisan", "blade", "eloquent"],
             "dart": ["dart", "flutter", "widget", "pubspec", "riverpod", "provider", "bloc"],
@@ -1225,21 +1294,28 @@ class REPLSession:
 
         try:
             # On-demand language detection and indexing
-            if self.settings.docs_rag.auto_detect_on_request and self.settings.docs_rag.auto_index_on_request:
+            if (
+                self.settings.docs_rag.auto_detect_on_request
+                and self.settings.docs_rag.auto_index_on_request
+            ):
                 detected_langs = self._detect_languages_in_message(message)
                 for lang in detected_langs:
                     await self._ensure_language_indexed(lang)
 
             # Inject documentation context if available
             if self.context_injector and self.project_context:
-                should_inject = await self.context_injector.should_inject_context(message, self.project_context)
+                should_inject = await self.context_injector.should_inject_context(
+                    message, self.project_context
+                )
                 if should_inject:
-                    context = await self.context_injector.get_relevant_context(self.scope_ctx, message, self.project_context)
+                    context = await self.context_injector.get_relevant_context(
+                        self.scope_ctx, message, self.project_context
+                    )
                     if context:
                         # Augment the chat agent's system prompt temporarily
                         original_prompt = self.chat_agent.system_prompt
-                        self.chat_agent.system_prompt = self.context_injector.build_augmented_prompt(
-                            original_prompt, context
+                        self.chat_agent.system_prompt = (
+                            self.context_injector.build_augmented_prompt(original_prompt, context)
                         )
                         console.print("[dim](using documentation context)[/dim]")
 
@@ -1296,7 +1372,9 @@ class REPLSession:
             try:
                 # Get user input with full readline support
                 prompt_text = f"You ({self.active_skill}): " if self.active_skill else "You: "
-                user_input = await asyncio.get_event_loop().run_in_executor(None, lambda: session.prompt(prompt_text))
+                user_input = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: session.prompt(prompt_text)
+                )
 
                 # Reset interrupt count on successful input
                 interrupt_count = 0

@@ -5,7 +5,11 @@
 # See penguincode_cli/proto/knowledge/v1/knowledge.proto for the scope-model
 # contract every request/response below MUST honor (api_version field 1 on
 # every request; tenant/org/team/user are never client-set).
-from .knowledge.v1.knowledge_pb2 import (  # Shared enums/types; Index; Query; MemoryAdd; MemorySearch; IndexCode; CodeGraphStatus
+from .knowledge.v1.knowledge_pb2 import (  # Shared enums/types; Index; Query; MemoryAdd; MemorySearch; IndexCode; CodeGraphStatus; IndexStatus; ClearIndex; CleanupIndex
+    CleanupIndexRequest,
+    CleanupIndexResponse,
+    ClearIndexRequest,
+    ClearIndexResponse,
     CodeGraphStatusRequest,
     CodeGraphStatusResponse,
     GraphEdge,
@@ -14,7 +18,11 @@ from .knowledge.v1.knowledge_pb2 import (  # Shared enums/types; Index; Query; M
     IndexCodeResponse,
     IndexRequest,
     IndexResponse,
+    IndexStatusRequest,
+    IndexStatusResponse,
     Language,
+    LanguageIndexStatus,
+    LibraryIndexStatus,
     LibraryTarget,
     MemoryAddRequest,
     MemoryAddResponse,
@@ -177,6 +185,17 @@ __all__ = [
     # KnowledgeService -- CodeGraphStatus
     "CodeGraphStatusRequest",
     "CodeGraphStatusResponse",
+    # KnowledgeService -- IndexStatus
+    "LibraryIndexStatus",
+    "LanguageIndexStatus",
+    "IndexStatusRequest",
+    "IndexStatusResponse",
+    # KnowledgeService -- ClearIndex
+    "ClearIndexRequest",
+    "ClearIndexResponse",
+    # KnowledgeService -- CleanupIndex
+    "CleanupIndexRequest",
+    "CleanupIndexResponse",
     # KnowledgeService -- stub/servicer/registration
     "KnowledgeServiceStub",
     "KnowledgeServiceServicer",

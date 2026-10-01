@@ -8,7 +8,6 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Docker installed and running (`docker version`)
 - [ ] kubectl installed (`kubectl version --client`)
 - [ ] Helm installed (`helm version`)
-- [ ] kustomize available (or use built-in kubectl support)
 - [ ] Kubernetes cluster accessible (`kubectl cluster-info`)
 - [ ] Correct kubeconfig configured (`kubectl config current-context`)
 
@@ -17,7 +16,7 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Access to appropriate Kubernetes context (dal2-beta for beta)
 - [ ] Cluster resource availability (`kubectl top nodes`)
 - [ ] Storage provisioner available (if using persistence)
-- [ ] Container registry access (`docker login ghcr.io`)
+- [ ] Container registry access (`docker login registry-dal2.penguintech.io`)
 
 ### Code Repository
 - [ ] Latest code pulled (`git status`)
@@ -27,12 +26,10 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] All manifests files present
 
 ### Configuration Review
-- [ ] Helm values reviewed (values.yaml, values-alpha.yaml, values-beta.yaml)
-- [ ] Kustomize overlays reviewed (alpha/ and beta/)
+- [ ] Helm values reviewed (values.yaml, alpha.yml, beta.yml)
 - [ ] Deploy script reviewed and understood (`./scripts/deploy-beta.sh --help`)
-- [ ] Target namespace confirmed (`penguincode` — same in every environment, no
-      alpha/beta/prod suffix)
-- [ ] Image registry configured correctly (ghcr.io for beta)
+- [ ] Target namespace confirmed (penguincode)
+- [ ] Image registry configured correctly (registry-dal2.penguintech.io for beta)
 
 ## Alpha Deployment Checklist
 
@@ -44,18 +41,10 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Small resource footprint acceptable (1 replica, 100m/200m CPU)
 
 ### Deployment Steps
-- [ ] Option 1 - Kustomize:
-  ```bash
-  kubectl apply -k k8s/kustomize/overlays/alpha
-  ```
-  - [ ] Dry-run first: `kubectl apply -k k8s/kustomize/overlays/alpha --dry-run=client -o yaml`
-  - [ ] Review output
-  - [ ] Apply changes
-
-- [ ] Option 2 - Helm:
+- [ ] Helm:
   ```bash
   helm install penguincode k8s/helm/penguincode \
-    -f k8s/helm/penguincode/values-alpha.yaml \
+    -f k8s/helm/penguincode/alpha.yml \
     -n penguincode --create-namespace
   ```
   - [ ] Lint first: `helm lint k8s/helm/penguincode`
@@ -82,7 +71,6 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Monitor resource usage: `kubectl top pods -n penguincode`
 
 ### Cleanup (if needed)
-- [ ] Delete deployment: `kubectl delete -k k8s/kustomize/overlays/alpha`
 - [ ] Or uninstall helm: `helm uninstall penguincode -n penguincode`
 - [ ] Verify cleanup: `kubectl get all -n penguincode`
 
@@ -108,7 +96,7 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 - [ ] Option 2 - Manual build and push:
   - [ ] Build image:
     ```bash
-    docker build -t ghcr.io/penguintechinc/penguincode:latest \
+    docker build -t registry-dal2.penguintech.io/penguincode:beta-latest \
       -f Dockerfile.server .
     ```
     - [ ] Build succeeds without errors
@@ -116,7 +104,7 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
 
   - [ ] Push image:
     ```bash
-    docker push ghcr.io/penguintechinc/penguincode:latest
+    docker push registry-dal2.penguintech.io/penguincode:beta-latest
     ```
     - [ ] Login to registry first if needed
     - [ ] Push completes successfully
@@ -132,25 +120,16 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
   - [ ] Deployment reaches ready state
   - [ ] Health check passes
 
-- [ ] Option 2 - Kustomize:
-  ```bash
-  kubectl apply -k k8s/kustomize/overlays/beta
-  ```
-  - [ ] Dry-run first: `kubectl apply -k k8s/kustomize/overlays/beta --dry-run=client -o yaml`
-  - [ ] Review namespace (penguincode)
-  - [ ] Review resource names (beta- prefix)
-  - [ ] Review image registry (ghcr.io)
-
-- [ ] Option 3 - Helm:
+- [ ] Option 2 - Helm:
   ```bash
   helm install penguincode k8s/helm/penguincode \
-    -f k8s/helm/penguincode/values-beta.yaml \
+    -f k8s/helm/penguincode/beta.yml \
     -f k8s/helm/penguincode/values.yaml \
     -n penguincode --create-namespace \
     --set image.tag=<your-tag>
   ```
   - [ ] Lint chart: `helm lint k8s/helm/penguincode`
-  - [ ] Template render: `helm template penguincode k8s/helm/penguincode -f k8s/helm/penguincode/values-beta.yaml`
+  - [ ] Template render: `helm template penguincode k8s/helm/penguincode -f k8s/helm/penguincode/beta.yml`
   - [ ] Review rendered manifests
   - [ ] Apply with --wait: add `--wait --timeout 5m`
 
@@ -300,8 +279,8 @@ Complete checklist for deploying PenguinCode to Kubernetes environments.
   - [ ] Security context not blocking
 
 ### Image pull failing?
-- [ ] Verify registry credentials: `docker login ghcr.io`
-- [ ] Check image exists: `docker pull ghcr.io/penguintechinc/penguincode:tag`
+- [ ] Verify registry credentials: `docker login registry-dal2.penguintech.io`
+- [ ] Check image exists: `docker pull registry-dal2.penguintech.io/penguincode:tag`
 - [ ] Verify pull policy: `kubectl get deployment -n penguincode -o yaml | grep imagePullPolicy`
 - [ ] Check pull secrets: `kubectl get secrets -n penguincode`
 
@@ -347,7 +326,7 @@ kubectl delete pods -n penguincode -l app=penguincode --grace-period=0 --force
 kubectl delete deployment penguincode-server -n penguincode --grace-period=0 --force
 
 # Redeploy
-kubectl apply -k k8s/kustomize/overlays/beta
+helm upgrade --install penguincode k8s/helm/penguincode -f k8s/helm/penguincode/beta.yml -n penguincode
 ```
 
 ### Scale Down (Resource Issues)
@@ -365,13 +344,13 @@ kubectl scale deployment penguincode-server -n penguincode --replicas=2
 ### Clear All and Restart
 ```bash
 # Delete everything
-kubectl delete -k k8s/kustomize/overlays/beta
+helm uninstall penguincode -n penguincode
 
 # Wait for cleanup
 sleep 10
 
 # Redeploy
-kubectl apply -k k8s/kustomize/overlays/beta
+helm upgrade --install penguincode k8s/helm/penguincode -f k8s/helm/penguincode/beta.yml -n penguincode
 
 # Monitor
 kubectl rollout status deployment/penguincode-server -n penguincode --watch
