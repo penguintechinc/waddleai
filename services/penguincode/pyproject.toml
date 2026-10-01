@@ -157,3 +157,19 @@ warn_unused_ignores = true
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+
+# Coverage measurement only -- no `fail_under` here. The whole-package
+# figure (56.9% as of 2026-10-01, dragged down by legacy modules like
+# core/repl.py) is not a meaningful single gate; scripts/coverage_gate.py
+# enforces the real two-tier policy (90% on knowledge-platform modules,
+# a ratchet floor on everything else) by reading this same data file.
+[tool.coverage.run]
+branch = true
+source = ["penguincode_cli"]
+omit = [
+    "penguincode_cli/proto/**/*_pb2*.py",  # generated gRPC stubs, not hand-written
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

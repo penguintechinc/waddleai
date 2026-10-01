@@ -669,11 +669,14 @@ jobs:
           exit 1
         fi
 
-    - name: Run penguincode tests
-      # --no-cov: the subtree has no coverage config of its own and the root
-      # .coveragerc measures shared/, proxy/ and services/management/, none of
-      # which this suite exercises.
-      run: python -m pytest tests/ -v --no-cov
+    - name: Run penguincode tests (coverage-gated)
+      # Two-tier gate (scripts/coverage_gate.py): 90% line+branch on the
+      # knowledge-platform modules, plus a whole-package ratchet floor
+      # (.coverage-floor) that can only move up. Replaces the old --no-cov,
+      # which meant this subtree had no coverage gate anywhere (the root
+      # .coveragerc measures shared/, proxy/ and services/management/, none
+      # of which this suite exercises).
+      run: make test-coverage
 
   build-platform:
     needs: [determine-tier, test, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e, test-penguincode]
