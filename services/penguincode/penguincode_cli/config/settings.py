@@ -254,17 +254,6 @@ class GraphConfig:
     postgres: PostgresGraphStoreConfig = field(default_factory=PostgresGraphStoreConfig)
 
 
-def _env_int(name: str, default: int) -> int:
-    """Parse `name` as an int, falling back to `default` on unset/blank/invalid -- never raises."""
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
 def _env_float(name: str, default: float) -> float:
     """Float counterpart of `_env_int` -- same unset/blank/invalid fallback contract."""
     raw = os.environ.get(name)
