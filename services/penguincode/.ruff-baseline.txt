@@ -111,13 +111,11 @@ format|penguincode_cli/docs_rag/sources.py:385:35: unformatted: File would be re
 format|penguincode_cli/lessons/scrub.py:484:39: unformatted: File would be reformatted
 format|penguincode_cli/main.py:341:35: unformatted: File would be reformatted
 format|penguincode_cli/ollama/client.py:146:43: unformatted: File would be reformatted
-format|penguincode_cli/retrieval/graphrag.py:320:15: unformatted: File would be reformatted
 format|penguincode_cli/server/models/config_store.py:254:18: unformatted: File would be reformatted
 format|penguincode_cli/server/services/admin.py:119:14: unformatted: File would be reformatted
 format|penguincode_cli/server/services/auth.py:169:23: unformatted: File would be reformatted
 format|penguincode_cli/server/services/provision.py:100:32: unformatted: File would be reformatted
 format|penguincode_cli/skills/loader.py:116:20: unformatted: File would be reformatted
-format|penguincode_cli/stores/graph.py:592:24: unformatted: File would be reformatted
 format|penguincode_cli/tools/engines/factory.py:62:54: unformatted: File would be reformatted
 format|penguincode_cli/tools/engines/fireplexity.py:67:45: unformatted: File would be reformatted
 format|penguincode_cli/tools/engines/google.py:70:45: unformatted: File would be reformatted
