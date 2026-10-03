@@ -72,6 +72,12 @@ ENV FLASK_ENV=production \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# O9: worker count overridable at runtime via HYPERCORN_WORKERS (see
+# k8s/helm/waddleai/values.yaml management.workers) instead of a value
+# baked into the image. Default below preserves this image's previous
+# fixed `--workers 2` behavior for anyone running it outside the chart.
+ENV HYPERCORN_WORKERS=2
+
 # Expose port
 EXPOSE 8001
 
@@ -79,6 +85,9 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')" || exit 1
 
-# Run with hypercorn (ASGI)
-# SQLAlchemy handles schema init once, PyDAL connects in each worker
-CMD ["hypercorn", "asgi:app", "--bind", "0.0.0.0:8001", "--workers", "2"]
+# Run with hypercorn (ASGI). SQLAlchemy handles schema init once, PyDAL
+# connects in each worker. `sh -c 'exec ...'` (not the shell form of CMD) so
+# hypercorn becomes PID 1 after exec and receives SIGTERM directly instead
+# of it being absorbed by an intermediate shell process. USER waddleai is
+# already set above, so this stays rootless.
+CMD ["sh", "-c", "exec hypercorn asgi:app --bind 0.0.0.0:8001 --workers ${HYPERCORN_WORKERS}"]

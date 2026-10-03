@@ -1253,8 +1253,14 @@ class ProxyServer:
     async def shutdown(self):
         """Cleanup server components."""
         if self.grpc_server:
-            self.grpc_server.stop(grace=5)
-            logger.info("gRPC server stopped")
+            # O5-a: was hardcoded `grace=5`, racing a pod's
+            # terminationGracePeriodSeconds on any environment that sets it
+            # tighter/looser than 5s. Values-driven via
+            # PROXY_GRPC_SHUTDOWN_GRACE_SECONDS (see
+            # k8s/helm/waddleai/values.yaml proxy.grpcShutdownGraceSeconds).
+            grpc_shutdown_grace = float(os.environ.get("PROXY_GRPC_SHUTDOWN_GRACE_SECONDS", "5"))
+            self.grpc_server.stop(grace=grpc_shutdown_grace)
+            logger.info("gRPC server stopped", grace=grpc_shutdown_grace)
 
         if self.http_session:
             await self.http_session.close()
