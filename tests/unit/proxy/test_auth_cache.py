@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -120,16 +119,19 @@ class TestApiKeyAuthCacheNoValkey:
         await cache.set_negative("ghost-key")
         assert await cache.get("ghost-key") is True
 
-    async def test_ttl_expiry(self, monkeypatch):
-        """An entry past its TTL reads back as a miss, not a stale hit."""
-        cache = ApiKeyAuthCache(valkey=None, ttl_seconds=10.0)
+    async def test_ttl_expiry(self):
+        """An entry past its TTL reads back as a miss, not a stale hit.
+
+        Uses an injected ``clock`` -- the cache's own sanctioned test seam --
+        rather than monkeypatching the global ``time`` module: every
+        timestamp the cache ever reads or writes goes through the same fake
+        clock from construction onward, so there is no real-wall-clock value
+        baked into any entry for the fake clock to disagree with later.
+        """
+        fake_now = [1000.0]
+        cache = ApiKeyAuthCache(valkey=None, ttl_seconds=10.0, clock=lambda: fake_now[0])
         record = _make_record()
 
-        fake_now = [1000.0]
-        monkeypatch.setattr(
-            "proxy.apps.proxy_server.auth_cache.time",
-            SimpleNamespace(monotonic=lambda: fake_now[0]),
-        )
         await cache.set("abc123", record)
 
         fake_now[0] += 5.0  # still within TTL
@@ -514,31 +516,39 @@ class TestApiKeyAuthenticatorLastUsedDebounce:
 
         metrics.record_database_operation.assert_any_call("update", "api_keys", success=False)
 
-    async def test_touch_after_interval_elapses_again(self, monkeypatch):
+    async def test_touch_after_interval_elapses_again(self):
         """A second authentication after the debounce interval elapses writes last_used again.
 
-        Patches only `auth_cache`'s own `time` name (a fake namespace with
-        just `.monotonic()` overridden), never the real `time` module --
-        asyncio's own event-loop clock reads `time.monotonic()` too, and
-        freezing that singleton would hang every real `asyncio.sleep()`
-        call below waiting on a clock that never advances.
+        Uses a single injected ``clock`` shared by both `cache` and `auth`
+        (the sanctioned test seam -- see `ApiKeyAuthCache`/`ApiKeyAuthenticator`
+        docstrings), constructed *before* `cache.set()` runs. Never
+        monkeypatches the global `time` module: doing so after a cache
+        entry has already been written against the real wall clock mixes a
+        real timestamp with a frozen fake one, and whether the frozen value
+        reads as "already expired" then depends on the test host's real
+        monotonic uptime at the moment `cache.set()` ran -- which is exactly
+        what made the original version of this test flake in CI (it passed
+        on a long-uptime dev machine, failed on a fresh low-uptime
+        container where `expires_at` landed below the frozen fake `now`).
         """
         secret = "wa-abc123-realsecret"  # noqa: S105 -- test fixture credential
         record = _make_record(key_record_id=100, key_hash=bcrypt.hash(secret))
-        cache = ApiKeyAuthCache(valkey=None)
+
+        fake_now = [2000.0]
+        clock = lambda: fake_now[0]  # noqa: E731 -- shared mutable-cell clock, a def buys nothing here
+
+        cache = ApiKeyAuthCache(valkey=None, clock=clock)
         await cache.set("abc123", record)
 
         rbac = _mock_rbac()
-        auth = ApiKeyAuthenticator(rbac=rbac, cache=cache, last_used_interval_seconds=1.0)
-
-        fake_now = [2000.0]
-        fake_time = SimpleNamespace(monotonic=lambda: fake_now[0])
-        monkeypatch.setattr("proxy.apps.proxy_server.auth_cache.time", fake_time)
+        auth = ApiKeyAuthenticator(
+            rbac=rbac, cache=cache, clock=clock, last_used_interval_seconds=1.0
+        )
 
         await auth.authenticate(secret)
         await asyncio.sleep(0.05)  # let the fire-and-forget executor touch task finish
 
-        fake_now[0] += 2.0  # past the 1s debounce window
+        fake_now[0] += 2.0  # past the 1s debounce window (well within the 60s cache TTL)
         await auth.authenticate(secret)
         await asyncio.sleep(0.05)  # let the fire-and-forget executor touch task finish
 

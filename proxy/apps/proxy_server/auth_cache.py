@@ -44,6 +44,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from enum import Enum, auto
@@ -199,6 +200,13 @@ class ApiKeyAuthCache:
     dict pruned lazily on read (bounded by the tenant's own key_id
     cardinality, not by an eviction policy) so a Valkey outage degrades to
     per-process caching rather than no caching at all.
+
+    ``clock`` is the TTL time source, injectable for deterministic tests
+    (construct with a fake ``clock`` callable and advance it explicitly --
+    never monkeypatch the global ``time`` module: this class's own ``clock``
+    calls are the sanctioned seam, and mixing a frozen fake clock with any
+    real-clock-stamped entry written before the patch was applied is exactly
+    the bug this seam avoids).
     """
 
     valkey: Any | None
@@ -208,6 +216,7 @@ class ApiKeyAuthCache:
     negative_ttl_seconds: float = field(
         default_factory=lambda: _float_env(_ENV_NEGATIVE_TTL_SECONDS, _DEFAULT_NEGATIVE_TTL_SECONDS)
     )
+    clock: Callable[[], float] = time.monotonic
     _local: dict[str, tuple[float, str]] = field(default_factory=dict)
     _local_lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
 
@@ -278,7 +287,7 @@ class ApiKeyAuthCache:
                 logger.warning("Auth cache: Valkey write failed for key_id=%s: %s", key_id, exc)
 
     def _read_local(self, key_id: str) -> str | None:
-        now = time.monotonic()
+        now = self.clock()
         with self._local_lock:
             entry = self._local.get(key_id)
             if entry is None:
@@ -291,7 +300,7 @@ class ApiKeyAuthCache:
 
     def _write_local(self, key_id: str, raw: str, ttl: float) -> None:
         with self._local_lock:
-            self._local[key_id] = (time.monotonic() + ttl, raw)
+            self._local[key_id] = (self.clock() + ttl, raw)
 
 
 # ---------------------------------------------------------------------------
@@ -349,12 +358,20 @@ class ApiKeyAuthenticator:
     every request carrying a raw API-key credential. Never used by the gRPC
     surface, which already runs on its own thread pool (``grpc_identity_resolver``
     stays on the original, synchronous ``RBACManager.authenticate_api_key``).
+
+    ``clock`` is the debounce time source, injectable for deterministic
+    tests (pass the SAME fake ``clock`` callable to both this and ``cache``
+    so cache-TTL and debounce logic advance together under one controllable
+    clock -- never monkeypatch the global ``time`` module, which also
+    freezes asyncio's own event-loop clock and hangs any real
+    ``asyncio.sleep``/executor await in the same test).
     """
 
     rbac: RBACManager
     cache: ApiKeyAuthCache
     metrics: WaddleAIMetrics | None = None
     features: FeatureFlagsHelper | None = None
+    clock: Callable[[], float] = time.monotonic
     last_used_interval_seconds: float = field(
         default_factory=lambda: _float_env(
             _ENV_LAST_USED_INTERVAL_SECONDS, _DEFAULT_LAST_USED_INTERVAL_SECONDS
@@ -383,7 +400,7 @@ class ApiKeyAuthenticator:
         if self.features is not None:
             bypass = await self.features.resolve(AUTH_CACHE_DISABLE_FLAG, distinct_id="server")
 
-        start = time.monotonic()
+        start = self.clock()
         outcome = _Outcome.BYPASS if bypass else _Outcome.MISS
         try:
             if bypass:
@@ -400,7 +417,7 @@ class ApiKeyAuthenticator:
             outcome = _Outcome.MISS
             return await self._authenticate_uncached(credential, key_id, populate_cache=True)
         finally:
-            self._record(outcome, time.monotonic() - start)
+            self._record(outcome, self.clock() - start)
 
     async def _authenticate_from_cache(
         self, credential: str, cached: CachedKeyRecord
@@ -455,7 +472,7 @@ class ApiKeyAuthenticator:
 
     def _schedule_last_used_touch(self, key_record_id: int) -> None:
         """Fire a debounced, background ``last_used`` write -- never inline on the request path."""
-        now = time.monotonic()
+        now = self.clock()
         with self._last_used_lock:
             due = self._last_used_at.get(key_record_id, 0.0) + self.last_used_interval_seconds
             if now < due:
