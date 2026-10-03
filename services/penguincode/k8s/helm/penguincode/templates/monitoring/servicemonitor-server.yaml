@@ -1,0 +1,39 @@
+{{/*
+Prometheus Operator ServiceMonitor for the penguincode server (O2 fix).
+Scrapes the `rest` Service port (8080) -- see values.yaml `monitoring`
+block's header comment for the documented gap: this port has no
+Prometheus `/metrics` route in app code as of this PR, only OTLP push
+(penguincode_cli/observability/otel.py). Guarded by monitoring.enabled +
+.serviceMonitor.enabled AND a live CRD capability check so a cluster
+without the Prometheus Operator installed still renders/installs this
+chart cleanly.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled .Values.server.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "penguincode.fullname" . }}-server
+  namespace: {{ .Values.monitoring.namespace | default .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.server.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.global.namespace }}
+  selector:
+    matchLabels:
+      {{- include "penguincode.server.selectorLabels" . | nindent 6 }}
+  endpoints:
+    # "rest" port only -- "grpc" is a separate protocol, not a second
+    # Prometheus text-format surface.
+    - port: rest
+      path: {{ .Values.monitoring.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        - targetLabel: job
+          replacement: penguincode-server
+{{- end }}

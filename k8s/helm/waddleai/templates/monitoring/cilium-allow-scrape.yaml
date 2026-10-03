@@ -1,0 +1,42 @@
+{{/*
+Explicit Cilium ingress-allow for the Prometheus scrape itself (O2 fix).
+`waddleai-default-deny` (templates/cilium-network-policy.yaml) sets
+`ingress: []` for the whole namespace -- without this rule a Cilium cluster
+would accept the ServiceMonitor object but silently 0-scrape every target
+(connection refused at the network layer, not an app-level 404), which is
+exactly the kind of "green dashboard, dead data" failure mode critical-rules
+Verification Integrity warns about. Scoped to the management/proxy metrics
+port only (security.md "port-scoped external access"), from whatever
+namespace runs the cluster's Prometheus (monitoring.scrapeSourceNamespaceLabels),
+never a blanket allow. Same CRD-capability + cilium.enabled guard as every
+other CiliumNetworkPolicy in this chart.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") -}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-prometheus-scrape
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - management
+          - proxy
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- range $k, $v := .Values.monitoring.scrapeSourceNamespaceLabels }}
+            "k8s:{{ $k }}": {{ $v | quote }}
+            {{- end }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.management.service.targetPort | quote }}
+              protocol: TCP
+            - port: {{ .Values.proxy.service.targetPort | quote }}
+              protocol: TCP
+{{- end }}

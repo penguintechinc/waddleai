@@ -388,6 +388,6 @@ Check WaddleAI analytics regularly to:
 
 - [WaddleAI API Documentation](../api/openai-compatible.md)
 - [Authentication Guide](../api/authentication.md)
-- [Analytics Dashboard](../administration/monitoring.md)
+- [Monitoring Guide](../operations/MONITORING.md)
 - [Memory Systems](memory-systems.md)
 - [Open WebUI Documentation](https://docs.openwebui.com)

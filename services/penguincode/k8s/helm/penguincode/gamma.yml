@@ -72,3 +72,9 @@ ingress:
     - secretName: penguincode-gamma-tls
       hosts:
         - penguincode-gamma.penguintech.cloud
+
+# Observability (O2 fix) -- DO gamma runs kube-prometheus-stack.
+monitoring:
+  enabled: true
+  extraLabels:
+    release: kube-prometheus-stack

@@ -69,3 +69,9 @@ ingress:
     - secretName: penguincode-beta-tls
       hosts:
         - penguincode.penguintech.cloud
+
+# Observability (O2 fix) -- dal2-beta runs kube-prometheus-stack.
+monitoring:
+  enabled: true
+  extraLabels:
+    release: kube-prometheus-stack

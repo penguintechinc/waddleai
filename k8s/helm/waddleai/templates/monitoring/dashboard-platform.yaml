@@ -1,0 +1,78 @@
+{{/*
+Platform-overview Grafana dashboard ConfigMap (O2 fix) -- one glance across
+management + proxy (+ penguincode, scraped by the sibling chart's own
+ServiceMonitor into the same Prometheus). Same sidecar-discovery label as
+the per-service dashboards; renders whenever EITHER service is enabled so
+it's never empty-by-construction.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.dashboards.enabled (or .Values.management.enabled .Values.proxy.enabled) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "waddleai.fullname" . }}-dashboard-platform
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: platform
+    {{ .Values.monitoring.dashboards.sidecarLabelKey }}: {{ .Values.monitoring.dashboards.sidecarLabelValue | quote }}
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  waddleai-platform-overview.json: |
+    {
+      "title": "WaddleAI / Platform Overview",
+      "uid": "waddleai-platform-overview",
+      "schemaVersion": 39,
+      "timezone": "utc",
+      "time": { "from": "now-6h", "to": "now" },
+      "tags": ["waddleai", "overview"],
+      "panels": [
+        {
+          "id": 1, "title": "Request rate by service", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_requests_total{}[5m])) by (service)", "legendFormat": {{ "{{service}}" | quote }} }
+          ]
+        },
+        {
+          "id": 2, "title": "Error ratio by service", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_requests_total{status_code=~\"5..\"}[5m])) by (service) / sum(rate(waddleai_requests_total{}[5m])) by (service)", "legendFormat": {{ "{{service}}" | quote }} }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit" } }
+        },
+        {
+          "id": 3, "title": "p95 latency by service", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            { "expr": "histogram_quantile(0.95, sum(rate(waddleai_request_duration_seconds_bucket{}[5m])) by (le, service))", "legendFormat": {{ "{{service}}" | quote }} }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 4, "title": "Scrape targets up", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "up{job=~\"waddleai-management|waddleai-proxy|penguincode-server\"}", "legendFormat": {{ "{{job}}" | quote }} }
+          ],
+          "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
+        },
+        {
+          "id": 5, "title": "Pod restarts (1h) by workload", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
+          "targets": [
+            { "expr": "sum(increase(kube_pod_container_status_restarts_total{}[1h])) by (pod)", "legendFormat": {{ "{{pod}}" | quote }} }
+          ]
+        },
+        {
+          "id": 6, "title": "Firing alerts (ALERTS)", "type": "table",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
+          "targets": [
+            { "expr": "ALERTS{alertstate=\"firing\",service=~\"management|proxy|penguincode\"}" }
+          ]
+        }
+      ]
+    }
+{{- end }}
