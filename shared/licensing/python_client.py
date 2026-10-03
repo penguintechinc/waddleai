@@ -2,6 +2,17 @@
 
 This module provides a Python client for integrating with the PenguinTech License Server
 to validate licenses and check feature entitlements.
+
+``check_feature`` implements stale-while-error: once the normal 5-minute
+cache TTL expires, a license-server outage serves the last-known entitlement
+(regardless of that TTL) rather than hard-denying, up to
+``LICENSE_MAX_STALE_SECONDS`` old (default 7 days) -- a license-server
+outage must never lock out an already-entitled, paying tenant. Only a
+feature that was never successfully fetched, or whose cached entry has aged
+past the max-stale window, hard-denies. Kill switch:
+``waddleai.disable-license-stale-cache`` (unseen/OFF, the default, keeps
+this mechanism ON; ON reverts to the pre-fix behaviour of hard-denying on
+any request exception).
 """
 
 import logging
@@ -12,7 +23,53 @@ from typing import Any, Optional
 
 import requests
 
+from shared.utils.feature_flags import is_feature_enabled
+
 logger = logging.getLogger(__name__)
+
+_DISABLE_STALE_CACHE_FLAG = "waddleai.disable-license-stale-cache"
+
+_DEFAULT_MAX_STALE_SECONDS = 7 * 24 * 60 * 60  # 7 days
+
+_license_checks_counter: Any = None
+
+
+def _max_stale_seconds() -> float:
+    """``LICENSE_MAX_STALE_SECONDS`` env override, default 7 days."""
+    raw = os.getenv("LICENSE_MAX_STALE_SECONDS")
+    if raw is None:
+        return float(_DEFAULT_MAX_STALE_SECONDS)
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid LICENSE_MAX_STALE_SECONDS=%r, using default=%s",
+            raw,
+            _DEFAULT_MAX_STALE_SECONDS,
+        )
+        return float(_DEFAULT_MAX_STALE_SECONDS)
+
+
+def _record_license_check(result: str) -> None:
+    """Increment ``license_checks_total{result=...}``. Never raises."""
+    global _license_checks_counter
+    try:
+        if _license_checks_counter is None:
+            from shared.observability.metrics import get_meter
+
+            _license_checks_counter = get_meter().create_counter(
+                "license_checks_total",
+                unit="1",
+                description=(
+                    "License feature-entitlement checks by result: live (fresh "
+                    "fetch), stale (served past normal TTL during an outage), "
+                    "denied (hard denial), bypass (domain-based, recorded by "
+                    "the caller's penguin_licensing/domain_bypass integration)"
+                ),
+            )
+        _license_checks_counter.add(1, {"result": result})
+    except Exception as exc:  # noqa: BLE001 -- telemetry must never break licensing
+        logger.debug("license check telemetry emission failed: %s", exc)
 
 
 class FeatureNotAvailableError(Exception):
@@ -140,6 +197,11 @@ class PenguinTechLicenseClient:
     def check_feature(self, feature: str, use_cache: bool = True) -> bool:
         """Check if a specific feature is enabled.
 
+        On a license-server outage (``requests.RequestException``), degrades
+        to the last-known entitlement for ``feature`` -- see the module
+        docstring for the stale-while-error contract and the
+        ``waddleai.disable-license-stale-cache`` kill switch.
+
         Args:
             feature: Feature name to check
             use_cache: Whether to use cached results
@@ -152,6 +214,7 @@ class PenguinTechLicenseClient:
         if use_cache and self._is_cache_valid():
             cached_result = self._feature_cache.get(feature)
             if cached_result is not None:
+                _record_license_check("live")
                 return cached_result
 
         try:
@@ -170,13 +233,60 @@ class PenguinTechLicenseClient:
                 # Cache the result
                 self._feature_cache[feature] = entitled
                 self._cache_timestamp = time.time()
+                _record_license_check("live")
                 return entitled
 
+            _record_license_check("live")
             return False
 
         except requests.RequestException as e:
-            logger.error(f"Feature check failed for {feature}: {e}")
+            if is_feature_enabled(_DISABLE_STALE_CACHE_FLAG, default=False):
+                # Kill switch ON: pre-fix behaviour, hard-deny, no stale serving.
+                logger.error(f"Feature check failed for {feature}: {e}")
+                _record_license_check("denied")
+                return False
+            return self._serve_stale_or_deny(feature, e)
+
+    def _serve_stale_or_deny(self, feature: str, error: Exception) -> bool:
+        """Stale-while-error fallback for :meth:`check_feature`.
+
+        Serves the last-known entitlement for ``feature`` -- regardless of
+        the normal 5-minute cache TTL -- as long as it is younger than
+        ``LICENSE_MAX_STALE_SECONDS``. Hard-denies only when ``feature`` was
+        never successfully fetched, or its cached entry has aged past that
+        window; a license-server outage must never lock out an
+        already-entitled, paying tenant.
+        """
+        cached_result = self._feature_cache.get(feature)
+        if cached_result is not None and self._cache_timestamp is not None:
+            age = time.time() - self._cache_timestamp
+            max_stale = _max_stale_seconds()
+            if age < max_stale:
+                logger.warning(
+                    "License server unreachable checking feature %s (%s); serving "
+                    "stale cached entitlement=%s (age=%.0fs, max_stale=%.0fs)",
+                    feature,
+                    error,
+                    cached_result,
+                    age,
+                    max_stale,
+                )
+                _record_license_check("stale")
+                return cached_result
+            logger.error(
+                "License server unreachable checking feature %s (%s); cached "
+                "entitlement is %.0fs old, past LICENSE_MAX_STALE_SECONDS=%.0fs -- denying",
+                feature,
+                error,
+                age,
+                max_stale,
+            )
+            _record_license_check("denied")
             return False
+
+        logger.error(f"Feature check failed for {feature} and no prior successful fetch: {error}")
+        _record_license_check("denied")
+        return False
 
     def keepalive(self, usage_data: dict[str, Any] | None = None) -> dict[str, Any]:
         """Send keepalive with optional usage statistics.

@@ -78,6 +78,13 @@ class Config:
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", os.getenv("JWT_SECRET", ""))
     DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
+    # Request body size cap (Quart/werkzeug enforce this itself, raising
+    # RequestEntityTooLarge -> our 413 handler below). Default 2 MiB: generous
+    # for JSON API payloads (provider configs, routing policies, bulk ops)
+    # while bounding worst-case memory per request; override per-deployment
+    # if a legitimate payload (e.g. a large bulk import) needs more headroom.
+    MAX_CONTENT_LENGTH = int(os.getenv("MANAGEMENT_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+
     # Database settings (PyDAL)
     DATABASE_URL = _build_database_url()
 
