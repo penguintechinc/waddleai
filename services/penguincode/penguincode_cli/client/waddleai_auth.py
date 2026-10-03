@@ -395,6 +395,19 @@ class WaddleAITokenProvider:
         """Return gRPC invocation metadata carrying the bearer token (F3's consumption point)."""
         return [("authorization", await self.get_authorization_header())]
 
+    def invalidate_cache(self) -> None:
+        """Discard the cached token WITHOUT a server-side logout call (O8 CLI resilience).
+
+        Used by `KnowledgeClient._call` when the server rejects the cached token as
+        `UNAUTHENTICATED` -- clearing the cache (rather than keeping and re-handing out the
+        same rejected token) means the *next* `get_access_token()` call re-acquires from
+        scratch instead of looping on a credential the server has already refused.
+        Deliberately synchronous and side-effect-only on the local cache: unlike
+        `logout()`, this never talks to the network, so it is always safe to call from an
+        exception handler.
+        """
+        self._store.clear()
+
     async def logout(self) -> None:
         """Discard the cached token and best-effort notify the server (``/auth/logout``).
 

@@ -2,11 +2,14 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+import random
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import grpc
 
 from penguincode_cli.config.settings import ClientConfig, ServerConfig
+from penguincode_cli.flags.client import DISABLE_CLIENT_RETRY_FLAG, SYSTEM_SCOPE
+from penguincode_cli.flags.client import is_enabled as _flag_is_enabled
 from penguincode_cli.proto import (
     AuthRequest,
     AuthServiceStub,
@@ -27,6 +30,67 @@ from .auth import TokenManager
 from .tracing_interceptor import TracingClientInterceptor
 
 logger = logging.getLogger(__name__)
+
+#: gRPC status codes a retry is ever attempted for (O8 CLI resilience) -- a transient
+#: connectivity blip or a server-side deadline, never anything else.
+_RETRYABLE_STATUS_CODES = (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED)
+
+#: gRPC status codes that must NEVER be retried -- an expired/invalid credential retrying
+#: with the same credential just fails identically every time; the caller needs to
+#: re-authenticate, not spin in a backoff loop (security.md Service-to-Service Auth).
+_NON_RETRYABLE_AUTH_CODES = (grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.PERMISSION_DENIED)
+
+
+def _retry_enabled() -> bool:
+    """Whether the O8 retry/backoff mechanism is active (opt-out kill-switch, process-wide).
+
+    `penguincode.disable-client-retry` unseen/OFF (the default) means retry is ON; setting
+    it ON reverts to a single attempt, the pre-O8 behavior. Evaluated per call (never
+    cached beyond `FlagClient`'s own cache) so a live flag flip takes effect immediately.
+    """
+    return not _flag_is_enabled(DISABLE_CLIENT_RETRY_FLAG, SYSTEM_SCOPE)
+
+
+async def retry_with_backoff[T](
+    call: Callable[[], Awaitable[T]],
+    *,
+    max_retries: int,
+    base_delay_ms: float,
+    max_delay_ms: float,
+) -> T:
+    """Invoke *call*, retrying on `UNAVAILABLE`/`DEADLINE_EXCEEDED` with exponential
+    backoff + full jitter, bounded by *max_retries* attempts (O8 CLI resilience).
+
+    Never retries `UNAUTHENTICATED`/`PERMISSION_DENIED` -- those propagate on the first
+    attempt so the caller can re-authenticate instead of retrying a doomed call. Any other
+    `grpc.RpcError`, or exhausting *max_retries*, re-raises the last error. Total wall time
+    is inherently bounded: at most `max_retries` sleeps, each capped at `max_delay_ms`.
+    Honors `_retry_enabled()` -- when the kill-switch is ON, this degrades to exactly one
+    attempt regardless of *max_retries* (the legacy, pre-O8 behavior).
+    """
+    attempts_left = max_retries if _retry_enabled() else 0
+    attempt = 0
+    while True:
+        try:
+            return await call()
+        except grpc.RpcError as exc:
+            code = exc.code() if hasattr(exc, "code") else None
+            if code in _NON_RETRYABLE_AUTH_CODES:
+                raise
+            if code not in _RETRYABLE_STATUS_CODES or attempt >= attempts_left:
+                raise
+            delay_ms = min(base_delay_ms * (2**attempt), max_delay_ms)
+            delay_s = (delay_ms * random.random()) / 1000.0  # full jitter: [0, delay_ms)
+            logger.warning(
+                "gRPC call failed (%s), retrying in %.3fs (attempt %d/%d): %s",
+                code,
+                delay_s,
+                attempt + 1,
+                attempts_left,
+                exc,
+            )
+            await asyncio.sleep(delay_s)
+            attempt += 1
 
 
 class GRPCClient(IChatService):
@@ -100,8 +164,17 @@ class GRPCClient(IChatService):
             self._tool_stub = ToolCallbackServiceStub(self._channel)
             self._health_stub = HealthServiceStub(self._channel)
 
-            # Test connection with health check
-            response = await self._health_stub.Check(HealthCheckRequest())
+            # Test connection with health check. O8 CLI resilience: a transient
+            # UNAVAILABLE/DEADLINE_EXCEEDED on the very first call (server mid-restart,
+            # brief network blip) no longer fails `connect()` outright -- retried with
+            # backoff+jitter per `self.client_config.retry_*` before giving up.
+            health_stub = self._health_stub
+            response = await retry_with_backoff(
+                lambda: health_stub.Check(HealthCheckRequest()),
+                max_retries=self.client_config.retry_max,
+                base_delay_ms=self.client_config.retry_base_ms,
+                max_delay_ms=self.client_config.retry_max_ms,
+            )
             logger.info(f"Connected to server version {response.version}")
 
             return True

@@ -542,6 +542,62 @@ class TestBearerHeaderAndLogout:
         assert provider._store.load() is None
 
 
+class TestInvalidateCache:
+    """O8 CLI resilience: `invalidate_cache()` clears the local cache without any
+    network call -- used by `KnowledgeClient._call` on a server-rejected (UNAUTHENTICATED)
+    cached token, where a best-effort server round trip (`logout()`'s job) would be
+    pointless (the server already rejected this exact token).
+    """
+
+    @pytest.mark.asyncio
+    async def test_invalidate_cache_clears_without_network_call(self, tmp_path: Path) -> None:
+        issued = _login_response_token()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/api/v1/auth/login"
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path), client_factory=_client_factory_for(handler)
+        )
+        await provider.get_access_token()
+        assert provider._store.load() is not None
+
+        provider.invalidate_cache()
+
+        assert provider._store.load() is None
+
+    def test_invalidate_cache_with_no_cached_token_is_a_noop(self, tmp_path: Path) -> None:
+        provider = WaddleAITokenProvider(_make_config(tmp_path))
+        provider.invalidate_cache()  # must not raise
+        assert provider._store.load() is None
+
+    @pytest.mark.asyncio
+    async def test_next_call_reacquires_after_invalidate(self, tmp_path: Path) -> None:
+        """The whole point: a fresh `get_access_token()` after `invalidate_cache()` hits
+        the server again rather than replaying the discarded (rejected) token.
+        """
+        login_calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal login_calls
+            assert request.url.path == "/api/v1/auth/login"
+            login_calls += 1
+            return httpx.Response(
+                200, json={"access_token": _login_response_token(), "expires_in": 3600}
+            )
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path), client_factory=_client_factory_for(handler)
+        )
+        await provider.get_access_token()
+        assert login_calls == 1
+
+        provider.invalidate_cache()
+        await provider.get_access_token()
+        assert login_calls == 2
+
+
 class TestNeverLogsToken:
     @pytest.mark.asyncio
     async def test_token_value_never_appears_in_log_records(

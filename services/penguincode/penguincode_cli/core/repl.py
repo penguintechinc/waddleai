@@ -1,8 +1,9 @@
 """Interactive REPL loop for PenguinCode chat."""
 
 import asyncio
+import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -14,6 +15,7 @@ from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.client.knowledge_client import (
     KnowledgeClient,
     KnowledgeClientError,
+    KnowledgeServerUnavailableError,
     LibraryRef,
     RemoteMemoryManager,
 )
@@ -22,6 +24,8 @@ from penguincode_cli.client.lessons_client import (
     LessonsClientError,
     LessonsPermissionDeniedError,
 )
+from penguincode_cli.client.offline_cache import OfflineCache
+from penguincode_cli.client.update_check import maybe_notify_update
 from penguincode_cli.config.settings import (
     Settings,
     get_config_value,
@@ -35,6 +39,8 @@ from penguincode_cli.skills import SkillLoader
 from penguincode_cli.ui import console, print_error, print_info, print_success
 
 from .session import SessionManager
+
+logger = logging.getLogger(__name__)
 
 # Lazy imports to avoid circular dependency
 if TYPE_CHECKING:
@@ -110,6 +116,34 @@ class REPLSession:
         self.skill_loader.discover()
         self.active_skill: str | None = None
 
+        # O8 CLI resilience: scope-safe local read cache (`client/offline_cache.py`) so a
+        # transient server outage degrades read commands (e.g. `/docs search`) to a stale
+        # cached result instead of a bare failure. `connectivity_ok` is the REPL's own
+        # connectivity indicator -- flipped by `_note_connectivity` around every
+        # `knowledge_client` call, surfaced via `/status` and inline error messages.
+        self.offline_cache = OfflineCache(
+            cache_dir=self.settings.client.offline_cache_dir,
+            ttl_seconds=self.settings.client.offline_cache_ttl_seconds,
+        )
+        self.connectivity_ok: bool = True
+        self._update_check_task: asyncio.Task[None] | None = None
+
+    def _note_connectivity(self, *, ok: bool) -> None:
+        """Record the outcome of the most recent server call and, on a state change, tell
+        the user -- so "the server went away" is a one-line notice, not a silent flag flip
+        the user only discovers from a later, unrelated error.
+        """
+        if ok == self.connectivity_ok:
+            return
+        self.connectivity_ok = ok
+        if ok:
+            print_success("Reconnected to the penguincode server")
+        else:
+            print_error(
+                "penguincode server unreachable -- read commands will use cached results "
+                "where available; write commands will fail until it's back"
+            )
+
     async def __aenter__(self):
         """Async context manager entry."""
         # Lazy import agents to avoid circular import
@@ -126,7 +160,9 @@ class REPLSession:
         # code-graph all route through this one `KnowledgeClient`. Construction never fails
         # (the channel is lazy; a WaddleAI token is only acquired on first real call), so
         # server-unreachable is discovered -- and reported -- at first use, not here.
-        self.knowledge_client = KnowledgeClient(self.settings.server)
+        self.knowledge_client = KnowledgeClient(
+            self.settings.server, client_config=self.settings.client
+        )
         self.lessons_client = LessonsClient(self.settings.server)
 
         # Memory manager for cross-session persistence -- a thin facade over
@@ -404,6 +440,28 @@ class REPLSession:
         # Close the gRPC channel used by the lessons-promotion review workflow (T-L2b)
         if self.lessons_client:
             await self.lessons_client.close()
+
+        # Cancel the O8 startup update check if the session exits before it finished
+        if self._update_check_task:
+            self._update_check_task.cancel()
+            try:
+                await self._update_check_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _check_for_update(self) -> None:
+        """Background task (O8 CLI resilience): print a one-line notice if the server
+        reports a newer version than this CLI. Any exception here is caught and logged
+        rather than propagated -- a background task's unhandled exception would otherwise
+        surface as an unraisable-exception warning with nothing useful for the user to do.
+        """
+        try:
+            notice = await maybe_notify_update(self.settings.server, self.settings.client)
+        except Exception as e:  # noqa: BLE001 -- background task, must never crash the REPL
+            logger.debug("update check failed: %s", e)
+            return
+        if notice:
+            print_info(notice)
 
     async def handle_command(self, command: str) -> bool:
         """
@@ -1171,24 +1229,60 @@ class REPLSession:
             else None
         )
 
+        token = await self.knowledge_client.current_token_for_cache_scoping()
+        hits_payload: list[dict[str, Any]] | None = None
+        stale_notice: str | None = None
+
         try:
             result = await self.knowledge_client.query(query=query, n_vector=5)
+            self._note_connectivity(ok=True)
+            hits_payload = [
+                {"document": hit.document, "metadata": hit.metadata, "score": hit.score}
+                for hit in result.vector_hits
+            ]
+            if token is not None:
+                self.offline_cache.set(
+                    token=token, namespace="docs_search", key=query, value={"hits": hits_payload}
+                )
+        except KnowledgeServerUnavailableError as e:
+            self._note_connectivity(ok=False)
+            cached = (
+                self.offline_cache.get(token=token, namespace="docs_search", key=query)
+                if token is not None
+                else None
+            )
+            if cached is None:
+                print_error(
+                    f"Search failed -- server unreachable and no cached result for this query: {e}"
+                )
+                return
+            hits_payload = cached.value.get("hits", [])
+            age_minutes = int(cached.age_seconds() // 60)
+            stale_notice = (
+                f"stale (last synced {age_minutes} min ago)"
+                if cached.is_stale
+                else (f"cached {age_minutes} min ago")
+            )
         except KnowledgeClientError as e:
             print_error(f"Search failed: {e}")
             return
 
+        if stale_notice:
+            console.print(f"[yellow]({stale_notice})[/yellow]")
+
         hits = [
             hit
-            for hit in result.vector_hits
-            if not library_names or str(hit.metadata.get("library", "")).lower() in library_names
+            for hit in (hits_payload or [])
+            if not library_names or str(hit["metadata"].get("library", "")).lower() in library_names
         ]
 
         if hits:
             for i, hit in enumerate(hits, 1):
-                library = hit.metadata.get("library", "?")
-                console.print(f"[bold]{i}. [{library}][/bold] (score: {hit.score:.2f})")
+                library = hit["metadata"].get("library", "?")
+                console.print(f"[bold]{i}. [{library}][/bold] (score: {hit['score']:.2f})")
                 # Truncate long content
-                content = hit.document[:300] + "..." if len(hit.document) > 300 else hit.document
+                content = hit["document"]
+                content = content[:300] + "..." if len(content) > 300 else content
                 console.print(f"   {content}\n")
         else:
             print_info("No results found")
@@ -1368,6 +1462,13 @@ class REPLSession:
             f"Models: orchestration={self.settings.models.orchestration}, execution={self.settings.models.execution}"
         )
         console.print("\nType [bold]/help[/bold] for commands, [bold]/exit[/bold] to quit\n")
+
+        # O8 CLI resilience: silent, non-blocking startup update check -- fire-and-forget
+        # (the reference is kept on `self` only so the task isn't GC'd mid-flight, and so
+        # `__aexit__` can cancel it on early exit) so a slow/unreachable server never
+        # delays the first prompt; `maybe_notify_update` itself is bounded by
+        # `update_check_timeout_seconds` and never raises.
+        self._update_check_task = asyncio.create_task(self._check_for_update())
 
         # Set up prompt_toolkit session with history and styling
         history_file = Path.home() / ".config" / "penguincode" / "history"

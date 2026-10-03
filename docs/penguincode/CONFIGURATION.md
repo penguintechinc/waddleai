@@ -617,6 +617,51 @@ Tools in `local_tools` execute on the client machine for security:
 | `grep` | Search file contents |
 | `glob` | Find files by pattern |
 
+### CLI Resilience (Retry, Offline Cache, Update Check)
+
+These `client.*` keys (and matching env vars) govern how the CLI behaves when the
+penguincode gRPC server is slow or unreachable (ops O8/O5): automatic retry with
+backoff on `grpc_client.py`/`knowledge_client.py` calls, a local read cache that lets
+`/docs search` degrade to a stale result instead of failing outright, and a silent,
+non-blocking startup check against the server's reported version.
+
+```yaml
+client:
+  retry_max: 3
+  retry_base_ms: 200.0
+  retry_max_ms: 2000.0
+  offline_cache_dir: "~/.penguincode/cache"
+  offline_cache_ttl_seconds: 3600.0
+  update_check_timeout_seconds: 3.0
+  update_check_interval_hours: 24.0
+```
+
+| Key | Env Var | Default | Description |
+|-----|---------|---------|-------------|
+| `retry_max` | `PENGUINCODE_CLIENT_RETRY_MAX` | `3` | Max retry attempts on `UNAVAILABLE`/`DEADLINE_EXCEEDED`; `UNAUTHENTICATED`/`PERMISSION_DENIED` are never retried. |
+| `retry_base_ms` | `PENGUINCODE_CLIENT_RETRY_BASE_MS` | `200` | Base backoff delay (doubles per attempt, full jitter applied). |
+| `retry_max_ms` | `PENGUINCODE_CLIENT_RETRY_MAX_MS` | `2000` | Per-attempt backoff cap. |
+| `offline_cache_dir` | `PENGUINCODE_OFFLINE_CACHE_TTL_SECONDS` (TTL only; dir is YAML/default only) | `~/.penguincode/cache` | Local directory for cached read results, owner-only (`0600`) permissions. |
+| `offline_cache_ttl_seconds` | `PENGUINCODE_OFFLINE_CACHE_TTL_SECONDS` | `3600` | Age after which a cached entry is served with a "stale" notice rather than silently as fresh. |
+| `update_check_timeout_seconds` | `PENGUINCODE_UPDATE_CHECK_TIMEOUT_SECONDS` | `3` | Bound on the startup version-check RPC; the check is skipped (never blocks the first prompt) past this. |
+| `update_check_interval_hours` | `PENGUINCODE_UPDATE_CHECK_INTERVAL_HOURS` | `24` | Minimum time between update checks, tracked via `~/.penguincode/update_check_state.json`'s mtime. |
+
+**Offline cache scoping.** Every cache entry is keyed off the caller's own WaddleAI
+bearer token (`tenant`/`sub` claims, hashed -- never stored raw), never the bare query
+text alone -- two different tenants (or two different users in the same tenant) never
+see each other's cached results, and an undecodable/missing token simply skips caching
+rather than falling back to a shared key. See `client/offline_cache.py`.
+
+**Opt-out kill-switches** (PostHog flags, env override `PENGUINCODE_FLAG_<NAME>`;
+unseen/OFF = the resilience mechanism is ON, ON = revert to the pre-O8 legacy
+behavior -- see `flags/client.py`):
+
+| Flag | Reverts |
+|------|---------|
+| `penguincode.disable-client-retry` | `GRPCClient.connect()`/`KnowledgeClient` calls make exactly one attempt -- no backoff. |
+| `penguincode.disable-offline-cache` | `OfflineCache.get()`/`.set()` become no-ops -- every read goes straight to the server, no local fallback on an outage. |
+| `penguincode.disable-update-check` | The startup version check never runs. |
+
 ---
 
 ## Docker Configuration

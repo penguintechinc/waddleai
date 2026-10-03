@@ -31,8 +31,8 @@ from penguincode_cli.client.knowledge_client import (
     LibraryRef,
     RemoteMemoryManager,
 )
-from penguincode_cli.client.waddleai_auth import WaddleAIAuthError
-from penguincode_cli.config.settings import ServerConfig
+from penguincode_cli.client.waddleai_auth import WaddleAIAuthError, WaddleAITokenProvider
+from penguincode_cli.config.settings import ClientConfig, ServerConfig
 from penguincode_cli.proto import (
     CleanupIndexResponse,
     ClearIndexResponse,
@@ -79,12 +79,21 @@ def _rpc_error(code: grpc.StatusCode, details: str = "boom") -> grpc.aio.AioRpcE
 
 
 def _client(
-    monkeypatch: pytest.MonkeyPatch, stub: _FakeStub, *, token_ok: bool = True
+    monkeypatch: pytest.MonkeyPatch,
+    stub: _FakeStub,
+    *,
+    token_ok: bool = True,
+    client_config: ClientConfig | None = None,
 ) -> KnowledgeClient:
     monkeypatch.setattr(
         "penguincode_cli.client.knowledge_client.KnowledgeServiceStub", lambda channel: stub
     )
-    token_provider = AsyncMock()
+    # `spec=WaddleAITokenProvider` (regression: O8 CLI resilience) -- without a spec,
+    # `invalidate_cache` (a plain sync method `_call` now calls on UNAUTHENTICATED) resolves
+    # to an auto-generated *async* mock attribute, producing a real-but-unawaited coroutine
+    # and a `RuntimeWarning` on every UNAUTHENTICATED test case. Spec'ing the mock makes
+    # mock match the real class's sync/async split per-attribute.
+    token_provider = AsyncMock(spec=WaddleAITokenProvider)
     if token_ok:
         token_provider.get_auth_metadata = AsyncMock(return_value=_AUTH_METADATA)
     else:
@@ -94,7 +103,15 @@ def _client(
     server_config = ServerConfig(host="pc-server.internal", port=50051)
     # `channel=object()` short-circuits real `grpc.aio.insecure_channel()` creation --
     # `_ensure_stub` only checks `is None`, and `KnowledgeServiceStub` itself is patched above.
-    return KnowledgeClient(server_config, token_provider=token_provider, channel=object())
+    # `retry_max=0` by default (regression: O8 CLI resilience) -- these pre-existing tests
+    # assert a single RPC attempt per case; a non-zero default retry count would require
+    # every one of them to also mock `asyncio.sleep`.
+    return KnowledgeClient(
+        server_config,
+        token_provider=token_provider,
+        channel=object(),
+        client_config=client_config or ClientConfig(retry_max=0),
+    )
 
 
 class TestIndex:

@@ -69,6 +69,8 @@ TIER_A_PATHS: tuple[str, ...] = (
     "penguincode_cli/client/knowledge_client.py",
     "penguincode_cli/client/lessons_client.py",
     "penguincode_cli/client/waddleai_auth.py",
+    "penguincode_cli/client/offline_cache.py",
+    "penguincode_cli/client/update_check.py",
     "penguincode_cli/tools/memory.py",
 )
 
