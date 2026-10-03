@@ -42,7 +42,12 @@ import pytest
 import penguincode_cli.auth.middleware as auth_middleware
 import penguincode_cli.server.services.knowledge as knowledge_module
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.config.settings import GraphConfig, PostgresGraphStoreConfig, Settings
+from penguincode_cli.config.settings import (
+    GraphConfig,
+    LimitsConfig,
+    PostgresGraphStoreConfig,
+    Settings,
+)
 from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.docs_rag.indexer import DocumentationIndexer
 from penguincode_cli.docs_rag.models import Language as ModelLanguage
@@ -409,6 +414,55 @@ class TestQuery:
         assert captured["kwargs"] == {"n_vector": 8, "graph_depth": 1}
 
 
+class TestQueryClamping:
+    """Ops-audit O7: `n_vector`/`graph_depth` are clamped to `settings.limits`, never rejected."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_n_vector_and_graph_depth_are_clamped(
+        self, scope_ctx: ScopeContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_retrieve(ctx: ScopeContext, query: str, **kwargs: Any) -> RetrievalResult:
+            captured["kwargs"] = kwargs
+            return RetrievalResult(vector_hits=[], subgraphs={}, context="")
+
+        monkeypatch.setattr(knowledge_module, "retrieve", _fake_retrieve)
+        settings = Settings(limits=LimitsConfig(max_vector_results=5, max_graph_depth=2))
+        service = KnowledgeServiceImpl(
+            settings, indexer=_FakeIndexer(), scoped_memory=_FakeScopedMemory()
+        )
+
+        await service.Query(
+            QueryRequest(api_version="v1", query="q", n_vector=10_000, graph_depth=50),
+            _FakeContext(),
+        )
+
+        assert captured["kwargs"] == {"n_vector": 5, "graph_depth": 2}
+
+    @pytest.mark.asyncio
+    async def test_within_bound_values_pass_through_unchanged(
+        self, scope_ctx: ScopeContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_retrieve(ctx: ScopeContext, query: str, **kwargs: Any) -> RetrievalResult:
+            captured["kwargs"] = kwargs
+            return RetrievalResult(vector_hits=[], subgraphs={}, context="")
+
+        monkeypatch.setattr(knowledge_module, "retrieve", _fake_retrieve)
+        settings = Settings(limits=LimitsConfig(max_vector_results=50, max_graph_depth=3))
+        service = KnowledgeServiceImpl(
+            settings, indexer=_FakeIndexer(), scoped_memory=_FakeScopedMemory()
+        )
+
+        await service.Query(
+            QueryRequest(api_version="v1", query="q", n_vector=3, graph_depth=2), _FakeContext()
+        )
+
+        assert captured["kwargs"] == {"n_vector": 3, "graph_depth": 2}
+
+
 # ---------------------------------------------------------------------------
 # MemoryAdd / MemorySearch -> ScopedMemoryManager.add / .search
 # ---------------------------------------------------------------------------
@@ -577,6 +631,21 @@ class TestMemorySearch:
         service = _service(scoped_memory=scoped_memory)
 
         await service.MemorySearch(MemorySearchRequest(api_version="v1", query="q"), _FakeContext())
+
+        scoped_memory.search.assert_awaited_once_with(scope_ctx, "q", limit=5)
+
+    @pytest.mark.asyncio
+    async def test_oversized_limit_is_clamped(self, scope_ctx: ScopeContext) -> None:
+        """Ops-audit O7: `limit` is clamped to `settings.limits.max_vector_results`."""
+        scoped_memory = _FakeScopedMemory()
+        settings = Settings(limits=LimitsConfig(max_vector_results=5, max_graph_depth=3))
+        service = KnowledgeServiceImpl(
+            settings, indexer=_FakeIndexer(), scoped_memory=scoped_memory
+        )
+
+        await service.MemorySearch(
+            MemorySearchRequest(api_version="v1", query="q", limit=10_000), _FakeContext()
+        )
 
         scoped_memory.search.assert_awaited_once_with(scope_ctx, "q", limit=5)
 

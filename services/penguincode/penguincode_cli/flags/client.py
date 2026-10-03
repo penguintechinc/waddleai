@@ -58,6 +58,12 @@ DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG = "waddleai.disable-grpc-concurrency-limits
 DISABLE_GRPC_MESSAGE_LIMITS_FLAG = "waddleai.disable-grpc-message-limits"
 DISABLE_TOOL_QUEUE_BOUND_FLAG = "waddleai.disable-tool-queue-bound"
 
+#: Opt-out kill-switch for `db/pool.py`'s shared `ConnectionPool` (ops-audit
+#: O7). Unseen/OFF (the default) = pooled connections; ON = legacy behavior,
+#: a fresh `psycopg.connect()` per store call -- an escape hatch if the pool
+#: itself misbehaves in some environment, never the normal operating mode.
+DISABLE_DB_POOL_FLAG = "penguincode.disable-db-pool"
+
 _ENV_PREFIX = "PENGUINCODE_FLAG_"
 _TRUTHY = ("1", "true", "yes", "on")
 _DEFAULT_POSTHOG_HOST = "https://license.penguintech.io"
@@ -278,6 +284,7 @@ __all__ = [
     "DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG",
     "DISABLE_GRPC_MESSAGE_LIMITS_FLAG",
     "DISABLE_TOOL_QUEUE_BOUND_FLAG",
+    "DISABLE_DB_POOL_FLAG",
     "ScopeContextLike",
     "SystemScope",
     "SYSTEM_SCOPE",

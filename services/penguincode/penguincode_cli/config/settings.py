@@ -327,6 +327,59 @@ class SessionsConfig:
 
 
 @dataclass(slots=True)
+class DbConfig:
+    """Shared-pool sizing/timeouts for `db/pool.py`'s process-wide `ConnectionPool`.
+
+    Every field defaults from an env var (mirroring `PGVectorStoreConfig.url`'s
+    `PGVECTOR_URL` pattern) so the pool is correctly sized out of the box in
+    every environment without a `config.yaml` entry (ops-audit O7: vector/graph
+    stores previously opened a fresh `psycopg.connect()` per call, with no
+    bound on total connections against Postgres `max_connections`).
+    `statement_timeout_ms` is applied server-side on every pooled connection
+    (`db/pool.py`'s `configure` callback) so a runaway traversal/query is
+    killed by Postgres itself rather than hanging a borrower forever.
+    """
+
+    pool_min_size: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_DB_POOL_MIN", "2"))
+    )
+    pool_max_size: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_DB_POOL_MAX", "10"))
+    )
+    pool_timeout_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("PENGUINCODE_DB_POOL_TIMEOUT_SECONDS", "30"))
+    )
+    statement_timeout_ms: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_DB_STATEMENT_TIMEOUT_MS", "15000"))
+    )
+
+
+@dataclass(slots=True)
+class LimitsConfig:
+    """Server-side clamps on caller-supplied retrieval size/depth (ops-audit O7).
+
+    `graph_depth`/`n_vector` previously came straight from the gRPC request
+    with no server-side bound -- a caller could pin Postgres with an
+    arbitrarily deep traversal or an arbitrarily large top-k. Every field
+    here is a CLAMP (the request is coerced down, never rejected) applied at
+    the store chokepoints (`stores.graph.PostgresGraphStore._traverse`,
+    `stores.vector.PgVectorStore.query`) and again at the orchestration layer
+    (`retrieval.graphrag.retrieve`, `server.services.knowledge`'s
+    Query/MemorySearch handlers) as defense in depth.
+    """
+
+    max_graph_depth: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_MAX_GRAPH_DEPTH", "3"))
+    )
+    max_vector_results: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_MAX_VECTOR_RESULTS", "50"))
+    )
+    max_graph_nodes: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_MAX_GRAPH_NODES", "500"))
+    )
+
+
+@dataclass(slots=True)
 class LessonsConfig:
     """Lessons-promotion confidentiality-verifier configuration (F2+F3, security review).
 
@@ -588,6 +641,8 @@ class Settings:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    db: DbConfig = field(default_factory=DbConfig)
+    limits: LimitsConfig = field(default_factory=LimitsConfig)
     lessons: LessonsConfig = field(default_factory=LessonsConfig)
     regulators: RegulatorsConfig = field(default_factory=RegulatorsConfig)
     usage_api: UsageAPIConfig = field(default_factory=UsageAPIConfig)
@@ -619,6 +674,8 @@ class Settings:
             memory=cls._parse_memory_config(data.get("memory", {})),
             graph=cls._parse_graph_config(data.get("graph", {})),
             sessions=cls._parse_sessions_config(data.get("sessions", {})),
+            db=DbConfig(**data.get("db", {})),
+            limits=LimitsConfig(**data.get("limits", {})),
             lessons=cls._parse_lessons_config(data.get("lessons", {})),
             regulators=RegulatorsConfig(**data.get("regulators", {})),
             usage_api=UsageAPIConfig(**data.get("usage_api", {})),
