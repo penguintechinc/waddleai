@@ -139,7 +139,7 @@ def jittered_ttl(base_seconds: int, jitter_fraction: float = DEFAULT_TTL_JITTER_
         return max(base_seconds, 0)
     spread = base_seconds * jitter_fraction
     # Non-cryptographic jitter (cache TTL spread, never a security boundary).
-    jittered = base_seconds + random.uniform(-spread, spread)  # noqa: S311
+    jittered = base_seconds + random.uniform(-spread, spread)  # noqa: S311 # nosec B311
     return max(1, int(round(jittered)))
 
 
@@ -255,7 +255,9 @@ async def wait_for_value(
             return None
         spread = poll_interval_seconds * jitter_fraction
         # Non-cryptographic jitter (poll-interval spread, never a security boundary).
-        jittered_interval = poll_interval_seconds + random.uniform(-spread, spread)  # noqa: S311
+        jittered_interval = poll_interval_seconds + random.uniform(  # noqa: S311 # nosec B311
+            -spread, spread
+        )
         delay = max(0.01, min(remaining, jittered_interval))
         await asyncio.sleep(delay)
 
