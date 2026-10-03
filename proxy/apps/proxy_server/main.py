@@ -30,6 +30,7 @@ from penguin_aaa.audit.sinks import StdoutSink
 from penguin_aaa.middleware import AuditMiddleware, OIDCAuthMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST
 from quart import Quart, Response, abort, jsonify, request
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from shared.agents import SecurityAgent, UsageTracker
 from shared.auth.jwks_verifier import JWKSVerifier, JWKSVerifierConfig, create_jwks_verifier
@@ -455,6 +456,13 @@ class ConcurrencyLimiter:
     429 rather than queueing unboundedly. Under a single asyncio event loop the
     check-and-increment in :meth:`try_enter` never yields, so it is race-free
     without a lock; ``limit <= 0`` disables the gate (unlimited).
+
+    IMPORTANT: ``limit`` is enforced PER HYPERCORN WORKER PROCESS, not
+    cluster- or pod-wide -- each worker gets its own instance (release-audit
+    -2026-10-02, ops O10-low). With N Hypercorn workers the real ceiling is
+    ``limit * N``; see ``PROXY_MAX_CONCURRENT_PER_WORKER`` below and
+    ``waddleai_proxy_inflight_requests``/``waddleai_proxy_concurrency_rejections_total``
+    for observing the actual, multi-process behavior.
     """
 
     limit: int
@@ -479,7 +487,8 @@ class ConcurrencyLimiter:
 
 
 def _overloaded_response(endpoint: str, start_time: float) -> tuple[Any, int]:
-    """Shared 429 body + latency accounting for a shed (over-concurrency) request."""
+    """Shared 429 body + latency/rejection accounting for a shed (over-concurrency) request."""
+    proxy_server.metrics.record_concurrency_rejection(endpoint=endpoint)
     proxy_server.metrics.record_request(
         endpoint=endpoint, method="POST", status_code=429, duration=time.time() - start_time
     )
@@ -494,6 +503,25 @@ def _overloaded_response(endpoint: str, start_time: float) -> tuple[Any, int]:
         ),
         429,
     )
+
+
+def _valkey_client_kwargs() -> dict[str, Any]:
+    """Bounded connection-pool kwargs shared by every `redis.from_url(...)` call in this module.
+
+    `redis.from_url` with no `max_connections` opens an effectively
+    unbounded pool under load (release-audit-2026-10-02, ops O4). All four
+    knobs are env-tunable with sane defaults rather than hardcoded in the
+    hot path; `health_check_interval` keeps idle pooled connections from
+    going stale against Valkey.
+    """
+    return {
+        "max_connections": int(os.getenv("PROXY_VALKEY_MAX_CONNECTIONS", "50")),
+        "socket_timeout": float(os.getenv("PROXY_VALKEY_SOCKET_TIMEOUT_SECONDS", "5")),
+        "socket_connect_timeout": float(
+            os.getenv("PROXY_VALKEY_SOCKET_CONNECT_TIMEOUT_SECONDS", "5")
+        ),
+        "health_check_interval": int(os.getenv("PROXY_VALKEY_HEALTH_CHECK_INTERVAL_SECONDS", "30")),
+    }
 
 
 class ProxyServer:
@@ -535,7 +563,16 @@ class ProxyServer:
         self.config = {
             "management_server_url": os.getenv("MANAGEMENT_SERVER_URL", "http://localhost:8001"),
             "security_policy": os.getenv("SECURITY_POLICY", "balanced"),
-            "max_concurrent_requests": int(os.getenv("MAX_CONCURRENT_REQUESTS", "100")),
+            # PER-WORKER ceiling, not cluster-wide -- see ConcurrencyLimiter's
+            # docstring (release-audit-2026-10-02, ops O10-low). The old
+            # MAX_CONCURRENT_REQUESTS name is still honored as a fallback so
+            # an existing deployment's env doesn't silently revert to the
+            # default on upgrade.
+            "max_concurrent_requests": int(
+                os.getenv(
+                    "PROXY_MAX_CONCURRENT_PER_WORKER", os.getenv("MAX_CONCURRENT_REQUESTS", "100")
+                )
+            ),
         }
 
         # Enforce the configured in-flight ceiling on the data-plane dispatch
@@ -641,7 +678,9 @@ class ProxyServer:
             import redis.asyncio as redis
 
             self.memory_valkey = redis.from_url(
-                os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
+                os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                decode_responses=True,
+                **_valkey_client_kwargs(),
             )
         except Exception as e:
             logger.warning("Memory-layer Valkey client init failed: %s", e)
@@ -977,7 +1016,7 @@ class ProxyServer:
 
         valkey_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         try:
-            valkey = redis.from_url(valkey_url, decode_responses=True)
+            valkey = redis.from_url(valkey_url, decode_responses=True, **_valkey_client_kwargs())
         except Exception as e:
             logger.warning("Valkey client initialization failed: %s", e)
             valkey = None
@@ -1456,11 +1495,35 @@ _cors_policy: CORSPolicy = load_cors_policy()
 # Quart app
 app = Quart(__name__)
 
+# Request body size cap (release-audit-2026-10-02, ops O6) -- previously
+# unset, so a malicious or buggy client could stream an unbounded request
+# body into memory before any handler ran. Default 10 MiB: LLM prompts
+# (incl. multi-turn history and embedded context) are legitimately large,
+# so the cap is well above a typical chat/messages payload while still
+# bounding worst-case memory use per in-flight request.
+app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("PROXY_MAX_BODY_BYTES", str(10 * 1024 * 1024)))
+
 # Register mem0-compatible API blueprint
 app.register_blueprint(mem0_bp)
 
 # Public paths excluded from OIDC middleware authentication
 _PUBLIC_PATHS: set = {"/healthz", "/livez", "/readyz", "/metrics", "/docs"}
+
+
+@app.errorhandler(RequestEntityTooLarge)
+async def handle_request_entity_too_large(_error: RequestEntityTooLarge) -> tuple[Any, int]:
+    """Return the proxy's standard error envelope for a body over MAX_CONTENT_LENGTH.
+
+    Quart/Werkzeug raises this before any route handler runs once
+    Content-Length exceeds `app.config["MAX_CONTENT_LENGTH"]`
+    (release-audit-2026-10-02, ops O6) -- without this handler the client
+    gets Werkzeug's default HTML error page instead of the OpenAI-/
+    Anthropic-style `{"error": {...}}` JSON every other error path uses.
+    """
+    logger.warning("Request body exceeded PROXY_MAX_BODY_BYTES limit")
+    return jsonify(
+        {"error": {"message": "Request body too large", "type": "invalid_request_error"}}
+    ), 413
 
 
 # ---------------------------------------------------------------------------
@@ -1569,6 +1632,27 @@ async def add_cors_headers(response: Response) -> Response:
 
 
 @app.before_request
+async def _enforce_max_body_size() -> None:
+    """Reject an over-limit body before a route handler's own try/except can swallow it.
+
+    Quart/Werkzeug's `MAX_CONTENT_LENGTH` enforcement is lazy -- it only
+    raises `RequestEntityTooLarge` the first time the body is actually
+    read. Several routes here (`chat_completions`, `claude_messages`) wrap
+    that read in their own broad `except Exception`, which converts it
+    into a generic 500 before it ever reaches `handle_request_entity_too_
+    large` below. Checking the advertised Content-Length header here runs
+    strictly before routing/dispatch, so the same exception is raised
+    early enough to always hit the global handler instead (release-audit
+    -2026-10-02, ops O6). A request without a Content-Length header (e.g.
+    chunked transfer) isn't covered by this early check -- Quart's lazy
+    enforcement during the body read is still the backstop for that case.
+    """
+    max_len = app.config.get("MAX_CONTENT_LENGTH")
+    if max_len and request.content_length and request.content_length > max_len:
+        abort(413, description="Request body too large")
+
+
+@app.before_request
 async def before_request_metrics():
     """Record request start time."""
     request._start_time = time.time()
@@ -1580,8 +1664,14 @@ async def after_request_metrics(response: Response) -> Response:
     start_time = getattr(request, "_start_time", None)
     if start_time is not None:
         duration = time.time() - start_time
+        # Matched route TEMPLATE (e.g. "/memories/<memory_id>"), never the
+        # concrete request path -- request.path on a per-memory-id route
+        # was unbounded-cardinality on the `endpoint` label (release-audit
+        # -2026-10-02, ops O1-a). request.url_rule is None for a 404/405
+        # (no route matched), bounded fallback "unmatched" in that case.
+        endpoint = request.url_rule.rule if request.url_rule is not None else "unmatched"
         proxy_server.metrics.record_request(
-            endpoint=request.path,
+            endpoint=endpoint,
             method=request.method,
             status_code=response.status_code,
             duration=duration,
@@ -1828,6 +1918,7 @@ async def chat_completions():
     # try/finally that releases it, so every non-shed path releases exactly once.
     if not proxy_server.request_limiter.try_enter():
         return _overloaded_response("/v1/chat/completions", start_time)
+    proxy_server.metrics.set_inflight_requests(proxy_server.request_limiter.active)
 
     try:
         # Parse and validate the request body. silent=True yields None (not a
@@ -1888,13 +1979,28 @@ async def chat_completions():
             escalate_hint=request.headers.get("X-WaddleAI-Escalate"),
         )
 
-        # Run the pipeline
+        # Run the pipeline (dominated by DispatchStage's single upstream
+        # provider call -- timed here rather than in DispatchStage itself
+        # since that stage is mid-rewrite for streaming elsewhere; see
+        # record_llm_latency's docstring).
+        pipeline_start = time.time()
         ctx = await proxy_server.pipeline.run(ctx)
+        pipeline_duration = time.time() - pipeline_start
 
         # If blocked, return error response
         if ctx.blocked:
             status_code = ctx.status_code or 500
             error_msg = ctx.block_reason or "Request blocked"
+            if ctx.provider is not None:
+                # DispatchStage set ctx.provider before the failure occurred
+                # (release-audit-2026-10-02, ops O1-c) -- record the failed
+                # upstream call's latency, not just the 2xx path.
+                proxy_server.metrics.record_llm_latency(
+                    provider=ctx.provider,
+                    model=ctx.model or model,
+                    status="error",
+                    duration=pipeline_duration,
+                )
             return jsonify({"error": {"message": error_msg, "type": "error"}}), status_code
 
         # Extract model and usage from pipeline context
@@ -1935,6 +2041,9 @@ async def chat_completions():
                 # (bounded by customer count); user attribution lives in the
                 # usage DB rows, not in a Prometheus label.
             },
+        )
+        proxy_server.metrics.record_llm_latency(
+            provider=provider, model=model, status="success", duration=pipeline_duration
         )
 
         # Store conversation in memory (asynchronously)
@@ -2016,6 +2125,7 @@ async def chat_completions():
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
     finally:
         proxy_server.request_limiter.leave()
+        proxy_server.metrics.set_inflight_requests(proxy_server.request_limiter.active)
         duration = time.time() - start_time
         proxy_server.metrics.record_request(
             endpoint="/v1/chat/completions", method="POST", status_code=200, duration=duration
@@ -2180,6 +2290,7 @@ async def claude_messages():
     # (release-audit-2026-09-23, ops O10).
     if not proxy_server.request_limiter.try_enter():
         return _overloaded_response("/v1/messages", start_time)
+    proxy_server.metrics.set_inflight_requests(proxy_server.request_limiter.active)
 
     try:
         # Parse and validate the request body — preserve Anthropic format
@@ -2241,13 +2352,23 @@ async def claude_messages():
         )
 
         # Run the pipeline (now includes SecurityInStage and SecurityOutStage
-        # which were previously skipped for /v1/messages)
+        # which were previously skipped for /v1/messages). Timed the same
+        # way as chat_completions() -- see that handler's comment.
+        pipeline_start = time.time()
         ctx = await proxy_server.pipeline.run(ctx)
+        pipeline_duration = time.time() - pipeline_start
 
         # If blocked, return Anthropic error format
         if ctx.blocked:
             status_code = ctx.status_code or 500
             error_msg = ctx.block_reason or "Request blocked"
+            if ctx.provider is not None:
+                proxy_server.metrics.record_llm_latency(
+                    provider=ctx.provider,
+                    model=ctx.model or model,
+                    status="error",
+                    duration=pipeline_duration,
+                )
             return jsonify(
                 {"error": {"type": "invalid_request_error", "message": error_msg}}
             ), status_code
@@ -2288,6 +2409,9 @@ async def claude_messages():
                 # (bounded by customer count); user attribution lives in the
                 # usage DB rows, not in a Prometheus label.
             },
+        )
+        proxy_server.metrics.record_llm_latency(
+            provider=provider, model=model, status="success", duration=pipeline_duration
         )
 
         # Store conversation in memory (asynchronously)
@@ -2349,6 +2473,7 @@ async def claude_messages():
         return jsonify({"error": {"message": "Internal server error", "type": "server_error"}}), 500
     finally:
         proxy_server.request_limiter.leave()
+        proxy_server.metrics.set_inflight_requests(proxy_server.request_limiter.active)
         duration = time.time() - start_time
         proxy_server.metrics.record_request(
             endpoint="/v1/messages", method="POST", status_code=200, duration=duration

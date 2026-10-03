@@ -49,6 +49,7 @@ import grpc
 
 from penguincode_cli.auth.middleware import WaddleAIAuthInterceptor, WaddleAIJWTValidator
 from penguincode_cli.config.settings import Settings, load_settings
+from penguincode_cli.db.pool import close_pool, open_pool
 from penguincode_cli.flags.client import (
     DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG,
     DISABLE_GRPC_MESSAGE_LIMITS_FLAG,
@@ -128,6 +129,15 @@ class PenguinCodeServer:
 
     async def start(self) -> None:
         """Start both gRPC and REST servers."""
+        # --- Shared db pool (ops-audit O7) ----------------------------------
+        # Opened once, up front, before any vector/graph store call can run --
+        # `stores.vector`/`stores.graph` borrow from this process-wide pool
+        # instead of opening a fresh `psycopg.connect()` per call. Blocking
+        # (`open(wait=False)` inside `open_pool` returns immediately; the
+        # pool fills its `min_size` connections in the background) so a slow
+        # Postgres never delays gRPC/REST startup.
+        await asyncio.to_thread(open_pool, self.settings.graph.postgres.url, self.settings.db)
+
         # --- Config store ---------------------------------------------------
         self.config_store = ConfigStore()
         await self.config_store.open()
@@ -315,6 +325,11 @@ class PenguinCodeServer:
         # Close config store
         if self.config_store:
             await self.config_store.close()
+
+        # Close the shared db pool (ops-audit O7) -- after gRPC/REST have
+        # both stopped taking new requests, so no borrower is left stranded
+        # mid-call.
+        await asyncio.to_thread(close_pool)
 
     async def wait_for_termination(self) -> None:
         """Wait for the server to be terminated."""

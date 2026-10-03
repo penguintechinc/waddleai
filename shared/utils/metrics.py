@@ -4,11 +4,51 @@ Provides comprehensive metrics for proxy and management servers.
 """
 
 import logging
+import re
 import time
 
 from prometheus_client import Counter, Gauge, Histogram, Info, generate_latest
 
 logger = logging.getLogger(__name__)
+
+# Matches a UUID (any version/case) or a bare run of 2+ digits appearing as
+# its own path segment -- the two shapes an id/memory_id/user_id/etc. takes
+# when a caller accidentally passes a concrete request path (e.g.
+# `/memories/3fa85f64-...`) instead of the matched route template as a
+# metric label value (release-audit-2026-10-02, ops O1-a). Anything matched
+# is replaced with `<id>` so a single unbounded caller can't blow up the
+# TSDB's cardinality.
+_UUID_SEGMENT_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_NUMERIC_SEGMENT_RE = re.compile(r"(?<=/)\d{2,}(?=/|$)")
+
+#: Set True the first time `_sanitize_label` actually rewrites a value, so
+#: the WARN below fires once per process instead of once per request --
+#: the point is to surface that *some* caller is passing unbounded label
+#: values, not to spam logs for every single one.
+_unbounded_label_warned = False
+
+
+def _sanitize_label(value: str) -> str:
+    """Rewrite UUID/numeric-id path segments in a metric label value to `<id>`.
+
+    Defensive backstop for `record_request`'s `endpoint` label: even after
+    callers are fixed to pass a route template rather than `request.path`,
+    this guards against a future caller (or an unmatched/404 path) leaking
+    a concrete id into Prometheus and causing unbounded cardinality.
+    """
+    global _unbounded_label_warned
+    sanitized = _NUMERIC_SEGMENT_RE.sub("<id>", _UUID_SEGMENT_RE.sub("<id>", value))
+    if sanitized != value and not _unbounded_label_warned:
+        logger.warning(
+            "Unbounded id-like metric label value sanitized: %r -> %r "
+            "(release-audit ops O1-a; fix the caller to pass a route template)",
+            value,
+            sanitized,
+        )
+        _unbounded_label_warned = True
+    return sanitized
 
 
 class WaddleAIMetrics:
@@ -122,6 +162,36 @@ class WaddleAIMetrics:
             "waddleai_token_quota_usage", "Token quota usage percentage", ["organization", "user"]
         )
 
+        # Upstream LLM/provider call latency (release-audit-2026-10-02, ops
+        # O1-c) -- `waddleai_llm_requests_total` above counts calls but never
+        # recorded how long they took. `model` reuses the exact label value
+        # that counter already uses (the router-resolved target model, a
+        # closed/operator-configured set of connection-link models -- never
+        # raw user input), so this histogram doesn't introduce a second
+        # cardinality source.
+        self.llm_request_duration = Histogram(
+            "waddleai_llm_request_duration_seconds",
+            "Upstream LLM/provider call duration in seconds",
+            ["provider", "model", "status"],
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0),
+        )
+
+        # Proxy ConcurrencyLimiter observability (release-audit-2026-10-02,
+        # ops O10) -- the limiter enforces a PER-WORKER ceiling
+        # (PROXY_MAX_CONCURRENT_PER_WORKER); these make the real,
+        # multi-worker-process ceiling and shedding rate observable instead
+        # of only documented.
+        self.proxy_inflight_requests = Gauge(
+            "waddleai_proxy_inflight_requests",
+            "Current in-flight requests held by this worker's ConcurrencyLimiter",
+            ["service"],
+        )
+        self.proxy_concurrency_rejections_total = Counter(
+            "waddleai_proxy_concurrency_rejections_total",
+            "Requests shed with 429 by the proxy ConcurrencyLimiter",
+            ["endpoint"],
+        )
+
         # Rate limiting metrics
         self.rate_limit_exceeded = Counter(
             "waddleai_rate_limit_exceeded_total",
@@ -210,7 +280,14 @@ class WaddleAIMetrics:
         }
 
     def record_request(self, endpoint: str, method: str, status_code: int, duration: float):
-        """Record HTTP request metrics."""
+        """Record HTTP request metrics.
+
+        `endpoint` should already be a bounded route template (e.g.
+        `/memories/<memory_id>`, or `unmatched` for a 404), never a
+        concrete path -- `_sanitize_label` is only a defensive backstop
+        (release-audit-2026-10-02, ops O1-a).
+        """
+        endpoint = _sanitize_label(endpoint)
         self.requests_total.labels(
             service=self.service_name, endpoint=endpoint, method=method, status_code=status_code
         ).inc()
@@ -284,6 +361,34 @@ class WaddleAIMetrics:
     def set_token_quota_usage(self, organization: str, user: str, usage_percentage: float):
         """Set token quota usage percentage."""
         self.token_quota_usage.labels(organization=organization, user=user).set(usage_percentage)
+
+    def record_llm_latency(self, provider: str, model: str, status: str, duration: float) -> None:
+        """Record upstream LLM/provider call latency (release-audit-2026-10-02, ops O1-c).
+
+        Called today from proxy `main.py`'s non-streaming `/v1/chat/completions`
+        and `/v1/messages` handlers, where `duration` spans the
+        `ProxyPipeline.run()` call (dominated by the single upstream
+        DispatchStage call). This is also the helper `pipeline/stages.py`'s
+        streaming `DispatchStage` rewrite should call once it times the
+        streamed upstream call directly -- same histogram, same bounded
+        labels, no separate instrument needed.
+        """
+        self.llm_request_duration.labels(provider=provider, model=model, status=status).observe(
+            duration
+        )
+
+    def set_inflight_requests(self, count: int) -> None:
+        """Report the proxy ConcurrencyLimiter's current in-flight count for this worker."""
+        self.proxy_inflight_requests.labels(service=self.service_name).set(count)
+
+    def record_concurrency_rejection(self, endpoint: str) -> None:
+        """Record a request shed with 429 by the proxy ConcurrencyLimiter.
+
+        `endpoint` is always a caller-supplied literal (e.g.
+        `/v1/chat/completions`), never request.path, so no sanitization
+        is needed here.
+        """
+        self.proxy_concurrency_rejections_total.labels(endpoint=endpoint).inc()
 
     def record_rate_limit_exceeded(self, endpoint: str, limit_type: str):
         """Record rate limit exceeded event."""
