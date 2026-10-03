@@ -41,6 +41,11 @@ grpc = [
     "grpcio>=1.60.0",
     "grpcio-tools>=1.60.0",
     "protobuf>=4.25.0",
+    # W3C trace-context + baggage propagation in interceptors.py (ops O1-d) --
+    # API only, no SDK/exporter: consuming apps already pin opentelemetry-sdk +
+    # an exporter at an exact version (e.g. 1.44.0) in their own hash-pinned
+    # requirements.txt; py_libs only needs the no-op-safe API surface.
+    "opentelemetry-api>=1.44.0",
 ]
 redis = [
     "redis>=5.0.0",
@@ -82,6 +87,13 @@ line-length = 100
 target-version = "py312"
 select = ["E", "F", "W", "I", "N", "D", "UP", "S", "B", "A", "C4", "T20", "RET", "SIM"]
 ignore = ["D100", "D104"]
+
+[tool.ruff.per-file-ignores]
+# S101 (flake8-bandit "use of assert") is stripped under `python -O`, unsafe to
+# rely on in production code but the actual contract in a test suite -- see the
+# matching exemption + rationale in the monorepo root pyproject.toml. Docstring
+# (D) rules are deliberately NOT exempted here; same convention.
+"tests/**/*.py" = ["S101"]
 
 [tool.mypy]
 python_version = "3.12"

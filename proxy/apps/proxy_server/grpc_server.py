@@ -31,6 +31,7 @@ from grpc_proto.waddleai.v1 import proxy_pb2_grpc as waddleai_pb2_grpc
 
 from shared.agents import SecurityAgent, UsageTracker
 from shared.agents.usage_tracker import UsageReport as AgentUsageReport
+from shared.observability.grpc_tracing import TracingServerInterceptor
 from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
 from shared.utils.feature_flags import is_feature_enabled
 from shared.utils.memory_integration import WaddleAIMemoryManager
@@ -672,6 +673,10 @@ def start_grpc_server(
 
     # Create auth interceptor (fail-closed if token not configured)
     auth_interceptor = GrpcAuthInterceptor(grpc_auth_token)
+    # ops O1-d: extract inbound W3C trace context so this server's spans are
+    # children of whatever client (management's AILB client, penguincode CLI,
+    # etc.) made the call, instead of detached roots.
+    tracing_interceptor = TracingServerInterceptor()
 
     # O6 (gRPC server hardening): explicit receive/send message size limits
     # (PROXY_GRPC_MAX_MESSAGE_BYTES, default 4 MiB) instead of relying on
@@ -694,7 +699,7 @@ def start_grpc_server(
 
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=resolved_max_workers),
-        interceptors=[auth_interceptor],
+        interceptors=[tracing_interceptor, auth_interceptor],
         options=grpc_options,
     )
 

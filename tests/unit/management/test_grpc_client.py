@@ -11,11 +11,18 @@ plausibly raise once the real stub call lands.
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
+from typing import Any
 from urllib.parse import urlparse
 
 import grpc
+import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
 
 from services.management.app.grpc import client as client_module
 from services.management.app.grpc.client import (
@@ -24,8 +31,36 @@ from services.management.app.grpc.client import (
     ModuleStatus,
     RateLimitConfig,
     RouteConfig,
+    _TracingClientInterceptor,
     create_ailb_client,
 )
+
+_FakeClientCallDetails = collections.namedtuple(
+    "_FakeClientCallDetails",
+    ("method", "timeout", "metadata", "credentials", "wait_for_ready", "compression"),
+)
+
+
+class _FakeCall:
+    """Minimal ``grpc.Call``/``grpc.Future`` stand-in for direct interceptor unit tests."""
+
+    def __init__(self, code: grpc.StatusCode | None = grpc.StatusCode.OK) -> None:
+        """Store the status code ``.code()`` should return."""
+        self._code = code
+
+    def code(self) -> grpc.StatusCode | None:
+        """Return the stored status code."""
+        return self._code
+
+
+@pytest.fixture
+def span_exporter() -> InMemorySpanExporter:
+    """A standalone TracerProvider-backed in-memory span sink for interceptor tests."""
+    exporter: Any = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter._provider = provider
+    return exporter
 
 
 class TestInit:
@@ -883,3 +918,153 @@ class TestCreateAilbClient:
         assert c.port == 60051
         assert c.use_tls is True
         assert c.tls_cert_path == "/etc/certs/ailb.pem"
+
+
+class TestConnectWiresTracingInterceptor:
+    """connect() must register the tracing client interceptor on the channel."""
+
+    def test_connect_wraps_channel_with_tracing_interceptor(self, monkeypatch) -> None:
+        """connect() calls grpc.intercept_channel with a _TracingClientInterceptor."""
+        seen: list[Any] = []
+        real_intercept_channel = grpc.intercept_channel
+
+        def _spy(channel: Any, *interceptors: Any) -> Any:
+            seen.extend(interceptors)
+            return real_intercept_channel(channel, *interceptors)
+
+        monkeypatch.setattr(client_module.grpc, "intercept_channel", _spy)
+        c = AILBModuleClient()
+        try:
+            assert c.connect() is True
+            assert any(isinstance(i, _TracingClientInterceptor) for i in seen)
+        finally:
+            c.disconnect()
+
+
+class TestTracingClientInterceptor:
+    """Direct unit coverage of _TracingClientInterceptor.intercept_unary_unary."""
+
+    def setup_method(self) -> None:
+        """Reset the cached RPC client instruments before each test."""
+        client_module.reset_instruments_for_testing()
+
+    def _details(self, metadata: tuple = ()) -> _FakeClientCallDetails:
+        """Build a fake ClientCallDetails for /svc.Module/GetStatus."""
+        return _FakeClientCallDetails("/svc.Module/GetStatus", None, metadata, None, None, None)
+
+    def test_injects_traceparent_and_correlation_id(self, span_exporter) -> None:
+        """A fresh call carries a W3C traceparent and a minted correlation id."""
+        tracer = span_exporter._provider.get_tracer("test")
+        interceptor = _TracingClientInterceptor(tracer=tracer)
+        captured: dict[str, Any] = {}
+
+        def _continuation(details: Any, request: Any) -> _FakeCall:
+            captured["metadata"] = dict(details.metadata)
+            return _FakeCall(grpc.StatusCode.OK)
+
+        call = interceptor.intercept_unary_unary(_continuation, self._details(), b"x")
+        assert isinstance(call, _FakeCall)
+        assert "traceparent" in captured["metadata"]
+        assert "x-correlation-id" in captured["metadata"]
+
+        spans = span_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].kind == SpanKind.CLIENT
+        assert spans[0].name == "svc.Module/GetStatus"
+        assert spans[0].attributes["rpc.system"] == "grpc"
+        assert spans[0].attributes["rpc.grpc.status_code"] == "OK"
+
+    def test_reuses_an_inbound_correlation_id(self, span_exporter) -> None:
+        """An existing x-correlation-id in metadata is reused, not replaced."""
+        tracer = span_exporter._provider.get_tracer("test")
+        interceptor = _TracingClientInterceptor(tracer=tracer)
+        captured: dict[str, Any] = {}
+
+        def _continuation(details: Any, request: Any) -> _FakeCall:
+            captured["metadata"] = dict(details.metadata)
+            return _FakeCall(grpc.StatusCode.OK)
+
+        details = self._details(metadata=(("x-correlation-id", "caller-supplied"),))
+        interceptor.intercept_unary_unary(_continuation, details, b"x")
+        assert captured["metadata"]["x-correlation-id"] == "caller-supplied"
+
+    def test_error_status_code_sets_error_span_status(self, span_exporter) -> None:
+        """A non-OK status code is recorded on the span attribute."""
+        tracer = span_exporter._provider.get_tracer("test")
+        interceptor = _TracingClientInterceptor(tracer=tracer)
+
+        def _continuation(details: Any, request: Any) -> _FakeCall:
+            return _FakeCall(grpc.StatusCode.UNAVAILABLE)
+
+        interceptor.intercept_unary_unary(_continuation, self._details(), b"x")
+        spans = span_exporter.get_finished_spans()
+        assert spans[0].attributes["rpc.grpc.status_code"] == "UNAVAILABLE"
+
+    def test_code_lookup_failure_falls_back_to_unknown(self, span_exporter) -> None:
+        """call.code() raising never breaks the call; status falls back to UNKNOWN."""
+        tracer = span_exporter._provider.get_tracer("test")
+        interceptor = _TracingClientInterceptor(tracer=tracer)
+
+        class _RaisingCall:
+            def code(self) -> grpc.StatusCode:
+                raise RuntimeError("not ready")
+
+        def _continuation(details: Any, request: Any) -> Any:
+            return _RaisingCall()
+
+        interceptor.intercept_unary_unary(_continuation, self._details(), b"x")
+        spans = span_exporter.get_finished_spans()
+        assert spans[0].attributes["rpc.grpc.status_code"] == "UNKNOWN"
+
+    def test_kill_switch_disables_propagation(self, span_exporter, monkeypatch) -> None:
+        """waddleai.disable-grpc-trace-propagation=ON skips injection entirely."""
+        monkeypatch.setattr(client_module, "is_feature_enabled", lambda *a, **k: True)
+        tracer = span_exporter._provider.get_tracer("test")
+        interceptor = _TracingClientInterceptor(tracer=tracer)
+        captured: dict[str, Any] = {}
+
+        def _continuation(details: Any, request: Any) -> _FakeCall:
+            captured["metadata"] = dict(details.metadata or ())
+            return _FakeCall(grpc.StatusCode.OK)
+
+        interceptor.intercept_unary_unary(_continuation, self._details(), b"x")
+        assert "traceparent" not in captured["metadata"]
+        assert len(span_exporter.get_finished_spans()) == 0
+
+    def test_metrics_recorded(self, span_exporter) -> None:
+        """A successful call records both the duration histogram and request counter."""
+        from opentelemetry import metrics as otel_metrics
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+        from opentelemetry.util._once import Once
+
+        prev_provider = otel_metrics._internal._METER_PROVIDER
+        prev_once = otel_metrics._internal._METER_PROVIDER_SET_ONCE
+        reader = InMemoryMetricReader()
+        otel_metrics._internal._METER_PROVIDER = None
+        otel_metrics._internal._METER_PROVIDER_SET_ONCE = Once()
+        otel_metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+        client_module.reset_instruments_for_testing()
+        try:
+            tracer = span_exporter._provider.get_tracer("test")
+            interceptor = _TracingClientInterceptor(tracer=tracer)
+
+            def _continuation(details: Any, request: Any) -> _FakeCall:
+                return _FakeCall(grpc.StatusCode.OK)
+
+            interceptor.intercept_unary_unary(_continuation, self._details(), b"x")
+
+            data = reader.get_metrics_data()
+            assert data is not None
+            names = {
+                m.name
+                for rm in data.resource_metrics
+                for sm in rm.scope_metrics
+                for m in sm.metrics
+            }
+            assert "rpc_client_duration_seconds" in names
+            assert "rpc_client_requests_total" in names
+        finally:
+            otel_metrics._internal._METER_PROVIDER = prev_provider
+            otel_metrics._internal._METER_PROVIDER_SET_ONCE = prev_once
+            client_module.reset_instruments_for_testing()

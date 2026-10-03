@@ -6,13 +6,140 @@ to manage AI provider routes, rate limits, and configuration.
 
 import json
 import logging
+import time
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import grpc
+from opentelemetry.trace import SpanKind, Status, StatusCode
+
+from shared.observability.tracing import get_tracer, inject_context
+from shared.utils.feature_flags import is_feature_enabled
 
 logger = logging.getLogger(__name__)
+
+#: ops O1-d: management -> proxy/AILB gRPC calls previously carried zero trace
+#: context (finding: "services/management/app/grpc/client.py has zero
+#: tracer/span/inject usage"). Opt-out kill-switch per COMMON.md -- unseen/OFF
+#: keeps propagation ON; flip ON only to fall back to the pre-fix behavior.
+_DISABLE_TRACE_PROPAGATION_FLAG = "waddleai.disable-grpc-trace-propagation"
+_CORRELATION_METADATA_KEY = "x-correlation-id"
+
+_rpc_client_duration = None
+_rpc_client_requests = None
+
+
+def _client_instruments() -> tuple[Any, Any]:
+    """Lazily create (and cache) the RPC client instruments on the process meter."""
+    global _rpc_client_duration, _rpc_client_requests
+    if _rpc_client_duration is None or _rpc_client_requests is None:
+        from shared.observability.metrics import get_meter
+
+        meter = get_meter()
+        _rpc_client_duration = meter.create_histogram(
+            "rpc_client_duration_seconds",
+            unit="s",
+            description="Duration of outgoing gRPC client calls (management -> AILB)",
+        )
+        _rpc_client_requests = meter.create_counter(
+            "rpc_client_requests_total",
+            unit="1",
+            description="Count of outgoing gRPC client calls (management -> AILB)",
+        )
+    return _rpc_client_duration, _rpc_client_requests
+
+
+def reset_instruments_for_testing() -> None:
+    """Drop cached RPC client instruments so a test can install a fresh MeterProvider."""
+    global _rpc_client_duration, _rpc_client_requests
+    _rpc_client_duration = None
+    _rpc_client_requests = None
+
+
+def _split_method(method: str | bytes | None) -> tuple[str, str]:
+    """Split a gRPC full method string ``/package.Service/Method`` into (service, method)."""
+    if not method:
+        return "unknown", "unknown"
+    if isinstance(method, bytes):
+        method = method.decode("utf-8", errors="replace")
+    parts = method.lstrip("/").split("/", 1)
+    return (parts[0], parts[1]) if len(parts) == 2 else ("unknown", parts[0])
+
+
+class _TracingClientInterceptor(grpc.UnaryUnaryClientInterceptor):
+    """Client interceptor propagating W3C trace context to the AILB module.
+
+    Injects the active OTel trace context (``shared.observability.tracing``) and an
+    ``x-correlation-id`` metadata entry (reused if the caller already set one, minted
+    otherwise) into outgoing metadata, opens a CLIENT span, and records
+    ``rpc_client_duration_seconds``/``rpc_client_requests_total``. No-ops (passes the
+    call through unmodified) when ``waddleai.disable-grpc-trace-propagation`` is ON.
+
+    ``tracer`` is an optional override (tests only) -- production code always leaves
+    it unset and resolves the process tracer from ``shared.observability.tracing``.
+    """
+
+    def __init__(self, tracer: Any = None) -> None:
+        """Store an optional tracer override; ``None`` resolves to the process tracer."""
+        self._tracer = tracer
+
+    def intercept_unary_unary(
+        self,
+        continuation: Callable[[grpc.ClientCallDetails, Any], grpc.Call],
+        client_call_details: grpc.ClientCallDetails,
+        request: Any,
+    ) -> grpc.Call:
+        """Inject propagation headers, open a CLIENT span, and record metrics."""
+        if is_feature_enabled(
+            _DISABLE_TRACE_PROPAGATION_FLAG, distinct_id="management-grpc-client"
+        ):
+            return continuation(client_call_details, request)
+
+        service_name, method_name = _split_method(client_call_details.method)
+        correlation_id = dict(client_call_details.metadata or ()).get(
+            _CORRELATION_METADATA_KEY
+        ) or str(uuid.uuid4())
+
+        tracer = self._tracer or get_tracer()
+        status_name = "OK"
+        start = time.monotonic()
+        duration_hist, request_counter = _client_instruments()
+        try:
+            with tracer.start_as_current_span(
+                f"{service_name}/{method_name}",
+                kind=SpanKind.CLIENT,
+                attributes={
+                    "rpc.system": "grpc",
+                    "rpc.service": service_name,
+                    "rpc.method": method_name,
+                },
+            ) as span:
+                carrier: dict[str, str] = {_CORRELATION_METADATA_KEY: correlation_id}
+                inject_context(carrier)
+                merged = list(client_call_details.metadata or ())
+                merged.extend(carrier.items())
+                new_details = client_call_details._replace(metadata=tuple(merged))
+                call = continuation(new_details, request)
+                try:
+                    code = call.code()
+                    status_name = code.name if code is not None else "OK"
+                except Exception:  # noqa: BLE001 -- status lookup must never break the call
+                    status_name = "UNKNOWN"
+                span.set_attribute("rpc.grpc.status_code", status_name)
+                if status_name not in ("OK", "UNKNOWN"):
+                    span.set_status(Status(StatusCode.ERROR, status_name))
+                return call
+        finally:
+            duration_hist.record(
+                time.monotonic() - start,
+                {"service": service_name, "method": method_name, "status_code": status_name},
+            )
+            request_counter.add(
+                1, {"service": service_name, "method": method_name, "status_code": status_name}
+            )
 
 
 @dataclass
@@ -129,6 +256,11 @@ class AILBModuleClient:
                         ("grpc.max_send_message_length", 50 * 1024 * 1024),
                     ],
                 )
+
+            # ops O1-d: every outgoing call now carries W3C trace context + a
+            # correlation id (see _TracingClientInterceptor) so it appears as a
+            # child span of the inbound request that triggered it.
+            self._channel = grpc.intercept_channel(self._channel, _TracingClientInterceptor())
 
             # Import generated stubs (will be generated from proto files)
             # For now, we use a mock stub until proto generation

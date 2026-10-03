@@ -1403,3 +1403,30 @@ class TestApiVersionRouting:
             wrapped(None, waddleai_pb2.RouteRequest(api_version="v1"), ctx)
 
         assert exc_info.value.details == "api_version v1 not supported"
+
+
+class TestStartGrpcServerWiresTracingInterceptor:
+    """start_grpc_server() must register TracingServerInterceptor (ops O1-d)."""
+
+    def test_tracing_interceptor_is_registered(self, monkeypatch) -> None:
+        """grpc.server() is called with a TracingServerInterceptor in its list."""
+        from proxy.apps.proxy_server import grpc_server as grpc_server_module
+        from shared.observability.grpc_tracing import TracingServerInterceptor
+
+        seen: dict[str, Any] = {}
+        real_server = grpc.server
+
+        def _spy(executor: Any, *, interceptors: Any = None, **kwargs: Any) -> Any:
+            seen["interceptors"] = interceptors
+            return real_server(executor, interceptors=interceptors, **kwargs)
+
+        monkeypatch.setattr(grpc_server_module.grpc, "server", _spy)
+        server = start_grpc_server(
+            port=0,
+            server_components=None,
+            grpc_auth_token="tok",  # noqa: S106 -- test value
+        )
+        try:
+            assert any(isinstance(i, TracingServerInterceptor) for i in seen["interceptors"])
+        finally:
+            server.stop(grace=None)
