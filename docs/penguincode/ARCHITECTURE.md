@@ -73,6 +73,34 @@ penguincode/client/
 └── auth.py              # Token storage and refresh
 ```
 
+## Chat Session Storage
+
+`ChatService` (`CreateSession`/`Chat`/`GetHistory`/`CloseSession`) persists
+session state to the shared `penguincode` Postgres schema
+(`penguincode_cli/sessions/store.py`, table `chat_sessions` --
+`db/migrations/0007_chat_sessions.sql`) rather than an in-process dict.
+This closes a High-severity cross-pod gap: prod runs `replicas=3`, and
+with per-process state a session created on one pod 404'd on every other
+pod, and any rolling deploy dropped every in-flight session. Any pod can
+now serve any RPC for any session -- `Chat` loads the persisted
+conversation at the start of the call and saves it back after the turn,
+never holding a DB connection open across the LLM call itself.
+
+- **Scope**: a session is visible to its own tenant AND its owning user
+  only (never team- or tenant-shared) -- derived from the caller's
+  WaddleAI JWT `ScopeContext` when present, or a fixed single-tenant scope
+  keyed by the legacy HS256 token's `sub` in standalone client-server mode.
+- **TTL**: `PENGUINCODE_SESSION_TTL_SECONDS` (default 24h) -- refreshed on
+  every `Chat`/update; a background sweeper
+  (`PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS` /
+  `_SWEEP_BATCH_SIZE`) deletes expired rows in bounded batches.
+  See [`CONFIGURATION.md`](./CONFIGURATION.md#chat-session-storage).
+- **Kill switch**: the `penguincode.disable-shared-sessions` PostHog flag
+  (opt-out, unseen/OFF = the shared-Postgres mechanism is active) reverts
+  to an in-process-only store as an emergency rollback.
+- **Observability**: `active_sessions` gauge + `session_store_duration_seconds`
+  histogram (label: `op`), emitted from `penguincode_cli/sessions/metrics.py`.
+
 ## Tool Execution Model
 
 In remote mode, tools execute **locally on the client** for security:

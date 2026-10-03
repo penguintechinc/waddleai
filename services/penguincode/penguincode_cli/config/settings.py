@@ -191,6 +191,78 @@ class GraphConfig:
     postgres: PostgresGraphStoreConfig = field(default_factory=PostgresGraphStoreConfig)
 
 
+def _env_int(name: str, default: int) -> int:
+    """Parse `name` as an int, falling back to `default` on unset/blank/invalid -- never raises."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Float counterpart of `_env_int` -- same unset/blank/invalid fallback contract."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+#: `PENGUINCODE_SESSION_TTL_SECONDS` default (24h) -- see `SessionsConfig`.
+DEFAULT_SESSION_TTL_SECONDS = 24 * 60 * 60
+#: `PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS` default (5 min).
+DEFAULT_SESSION_SWEEP_INTERVAL_SECONDS = 300.0
+#: `PENGUINCODE_SESSION_SWEEP_BATCH_SIZE` default -- bounds one sweep's `DELETE`.
+DEFAULT_SESSION_SWEEP_BATCH_SIZE = 500
+
+
+@dataclass(slots=True)
+class PostgresSessionStoreConfig:
+    """Postgres chat-session store configuration (shared WaddleAI Postgres, `penguincode` schema).
+
+    Reuses the same shared-Postgres DSN as `PGVectorStoreConfig`/
+    `PostgresGraphStoreConfig` (`PGVECTOR_URL`) -- the sessions table lives
+    in the same database. `chat_sessions` is created in the `penguincode`
+    schema by `db/migrations/0007_chat_sessions.sql`.
+    """
+
+    url: str = field(default_factory=lambda: os.environ.get("PGVECTOR_URL", ""))
+
+
+@dataclass(slots=True)
+class SessionsConfig:
+    """Cross-pod chat-session store configuration (security audit O4-a High fix).
+
+    `ttl_seconds`/`sweep_interval_seconds`/`sweep_batch_size` all default
+    from env (`PENGUINCODE_SESSION_TTL_SECONDS` / `_SWEEP_INTERVAL_SECONDS`
+    / `_SWEEP_BATCH_SIZE`) so they work without a `config.yaml` entry,
+    mirroring `PGVectorStoreConfig.url`'s `PGVECTOR_URL`-default pattern --
+    see `penguincode_cli/sessions/store.py` for how each is used.
+    """
+
+    ttl_seconds: int = field(
+        default_factory=lambda: _env_int(
+            "PENGUINCODE_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS
+        )
+    )
+    sweep_interval_seconds: float = field(
+        default_factory=lambda: _env_float(
+            "PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS", DEFAULT_SESSION_SWEEP_INTERVAL_SECONDS
+        )
+    )
+    sweep_batch_size: int = field(
+        default_factory=lambda: _env_int(
+            "PENGUINCODE_SESSION_SWEEP_BATCH_SIZE", DEFAULT_SESSION_SWEEP_BATCH_SIZE
+        )
+    )
+    postgres: PostgresSessionStoreConfig = field(default_factory=PostgresSessionStoreConfig)
+
+
 @dataclass(slots=True)
 class LessonsConfig:
     """Lessons-promotion confidentiality-verifier configuration (F2+F3, security review).
@@ -439,6 +511,7 @@ class Settings:
     research: ResearchConfig = field(default_factory=ResearchConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
     lessons: LessonsConfig = field(default_factory=LessonsConfig)
     regulators: RegulatorsConfig = field(default_factory=RegulatorsConfig)
     usage_api: UsageAPIConfig = field(default_factory=UsageAPIConfig)
@@ -469,6 +542,7 @@ class Settings:
             research=cls._parse_research_config(data.get("research", {})),
             memory=cls._parse_memory_config(data.get("memory", {})),
             graph=cls._parse_graph_config(data.get("graph", {})),
+            sessions=cls._parse_sessions_config(data.get("sessions", {})),
             lessons=cls._parse_lessons_config(data.get("lessons", {})),
             regulators=RegulatorsConfig(**data.get("regulators", {})),
             usage_api=UsageAPIConfig(**data.get("usage_api", {})),
@@ -545,6 +619,25 @@ class Settings:
         return GraphConfig(
             backend=data.get("backend", "postgres"),
             postgres=PostgresGraphStoreConfig(**data.get("postgres", {})),
+        )
+
+    @staticmethod
+    def _parse_sessions_config(data: dict[str, Any]) -> SessionsConfig:
+        """Parse cross-pod chat-session store configuration (security audit O4-a High fix).
+
+        Any key omitted from `data` keeps `SessionsConfig`'s own env-backed
+        default (see that dataclass) rather than a YAML-only literal, so a
+        bare `config.yaml` with no `sessions:` section still picks up
+        `PENGUINCODE_SESSION_TTL_SECONDS`/etc. from the environment.
+        """
+        default = SessionsConfig()
+        return SessionsConfig(
+            ttl_seconds=data.get("ttl_seconds", default.ttl_seconds),
+            sweep_interval_seconds=data.get(
+                "sweep_interval_seconds", default.sweep_interval_seconds
+            ),
+            sweep_batch_size=data.get("sweep_batch_size", default.sweep_batch_size),
+            postgres=PostgresSessionStoreConfig(**data.get("postgres", {})),
         )
 
     @staticmethod

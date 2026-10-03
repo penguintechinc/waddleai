@@ -285,6 +285,37 @@ memory:
 
 ---
 
+## Chat Session Storage
+
+Cross-pod persistence for `ChatService` sessions (security audit O4-a,
+High) -- see [`ARCHITECTURE.md`](./ARCHITECTURE.md#chat-session-storage)
+for the design. Reuses the same shared-Postgres DSN as the memory/graph
+stores (`PGVECTOR_URL`) unless overridden.
+
+```yaml
+sessions:
+  ttl_seconds: 86400              # 24h; refreshed on every Chat turn
+  sweep_interval_seconds: 300     # 5 min between sweeper passes
+  sweep_batch_size: 500           # Max rows deleted per sweep pass
+  postgres:
+    url: "${PGVECTOR_URL}"
+```
+
+| Key | Env Var | Type | Default | Description |
+|-----|---------|------|---------|-------------|
+| `ttl_seconds` | `PENGUINCODE_SESSION_TTL_SECONDS` | int | `86400` | Session idle lifetime; a `Chat` turn extends it by this amount again. |
+| `sweep_interval_seconds` | `PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS` | float | `300` | Time between the background sweeper's expired-row deletion passes. |
+| `sweep_batch_size` | `PENGUINCODE_SESSION_SWEEP_BATCH_SIZE` | int | `500` | Max rows one sweep pass deletes -- bounds the `DELETE`. |
+| `postgres.url` | `PGVECTOR_URL` | string | `""` | Shared-Postgres DSN; same variable as the memory/graph stores. |
+
+**Kill switch**: the `penguincode.disable-shared-sessions` PostHog flag
+(opt-out -- unseen/OFF means the shared-Postgres mechanism is active) can
+be forced via `PENGUINCODE_FLAG_DISABLE_SHARED_SESSIONS=true`, reverting
+to an in-process-only session store (the pre-fix behavior) as an
+emergency rollback.
+
+---
+
 ## GPU Regulators
 
 ```yaml
