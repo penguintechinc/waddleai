@@ -45,5 +45,17 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Set Python path to include /app for shared module imports
 ENV PYTHONPATH=/app
 
-# Run the application with hypercorn
-CMD ["hypercorn", "apps.proxy_server.main:app", "--bind", "0.0.0.0:8080", "--workers", "4"]
+# O9: worker count and graceful-drain window are overridable at runtime via
+# HYPERCORN_WORKERS / HYPERCORN_GRACEFUL_TIMEOUT (see
+# k8s/helm/waddleai/values.yaml proxy.workers / proxy.gracefulTimeoutSeconds)
+# instead of a value baked into the image. Defaults below preserve this
+# image's previous fixed `--workers 4` behavior for anyone running it
+# outside the chart (docker run, local dev) with no env override.
+ENV HYPERCORN_WORKERS=4 \
+    HYPERCORN_GRACEFUL_TIMEOUT=30
+
+# `sh -c 'exec ...'` (not the shell form of CMD) so hypercorn becomes PID 1
+# after exec -- SIGTERM from the kubelet/Docker goes straight to hypercorn
+# for its own graceful shutdown instead of being absorbed by an intermediate
+# shell process. USER waddleai is already set above, so this stays rootless.
+CMD ["sh", "-c", "exec hypercorn apps.proxy_server.main:app --bind 0.0.0.0:8080 --workers ${HYPERCORN_WORKERS} --graceful-timeout ${HYPERCORN_GRACEFUL_TIMEOUT}"]

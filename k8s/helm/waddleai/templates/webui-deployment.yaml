@@ -27,6 +27,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+      {{- with .Values.webui.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -54,18 +57,56 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          {{- /*
+          O4-c: liveness and readiness used to be hardcoded to the exact
+          same httpGet check, so a readiness-only dependency failure could
+          never be distinguished from a dead process -- both always failed
+          together. Now wired to webui.livenessProbe (tcpSocket, cheap
+          process-alive check) and webui.readinessProbe (httpGet, proves
+          nginx is actually serving) in values.yaml, each independently
+          enable-able.
+          */}}
+          {{- if .Values.webui.livenessProbe.enabled }}
           livenessProbe:
+            {{- if .Values.webui.livenessProbe.tcpSocket }}
+            tcpSocket:
+              port: {{ .Values.webui.livenessProbe.tcpSocket.port }}
+            {{- else }}
             httpGet:
-              path: /
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 10
+              path: {{ .Values.webui.livenessProbe.httpGet.path }}
+              port: {{ .Values.webui.livenessProbe.httpGet.port }}
+            {{- end }}
+            initialDelaySeconds: {{ .Values.webui.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.webui.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.webui.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.webui.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.webui.readinessProbe.enabled }}
           readinessProbe:
             httpGet:
-              path: /
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 10
+              path: {{ .Values.webui.readinessProbe.httpGet.path }}
+              port: {{ .Values.webui.readinessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.webui.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.webui.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.webui.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.webui.readinessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.webui.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.webui.startupProbe.httpGet.path }}
+              port: {{ .Values.webui.startupProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.webui.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.webui.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.webui.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.webui.startupProbe.failureThreshold }}
+          {{- end }}
+          {{- with .Values.webui.preStopSleepSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ . }}"]
+          {{- end }}
           resources:
             {{- toYaml .Values.webui.resources | nindent 12 }}
           volumeMounts:

@@ -410,6 +410,17 @@ kubectl set resources deployment penguincode-server \
   --requests=cpu=1000m,memory=2Gi
 ```
 
+### Health Checks, Graceful Shutdown, Autoscaling & Disruption Budgets
+
+| `values.yaml` key | Default | Notes |
+|---|---|---|
+| `server.startupProbe` | `enabled: true`, 5s + 24×5s ≈ 125s grace | Gates liveness/readiness until the server's gRPC channel accepts connections once — absorbs a slow first-start model-registry/config load |
+| `server.terminationGracePeriodSeconds` / `.preStopSleepSeconds` | `120` / `10` | Pod-level SIGTERM→SIGKILL window and a `preStop sleep` before SIGTERM, covering an in-flight agent/chat RPC plus Service/EndpointSlice deregistration time |
+| `server.podDisruptionBudget.enabled` / `.minAvailable` | `true` / `1` | Renders `templates/pdb.yaml` only when the effective replica count (`autoscaling.minReplicas` when autoscaling is on, else `server.replicas`) is greater than 1 — alpha (`replicas: 1`) renders nothing, beta/gamma/production (`replicas: 2+`) render normally |
+| `autoscaling.enabled` / `.minReplicas` / `.maxReplicas` | `false` / `2` / `10` | `templates/hpa.yaml` (CPU + memory targets) honors this block — previously defined in `values.yaml` with no template ever reading it. `server.replicas` is omitted from the Deployment spec whenever this is on, so `helm upgrade` never fights the HPA |
+| `server.healthCheck.nativeGrpcProbe` | `false` | Switches both probes from the exec-based `grpc.channel_ready_future()` check to K8s's native `grpc:` probe type (GA since 1.27) against the standard `grpc.health.v1.Health` service — readiness targets `KnowledgeService` specifically, liveness targets overall server health. **Leave this `false` until `penguincode_cli/server/main.py` actually registers `grpc.health.v1.Health`** (it currently doesn't; `shared/py_libs/py_libs/grpc/server.py`'s `register_health_check` exists but is unused) — flipping it on before then fails every probe closed |
+| `server.grpcMaxWorkers` | `10` | Sets `PENGUINCODE_GRPC_MAX_WORKERS` — chart-side plumbing is ready for when the server reads it (currently hardcoded `max_workers=10` in `main.py`, a separate non-Helm change) |
+
 ## Troubleshooting
 
 ### Deployment Issues

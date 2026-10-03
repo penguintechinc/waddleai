@@ -7,7 +7,13 @@ metadata:
   labels:
     {{- include "penguincode.server.labels" . | nindent 4 }}
 spec:
+  # O4-Low: omitted entirely when autoscaling is enabled -- otherwise every
+  # `helm upgrade` resets replicas back to server.replicas and fights the
+  # HPA's own scaling decisions (see templates/hpa.yaml, k8s/helm/waddleai's
+  # management-deployment.yaml for the identical pattern).
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.server.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "penguincode.server.selectorLabels" . | nindent 6 }}
@@ -69,6 +75,12 @@ spec:
               name: {{ include "penguincode.otelHeadersSecretName" . }}
               key: {{ .Values.otel.headers.secretKey }}
               optional: true
+        # O9: gRPC server thread-pool size -- was hardcoded `max_workers=10`
+        # in penguincode_cli/server/main.py's grpc.aio.server(...). Reading
+        # this env var server-side is a separate, non-Helm change (tracked
+        # outside this PR); default below matches today's hardcoded value.
+        - name: PENGUINCODE_GRPC_MAX_WORKERS
+          value: {{ .Values.server.grpcMaxWorkers | default 10 | quote }}
         envFrom:
         {{- if .Values.configMap.enabled }}
         - configMapRef:
@@ -79,6 +91,33 @@ spec:
             name: {{ include "penguincode.fullname" . }}-secrets
         {{- end }}
         {{- if .Values.server.healthCheck.enabled }}
+        {{- /*
+        O4: nativeGrpcProbe (default OFF, see values.yaml comment) swaps
+        both probes to K8s's native `grpc:` probe type against the standard
+        grpc.health.v1.Health service -- readiness checks the knowledge
+        service specifically (the capability this server exists to provide),
+        liveness checks overall server health (empty service name). Stays on
+        the exec/grpc.channel_ready_future check otherwise, which only
+        proves the channel accepts connections, not that the server is
+        actually serving -- a known, documented gap (values.yaml) until
+        grpc.health.v1 is registered server-side.
+        */}}
+        {{- if .Values.server.healthCheck.nativeGrpcProbe }}
+        livenessProbe:
+          grpc:
+            port: {{ .Values.server.healthCheck.grpc.port }}
+            service: {{ .Values.server.healthCheck.grpcServiceName | default "" | quote }}
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          grpc:
+            port: {{ .Values.server.healthCheck.grpc.port }}
+            service: "penguincode.knowledge.v1.KnowledgeService"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        {{- else }}
         livenessProbe:
           exec:
             command:
@@ -104,8 +143,33 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
         {{- end }}
+        {{- end }}
+        {{- if .Values.server.startupProbe.enabled }}
+        startupProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - |
+              import grpc
+              ch = grpc.insecure_channel('localhost:{{ .Values.server.healthCheck.grpc.port }}')
+              grpc.channel_ready_future(ch).result(timeout=5)
+          initialDelaySeconds: {{ .Values.server.startupProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.server.startupProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.server.startupProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.server.startupProbe.failureThreshold }}
+        {{- end }}
+        {{- with .Values.server.preStopSleepSeconds }}
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep {{ . }}"]
+        {{- end }}
         resources:
           {{- toYaml .Values.server.resources | nindent 12 }}
+      {{- with .Values.server.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

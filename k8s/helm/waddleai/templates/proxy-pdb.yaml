@@ -1,0 +1,27 @@
+{{/*
+O4: PodDisruptionBudget for the AIProxy service. Same guard pattern as
+management-pdb.yaml -- only renders when podDisruptionBudget.enabled AND
+the effective replica count (autoscaling.minReplicas when autoscaling is
+on, else the fixed replicaCount) is greater than 1, so a singleton proxy
+deployment is never blocked from voluntary eviction by its own PDB.
+*/}}
+{{- $effectiveMin := .Values.proxy.replicaCount -}}
+{{- if .Values.proxy.autoscaling.enabled -}}
+{{- $effectiveMin = .Values.proxy.autoscaling.minReplicas -}}
+{{- end -}}
+{{- if and .Values.proxy.enabled .Values.podDisruptionBudget.enabled (gt (int $effectiveMin) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "waddleai.fullname" . }}-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+{{- end }}

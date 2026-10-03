@@ -30,6 +30,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+      {{- with .Values.management.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
@@ -86,6 +89,11 @@ spec:
               value: "6379"
             - name: REDIS_URL
               value: "redis://{{ include "waddleai.fullname" . }}-valkey:6379/0"
+            # O9: drives services/management/Dockerfile's CMD
+            # (`hypercorn ... --workers ${HYPERCORN_WORKERS}`) -- was a
+            # hardcoded `--workers 2`.
+            - name: HYPERCORN_WORKERS
+              value: {{ .Values.management.workers | default 2 | quote }}
             {{- with include "waddleai.publicHost" . }}
             - name: WADDLEAI_PUBLIC_HOST
               value: {{ . | quote }}
@@ -134,6 +142,22 @@ spec:
             periodSeconds: {{ .Values.management.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.management.readinessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.management.readinessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.management.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.management.startupProbe.httpGet.path }}
+              port: {{ .Values.management.startupProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.management.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.management.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.management.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.management.startupProbe.failureThreshold }}
+          {{- end }}
+          {{- with .Values.management.preStopSleepSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ . }}"]
           {{- end }}
           resources:
             {{- toYaml .Values.management.resources | nindent 12 }}

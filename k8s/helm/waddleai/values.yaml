@@ -80,6 +80,35 @@ management:
     timeoutSeconds: 5
     failureThreshold: 3
 
+  # O4-b: covers first-start slow paths (SQLAlchemy/PyDAL bootstrap, spaCy
+  # NER_SPACY_MODEL load in some deployments) so livenessProbe's own
+  # initialDelaySeconds never races a cold start. The kubelet does not begin
+  # the liveness/readiness probes at all until this one succeeds once --
+  # 5s + 24*5s = ~125s of grace before a slow-starting pod is killed.
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8001
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 24
+
+  # O5-a: pod-level drain window. Must be >= preStopSleepSeconds + the app's
+  # own shutdown work (hypercorn's graceful-timeout default of 3s, SQLAlchemy
+  # pool teardown) with headroom for an in-flight admin request.
+  terminationGracePeriodSeconds: 60
+  # O5-a: preStop sleep so the endpoint has time to deregister (Service/
+  # EndpointSlice removal + any in-flight kube-proxy/Cilium update) before
+  # the app receives SIGTERM -- prevents a dropped request from a client that
+  # already resolved the (now-terminating) pod's IP.
+  preStopSleepSeconds: 5
+  # O9: Hypercorn worker count, overridable per environment -- previously a
+  # hardcoded `--workers 2` baked into services/management/Dockerfile's CMD.
+  # Wired to the HYPERCORN_WORKERS env var the image now reads at startup.
+  workers: 2
+
   env:
     DB_TYPE: postgres
     FLASK_ENV: production
@@ -194,6 +223,46 @@ proxy:
     timeoutSeconds: 3
     failureThreshold: 3
 
+  # O4-b: proxy loads shared/security/ner_filter.py's en_core_web_lg spaCy
+  # model on first start, observed 60-120s on a cold pod -- the old
+  # livenessProbe.initialDelaySeconds of 10 could kill a pod mid-load before
+  # the NER filter ever finished initializing. failureThreshold*periodSeconds
+  # (30*5=150s) covers the full 60-120s window with headroom; livenessProbe
+  # above is left as-is since the kubelet never runs it until this succeeds.
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 30
+
+  # O5-a: proxy streams LLM completions that can run well past 30s -- the
+  # pod-level grace period must comfortably outlast the longest in-flight
+  # stream plus preStopSleepSeconds plus the app's own drain
+  # (gracefulTimeoutSeconds + grpcShutdownGraceSeconds below).
+  terminationGracePeriodSeconds: 300
+  # O5-a: preStop sleep before SIGTERM, so the proxy's Service/EndpointSlice
+  # entry has time to propagate removal and in-flight requests already
+  # routed here aren't dropped by a client racing endpoint deregistration.
+  preStopSleepSeconds: 10
+  # O9: Hypercorn worker count -- previously hardcoded `--workers 4` in
+  # proxy/Dockerfile's CMD. Wired to HYPERCORN_WORKERS, read at container
+  # start.
+  workers: 4
+  # O5-a: Hypercorn's own in-process graceful drain window (stops accepting
+  # new connections, waits up to this long for in-flight requests/streams to
+  # finish before closing). Wired to HYPERCORN_GRACEFUL_TIMEOUT. Keep
+  # strictly less than terminationGracePeriodSeconds - preStopSleepSeconds so
+  # the pod is never SIGKILLed mid-drain.
+  gracefulTimeoutSeconds: 30
+  # O5-a: grace period (seconds) passed to the internal gRPC server's own
+  # stop() in proxy/apps/proxy_server/main.py's ProxyServer.shutdown() --
+  # was hardcoded `grace=5`; now read from PROXY_GRPC_SHUTDOWN_GRACE_SECONDS.
+  grpcShutdownGraceSeconds: 5
+
   env:
     LOG_LEVEL: INFO
     HTTP_PORT: "8080"
@@ -263,10 +332,17 @@ webui:
     maxReplicas: 3
     targetCPUUtilizationPercentage: 75
 
+  # O4-c: liveness and readiness were previously byte-for-byte identical
+  # (templates/webui-deployment.yaml hardcoded both to the same httpGet
+  # check, ignoring these values entirely). nginx ships no app-specific
+  # health endpoint distinct from "/" without an image change (out of
+  # scope here -- see PR notes), so the two are split by MECHANISM instead:
+  # liveness is a cheap TCP accept-only check (process alive, nginx
+  # listening) and readiness is the full HTTP GET that proves nginx is
+  # actually serving the index.
   livenessProbe:
     enabled: true
-    httpGet:
-      path: /
+    tcpSocket:
       port: 8080
     initialDelaySeconds: 10
     periodSeconds: 30
@@ -282,6 +358,24 @@ webui:
     periodSeconds: 10
     timeoutSeconds: 3
     failureThreshold: 3
+
+  # O4-b: static nginx content starts fast, but still gets a (modest)
+  # startupProbe for consistency with every other Deployment in this chart
+  # and so a slow image pull / cold node never races livenessProbe.
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+  # O5-a: nginx itself drains near-instantly; this is mostly about giving
+  # the Service/EndpointSlice time to propagate removal before SIGTERM.
+  terminationGracePeriodSeconds: 30
+  preStopSleepSeconds: 5
 
 # PostgreSQL Database
 postgres:
@@ -748,6 +842,22 @@ ollama:
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 3
+
+  # O4-b: Ollama's own livenessProbe above already carries a generous
+  # initialDelaySeconds (60s) for GPU/model-load startup; this adds a
+  # dedicated startupProbe on top so a slow driver/model load never
+  # competes with the (intentionally tighter) steady-state liveness check
+  # once the pod is actually up. Covers up to ~10 minutes
+  # (10s + 60*10s) for a cold GPU node pulling a large model.
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 60
 
 # llama.cpp Inference Engine (self-managed alternative to Ollama)
 # llama-server serves exactly ONE model per process (unlike `ollama serve`, which
