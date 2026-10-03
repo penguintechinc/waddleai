@@ -42,7 +42,8 @@ def _backoff_delay(attempt: int, base: float, cap: float) -> float:
     interval. Not security-sensitive (connection-retry timing only).
     """
     exp = min(cap, base * (2**attempt))
-    return random.uniform(0, exp)  # noqa: S311 -- jitter, not a security-sensitive random use
+    # Retry-timing jitter, not a security/cryptographic use of randomness.
+    return random.uniform(0, exp)  # noqa: S311 # nosec B311
 
 
 # Fixed, NON-secret lookup handle for the bootstrap admin key. It is the
