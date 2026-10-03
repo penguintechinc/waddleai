@@ -25,8 +25,21 @@ from shared.licensing.python_client import (
 )
 
 
-def setup_function() -> None:
-    """Reset the module-level global client singleton between tests."""
+@pytest.fixture(autouse=True)
+def _reset_global_client():
+    """Reset the module-level global client singleton before every test.
+
+    An autouse fixture, not a bare `setup_function`: `setup_function` is only
+    invoked by pytest for bare module-level test functions, NOT for methods on
+    test classes -- and every test below lives in a class. Using it here would
+    silently skip the reset for all of them, which is exactly how this file
+    was vulnerable to a leaked `_global_client` (e.g. from
+    test_license_client_timeout.py's TestInitializeLicensing, which assigns a
+    MagicMock to the global during a now-exited `patch()` context) persisting
+    across test collection order.
+    """
+    pc._global_client = None
+    yield
     pc._global_client = None
 
 
