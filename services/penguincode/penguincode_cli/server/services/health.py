@@ -39,10 +39,11 @@ class HealthServiceImpl(HealthServiceServicer):
         except Exception:
             pass
 
-        # Get active session count
+        # Get active session count (sessions.store.SessionStore, see
+        # server/services/chat.py's O4-a fix -- no longer an in-process dict).
         active_sessions = 0
         if self._chat_service:
-            active_sessions = len(self._chat_service.sessions)
+            active_sessions = await self._chat_service.active_session_count()
 
         return HealthCheckResponse(
             healthy=True,
