@@ -220,6 +220,7 @@ class TestGRPCClientConnectWiring:
             host = "localhost"
             port = 1
             tls_enabled = False
+            grpc_max_message_bytes = 4 * 1024 * 1024
 
         class _StubClientConfig:
             token_path = "/tmp/does-not-matter"  # noqa: S108 -- test fixture path
