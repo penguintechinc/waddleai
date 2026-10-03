@@ -322,7 +322,9 @@ class TestEmbeddingBulkheadTelemetry:
             async def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
                 return _FakeResponse()
 
-        monkeypatch.setattr(graphrag_module.httpx, "AsyncClient", lambda *a, **kw: _FakeAsyncClient())
+        monkeypatch.setattr(
+            graphrag_module.httpx, "AsyncClient", lambda *a, **kw: _FakeAsyncClient()
+        )
         calls: list[tuple[str, str, float]] = []
         monkeypatch.setattr(
             graphrag_module,
@@ -366,7 +368,9 @@ class TestEmbeddingBulkheadTelemetry:
             async def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
                 return _FakeResponse()
 
-        monkeypatch.setattr(graphrag_module.httpx, "AsyncClient", lambda *a, **kw: _FakeAsyncClient())
+        monkeypatch.setattr(
+            graphrag_module.httpx, "AsyncClient", lambda *a, **kw: _FakeAsyncClient()
+        )
         calls: list[tuple[str, str, float]] = []
         monkeypatch.setattr(
             graphrag_module,

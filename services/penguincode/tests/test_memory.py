@@ -339,8 +339,7 @@ class TestMemoryManagerEmbeddingBulkhead:
         mem0_config = mock_memory_cls.from_config.call_args[0][0]
         assert mem0_config["llm"]["config"]["ollama_base_url"] == "http://chat-ollama:11434"
         assert (
-            mem0_config["embedder"]["config"]["ollama_base_url"]
-            == "http://ollama-embeddings:11434"
+            mem0_config["embedder"]["config"]["ollama_base_url"] == "http://ollama-embeddings:11434"
         )
 
     def test_unset_embedding_ollama_url_falls_back_to_ollama_url(self) -> None:
@@ -366,8 +365,7 @@ class TestMemoryManagerEmbeddingBulkhead:
 
         mem0_config = mock_memory_cls.from_config.call_args[0][0]
         assert (
-            mem0_config["embedder"]["config"]["ollama_base_url"]
-            == "http://ollama-embeddings:11434"
+            mem0_config["embedder"]["config"]["ollama_base_url"] == "http://ollama-embeddings:11434"
         )
 
 
