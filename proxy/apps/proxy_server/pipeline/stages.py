@@ -32,6 +32,22 @@ Landed:
     SummarizationStage and DedupStage (see memory_stages.py's module
     docstring for the full placement rationale) -- auto-injects ranked
     retrieved context for non-MCP clients before the cache key is derived.
+  - True SSE streaming (ops O7-b, flag waddleai.disable-sse-streaming --
+    unseen/OFF = real streaming, ON = legacy buffered-JSON fallback): for a
+    streaming dispatch *miss*, the route handler in main.py no longer calls
+    `DispatchStage.__call__` (which still fully buffers, for the flag-ON
+    legacy path and all non-streaming requests). Instead it calls
+    `ProxyPipeline.run_until(ctx, "dispatch")`, then drives
+    `DispatchStage.stream_dispatch(ctx)` directly via
+    `proxy_server/streaming.py` to forward each upstream chunk to the client
+    as it arrives, and finally calls `ProxyPipeline.run_after(ctx, "dispatch")`
+    once the upstream stream is fully drained so security_out/meter still run
+    on the now-complete `ctx.response_text`/`ctx.usage` -- same stage order,
+    just dispatch driven out-of-band. A streaming cache *hit* needs no split:
+    CacheStage already has the full response in hand, so `run_until` +
+    `run_after(ctx, "dispatch")` (which includes `DispatchStage.__call__`'s
+    cheap `ctx.cache_hit` no-op) runs the whole pipeline before replaying
+    `ctx.stream_iter` (shared.cache.replay) as SSE.
 
 Removed:
   - No more empty placeholder stages; insertion points are documented above.
@@ -40,8 +56,9 @@ Removed:
 import asyncio
 import inspect
 import logging
+import time
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -61,6 +78,7 @@ from shared.utils.llm_connectors import (
     ProviderRateLimitError,
     ProviderServerError,
     ProviderTimeoutError,
+    StreamChunk,
 )
 from shared.utils.metering import MeteringBuffer, MeteringEvent
 from shared.utils.metrics import get_proxy_metrics
@@ -238,40 +256,87 @@ class ProxyPipeline:
         """
         with self.tracer.start_as_current_span("pipeline"):
             for stage in self.stages:
-                # Check if stage is flag-gated
-                if stage.flag is not None:
-                    # Extract distinct_id from user if available
-                    distinct_id = None
-                    if hasattr(ctx.user, "id"):
-                        distinct_id = str(ctx.user.id)
+                ctx = await self._run_stage(ctx, stage)
+        return ctx
 
-                    is_enabled = await _resolve_flag(
-                        self.features,
-                        stage.flag,
-                        distinct_id,
-                    )
-                    if not is_enabled:
-                        ctx.stage_log.append(f"skipped:{stage.name}")
-                        continue
+    async def run_until(self, ctx: PipelineContext, stage_name: str) -> PipelineContext:
+        """Run stages strictly before ``stage_name`` (exclusive) -- otherwise matches :meth:`run`.
 
-                # Short-circuit if previous stage blocked
-                if ctx.blocked:
-                    ctx.stage_log.append(f"short-circuit:{stage.name}")
+        Used by the true-SSE streaming path (``proxy_server.streaming``) to
+        pause the pipeline immediately before ``"dispatch"`` -- auth,
+        token_budget, security_in, cache, and routing all still run exactly
+        as :meth:`run` would, but the caller then drives
+        ``DispatchStage.stream_dispatch`` directly instead of letting
+        ``DispatchStage.__call__`` buffer the whole upstream response.
+        """
+        with self.tracer.start_as_current_span("pipeline_head"):
+            for stage in self.stages:
+                if stage.name == stage_name:
+                    break
+                ctx = await self._run_stage(ctx, stage)
+        return ctx
+
+    async def run_after(self, ctx: PipelineContext, stage_name: str) -> PipelineContext:
+        """Run every stage strictly after ``stage_name`` (exclusive), same semantics as :meth:`run`.
+
+        Complements :meth:`run_until`: once a true-SSE stream has finished
+        (or a streaming cache hit, which never calls
+        ``DispatchStage.stream_dispatch`` at all), the caller resumes the
+        pipeline from the stage right after ``stage_name`` so security_out
+        (PII/sensitive-content filtering) and meter (billing) still run on
+        the now-fully-accumulated ``ctx.response_text``/``ctx.usage`` --
+        honoring the same cheapest-first stage order as a non-streaming
+        request, just with the dispatch step itself driven out-of-band.
+        """
+        found = False
+        with self.tracer.start_as_current_span("pipeline_tail"):
+            for stage in self.stages:
+                if not found:
+                    if stage.name == stage_name:
+                        found = True
                     continue
+                ctx = await self._run_stage(ctx, stage)
+        return ctx
 
-                # Execute stage with tracing
-                with self.tracer.start_as_current_span(stage.name) as span:
-                    try:
-                        ctx = await stage(ctx)
-                        ctx.stage_log.append(f"ran:{stage.name}")
-                        if stage.name == "dispatch":
-                            self._set_genai_attributes(span, ctx)
-                    except Exception as e:
-                        logger.error(f"Stage {stage.name} failed: {e}", exc_info=True)
-                        span.set_attribute("error", True)
-                        span.set_attribute("error.message", str(e))
-                        # Don't block the pipeline on stage errors; let them propagate
-                        raise
+    async def _run_stage(self, ctx: PipelineContext, stage: Stage) -> PipelineContext:
+        """Run one stage: flag-gating, short-circuit, tracing.
+
+        Shared by :meth:`run`, :meth:`run_until`, and :meth:`run_after`.
+        """
+        # Check if stage is flag-gated
+        if stage.flag is not None:
+            # Extract distinct_id from user if available
+            distinct_id = None
+            if hasattr(ctx.user, "id"):
+                distinct_id = str(ctx.user.id)
+
+            is_enabled = await _resolve_flag(
+                self.features,
+                stage.flag,
+                distinct_id,
+            )
+            if not is_enabled:
+                ctx.stage_log.append(f"skipped:{stage.name}")
+                return ctx
+
+        # Short-circuit if previous stage blocked
+        if ctx.blocked:
+            ctx.stage_log.append(f"short-circuit:{stage.name}")
+            return ctx
+
+        # Execute stage with tracing
+        with self.tracer.start_as_current_span(stage.name) as span:
+            try:
+                ctx = await stage(ctx)
+                ctx.stage_log.append(f"ran:{stage.name}")
+                if stage.name == "dispatch":
+                    self._set_genai_attributes(span, ctx)
+            except Exception as e:
+                logger.error(f"Stage {stage.name} failed: {e}", exc_info=True)
+                span.set_attribute("error", True)
+                span.set_attribute("error.message", str(e))
+                # Don't block the pipeline on stage errors; let them propagate
+                raise
 
         return ctx
 
@@ -876,7 +941,7 @@ class DispatchStage(Stage):
         self.features = features
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
-        """Route to provider and dispatch request.
+        """Route to provider and dispatch request, fully buffering a streamed response.
 
         1. Select provider via router
         2. Call connector (streaming or non-streaming based on ctx.stream)
@@ -889,6 +954,16 @@ class DispatchStage(Stage):
         Skipped entirely on a cache hit (ctx.cache_hit, set by CacheStage) --
         ctx.response_text/usage/finish_reason/provider are already populated
         from the cache, so no provider call happens.
+
+        This is the **legacy, fully-buffered** path for ``ctx.stream`` -- it
+        still accumulates the whole upstream response before returning, same
+        as before true SSE streaming existed. It remains the only path for
+        non-streaming requests, and is also what the
+        ``waddleai.disable-sse-streaming`` kill-switch falls back to for
+        ``stream: true`` requests (route handler in main.py). Real-time SSE
+        callers use :meth:`stream_dispatch` instead, which shares
+        :meth:`_prepare_dispatch` and :meth:`_record_dispatch_error` with this
+        method so both paths select providers and map errors identically.
         """
         if ctx.cache_hit:
             return ctx
@@ -899,6 +974,141 @@ class DispatchStage(Stage):
             ctx.block_reason = "no_messages"
             return ctx
 
+        prepared = await self._prepare_dispatch(ctx)
+        if prepared is None:
+            return ctx
+        provider, target_model, connector = prepared
+
+        try:
+            if ctx.stream:
+                # Streaming: accumulate chunks
+                ctx.response_text = ""
+                usage: dict[str, Any] | None = None
+                # NOTE: shared.utils.llm_connectors.LLMConnector intentionally
+                # declares stream_chat_completion as a plain (non-async)
+                # abstractmethod because every concrete connector implements it as
+                # an async-generator function; calling it returns the AsyncIterator
+                # directly (see that class's docstring). mypy's override checker
+                # doesn't special-case this, so it reports the abstract
+                # declaration's static type as a Coroutine here. No `await`
+                # belongs on this call -- adding one would break at runtime
+                # (async generators aren't awaitable).
+                async for chunk in connector.stream_chat_completion(  # type: ignore[attr-defined]
+                    ctx.messages, model=target_model
+                ):
+                    ctx.response_text += chunk.delta
+                    if chunk.done and chunk.usage:
+                        usage = chunk.usage
+                if usage:
+                    ctx.usage = usage
+                    ctx.finish_reason = usage.get("finish_reason", "stop")
+            else:
+                # Non-streaming: single call
+                response_text, usage_info = await connector.chat_completion(
+                    ctx.messages, model=target_model
+                )
+                ctx.response_text = response_text
+                ctx.usage = usage_info
+                ctx.finish_reason = usage_info.get("finish_reason", "stop")
+
+            await self._depseudonymize(ctx)
+
+            logger.debug(
+                "DispatchStage: dispatched to %s/%s (tokens: in=%s, out=%s)",
+                provider,
+                target_model,
+                ctx.usage.get("input_tokens") if ctx.usage else "?",
+                ctx.usage.get("output_tokens") if ctx.usage else "?",
+            )
+
+        except Exception as e:
+            self._record_dispatch_error(ctx, provider, e)
+
+        return ctx
+
+    async def stream_dispatch(self, ctx: PipelineContext) -> AsyncGenerator[StreamChunk]:
+        """Yield upstream ``StreamChunk``s as they arrive, for true SSE streaming.
+
+        Mirrors :meth:`__call__`'s streaming branch -- same provider
+        selection (:meth:`_prepare_dispatch`) and the same error-to-HTTP-
+        status mapping (:meth:`_record_dispatch_error`) -- but yields each
+        chunk to the caller (``proxy_server.streaming``) immediately instead
+        of silently accumulating it, so the client sees text as the upstream
+        provider produces it. ``ctx.response_text``/``ctx.usage``/
+        ``ctx.finish_reason``/``ctx.provider``/``ctx.model`` are filled in
+        place as chunks arrive, so by the time this generator is exhausted
+        ``ctx`` is in the exact same state :meth:`__call__` would have left
+        it in -- the caller then runs the remaining pipeline stages
+        (security_out, meter) via ``ProxyPipeline.run_after(ctx, "dispatch")``.
+
+        On a dispatch error (including mid-stream, e.g. the upstream
+        connection drops partway through), sets ``ctx.blocked`` exactly like
+        ``__call__`` and stops yielding -- it does NOT raise, so the
+        caller's ``async for`` ends cleanly and must check ``ctx.blocked``
+        afterward to decide whether to emit a terminal SSE error event.
+
+        A client disconnect (the caller's consumer closing this generator)
+        propagates as ``GeneratorExit``/``CancelledError`` through the
+        ``async for`` below and out through ``connector.stream_chat_completion``,
+        which is expected to cancel its own upstream HTTP call on close --
+        this method does not catch those (``except Exception`` never matches
+        ``BaseException`` subclasses), so cancellation is never swallowed.
+
+        Timed and recorded to the same ``record_llm_latency`` histogram the
+        non-streaming ``__call__`` path records around ``ProxyPipeline.run()``
+        (release-audit-2026-10-02, ops O1-c) -- here the measurement spans
+        only the live upstream call itself (from the first byte requested to
+        the last chunk or the failure), both success and error, so streaming
+        and non-streaming latencies stay directly comparable in one histogram.
+        """
+        if ctx.cache_hit:
+            return
+
+        if not ctx.messages:
+            ctx.blocked = True
+            ctx.status_code = 400
+            ctx.block_reason = "no_messages"
+            return
+
+        prepared = await self._prepare_dispatch(ctx)
+        if prepared is None:
+            return
+        provider, target_model, connector = prepared
+
+        ctx.response_text = ""
+        usage: dict[str, Any] | None = None
+        start = time.time()
+        try:
+            async for chunk in connector.stream_chat_completion(  # type: ignore[attr-defined]
+                ctx.messages, model=target_model
+            ):
+                ctx.response_text += chunk.delta
+                if chunk.done and chunk.usage:
+                    usage = chunk.usage
+                yield chunk
+            if usage:
+                ctx.usage = usage
+                ctx.finish_reason = usage.get("finish_reason", "stop")
+            await self._depseudonymize(ctx)
+            get_proxy_metrics().record_llm_latency(
+                provider=provider, model=target_model, status="success", duration=time.time() - start
+            )
+        except Exception as e:
+            self._record_dispatch_error(ctx, provider, e)
+            get_proxy_metrics().record_llm_latency(
+                provider=provider, model=target_model, status="error", duration=time.time() - start
+            )
+
+    async def _prepare_dispatch(self, ctx: PipelineContext) -> tuple[str, str, LLMConnector] | None:
+        """Select a provider/model/connector and apply security_v2 upstream filtering.
+
+        Shared by :meth:`__call__` and :meth:`stream_dispatch` so both the
+        buffered and true-streaming paths select providers, map
+        selection failures, and apply §8.7 upstream filtering identically.
+        Sets ``ctx.blocked`` (and returns ``None``) on any selection
+        failure; on success sets ``ctx.provider``/``ctx.requested_model``/
+        ``ctx.model`` and returns ``(provider, target_model, connector)``.
+        """
         # Select provider and target model via the router's public seam, which
         # applies availability filtering (and therefore the circuit breaker,
         # including its half-open probe). Reaching into the private helpers
@@ -939,14 +1149,14 @@ class DispatchStage(Stage):
                 ctx.blocked = True
                 ctx.status_code = 503
                 ctx.block_reason = "no_available_providers"
-                return ctx
+                return None
             provider, target_model = selection
         except Exception as e:
             logger.error("DispatchStage: provider selection failed: %s", e)
             ctx.blocked = True
             ctx.status_code = 500
             ctx.block_reason = "routing_error"
-            return ctx
+            return None
 
         connector = self.connectors.get(provider)
         if not connector:
@@ -954,7 +1164,7 @@ class DispatchStage(Stage):
             ctx.blocked = True
             ctx.status_code = 500
             ctx.block_reason = "no_connector"
-            return ctx
+            return None
 
         ctx.provider = provider
         ctx.requested_model = ctx.model
@@ -967,66 +1177,41 @@ class DispatchStage(Stage):
             if await _resolve_flag(self.features, "waddleai.security_v2", str(org_id)):
                 await self._apply_upstream_filter(ctx, org_id, provider, target_model)
 
-        try:
-            if ctx.stream:
-                # Streaming: accumulate chunks
-                ctx.response_text = ""
-                usage: dict[str, Any] | None = None
-                # NOTE: shared.utils.llm_connectors.LLMConnector intentionally
-                # declares stream_chat_completion as a plain (non-async)
-                # abstractmethod because every concrete connector implements it as
-                # an async-generator function; calling it returns the AsyncIterator
-                # directly (see that class's docstring). mypy's override checker
-                # doesn't special-case this, so it reports the abstract
-                # declaration's static type as a Coroutine here. No `await`
-                # belongs on this call -- adding one would break at runtime
-                # (async generators aren't awaitable).
-                async for chunk in connector.stream_chat_completion(  # type: ignore[attr-defined]
-                    ctx.messages, model=target_model
-                ):
-                    ctx.response_text += chunk.delta
-                    if chunk.done and chunk.usage:
-                        usage = chunk.usage
-                if usage:
-                    ctx.usage = usage
-                    ctx.finish_reason = usage.get("finish_reason", "stop")
-            else:
-                # Non-streaming: single call
-                response_text, usage_info = await connector.chat_completion(
-                    ctx.messages, model=target_model
-                )
-                ctx.response_text = response_text
-                ctx.usage = usage_info
-                ctx.finish_reason = usage_info.get("finish_reason", "stop")
+        return provider, target_model, connector
 
-            if ctx.upstream_mapping_id and self.upstream_filter is not None:
-                # §8.7: de-pseudonymize before the response reaches the
-                # client, then drop the Valkey map -- it must not outlive
-                # this request.
-                ctx.response_text = await self.upstream_filter.depseudonymize(
-                    ctx.response_text, ctx.upstream_mapping_id
-                )
-                await self.upstream_filter.cleanup(ctx.upstream_mapping_id)
-                ctx.upstream_mapping_id = None
+    async def _depseudonymize(self, ctx: PipelineContext) -> None:
+        """§8.7: de-pseudonymize ``ctx.response_text`` before it reaches the client.
 
-            logger.debug(
-                "DispatchStage: dispatched to %s/%s (tokens: in=%s, out=%s)",
-                provider,
-                target_model,
-                ctx.usage.get("input_tokens") if ctx.usage else "?",
-                ctx.usage.get("output_tokens") if ctx.usage else "?",
+        Shared by :meth:`__call__` and :meth:`stream_dispatch` -- no-ops
+        unless :meth:`_prepare_dispatch` set ``ctx.upstream_mapping_id``
+        (security_v2 only). Drops the Valkey map immediately after: it must
+        not outlive this request.
+        """
+        if ctx.upstream_mapping_id and self.upstream_filter is not None:
+            ctx.response_text = await self.upstream_filter.depseudonymize(
+                ctx.response_text, ctx.upstream_mapping_id
             )
+            await self.upstream_filter.cleanup(ctx.upstream_mapping_id)
+            ctx.upstream_mapping_id = None
 
-        except ProviderClientError as e:
+    @staticmethod
+    def _record_dispatch_error(ctx: PipelineContext, provider: str, e: Exception) -> None:
+        """Map a dispatch-time exception to ``ctx.blocked``/``status_code``/``block_reason``.
+
+        Shared by :meth:`__call__` and :meth:`stream_dispatch` so a buffered
+        call and a true-streaming call map the exact same exception types to
+        the exact same HTTP status/block_reason.
+        """
+        if isinstance(e, ProviderClientError):
             # 4xx: not retryable, pass through
             ctx.blocked = True
             ctx.status_code = e.status_code or 400
             ctx.block_reason = f"provider_error_{e.status_code}"
             logger.warning("DispatchStage: provider client error from %s: %s", provider, e)
 
-        except (ProviderTimeoutError, ProviderRateLimitError, ProviderServerError) as e:
-            # Retryable errors: already retried by connector, exhausted attempts
-            # Map to appropriate HTTP error
+        elif isinstance(e, (ProviderTimeoutError, ProviderRateLimitError, ProviderServerError)):
+            # Retryable errors: already retried by connector, exhausted attempts.
+            # Map to appropriate HTTP error.
             if isinstance(e, ProviderRateLimitError):
                 ctx.status_code = 429
             elif isinstance(e, ProviderTimeoutError):
@@ -1041,21 +1226,19 @@ class DispatchStage(Stage):
                 "DispatchStage: provider error from %s (retries exhausted): %s", provider, e
             )
 
-        except ProviderError as e:
+        elif isinstance(e, ProviderError):
             # Generic provider error
             ctx.blocked = True
             ctx.status_code = e.status_code or 500
             ctx.block_reason = "provider_error"
             logger.warning("DispatchStage: provider error from %s: %s", provider, e)
 
-        except Exception as e:
+        else:
             # Unexpected error
             logger.error("DispatchStage: unexpected error: %s", e, exc_info=True)
             ctx.blocked = True
             ctx.status_code = 500
             ctx.block_reason = "dispatch_error"
-
-        return ctx
 
     async def _apply_upstream_filter(
         self, ctx: PipelineContext, org_id: Any, provider: str, target_model: str

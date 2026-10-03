@@ -66,6 +66,7 @@ from shared.utils.metrics import get_proxy_metrics
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
 
+from . import streaming
 from .feature_flag_cache import FeatureFlagsHelper
 from .grpc_server import CallerIdentity, ServerComponents, run_grpc_in_thread
 from .mcp_mount import MCPMount
@@ -197,6 +198,18 @@ def _stub_llm_response(model: str, messages: list) -> tuple:
 def _cache_flag_enabled(distinct_id: str) -> bool:
     """Whether waddleai.response_cache is on for this caller (spec §14.5, fail-safe OFF)."""
     return is_feature_enabled(RESPONSE_CACHE_FLAG, distinct_id, default=False)
+
+
+# Opt-out kill-switch (ops O7-b): unseen/OFF (default) means true SSE
+# streaming is ON; flipping this ON falls back to the pre-existing
+# fully-buffered-JSON behavior for `stream: true` requests, as a rollback
+# lever if the new streaming path misbehaves in production.
+_DISABLE_SSE_STREAMING_FLAG = "waddleai.disable-sse-streaming"
+
+
+def _sse_streaming_disabled(distinct_id: str) -> bool:
+    """Whether the true-SSE-streaming kill-switch is ON (legacy buffered JSON) for this caller."""
+    return is_feature_enabled(_DISABLE_SSE_STREAMING_FLAG, distinct_id, default=False)
 
 
 def _build_waddleai_cache_usage(ctx: PipelineContext) -> dict:
@@ -486,12 +499,21 @@ class ConcurrencyLimiter:
         return self._active
 
 
-def _overloaded_response(endpoint: str, start_time: float) -> tuple[Any, int]:
-    """Shared 429 body + latency/rejection accounting for a shed (over-concurrency) request."""
+def _overloaded_response(endpoint: str, start_time: float) -> tuple[Any, int, dict[str, str]]:
+    """Shared 429 body + latency/rejection accounting + Retry-After for a shed request.
+
+    ``PROXY_OVERLOAD_RETRY_AFTER_SECONDS`` (release-audit-2026-09-23, ops
+    O10 follow-up) is this gate's own tunable rather than a reused window
+    value -- ``ConcurrencyLimiter`` is an in-flight slot count, not a
+    sliding-window rate limiter, so it has no natural "window" duration;
+    the default (1s) just reflects how quickly an in-flight slot typically
+    frees up under normal request latency.
+    """
     proxy_server.metrics.record_concurrency_rejection(endpoint=endpoint)
     proxy_server.metrics.record_request(
         endpoint=endpoint, method="POST", status_code=429, duration=time.time() - start_time
     )
+    retry_after = proxy_server.config["overload_retry_after_seconds"]
     return (
         jsonify(
             {
@@ -502,6 +524,7 @@ def _overloaded_response(endpoint: str, start_time: float) -> tuple[Any, int]:
             }
         ),
         429,
+        {"Retry-After": str(retry_after)},
     )
 
 
@@ -572,6 +595,13 @@ class ProxyServer:
                 os.getenv(
                     "PROXY_MAX_CONCURRENT_PER_WORKER", os.getenv("MAX_CONCURRENT_REQUESTS", "100")
                 )
+            ),
+            # Retry-After (seconds) advertised on the 429 shed response
+            # (release-audit-2026-09-23, ops O10 follow-up) -- see
+            # _overloaded_response's docstring for why this has its own
+            # tunable rather than reusing a rate-limiter window.
+            "overload_retry_after_seconds": int(
+                os.getenv("PROXY_OVERLOAD_RETRY_AFTER_SECONDS", "1")
             ),
         }
 
@@ -1979,11 +2009,149 @@ async def chat_completions():
             escalate_hint=request.headers.get("X-WaddleAI-Escalate"),
         )
 
-        # Run the pipeline (dominated by DispatchStage's single upstream
-        # provider call -- timed here rather than in DispatchStage itself
-        # since that stage is mid-rewrite for streaming elsewhere; see
-        # record_llm_latency's docstring).
+        # Timed around the non-streaming ProxyPipeline.run() call below
+        # (dominated by DispatchStage's single upstream provider call). The
+        # true-SSE streaming path (ops O7-b) times its own upstream call
+        # directly inside DispatchStage.stream_dispatch instead -- see
+        # record_llm_latency's docstring.
         pipeline_start = time.time()
+
+        async def _finalize(final_ctx: PipelineContext) -> dict[str, Any]:
+            """Metrics/memory-storage/cache-write-back once ctx is fully resolved.
+
+            Shared by the buffered-JSON path and the true-SSE-streaming
+            completion path (ops O7-b) -- called exactly once, only after
+            the full pipeline (through SecurityOutStage) has passed without
+            ctx.blocked, same poisoning-defense ordering as before (spec
+            §3.6). Returns the OpenAI-compatible response_dict so the
+            non-streaming caller can jsonify it directly without rebuilding it.
+            """
+            response_text = final_ctx.response_text
+            usage = final_ctx.usage or {}
+            resolved_model = final_ctx.model or model
+            provider = final_ctx.provider or "unknown"
+            finish_reason = final_ctx.finish_reason or "stop"
+
+            token_usage = proxy_server.token_manager.process_usage(
+                input_text="\n".join(
+                    [msg.get("content", "") for msg in messages if msg.get("content")]
+                ),
+                output_text=response_text,
+                provider=provider,
+                model=resolved_model,
+                api_key_id=user_context.api_key_id or 0,
+                user_id=user_context.user_id,
+                organization_id=user_context.organization_id,
+                actual_input_tokens=usage.get("input_tokens", 0),
+                actual_output_tokens=usage.get("output_tokens", 0),
+            )
+
+            proxy_server.metrics.record_llm_request(
+                provider=provider,
+                model=resolved_model,
+                status="success",
+                token_usage={
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                    "waddleai_tokens": token_usage.waddleai_tokens,
+                    "organization": user_context.organization_id,
+                    # Per-user `user` label dropped -- raw user_id is unbounded
+                    # cardinality on a live per-completion counter
+                    # (release-audit-2026-09-23, ops O1). `organization` stays
+                    # (bounded by customer count); user attribution lives in the
+                    # usage DB rows, not in a Prometheus label.
+                },
+            )
+
+            # Store conversation in memory (asynchronously)
+            asyncio.ensure_future(
+                proxy_server.memory_manager.add_conversation_turn(
+                    user_id=user_context.user_id,
+                    organization_id=user_context.organization_id,
+                    messages=messages,  # Original messages without enhancement
+                    response=response_text,
+                    session_id=session_id,
+                    metadata={
+                        "model": resolved_model,
+                        "provider": provider,
+                        "waddleai_tokens": token_usage.waddleai_tokens,
+                        "llm_tokens_input": usage.get("input_tokens", 0),
+                        "llm_tokens_output": usage.get("output_tokens", 0),
+                    },
+                )
+            )
+
+            # Build the OpenAI-compatible response
+            response_dict: dict[str, Any] = {
+                "id": f"chatcmpl-{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": resolved_model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": response_text},
+                        "finish_reason": finish_reason,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": usage.get("input_tokens", 0),
+                    "completion_tokens": usage.get("output_tokens", 0),
+                    "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                    "waddleai_tokens": token_usage.waddleai_tokens,
+                },
+            }
+            # Additive-only, and only when populated (spec §14.2): with the cache
+            # flag off, no memory-layer activity, and no routing redirect, the
+            # `waddleai` key must not appear at all -- not even as {} -- so
+            # responses stay byte-identical to pre-cache/pre-memory/pre-routing
+            # snapshots. Cache (§6.4), proxy-memory (§6A.5), and routing (§7.6)
+            # accounting share the single additive `usage.waddleai` object -- see
+            # _merge_waddleai_usage for how overlapping fields (tokens_saved)
+            # combine; routed_from (None when RoutingStage didn't redirect the
+            # model -- flag off, or no alias/escalation/capability-veto fired) is
+            # disjoint from both, so it's merged in last.
+            cache_meta = (
+                _build_waddleai_cache_usage(final_ctx)
+                if _cache_flag_enabled(str(user_context.user_id))
+                else None
+            )
+            routing_meta = {"routed_from": final_ctx.routed_from} if final_ctx.routed_from else None
+            waddleai_usage = _merge_waddleai_usage(
+                _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(final_ctx)), routing_meta
+            )
+            if waddleai_usage is not None:
+                response_dict["usage"]["waddleai"] = waddleai_usage
+
+            # Write-back only after SecurityOutStage has already passed (spec §3.6
+            # poisoning defense) -- guaranteed by _finalize only ever being
+            # called after a non-blocked pipeline completion.
+            _maybe_write_back_cache(final_ctx, response_dict, usage)
+
+            return response_dict
+
+        # True SSE streaming (ops O7-b): `waddleai.disable-sse-streaming` is an
+        # opt-out kill-switch -- unseen/OFF (default) takes this real-streaming
+        # path; ON falls through to the legacy fully-buffered run() below, even
+        # for stream:true, as a rollback lever.
+        if stream and not _sse_streaming_disabled(str(user_context.user_id)):
+            ctx = await proxy_server.pipeline.run_until(ctx, "dispatch")
+
+            if ctx.blocked:
+                status_code = ctx.status_code or 500
+                error_msg = ctx.block_reason or "Request blocked"
+                return jsonify({"error": {"message": error_msg, "type": "error"}}), status_code
+
+            return Response(
+                streaming.stream_openai_chat_completion(
+                    ctx, proxy_server.pipeline, proxy_server.metrics, finalize=_finalize
+                ),
+                content_type="text/event-stream",
+                headers=streaming.SSE_HEADERS,
+            )
+
+        # Run the pipeline (non-streaming, or streaming with the legacy
+        # buffered-JSON kill-switch flag ON)
         ctx = await proxy_server.pipeline.run(ctx)
         pipeline_duration = time.time() - pipeline_start
 
@@ -2003,114 +2171,16 @@ async def chat_completions():
                 )
             return jsonify({"error": {"message": error_msg, "type": "error"}}), status_code
 
-        # Extract model and usage from pipeline context
-        response_text = ctx.response_text
-        usage = ctx.usage or {}
-        model = ctx.model or model
-        provider = ctx.provider or "unknown"
-        finish_reason = ctx.finish_reason or "stop"
-
-        # Process token usage record
-        token_usage = proxy_server.token_manager.process_usage(
-            input_text="\n".join(
-                [msg.get("content", "") for msg in messages if msg.get("content")]
-            ),
-            output_text=response_text,
-            provider=provider,
-            model=model,
-            api_key_id=user_context.api_key_id or 0,
-            user_id=user_context.user_id,
-            organization_id=user_context.organization_id,
-            actual_input_tokens=usage.get("input_tokens", 0),
-            actual_output_tokens=usage.get("output_tokens", 0),
-        )
-
-        # Record metrics
-        proxy_server.metrics.record_llm_request(
-            provider=provider,
-            model=model,
-            status="success",
-            token_usage={
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "waddleai_tokens": token_usage.waddleai_tokens,
-                "organization": user_context.organization_id,
-                # Per-user `user` label dropped -- raw user_id is unbounded
-                # cardinality on a live per-completion counter
-                # (release-audit-2026-09-23, ops O1). `organization` stays
-                # (bounded by customer count); user attribution lives in the
-                # usage DB rows, not in a Prometheus label.
-            },
-        )
+        response_dict = await _finalize(ctx)
+        # DispatchStage.stream_dispatch times/records its own upstream call
+        # for the true-SSE path; this non-streaming path never goes through
+        # it, so record_llm_latency here, same as before _finalize existed.
         proxy_server.metrics.record_llm_latency(
-            provider=provider, model=model, status="success", duration=pipeline_duration
+            provider=ctx.provider or "unknown",
+            model=ctx.model or model,
+            status="success",
+            duration=pipeline_duration,
         )
-
-        # Store conversation in memory (asynchronously)
-        asyncio.ensure_future(
-            proxy_server.memory_manager.add_conversation_turn(
-                user_id=user_context.user_id,
-                organization_id=user_context.organization_id,
-                messages=messages,  # Original messages without enhancement
-                response=response_text,
-                session_id=session_id,
-                metadata={
-                    "model": model,
-                    "provider": provider,
-                    "waddleai_tokens": token_usage.waddleai_tokens,
-                    "llm_tokens_input": usage.get("input_tokens", 0),
-                    "llm_tokens_output": usage.get("output_tokens", 0),
-                },
-            )
-        )
-
-        # Build the OpenAI-compatible response
-        response_dict = {
-            "id": f"chatcmpl-{int(time.time())}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": response_text},
-                    "finish_reason": finish_reason,
-                }
-            ],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
-                "waddleai_tokens": token_usage.waddleai_tokens,
-            },
-        }
-        # Additive-only, and only when populated (spec §14.2): with the cache
-        # flag off, no memory-layer activity, and no routing redirect, the
-        # `waddleai` key must not appear at all -- not even as {} -- so
-        # responses stay byte-identical to pre-cache/pre-memory/pre-routing
-        # snapshots. Cache (§6.4), proxy-memory (§6A.5), and routing (§7.6)
-        # accounting share the single additive `usage.waddleai` object -- see
-        # _merge_waddleai_usage for how overlapping fields (tokens_saved)
-        # combine; routed_from (None when RoutingStage didn't redirect the
-        # model -- flag off, or no alias/escalation/capability-veto fired) is
-        # disjoint from both, so it's merged in last.
-        cache_meta = (
-            _build_waddleai_cache_usage(ctx)
-            if _cache_flag_enabled(str(user_context.user_id))
-            else None
-        )
-        routing_meta = {"routed_from": ctx.routed_from} if ctx.routed_from else None
-        waddleai_usage = _merge_waddleai_usage(
-            _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx)), routing_meta
-        )
-        if waddleai_usage is not None:
-            response_dict["usage"]["waddleai"] = waddleai_usage
-
-        # Write-back only after SecurityOutStage has already passed (spec §3.6
-        # poisoning defense) -- pipeline.run() completed without ctx.blocked,
-        # which is guaranteed by having reached this line.
-        _maybe_write_back_cache(ctx, response_dict, usage)
-
         return jsonify(response_dict)
 
     except Exception as e:
@@ -2351,10 +2421,130 @@ async def claude_messages():
             escalate_hint=request.headers.get("X-WaddleAI-Escalate"),
         )
 
-        # Run the pipeline (now includes SecurityInStage and SecurityOutStage
-        # which were previously skipped for /v1/messages). Timed the same
-        # way as chat_completions() -- see that handler's comment.
+        # Timed the same way as chat_completions() -- see that handler's comment.
         pipeline_start = time.time()
+
+        async def _finalize(final_ctx: PipelineContext) -> dict[str, Any]:
+            """Metrics/memory-storage/cache-write-back once ctx is fully resolved.
+
+            Shared by the buffered-JSON path and the true-SSE-streaming
+            completion path (ops O7-b) -- see the matching helper in
+            chat_completions() for the full rationale. Returns the Claude
+            Messages API compatible response_dict so the non-streaming
+            caller can jsonify it directly without rebuilding it.
+            """
+            response_text = final_ctx.response_text
+            usage_info = final_ctx.usage or {}
+            resolved_model = final_ctx.model or model
+            provider = final_ctx.provider or "unknown"
+            finish_reason = final_ctx.finish_reason or "end_turn"
+
+            token_usage = proxy_server.token_manager.process_usage(
+                input_text=_extract_text_from_claude_messages(messages),
+                output_text=response_text,
+                provider=provider,
+                model=resolved_model,
+                api_key_id=user_context.api_key_id or 0,
+                user_id=user_context.user_id,
+                organization_id=user_context.organization_id,
+                actual_input_tokens=usage_info.get("input_tokens", 0),
+                actual_output_tokens=usage_info.get("output_tokens", 0),
+            )
+
+            proxy_server.metrics.record_llm_request(
+                provider=provider,
+                model=resolved_model,
+                status="success",
+                token_usage={
+                    "input_tokens": usage_info.get("input_tokens", 0),
+                    "output_tokens": usage_info.get("output_tokens", 0),
+                    "waddleai_tokens": token_usage.waddleai_tokens,
+                    "organization": user_context.organization_id,
+                    # Per-user `user` label dropped -- raw user_id is unbounded
+                    # cardinality on a live per-completion counter
+                    # (release-audit-2026-09-23, ops O1). `organization` stays
+                    # (bounded by customer count); user attribution lives in the
+                    # usage DB rows, not in a Prometheus label.
+                },
+            )
+
+            # Store conversation in memory (asynchronously)
+            asyncio.ensure_future(
+                proxy_server.memory_manager.add_conversation_turn(
+                    user_id=user_context.user_id,
+                    organization_id=user_context.organization_id,
+                    messages=messages,  # Original Anthropic messages
+                    response=response_text,
+                    session_id=session_id,
+                    metadata={
+                        "model": resolved_model,
+                        "provider": provider,
+                        "waddleai_tokens": token_usage.waddleai_tokens,
+                        "llm_tokens_input": usage_info.get("input_tokens", 0),
+                        "llm_tokens_output": usage_info.get("output_tokens", 0),
+                        "api_format": "claude_messages",
+                    },
+                )
+            )
+
+            # Build the Claude Messages API compatible response
+            response_dict: dict[str, Any] = {
+                "id": f"msg_{int(time.time() * 1000)}",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": response_text}],
+                "model": resolved_model,
+                "stop_reason": finish_reason,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": usage_info.get("input_tokens", 0),
+                    "output_tokens": usage_info.get("output_tokens", 0),
+                },
+            }
+            # Additive-only, and only when populated -- see the matching comment
+            # in chat_completions() above (cache, proxy-memory, and routing
+            # accounting share the single additive usage.waddleai object).
+            cache_meta = (
+                _build_waddleai_cache_usage(final_ctx)
+                if _cache_flag_enabled(str(user_context.user_id))
+                else None
+            )
+            routing_meta = {"routed_from": final_ctx.routed_from} if final_ctx.routed_from else None
+            waddleai_usage = _merge_waddleai_usage(
+                _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(final_ctx)), routing_meta
+            )
+            if waddleai_usage is not None:
+                response_dict["usage"]["waddleai"] = waddleai_usage
+
+            # Write-back only after SecurityOutStage has already passed (spec §3.6
+            # poisoning defense) -- see _maybe_write_back_cache docstring.
+            _maybe_write_back_cache(final_ctx, response_dict, usage_info)
+
+            return response_dict
+
+        # True SSE streaming (ops O7-b) -- see the matching comment in
+        # chat_completions() for the kill-switch semantics.
+        if stream and not _sse_streaming_disabled(str(user_context.user_id)):
+            ctx = await proxy_server.pipeline.run_until(ctx, "dispatch")
+
+            if ctx.blocked:
+                status_code = ctx.status_code or 500
+                error_msg = ctx.block_reason or "Request blocked"
+                return jsonify(
+                    {"error": {"type": "invalid_request_error", "message": error_msg}}
+                ), status_code
+
+            return Response(
+                streaming.stream_anthropic_messages(
+                    ctx, proxy_server.pipeline, proxy_server.metrics, finalize=_finalize
+                ),
+                content_type="text/event-stream",
+                headers=streaming.SSE_HEADERS,
+            )
+
+        # Run the pipeline (now includes SecurityInStage and SecurityOutStage
+        # which were previously skipped for /v1/messages) -- non-streaming,
+        # or streaming with the legacy buffered-JSON kill-switch flag ON.
         ctx = await proxy_server.pipeline.run(ctx)
         pipeline_duration = time.time() - pipeline_start
 
@@ -2373,99 +2563,16 @@ async def claude_messages():
                 {"error": {"type": "invalid_request_error", "message": error_msg}}
             ), status_code
 
-        # Extract results from pipeline
-        response_text = ctx.response_text
-        usage_info = ctx.usage or {}
-        model = ctx.model or model
-        provider = ctx.provider or "unknown"
-        finish_reason = ctx.finish_reason or "end_turn"
-
-        # Process token usage record
-        token_usage = proxy_server.token_manager.process_usage(
-            input_text=_extract_text_from_claude_messages(messages),
-            output_text=response_text,
-            provider=provider,
-            model=model,
-            api_key_id=user_context.api_key_id or 0,
-            user_id=user_context.user_id,
-            organization_id=user_context.organization_id,
-            actual_input_tokens=usage_info.get("input_tokens", 0),
-            actual_output_tokens=usage_info.get("output_tokens", 0),
-        )
-
-        # Record metrics
-        proxy_server.metrics.record_llm_request(
-            provider=provider,
-            model=model,
-            status="success",
-            token_usage={
-                "input_tokens": usage_info.get("input_tokens", 0),
-                "output_tokens": usage_info.get("output_tokens", 0),
-                "waddleai_tokens": token_usage.waddleai_tokens,
-                "organization": user_context.organization_id,
-                # Per-user `user` label dropped -- raw user_id is unbounded
-                # cardinality on a live per-completion counter
-                # (release-audit-2026-09-23, ops O1). `organization` stays
-                # (bounded by customer count); user attribution lives in the
-                # usage DB rows, not in a Prometheus label.
-            },
-        )
+        response_dict = await _finalize(ctx)
+        # DispatchStage.stream_dispatch times/records its own upstream call
+        # for the true-SSE path; this non-streaming path never goes through
+        # it, so record_llm_latency here, same as before _finalize existed.
         proxy_server.metrics.record_llm_latency(
-            provider=provider, model=model, status="success", duration=pipeline_duration
+            provider=ctx.provider or "unknown",
+            model=ctx.model or model,
+            status="success",
+            duration=pipeline_duration,
         )
-
-        # Store conversation in memory (asynchronously)
-        asyncio.ensure_future(
-            proxy_server.memory_manager.add_conversation_turn(
-                user_id=user_context.user_id,
-                organization_id=user_context.organization_id,
-                messages=messages,  # Original Anthropic messages
-                response=response_text,
-                session_id=session_id,
-                metadata={
-                    "model": model,
-                    "provider": provider,
-                    "waddleai_tokens": token_usage.waddleai_tokens,
-                    "llm_tokens_input": usage_info.get("input_tokens", 0),
-                    "llm_tokens_output": usage_info.get("output_tokens", 0),
-                    "api_format": "claude_messages",
-                },
-            )
-        )
-
-        # Build the Claude Messages API compatible response
-        response_dict = {
-            "id": f"msg_{int(time.time() * 1000)}",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": response_text}],
-            "model": model,
-            "stop_reason": finish_reason,
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": usage_info.get("input_tokens", 0),
-                "output_tokens": usage_info.get("output_tokens", 0),
-            },
-        }
-        # Additive-only, and only when populated -- see the matching comment
-        # in chat_completions() above (cache, proxy-memory, and routing
-        # accounting share the single additive usage.waddleai object).
-        cache_meta = (
-            _build_waddleai_cache_usage(ctx)
-            if _cache_flag_enabled(str(user_context.user_id))
-            else None
-        )
-        routing_meta = {"routed_from": ctx.routed_from} if ctx.routed_from else None
-        waddleai_usage = _merge_waddleai_usage(
-            _merge_waddleai_usage(cache_meta, _waddleai_usage_meta(ctx)), routing_meta
-        )
-        if waddleai_usage is not None:
-            response_dict["usage"]["waddleai"] = waddleai_usage
-
-        # Write-back only after SecurityOutStage has already passed (spec §3.6
-        # poisoning defense) -- see _maybe_write_back_cache docstring.
-        _maybe_write_back_cache(ctx, response_dict, usage_info)
-
         return jsonify(response_dict)
 
     except Exception as e:

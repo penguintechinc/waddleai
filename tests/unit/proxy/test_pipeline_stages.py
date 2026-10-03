@@ -19,6 +19,7 @@ from proxy.apps.proxy_server.pipeline import (
     DispatchStage,
     MeterStage,
     PipelineContext,
+    ProxyPipeline,
     SecurityInStage,
     SecurityOutStage,
     TokenBudgetStage,
@@ -732,6 +733,249 @@ class TestDispatchStageImplementation:
         assert result.blocked is True
         assert result.status_code == 500
         assert result.block_reason == "dispatch_error"
+
+
+@pytest.mark.asyncio
+class TestDispatchStageStreamDispatch:
+    """DispatchStage.stream_dispatch -- the true-SSE-streaming sibling of __call__ (ops O7-b).
+
+    Each test mirrors a __call__ test above to prove the two paths select
+    providers and map errors identically, differing only in that chunks are
+    yielded to the caller as they're produced instead of silently buffered.
+    """
+
+    async def test_stream_dispatch_yields_chunks_and_fills_ctx_like_call(self):
+        """Chunks are yielded live AND ctx ends up exactly as __call__ would leave it."""
+
+        async def stream_chunks(*args, **kwargs):
+            yield StreamChunk(delta="Hello ", usage=None, done=False)
+            yield StreamChunk(delta="world", usage=None, done=False)
+            yield StreamChunk(delta="", usage={"input_tokens": 10, "output_tokens": 20}, done=True)
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+        connector = Mock()
+        connector.stream_chat_completion = stream_chunks
+
+        stage = DispatchStage(name="dispatch", router=router, connectors={"openai": connector})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        collected = [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        assert [c.delta for c in collected] == ["Hello ", "world", ""]
+        assert ctx.blocked is False
+        assert ctx.response_text == "Hello world"
+        assert ctx.usage["input_tokens"] == 10
+        assert ctx.usage["output_tokens"] == 20
+        assert ctx.provider == "openai"
+        assert ctx.model == "gpt-4o"
+
+    async def test_stream_dispatch_without_final_usage_chunk_leaves_usage_none(self):
+        """No done+usage chunk -> ctx.usage/finish_reason stay untouched, same as __call__."""
+
+        async def stream_chunks(*args, **kwargs):
+            yield StreamChunk(delta="partial", usage=None, done=False)
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+        connector = Mock()
+        connector.stream_chat_completion = stream_chunks
+
+        stage = DispatchStage(name="dispatch", router=router, connectors={"openai": connector})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        collected = [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        assert [c.delta for c in collected] == ["partial"]
+        assert ctx.blocked is False
+        assert ctx.response_text == "partial"
+        assert ctx.usage is None
+        assert ctx.finish_reason is None
+
+    async def test_stream_dispatch_yields_partial_chunks_then_blocks_on_mid_stream_error(self):
+        """A connector that fails partway through still yields the chunks seen so far."""
+
+        async def stream_then_fail(*args, **kwargs):
+            yield StreamChunk(delta="partial", usage=None, done=False)
+            raise ProviderServerError(
+                provider="openai", model="gpt-4o", message="dropped", status_code=503
+            )
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+        connector = Mock()
+        connector.stream_chat_completion = stream_then_fail
+
+        stage = DispatchStage(name="dispatch", router=router, connectors={"openai": connector})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        collected = [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        assert [c.delta for c in collected] == ["partial"]
+        assert ctx.response_text == "partial"
+        assert ctx.blocked is True
+        assert ctx.status_code == 502
+        assert ctx.block_reason == "provider_error_503"
+
+    async def test_stream_dispatch_skips_on_cache_hit(self):
+        """A cache hit yields nothing and leaves ctx untouched, same as __call__."""
+        router = Mock()
+        stage = DispatchStage(name="dispatch", router=router, connectors={})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+            cache_hit=True,
+            response_text="cached text",
+        )
+
+        collected = [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        assert collected == []
+        assert ctx.response_text == "cached text"
+        router.select_provider.assert_not_called()
+
+    async def test_stream_dispatch_blocks_on_empty_messages(self):
+        """No messages -> no_messages block, zero chunks, router never called."""
+        router = Mock()
+        stage = DispatchStage(name="dispatch", router=router, connectors={})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(user=user, body={}, model="gpt-4", messages=[], stream=True)
+
+        collected = [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        assert collected == []
+        assert ctx.blocked is True
+        assert ctx.status_code == 400
+        assert ctx.block_reason == "no_messages"
+        router.select_provider.assert_not_called()
+
+    async def test_stream_dispatch_blocks_when_no_connector_for_provider(self):
+        """Same no_connector mapping as __call__, before any upstream call is attempted."""
+        router = Mock()
+        router.select_provider = Mock(return_value=("mystery_provider", "gpt-4o"))
+        stage = DispatchStage(name="dispatch", router=router, connectors={"openai": Mock()})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        collected = [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        assert collected == []
+        assert ctx.blocked is True
+        assert ctx.status_code == 500
+        assert ctx.block_reason == "no_connector"
+
+
+@pytest.mark.asyncio
+class TestProxyPipelineRunUntilRunAfter:
+    """ProxyPipeline.run_until/run_after -- the split used by true-SSE streaming (ops O7-b).
+
+    main.py runs the pipeline head (through routing) via run_until(ctx,
+    "dispatch"), drives DispatchStage.stream_dispatch itself, then resumes
+    with run_after(ctx, "dispatch") for security_out/meter -- these tests
+    pin that both halves together behave exactly like a single run().
+    """
+
+    @staticmethod
+    def _stage(name: str, calls: list) -> AsyncMock:
+        async def _call(ctx: PipelineContext) -> PipelineContext:
+            calls.append(name)
+            return ctx
+
+        stage = AsyncMock(side_effect=_call)
+        stage.name = name
+        stage.flag = None
+        return stage
+
+    async def test_run_until_stops_strictly_before_named_stage(self):
+        """run_until runs every earlier stage and never touches the named one or anything after."""
+        calls: list = []
+        stages = [
+            self._stage("auth", calls),
+            self._stage("dispatch", calls),
+            self._stage("meter", calls),
+        ]
+        pipeline = ProxyPipeline(stages=stages, features=None)
+        ctx = PipelineContext(user=Mock(id=1), body={})
+
+        await pipeline.run_until(ctx, "dispatch")
+
+        assert calls == ["auth"]
+
+    async def test_run_after_runs_only_stages_strictly_after_named_stage(self):
+        """run_after skips the named stage itself and everything before it."""
+        calls: list = []
+        stages = [
+            self._stage("auth", calls),
+            self._stage("dispatch", calls),
+            self._stage("meter", calls),
+        ]
+        pipeline = ProxyPipeline(stages=stages, features=None)
+        ctx = PipelineContext(user=Mock(id=1), body={})
+
+        await pipeline.run_after(ctx, "dispatch")
+
+        assert calls == ["meter"]
+
+    async def test_run_until_then_run_after_covers_every_stage_exactly_once(self):
+        """Splitting run() at "dispatch" and stitching the halves back together == plain run()."""
+        calls: list = []
+        stages = [
+            self._stage("auth", calls),
+            self._stage("security_in", calls),
+            self._stage("dispatch", calls),
+            self._stage("security_out", calls),
+            self._stage("meter", calls),
+        ]
+        pipeline = ProxyPipeline(stages=stages, features=None)
+        ctx = PipelineContext(user=Mock(id=1), body={})
+
+        ctx = await pipeline.run_until(ctx, "dispatch")
+        ctx = await pipeline.run_after(ctx, "dispatch")
+
+        assert calls == ["auth", "security_in", "security_out", "meter"]
+
+    async def test_run_after_honors_short_circuit_on_blocked(self):
+        """A blocked ctx still short-circuits every remaining stage in run_after, same as run()."""
+        calls: list = []
+        stages = [self._stage("dispatch", calls), self._stage("security_out", calls)]
+        pipeline = ProxyPipeline(stages=stages, features=None)
+        ctx = PipelineContext(user=Mock(id=1), body={}, blocked=True, status_code=503)
+
+        ctx = await pipeline.run_after(ctx, "dispatch")
+
+        assert calls == []
+        assert "short-circuit:security_out" in ctx.stage_log
 
 
 @pytest.mark.asyncio

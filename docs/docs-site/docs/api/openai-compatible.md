@@ -160,6 +160,26 @@ data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1699896916
 data: [DONE]
 ```
 
+This is a genuine live stream end-to-end: `data: ...` frames are forwarded to the
+client as the upstream provider produces them (`Content-Type: text/event-stream`,
+`Cache-Control: no-cache`, `X-Accel-Buffering: no`), not buffered and sent as a single
+blob. PII/sensitive-content output filtering and billing still run once the stream
+completes, so a filtered or blocked response can only be caught after the fact for
+already-streamed content — the same tradeoff every other LLM gateway's streaming makes.
+`POST /v1/messages` streams the equivalent Anthropic SSE event sequence
+(`message_start` → `content_block_start` → `content_block_delta` (`text_delta`) →
+`content_block_stop` → `message_delta` → `message_stop`) instead of
+`chat.completion.chunk` framing.
+
+A mid-stream upstream failure ends the response with one terminal error event
+(`data: {"error": {...}}` for `/v1/chat/completions`, an `event: error` frame for
+`/v1/messages`) and closes the connection — no `[DONE]`/`message_stop` follows an error.
+
+Operators can force the legacy fully-buffered-JSON behavior for `stream: true`
+requests (pre-streaming behavior, useful as a rollback lever) via the
+`waddleai.disable-sse-streaming` PostHog flag — unset/OFF (the default) means true
+streaming is active.
+
 ## Models
 
 ### GET /v1/models
@@ -290,12 +310,12 @@ Per-org request-rate limiting is enforced at the network layer via a Cilium `Cil
 | 401 | Missing/invalid Authorization header or API key |
 | 403 | Missing organization/tenant context, or admin permission required |
 | 404 | Unknown route (includes `/v1/completions`, `/v1/embeddings` — not implemented) |
-| 429 | Token/quota budget exceeded |
+| 429 | Token/quota budget exceeded, or the proxy shed the request under load (`error.type: "overloaded_error"`) |
 | 500 | Internal server error |
 | 502 | Upstream LLM provider error |
 | 504 | Upstream LLM provider timeout |
 
-There is no separate machine-readable `error.type`/`error.code` taxonomy (e.g. `quota_exceeded`, `invalid_api_key`) — `error.type` is always the literal string `"error"`; branch on HTTP status instead.
+There is no separate machine-readable `error.type`/`error.code` taxonomy (e.g. `quota_exceeded`, `invalid_api_key`) — `error.type` is always the literal string `"error"`, except the load-shed `429` above (`"overloaded_error"`); branch on HTTP status for everything else. The load-shed `429` always carries a `Retry-After` header (seconds, env-configurable via `PROXY_OVERLOAD_RETRY_AFTER_SECONDS`, default `1`) — honor it before retrying.
 
 ## Best Practices
 
