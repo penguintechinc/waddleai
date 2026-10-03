@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import shared.licensing.python_client as pc
 from shared.licensing.python_client import (
     LicenseValidationError,
     PenguinTechLicenseClient,
@@ -20,6 +21,21 @@ from shared.licensing.python_client import (
 )
 
 _TIMEOUT = 7
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_client():
+    """initialize_licensing() sets the module-level _global_client singleton.
+
+    TestInitializeLicensing patches PenguinTechLicenseClient's constructor,
+    but that patch unwinds at the `with` block's exit -- the *assignment* of
+    its MagicMock return value to `pc._global_client` is not undone by
+    unpatching the class, so without this reset the leaked MagicMock
+    survives into whichever test runs next in the session and permanently
+    satisfies `get_client()`'s `if _global_client is None` check.
+    """
+    yield
+    pc._global_client = None
 
 
 @pytest.fixture

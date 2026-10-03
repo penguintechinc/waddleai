@@ -1,11 +1,15 @@
 """gRPC interceptors for authentication and request processing."""
 
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any
 
 import grpc
 import jwt
+from opentelemetry import trace
+
+from penguincode_cli.observability import otel
 
 logger = logging.getLogger(__name__)
 
@@ -168,3 +172,144 @@ class LoggingInterceptor(grpc.aio.ServerInterceptor):
         except Exception as e:
             logger.error(f"Error in {method}: {e}")
             raise
+
+
+def _status_label(context: Any, *, raised: bool) -> str:
+    """The ``grpc.StatusCode`` name set on *context*, or a safe fallback.
+
+    A successful unary/streaming call rarely calls ``set_code``/``abort``
+    explicitly, so ``context.code()`` is usually ``None`` -- that case maps
+    to ``"OK"`` when nothing raised, ``"UNKNOWN"`` when something did (e.g.
+    an exception that is not a gRPC-aware abort).
+    """
+    code = context.code()
+    if code is not None:
+        # grpc ships no type stubs, so `code` is `Any` here -- `str()` keeps
+        # this function's declared `-> str` honest rather than returning Any.
+        return str(code.name)
+    return "UNKNOWN" if raised else "OK"
+
+
+def _finish_rpc_span(
+    span: trace.Span,
+    context: Any,
+    service: str,
+    method: str,
+    start: float,
+    exc: BaseException | None,
+) -> None:
+    """Set the final status attribute on *span* and emit the RPC metrics.
+
+    Shared tail for both the unary and streaming wrappers below -- kept as
+    one function so the status-label logic and the metric emission can
+    never drift between the two call shapes. Does *not* call
+    ``span.record_exception``/``set_status`` itself on failure --
+    ``otel.rpc_server_span``'s underlying ``start_as_current_span`` context
+    manager already does both automatically when an exception propagates
+    out of its ``with`` block (its default ``record_exception``/
+    ``set_status_on_exception`` behavior), so doing it here too would
+    double-record the same exception.
+    """
+    label = _status_label(context, raised=exc is not None)
+    span.set_attribute("rpc.grpc.status_code", label)
+    duration_ms = (time.perf_counter() - start) * 1000
+    otel.record_rpc_server_call(service, method, label, duration_ms)
+
+
+class TracingInterceptor(grpc.aio.ServerInterceptor):  # type: ignore[misc]
+    # grpc ships no type stubs (no types-grpcio pin here), so ServerInterceptor
+    # resolves to Any -- identical to every other subclass in this file.
+    """Opens a SERVER span + records duration/count metrics for every RPC.
+
+    Installed outermost (ahead of the auth/routing interceptors in
+    ``server/main.py``) so every call -- authenticated, rejected, or
+    successful -- gets exactly one span and one metric point. Extracts
+    incoming W3C ``traceparent``/``baggage`` metadata (see
+    ``observability.otel.rpc_server_span``) so a caller's span, if any,
+    becomes this span's parent, completing the cross-service trace chain
+    required by the org's OTel observability rule (O1, gRPC server
+    hardening). Span/metric labels (``rpc.service``, ``rpc.method``,
+    ``rpc.grpc.status_code``) are all bounded, closed-set values taken from
+    the server's own registered method table and gRPC's ``StatusCode``
+    enum -- never request content, tenant, or user identifiers.
+
+    Supports all four RPC shapes (unary-unary, unary-stream, stream-unary,
+    stream-stream); streaming responses are timed end-to-end, from the
+    first item requested to the generator's exhaustion or failure.
+    """
+
+    async def intercept_service(
+        self,
+        continuation: Callable[[grpc.HandlerCallDetails], Any],
+        handler_call_details: grpc.HandlerCallDetails,
+    ) -> Any:
+        """Wrap the real handler's behavior function with a span + metrics."""
+        handler = await continuation(handler_call_details)
+        if handler is None:
+            return None
+
+        method_path = (handler_call_details.method or "").lstrip("/")
+        service, _, method_name = method_path.rpartition("/")
+        carrier: Mapping[str, str] = dict(handler_call_details.invocation_metadata or [])
+
+        if handler.unary_unary is not None:
+            return handler._replace(
+                unary_unary=self._wrap_unary(handler.unary_unary, service, method_name, carrier)
+            )
+        if handler.stream_unary is not None:
+            return handler._replace(
+                stream_unary=self._wrap_unary(handler.stream_unary, service, method_name, carrier)
+            )
+        if handler.unary_stream is not None:
+            return handler._replace(
+                unary_stream=self._wrap_stream(handler.unary_stream, service, method_name, carrier)
+            )
+        if handler.stream_stream is not None:
+            return handler._replace(
+                stream_stream=self._wrap_stream(
+                    handler.stream_stream, service, method_name, carrier
+                )
+            )
+        return handler
+
+    @staticmethod
+    def _wrap_unary(
+        behavior: Callable[..., Any], service: str, method: str, carrier: Mapping[str, str]
+    ) -> Callable[..., Any]:
+        """Wrap a unary-response behavior (unary_unary or stream_unary)."""
+
+        async def _instrumented(request_or_iterator: Any, context: Any) -> Any:
+            start = time.perf_counter()
+            with otel.rpc_server_span(service, method, carrier) as span:
+                try:
+                    response = await behavior(request_or_iterator, context)
+                except Exception as exc:
+                    _finish_rpc_span(span, context, service, method, start, exc)
+                    raise
+                _finish_rpc_span(span, context, service, method, start, None)
+                return response
+
+        return _instrumented
+
+    @staticmethod
+    def _wrap_stream(
+        behavior: Callable[..., AsyncIterator[Any]],
+        service: str,
+        method: str,
+        carrier: Mapping[str, str],
+    ) -> Callable[..., AsyncIterator[Any]]:
+        """Wrap a streaming-response behavior (unary_stream or stream_stream)."""
+
+        async def _instrumented(request_or_iterator: Any, context: Any) -> AsyncIterator[Any]:
+            start = time.perf_counter()
+            with otel.rpc_server_span(service, method, carrier) as span:
+                try:
+                    async for item in behavior(request_or_iterator, context):
+                        yield item
+                except Exception as exc:
+                    _finish_rpc_span(span, context, service, method, start, exc)
+                    raise
+                else:
+                    _finish_rpc_span(span, context, service, method, start, None)
+
+        return _instrumented

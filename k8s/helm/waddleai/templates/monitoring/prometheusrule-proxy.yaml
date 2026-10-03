@@ -1,0 +1,314 @@
+{{/*
+PrometheusRule for the proxy (AIProxy) service (O2 fix). Error-rate/latency
+expressions reference waddleai_requests_total/waddleai_request_duration_seconds
+(shared/utils/metrics.py, recorded at proxy/apps/proxy_server/main.py's
+after_request hook and per-route finally blocks) -- metrics that exist
+today. LLM routes (/v1/chat/completions, /v1/messages,
+/v1/messages/count_tokens) are excluded from the general latency SLO and
+given their own, looser budget (upstream provider latency dominates and is
+outside this service's control). proxy_inflight_requests,
+proxy_concurrency_rejections_total, proxy_stream_ttfb_seconds, and
+db_pool_waiting are added by a sibling PR in this same audit pass -- marked
+inline; see this PR's description.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled .Values.proxy.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+{{- $slo := .Values.monitoring.prometheusRule.proxy.slo }}
+{{- $llmPaths := "/v1/chat/completions|/v1/messages|/v1/messages/count_tokens" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "waddleai.fullname" . }}-proxy
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: waddleai-proxy.slo-error-budget-burn
+      rules:
+        - alert: ProxyErrorBudgetBurnFast
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateFast.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateFast.longWindow }}]))
+            ) > {{ $slo.burnRateFast.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateFast.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateFast.shortWindow }}]))
+            ) > {{ $slo.burnRateFast.threshold }}
+          for: 2m
+          labels:
+            severity: critical
+            service: proxy
+            slo: error-budget-burn
+          annotations:
+            summary: "Proxy error budget burning fast"
+            description: "Proxy 5xx ratio exceeded the fast-burn threshold over both the {{ $slo.burnRateFast.longWindow }} and {{ $slo.burnRateFast.shortWindow }} windows -- the {{ $slo.availabilityTargetPercent }}% SLO's {{ $slo.errorBudgetWindow }} budget empties in hours at this rate. See docs/operations/MONITORING.md#proxyerrorbudgetburnfast."
+        - alert: ProxyErrorBudgetBurnMid
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateMid.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateMid.longWindow }}]))
+            ) > {{ $slo.burnRateMid.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateMid.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateMid.shortWindow }}]))
+            ) > {{ $slo.burnRateMid.threshold }}
+          for: 5m
+          labels:
+            severity: critical
+            service: proxy
+            slo: error-budget-burn
+          annotations:
+            summary: "Proxy error budget burning"
+            description: "Proxy 5xx ratio exceeded the mid-burn threshold over both the {{ $slo.burnRateMid.longWindow }} and {{ $slo.burnRateMid.shortWindow }} windows. See docs/operations/MONITORING.md#proxyerrorbudgetburnmid."
+        - alert: ProxyErrorBudgetBurnSlow
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateSlow.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateSlow.longWindow }}]))
+            ) > {{ $slo.burnRateSlow.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateSlow.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateSlow.shortWindow }}]))
+            ) > {{ $slo.burnRateSlow.threshold }}
+          for: 15m
+          labels:
+            severity: warning
+            service: proxy
+            slo: error-budget-burn
+          annotations:
+            summary: "Proxy error budget burning slowly"
+            description: "Proxy 5xx ratio exceeded the slow-burn threshold over both the {{ $slo.burnRateSlow.longWindow }} and {{ $slo.burnRateSlow.shortWindow }} windows -- ticket, not page. See docs/operations/MONITORING.md#proxyerrorbudgetburnslow."
+        - alert: ProxyErrorBudgetBurnSlowest
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateSlowest.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateSlowest.longWindow }}]))
+            ) > {{ $slo.burnRateSlowest.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="proxy",status_code=~"5.."}[{{ $slo.burnRateSlowest.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="proxy"}[{{ $slo.burnRateSlowest.shortWindow }}]))
+            ) > {{ $slo.burnRateSlowest.threshold }}
+          for: 30m
+          labels:
+            severity: warning
+            service: proxy
+            slo: error-budget-burn
+          annotations:
+            summary: "Proxy error budget burning (long-horizon)"
+            description: "Proxy 5xx ratio exceeded the slowest-burn threshold over both the {{ $slo.burnRateSlowest.longWindow }} and {{ $slo.burnRateSlowest.shortWindow }} windows. See docs/operations/MONITORING.md#proxyerrorbudgetburnslowest."
+    - name: waddleai-proxy.slo-latency
+      rules:
+        - alert: ProxyLatencyP95High
+          expr: |
+            histogram_quantile(0.95, sum(rate(waddleai_request_duration_seconds_bucket{service="proxy",endpoint!~"{{ $llmPaths }}"}[15m])) by (le)) > {{ $slo.latencyP95Seconds }}
+          for: 15m
+          labels:
+            severity: warning
+            service: proxy
+            slo: latency
+          annotations:
+            summary: "Proxy non-LLM p95 latency above {{ $slo.latencyP95Seconds }}s"
+            description: "p95 latency on non-LLM routes (LLM routes have their own budget below) exceeded {{ $slo.latencyP95Seconds }}s over 15m. See docs/operations/MONITORING.md#proxylatencyp95high."
+        - alert: ProxyLatencyP99High
+          expr: |
+            histogram_quantile(0.99, sum(rate(waddleai_request_duration_seconds_bucket{service="proxy",endpoint!~"{{ $llmPaths }}"}[15m])) by (le)) > {{ $slo.latencyP99Seconds }}
+          for: 15m
+          labels:
+            severity: critical
+            service: proxy
+            slo: latency
+          annotations:
+            summary: "Proxy non-LLM p99 latency above {{ $slo.latencyP99Seconds }}s"
+            description: "p99 latency on non-LLM routes exceeded {{ $slo.latencyP99Seconds }}s over 15m. See docs/operations/MONITORING.md#proxylatencyp99high."
+        - alert: ProxyLLMLatencyP95High
+          expr: |
+            histogram_quantile(0.95, sum(rate(waddleai_request_duration_seconds_bucket{service="proxy",endpoint=~"{{ $llmPaths }}"}[15m])) by (le)) > {{ $slo.llmLatencyP95Seconds }}
+          for: 15m
+          labels:
+            severity: warning
+            service: proxy
+            slo: latency-llm
+          annotations:
+            summary: "Proxy LLM-route p95 latency above {{ $slo.llmLatencyP95Seconds }}s"
+            description: "p95 latency on /v1/chat/completions, /v1/messages, /v1/messages/count_tokens exceeded their own (looser) {{ $slo.llmLatencyP95Seconds }}s budget over 15m -- check provider_health / upstream provider status before assuming a proxy regression. See docs/operations/MONITORING.md#proxyllmlatencyp95high."
+    - name: waddleai-proxy.saturation
+      rules:
+        - alert: ProxyInflightSaturationHigh
+          # proxy_inflight_requests / the proxy's own concurrency cap are
+          # added by a sibling PR in this audit pass -- see this PR's
+          # description.
+          expr: |
+            (proxy_inflight_requests{job="waddleai-proxy"} / proxy_concurrency_limit{job="waddleai-proxy"}) * 100 > {{ $slo.inflightSaturationPercent }}
+          for: 5m
+          labels:
+            severity: warning
+            service: proxy
+            slo: saturation
+          annotations:
+            summary: "Proxy in-flight concurrency above {{ $slo.inflightSaturationPercent }}% of its cap"
+            description: "The proxy's own request-admission limiter is near its ceiling -- expect 429 overloaded_error responses (ProxyConcurrencyRejections) and growing queueing latency. See docs/operations/MONITORING.md#proxyinflightsaturationhigh."
+        - alert: ProxyConcurrencyRejectionsHigh
+          expr: |
+            sum(rate(proxy_concurrency_rejections_total{job="waddleai-proxy"}[10m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: proxy
+            slo: saturation
+          annotations:
+            summary: "Proxy shedding load (429 overloaded_error)"
+            description: "The proxy has rejected requests over capacity for 10m straight -- scale out (HPA) or raise the concurrency cap if this is sustained legitimate load. See docs/operations/MONITORING.md#proxyconcurrencyrejectionshigh."
+    - name: waddleai-proxy.availability
+      rules:
+        - alert: ProxyTargetDown
+          expr: up{job="waddleai-proxy"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: proxy
+            slo: availability
+          annotations:
+            summary: "Proxy scrape target down"
+            description: "Prometheus has not successfully scraped waddleai-proxy for 5m. See docs/operations/MONITORING.md#proxytargetdown."
+        - alert: ProxyMetricsAbsent
+          expr: absent(up{job="waddleai-proxy"})
+          for: 10m
+          labels:
+            severity: critical
+            service: proxy
+            slo: availability
+          annotations:
+            summary: "No proxy scrape target registered"
+            description: "Prometheus has no waddleai-proxy target at all. See docs/operations/MONITORING.md#proxymetricsabsent."
+    - name: waddleai-proxy.cause
+      rules:
+        - alert: ProxyProviderUnhealthy
+          expr: waddleai_provider_health{} == 0
+          for: 5m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy marked a provider endpoint unhealthy"
+            description: "waddleai_provider_health is 0 for provider={{`{{ $labels.provider }}`}} endpoint={{`{{ $labels.endpoint }}`}} -- likely cause behind ProxyErrorBudgetBurn*/ProxyLLMLatencyP95High if the routing engine keeps sending traffic there. See docs/operations/MONITORING.md#proxyproviderunhealthy."
+        - alert: ProxyDBPoolSaturated
+          # db_pool_waiting is added by a sibling PR in this audit pass --
+          # see this PR's description.
+          expr: db_pool_waiting{job="waddleai-proxy"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy DB connection pool has waiters"
+            description: "Requests are queueing for a DB connection. See docs/operations/MONITORING.md#proxydbpoolsaturated."
+        - alert: ProxyRateLimitExceededHigh
+          expr: sum(rate(waddleai_rate_limit_exceeded_total{}[10m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy rate limiting is actively rejecting requests"
+            description: "waddleai_rate_limit_exceeded_total is incrementing -- confirm this is tenant abuse, not an under-provisioned quota for legitimate traffic. See docs/operations/MONITORING.md#proxyratelimitexceededhigh."
+        - alert: ProxyCacheHitRateLow
+          expr: |
+            (
+              sum(rate(waddleai_cache_lookups_total{result="hit"}[1h]))
+              /
+              sum(rate(waddleai_cache_lookups_total{}[1h]))
+            ) < 0.05
+          for: 1h
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy response-cache hit rate below 5%"
+            description: "The exact/semantic response cache's hit rate over the last hour fell below 5% -- either genuinely diverse traffic, or a cache-layer regression (TTL, key derivation) silently defeating it. See docs/operations/MONITORING.md#proxycachehitratelow."
+        - alert: ProxyPodRestartingFrequently
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ .Values.namespace }}", pod=~".*proxy.*"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy pod restarting repeatedly"
+            description: "A proxy pod restarted more than 3 times in the last hour -- check `kubectl logs --previous`. See docs/operations/MONITORING.md#proxypodrestartingfrequently."
+        - alert: ProxyHPAAtMax
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="{{ .Values.namespace }}", horizontalpodautoscaler=~".*proxy.*"}
+            >=
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="{{ .Values.namespace }}", horizontalpodautoscaler=~".*proxy.*"}
+          for: 10m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy HPA pinned at max replicas"
+            description: "The proxy HPA has been at maxReplicas for 10m. See docs/operations/MONITORING.md#proxyhpaatmax."
+        - alert: ProxyPDBViolated
+          # Proxy's PodDisruptionBudget is added by the concurrent
+          # fix/helm-probes-pdb-grace PR -- see this PR's description.
+          expr: |
+            kube_poddisruptionbudget_status_currenthealthy{namespace="{{ .Values.namespace }}", poddisruptionbudget=~".*proxy.*"}
+            <
+            kube_poddisruptionbudget_status_desiredhealthy{namespace="{{ .Values.namespace }}", poddisruptionbudget=~".*proxy.*"}
+          for: 5m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy PodDisruptionBudget violated"
+            description: "Fewer proxy pods are healthy than the PDB's minAvailable requires. See docs/operations/MONITORING.md#proxypdbviolated."
+        - alert: ProxyFeatureFlagEvalErrors
+          # feature_flag_evaluations_total is added by a sibling PR in this
+          # audit pass -- see this PR's description.
+          expr: |
+            sum(rate(feature_flag_evaluations_total{service="proxy",result="error"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy feature-flag evaluations failing"
+            description: "Flags are falling back to last-known-cached values; the cache is going stale if this persists. See docs/operations/MONITORING.md#proxyfeatureflagevalerrors."
+        - alert: ProxyLicenseCheckErrors
+          # license_checks_total is added by a sibling PR in this audit
+          # pass -- see this PR's description.
+          expr: |
+            sum(rate(license_checks_total{service="proxy",status="error"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Proxy license checks failing"
+            description: "Calls to license.penguintech.io are erroring; entitlement checks are falling back to cached state. See docs/operations/MONITORING.md#proxylicensecheckerrors."
+{{- end }}

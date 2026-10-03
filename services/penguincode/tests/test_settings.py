@@ -24,7 +24,9 @@ from penguincode_cli.config.settings import (
     MemoryStoresConfig,
     PGVectorStoreConfig,
     PostgresGraphStoreConfig,
+    PostgresSessionStoreConfig,
     QdrantStoreConfig,
+    SessionsConfig,
     Settings,
 )
 
@@ -272,3 +274,101 @@ def test_pgvector_url_env_key_documented_in_module() -> None:
         assert PostgresGraphStoreConfig().url == "postgresql://pin-check/db"
     finally:
         del os.environ["PGVECTOR_URL"]
+
+
+@pytest.fixture
+def clean_sessions_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure every PENGUINCODE_SESSION_* env var is unset -- deterministic defaults."""
+    monkeypatch.delenv("PENGUINCODE_SESSION_TTL_SECONDS", raising=False)
+    monkeypatch.delenv("PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("PENGUINCODE_SESSION_SWEEP_BATCH_SIZE", raising=False)
+    monkeypatch.delenv("PGVECTOR_URL", raising=False)
+
+
+class TestSessionsConfig:
+    """Cross-pod chat-session store configuration (security audit O4-a High fix).
+
+    # regression: penguincode-shared-chat-sessions (O4-a High)
+    """
+
+    def test_defaults_without_env(self, clean_sessions_env: None) -> None:
+        cfg = SessionsConfig()
+        assert cfg.ttl_seconds == 24 * 60 * 60
+        assert cfg.sweep_interval_seconds == 300.0
+        assert cfg.sweep_batch_size == 500
+        assert cfg.postgres.url == ""
+
+    def test_reads_ttl_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PENGUINCODE_SESSION_TTL_SECONDS", "3600")
+        assert SessionsConfig().ttl_seconds == 3600
+
+    def test_reads_sweep_interval_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS", "45.5")
+        assert SessionsConfig().sweep_interval_seconds == 45.5
+
+    def test_reads_sweep_batch_size_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PENGUINCODE_SESSION_SWEEP_BATCH_SIZE", "42")
+        assert SessionsConfig().sweep_batch_size == 42
+
+    def test_blank_env_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PENGUINCODE_SESSION_TTL_SECONDS", "   ")
+        assert SessionsConfig().ttl_seconds == 24 * 60 * 60
+
+    def test_invalid_int_env_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PENGUINCODE_SESSION_SWEEP_BATCH_SIZE", "not-a-number")
+        assert SessionsConfig().sweep_batch_size == 500
+
+    def test_invalid_float_env_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS", "not-a-float")
+        assert SessionsConfig().sweep_interval_seconds == 300.0
+
+    def test_postgres_url_defaults_from_pgvector_url_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PGVECTOR_URL", "postgresql://waddleai:pw@pg.svc/waddleai")
+        assert PostgresSessionStoreConfig().url == "postgresql://waddleai:pw@pg.svc/waddleai"
+
+    def test_settings_default_includes_sessions(self, clean_sessions_env: None) -> None:
+        assert Settings().sessions == SessionsConfig()
+
+    def test_parse_sessions_config_default_matches_env_backed_default(
+        self, clean_sessions_env: None
+    ) -> None:
+        parsed = Settings._parse_sessions_config({})
+        assert parsed == SessionsConfig()
+
+    def test_parse_sessions_config_yaml_overrides_ttl_and_sweep(
+        self, clean_sessions_env: None
+    ) -> None:
+        parsed = Settings._parse_sessions_config(
+            {"ttl_seconds": 7200, "sweep_interval_seconds": 60.0, "sweep_batch_size": 10}
+        )
+        assert parsed.ttl_seconds == 7200
+        assert parsed.sweep_interval_seconds == 60.0
+        assert parsed.sweep_batch_size == 10
+
+    def test_parse_sessions_config_postgres_url_override(self, clean_sessions_env: None) -> None:
+        parsed = Settings._parse_sessions_config({"postgres": {"url": "postgresql://custom/db"}})
+        assert parsed.postgres.url == "postgresql://custom/db"
+
+    def test_from_yaml_sessions_section_round_trips(
+        self, tmp_path: Path, clean_sessions_env: None
+    ) -> None:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump({"sessions": {"ttl_seconds": 1800}}))
+
+        settings = Settings.from_yaml(str(config_path))
+
+        assert settings.sessions.ttl_seconds == 1800
+        assert settings.sessions.sweep_batch_size == 500
+
+    def test_from_yaml_defaults_sessions_postgres_url_from_pgvector_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PGVECTOR_URL", "postgresql://waddleai:pw@pg.svc/waddleai")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump({"memory": {"enabled": True}}))
+
+        settings = Settings.from_yaml(str(config_path))
+
+        assert settings.sessions.postgres.url == "postgresql://waddleai:pw@pg.svc/waddleai"

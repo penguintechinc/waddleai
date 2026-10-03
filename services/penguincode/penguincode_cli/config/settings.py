@@ -1,10 +1,73 @@
 """Configuration settings for PenguinCode."""
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+#: Default gRPC server thread-pool size (O9, gRPC server hardening) -- the
+#: same literal value `server/main.py` hardcoded before this change, kept as
+#: the default so an unconfigured deployment behaves identically.
+_DEFAULT_GRPC_MAX_WORKERS = 10
+
+#: Default multiplier applied to the resolved worker count to produce the
+#: `maximum_concurrent_rpcs` default when neither YAML nor
+#: `PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS` configures it explicitly -- bounds
+#: in-flight RPCs so the server sheds load with RESOURCE_EXHAUSTED instead of
+#: queuing unboundedly once every worker thread is busy.
+_DEFAULT_GRPC_CONCURRENT_RPCS_MULTIPLIER = 4
+
+#: Default gRPC message size limit (O6), applied to both
+#: `grpc.max_receive_message_length` and `grpc.max_send_message_length` --
+#: matches grpc-core's own historical default receive limit, so an
+#: unconfigured deployment's receive behavior is unchanged; the send side
+#: becomes explicitly bounded (grpc-core's default send limit is unbounded).
+_DEFAULT_GRPC_MAX_MESSAGE_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse *name*'s env var as a positive int, falling back to *default*.
+
+    Never raises: unset, blank, non-numeric, or non-positive values all fall
+    back to *default* with a logged warning (except "unset", which is the
+    expected, silent case) -- a malformed tunable must never crash server
+    startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %d", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("%s must be positive, got %d; using default %d", name, value, default)
+        return default
+    return value
+
+
+def _default_grpc_max_workers() -> int:
+    """Resolve the gRPC thread-pool size default from `PENGUINCODE_GRPC_MAX_WORKERS`."""
+    return _env_int("PENGUINCODE_GRPC_MAX_WORKERS", _DEFAULT_GRPC_MAX_WORKERS)
+
+
+def _default_grpc_max_concurrent_rpcs() -> int:
+    """Resolve the `maximum_concurrent_rpcs` default from the env, scaled off worker count."""
+    workers = _default_grpc_max_workers()
+    return _env_int(
+        "PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS",
+        workers * _DEFAULT_GRPC_CONCURRENT_RPCS_MULTIPLIER,
+    )
+
+
+def _default_grpc_max_message_bytes() -> int:
+    """Resolve the gRPC message size limit default from `PENGUINCODE_GRPC_MAX_MESSAGE_BYTES`."""
+    return _env_int("PENGUINCODE_GRPC_MAX_MESSAGE_BYTES", _DEFAULT_GRPC_MAX_MESSAGE_BYTES)
 
 
 @dataclass
@@ -191,6 +254,120 @@ class GraphConfig:
     postgres: PostgresGraphStoreConfig = field(default_factory=PostgresGraphStoreConfig)
 
 
+def _env_float(name: str, default: float) -> float:
+    """Float counterpart of `_env_int` -- same unset/blank/invalid fallback contract."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+#: `PENGUINCODE_SESSION_TTL_SECONDS` default (24h) -- see `SessionsConfig`.
+DEFAULT_SESSION_TTL_SECONDS = 24 * 60 * 60
+#: `PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS` default (5 min).
+DEFAULT_SESSION_SWEEP_INTERVAL_SECONDS = 300.0
+#: `PENGUINCODE_SESSION_SWEEP_BATCH_SIZE` default -- bounds one sweep's `DELETE`.
+DEFAULT_SESSION_SWEEP_BATCH_SIZE = 500
+
+
+@dataclass(slots=True)
+class PostgresSessionStoreConfig:
+    """Postgres chat-session store configuration (shared WaddleAI Postgres, `penguincode` schema).
+
+    Reuses the same shared-Postgres DSN as `PGVectorStoreConfig`/
+    `PostgresGraphStoreConfig` (`PGVECTOR_URL`) -- the sessions table lives
+    in the same database. `chat_sessions` is created in the `penguincode`
+    schema by `db/migrations/0007_chat_sessions.sql`.
+    """
+
+    url: str = field(default_factory=lambda: os.environ.get("PGVECTOR_URL", ""))
+
+
+@dataclass(slots=True)
+class SessionsConfig:
+    """Cross-pod chat-session store configuration (security audit O4-a High fix).
+
+    `ttl_seconds`/`sweep_interval_seconds`/`sweep_batch_size` all default
+    from env (`PENGUINCODE_SESSION_TTL_SECONDS` / `_SWEEP_INTERVAL_SECONDS`
+    / `_SWEEP_BATCH_SIZE`) so they work without a `config.yaml` entry,
+    mirroring `PGVectorStoreConfig.url`'s `PGVECTOR_URL`-default pattern --
+    see `penguincode_cli/sessions/store.py` for how each is used.
+    """
+
+    ttl_seconds: int = field(
+        default_factory=lambda: _env_int(
+            "PENGUINCODE_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS
+        )
+    )
+    sweep_interval_seconds: float = field(
+        default_factory=lambda: _env_float(
+            "PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS", DEFAULT_SESSION_SWEEP_INTERVAL_SECONDS
+        )
+    )
+    sweep_batch_size: int = field(
+        default_factory=lambda: _env_int(
+            "PENGUINCODE_SESSION_SWEEP_BATCH_SIZE", DEFAULT_SESSION_SWEEP_BATCH_SIZE
+        )
+    )
+    postgres: PostgresSessionStoreConfig = field(default_factory=PostgresSessionStoreConfig)
+
+
+@dataclass(slots=True)
+class DbConfig:
+    """Shared-pool sizing/timeouts for `db/pool.py`'s process-wide `ConnectionPool`.
+
+    Every field defaults from an env var (mirroring `PGVectorStoreConfig.url`'s
+    `PGVECTOR_URL` pattern) so the pool is correctly sized out of the box in
+    every environment without a `config.yaml` entry (ops-audit O7: vector/graph
+    stores previously opened a fresh `psycopg.connect()` per call, with no
+    bound on total connections against Postgres `max_connections`).
+    `statement_timeout_ms` is applied server-side on every pooled connection
+    (`db/pool.py`'s `configure` callback) so a runaway traversal/query is
+    killed by Postgres itself rather than hanging a borrower forever.
+    """
+
+    pool_min_size: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_DB_POOL_MIN", "2"))
+    )
+    pool_max_size: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_DB_POOL_MAX", "10"))
+    )
+    pool_timeout_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("PENGUINCODE_DB_POOL_TIMEOUT_SECONDS", "30"))
+    )
+    statement_timeout_ms: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_DB_STATEMENT_TIMEOUT_MS", "15000"))
+    )
+
+
+@dataclass(slots=True)
+class LimitsConfig:
+    """Server-side clamps on caller-supplied retrieval size/depth (ops-audit O7).
+
+    `graph_depth`/`n_vector` previously came straight from the gRPC request
+    with no server-side bound -- a caller could pin Postgres with an
+    arbitrarily deep traversal or an arbitrarily large top-k. Every field
+    here is a CLAMP (the request is coerced down, never rejected) applied at
+    the store chokepoints (`stores.graph.PostgresGraphStore._traverse`,
+    `stores.vector.PgVectorStore.query`) and again at the orchestration layer
+    (`retrieval.graphrag.retrieve`, `server.services.knowledge`'s
+    Query/MemorySearch handlers) as defense in depth.
+    """
+
+    max_graph_depth: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_MAX_GRAPH_DEPTH", "3"))
+    )
+    max_vector_results: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_MAX_VECTOR_RESULTS", "50"))
+    )
+    max_graph_nodes: int = field(
+        default_factory=lambda: int(os.environ.get("PENGUINCODE_MAX_GRAPH_NODES", "500"))
+    )
+
+
 @dataclass(slots=True)
 class LessonsConfig:
     """Lessons-promotion confidentiality-verifier configuration (F2+F3, security review).
@@ -298,6 +475,16 @@ class ServerConfig:
     - local: In-process execution (default, current behavior)
     - standalone: gRPC server on localhost
     - remote: gRPC server on remote host with JWT auth
+
+    `grpc_max_workers`/`grpc_max_concurrent_rpcs`/`grpc_max_message_bytes`
+    (O9/O6, gRPC server hardening) default from
+    `PENGUINCODE_GRPC_MAX_WORKERS` / `PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS` /
+    `PENGUINCODE_GRPC_MAX_MESSAGE_BYTES` so a bare `ServerConfig()` (no
+    `config.yaml`, e.g. `server/main.py`'s `serve()` fallback) still resolves
+    operator-configured tunables; a YAML value wins over both when present
+    (see `Settings._parse_server_config`). `client/grpc_client.py` reads
+    `grpc_max_message_bytes` from this same dataclass so client and server
+    agree on the wire message-size contract by construction.
     """
 
     mode: str = "local"  # local | standalone | remote
@@ -306,6 +493,9 @@ class ServerConfig:
     tls_enabled: bool = False
     tls_cert_path: str = ""
     tls_key_path: str = ""
+    grpc_max_workers: int = field(default_factory=_default_grpc_max_workers)
+    grpc_max_concurrent_rpcs: int = field(default_factory=_default_grpc_max_concurrent_rpcs)
+    grpc_max_message_bytes: int = field(default_factory=_default_grpc_max_message_bytes)
 
 
 @dataclass
@@ -439,6 +629,9 @@ class Settings:
     research: ResearchConfig = field(default_factory=ResearchConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    db: DbConfig = field(default_factory=DbConfig)
+    limits: LimitsConfig = field(default_factory=LimitsConfig)
     lessons: LessonsConfig = field(default_factory=LessonsConfig)
     regulators: RegulatorsConfig = field(default_factory=RegulatorsConfig)
     usage_api: UsageAPIConfig = field(default_factory=UsageAPIConfig)
@@ -469,6 +662,9 @@ class Settings:
             research=cls._parse_research_config(data.get("research", {})),
             memory=cls._parse_memory_config(data.get("memory", {})),
             graph=cls._parse_graph_config(data.get("graph", {})),
+            sessions=cls._parse_sessions_config(data.get("sessions", {})),
+            db=DbConfig(**data.get("db", {})),
+            limits=LimitsConfig(**data.get("limits", {})),
             lessons=cls._parse_lessons_config(data.get("lessons", {})),
             regulators=RegulatorsConfig(**data.get("regulators", {})),
             usage_api=UsageAPIConfig(**data.get("usage_api", {})),
@@ -548,6 +744,25 @@ class Settings:
         )
 
     @staticmethod
+    def _parse_sessions_config(data: dict[str, Any]) -> SessionsConfig:
+        """Parse cross-pod chat-session store configuration (security audit O4-a High fix).
+
+        Any key omitted from `data` keeps `SessionsConfig`'s own env-backed
+        default (see that dataclass) rather than a YAML-only literal, so a
+        bare `config.yaml` with no `sessions:` section still picks up
+        `PENGUINCODE_SESSION_TTL_SECONDS`/etc. from the environment.
+        """
+        default = SessionsConfig()
+        return SessionsConfig(
+            ttl_seconds=data.get("ttl_seconds", default.ttl_seconds),
+            sweep_interval_seconds=data.get(
+                "sweep_interval_seconds", default.sweep_interval_seconds
+            ),
+            sweep_batch_size=data.get("sweep_batch_size", default.sweep_batch_size),
+            postgres=PostgresSessionStoreConfig(**data.get("postgres", {})),
+        )
+
+    @staticmethod
     def _parse_lessons_config(data: dict[str, Any]) -> LessonsConfig:
         """Parse lessons-promotion configuration.
 
@@ -624,7 +839,13 @@ class Settings:
 
     @staticmethod
     def _parse_server_config(data: dict[str, Any]) -> ServerConfig:
-        """Parse server configuration."""
+        """Parse server configuration, including the gRPC hardening tunables.
+
+        `grpc_max_workers`/`grpc_max_concurrent_rpcs`/`grpc_max_message_bytes`
+        fall back to `ServerConfig()`'s own env-driven defaults (see the
+        dataclass docstring) when absent from YAML.
+        """
+        default = ServerConfig()
         return ServerConfig(
             mode=data.get("mode", "local"),
             host=data.get("host", "localhost"),
@@ -632,6 +853,13 @@ class Settings:
             tls_enabled=data.get("tls_enabled", False),
             tls_cert_path=data.get("tls_cert_path", ""),
             tls_key_path=data.get("tls_key_path", ""),
+            grpc_max_workers=data.get("grpc_max_workers", default.grpc_max_workers),
+            grpc_max_concurrent_rpcs=data.get(
+                "grpc_max_concurrent_rpcs", default.grpc_max_concurrent_rpcs
+            ),
+            grpc_max_message_bytes=data.get(
+                "grpc_max_message_bytes", default.grpc_max_message_bytes
+            ),
         )
 
     @staticmethod

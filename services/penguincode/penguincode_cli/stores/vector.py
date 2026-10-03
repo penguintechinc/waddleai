@@ -14,21 +14,26 @@ interface instead of hand-rolled SQL).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.observability.otel import timed_store_operation
+from penguincode_cli.config.settings import LimitsConfig
+from penguincode_cli.db.pool import connection as db_connection
+from penguincode_cli.observability.otel import record_query_clamped, timed_store_operation
 
 #: The two logical vector stores from T1's migrations -- a closed set, so a
 #: table name is never taken from caller input, only this allow-list.
 TableName = Literal["docs_vectors", "memory_vectors"]
 _VALID_TABLES: frozenset[str] = frozenset({"docs_vectors", "memory_vectors"})
 _VALID_VISIBILITIES: frozenset[str] = frozenset({"user", "team", "tenant"})
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,6 +109,15 @@ def _validate_team_id(ctx: ScopeContext, team_id: str | None) -> None:
         raise ValueError(f"team_id {team_id!r} is not one of the caller's own teams")
 
 
+def _clamp(value: int, maximum: int, *, param: str) -> int:
+    """Coerce ``value`` down to ``maximum`` (never reject), logging + counting a clamp hit."""
+    if value > maximum:
+        logger.debug("pgvector query clamped: param=%s requested=%d max=%d", param, value, maximum)
+        record_query_clamped(param)
+        return maximum
+    return value
+
+
 def _vector_literal(embedding: list[float]) -> str:
     """Render an embedding as a pgvector text literal (``[0.1,0.2,...]``).
 
@@ -123,10 +137,22 @@ class PgVectorStore:
     shared one that could accidentally cross-write between them.
     """
 
-    def __init__(self, dsn: str, table: TableName = "docs_vectors") -> None:
+    def __init__(
+        self,
+        dsn: str,
+        table: TableName = "docs_vectors",
+        *,
+        pool: ConnectionPool | None = None,
+        limits: LimitsConfig | None = None,
+    ) -> None:
         _validate_table(table)
         self._dsn = dsn
         self._table: TableName = table
+        #: ``None`` defaults to the process-wide shared pool (``db/pool.py``'s
+        #: ``get_pool``) -- a test/CLI caller injects an ephemeral pool here
+        #: instead of touching the shared singleton.
+        self._pool = pool
+        self._limits = limits if limits is not None else LimitsConfig()
 
     @property
     def table(self) -> str:
@@ -156,7 +182,7 @@ class PgVectorStore:
         with timed_store_operation(
             "vector_query", "pgvector.upsert", table=self._table, count=len(items)
         ):
-            with psycopg.connect(self._dsn, autocommit=True) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool, autocommit=True) as conn:
                 with conn.cursor() as cur:
                     for item in items:
                         cur.execute(
@@ -207,7 +233,12 @@ class PgVectorStore:
         team-visible to one of the caller's own teams, or user-visible to the
         caller. Never trust a caller-supplied tenant/team/user -- everything
         here comes from the validated ``ScopeContext``.
+
+        ``n`` is clamped server-side to ``LimitsConfig.max_vector_results``
+        (ops-audit O7: a caller-supplied top-k with no server bound) -- the
+        request is coerced down, never rejected.
         """
+        n = _clamp(n, self._limits.max_vector_results, param="n_vector")
         vector_literal = _vector_literal(embedding)
         params: dict[str, Any] = {
             "embedding": vector_literal,
@@ -237,7 +268,7 @@ class PgVectorStore:
         """
 
         with timed_store_operation("vector_query", "pgvector.query", table=self._table, n=n):
-            with psycopg.connect(self._dsn) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool) as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute(sql, params)
                     rows = cur.fetchall()
@@ -282,5 +313,5 @@ class PgVectorStore:
         with timed_store_operation(
             "vector_query", "pgvector.delete", table=self._table, count=len(ids)
         ):
-            with psycopg.connect(self._dsn, autocommit=True) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool, autocommit=True) as conn:
                 conn.execute(sql, params)

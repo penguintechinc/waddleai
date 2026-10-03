@@ -49,6 +49,9 @@ nav:
   - Administration:
     - User Management: administration/user-management.md
     - AI Security Recommendations: administration/ai-security-recommendations.md
+  - Operations:
+    - Monitoring: operations/MONITORING.md
+    - Service Level Objectives: operations/SLOS.md
   - Deployment:
     - Docker Compose: deployment/docker-compose.md
     - Kubernetes: deployment/kubernetes.md

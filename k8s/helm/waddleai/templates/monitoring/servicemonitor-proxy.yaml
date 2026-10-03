@@ -1,0 +1,40 @@
+{{/*
+Prometheus Operator ServiceMonitor for the proxy (AIProxy) service (O2
+fix). Scrapes the `/metrics` route registered at
+proxy/apps/proxy_server/main.py:1796 (prometheus_client registry fed by
+shared/utils/metrics.py's WaddleAIMetrics). Same gating pattern as the
+management ServiceMonitor -- monitoring.enabled + .serviceMonitor.enabled +
+a live CRD capability check.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled .Values.proxy.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "waddleai.fullname" . }}-proxy
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  endpoints:
+    # "http" port only -- "grpc" (50051) is a separate protocol, not a
+    # second Prometheus text-format surface; scraping it would just error
+    # every interval.
+    - port: http
+      path: {{ .Values.monitoring.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        - targetLabel: job
+          replacement: waddleai-proxy
+{{- end }}

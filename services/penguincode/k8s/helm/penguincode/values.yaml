@@ -45,11 +45,60 @@ server:
       cpu: 500m
       memory: 1Gi
 
-  # gRPC health check configuration
+  # gRPC health check configuration. The exec-based grpc.channel_ready_future
+  # check (templates/server-deployment.yaml) only proves the TCP/HTTP2
+  # channel accepts connections, never that the server is actually serving
+  # (penguincode_cli/server/services/health.py's HealthServiceImpl is a
+  # custom, non-standard RPC). nativeGrpcProbe switches both probes to K8s's
+  # native `grpc:` probe type (GA since 1.27) against the standard
+  # `grpc.health.v1.Health` service -- but that service is not currently
+  # registered by penguincode_cli/server/main.py (shared/py_libs/py_libs/
+  # grpc/server.py's register_health_check exists and is unused there).
+  # Defaults OFF until that server-side wiring lands (separate, non-Helm
+  # change, tracked outside this PR) -- flipping this on before then means
+  # every probe fails closed (UNIMPLEMENTED) and the pod never goes Ready.
   healthCheck:
     enabled: true
     grpc:
       port: 50051
+    nativeGrpcProbe: false
+    # grpc.health.v1.Health service name to check once nativeGrpcProbe is
+    # true -- empty string is the conventional "overall server health" name.
+    grpcServiceName: ""
+
+  # O4-b: generous enough to cover a slow model-registry/config load on
+  # first start without racing the (much tighter) steady-state liveness
+  # check above -- the kubelet does not run liveness/readiness at all until
+  # this succeeds once. 5s + 24*5s = ~125s of startup grace.
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 24
+
+  # O5-a: pod-level drain window -- must comfortably outlast an in-flight
+  # agent/chat RPC plus preStopSleepSeconds below.
+  terminationGracePeriodSeconds: 120
+  # O5-a: preStop sleep so the Service/EndpointSlice entry has time to
+  # propagate removal before SIGTERM reaches the process.
+  preStopSleepSeconds: 10
+
+  # O4: PodDisruptionBudget -- see templates/pdb.yaml. Only actually renders
+  # when the effective replica count (autoscaling.minReplicas when
+  # autoscaling.enabled, else server.replicas) is greater than 1, so a
+  # single-replica environment (alpha) is never blocked from voluntary
+  # eviction by its own PDB.
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  # O9: gRPC server thread-pool size, previously hardcoded (`max_workers=10`
+  # in penguincode_cli/server/main.py's grpc.aio.server(...)). Wired to
+  # PENGUINCODE_GRPC_MAX_WORKERS -- server-side env read is a separate,
+  # non-Helm change (tracked outside this PR); the chart-side plumbing here
+  # is ready the moment that lands, with a default matching today's value.
+  grpcMaxWorkers: 10
 
   # Environment configuration
   env:
@@ -369,3 +418,63 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 80
   targetMemoryUtilizationPercentage: 80
+
+# Observability baseline (O2 fix): Prometheus Operator ServiceMonitor +
+# PrometheusRule + Grafana sidecar-discovered dashboard for the server.
+# Default OFF so a cluster without the Prometheus Operator CRDs still
+# templates/installs this chart cleanly (alpha). Flip monitoring.enabled=true
+# in beta.yml/gamma.yml/production.yml once the operator is present.
+#
+# IMPORTANT (documented gap, not silently papered over): the server's REST
+# app (penguincode_cli/server/rest_app.py, port 8080) exposes NO Prometheus
+# `/metrics` route today -- only OTLP push via penguincode_cli/observability/
+# otel.py. The ServiceMonitor below scrapes `monitoring.serviceMonitor.path`
+# on the existing `rest` Service port anyway, on the documented assumption
+# (see this PR's description) that the sibling PR instrumenting
+# rpc_server_duration_seconds/rpc_server_requests_total/index_queue_depth/
+# index_jobs_total/db_pool_waiting also exposes a prometheus_client
+# `/metrics` route alongside those instruments, matching the
+# management/proxy convention (shared/utils/metrics.py). Until that lands,
+# this ServiceMonitor scrapes 404s (visible as `up == 0` -- the
+# PenguinCodeTargetDown alert -- not a silent gap).
+monitoring:
+  enabled: false
+  namespace: ""
+  extraLabels: {}
+  scrapeSourceNamespaceLabels:
+    kubernetes.io/metadata.name: monitoring
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    path: /metrics
+  prometheusRule:
+    enabled: true
+    slo:
+      availabilityTargetPercent: "99.9"
+      latencyP95Seconds: "5"
+      latencyP99Seconds: "15"
+      errorBudgetWindow: 30d
+      burnRateFast:
+        longWindow: 2h
+        shortWindow: 10m
+        threshold: "0.0072"
+      burnRateMid:
+        longWindow: 6h
+        shortWindow: 30m
+        threshold: "0.006"
+      burnRateSlow:
+        longWindow: 1d
+        shortWindow: 2h
+        threshold: "0.003"
+      burnRateSlowest:
+        longWindow: 3d
+        shortWindow: 6h
+        threshold: "0.001"
+      # Index-build queue depth considered saturated above this many
+      # pending jobs (index_queue_depth, sibling PR metric).
+      indexQueueDepthThreshold: "50"
+  dashboards:
+    enabled: true
+    sidecarLabelKey: grafana_dashboard
+    sidecarLabelValue: "1"

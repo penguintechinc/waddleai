@@ -1,0 +1,24 @@
+{{/*
+O4: PodDisruptionBudget for the WebUI service. Same guard pattern as
+management-pdb.yaml/proxy-pdb.yaml.
+*/}}
+{{- $effectiveMin := .Values.webui.replicaCount -}}
+{{- if .Values.webui.autoscaling.enabled -}}
+{{- $effectiveMin = .Values.webui.autoscaling.minReplicas -}}
+{{- end -}}
+{{- if and .Values.webui.enabled .Values.podDisruptionBudget.enabled (gt (int $effectiveMin) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "waddleai.fullname" . }}-webui
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webui
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: webui
+{{- end }}

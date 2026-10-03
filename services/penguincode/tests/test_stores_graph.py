@@ -26,7 +26,7 @@ import psycopg
 import pytest
 
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.config.settings import GraphConfig, PostgresGraphStoreConfig
+from penguincode_cli.config.settings import GraphConfig, LimitsConfig, PostgresGraphStoreConfig
 from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.stores.graph import (
     GraphEdge,
@@ -465,6 +465,76 @@ class TestTraversalDepth:
         )
         result = store.neighbors(ctx, "code", "a.py", depth=1)
         assert {n.key for n in result.nodes} == {"a.py", "b.py"}
+
+
+@requires_postgres
+class TestClampingAndBounds:
+    """Ops-audit O7: `depth` is clamped server-side; result size is capped on every axis."""
+
+    def _seed_chain(self, store: PostgresGraphStore, ctx: ScopeContext) -> None:
+        edges = [
+            GraphEdge(
+                src_type="file", src_key="a.py", dst_type="file", dst_key="b.py", rel_type="imports"
+            ),
+            GraphEdge(
+                src_type="file", src_key="b.py", dst_type="file", dst_key="c.py", rel_type="imports"
+            ),
+            GraphEdge(
+                src_type="file", src_key="c.py", dst_type="file", dst_key="d.py", rel_type="imports"
+            ),
+            GraphEdge(
+                src_type="file", src_key="d.py", dst_type="file", dst_key="e.py", rel_type="imports"
+            ),
+        ]
+        store.upsert_edges(ctx, "code", edges, visibility="tenant", team_id=None)
+
+    def test_oversized_depth_is_clamped_to_configured_max(self, graph_dsn: str) -> None:
+        # a->b->c->d->e, but max_graph_depth=2 clamps a requested depth=50
+        # down to 2 hops from "a.py" -- "d.py"/"e.py" must stay unreachable.
+        store = PostgresGraphStore(
+            dsn=graph_dsn, schema="penguincode", limits=LimitsConfig(max_graph_depth=2)
+        )
+        ctx = _ctx(_new_tenant())
+        self._seed_chain(store, ctx)
+
+        result = store.neighbors(ctx, "code", "a.py", depth=50)
+
+        assert {n.key for n in result.nodes} == {"a.py", "b.py", "c.py"}
+
+    def test_within_bound_depth_is_unaffected(self, graph_dsn: str) -> None:
+        store = PostgresGraphStore(
+            dsn=graph_dsn, schema="penguincode", limits=LimitsConfig(max_graph_depth=3)
+        )
+        ctx = _ctx(_new_tenant())
+        self._seed_chain(store, ctx)
+
+        result = store.neighbors(ctx, "code", "a.py", depth=2)
+
+        assert {n.key for n in result.nodes} == {"a.py", "b.py", "c.py"}
+
+    def test_node_cap_bounds_result_on_a_synthetic_dense_graph(self, graph_dsn: str) -> None:
+        """A hub fanning out to far more nodes than `max_graph_nodes` never returns them all."""
+        store = PostgresGraphStore(
+            dsn=graph_dsn,
+            schema="penguincode",
+            limits=LimitsConfig(max_graph_depth=3, max_graph_nodes=5),
+        )
+        ctx = _ctx(_new_tenant())
+        edges = [
+            GraphEdge(
+                src_type="file",
+                src_key="hub.py",
+                dst_type="file",
+                dst_key=f"leaf-{i}.py",
+                rel_type="imports",
+            )
+            for i in range(50)
+        ]
+        store.upsert_edges(ctx, "code", edges, visibility="tenant", team_id=None)
+
+        result = store.neighbors(ctx, "code", "hub.py", depth=1)
+
+        assert len(result.nodes) <= 5
 
 
 @requires_postgres

@@ -1815,3 +1815,369 @@ class TestReleaseAudit20260923Handlers:
 
         meter = next(s for s in proxy_main.proxy_server.pipeline.stages if s.name == "meter")
         assert meter.flag == METERING_FLAG  # explicit disable, not a silent dead gate (gh-216)
+
+
+# ---------------------------------------------------------------------------
+# Release-audit-2026-10-02 (ops O1-a/O1-c/O4/O6/O10): bounded endpoint
+# labels, LLM/provider latency histogram, body-size cap, and
+# ConcurrencyLimiter observability.
+# ---------------------------------------------------------------------------
+
+
+class TestAfterRequestMetricsEndpointLabel:
+    """after_request_metrics() labels `endpoint` with the matched route TEMPLATE (ops O1-a)."""
+
+    async def test_static_route_uses_its_own_path_as_template(self, running_app, monkeypatch):
+        """A static route's template is just its own path."""
+        calls = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics, "record_request", lambda **kw: calls.append(kw)
+        )
+        client = running_app.test_client()
+        resp = await client.get("/healthz")
+        assert resp.status_code == 200
+        assert calls[-1]["endpoint"] == "/healthz"
+
+    async def test_parametrized_route_uses_template_not_concrete_id(self, running_app, monkeypatch):
+        """DELETE /mem0/memories/<id> records the route template, never the concrete id.
+
+        Regardless of what status code the handler itself returns (memory
+        manager may not be wired in this fixture), the metrics middleware
+        must never see the raw id in the `endpoint` label -- that was the
+        exact unbounded-cardinality bug (release-audit-2026-10-02, ops O1-a).
+        mem0_bp is mounted at the `/mem0` url_prefix (see mem0_api.py).
+        """
+        calls = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics, "record_request", lambda **kw: calls.append(kw)
+        )
+        client = running_app.test_client()
+        await client.delete("/mem0/memories/999999999", headers=_bearer_headers())
+        assert calls[-1]["endpoint"] == "/mem0/memories/<memory_id>"
+        assert "999999999" not in calls[-1]["endpoint"]
+
+    async def test_unmatched_route_falls_back_to_unmatched_label(self, running_app, monkeypatch):
+        """A 404 (no route matched at all, post-auth) records the bounded `unmatched` literal."""
+        calls = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics, "record_request", lambda **kw: calls.append(kw)
+        )
+        client = running_app.test_client()
+        resp = await client.get("/this-route-does-not-exist-at-all", headers=_bearer_headers())
+        assert resp.status_code == 404
+        assert calls[-1]["endpoint"] == "unmatched"
+
+
+class TestLlmLatencyWiring:
+    """chat_completions()/claude_messages() call record_llm_latency on both success and failure."""
+
+    async def test_chat_completions_records_success_latency(self, running_app, monkeypatch):
+        """A successful dispatch records status="success" with the resolved provider/model."""
+        captured = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics,
+            "record_llm_latency",
+            lambda **kw: captured.append(kw),
+        )
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        assert captured[0]["status"] == "success"
+        assert captured[0]["provider"] == "stub"
+        assert isinstance(captured[0]["duration"], float)
+
+    async def test_chat_completions_records_error_latency_on_blocked_dispatch(
+        self, running_app, monkeypatch
+    ):
+        """A blocked pipeline run with ctx.provider already set still records latency as an error.
+
+        DispatchStage sets ctx.provider before any of its failure branches
+        run, so a dispatch failure is exactly as measurable as a success
+        (release-audit-2026-10-02, ops O1-c) -- previously only the 2xx
+        path was ever recorded at all.
+        """
+        captured = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics,
+            "record_llm_latency",
+            lambda **kw: captured.append(kw),
+        )
+
+        async def fake_run(ctx):
+            ctx.blocked = True
+            ctx.status_code = 502
+            ctx.block_reason = "provider_error_502"
+            ctx.provider = "stub"
+            ctx.model = "gpt-3.5-turbo"
+            return ctx
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 502
+        assert captured == [
+            {
+                "provider": "stub",
+                "model": "gpt-3.5-turbo",
+                "status": "error",
+                "duration": captured[0]["duration"],
+            }
+        ]
+
+    async def test_chat_completions_skips_latency_when_no_provider_was_selected(
+        self, running_app, monkeypatch
+    ):
+        """A pre-dispatch block (no provider ever selected) records no latency sample."""
+        captured = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics,
+            "record_llm_latency",
+            lambda **kw: captured.append(kw),
+        )
+
+        async def fake_run(ctx):
+            ctx.blocked = True
+            ctx.status_code = 503
+            ctx.block_reason = "no_available_providers"
+            # ctx.provider stays None -- DispatchStage never reached selection.
+            return ctx
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 503
+        assert captured == []
+
+    async def test_claude_messages_records_success_latency(self, running_app, monkeypatch):
+        """The Anthropic-shape endpoint records latency symmetrically with chat_completions."""
+        captured = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics,
+            "record_llm_latency",
+            lambda **kw: captured.append(kw),
+        )
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        assert captured[0]["status"] == "success"
+
+    async def test_claude_messages_records_error_latency_on_blocked_dispatch(
+        self, running_app, monkeypatch
+    ):
+        """Symmetric with chat_completions' blocked+provider-set latency recording."""
+        captured = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics,
+            "record_llm_latency",
+            lambda **kw: captured.append(kw),
+        )
+
+        async def fake_run(ctx):
+            ctx.blocked = True
+            ctx.status_code = 504
+            ctx.block_reason = "provider_error_504"
+            ctx.provider = "stub"
+            ctx.model = "claude-3-sonnet-20240229"
+            return ctx
+
+        monkeypatch.setattr(proxy_main.proxy_server.pipeline, "run", fake_run)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 504
+        assert captured and captured[0]["status"] == "error" and captured[0]["provider"] == "stub"
+
+
+class TestMaxContentLength:
+    """app.config["MAX_CONTENT_LENGTH"] (ops O6): oversized bodies get a 413, proxy error shape."""
+
+    async def test_oversized_body_returns_413_with_standard_envelope(
+        self, running_app, monkeypatch
+    ):
+        """A body over the configured cap is rejected before any route handler runs.
+
+        Quart's test client doesn't set a Content-Length header for its
+        `json=` convenience kwarg (it transfers the body unframed), so
+        `_enforce_max_body_size`'s header check -- the thing that keeps a
+        real oversized request from ever reaching chat_completions()'s own
+        broad `except Exception` -- never fires without one. A raw `data=`
+        payload with an explicit Content-Length mirrors what every real
+        HTTP client sends for a bounded JSON body.
+        """
+        monkeypatch.setitem(proxy_main.app.config, "MAX_CONTENT_LENGTH", 64)
+        payload = json.dumps(
+            {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "x" * 1000}]}
+        ).encode()
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers={
+                **_bearer_headers(),
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+            data=payload,
+        )
+        assert resp.status_code == 413
+        body = await resp.get_json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "too large" in body["error"]["message"].lower()
+
+    async def test_body_within_limit_is_unaffected(self, running_app, monkeypatch):
+        """The default cap (10 MiB) never interferes with a normal small request."""
+        monkeypatch.setitem(proxy_main.app.config, "MAX_CONTENT_LENGTH", 10 * 1024 * 1024)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+
+
+class TestConcurrencyLimiterObservability:
+    """ConcurrencyLimiter wiring into the inflight gauge / rejections counter (ops O10)."""
+
+    async def test_successful_request_updates_inflight_gauge_and_releases_it(
+        self, running_app, monkeypatch
+    ):
+        """The gauge reflects the reserved slot during the request and 0 again after release."""
+        observed = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics,
+            "set_inflight_requests",
+            lambda count: observed.append(count),
+        )
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        assert observed == [1, 0]  # entered (1 active), then released (0 active)
+
+    async def test_shed_request_increments_rejection_counter(self, running_app, monkeypatch):
+        """A 429-shed request increments the bounded, caller-literal rejection counter."""
+        from proxy.apps.proxy_server.main import ConcurrencyLimiter
+
+        full = ConcurrencyLimiter(limit=1)
+        assert full.try_enter() is True  # occupy the only slot
+        monkeypatch.setattr(proxy_main.proxy_server, "request_limiter", full)
+        rejections = []
+        monkeypatch.setattr(
+            proxy_main.proxy_server.metrics,
+            "record_concurrency_rejection",
+            lambda **kw: rejections.append(kw),
+        )
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 429
+        assert rejections == [{"endpoint": "/v1/chat/completions"}]
+
+    async def test_claude_messages_sheds_with_429_when_at_capacity(self, running_app, monkeypatch):
+        """/v1/messages sheds load identically to /v1/chat/completions (symmetric coverage)."""
+        from proxy.apps.proxy_server.main import ConcurrencyLimiter
+
+        full = ConcurrencyLimiter(limit=1)
+        assert full.try_enter() is True
+        monkeypatch.setattr(proxy_main.proxy_server, "request_limiter", full)
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 429
+        body = await resp.get_json()
+        assert body["error"]["type"] == "overloaded_error"
+
+
+class TestValkeyClientPoolBounds:
+    """redis.from_url(...) call sites apply bounded pool kwargs (ops O4).
+
+    Both call sites (`ProxyServer.startup()`'s `memory_valkey` and
+    `_build_pipeline()`'s shared `valkey`) pass the identical
+    `**_valkey_client_kwargs()` -- the `startup()` site isn't independently
+    re-exercisable here (REDIS_URL="" in this fixture's env makes it raise
+    and fall back to None, and re-running all of startup() just to test one
+    line isn't worth the cost), so this class proves the shared helper
+    itself (`test_valkey_client_kwargs_...`) and one live call site
+    (`_build_pipeline()`'s, below) -- source review confirms the other site
+    uses the same helper identically.
+    """
+
+    def test_valkey_client_kwargs_are_env_tunable_with_sane_defaults(self, monkeypatch):
+        """Every knob reads its own env var and falls back to a sane default."""
+        for key in (
+            "PROXY_VALKEY_MAX_CONNECTIONS",
+            "PROXY_VALKEY_SOCKET_TIMEOUT_SECONDS",
+            "PROXY_VALKEY_SOCKET_CONNECT_TIMEOUT_SECONDS",
+            "PROXY_VALKEY_HEALTH_CHECK_INTERVAL_SECONDS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        kwargs = proxy_main._valkey_client_kwargs()
+        assert kwargs == {
+            "max_connections": 50,
+            "socket_timeout": 5.0,
+            "socket_connect_timeout": 5.0,
+            "health_check_interval": 30,
+        }
+
+        monkeypatch.setenv("PROXY_VALKEY_MAX_CONNECTIONS", "25")
+        assert proxy_main._valkey_client_kwargs()["max_connections"] == 25
+
+    async def test_build_pipeline_token_budget_valkey_client_has_bounded_pool(
+        self, running_app, monkeypatch
+    ):
+        """The TokenBudgetStage's real (non-mock) Valkey client has the bounded pool.
+
+        Forces the "production" metering branch (same technique as
+        `test_non_test_mode_uses_real_metering_buffer`) with a resolvable
+        REDIS_URL so `_build_pipeline()`'s `valkey = redis.from_url(...)`
+        actually succeeds instead of falling back to None.
+        """
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+        monkeypatch.setattr(proxy_main, "_TEST_MODE", False)
+        pipeline = proxy_main.proxy_server._build_pipeline()
+        token_stage = next(s for s in pipeline.stages if s.name == "token_budget")
+        valkey = token_stage.token_limiter.valkey
+        assert valkey is not None
+        assert (
+            valkey.connection_pool.max_connections
+            == proxy_main._valkey_client_kwargs()["max_connections"]
+        )

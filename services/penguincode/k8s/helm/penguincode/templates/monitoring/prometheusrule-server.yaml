@@ -1,0 +1,204 @@
+{{/*
+PrometheusRule for the penguincode server (O2 fix). Every metric name
+referenced below (rpc_server_duration_seconds, rpc_server_requests_total,
+index_queue_depth, index_jobs_total, db_pool_waiting,
+feature_flag_evaluations_total, license_checks_total) does NOT exist in
+this repo as of this PR -- they are being added by a sibling PR in this
+same audit pass (gRPC + index-pipeline + DB-pool + flag/license
+instrumentation). Marked inline; see this PR's description for the
+cross-PR dependency. `up`/kube-state-metrics series are the Prometheus
+Operator's own, available regardless.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled .Values.server.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+{{- $slo := .Values.monitoring.prometheusRule.slo }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "penguincode.fullname" . }}-server
+  namespace: {{ .Values.monitoring.namespace | default .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.server.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: penguincode-server.slo-error-budget-burn
+      rules:
+        - alert: PenguinCodeErrorBudgetBurnFast
+          expr: |
+            (
+              sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[{{ $slo.burnRateFast.longWindow }}]))
+              /
+              sum(rate(rpc_server_requests_total{job="penguincode-server"}[{{ $slo.burnRateFast.longWindow }}]))
+            ) > {{ $slo.burnRateFast.threshold }}
+            and
+            (
+              sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[{{ $slo.burnRateFast.shortWindow }}]))
+              /
+              sum(rate(rpc_server_requests_total{job="penguincode-server"}[{{ $slo.burnRateFast.shortWindow }}]))
+            ) > {{ $slo.burnRateFast.threshold }}
+          for: 2m
+          labels:
+            severity: critical
+            service: penguincode
+            slo: error-budget-burn
+          annotations:
+            summary: "PenguinCode gRPC error budget burning fast"
+            description: "Non-OK gRPC status ratio exceeded the fast-burn threshold over both the {{ $slo.burnRateFast.longWindow }} and {{ $slo.burnRateFast.shortWindow }} windows -- the {{ $slo.availabilityTargetPercent }}% SLO's {{ $slo.errorBudgetWindow }} budget empties in hours at this rate. See docs/operations/MONITORING.md#penguincodeerrorbudgetburnfast."
+        - alert: PenguinCodeErrorBudgetBurnSlow
+          expr: |
+            (
+              sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[{{ $slo.burnRateSlow.longWindow }}]))
+              /
+              sum(rate(rpc_server_requests_total{job="penguincode-server"}[{{ $slo.burnRateSlow.longWindow }}]))
+            ) > {{ $slo.burnRateSlow.threshold }}
+            and
+            (
+              sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[{{ $slo.burnRateSlow.shortWindow }}]))
+              /
+              sum(rate(rpc_server_requests_total{job="penguincode-server"}[{{ $slo.burnRateSlow.shortWindow }}]))
+            ) > {{ $slo.burnRateSlow.threshold }}
+          for: 15m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: error-budget-burn
+          annotations:
+            summary: "PenguinCode gRPC error budget burning slowly"
+            description: "Non-OK gRPC status ratio exceeded the slow-burn threshold over both the {{ $slo.burnRateSlow.longWindow }} and {{ $slo.burnRateSlow.shortWindow }} windows -- ticket, not page. See docs/operations/MONITORING.md#penguincodeerrorbudgetburnslow."
+        - alert: PenguinCodeErrorBudgetBurnSlowest
+          expr: |
+            (
+              sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[{{ $slo.burnRateSlowest.longWindow }}]))
+              /
+              sum(rate(rpc_server_requests_total{job="penguincode-server"}[{{ $slo.burnRateSlowest.longWindow }}]))
+            ) > {{ $slo.burnRateSlowest.threshold }}
+            and
+            (
+              sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[{{ $slo.burnRateSlowest.shortWindow }}]))
+              /
+              sum(rate(rpc_server_requests_total{job="penguincode-server"}[{{ $slo.burnRateSlowest.shortWindow }}]))
+            ) > {{ $slo.burnRateSlowest.threshold }}
+          for: 30m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: error-budget-burn
+          annotations:
+            summary: "PenguinCode gRPC error budget burning (long-horizon)"
+            description: "Non-OK gRPC status ratio exceeded the slowest-burn threshold over both the {{ $slo.burnRateSlowest.longWindow }} and {{ $slo.burnRateSlowest.shortWindow }} windows. See docs/operations/MONITORING.md#penguincodeerrorbudgetburnslowest."
+    - name: penguincode-server.slo-latency
+      rules:
+        - alert: PenguinCodeLatencyP95High
+          expr: |
+            histogram_quantile(0.95, sum(rate(rpc_server_duration_seconds_bucket{job="penguincode-server"}[15m])) by (le)) > {{ $slo.latencyP95Seconds }}
+          for: 15m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: latency
+          annotations:
+            summary: "PenguinCode p95 gRPC latency above {{ $slo.latencyP95Seconds }}s"
+            description: "p95 RPC latency over the last 15m exceeded {{ $slo.latencyP95Seconds }}s. See docs/operations/MONITORING.md#penguincodelatencyp95high."
+        - alert: PenguinCodeLatencyP99High
+          expr: |
+            histogram_quantile(0.99, sum(rate(rpc_server_duration_seconds_bucket{job="penguincode-server"}[15m])) by (le)) > {{ $slo.latencyP99Seconds }}
+          for: 15m
+          labels:
+            severity: critical
+            service: penguincode
+            slo: latency
+          annotations:
+            summary: "PenguinCode p99 gRPC latency above {{ $slo.latencyP99Seconds }}s"
+            description: "p99 RPC latency over the last 15m exceeded {{ $slo.latencyP99Seconds }}s. See docs/operations/MONITORING.md#penguincodelatencyp99high."
+    - name: penguincode-server.availability
+      rules:
+        - alert: PenguinCodeTargetDown
+          expr: up{job="penguincode-server"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: penguincode
+            slo: availability
+          annotations:
+            summary: "PenguinCode server scrape target down"
+            description: "Prometheus has not successfully scraped penguincode-server for 5m -- this fires immediately on install until the sibling PR adding a /metrics route on the rest port lands (see values.yaml monitoring block header comment). See docs/operations/MONITORING.md#penguincodetargetdown."
+        - alert: PenguinCodeMetricsAbsent
+          expr: absent(up{job="penguincode-server"})
+          for: 10m
+          labels:
+            severity: critical
+            service: penguincode
+            slo: availability
+          annotations:
+            summary: "No penguincode-server scrape target registered"
+            description: "Prometheus has no penguincode-server target at all. See docs/operations/MONITORING.md#penguincodemetricsabsent."
+    - name: penguincode-server.cause
+      rules:
+        - alert: PenguinCodeIndexQueueDepthHigh
+          # index_queue_depth / index_jobs_total are added by a sibling PR
+          # in this audit pass -- see this PR's description.
+          expr: index_queue_depth{job="penguincode-server"} > {{ $slo.indexQueueDepthThreshold }}
+          for: 10m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode index-build queue depth above {{ $slo.indexQueueDepthThreshold }}"
+            description: "Pending index jobs are backing up -- check index_jobs_total{status=\"failed\"} for a stuck/crashing worker before assuming it's just load. See docs/operations/MONITORING.md#penguincodeindexqueuedepthhigh."
+        - alert: PenguinCodeIndexJobFailuresHigh
+          expr: sum(rate(index_jobs_total{job="penguincode-server",status="failed"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode index jobs failing"
+            description: "index_jobs_total{status=\"failed\"} is incrementing -- a parser/extractor regression or a store (pgvector/graph) connectivity issue is the likely cause. See docs/operations/MONITORING.md#penguincodeindexjobfailureshigh."
+        - alert: PenguinCodeDBPoolSaturated
+          expr: db_pool_waiting{job="penguincode-server"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode DB connection pool has waiters"
+            description: "Requests are queueing for a pgvector/Postgres connection. See docs/operations/MONITORING.md#penguincodedbpoolsaturated."
+        - alert: PenguinCodePodRestartingFrequently
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ .Values.global.namespace }}", pod=~".*server.*"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode server pod restarting repeatedly"
+            description: "A server pod restarted more than 3 times in the last hour -- check `kubectl logs --previous`. See docs/operations/MONITORING.md#penguincodepodrestartingfrequently."
+        - alert: PenguinCodeFeatureFlagEvalErrors
+          expr: |
+            sum(rate(feature_flag_evaluations_total{service="penguincode",result="error"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode feature-flag evaluations failing"
+            description: "PostHog/flags/client.py evaluations are erroring -- flags fall back to last-known-cached values. See docs/operations/MONITORING.md#penguincodefeatureflagevalerrors."
+        - alert: PenguinCodeLicenseCheckErrors
+          expr: |
+            sum(rate(license_checks_total{service="penguincode",status="error"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode license checks failing"
+            description: "Calls to license.penguintech.io are erroring; entitlement checks fall back to cached state. See docs/operations/MONITORING.md#penguincodelicensecheckerrors."
+{{- end }}

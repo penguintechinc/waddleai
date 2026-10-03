@@ -66,13 +66,26 @@ class GRPCClient(IChatService):
             # Build server address
             address = f"{self.server_config.host}:{self.server_config.port}"
 
+            # O6 (gRPC server hardening): channel-level message size limits,
+            # matching the server's own `grpc.max_receive_message_length` /
+            # `grpc.max_send_message_length` (see `ServerConfig.
+            # grpc_max_message_bytes`) -- client and server agree on the
+            # wire message-size contract by construction, since both read
+            # the same `PENGUINCODE_GRPC_MAX_MESSAGE_BYTES`-derived value.
+            channel_options = [
+                ("grpc.max_receive_message_length", self.server_config.grpc_max_message_bytes),
+                ("grpc.max_send_message_length", self.server_config.grpc_max_message_bytes),
+            ]
+
             # Create channel with or without TLS
             if self.server_config.tls_enabled:
                 # TODO: Load TLS credentials
                 credentials = grpc.ssl_channel_credentials()
-                self._channel = grpc.aio.secure_channel(address, credentials)
+                self._channel = grpc.aio.secure_channel(
+                    address, credentials, options=channel_options
+                )
             else:
-                self._channel = grpc.aio.insecure_channel(address)
+                self._channel = grpc.aio.insecure_channel(address, options=channel_options)
 
             # Create stubs
             self._auth_stub = AuthServiceStub(self._channel)
@@ -118,7 +131,9 @@ class GRPCClient(IChatService):
             raise RuntimeError("Not connected to server")
 
         try:
-            response = await self._auth_stub.Authenticate(AuthRequest(api_key=api_key, client_id=client_id))
+            response = await self._auth_stub.Authenticate(
+                AuthRequest(api_key=api_key, client_id=client_id)
+            )
 
             # Store token
             self.token_manager.store_token(

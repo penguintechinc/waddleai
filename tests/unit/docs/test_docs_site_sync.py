@@ -28,6 +28,10 @@ _MIRRORED = (
     "getting-started/installation.md",
     "integrations/claude-code.md",
     "integrations/vscode-extension.md",
+    # O2 observability fix (k8s-manifest-builder) -- new pages, mirrored from
+    # day one rather than left to fork later.
+    "operations/MONITORING.md",
+    "operations/SLOS.md",
 )
 
 # Known fork, deliberately not asserted: none currently. Add an entry here

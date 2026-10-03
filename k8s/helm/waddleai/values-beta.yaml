@@ -305,3 +305,14 @@ cilium:
 # so `baseline` can be restored here.
 podSecurityAdmission:
   enforce: privileged
+
+# Observability (O2 fix) — dal2-beta runs kube-prometheus-stack
+# (Prometheus Operator CRDs + a Grafana sidecar watching `grafana_dashboard:
+# "1"` ConfigMaps) in its own `monitoring` namespace, so flip the chart's
+# default-OFF monitoring block on here. `extraLabels.release` matches
+# whatever release name the operator's Prometheus CR scopes its
+# serviceMonitorSelector/ruleSelector to on this cluster.
+monitoring:
+  enabled: true
+  extraLabels:
+    release: kube-prometheus-stack

@@ -27,6 +27,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+      {{- with .Values.proxy.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
@@ -90,6 +93,19 @@ spec:
               value: "redis://{{ include "waddleai.fullname" . }}-valkey:6379/0"
             - name: MANAGEMENT_SERVER_URL
               value: "http://{{ include "waddleai.fullname" . }}-management:{{ .Values.management.service.port }}"
+            # O9: drives proxy/Dockerfile's CMD (`hypercorn ... --workers
+            # ${HYPERCORN_WORKERS}`) -- was a hardcoded `--workers 4`.
+            - name: HYPERCORN_WORKERS
+              value: {{ .Values.proxy.workers | default 4 | quote }}
+            # O5-a: Hypercorn's own graceful drain window -- see
+            # proxy/Dockerfile's CMD and values.yaml proxy.gracefulTimeoutSeconds.
+            - name: HYPERCORN_GRACEFUL_TIMEOUT
+              value: {{ .Values.proxy.gracefulTimeoutSeconds | default 30 | quote }}
+            # O5-a: grace period for the internal gRPC server's stop() in
+            # ProxyServer.shutdown() (proxy/apps/proxy_server/main.py) -- was
+            # hardcoded `grace=5`.
+            - name: PROXY_GRPC_SHUTDOWN_GRACE_SECONDS
+              value: {{ .Values.proxy.grpcShutdownGraceSeconds | default 5 | quote }}
             {{- with include "waddleai.publicHost" . }}
             - name: WADDLEAI_PUBLIC_HOST
               value: {{ . | quote }}
@@ -143,6 +159,22 @@ spec:
             periodSeconds: {{ .Values.proxy.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.proxy.readinessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.proxy.readinessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.proxy.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.proxy.startupProbe.httpGet.path }}
+              port: {{ .Values.proxy.startupProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.proxy.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.proxy.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.proxy.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.proxy.startupProbe.failureThreshold }}
+          {{- end }}
+          {{- with .Values.proxy.preStopSleepSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ . }}"]
           {{- end }}
           resources:
             {{- toYaml .Values.proxy.resources | nindent 12 }}

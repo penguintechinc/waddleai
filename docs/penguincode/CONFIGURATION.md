@@ -285,6 +285,37 @@ memory:
 
 ---
 
+## Chat Session Storage
+
+Cross-pod persistence for `ChatService` sessions (security audit O4-a,
+High) -- see [`ARCHITECTURE.md`](./ARCHITECTURE.md#chat-session-storage)
+for the design. Reuses the same shared-Postgres DSN as the memory/graph
+stores (`PGVECTOR_URL`) unless overridden.
+
+```yaml
+sessions:
+  ttl_seconds: 86400              # 24h; refreshed on every Chat turn
+  sweep_interval_seconds: 300     # 5 min between sweeper passes
+  sweep_batch_size: 500           # Max rows deleted per sweep pass
+  postgres:
+    url: "${PGVECTOR_URL}"
+```
+
+| Key | Env Var | Type | Default | Description |
+|-----|---------|------|---------|-------------|
+| `ttl_seconds` | `PENGUINCODE_SESSION_TTL_SECONDS` | int | `86400` | Session idle lifetime; a `Chat` turn extends it by this amount again. |
+| `sweep_interval_seconds` | `PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS` | float | `300` | Time between the background sweeper's expired-row deletion passes. |
+| `sweep_batch_size` | `PENGUINCODE_SESSION_SWEEP_BATCH_SIZE` | int | `500` | Max rows one sweep pass deletes -- bounds the `DELETE`. |
+| `postgres.url` | `PGVECTOR_URL` | string | `""` | Shared-Postgres DSN; same variable as the memory/graph stores. |
+
+**Kill switch**: the `penguincode.disable-shared-sessions` PostHog flag
+(opt-out -- unseen/OFF means the shared-Postgres mechanism is active) can
+be forced via `PENGUINCODE_FLAG_DISABLE_SHARED_SESSIONS=true`, reverting
+to an in-process-only session store (the pre-fix behavior) as an
+emergency rollback.
+
+---
+
 ## GPU Regulators
 
 ```yaml
@@ -484,6 +515,45 @@ server:
 | `standalone` | gRPC server on localhost | Shared local server, testing |
 | `remote` | gRPC server with TLS + JWT auth | Team deployment, remote GPU |
 
+### gRPC Server Hardening (Ops/Resource Limits)
+
+These `server.*` keys (and matching env vars) bound the gRPC server's worker
+pool, in-flight RPC concurrency, and message sizes, so the server sheds
+load with `RESOURCE_EXHAUSTED` instead of queuing/accepting without limit.
+A YAML `config.yaml` value always wins over its env var; the env var wins
+over the literal default. The `client.*`/`server.*` channel on the CLI
+client (`client/grpc_client.py`) reads `grpc_max_message_bytes` from the
+same `ServerConfig`, so client and server always agree on the wire
+message-size contract.
+
+```yaml
+server:
+  grpc_max_workers: 10
+  grpc_max_concurrent_rpcs: 40
+  grpc_max_message_bytes: 4194304
+```
+
+| Key | Env Var | Default | Description |
+|-----|---------|---------|-------------|
+| `grpc_max_workers` | `PENGUINCODE_GRPC_MAX_WORKERS` | `10` | gRPC server thread-pool size. |
+| `grpc_max_concurrent_rpcs` | `PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS` | `4 ×` resolved `grpc_max_workers` | Max in-flight RPCs before the server rejects new ones with `RESOURCE_EXHAUSTED`. |
+| `grpc_max_message_bytes` | `PENGUINCODE_GRPC_MAX_MESSAGE_BYTES` | `4194304` (4 MiB) | Applied to both `grpc.max_receive_message_length` and `grpc.max_send_message_length`, server and CLI client alike. |
+| N/A (tool callback queue) | `PENGUINCODE_TOOL_QUEUE_MAXSIZE` | `256` | Per-session bound on the `ToolCallbackService` pending-request queue; a full queue rejects the new tool call immediately (never blocks). |
+
+Malformed values (non-numeric, blank, zero, or negative) fall back to the
+default with a logged warning rather than crashing startup.
+
+**Opt-out kill-switches** (PostHog flags, env override `PENGUINCODE_FLAG_<NAME>`;
+unseen/OFF = the hardening mechanism is ON, ON = revert to the pre-hardening
+legacy behavior — see `flags/client.py`):
+
+| Flag | Reverts |
+|------|---------|
+| `waddleai.disable-grpc-tracing` | Skips installing the per-RPC `TracingInterceptor` (O1) — no span/metric per RPC. |
+| `waddleai.disable-grpc-concurrency-limits` | Omits `maximum_concurrent_rpcs` entirely — unbounded in-flight RPCs (O9). |
+| `waddleai.disable-grpc-message-limits` | Omits the message-length `options` — grpc-core's own defaults apply (O6). Shared with the proxy's own gRPC server (same flag key). |
+| `waddleai.disable-tool-queue-bound` | Tool-callback queue becomes unbounded (`maxsize=0`) again (O10). |
+
 ---
 
 ## Authentication Configuration
@@ -661,6 +731,29 @@ services:
 | `PENGUINCODE_EMBEDDING_MODEL` | `nomic-embed-text` | `memory.embedding_model` | Embedding model name. |
 | `QDRANT_URL` | `http://localhost:6333` | `memory.stores.qdrant.url` | Qdrant server URL. |
 | `PGVECTOR_URL` | - | `memory.stores.pgvector.connection_string` | PostgreSQL connection string. |
+
+#### Shared DB Pool & Query Limits (ops-audit O7)
+
+Every vector/graph store call borrows a connection from one process-wide
+`psycopg_pool.ConnectionPool` (opened at server startup, closed at
+shutdown) instead of opening a fresh `psycopg.connect()` per call -- bounds
+total connections against Postgres's `max_connections` so a traffic spike
+can't starve other consumers of the same shared database (e.g.
+`services/management`'s SQLAlchemy pool). `graph_depth`/`n_vector`/`limit`
+on every `KnowledgeService` RPC are clamped (coerced down, never rejected)
+to a server-side maximum, re-enforced at both the GraphRAG orchestration
+layer and the `PgVectorStore`/`PostgresGraphStore` chokepoints.
+
+| Variable | Default | Config Equivalent | Description |
+|----------|---------|-------------------|-------------|
+| `PENGUINCODE_DB_POOL_MIN` | `2` | `db.pool_min_size` | Minimum pooled connections kept open. |
+| `PENGUINCODE_DB_POOL_MAX` | `10` | `db.pool_max_size` | Maximum pooled connections -- a borrower beyond this waits. |
+| `PENGUINCODE_DB_POOL_TIMEOUT_SECONDS` | `30` | `db.pool_timeout_seconds` | Seconds a borrower waits for a free connection before raising `PoolTimeout`. |
+| `PENGUINCODE_DB_STATEMENT_TIMEOUT_MS` | `15000` | `db.statement_timeout_ms` | Server-side `statement_timeout` (ms) on every pooled connection -- kills a runaway query/traversal. |
+| `PENGUINCODE_MAX_GRAPH_DEPTH` | `3` | `limits.max_graph_depth` | Max graph traversal depth (`neighbors`/`subgraph`/`Query.graph_depth`) -- requests above this are clamped, not rejected. |
+| `PENGUINCODE_MAX_VECTOR_RESULTS` | `50` | `limits.max_vector_results` | Max vector top-k (`PgVectorStore.query`/`Query.n_vector`/`MemorySearch.limit`). |
+| `PENGUINCODE_MAX_GRAPH_NODES` | `500` | `limits.max_graph_nodes` | Max nodes a single graph traversal can return (also bounds per-path expansion mid-recursion, not just the final result). |
+| `PENGUINCODE_FLAG_DISABLE_DB_POOL` | `false` | PostHog flag `penguincode.disable-db-pool` | Opt-out kill-switch: `true` reverts to a direct `psycopg.connect()` per call (pre-fix behavior) -- operational escape hatch only. |
 
 #### Security & Defaults
 

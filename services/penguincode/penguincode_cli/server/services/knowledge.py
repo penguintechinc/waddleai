@@ -40,7 +40,7 @@ from penguincode_cli.docs_rag.models import Language as ModelLanguage
 from penguincode_cli.docs_rag.models import Library
 from penguincode_cli.flags import CODE_GRAPH_FLAG, is_enabled
 from penguincode_cli.graphs.code import index_code
-from penguincode_cli.observability.otel import store_span
+from penguincode_cli.observability.otel import record_query_clamped, store_span
 from penguincode_cli.proto import (
     CleanupIndexRequest,
     CleanupIndexResponse,
@@ -201,6 +201,23 @@ def _valid_table(name: str) -> TableName | None:
     return None
 
 
+def _clamp_param(value: int, maximum: int, *, param: str) -> int:
+    """Coerce a caller-supplied request field down to `maximum` (never reject).
+
+    Ops-audit O7: `n_vector`/`graph_depth`/`limit` previously came straight
+    from the gRPC request with no server-side bound -- a caller could pin
+    Postgres with an arbitrarily deep traversal or an arbitrarily large
+    top-k. Mirrors the identical clamp inside `stores.vector.PgVectorStore.
+    query`/`stores.graph.PostgresGraphStore._traverse` -- this handler-level
+    clamp is defense in depth, not a substitute for those store-level ones.
+    """
+    if value > maximum:
+        logger.debug("knowledge: clamped param=%s requested=%d max=%d", param, value, maximum)
+        record_query_clamped(param)
+        return maximum
+    return value
+
+
 def _struct(data: dict[str, Any] | None) -> struct_pb2.Struct:
     """Build a `google.protobuf.Struct` from a plain dict, defaulting to empty."""
     proto_struct = struct_pb2.Struct()
@@ -349,10 +366,20 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
     async def Query(
         self, request: QueryRequest, context: grpc.aio.ServicerContext
     ) -> QueryResponse:
-        """Hybrid GraphRAG retrieval via `retrieval.graphrag.retrieve`."""
+        """Hybrid GraphRAG retrieval via `retrieval.graphrag.retrieve`.
+
+        `n_vector`/`graph_depth` are clamped to `self._settings.limits`
+        before being passed down (ops-audit O7) -- `retrieve()` and the
+        stores it calls clamp again independently, but a caller-visible
+        clamp here keeps the request-level trace/log attributes honest
+        about what actually ran.
+        """
         ctx = await _require_scope(context)
-        n_vector = request.n_vector or 8
-        graph_depth = request.graph_depth or 1
+        limits = self._settings.limits
+        n_vector = _clamp_param(request.n_vector or 8, limits.max_vector_results, param="n_vector")
+        graph_depth = _clamp_param(
+            request.graph_depth or 1, limits.max_graph_depth, param="graph_depth"
+        )
         requested_tables: list[TableName] = [
             table for name in request.vector_tables if (table := _valid_table(name)) is not None
         ]
@@ -460,9 +487,17 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
     async def MemorySearch(
         self, request: MemorySearchRequest, context: grpc.aio.ServicerContext
     ) -> MemorySearchResponse:
-        """Search memories within the caller's scope via `ScopedMemoryManager.search`."""
+        """Search memories within the caller's scope via `ScopedMemoryManager.search`.
+
+        `limit` is clamped to `self._settings.limits.max_vector_results`
+        (ops-audit O7) -- the same top-k bound applied to `Query`'s
+        `n_vector`, since an unclamped memory-search limit is the identical
+        unbounded-result-set risk.
+        """
         ctx = await _require_scope(context)
-        limit = request.limit or 5
+        limit = _clamp_param(
+            request.limit or 5, self._settings.limits.max_vector_results, param="limit"
+        )
 
         with store_span("knowledge.MemorySearch", limit=limit):
             rows = await self._scoped_memory.search(ctx, request.query, limit=limit)

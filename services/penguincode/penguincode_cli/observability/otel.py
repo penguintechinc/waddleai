@@ -29,15 +29,16 @@ stdlib logging, it just adds a handler that also forwards records to OTLP.
 import logging
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from opentelemetry import _logs, metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.propagate import extract as _propagate_extract
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -64,6 +65,25 @@ _DEBUG_LOGGER_NAME: Final = "penguincode"
 STORE_DURATION_HISTOGRAM_NAME: Final = "penguincode.store.duration"
 STORE_EVENTS_COUNTER_NAME: Final = "penguincode.store.events"
 
+#: gRPC server hardening (O1): per-RPC SERVER span latency + count, labeled
+#: by the server's own fixed method table (service/method) and gRPC's
+#: closed `StatusCode` enum -- never request content or identifiers, so the
+#: label cardinality stays bounded.
+RPC_SERVER_DURATION_HISTOGRAM_NAME: Final = "rpc_server_duration_seconds"
+RPC_SERVER_REQUESTS_COUNTER_NAME: Final = "rpc_server_requests_total"
+
+#: gRPC server hardening (O10): tool-callback queue admission outcomes
+#: (`enqueued`/`rejected`) -- bounded, closed label set.
+TOOL_QUEUE_EVENTS_COUNTER_NAME: Final = "penguincode.tool_queue.events"
+
+#: `db/pool.py` shared-pool occupancy gauges + borrow-wait histogram
+#: (ops-audit O7 pooling fix) and the clamp counter for `config.settings.
+#: LimitsConfig`-enforced request parameters (graph_depth/n_vector/limit).
+DB_POOL_IN_USE_GAUGE_NAME: Final = "penguincode.db_pool.in_use"
+DB_POOL_WAITING_GAUGE_NAME: Final = "penguincode.db_pool.waiting"
+DB_POOL_WAIT_HISTOGRAM_NAME: Final = "penguincode.db_pool.wait_duration"
+QUERY_CLAMPED_COUNTER_NAME: Final = "penguincode.query.clamped"
+
 #: Closed set of operation kinds accepted by every helper below. Keeping this
 #: bounded is what keeps ``op_kind`` a safe, low-cardinality metric label --
 #: an open string here would let a caller accidentally turn it into an
@@ -77,6 +97,19 @@ _initialized = False
 
 _duration_histogram: metrics.Histogram | None = None
 _events_counter: metrics.Counter | None = None
+_rpc_duration_histogram: metrics.Histogram | None = None
+_rpc_requests_counter: metrics.Counter | None = None
+_tool_queue_events_counter: metrics.Counter | None = None
+
+#: Typed `Any` -- synchronous `Gauge` is exported from `opentelemetry.metrics`
+#: only as the private `_Gauge` alias in this SDK version (still an
+#: experimental instrument kind upstream); `Meter.create_gauge`'s own return
+#: annotation resolves to the same underlying class, just under a different
+#: public name, so pinning a type here would just be re-deriving that alias.
+_db_pool_in_use_gauge: Any = None
+_db_pool_waiting_gauge: Any = None
+_db_pool_wait_histogram: metrics.Histogram | None = None
+_query_clamped_counter: metrics.Counter | None = None
 
 #: Handler bridging stdlib logging to OTLP, installed on the root logger by
 #: ``init_observability()`` when a log pipeline is active. Never replaces
@@ -240,6 +273,110 @@ def _events_counter_instrument() -> metrics.Counter:
     return _events_counter
 
 
+def _rpc_duration_histogram_instrument() -> metrics.Histogram:
+    global _rpc_duration_histogram
+    if _rpc_duration_histogram is None:
+        _rpc_duration_histogram = get_meter().create_histogram(
+            RPC_SERVER_DURATION_HISTOGRAM_NAME,
+            unit="s",
+            description="Latency of every gRPC server RPC, by service/method/status_code",
+        )
+    return _rpc_duration_histogram
+
+
+def _rpc_requests_counter_instrument() -> metrics.Counter:
+    global _rpc_requests_counter
+    if _rpc_requests_counter is None:
+        _rpc_requests_counter = get_meter().create_counter(
+            RPC_SERVER_REQUESTS_COUNTER_NAME,
+            unit="1",
+            description="Every gRPC server RPC served, by service/method/status_code",
+        )
+    return _rpc_requests_counter
+
+
+def _tool_queue_events_counter_instrument() -> metrics.Counter:
+    global _tool_queue_events_counter
+    if _tool_queue_events_counter is None:
+        _tool_queue_events_counter = get_meter().create_counter(
+            TOOL_QUEUE_EVENTS_COUNTER_NAME,
+            unit="1",
+            description="Tool-callback queue admission events, by outcome (enqueued/rejected)",
+        )
+    return _tool_queue_events_counter
+
+
+def _db_pool_in_use_gauge_instrument() -> Any:
+    global _db_pool_in_use_gauge
+    if _db_pool_in_use_gauge is None:
+        _db_pool_in_use_gauge = get_meter().create_gauge(
+            DB_POOL_IN_USE_GAUGE_NAME,
+            unit="1",
+            description="Connections currently borrowed from the shared db pool",
+        )
+    return _db_pool_in_use_gauge
+
+
+def _db_pool_waiting_gauge_instrument() -> Any:
+    global _db_pool_waiting_gauge
+    if _db_pool_waiting_gauge is None:
+        _db_pool_waiting_gauge = get_meter().create_gauge(
+            DB_POOL_WAITING_GAUGE_NAME,
+            unit="1",
+            description="Borrowers currently waiting for a connection from the shared db pool",
+        )
+    return _db_pool_waiting_gauge
+
+
+def _db_pool_wait_histogram_instrument() -> metrics.Histogram:
+    global _db_pool_wait_histogram
+    if _db_pool_wait_histogram is None:
+        _db_pool_wait_histogram = get_meter().create_histogram(
+            DB_POOL_WAIT_HISTOGRAM_NAME,
+            unit="ms",
+            description="Time spent waiting to borrow a connection from the shared db pool",
+        )
+    return _db_pool_wait_histogram
+
+
+def _query_clamped_counter_instrument() -> metrics.Counter:
+    global _query_clamped_counter
+    if _query_clamped_counter is None:
+        _query_clamped_counter = get_meter().create_counter(
+            QUERY_CLAMPED_COUNTER_NAME,
+            unit="1",
+            description="Requests whose graph_depth/n_vector/limit was clamped to a server max",
+        )
+    return _query_clamped_counter
+
+
+def update_pool_gauges(pool_size: int, pool_available: int, requests_waiting: int) -> None:
+    """Record point-in-time shared-pool occupancy (`db/pool.py`'s borrow/release path).
+
+    ``in_use`` is derived (``pool_size - pool_available``) rather than passed
+    in directly -- callers already have both numbers from one
+    ``ConnectionPool.get_stats()`` snapshot, so this keeps the call site to a
+    single pass-through instead of a second derived-value computation there.
+    """
+    _db_pool_in_use_gauge_instrument().set(max(pool_size - pool_available, 0))
+    _db_pool_waiting_gauge_instrument().set(requests_waiting)
+
+
+def record_pool_wait_duration(duration_ms: float) -> None:
+    """Record one borrow's wait time (ms) acquiring a connection from the shared pool."""
+    _db_pool_wait_histogram_instrument().record(duration_ms)
+
+
+def record_query_clamped(param: str) -> None:
+    """Increment the clamp counter for one server-clamped request parameter.
+
+    ``param`` must stay a small, closed, low-cardinality label -- e.g.
+    ``"graph_depth"``, ``"n_vector"``, ``"limit"``, ``"graph_nodes"`` -- never
+    a caller-supplied value.
+    """
+    _query_clamped_counter_instrument().add(1, attributes={"param": param})
+
+
 def reset_for_testing() -> None:
     """Drop cached tracer/meter/instruments so a test can install its own providers.
 
@@ -248,7 +385,18 @@ def reset_for_testing() -> None:
     in-memory provider would keep receiving every subsequent test's log
     records after that provider has gone out of scope.
     """
-    global _tracer, _meter, _initialized, _duration_histogram, _events_counter, _log_handler
+    global \
+        _tracer, \
+        _meter, \
+        _initialized, \
+        _duration_histogram, \
+        _events_counter, \
+        _rpc_duration_histogram, \
+        _rpc_requests_counter, \
+        _tool_queue_events_counter, \
+        _log_handler
+    global _db_pool_in_use_gauge, _db_pool_waiting_gauge, _db_pool_wait_histogram
+    global _query_clamped_counter
     if _log_handler is not None:
         logging.getLogger().removeHandler(_log_handler)
         logging.getLogger(_DEBUG_LOGGER_NAME).removeHandler(_log_handler)
@@ -257,6 +405,13 @@ def reset_for_testing() -> None:
     _initialized = False
     _duration_histogram = None
     _events_counter = None
+    _rpc_duration_histogram = None
+    _rpc_requests_counter = None
+    _tool_queue_events_counter = None
+    _db_pool_in_use_gauge = None
+    _db_pool_waiting_gauge = None
+    _db_pool_wait_histogram = None
+    _query_clamped_counter = None
     _log_handler = None
 
 
@@ -342,3 +497,49 @@ def timed_store_operation(
         duration_ms = (time.perf_counter() - start) * 1000
         _record_duration(op_kind, duration_ms, **attrs)
         record_store_event(op_kind, outcome=outcome, **attrs)
+
+
+@contextmanager
+def rpc_server_span(service: str, method: str, carrier: Mapping[str, str]) -> Iterator[trace.Span]:
+    """SERVER span for one gRPC RPC, linked to any incoming W3C trace context.
+
+    ``carrier`` is the call's invocation metadata (already a plain mapping);
+    incoming ``traceparent``/``baggage`` keys are extracted via the process's
+    configured propagator (``tracecontext``+``baggage`` by default, per
+    ``OTEL_PROPAGATORS``) so a caller's span, if any, becomes this span's
+    parent -- completing the cross-service trace chain. Sets the standard
+    ``rpc.system``/``rpc.service``/``rpc.method`` attributes; ``service`` and
+    ``method`` MUST come from the server's own registered method table
+    (``grpc.HandlerCallDetails.method``), never request content.
+    """
+    tracer = get_tracer()
+    parent_context = _propagate_extract(carrier)
+    with tracer.start_as_current_span(
+        f"{service}/{method}", context=parent_context, kind=trace.SpanKind.SERVER
+    ) as span:
+        span.set_attribute("rpc.system", "grpc")
+        span.set_attribute("rpc.service", service)
+        span.set_attribute("rpc.method", method)
+        yield span
+
+
+def record_rpc_server_call(service: str, method: str, status_code: str, duration_ms: float) -> None:
+    """Record one gRPC server RPC's latency (seconds) and count, by outcome.
+
+    ``status_code`` is a ``grpc.StatusCode`` member name (e.g. ``"OK"``,
+    ``"RESOURCE_EXHAUSTED"``) -- gRPC's own closed enum, kept as a bounded
+    metric label alongside ``service``/``method`` (both from the server's
+    fixed method table, never request content).
+    """
+    attributes = {"service": service, "method": method, "status_code": status_code}
+    _rpc_duration_histogram_instrument().record(duration_ms / 1000.0, attributes=attributes)
+    _rpc_requests_counter_instrument().add(1, attributes=attributes)
+
+
+def record_tool_queue_event(outcome: str) -> None:
+    """Increment the tool-callback queue admission counter for one outcome.
+
+    ``outcome`` is ``"enqueued"`` or ``"rejected"`` -- a closed, bounded
+    label set (see ``server/services/tools.py``'s queue-bound handling).
+    """
+    _tool_queue_events_counter_instrument().add(1, attributes={"outcome": outcome})

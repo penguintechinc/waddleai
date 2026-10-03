@@ -1,0 +1,44 @@
+{{/*
+O4-Low: values.yaml already carries a fully-populated `autoscaling:` block
+(minReplicas/maxReplicas/targetCPUUtilizationPercentage/
+targetMemoryUtilizationPercentage) with no template ever rendering it --
+`autoscaling.enabled: true` was a silent no-op. Mirrors the HPA pattern
+k8s/helm/waddleai's management-hpa.yaml/proxy-hpa.yaml/webui-hpa.yaml
+already use: `replicas:` on the Deployment is omitted whenever this is
+enabled (see server-deployment.yaml), so a routine `helm upgrade` never
+fights the HPA's own scaling decisions by resetting the pod count back to
+server.replicas.
+*/}}
+{{- if and .Values.server.enabled .Values.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "penguincode.fullname" . }}-server
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.server.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "penguincode.fullname" . }}-server
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

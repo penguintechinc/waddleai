@@ -1,0 +1,266 @@
+{{/*
+PrometheusRule for the management service (O2 fix). Every expression below
+references a metric that exists TODAY in shared/utils/metrics.py
+(waddleai_requests_total, waddleai_request_duration_seconds) or
+services/management/app/observability.py (waddleai_management_db_up/
+redis_up/uptime_seconds), plus the Prometheus-generated `up`/kube-state-
+metrics series every cluster with the Prometheus Operator already has.
+Expressions referencing db_pool_waiting, feature_flag_evaluations_total, and
+license_checks_total are marked inline -- those instruments are being added
+by a sibling PR in this same audit pass; see this PR's description.
+
+Symptom alerts (error-budget burn, latency, availability, saturation) page;
+cause alerts (dependency down, restarts, HPA pinned at max, PDB violated)
+are `severity: warning` -- they explain a symptom alert, they don't replace
+one. SLO targets/thresholds are values-driven (monitoring.prometheusRule.
+management.slo.*); see docs/operations/SLOS.md for derivation.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled .Values.management.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+{{- $slo := .Values.monitoring.prometheusRule.management.slo }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "waddleai.fullname" . }}-management
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: waddleai-management.slo-error-budget-burn
+      rules:
+        - alert: ManagementErrorBudgetBurnFast
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateFast.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateFast.longWindow }}]))
+            ) > {{ $slo.burnRateFast.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateFast.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateFast.shortWindow }}]))
+            ) > {{ $slo.burnRateFast.threshold }}
+          for: 2m
+          labels:
+            severity: critical
+            service: management
+            slo: error-budget-burn
+          annotations:
+            summary: "Management error budget burning fast ({{`{{ $value | humanizePercentage }}`}} error ratio)"
+            description: "Management 5xx ratio has exceeded the fast-burn threshold ({{ $slo.burnRateFast.threshold }}) over both the {{ $slo.burnRateFast.longWindow }} and {{ $slo.burnRateFast.shortWindow }} windows. At this rate the {{ $slo.errorBudgetWindow }} error budget for the {{ $slo.availabilityTargetPercent }}% availability SLO empties in hours, not days. See docs/operations/MONITORING.md#managementerrorbudgetburnfast."
+        - alert: ManagementErrorBudgetBurnMid
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateMid.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateMid.longWindow }}]))
+            ) > {{ $slo.burnRateMid.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateMid.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateMid.shortWindow }}]))
+            ) > {{ $slo.burnRateMid.threshold }}
+          for: 5m
+          labels:
+            severity: critical
+            service: management
+            slo: error-budget-burn
+          annotations:
+            summary: "Management error budget burning ({{`{{ $value | humanizePercentage }}`}} error ratio)"
+            description: "Management 5xx ratio exceeded the mid-burn threshold over both the {{ $slo.burnRateMid.longWindow }} and {{ $slo.burnRateMid.shortWindow }} windows. See docs/operations/MONITORING.md#managementerrorbudgetburnmid."
+        - alert: ManagementErrorBudgetBurnSlow
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateSlow.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateSlow.longWindow }}]))
+            ) > {{ $slo.burnRateSlow.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateSlow.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateSlow.shortWindow }}]))
+            ) > {{ $slo.burnRateSlow.threshold }}
+          for: 15m
+          labels:
+            severity: warning
+            service: management
+            slo: error-budget-burn
+          annotations:
+            summary: "Management error budget burning slowly"
+            description: "Management 5xx ratio exceeded the slow-burn threshold over both the {{ $slo.burnRateSlow.longWindow }} and {{ $slo.burnRateSlow.shortWindow }} windows -- ticket, not page. See docs/operations/MONITORING.md#managementerrorbudgetburnslow."
+        - alert: ManagementErrorBudgetBurnSlowest
+          expr: |
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateSlowest.longWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateSlowest.longWindow }}]))
+            ) > {{ $slo.burnRateSlowest.threshold }}
+            and
+            (
+              sum(rate(waddleai_requests_total{service="management",status_code=~"5.."}[{{ $slo.burnRateSlowest.shortWindow }}]))
+              /
+              sum(rate(waddleai_requests_total{service="management"}[{{ $slo.burnRateSlowest.shortWindow }}]))
+            ) > {{ $slo.burnRateSlowest.threshold }}
+          for: 30m
+          labels:
+            severity: warning
+            service: management
+            slo: error-budget-burn
+          annotations:
+            summary: "Management error budget burning (long-horizon)"
+            description: "Management 5xx ratio exceeded the slowest-burn threshold over both the {{ $slo.burnRateSlowest.longWindow }} and {{ $slo.burnRateSlowest.shortWindow }} windows. See docs/operations/MONITORING.md#managementerrorbudgetburnslowest."
+    - name: waddleai-management.slo-latency
+      rules:
+        - alert: ManagementLatencyP95High
+          expr: |
+            histogram_quantile(0.95, sum(rate(waddleai_request_duration_seconds_bucket{service="management"}[15m])) by (le)) > {{ $slo.latencyP95Seconds }}
+          for: 15m
+          labels:
+            severity: warning
+            service: management
+            slo: latency
+          annotations:
+            summary: "Management p95 latency above {{ $slo.latencyP95Seconds }}s"
+            description: "p95 request latency over the last 15m exceeded the {{ $slo.latencyP95Seconds }}s target. See docs/operations/MONITORING.md#managementlatencyp95high."
+        - alert: ManagementLatencyP99High
+          expr: |
+            histogram_quantile(0.99, sum(rate(waddleai_request_duration_seconds_bucket{service="management"}[15m])) by (le)) > {{ $slo.latencyP99Seconds }}
+          for: 15m
+          labels:
+            severity: critical
+            service: management
+            slo: latency
+          annotations:
+            summary: "Management p99 latency above {{ $slo.latencyP99Seconds }}s"
+            description: "p99 request latency over the last 15m exceeded the {{ $slo.latencyP99Seconds }}s target. See docs/operations/MONITORING.md#managementlatencyp99high."
+    - name: waddleai-management.availability
+      rules:
+        - alert: ManagementTargetDown
+          expr: up{job="waddleai-management"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: management
+            slo: availability
+          annotations:
+            summary: "Management scrape target down"
+            description: "Prometheus has not successfully scraped waddleai-management for 5m -- the pod may be crashing, unschedulable, or network-partitioned from Prometheus. See docs/operations/MONITORING.md#managementtargetdown."
+        - alert: ManagementMetricsAbsent
+          expr: absent(up{job="waddleai-management"})
+          for: 10m
+          labels:
+            severity: critical
+            service: management
+            slo: availability
+          annotations:
+            summary: "No management scrape target registered"
+            description: "Prometheus has no waddleai-management target at all -- ServiceMonitor/Service selector mismatch, or every replica is gone. See docs/operations/MONITORING.md#managementmetricsabsent."
+    - name: waddleai-management.cause
+      rules:
+        - alert: ManagementDatabaseDown
+          expr: waddleai_management_db_up == 0
+          for: 2m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management reports its database connection down"
+            description: "waddleai_management_db_up has been 0 for 2m. Likely cause behind ManagementErrorBudgetBurn*/ManagementLatency* firing alongside this. See docs/operations/MONITORING.md#managementdatabasedown."
+        - alert: ManagementRedisDown
+          expr: waddleai_management_redis_up == 0
+          for: 2m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management reports its Redis/Valkey connection down"
+            description: "waddleai_management_redis_up has been 0 for 2m. See docs/operations/MONITORING.md#managementredisdown."
+        - alert: ManagementDBPoolSaturated
+          # db_pool_waiting is added by a sibling PR in this audit pass
+          # (fix/helm-probes-pdb-grace or an adjacent finding) -- see this
+          # PR's description for the cross-PR dependency.
+          expr: db_pool_waiting{job="waddleai-management"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management DB connection pool has waiters"
+            description: "Requests are queueing for a DB connection -- pool_size is undersized for current load, or a slow query is holding connections. See docs/operations/MONITORING.md#managementdbpoolsaturated."
+        - alert: ManagementPodRestartingFrequently
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ .Values.namespace }}", pod=~".*management.*"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management pod restarting repeatedly"
+            description: "A management pod restarted more than 3 times in the last hour -- check `kubectl logs --previous` for the crash reason. See docs/operations/MONITORING.md#managementpodrestartingfrequently."
+        - alert: ManagementHPAAtMax
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="{{ .Values.namespace }}", horizontalpodautoscaler=~".*management.*"}
+            >=
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="{{ .Values.namespace }}", horizontalpodautoscaler=~".*management.*"}
+          for: 10m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management HPA pinned at max replicas"
+            description: "The management HPA has been at its configured maxReplicas for 10m -- raise the ceiling or investigate the load driving it. See docs/operations/MONITORING.md#managementhpaatmax."
+        - alert: ManagementPDBViolated
+          # Management's PodDisruptionBudget is added by the concurrent
+          # fix/helm-probes-pdb-grace PR -- this alert has no data until
+          # that lands; see this PR's description.
+          expr: |
+            kube_poddisruptionbudget_status_currenthealthy{namespace="{{ .Values.namespace }}", poddisruptionbudget=~".*management.*"}
+            <
+            kube_poddisruptionbudget_status_desiredhealthy{namespace="{{ .Values.namespace }}", poddisruptionbudget=~".*management.*"}
+          for: 5m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management PodDisruptionBudget violated"
+            description: "Fewer management pods are healthy than the PDB's minAvailable requires -- a voluntary disruption (node drain, rollout) would be blocked, or already is. See docs/operations/MONITORING.md#managementpdbviolated."
+        - alert: ManagementFeatureFlagEvalErrors
+          # feature_flag_evaluations_total is added by a sibling PR in this
+          # audit pass -- see this PR's description.
+          expr: |
+            sum(rate(feature_flag_evaluations_total{service="management",result="error"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management feature-flag evaluations failing"
+            description: "PostHog/flag-client evaluations are erroring -- flags are falling back to last-known-cached values (critical-rules.md graceful degradation), but the cache is going stale. See docs/operations/MONITORING.md#managementfeatureflagevalerrors."
+        - alert: ManagementLicenseCheckErrors
+          # license_checks_total is added by a sibling PR in this audit
+          # pass -- see this PR's description.
+          expr: |
+            sum(rate(license_checks_total{service="management",status="error"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: management
+            slo: cause
+          annotations:
+            summary: "Management license checks failing"
+            description: "Calls to license.penguintech.io are erroring -- entitlement checks are falling back to cached state. Licensed features may incorrectly degrade for Professional/Enterprise orgs if this persists. See docs/operations/MONITORING.md#managementlicensecheckerrors."
+{{- end }}

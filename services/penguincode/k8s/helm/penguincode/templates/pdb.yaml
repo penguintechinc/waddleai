@@ -1,0 +1,28 @@
+{{/*
+O4: PodDisruptionBudget for the server Deployment. Guarded on
+server.podDisruptionBudget.enabled AND an effective-replica-count check
+(autoscaling.minReplicas when autoscaling.enabled, else server.replicas) --
+a PDB with minAvailable >= replica count blocks voluntary evictions (node
+drains, cluster-autoscaler, `kubectl drain`) entirely, so this only renders
+when there's more than one replica to spare. Alpha (server.replicas: 1,
+autoscaling.enabled: false) renders nothing; beta/gamma/production
+(replicas: 2+) render normally.
+*/}}
+{{- $effectiveMin := .Values.server.replicas -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- $effectiveMin = .Values.autoscaling.minReplicas -}}
+{{- end -}}
+{{- if and .Values.server.enabled .Values.server.podDisruptionBudget.enabled (gt (int $effectiveMin) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "penguincode.fullname" . }}-server
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.server.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.server.podDisruptionBudget.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "penguincode.server.selectorLabels" . | nindent 6 }}
+{{- end }}

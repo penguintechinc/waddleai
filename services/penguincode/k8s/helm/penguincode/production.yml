@@ -76,3 +76,11 @@ ingress:
     - secretName: penguincode-prod-tls
       hosts:
         - penguincode.app
+
+# Observability (O2 fix) -- DO production runs kube-prometheus-stack.
+# Latency/availability targets stay at the house defaults (values.yaml);
+# override here only if production's actual SLA ever diverges from them.
+monitoring:
+  enabled: true
+  extraLabels:
+    release: kube-prometheus-stack
