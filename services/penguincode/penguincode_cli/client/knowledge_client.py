@@ -28,8 +28,9 @@ from typing import Any
 import grpc
 from google.protobuf import struct_pb2
 
+from penguincode_cli.client.grpc_client import retry_with_backoff
 from penguincode_cli.client.waddleai_auth import WaddleAIAuthError, WaddleAITokenProvider
-from penguincode_cli.config.settings import ServerConfig
+from penguincode_cli.config.settings import ClientConfig, ServerConfig
 from penguincode_cli.proto import (
     CleanupIndexRequest,
     CleanupIndexResponse,
@@ -409,15 +410,20 @@ class KnowledgeClient:
         token_provider: WaddleAITokenProvider | None = None,
         *,
         channel: grpc.aio.Channel | None = None,
+        client_config: ClientConfig | None = None,
     ) -> None:
         """Bind this client to *server_config* (host/port/tls, see `config.settings.ServerConfig`).
 
         *token_provider*/*channel* are test seams -- production code leaves both at their
         defaults (a real `WaddleAITokenProvider` and a lazily created `grpc.aio.Channel`).
+        *client_config* supplies the O8 retry/backoff tunables (`retry_max`/
+        `retry_base_ms`/`retry_max_ms`); defaults to a bare `ClientConfig()`, which still
+        resolves each tunable from its own env var (see `config.settings`).
         """
         self._server_config = server_config
         self._token_provider = token_provider or WaddleAITokenProvider()
         self._channel = channel
+        self._client_config = client_config or ClientConfig()
         self._stub: KnowledgeServiceStub | None = None
 
     def _ensure_stub(self) -> KnowledgeServiceStub:
@@ -443,6 +449,18 @@ class KnowledgeClient:
             self._channel = None
             self._stub = None
 
+    async def current_token_for_cache_scoping(self) -> str | None:
+        """Best-effort WaddleAI bearer token, for callers (`core/repl.py`) that need to
+        scope an `offline_cache.OfflineCache` lookup/write to the same caller
+        `KnowledgeClient` itself would authenticate as. Returns `None` (never raises) if a
+        token can't currently be acquired -- the caller's own offline cache already treats
+        `None` as "do not cache this read".
+        """
+        try:
+            return await self._token_provider.get_access_token()
+        except WaddleAIAuthError:
+            return None
+
     async def _auth_metadata(self) -> list[tuple[str, str]]:
         """Acquire the WaddleAI bearer-token metadata for one call.
 
@@ -458,13 +476,35 @@ class KnowledgeClient:
         """Attach auth metadata, invoke *rpc*, and translate any failure into a
         `KnowledgeClientError` subclass -- the single choke point every public method routes
         through so no raw `grpc.aio.AioRpcError`/traceback ever reaches a caller.
+
+        O8 CLI resilience: `UNAVAILABLE`/`DEADLINE_EXCEEDED` are retried with
+        backoff+jitter (`retry_with_backoff`, bounded by `self._client_config.retry_*`)
+        before translating to `KnowledgeServerUnavailableError`. `UNAUTHENTICATED`/
+        `PERMISSION_DENIED` are NEVER retried -- on `UNAUTHENTICATED` specifically, the
+        cached WaddleAI token is invalidated (`WaddleAITokenProvider.invalidate_cache`) so
+        the *next* call re-acquires a fresh one instead of replaying the same rejected
+        credential forever, then the error is raised immediately so the caller can
+        surface a clear "re-authenticate" message (never an automatic inline retry with
+        the same request).
         """
         metadata = await self._auth_metadata()
-        try:
+
+        async def _invoke() -> Any:
             return await rpc(request, metadata=metadata)
+
+        try:
+            return await retry_with_backoff(
+                _invoke,
+                max_retries=self._client_config.retry_max,
+                base_delay_ms=self._client_config.retry_base_ms,
+                max_delay_ms=self._client_config.retry_max_ms,
+            )
         except grpc.aio.AioRpcError as exc:
             code = exc.code()
-            if code in (grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.PERMISSION_DENIED):
+            if code == grpc.StatusCode.UNAUTHENTICATED:
+                self._token_provider.invalidate_cache()
+                raise KnowledgeAuthError(f"server rejected the request: {exc.details()}") from exc
+            if code == grpc.StatusCode.PERMISSION_DENIED:
                 raise KnowledgeAuthError(f"server rejected the request: {exc.details()}") from exc
             if code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
                 address = f"{self._server_config.host}:{self._server_config.port}"

@@ -542,6 +542,81 @@ class TestBearerHeaderAndLogout:
         assert provider._store.load() is None
 
 
+class TestInvalidateCache:
+    """O8 CLI resilience: `invalidate_cache()` clears the local cache without any
+    network call -- used by `KnowledgeClient._call` on a server-rejected (UNAUTHENTICATED)
+    cached token, where a best-effort server round trip (`logout()`'s job) would be
+    pointless (the server already rejected this exact token).
+    """
+
+    @pytest.mark.asyncio
+    async def test_invalidate_cache_clears_without_network_call(self, tmp_path: Path) -> None:
+        issued = _login_response_token()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/api/v1/auth/login"
+            return httpx.Response(200, json={"access_token": issued, "expires_in": 3600})
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path), client_factory=_client_factory_for(handler)
+        )
+        await provider.get_access_token()
+        assert provider._store.load() is not None
+
+        provider.invalidate_cache()
+
+        assert provider._store.load() is None
+
+    def test_invalidate_cache_with_no_cached_token_is_a_noop(self, tmp_path: Path) -> None:
+        provider = WaddleAITokenProvider(_make_config(tmp_path))
+        provider.invalidate_cache()  # must not raise
+        assert provider._store.load() is None
+
+    @pytest.mark.asyncio
+    async def test_next_call_reacquires_after_invalidate(self, tmp_path: Path) -> None:
+        """The whole point: a fresh `get_access_token()` after `invalidate_cache()` hits
+        the server again rather than replaying the discarded (rejected) token.
+        """
+        login_calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal login_calls
+            assert request.url.path == "/api/v1/auth/login"
+            login_calls += 1
+            return httpx.Response(
+                200, json={"access_token": _login_response_token(), "expires_in": 3600}
+            )
+
+        provider = WaddleAITokenProvider(
+            _make_config(tmp_path), client_factory=_client_factory_for(handler)
+        )
+        await provider.get_access_token()
+        assert login_calls == 1
+
+        provider.invalidate_cache()
+        await provider.get_access_token()
+        assert login_calls == 2
+
+    def test_invalidate_cache_is_null_safe_for_a_subclass_with_no_store(self) -> None:
+        """regression: gh-275 CI (`test_knowledge_service_e2e.py`'s `StaticTokenProvider`).
+
+        A subclass that overrides `get_access_token`/`get_auth_metadata` entirely and
+        never calls `WaddleAITokenProvider.__init__` (so it has no `self._store`) must
+        still tolerate `invalidate_cache()` as a safe no-op -- `KnowledgeClient._call`
+        calls it unconditionally on every `UNAUTHENTICATED` response regardless of which
+        concrete token-provider implementation is in use, and a raw `AttributeError`
+        escaping there used to shadow the expected `KnowledgeAuthError`.
+        """
+
+        class _BareTokenProvider(WaddleAITokenProvider):
+            def __init__(self) -> None:
+                pass  # deliberately never calls super().__init__() -- no self._store
+
+        provider = _BareTokenProvider()
+        provider.invalidate_cache()  # must not raise AttributeError
+        assert not hasattr(provider, "_store")
+
+
 class TestNeverLogsToken:
     @pytest.mark.asyncio
     async def test_token_value_never_appears_in_log_records(

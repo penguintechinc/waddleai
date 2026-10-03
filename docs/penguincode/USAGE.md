@@ -400,6 +400,31 @@ auth:
   token_expiry: 3600
 ```
 
+### Offline Behavior & Connectivity
+
+The CLI's only path to the knowledge platform (docs search, code graph, scoped memory)
+is the gRPC server (`standalone`/`remote` mode) -- here's what happens when it, or the
+WaddleAI auth service behind it, is unreachable:
+
+| Capability | Server unreachable | WaddleAI auth unreachable |
+|---|---|---|
+| `/docs search <query>` | Serves the last successful result for that exact query, marked `(stale (last synced N min ago))` or `(cached N min ago)` -- or a clear error if nothing was ever cached for it | Same -- a cached read needs no fresh token |
+| `/index`, `/index-code` (writes) | Fails with a clear error; nothing is queued locally | Fails with a clear error |
+| `/memory add`/`/memory search` | Degrades silently (mirrors the pre-server-side behavior) | Degrades silently |
+| Local chat (Ollama-only) | Unaffected -- no server dependency | Unaffected |
+
+A connectivity indicator notice prints on every state change (`penguincode server
+unreachable -- ...` / `Reconnected to the penguincode server`), not on every call, so a
+sustained outage doesn't spam the terminal. gRPC calls themselves retry with backoff
+before surfacing `unreachable` at all -- see **CLI Resilience** in
+`docs/penguincode/CONFIGURATION.md`. None of this applies to Local Mode, which has no
+server to lose connectivity to in the first place.
+
+**Startup update check.** At REPL startup the CLI silently compares its version against
+the server's (via the existing `HealthService.Check` RPC) and prints one line if the
+server is ahead -- never blocking, never erroring if the server is unreachable at that
+moment.
+
 ---
 
 ## GPU Optimization

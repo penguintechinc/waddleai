@@ -3,7 +3,7 @@ check|  - 'per-file-ignores' -> 'lint.per-file-ignores'
 check|  - 'select' -> 'lint.select'
 check|penguincode_cli/agents/base.py:708:29: B007 Loop control variable `target` not used within loop body
 check|penguincode_cli/agents/intent.py:76:5: SIM102 Use a single `if` statement instead of nested `if` statements
-check|penguincode_cli/core/repl.py:1397:50: B023 Function definition does not bind loop variable `prompt_text`
+check|penguincode_cli/core/repl.py:1498:50: B023 Function definition does not bind loop variable `prompt_text`
 check|penguincode_cli/skills/loader.py:108:13: SIM108 Use ternary operator `name = skill_dir.name if skill_dir else skill_file.stem` instead of `if`-`else`-block
 check|penguincode_cli/tools/bash.py:87:17: SIM102 Use a single `if` statement instead of nested `if` statements
 check|shared/licensing/python_client.py:125:13: B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling

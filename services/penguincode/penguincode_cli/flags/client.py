@@ -72,6 +72,20 @@ DISABLE_DB_POOL_FLAG = "penguincode.disable-db-pool"
 #: platform mechanisms... opt-out kill-switch" convention.
 DISABLE_INDEX_QUEUE_FLAG = "penguincode.disable-index-queue"
 
+#: Opt-out kill switches for the O8/O5 CLI-resilience mechanisms
+#: (`client/grpc_client.py`, `client/knowledge_client.py`,
+#: `client/offline_cache.py`, `client/update_check.py`). Same inverted
+#: polarity as every other opt-out switch in this module: unseen/OFF (the
+#: default) means the new, resilient behavior is ON; setting one ON reverts
+#: only that one mechanism to its pre-O8 legacy behavior (a single attempt
+#: with no backoff, no local read cache, no startup version check) --
+#: evaluated process-wide via `SYSTEM_SCOPE`, since these are client-side,
+#: channel/process-level mechanisms with no per-request tenant to key a
+#: rollout on, same reasoning as the four gRPC-hardening flags above.
+DISABLE_CLIENT_RETRY_FLAG = "penguincode.disable-client-retry"
+DISABLE_OFFLINE_CACHE_FLAG = "penguincode.disable-offline-cache"
+DISABLE_UPDATE_CHECK_FLAG = "penguincode.disable-update-check"
+
 _ENV_PREFIX = "PENGUINCODE_FLAG_"
 _TRUTHY = ("1", "true", "yes", "on")
 _DEFAULT_POSTHOG_HOST = "https://license.penguintech.io"
@@ -294,6 +308,9 @@ __all__ = [
     "DISABLE_TOOL_QUEUE_BOUND_FLAG",
     "DISABLE_DB_POOL_FLAG",
     "DISABLE_INDEX_QUEUE_FLAG",
+    "DISABLE_CLIENT_RETRY_FLAG",
+    "DISABLE_OFFLINE_CACHE_FLAG",
+    "DISABLE_UPDATE_CHECK_FLAG",
     "ScopeContextLike",
     "SystemScope",
     "SYSTEM_SCOPE",

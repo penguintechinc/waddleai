@@ -70,6 +70,70 @@ def _default_grpc_max_message_bytes() -> int:
     return _env_int("PENGUINCODE_GRPC_MAX_MESSAGE_BYTES", _DEFAULT_GRPC_MAX_MESSAGE_BYTES)
 
 
+# ---------------------------------------------------------------------------
+# Client resilience tunables (O8/O5 ops-audit): retry/backoff, the offline
+# read cache, and the startup update check. Self-contained block -- every
+# default below is env-overridable (never a bare literal in the hot path)
+# and the whole group lives on `ClientConfig` so `Settings.client.*` is the
+# one place a caller reads any of them from.
+# ---------------------------------------------------------------------------
+
+#: `GRPCClient`/`KnowledgeClient` retry defaults -- 3 attempts, 200ms base
+#: backoff doubling per attempt, capped at 2s per attempt (jitter applied on
+#: top by the caller). Never retried: UNAUTHENTICATED/PERMISSION_DENIED.
+_DEFAULT_CLIENT_RETRY_MAX = 3
+_DEFAULT_CLIENT_RETRY_BASE_MS = 200.0
+_DEFAULT_CLIENT_RETRY_MAX_MS = 2000.0
+
+#: Offline read-cache defaults (`client/offline_cache.py`) -- entries older
+#: than this are still served (with a "stale" notice) rather than discarded,
+#: since the whole point is degrading gracefully through an outage; a
+#: separate on-disk directory under the user's cache home, scope-keyed.
+_DEFAULT_OFFLINE_CACHE_TTL_SECONDS = 3600.0
+_DEFAULT_OFFLINE_CACHE_DIR = "~/.penguincode/cache"
+
+#: Startup update-check defaults (`client/update_check.py`) -- a short,
+#: non-blocking gRPC health call; never allowed to delay REPL startup
+#: beyond this timeout, and only run again after the interval elapses
+#: (tracked by the cache file's own mtime, not a separate timer).
+_DEFAULT_UPDATE_CHECK_TIMEOUT_SECONDS = 3.0
+_DEFAULT_UPDATE_CHECK_INTERVAL_HOURS = 24.0
+
+
+def _default_client_retry_max() -> int:
+    """Resolve the max retry-attempt count from `PENGUINCODE_CLIENT_RETRY_MAX`."""
+    return _env_int("PENGUINCODE_CLIENT_RETRY_MAX", _DEFAULT_CLIENT_RETRY_MAX)
+
+
+def _default_client_retry_base_ms() -> float:
+    """Resolve the base backoff delay from `PENGUINCODE_CLIENT_RETRY_BASE_MS`."""
+    return _env_float("PENGUINCODE_CLIENT_RETRY_BASE_MS", _DEFAULT_CLIENT_RETRY_BASE_MS)
+
+
+def _default_client_retry_max_ms() -> float:
+    """Resolve the per-attempt backoff cap from `PENGUINCODE_CLIENT_RETRY_MAX_MS`."""
+    return _env_float("PENGUINCODE_CLIENT_RETRY_MAX_MS", _DEFAULT_CLIENT_RETRY_MAX_MS)
+
+
+def _default_offline_cache_ttl_seconds() -> float:
+    """Resolve the offline-cache staleness threshold from `PENGUINCODE_OFFLINE_CACHE_TTL_SECONDS`."""
+    return _env_float("PENGUINCODE_OFFLINE_CACHE_TTL_SECONDS", _DEFAULT_OFFLINE_CACHE_TTL_SECONDS)
+
+
+def _default_update_check_timeout_seconds() -> float:
+    """Resolve the update-check RPC timeout from `PENGUINCODE_UPDATE_CHECK_TIMEOUT_SECONDS`."""
+    return _env_float(
+        "PENGUINCODE_UPDATE_CHECK_TIMEOUT_SECONDS", _DEFAULT_UPDATE_CHECK_TIMEOUT_SECONDS
+    )
+
+
+def _default_update_check_interval_hours() -> float:
+    """Resolve the update-check re-check interval from `PENGUINCODE_UPDATE_CHECK_INTERVAL_HOURS`."""
+    return _env_float(
+        "PENGUINCODE_UPDATE_CHECK_INTERVAL_HOURS", _DEFAULT_UPDATE_CHECK_INTERVAL_HOURS
+    )
+
+
 @dataclass
 class OllamaConfig:
     """Ollama API configuration."""
@@ -553,7 +617,16 @@ class AuthConfig:
 
 @dataclass
 class ClientConfig:
-    """Client configuration for remote server connections."""
+    """Client configuration for remote server connections.
+
+    `retry_*`/`offline_cache_*`/`update_check_*` (O8/O5 ops-audit) are a
+    self-contained resilience block -- see the `_default_client_retry_max`
+    and friends factories above for the env vars each one reads. Every
+    field here has a kill-switch counterpart in `flags/client.py`
+    (`DISABLE_CLIENT_RETRY_FLAG`/`DISABLE_OFFLINE_CACHE_FLAG`/
+    `DISABLE_UPDATE_CHECK_FLAG`) so an operator can revert any one
+    mechanism to its pre-O8 legacy behavior without a redeploy.
+    """
 
     server_url: str = ""  # Remote server URL (e.g., "grpc://server:50051")
     shared_key: str = ""  # Shared secret for auto-auth with server
@@ -561,6 +634,21 @@ class ClientConfig:
     local_tools: list = field(
         default_factory=lambda: ["read", "write", "edit", "bash", "grep", "glob"]
     )  # Tools that execute locally on client
+
+    # -- Retry/backoff (`client/grpc_client.py`, `client/knowledge_client.py`) --
+    retry_max: int = field(default_factory=_default_client_retry_max)
+    retry_base_ms: float = field(default_factory=_default_client_retry_base_ms)
+    retry_max_ms: float = field(default_factory=_default_client_retry_max_ms)
+
+    # -- Offline read cache (`client/offline_cache.py`) --
+    offline_cache_dir: str = _DEFAULT_OFFLINE_CACHE_DIR
+    offline_cache_ttl_seconds: float = field(default_factory=_default_offline_cache_ttl_seconds)
+
+    # -- Startup update check (`client/update_check.py`) --
+    update_check_timeout_seconds: float = field(
+        default_factory=_default_update_check_timeout_seconds
+    )
+    update_check_interval_hours: float = field(default_factory=_default_update_check_interval_hours)
 
 
 @dataclass
@@ -916,13 +1004,31 @@ class Settings:
 
     @staticmethod
     def _parse_client_config(data: dict[str, Any]) -> ClientConfig:
-        """Parse client configuration."""
+        """Parse client configuration.
+
+        Resilience fields (`retry_*`/`offline_cache_*`/`update_check_*`) fall back to
+        their env-driven factories (see module-level `_default_client_*` functions) when
+        absent from YAML, same pattern as every other env+YAML-overridable tunable here.
+        """
         default_tools = ["read", "write", "edit", "bash", "grep", "glob"]
         return ClientConfig(
             server_url=data.get("server_url", ""),
             shared_key=data.get("shared_key", ""),
             token_path=data.get("token_path", "~/.penguincode/token"),
             local_tools=data.get("local_tools", default_tools),
+            retry_max=data.get("retry_max", _default_client_retry_max()),
+            retry_base_ms=data.get("retry_base_ms", _default_client_retry_base_ms()),
+            retry_max_ms=data.get("retry_max_ms", _default_client_retry_max_ms()),
+            offline_cache_dir=data.get("offline_cache_dir", _DEFAULT_OFFLINE_CACHE_DIR),
+            offline_cache_ttl_seconds=data.get(
+                "offline_cache_ttl_seconds", _default_offline_cache_ttl_seconds()
+            ),
+            update_check_timeout_seconds=data.get(
+                "update_check_timeout_seconds", _default_update_check_timeout_seconds()
+            ),
+            update_check_interval_hours=data.get(
+                "update_check_interval_hours", _default_update_check_interval_hours()
+            ),
         )
 
 
