@@ -56,24 +56,39 @@ DEFAULT_VISIBILITY: Final = "team"
 class MemoryManager:
     """Manages persistent memory using mem0 open-source."""
 
-    def __init__(self, config: MemoryConfig, ollama_url: str, llm_model: str = "gemma4:e4b"):
+    def __init__(
+        self,
+        config: MemoryConfig,
+        ollama_url: str,
+        llm_model: str = "gemma4:e4b",
+        embedding_ollama_url: str | None = None,
+    ):
         """
         Initialize memory manager.
 
         Args:
             config: Memory configuration
-            ollama_url: Ollama API base URL
+            ollama_url: Ollama API base URL for mem0's LLM (chat) calls
             llm_model: LLM model to use for memory operations
+            embedding_ollama_url: Ollama API base URL for mem0's embedder
+                calls (ops-audit O10/O5 bulkhead) -- when omitted or empty,
+                falls back to `ollama_url`, i.e. today's single-Ollama
+                behavior. Callers should resolve this via
+                `config.settings.resolve_embedding_url`.
         """
         self.config = config
         self.ollama_url = ollama_url
         self.llm_model = llm_model
+        self.embedding_ollama_url = embedding_ollama_url or ollama_url
 
         if not config.enabled:
             self.memory = None
             return
 
-        # Configure mem0 with Ollama backend
+        # Configure mem0 with Ollama backend -- LLM (chat) calls stay on
+        # `ollama_url`; embedder calls route to `self.embedding_ollama_url`,
+        # which is `ollama_url` itself unless a dedicated embedding
+        # endpoint was configured.
         mem0_config = {
             "llm": {
                 "provider": "ollama",
@@ -86,7 +101,7 @@ class MemoryManager:
                 "provider": "ollama",
                 "config": {
                     "model": config.embedding_model,
-                    "ollama_base_url": ollama_url,
+                    "ollama_base_url": self.embedding_ollama_url,
                 },
             },
             "vector_store": self._get_vector_store_config(config),
@@ -308,20 +323,25 @@ class MemoryManager:
 
 # Utility function for creating memory manager from settings
 def create_memory_manager(
-    config: MemoryConfig, ollama_url: str, llm_model: str = "gemma4:e4b"
+    config: MemoryConfig,
+    ollama_url: str,
+    llm_model: str = "gemma4:e4b",
+    embedding_ollama_url: str | None = None,
 ) -> MemoryManager:
     """
     Create a MemoryManager instance.
 
     Args:
         config: Memory configuration
-        ollama_url: Ollama API URL
+        ollama_url: Ollama API URL for LLM (chat) calls
         llm_model: LLM model name
+        embedding_ollama_url: Ollama API URL for embedder calls (ops-audit
+            O10/O5 bulkhead) -- defaults to `ollama_url` when omitted.
 
     Returns:
         MemoryManager instance
     """
-    return MemoryManager(config, ollama_url, llm_model)
+    return MemoryManager(config, ollama_url, llm_model, embedding_ollama_url)
 
 
 def _validate_visibility(visibility: str) -> None:

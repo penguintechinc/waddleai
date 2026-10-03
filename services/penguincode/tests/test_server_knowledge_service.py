@@ -45,6 +45,7 @@ from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.config.settings import (
     GraphConfig,
     LimitsConfig,
+    OllamaConfig,
     PostgresGraphStoreConfig,
     Settings,
 )
@@ -166,6 +167,40 @@ def _service(
         scoped_memory=scoped_memory or _FakeScopedMemory(),
         graph_config=graph_config,
     )
+
+
+class TestDefaultIndexerEmbeddingBulkhead:
+    """Ops-audit O10/O5: `KnowledgeServiceImpl.__init__`'s default
+    `DocumentationIndexer()` construction (no `indexer=` injected) must wire
+    the resolved embedding URL/label from `settings.ollama`, not the
+    hardcoded localhost default `DocumentationIndexer.__init__` falls back
+    to on its own.
+    """
+
+    def test_default_indexer_uses_dedicated_embedding_endpoint_when_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)  # DocumentationIndexer() writes ./.penguincode/docs_index
+        settings = Settings(
+            ollama=OllamaConfig(
+                api_url="http://chat-ollama:11434",
+                embedding_api_url="http://ollama-embeddings:11434",
+            )
+        )
+        service = KnowledgeServiceImpl(settings, scoped_memory=_FakeScopedMemory())
+        assert isinstance(service._indexer, DocumentationIndexer)
+        assert service._indexer.ollama_url == "http://ollama-embeddings:11434"
+        assert service._indexer._embedding_endpoint == "embedding_ollama"
+
+    def test_default_indexer_falls_back_to_chat_endpoint_when_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        settings = Settings(ollama=OllamaConfig(api_url="http://chat-ollama:11434"))
+        service = KnowledgeServiceImpl(settings, scoped_memory=_FakeScopedMemory())
+        assert isinstance(service._indexer, DocumentationIndexer)
+        assert service._indexer.ollama_url == "http://chat-ollama:11434"
+        assert service._indexer._embedding_endpoint == "chat_ollama"
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +423,8 @@ class TestQuery:
             "n_vector": 3,
             "graph_depth": 2,
             "vector_tables": ("docs_vectors",),
+            "ollama_base_url": "http://localhost:11434",
+            "embedding_endpoint": "chat_ollama",
         }
         assert response.vector_hits[0].id == "v1"
         assert response.vector_hits[0].score == pytest.approx(0.9)
@@ -411,7 +448,67 @@ class TestQuery:
 
         await service.Query(QueryRequest(api_version="v1", query="q"), _FakeContext())
 
-        assert captured["kwargs"] == {"n_vector": 8, "graph_depth": 1}
+        assert captured["kwargs"] == {
+            "n_vector": 8,
+            "graph_depth": 1,
+            "ollama_base_url": "http://localhost:11434",
+            "embedding_endpoint": "chat_ollama",
+        }
+
+
+class TestQueryEmbeddingBulkhead:
+    """Ops-audit O10/O5 (Gemini High): `Query` must route `retrieve()`'s embedding
+    call through whichever Ollama endpoint `settings.ollama` resolves to --
+    the dedicated bulkhead when configured, else the single chat endpoint
+    (today's unchanged behavior).
+    """
+
+    @pytest.mark.asyncio
+    async def test_dedicated_embedding_url_configured_routes_retrieve_there(
+        self, scope_ctx: ScopeContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_retrieve(ctx: ScopeContext, query: str, **kwargs: Any) -> RetrievalResult:
+            captured["kwargs"] = kwargs
+            return RetrievalResult(vector_hits=[], subgraphs={}, context="")
+
+        monkeypatch.setattr(knowledge_module, "retrieve", _fake_retrieve)
+        settings = Settings(
+            ollama=OllamaConfig(
+                api_url="http://chat-ollama:11434",
+                embedding_api_url="http://ollama-embeddings:11434",
+            )
+        )
+        service = KnowledgeServiceImpl(
+            settings, indexer=_FakeIndexer(), scoped_memory=_FakeScopedMemory()
+        )
+
+        await service.Query(QueryRequest(api_version="v1", query="q"), _FakeContext())
+
+        assert captured["kwargs"]["ollama_base_url"] == "http://ollama-embeddings:11434"
+        assert captured["kwargs"]["embedding_endpoint"] == "embedding_ollama"
+
+    @pytest.mark.asyncio
+    async def test_unset_embedding_url_falls_back_to_chat_endpoint(
+        self, scope_ctx: ScopeContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_retrieve(ctx: ScopeContext, query: str, **kwargs: Any) -> RetrievalResult:
+            captured["kwargs"] = kwargs
+            return RetrievalResult(vector_hits=[], subgraphs={}, context="")
+
+        monkeypatch.setattr(knowledge_module, "retrieve", _fake_retrieve)
+        settings = Settings(ollama=OllamaConfig(api_url="http://chat-ollama:11434"))
+        service = KnowledgeServiceImpl(
+            settings, indexer=_FakeIndexer(), scoped_memory=_FakeScopedMemory()
+        )
+
+        await service.Query(QueryRequest(api_version="v1", query="q"), _FakeContext())
+
+        assert captured["kwargs"]["ollama_base_url"] == "http://chat-ollama:11434"
+        assert captured["kwargs"]["embedding_endpoint"] == "chat_ollama"
 
 
 class TestQueryClamping:
@@ -438,7 +535,12 @@ class TestQueryClamping:
             _FakeContext(),
         )
 
-        assert captured["kwargs"] == {"n_vector": 5, "graph_depth": 2}
+        assert captured["kwargs"] == {
+            "n_vector": 5,
+            "graph_depth": 2,
+            "ollama_base_url": "http://localhost:11434",
+            "embedding_endpoint": "chat_ollama",
+        }
 
     @pytest.mark.asyncio
     async def test_within_bound_values_pass_through_unchanged(
@@ -460,7 +562,12 @@ class TestQueryClamping:
             QueryRequest(api_version="v1", query="q", n_vector=3, graph_depth=2), _FakeContext()
         )
 
-        assert captured["kwargs"] == {"n_vector": 3, "graph_depth": 2}
+        assert captured["kwargs"] == {
+            "n_vector": 3,
+            "graph_depth": 2,
+            "ollama_base_url": "http://localhost:11434",
+            "embedding_endpoint": "chat_ollama",
+        }
 
 
 # ---------------------------------------------------------------------------

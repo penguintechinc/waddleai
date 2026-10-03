@@ -380,6 +380,225 @@ spec:
 {{- end }}
 
 {{/*
+Image name for the dedicated ollama-embeddings Deployment.
+*/}}
+{{- define "waddleai.ollamaEmbeddings.image" -}}
+{{- if .Values.ollamaEmbeddings.image.digest -}}
+{{- printf "%s@%s" .Values.ollamaEmbeddings.image.repository .Values.ollamaEmbeddings.image.digest }}
+{{- else -}}
+{{- printf "%s:%s" .Values.ollamaEmbeddings.image.repository .Values.ollamaEmbeddings.image.tag }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High) pod template --
+an OPTIONAL, separate Ollama Deployment dedicated to bulk embedding traffic
+(penguincode doc/code indexing, GraphRAG query embedding, mem0 memory
+embedder, and the proxy's semantic-cache embedding), so a document-indexing
+burst can no longer saturate the SAME Ollama instance serving live chat
+completions (templates/ollama-daemonset.yaml / ollama-deployment.yaml).
+Deliberately a near-duplicate of `waddleai.ollama.podTemplate` above
+(parameterized against `.Values.ollamaEmbeddings.*` instead of
+`.Values.ollama.*`) rather than a shared/parameterized helper -- the two
+Ollama workloads are independently gated (`ollamaEmbeddings.enabled`
+defaults FALSE; opt-in only) and independently scheduled (own
+nodeSelector/tolerations, so it can be pinned to its own node pool/GPU),
+and keeping them textually separate means this new, optional workload can
+never change the existing chat-serving Ollama's rendered manifest -- a
+template bug here has zero blast radius on the always-on chat path.
+Always a Deployment (never a DaemonSet/pool-mode split like chat-serving
+Ollama) -- a bulk-embedding bulkhead is sized by request volume, not
+"one per GPU node".
+*/}}
+{{- define "waddleai.ollamaEmbeddings.podTemplate" -}}
+metadata:
+  labels:
+    {{- include "waddleai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-embeddings
+spec:
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+  securityContext:
+    fsGroup: 1000
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  {{- if .Values.ollamaEmbeddings.models }}
+  initContainers:
+    - name: serve
+      restartPolicy: Always # native K8s 1.29+ sidecar — stays up for the whole pod lifetime
+      image: {{ include "waddleai.ollamaEmbeddings.image" . }}
+      imagePullPolicy: {{ .Values.ollamaEmbeddings.image.pullPolicy }}
+      args: ["serve"]
+      env:
+        - name: OLLAMA_MODELS
+          value: /models
+        - name: HOME
+          value: /tmp
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop:
+            - ALL
+      readinessProbe: # gates the kubelet from starting the pull-* initContainers below until serve is actually accepting connections
+        exec:
+          command: ["/usr/bin/ollama", "list"]
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        timeoutSeconds: 5
+        failureThreshold: 20
+      {{- if .Values.ollamaEmbeddings.gpu.enabled }}
+      resources:
+        limits:
+          {{ .Values.ollamaEmbeddings.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
+      {{- end }}
+      volumeMounts:
+        - name: ollama-embeddings-models
+          mountPath: /models
+        - name: tmp
+          mountPath: /tmp
+    {{- range .Values.ollamaEmbeddings.models }}
+    - name: pull-{{ include "waddleai.ollama.modelSlug" . }}
+      image: {{ include "waddleai.ollamaEmbeddings.image" $ }}
+      imagePullPolicy: {{ $.Values.ollamaEmbeddings.image.pullPolicy }}
+      args: ["pull", {{ . | quote }}]
+      env:
+        - name: OLLAMA_HOST # explicit loopback — targets the "serve" sidecar above, same pod network namespace
+          value: "127.0.0.1:11434"
+        - name: OLLAMA_MODELS
+          value: /models
+        - name: HOME
+          value: /tmp
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: ollama-embeddings-models
+          mountPath: /models
+        - name: tmp
+          mountPath: /tmp
+    {{- end }}
+  {{- end }}
+  containers:
+    - name: ollama-embeddings
+      image: {{ include "waddleai.ollamaEmbeddings.image" . }}
+      imagePullPolicy: {{ .Values.ollamaEmbeddings.image.pullPolicy }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+        capabilities:
+          drop:
+            - ALL
+      ports:
+        - name: http
+          containerPort: {{ .Values.ollamaEmbeddings.service.targetPort }}
+          protocol: TCP
+      env:
+        - name: OLLAMA_MODELS
+          value: /models
+        - name: HOME
+          value: /tmp
+        {{- range $key, $value := .Values.ollamaEmbeddings.env }}
+        - name: {{ $key }}
+          value: {{ $value | quote }}
+        {{- end }}
+      {{- if .Values.ollamaEmbeddings.livenessProbe.enabled }}
+      livenessProbe:
+        httpGet:
+          path: {{ .Values.ollamaEmbeddings.livenessProbe.httpGet.path }}
+          port: {{ .Values.ollamaEmbeddings.livenessProbe.httpGet.port }}
+        initialDelaySeconds: {{ .Values.ollamaEmbeddings.livenessProbe.initialDelaySeconds }}
+        periodSeconds: {{ .Values.ollamaEmbeddings.livenessProbe.periodSeconds }}
+        timeoutSeconds: {{ .Values.ollamaEmbeddings.livenessProbe.timeoutSeconds }}
+        failureThreshold: {{ .Values.ollamaEmbeddings.livenessProbe.failureThreshold }}
+      {{- end }}
+      {{- if .Values.ollamaEmbeddings.readinessProbe.enabled }}
+      readinessProbe:
+        httpGet:
+          path: {{ .Values.ollamaEmbeddings.readinessProbe.httpGet.path }}
+          port: {{ .Values.ollamaEmbeddings.readinessProbe.httpGet.port }}
+        initialDelaySeconds: {{ .Values.ollamaEmbeddings.readinessProbe.initialDelaySeconds }}
+        periodSeconds: {{ .Values.ollamaEmbeddings.readinessProbe.periodSeconds }}
+        timeoutSeconds: {{ .Values.ollamaEmbeddings.readinessProbe.timeoutSeconds }}
+        failureThreshold: {{ .Values.ollamaEmbeddings.readinessProbe.failureThreshold }}
+      {{- end }}
+      {{- if .Values.ollamaEmbeddings.startupProbe.enabled }}
+      startupProbe:
+        httpGet:
+          path: {{ .Values.ollamaEmbeddings.startupProbe.httpGet.path }}
+          port: {{ .Values.ollamaEmbeddings.startupProbe.httpGet.port }}
+        initialDelaySeconds: {{ .Values.ollamaEmbeddings.startupProbe.initialDelaySeconds }}
+        periodSeconds: {{ .Values.ollamaEmbeddings.startupProbe.periodSeconds }}
+        timeoutSeconds: {{ .Values.ollamaEmbeddings.startupProbe.timeoutSeconds }}
+        failureThreshold: {{ .Values.ollamaEmbeddings.startupProbe.failureThreshold }}
+      {{- end }}
+      resources:
+        {{- if .Values.ollamaEmbeddings.gpu.enabled }}
+        requests:
+          {{ .Values.ollamaEmbeddings.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
+          {{- with .Values.ollamaEmbeddings.resources.requests }}
+          memory: {{ .memory }}
+          cpu: {{ .cpu }}
+          {{- end }}
+        limits:
+          {{ .Values.ollamaEmbeddings.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
+          {{- with .Values.ollamaEmbeddings.resources.limits }}
+          memory: {{ .memory }}
+          cpu: {{ .cpu }}
+          {{- end }}
+        {{- else }}
+        {{- toYaml .Values.ollamaEmbeddings.resources | nindent 8 }}
+        {{- end }}
+      volumeMounts:
+        - name: ollama-embeddings-models
+          mountPath: /models
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: ollama-embeddings-models
+      {{- if .Values.ollamaEmbeddings.persistence.hostPath }}
+      hostPath:
+        path: {{ .Values.ollamaEmbeddings.persistence.hostPath }}
+        type: DirectoryOrCreate
+      {{- else if .Values.ollamaEmbeddings.persistence.enabled }}
+      persistentVolumeClaim:
+        claimName: {{ include "waddleai.fullname" . }}-ollama-embeddings-models
+      {{- else }}
+      emptyDir: {}
+      {{- end }}
+    - name: tmp
+      emptyDir: {}
+  {{- with .Values.ollamaEmbeddings.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.ollamaEmbeddings.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+
+{{/*
 Cilium reconciler topology, JSON-encoded — single source of truth shared by
 the CILIUM_TOPOLOGY env var (consumed by services/management/app/services/
 cilium_policy.py) and the bootstrap CiliumNetworkPolicy template, so the

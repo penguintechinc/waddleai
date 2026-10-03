@@ -1,0 +1,53 @@
+{{/*
+Prometheus Operator ServiceMonitor for the optional ollama-embeddings
+Deployment (ops-audit O10/O5 bulkhead), same gating pattern as
+servicemonitor-proxy.yaml/servicemonitor-management.yaml --
+monitoring.enabled + .serviceMonitor.enabled + a live CRD capability check.
+
+Upstream Ollama does NOT expose a Prometheus `/metrics` endpoint today (no
+`ollama`-native text-format surface exists, unlike the proxy/management
+services' own `/metrics` routes) -- scraping its HTTP port on the default
+monitoring.serviceMonitor.path ("/metrics") would 404 every interval
+instead of ever failing loudly, which is exactly the kind of check this
+org's Verification Integrity rule treats as a defect
+(critical-rules.md). This template therefore gates on its OWN explicit
+`ollamaEmbeddings.serviceMonitor.enabled` flag (default FALSE, independent
+of the global `monitoring.serviceMonitor.enabled` switch beta already
+turns on) rather than silently riding the shared default -- flip it on
+only once Ollama (or a sidecar exporter) actually serves metrics on this
+Service's port/path. Saturation of the embedding endpoint is visible
+today via the application-level `waddleai_embedding_call_*` metrics
+(shared.utils.metrics.WaddleAIMetrics.record_embedding_call /
+penguincode's `penguincode.embedding_call.*` instruments), which label by
+target endpoint (chat_ollama vs embedding_ollama) at the call site instead
+of this Service's own scrape surface.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled .Values.ollamaEmbeddings.enabled .Values.ollamaEmbeddings.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "waddleai.fullname" . }}-ollama-embeddings
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-embeddings
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama-embeddings
+  endpoints:
+    - port: http
+      path: {{ .Values.ollamaEmbeddings.serviceMonitor.path | default .Values.monitoring.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        - targetLabel: job
+          replacement: waddleai-ollama-embeddings
+{{- end }}

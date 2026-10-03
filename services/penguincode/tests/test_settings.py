@@ -22,12 +22,15 @@ from penguincode_cli.config.settings import (
     LessonsConfig,
     MemoryConfig,
     MemoryStoresConfig,
+    OllamaConfig,
     PGVectorStoreConfig,
     PostgresGraphStoreConfig,
     PostgresSessionStoreConfig,
     QdrantStoreConfig,
     SessionsConfig,
     Settings,
+    embedding_endpoint_label,
+    resolve_embedding_url,
 )
 
 
@@ -372,3 +375,57 @@ class TestSessionsConfig:
         settings = Settings.from_yaml(str(config_path))
 
         assert settings.sessions.postgres.url == "postgresql://waddleai:pw@pg.svc/waddleai"
+
+
+class TestOllamaEmbeddingBulkhead:
+    """Ops-audit O10/O5 (Gemini High): a bulk embedding burst against the
+    SAME Ollama instance serving live chat can saturate it and degrade chat
+    cluster-wide. `embedding_api_url`/`resolve_embedding_url`/
+    `embedding_endpoint_label` must default to "unset -> fall back to the
+    single chat `api_url`, unchanged behavior" and only switch over when a
+    dedicated endpoint is explicitly configured.
+    """
+
+    def test_embedding_api_url_env_var_sets_the_field(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PENGUINCODE_EMBEDDING_OLLAMA_URL", "http://ollama-embeddings:11434")
+        cfg = OllamaConfig()
+        assert cfg.embedding_api_url == "http://ollama-embeddings:11434"
+
+    def test_embedding_api_url_env_var_unset_defaults_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PENGUINCODE_EMBEDDING_OLLAMA_URL", raising=False)
+        cfg = OllamaConfig()
+        assert cfg.embedding_api_url == ""
+
+    def test_resolve_embedding_url_falls_back_to_api_url_when_unset(self) -> None:
+        cfg = OllamaConfig(api_url="http://chat-ollama:11434", embedding_api_url="")
+        assert resolve_embedding_url(cfg) == "http://chat-ollama:11434"
+
+    def test_resolve_embedding_url_prefers_dedicated_endpoint_when_set(self) -> None:
+        cfg = OllamaConfig(
+            api_url="http://chat-ollama:11434",
+            embedding_api_url="http://ollama-embeddings:11434",
+        )
+        assert resolve_embedding_url(cfg) == "http://ollama-embeddings:11434"
+
+    def test_embedding_endpoint_label_is_chat_ollama_when_unset(self) -> None:
+        cfg = OllamaConfig(embedding_api_url="")
+        assert embedding_endpoint_label(cfg) == "chat_ollama"
+
+    def test_embedding_endpoint_label_is_embedding_ollama_when_set(self) -> None:
+        cfg = OllamaConfig(embedding_api_url="http://ollama-embeddings:11434")
+        assert embedding_endpoint_label(cfg) == "embedding_ollama"
+
+    def test_from_yaml_embedding_api_url_round_trips(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.dump({"ollama": {"embedding_api_url": "http://ollama-embeddings:11434"}})
+        )
+
+        settings = Settings.from_yaml(str(config_path))
+
+        assert settings.ollama.embedding_api_url == "http://ollama-embeddings:11434"
+        assert resolve_embedding_url(settings.ollama) == "http://ollama-embeddings:11434"

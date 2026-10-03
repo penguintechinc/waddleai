@@ -31,6 +31,7 @@ ollama:
 |-----|------|---------|-------------|
 | `api_url` | string | `http://localhost:11434` | Ollama API endpoint. Supports local or remote instances. |
 | `timeout` | integer | `120` | Request timeout in seconds for Ollama API calls. |
+| `embedding_api_url` | string | `""` (unset) | Dedicated Ollama endpoint for embedding calls only -- see "Ollama-Embedding Bulkhead" below. Read directly from `PENGUINCODE_EMBEDDING_OLLAMA_URL` (no `${...}` substitution needed in `config.yaml`). |
 
 **Remote Ollama Examples:**
 ```bash
@@ -43,6 +44,42 @@ export OLLAMA_API_URL="http://gpu-server.example.com:11434"
 # Docker network
 export OLLAMA_API_URL="http://ollama:11434"
 ```
+
+### Ollama-Embedding Bulkhead (`PENGUINCODE_EMBEDDING_OLLAMA_URL`)
+
+**Problem:** the same Ollama instance that serves live chat completions
+(`api_url` above) also serves every embedding call -- document/code
+indexing, GraphRAG query embedding, and the mem0 memory embedder. A bulk
+indexing job can saturate that instance's GPU/CPU and degrade or time out
+live chat requests, since there is no QoS separation between the two
+workload types on one shared instance.
+
+**Fix:** point embedding traffic at a second, dedicated Ollama deployment:
+
+```bash
+export PENGUINCODE_EMBEDDING_OLLAMA_URL="http://ollama-embeddings.waddleai.svc:11434"
+```
+
+- **Unset (default):** every embedding call falls back to `ollama.api_url` --
+  today's single-Ollama behavior, completely unchanged. Nothing breaks if
+  you never set this.
+- **Set:** `config.settings.resolve_embedding_url()` routes every embedding
+  call site (doc indexing in `docs_rag/indexer.py`, GraphRAG query embedding
+  in `retrieval/graphrag.py`, and the mem0 memory embedder in
+  `tools/memory.py`) to this URL instead. The chat/completion path
+  (`ollama.api_url`) is never affected.
+- **When to enable:** you're running a bulk `index_docs`/`index_code` job
+  (or seeing GraphRAG/memory embedding traffic) at the same time chat
+  latency degrades. Pair this with the Helm chart's optional
+  `ollamaEmbeddings` Deployment (see
+  [`docs/penguincode/k8s-deployment.md`](k8s-deployment.md)) so the
+  dedicated URL actually points at separate compute, not the same instance
+  under a different name.
+- **Telemetry:** every embedding call records
+  `penguincode.embedding_call.duration`/`penguincode.embedding_call.events`
+  (OTel), labeled `endpoint=chat_ollama` or `endpoint=embedding_ollama` --
+  use this to confirm saturation moved off the chat-serving instance after
+  enabling the bulkhead.
 
 ---
 
@@ -718,6 +755,7 @@ services:
 | `OLLAMA_HOST` | `host.docker.internal` | `ollama.api_url` | Ollama server hostname. |
 | `OLLAMA_API_URL` | `http://localhost:11434` | `ollama.api_url` | Full Ollama API URL (overrides `OLLAMA_HOST`). |
 | `OLLAMA_TIMEOUT` | `120` | `ollama.timeout` | Request timeout in seconds. |
+| `PENGUINCODE_EMBEDDING_OLLAMA_URL` | unset | `ollama.embedding_api_url` | Dedicated Ollama endpoint for embedding calls only (ops-audit O10/O5 bulkhead). Unset falls back to `ollama.api_url` -- see "Ollama-Embedding Bulkhead" above. |
 
 #### Server Configuration
 

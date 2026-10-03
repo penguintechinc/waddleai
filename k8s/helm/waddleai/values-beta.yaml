@@ -233,6 +233,23 @@ ollama:
 
   models: []
 
+# Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High) -- commented out
+# deliberately: beta's chat Ollama above has handled combined chat+embedding
+# load fine so far. Uncomment (and set the matching OLLAMA_EMBEDDING_URL env
+# var on penguincode/proxy) if/when a doc-indexing burst is observed
+# degrading live chat latency on svr01/svr02-dal2.
+# ollamaEmbeddings:
+#   enabled: true
+#   nodeSelector:
+#     ollama: "true"
+#   tolerations:
+#     - key: nvidia.com/gpu
+#       operator: Exists
+#       effect: NoSchedule
+#   gpu:
+#     enabled: true
+#   models: ["nomic-embed-text"]
+
 # GPU Device Plugins - Beta
 # NVIDIA GPU Operator targets svr01-dal2 and svr02-dal2 (labeled gpu=true)
 # driver.enabled=false — NVIDIA drivers already present on nodes

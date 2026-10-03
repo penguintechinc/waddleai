@@ -1,0 +1,33 @@
+{{/*
+Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High): an OPTIONAL,
+dedicated Ollama Deployment serving ONLY embedding traffic (penguincode
+doc/code indexing, GraphRAG query embedding, mem0 memory embedder, and the
+proxy's semantic-cache embedding) so a bulk document-indexing burst can no
+longer saturate the SAME Ollama instance serving live chat completions
+(ollama-daemonset.yaml / ollama-deployment.yaml, left untouched by this
+change). Disabled by default (`ollamaEmbeddings.enabled: false`) -- safe to
+leave off entirely; every embedding-call site falls back to the existing
+single Ollama when this is off or unconfigured (see
+`config.settings.resolve_embedding_url` / `shared.utils.embedding_manager.
+resolve_embedding_ollama_host`).
+*/}}
+{{- if .Values.ollamaEmbeddings.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "waddleai.fullname" . }}-ollama-embeddings
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-embeddings
+spec:
+  replicas: {{ .Values.ollamaEmbeddings.replicaCount }}
+  strategy:
+    type: {{ .Values.ollamaEmbeddings.strategy | default "RollingUpdate" }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama-embeddings
+  template:
+    {{- include "waddleai.ollamaEmbeddings.podTemplate" . | nindent 4 }}
+{{- end }}

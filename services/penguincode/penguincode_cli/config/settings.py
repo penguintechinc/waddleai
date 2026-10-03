@@ -3,9 +3,12 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from penguincode_cli.observability.otel import EmbeddingEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -136,10 +139,55 @@ def _default_update_check_interval_hours() -> float:
 
 @dataclass
 class OllamaConfig:
-    """Ollama API configuration."""
+    """Ollama API configuration.
+
+    ``embedding_api_url`` is the Ollama-embedding bulkhead (ops-audit O10/O5,
+    Gemini High): a bulk document-indexing burst against the same Ollama
+    instance that serves live chat completions can saturate its GPU/CPU and
+    degrade or time out in-flight chat requests cluster-wide. When set
+    (``PENGUINCODE_EMBEDDING_OLLAMA_URL``), every embedding call (doc
+    indexing, GraphRAG query embedding, mem0 memory embedder) routes to this
+    dedicated endpoint instead of ``api_url``; left unset (the default), all
+    embedding calls fall back to ``api_url`` -- today's single-Ollama
+    behavior, unchanged. See ``resolve_embedding_url``/``embedding_endpoint_label``
+    below, which every embedding call site uses instead of reading
+    ``api_url``/``embedding_api_url`` directly.
+    """
 
     api_url: str = "http://localhost:11434"
     timeout: int = 120
+    embedding_api_url: str = field(
+        default_factory=lambda: os.environ.get("PENGUINCODE_EMBEDDING_OLLAMA_URL", "")
+    )
+
+
+def resolve_embedding_url(ollama: OllamaConfig) -> str:
+    """Resolve the Ollama URL embedding calls should target.
+
+    Returns ``ollama.embedding_api_url`` when set (the dedicated embedding
+    bulkhead), otherwise falls back to ``ollama.api_url`` -- the single
+    Ollama instance every embedding call used before the bulkhead existed.
+    Every embedding call site (doc indexing, GraphRAG, mem0 memory embedder)
+    must call this instead of reading either field directly, so the
+    fallback stays centralized in one place.
+    """
+    return ollama.embedding_api_url or ollama.api_url
+
+
+def embedding_endpoint_label(ollama: OllamaConfig) -> "EmbeddingEndpoint":
+    """Bounded metric-label for which Ollama endpoint embedding calls target.
+
+    Returns ``"embedding_ollama"`` when the dedicated bulkhead
+    (``embedding_api_url``) is configured, else ``"chat_ollama"`` -- the
+    shared instance also serving live chat. Deliberately a closed two-value
+    label (never the raw URL) so it stays safe, low-cardinality metric
+    attribute, matching ``observability.otel.record_embedding_call``'s
+    ``endpoint`` parameter. ``EmbeddingEndpoint`` is only imported under
+    ``TYPE_CHECKING`` (see top of module) -- neither module imports the
+    other at runtime, avoiding a load-order dependency between
+    ``config.settings`` and ``observability.otel``.
+    """
+    return "embedding_ollama" if ollama.embedding_api_url else "chat_ollama"
 
 
 @dataclass

@@ -273,6 +273,122 @@ class TestEmbeddingFailure:
         graph_store.subgraph.assert_not_called()
 
 
+class TestEmbeddingBulkheadTelemetry:
+    """Ops-audit O10/O5: `_get_embedding` records `record_embedding_call` labeled by
+    `embedding_endpoint`, defaulting to "chat_ollama" when the caller doesn't override it.
+    """
+
+    async def test_embed_fn_test_double_never_records_telemetry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The injected `embed_fn` seam bypasses Ollama entirely -- no metric recorded."""
+        import penguincode_cli.retrieval.graphrag as graphrag_module
+
+        calls: list[tuple[str, str, float]] = []
+        monkeypatch.setattr(
+            graphrag_module,
+            "record_embedding_call",
+            lambda endpoint, outcome, ms: calls.append((endpoint, outcome, ms)),
+        )
+
+        async def _fake_embed(_query: str) -> list[float]:
+            return [0.1]
+
+        result = await graphrag_module._get_embedding(
+            "q", embed_fn=_fake_embed, ollama_base_url="x", embedding_model="m"
+        )
+        assert result == [0.1]
+        assert calls == []
+
+    async def test_success_records_ok_with_configured_endpoint_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import penguincode_cli.retrieval.graphrag as graphrag_module
+
+        class _FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {"embedding": [0.1, 0.2]}
+
+        class _FakeAsyncClient:
+            async def __aenter__(self) -> _FakeAsyncClient:
+                return self
+
+            async def __aexit__(self, *exc_info: object) -> None:
+                return None
+
+            async def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
+                return _FakeResponse()
+
+        monkeypatch.setattr(
+            graphrag_module.httpx, "AsyncClient", lambda *a, **kw: _FakeAsyncClient()
+        )
+        calls: list[tuple[str, str, float]] = []
+        monkeypatch.setattr(
+            graphrag_module,
+            "record_embedding_call",
+            lambda endpoint, outcome, ms: calls.append((endpoint, outcome, ms)),
+        )
+
+        result = await graphrag_module._get_embedding(
+            "q",
+            embed_fn=None,
+            ollama_base_url="http://ollama-embeddings:11434",
+            embedding_model="nomic-embed-text",
+            embedding_endpoint="embedding_ollama",
+        )
+
+        assert result == [0.1, 0.2]
+        assert len(calls) == 1
+        endpoint, outcome, _duration = calls[0]
+        assert endpoint == "embedding_ollama"
+        assert outcome == "ok"
+
+    async def test_failure_records_error_with_default_chat_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import penguincode_cli.retrieval.graphrag as graphrag_module
+
+        class _FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {}  # missing "embedding" field
+
+        class _FakeAsyncClient:
+            async def __aenter__(self) -> _FakeAsyncClient:
+                return self
+
+            async def __aexit__(self, *exc_info: object) -> None:
+                return None
+
+            async def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
+                return _FakeResponse()
+
+        monkeypatch.setattr(
+            graphrag_module.httpx, "AsyncClient", lambda *a, **kw: _FakeAsyncClient()
+        )
+        calls: list[tuple[str, str, float]] = []
+        monkeypatch.setattr(
+            graphrag_module,
+            "record_embedding_call",
+            lambda endpoint, outcome, ms: calls.append((endpoint, outcome, ms)),
+        )
+
+        with pytest.raises(RuntimeError, match="missing a non-empty 'embedding'"):
+            await graphrag_module._get_embedding(
+                "q", embed_fn=None, ollama_base_url="x", embedding_model="m"
+            )
+
+        assert len(calls) == 1
+        endpoint, outcome, _duration = calls[0]
+        assert endpoint == "chat_ollama"  # default when the caller doesn't override it
+        assert outcome == "error"
+
+
 # ---------------------------------------------------------------------------
 # Vector-side behavior: merge/rank/truncate, per-table degradation.
 # ---------------------------------------------------------------------------

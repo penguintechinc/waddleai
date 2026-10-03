@@ -401,6 +401,26 @@ kubectl create secret generic penguincode-secrets \
   -n penguincode
 ```
 
+### Ollama-Embedding Bulkhead (Cross-Chart)
+
+A bulk `index_docs`/`index_code` job can saturate the Ollama instance also
+serving live chat if both workloads share one instance -- see
+[`docs/penguincode/ARCHITECTURE.md`](ARCHITECTURE.md#ollama-embedding-bulkhead)
+for the full picture. The dedicated embedding deployment lives in the
+**WaddleAI chart**, not this one: `k8s/helm/waddleai`'s optional
+`ollamaEmbeddings.enabled` value (default `false`) renders a second Ollama
+Deployment/Service (`<release>-ollama-embeddings`).
+
+To route this penguincode deployment's embedding calls there once that's
+enabled, set `PENGUINCODE_EMBEDDING_OLLAMA_URL` in **this** chart's `env:`
+map (`values.yaml`/`alpha.yml`/`beta.yml`, same key you'd use for
+`OLLAMA_HOST` today) to the WaddleAI release's Service DNS name, e.g.
+`http://waddleai-ollama-embeddings.waddleai.svc.cluster.local:11434`.
+Leaving it unset is always safe -- embedding calls fall back to
+`OLLAMA_HOST`/`OLLAMA_API_URL` exactly as before. See
+[`docs/penguincode/CONFIGURATION.md`](CONFIGURATION.md#ollama-embedding-bulkhead-penguincode_embedding_ollama_url)
+for the full env var reference.
+
 ### Resource Limits and Requests
 
 ```bash

@@ -319,6 +319,56 @@ class TestGetVectorStoreConfig:
             manager._get_vector_store_config(config)
 
 
+class TestMemoryManagerEmbeddingBulkhead:
+    """Ops-audit O10/O5 (Gemini High): mem0's LLM (chat) calls must stay on
+    `ollama_url`, while its embedder calls route to `embedding_ollama_url`
+    when configured, else fall back to `ollama_url` -- today's unchanged,
+    single-Ollama behavior.
+    """
+
+    def test_embedding_ollama_url_configures_only_the_embedder(self) -> None:
+        config = MemoryConfig(enabled=True, vector_store="pgvector")
+        with patch("penguincode_cli.tools.memory.Memory") as mock_memory_cls:
+            mock_memory_cls.from_config.return_value = _FakeMem0Memory()
+            MemoryManager(
+                config,
+                ollama_url="http://chat-ollama:11434",
+                embedding_ollama_url="http://ollama-embeddings:11434",
+            )
+
+        mem0_config = mock_memory_cls.from_config.call_args[0][0]
+        assert mem0_config["llm"]["config"]["ollama_base_url"] == "http://chat-ollama:11434"
+        assert (
+            mem0_config["embedder"]["config"]["ollama_base_url"] == "http://ollama-embeddings:11434"
+        )
+
+    def test_unset_embedding_ollama_url_falls_back_to_ollama_url(self) -> None:
+        config = MemoryConfig(enabled=True, vector_store="pgvector")
+        with patch("penguincode_cli.tools.memory.Memory") as mock_memory_cls:
+            mock_memory_cls.from_config.return_value = _FakeMem0Memory()
+            manager = MemoryManager(config, ollama_url="http://chat-ollama:11434")
+
+        mem0_config = mock_memory_cls.from_config.call_args[0][0]
+        assert mem0_config["llm"]["config"]["ollama_base_url"] == "http://chat-ollama:11434"
+        assert mem0_config["embedder"]["config"]["ollama_base_url"] == "http://chat-ollama:11434"
+        assert manager.embedding_ollama_url == "http://chat-ollama:11434"
+
+    def test_create_memory_manager_forwards_embedding_ollama_url(self) -> None:
+        config = MemoryConfig(enabled=True, vector_store="pgvector")
+        with patch("penguincode_cli.tools.memory.Memory") as mock_memory_cls:
+            mock_memory_cls.from_config.return_value = _FakeMem0Memory()
+            create_memory_manager(
+                config,
+                "http://chat-ollama:11434",
+                embedding_ollama_url="http://ollama-embeddings:11434",
+            )
+
+        mem0_config = mock_memory_cls.from_config.call_args[0][0]
+        assert (
+            mem0_config["embedder"]["config"]["ollama_base_url"] == "http://ollama-embeddings:11434"
+        )
+
+
 class TestMemoryManager:
     """Test the (scope-agnostic) memory manager used directly by the CLI."""
 

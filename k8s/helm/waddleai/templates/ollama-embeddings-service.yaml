@@ -1,0 +1,23 @@
+{{- if .Values.ollamaEmbeddings.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waddleai.fullname" . }}-ollama-embeddings
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-embeddings
+spec:
+  # ClusterIP only -- same rationale as ollama-service.yaml: Ollama has no
+  # native auth, so the AIProxy-only CiliumNetworkPolicy is the entire
+  # access-control story for this Service too.
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.ollamaEmbeddings.service.port }}
+      targetPort: {{ .Values.ollamaEmbeddings.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "waddleai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-embeddings
+{{- end }}

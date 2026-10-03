@@ -23,6 +23,8 @@ from shared.utils.embedding_manager import (
     EmbeddingConfig,
     EmbeddingManager,
     create_embedding_manager,
+    embedding_ollama_endpoint_label,
+    resolve_embedding_ollama_host,
 )
 
 # --- EmbeddingConfig ---------------------------------------------------------
@@ -342,3 +344,166 @@ def test_create_embedding_manager_passes_host_and_api_key_through() -> None:
     )
     assert manager.config.ollama_host == "http://custom:1234"
     assert manager.config.api_key == "k"
+
+
+# --- Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High) --------------
+#
+# The in-cluster Ollama serving live chat is the SAME instance the proxy's
+# semantic cache and RAG/memory paths embed against; a bulk embedding burst
+# can saturate it and degrade chat cluster-wide. OLLAMA_EMBEDDING_URL, when
+# set, routes embedding calls to a dedicated endpoint instead; unset, every
+# call falls back to OLLAMA_HOST (today's single-Ollama behavior, unchanged).
+
+
+def test_resolve_embedding_ollama_host_falls_back_to_default_when_nothing_set(
+    monkeypatch,
+) -> None:
+    """With neither env var set, the hardcoded localhost default applies."""
+    monkeypatch.delenv("OLLAMA_EMBEDDING_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert resolve_embedding_ollama_host() == "http://localhost:11434"
+
+
+def test_resolve_embedding_ollama_host_falls_back_to_chat_ollama_host(monkeypatch) -> None:
+    """With only OLLAMA_HOST set, embedding calls target the chat-serving instance."""
+    monkeypatch.delenv("OLLAMA_EMBEDDING_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "http://chat-ollama:11434")
+    assert resolve_embedding_ollama_host() == "http://chat-ollama:11434"
+
+
+def test_resolve_embedding_ollama_host_prefers_dedicated_endpoint(monkeypatch) -> None:
+    """OLLAMA_EMBEDDING_URL wins over OLLAMA_HOST when both are set."""
+    monkeypatch.setenv("OLLAMA_HOST", "http://chat-ollama:11434")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_URL", "http://ollama-embeddings:11434")
+    assert resolve_embedding_ollama_host() == "http://ollama-embeddings:11434"
+
+
+def test_embedding_ollama_endpoint_label_is_chat_ollama_when_unset(monkeypatch) -> None:
+    """The bounded metric label defaults to chat_ollama when the bulkhead is unconfigured."""
+    monkeypatch.delenv("OLLAMA_EMBEDDING_URL", raising=False)
+    assert embedding_ollama_endpoint_label() == "chat_ollama"
+
+
+def test_embedding_ollama_endpoint_label_is_embedding_ollama_when_set(monkeypatch) -> None:
+    """The bounded metric label switches to embedding_ollama once the bulkhead is configured."""
+    monkeypatch.setenv("OLLAMA_EMBEDDING_URL", "http://ollama-embeddings:11434")
+    assert embedding_ollama_endpoint_label() == "embedding_ollama"
+
+
+def test_create_embedding_manager_resolves_host_from_env_when_not_passed(monkeypatch) -> None:
+    """ollama_host=None (the default) resolves via the bulkhead env chain, not a bare literal."""
+    monkeypatch.setenv("OLLAMA_EMBEDDING_URL", "http://ollama-embeddings:11434")
+    manager = create_embedding_manager(backend="ollama")
+    assert manager.config.ollama_host == "http://ollama-embeddings:11434"
+    assert manager.config.endpoint_label == "embedding_ollama"
+
+
+def test_create_embedding_manager_unset_env_falls_back_to_localhost_default(monkeypatch) -> None:
+    """Both env vars unset -> ollama_host resolves to the hardcoded localhost default."""
+    monkeypatch.delenv("OLLAMA_EMBEDDING_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    manager = create_embedding_manager(backend="ollama")
+    assert manager.config.ollama_host == "http://localhost:11434"
+    assert manager.config.endpoint_label == "chat_ollama"
+
+
+def test_create_embedding_manager_explicit_host_bypasses_resolution_and_labels_chat_ollama(
+    monkeypatch,
+) -> None:
+    """An explicit ollama_host= always wins, even with OLLAMA_EMBEDDING_URL set."""
+    monkeypatch.setenv("OLLAMA_EMBEDDING_URL", "http://ollama-embeddings:11434")
+    manager = create_embedding_manager(backend="ollama", ollama_host="http://custom:1234")
+    assert manager.config.ollama_host == "http://custom:1234"
+    assert manager.config.endpoint_label == "chat_ollama"
+
+
+def test_embed_ollama_records_embedding_call_metric_on_success(monkeypatch) -> None:
+    """A successful ollama embed() records duration+outcome under the configured label."""
+    fake_client = _FakeOllamaClient(host="unused")
+    fake_module = types.SimpleNamespace(Client=lambda host: fake_client)
+    monkeypatch.setitem(sys.modules, "ollama", fake_module)
+
+    from shared.utils.metrics import get_proxy_metrics
+
+    recorded: list[tuple[str, str, float]] = []
+    monkeypatch.setattr(
+        get_proxy_metrics(),
+        "record_embedding_call",
+        lambda endpoint, outcome, duration: recorded.append((endpoint, outcome, duration)),
+    )
+
+    manager = EmbeddingManager(EmbeddingConfig(backend="ollama", endpoint_label="embedding_ollama"))
+    manager.embed("hello world")
+
+    assert len(recorded) == 1
+    endpoint, outcome, _duration = recorded[0]
+    assert endpoint == "embedding_ollama"
+    assert outcome == "ok"
+
+
+def test_embed_ollama_records_error_outcome_and_still_raises(monkeypatch) -> None:
+    """A failing ollama embed() records outcome="error" before re-raising."""
+
+    def _raise_client(host: str) -> object:
+        raise RuntimeError("ollama unreachable")
+
+    fake_module = types.SimpleNamespace(Client=_raise_client)
+    monkeypatch.setitem(sys.modules, "ollama", fake_module)
+
+    from shared.utils.metrics import get_proxy_metrics
+
+    recorded: list[tuple[str, str, float]] = []
+    monkeypatch.setattr(
+        get_proxy_metrics(),
+        "record_embedding_call",
+        lambda endpoint, outcome, duration: recorded.append((endpoint, outcome, duration)),
+    )
+
+    manager = EmbeddingManager(EmbeddingConfig(backend="ollama"))
+    with pytest.raises(RuntimeError):
+        manager.embed("hello world")
+
+    assert len(recorded) == 1
+    endpoint, outcome, _duration = recorded[0]
+    assert endpoint == "chat_ollama"
+    assert outcome == "error"
+
+
+def test_embed_ollama_metrics_outage_never_breaks_embed(monkeypatch) -> None:
+    """A broken metrics registry must not turn a successful embed into a failure."""
+    fake_client = _FakeOllamaClient(host="unused")
+    fake_module = types.SimpleNamespace(Client=lambda host: fake_client)
+    monkeypatch.setitem(sys.modules, "ollama", fake_module)
+
+    def _broken_get_proxy_metrics() -> object:
+        raise RuntimeError("metrics registry unavailable")
+
+    monkeypatch.setattr("shared.utils.metrics.get_proxy_metrics", _broken_get_proxy_metrics)
+
+    manager = EmbeddingManager(EmbeddingConfig(backend="ollama"))
+    result = manager.embed("hello world")
+
+    assert result == [0.1, 0.2, 0.3]
+
+
+def test_embed_openai_never_records_ollama_bulkhead_metric(monkeypatch) -> None:
+    """Non-ollama backends have no bulkhead concept -- no metric recorded either way."""
+    from shared.utils.metrics import get_proxy_metrics
+
+    recorded: list[tuple[str, str, float]] = []
+    monkeypatch.setattr(
+        get_proxy_metrics(),
+        "record_embedding_call",
+        lambda endpoint, outcome, duration: recorded.append((endpoint, outcome, duration)),
+    )
+
+    fake_response = types.SimpleNamespace(data=[types.SimpleNamespace(embedding=[0.1, 0.2])])
+    fake_embeddings = types.SimpleNamespace(create=lambda input, model: fake_response)
+    fake_client = types.SimpleNamespace(embeddings=fake_embeddings)
+    fake_module = types.SimpleNamespace(OpenAI=lambda api_key: fake_client)
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+
+    manager = EmbeddingManager(EmbeddingConfig(backend="openai", api_key="k"))
+    manager.embed("hello world")
+
+    assert recorded == []

@@ -1,0 +1,23 @@
+{{/*
+PodDisruptionBudget for the optional ollama-embeddings Deployment. Same
+guard pattern as proxy-pdb.yaml/management-pdb.yaml -- only renders when
+podDisruptionBudget.enabled AND replicaCount > 1, so a singleton
+ollama-embeddings deployment is never blocked from voluntary eviction by
+its own PDB.
+*/}}
+{{- if and .Values.ollamaEmbeddings.enabled .Values.podDisruptionBudget.enabled (gt (int .Values.ollamaEmbeddings.replicaCount) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "waddleai.fullname" . }}-ollama-embeddings
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-embeddings
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama-embeddings
+{{- end }}
