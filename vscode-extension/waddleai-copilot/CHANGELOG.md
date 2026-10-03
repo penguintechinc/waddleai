@@ -2,6 +2,23 @@
 
 All notable changes to the "WaddleAI for Copilot Chat" extension will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- `WaddleAIClient.getAvailableModels()` no longer swallows a fetch failure
+  behind a bare `[]` (O8 Low, network-failure UX) — it now returns a typed
+  `ModelFetchResult` (`{ ok: true; models }` or `{ ok: false; reason: 'auth'
+  | 'network'; error }`) so callers can tell a genuinely empty model list
+  apart from a failure. A `reason: 'network'` failure shows one throttled
+  `showWarningMessage` with a **Retry** action per outage window and keeps
+  retrying in the background with exponential backoff (2s base, doubling,
+  capped at 30s); a `reason: 'auth'` (401/403) failure is never retried and
+  instead prompts to update the API key, matching the existing re-auth
+  flow. `waddleai.selectModel` and the chat participant's model list were
+  updated for the new return shape.
+- Added a unit test harness for this extension (Jest + ts-jest + a minimal
+  `vscode` module mock) — there was none before.
+
 ## [0.2.0] - 2026-08-18
 
 ### Changed

@@ -19,8 +19,10 @@ vi.mock('../components/Header.css', () => ({}));
 // Mock axios used by child pages
 vi.mock('axios');
 
-// Mock fetch for AuthContext token verification
-global.fetch = vi.fn().mockResolvedValue({ ok: false });
+// Mock fetch for AuthContext token verification. A 401 is a real auth
+// decision (UNAUTHENTICATED) rather than UNREACHABLE, so AuthContext does
+// not schedule a background retry that would outlive this test.
+global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
 
 describe('App', () => {
   it('renders login page at /login route by default (unauthenticated)', async () => {

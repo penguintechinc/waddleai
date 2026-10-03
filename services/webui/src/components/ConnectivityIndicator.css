@@ -1,0 +1,26 @@
+.connectivity-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  color: #d4af37;
+  background: rgba(212, 175, 55, 0.08);
+}
+
+.connectivity-indicator-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #4caf50;
+}
+
+.connectivity-indicator.is-offline .connectivity-indicator-dot {
+  background: #d9534f;
+}
+
+.connectivity-indicator.is-offline {
+  color: #d9534f;
+}

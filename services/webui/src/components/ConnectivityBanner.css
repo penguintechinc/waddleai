@@ -1,0 +1,40 @@
+.connectivity-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: #7a1f1f;
+  color: #f5e6c8;
+  padding: 0.6rem 1rem;
+  font-size: 0.9rem;
+  border-bottom: 2px solid #d4af37;
+  position: sticky;
+  top: 0;
+  z-index: 1100;
+}
+
+.connectivity-banner-retry {
+  background: #d4af37;
+  color: #16213e;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.connectivity-banner-retry:hover {
+  background: #e6c769;
+}
+
+.connectivity-banner-retry:focus-visible {
+  outline: 2px solid #f5e6c8;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connectivity-banner {
+    transition: none;
+  }
+}

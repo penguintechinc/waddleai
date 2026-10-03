@@ -225,13 +225,15 @@ export class WaddleAIChatParticipant {
      * Get available models from WaddleAI
      */
     async getAvailableModels(): Promise<string[]> {
-        try {
-            const models = await this.client.getAvailableModels();
-            return models.map(m => m.id);
-        } catch (error) {
-            console.error('Failed to fetch models:', error);
+        // getAvailableModels() never throws; a failure has already
+        // surfaced its own warning/re-auth prompt via WaddleAIClient. Fall
+        // back to a static list purely so chat still has something to
+        // offer while the proxy is unreachable.
+        const result = await this.client.getAvailableModels();
+        if (!result.ok) {
             return ['gpt-4', 'gpt-3.5-turbo', 'claude-3-sonnet', 'llama2'];
         }
+        return result.models.map(m => m.id);
     }
 
     /**
