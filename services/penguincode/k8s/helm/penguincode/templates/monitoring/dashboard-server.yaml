@@ -1,0 +1,94 @@
+{{/*
+Grafana dashboard ConfigMap for the penguincode server (O2 fix). Same
+sidecar-discovery label as the waddleai chart's dashboards (shared
+Grafana/Prometheus stack). All metric names referenced are sibling-PR
+additions (see prometheusrule-server.yaml header) -- panels render empty
+until that PR lands, which is expected and documented, not a defect in
+this chart.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.dashboards.enabled .Values.server.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "penguincode.fullname" . }}-dashboard-server
+  namespace: {{ .Values.monitoring.namespace | default .Values.global.namespace }}
+  labels:
+    {{- include "penguincode.server.labels" . | nindent 4 }}
+    {{ .Values.monitoring.dashboards.sidecarLabelKey }}: {{ .Values.monitoring.dashboards.sidecarLabelValue | quote }}
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  penguincode-server.json: |
+    {
+      "title": "PenguinCode / Server",
+      "uid": "penguincode-server",
+      "schemaVersion": 39,
+      "timezone": "utc",
+      "time": { "from": "now-6h", "to": "now" },
+      "tags": ["penguincode", "server"],
+      "panels": [
+        {
+          "id": 1, "title": "gRPC request rate (RED)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(rpc_server_requests_total{job=\"penguincode-server\"}[5m])) by (status)", "legendFormat": {{ "{{status}}" | quote }} }
+          ]
+        },
+        {
+          "id": 2, "title": "Non-OK ratio", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(rpc_server_requests_total{job=\"penguincode-server\",status!=\"OK\"}[5m])) / sum(rate(rpc_server_requests_total{job=\"penguincode-server\"}[5m]))", "legendFormat": "error ratio" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit" } }
+        },
+        {
+          "id": 3, "title": "gRPC latency percentiles", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(rpc_server_duration_seconds_bucket{job=\"penguincode-server\"}[5m])) by (le))", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, sum(rate(rpc_server_duration_seconds_bucket{job=\"penguincode-server\"}[5m])) by (le))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, sum(rate(rpc_server_duration_seconds_bucket{job=\"penguincode-server\"}[5m])) by (le))", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 4, "title": "Latency heatmap", "type": "heatmap",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "sum(rate(rpc_server_duration_seconds_bucket{job=\"penguincode-server\"}[5m])) by (le)", "format": "heatmap", "legendFormat": {{ "{{le}}" | quote }} }
+          ]
+        },
+        {
+          "id": 5, "title": "Index queue depth / jobs", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
+          "targets": [
+            { "expr": "index_queue_depth{job=\"penguincode-server\"}", "legendFormat": "queue depth" },
+            { "expr": "sum(rate(index_jobs_total{job=\"penguincode-server\"}[5m])) by (status)", "legendFormat": {{ "{{status}}" | quote }} }
+          ]
+        },
+        {
+          "id": 6, "title": "DB pool waiters", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
+          "targets": [
+            { "expr": "db_pool_waiting{job=\"penguincode-server\"}", "legendFormat": "waiting" }
+          ]
+        },
+        {
+          "id": 7, "title": "Scrape target up", "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 22 },
+          "targets": [ { "expr": "up{job=\"penguincode-server\"}", "legendFormat": "up" } ],
+          "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
+        },
+        {
+          "id": 8, "title": "Feature-flag / license check errors", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 6, "y": 22 },
+          "targets": [
+            { "expr": "sum(rate(feature_flag_evaluations_total{service=\"penguincode\",result=\"error\"}[15m]))", "legendFormat": "flag eval errors" },
+            { "expr": "sum(rate(license_checks_total{service=\"penguincode\",status=\"error\"}[15m]))", "legendFormat": "license check errors" }
+          ]
+        }
+      ]
+    }
+{{- end }}

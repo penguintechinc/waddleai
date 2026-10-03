@@ -1,0 +1,40 @@
+{{/*
+Prometheus Operator ServiceMonitor for the management service (O2 fix).
+Scrapes the real RED-metric `/metrics` surface wired up in
+services/management/app/observability.py (critical-rules.md Observability --
+OTLP push is the primary path, this is the secondary HPA/alerting scrape
+surface). Guarded by monitoring.enabled + monitoring.serviceMonitor.enabled
+AND a live CRD capability check so a cluster without the Prometheus Operator
+installed still renders/installs every other template in this chart cleanly.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled .Values.management.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "waddleai.fullname" . }}-management
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: management
+  endpoints:
+    - port: http
+      path: {{ .Values.monitoring.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      # Stable job label for alert/dashboard filtering, independent of
+      # however this ServiceMonitor object happens to be named.
+      relabelings:
+        - targetLabel: job
+          replacement: waddleai-management
+{{- end }}

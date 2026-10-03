@@ -498,5 +498,5 @@ curl -X POST http://localhost:8001/api/memory/cleanup \
 
 - [pgvector Documentation](https://github.com/pgvector/pgvector)
 - [mem0 Documentation](https://docs.mem0.ai)
-- [Analytics Dashboard](../administration/monitoring.md)
+- [Monitoring Guide](../operations/MONITORING.md)
 - [Privacy Configuration](../administration/security-policies.md)

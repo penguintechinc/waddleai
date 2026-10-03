@@ -1007,3 +1007,106 @@ podSecurityAdmission:
   enforce: baseline
   audit: restricted
   warn: restricted
+
+# Observability baseline (O2 fix): Prometheus Operator ServiceMonitor +
+# PrometheusRule + Grafana sidecar-discovered dashboards for management and
+# proxy. Default OFF cluster-wide -- `helm template`/`helm install` must
+# render cleanly on a cluster that never installed the Prometheus Operator
+# CRDs (alpha/local). Flip monitoring.enabled=true once the operator is
+# present (see values-beta.yaml for dal2-beta's kube-prometheus-stack).
+# Individually-togglable sub-flags let an operator keep e.g. dashboards but
+# skip PrometheusRule (or vice versa) without an all-or-nothing switch.
+# SLO targets and thresholds are intentionally plain values (not computed
+# from a formula in-template -- Helm/Sprig has no fractional arithmetic) so
+# they match docs/operations/SLOS.md exactly; see that doc for how each
+# default was derived from the Google SRE multi-window multi-burn-rate
+# method.
+monitoring:
+  enabled: false
+  # Namespace the Prometheus Operator's Prometheus CR watches for
+  # ServiceMonitor/PrometheusRule objects (its
+  # serviceMonitorNamespaceSelector/ruleNamespaceSelector). Empty = same
+  # namespace as this release (.Values.namespace) -- the common case when
+  # the operator watches all namespaces or this one explicitly.
+  namespace: ""
+  # Extra labels merged onto every ServiceMonitor/PrometheusRule object --
+  # most kube-prometheus-stack installs scope their Prometheus CR's
+  # serviceMonitorSelector/ruleSelector to a release label (e.g.
+  # `release: kube-prometheus-stack`), otherwise the operator ignores
+  # objects that don't carry it.
+  extraLabels: {}
+  # Namespace running the cluster's Prometheus Operator/Prometheus pods --
+  # used ONLY to scope the Cilium ingress-allow for the scrape itself
+  # (templates/monitoring/cilium-allow-scrape.yaml), independent of the
+  # `namespace` key above (CRD discovery vs. actual scrape traffic can be
+  # different namespaces in some installs).
+  scrapeSourceNamespaceLabels:
+    kubernetes.io/metadata.name: monitoring
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    path: /metrics
+  prometheusRule:
+    enabled: true
+    management:
+      slo:
+        availabilityTargetPercent: "99.9"
+        latencyP95Seconds: "2"
+        latencyP99Seconds: "5"
+        errorBudgetWindow: 30d
+        # Multi-window multi-burn-rate thresholds (error ratio, 0-1) --
+        # see docs/operations/SLOS.md "Error-budget burn derivation" for the
+        # Google SRE workbook formula each was computed from, target=99.9%.
+        burnRateFast:
+          longWindow: 2h
+          shortWindow: 10m
+          threshold: "0.0072"
+        burnRateMid:
+          longWindow: 6h
+          shortWindow: 30m
+          threshold: "0.006"
+        burnRateSlow:
+          longWindow: 1d
+          shortWindow: 2h
+          threshold: "0.003"
+        burnRateSlowest:
+          longWindow: 3d
+          shortWindow: 6h
+          threshold: "0.001"
+    proxy:
+      slo:
+        # Proxy's non-LLM-path availability target; LLM paths (chat
+        # completions/messages) are excluded from the latency SLO below
+        # (upstream provider latency dominates and is outside this
+        # service's control) and get their own, looser budget.
+        availabilityTargetPercent: "99.9"
+        latencyP95Seconds: "2"
+        latencyP99Seconds: "5"
+        llmLatencyP95Seconds: "30"
+        llmLatencyP99Seconds: "60"
+        errorBudgetWindow: 30d
+        burnRateFast:
+          longWindow: 2h
+          shortWindow: 10m
+          threshold: "0.0072"
+        burnRateMid:
+          longWindow: 6h
+          shortWindow: 30m
+          threshold: "0.006"
+        burnRateSlow:
+          longWindow: 1d
+          shortWindow: 2h
+          threshold: "0.003"
+        burnRateSlowest:
+          longWindow: 3d
+          shortWindow: 6h
+          threshold: "0.001"
+        # Saturation: in-flight requests vs. the proxy's own concurrency
+        # cap (PROXY_MAX_CONCURRENCY / proxy_inflight_requests gauge, added
+        # by sibling PR fix/helm-probes-pdb-grace's concurrency work).
+        inflightSaturationPercent: "90"
+  dashboards:
+    enabled: true
+    sidecarLabelKey: grafana_dashboard
+    sidecarLabelValue: "1"

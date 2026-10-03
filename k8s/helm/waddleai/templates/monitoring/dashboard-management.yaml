@@ -1,0 +1,104 @@
+{{/*
+Grafana dashboard ConfigMap for the management service (O2 fix). The
+`grafana_dashboard: "1"` label is the standard kube-prometheus-stack
+Grafana sidecar discovery label -- no dashboard-provisioning config needed
+beyond that sidecar already running in the cluster. All PromQL below
+matches metric names that exist today (see prometheusrule-management.yaml
+header for the same inventory).
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.dashboards.enabled .Values.management.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "waddleai.fullname" . }}-dashboard-management
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+    {{ .Values.monitoring.dashboards.sidecarLabelKey }}: {{ .Values.monitoring.dashboards.sidecarLabelValue | quote }}
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  waddleai-management.json: |
+    {
+      "title": "WaddleAI / Management",
+      "uid": "waddleai-management",
+      "schemaVersion": 39,
+      "timezone": "utc",
+      "time": { "from": "now-6h", "to": "now" },
+      "tags": ["waddleai", "management"],
+      "panels": [
+        {
+          "id": 1, "title": "Request rate (RED)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_requests_total{service=\"management\"}[5m])) by (status_code)", "legendFormat": {{ "{{status_code}}" | quote }} }
+          ]
+        },
+        {
+          "id": 2, "title": "Error ratio (5xx / total)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_requests_total{service=\"management\",status_code=~\"5..\"}[5m])) / sum(rate(waddleai_requests_total{service=\"management\"}[5m]))", "legendFormat": "error ratio" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit" } }
+        },
+        {
+          "id": 3, "title": "Latency percentiles", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(waddleai_request_duration_seconds_bucket{service=\"management\"}[5m])) by (le))", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, sum(rate(waddleai_request_duration_seconds_bucket{service=\"management\"}[5m])) by (le))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, sum(rate(waddleai_request_duration_seconds_bucket{service=\"management\"}[5m])) by (le))", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 4, "title": "Latency heatmap", "type": "heatmap",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_request_duration_seconds_bucket{service=\"management\"}[5m])) by (le)", "format": "heatmap", "legendFormat": {{ "{{le}}" | quote }} }
+          ]
+        },
+        {
+          "id": 5, "title": "Dependency health (1=up)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
+          "targets": [
+            { "expr": "waddleai_management_db_up", "legendFormat": "postgres" },
+            { "expr": "waddleai_management_redis_up", "legendFormat": "redis/valkey" }
+          ],
+          "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
+        },
+        {
+          "id": 6, "title": "DB operation duration (p95)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
+          "targets": [
+            { "expr": "histogram_quantile(0.95, sum(rate(waddleai_database_operation_duration_seconds_bucket{}[5m])) by (le, operation))", "legendFormat": {{ "{{operation}}" | quote }} }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 7, "title": "Uptime", "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 22 },
+          "targets": [ { "expr": "waddleai_management_uptime_seconds", "legendFormat": "uptime" } ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 8, "title": "Scrape target up", "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 22 },
+          "targets": [ { "expr": "up{job=\"waddleai-management\"}", "legendFormat": "up" } ],
+          "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
+        },
+        {
+          "id": 9, "title": "Feature-flag / license check errors (sibling PR metrics)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 22 },
+          "description": "feature_flag_evaluations_total / license_checks_total are added by a sibling PR in the same audit pass -- panel renders empty until that lands.",
+          "targets": [
+            { "expr": "sum(rate(feature_flag_evaluations_total{service=\"management\",result=\"error\"}[15m]))", "legendFormat": "flag eval errors" },
+            { "expr": "sum(rate(license_checks_total{service=\"management\",status=\"error\"}[15m]))", "legendFormat": "license check errors" }
+          ]
+        }
+      ]
+    }
+{{- end }}

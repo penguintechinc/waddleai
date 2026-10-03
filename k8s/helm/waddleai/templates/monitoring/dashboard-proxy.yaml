@@ -1,0 +1,121 @@
+{{/*
+Grafana dashboard ConfigMap for the proxy (AIProxy) service (O2 fix). Same
+sidecar-discovery pattern as dashboard-management.yaml. NOTE: any
+`legendFormat` using Grafana's `{{label}}` interpolation MUST go through the
+`{{ "{{label}}" | quote }}` escape below -- this file is rendered by Helm's
+Go template engine first, so a bare `{{label}}` would be (mis)parsed as a
+Helm template action, not shipped to Grafana.
+*/}}
+{{- if and .Values.monitoring.enabled .Values.monitoring.dashboards.enabled .Values.proxy.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "waddleai.fullname" . }}-dashboard-proxy
+  namespace: {{ .Values.monitoring.namespace | default .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+    {{ .Values.monitoring.dashboards.sidecarLabelKey }}: {{ .Values.monitoring.dashboards.sidecarLabelValue | quote }}
+    {{- with .Values.monitoring.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  waddleai-proxy.json: |
+    {
+      "title": "WaddleAI / Proxy",
+      "uid": "waddleai-proxy",
+      "schemaVersion": 39,
+      "timezone": "utc",
+      "time": { "from": "now-6h", "to": "now" },
+      "tags": ["waddleai", "proxy"],
+      "panels": [
+        {
+          "id": 1, "title": "Request rate (RED)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_requests_total{service=\"proxy\"}[5m])) by (status_code)", "legendFormat": {{ "{{status_code}}" | quote }} }
+          ]
+        },
+        {
+          "id": 2, "title": "Error ratio (5xx / total)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_requests_total{service=\"proxy\",status_code=~\"5..\"}[5m])) / sum(rate(waddleai_requests_total{service=\"proxy\"}[5m]))", "legendFormat": "error ratio" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit" } }
+        },
+        {
+          "id": 3, "title": "Latency percentiles (non-LLM routes)", "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(waddleai_request_duration_seconds_bucket{service=\"proxy\",endpoint!~\"/v1/chat/completions|/v1/messages|/v1/messages/count_tokens\"}[5m])) by (le))", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, sum(rate(waddleai_request_duration_seconds_bucket{service=\"proxy\",endpoint!~\"/v1/chat/completions|/v1/messages|/v1/messages/count_tokens\"}[5m])) by (le))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, sum(rate(waddleai_request_duration_seconds_bucket{service=\"proxy\",endpoint!~\"/v1/chat/completions|/v1/messages|/v1/messages/count_tokens\"}[5m])) by (le))", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 4, "title": "Latency heatmap (all routes)", "type": "heatmap",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_request_duration_seconds_bucket{service=\"proxy\"}[5m])) by (le)", "format": "heatmap", "legendFormat": {{ "{{le}}" | quote }} }
+          ]
+        },
+        {
+          "id": 5, "title": "LLM route latency percentiles (own budget)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
+          "targets": [
+            { "expr": "histogram_quantile(0.95, sum(rate(waddleai_request_duration_seconds_bucket{service=\"proxy\",endpoint=~\"/v1/chat/completions|/v1/messages|/v1/messages/count_tokens\"}[5m])) by (le))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, sum(rate(waddleai_request_duration_seconds_bucket{service=\"proxy\",endpoint=~\"/v1/chat/completions|/v1/messages|/v1/messages/count_tokens\"}[5m])) by (le))", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 6, "title": "In-flight concurrency vs. cap (sibling PR metrics)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
+          "description": "proxy_inflight_requests / proxy_concurrency_limit are added by a sibling PR in the same audit pass.",
+          "targets": [
+            { "expr": "proxy_inflight_requests{job=\"waddleai-proxy\"}", "legendFormat": "in-flight" },
+            { "expr": "proxy_concurrency_limit{job=\"waddleai-proxy\"}", "legendFormat": "cap" }
+          ]
+        },
+        {
+          "id": 7, "title": "Provider health", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 22 },
+          "targets": [
+            { "expr": "waddleai_provider_health{}", "legendFormat": {{ "{{provider}}/{{endpoint}}" | quote }} }
+          ],
+          "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
+        },
+        {
+          "id": 8, "title": "Response cache hit rate", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 8, "x": 8, "y": 22 },
+          "targets": [
+            { "expr": "sum(rate(waddleai_cache_lookups_total{result=\"hit\"}[5m])) by (layer) / sum(rate(waddleai_cache_lookups_total{}[5m])) by (layer)", "legendFormat": {{ "{{layer}}" | quote }} }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit" } }
+        },
+        {
+          "id": 9, "title": "Scrape target up", "type": "stat",
+          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 22 },
+          "targets": [ { "expr": "up{job=\"waddleai-proxy\"}", "legendFormat": "up" } ],
+          "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
+        },
+        {
+          "id": 10, "title": "Feature-flag / license check errors (sibling PR metrics)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 28 },
+          "targets": [
+            { "expr": "sum(rate(feature_flag_evaluations_total{service=\"proxy\",result=\"error\"}[15m]))", "legendFormat": "flag eval errors" },
+            { "expr": "sum(rate(license_checks_total{service=\"proxy\",status=\"error\"}[15m]))", "legendFormat": "license check errors" }
+          ]
+        },
+        {
+          "id": 11, "title": "DB pool waiters (sibling PR metrics)", "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 28 },
+          "targets": [
+            { "expr": "db_pool_waiting{job=\"waddleai-proxy\"}", "legendFormat": "waiting" }
+          ]
+        }
+      ]
+    }
+{{- end }}

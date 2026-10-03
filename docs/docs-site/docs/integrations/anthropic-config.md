@@ -644,7 +644,7 @@ logging:
 - [OpenAI Configuration](openai-config.md)
 - [Ollama Setup](ollama-setup.md)
 - [Management API](../api/management-api.md)
-- [Usage Monitoring](../administration/monitoring.md)
+- [Monitoring Guide](../operations/MONITORING.md)
 
 ## Support
 
