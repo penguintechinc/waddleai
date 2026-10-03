@@ -505,6 +505,82 @@ class TestGetEmbeddingLiveAiohttpFailure:
         assert result == [0.1]
 
 
+class TestGetEmbeddingBulkheadTelemetry:
+    """Ops-audit O10/O5: `_get_embedding` records `record_embedding_call`
+    labeled by `embedding_endpoint`, so chat vs dedicated embedding Ollama
+    saturation stay independently visible.
+    """
+
+    async def test_success_records_ok_with_configured_endpoint_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aiohttp
+
+        import penguincode_cli.docs_rag.indexer as indexer_module
+
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: _FakeAiohttpSession(200))
+        calls: list[tuple[str, str, float]] = []
+        monkeypatch.setattr(
+            indexer_module,
+            "record_embedding_call",
+            lambda endpoint, outcome, ms: calls.append((endpoint, outcome, ms)),
+        )
+        indexer = DocumentationIndexer(
+            store=_FakeVectorStore(), embedding_endpoint="embedding_ollama"
+        )
+        await indexer._get_embedding("hello world")
+
+        assert len(calls) == 1
+        endpoint, outcome, _duration = calls[0]
+        assert endpoint == "embedding_ollama"
+        assert outcome == "ok"
+
+    async def test_failure_records_error_with_default_chat_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aiohttp
+
+        import penguincode_cli.docs_rag.indexer as indexer_module
+
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: _FakeAiohttpSession(500))
+        calls: list[tuple[str, str, float]] = []
+        monkeypatch.setattr(
+            indexer_module,
+            "record_embedding_call",
+            lambda endpoint, outcome, ms: calls.append((endpoint, outcome, ms)),
+        )
+        indexer = DocumentationIndexer(store=_FakeVectorStore())  # default label: chat_ollama
+        with pytest.raises(RuntimeError, match="Embedding failed: 500"):
+            await indexer._get_embedding("hello world")
+
+        assert len(calls) == 1
+        endpoint, outcome, _duration = calls[0]
+        assert endpoint == "chat_ollama"
+        assert outcome == "error"
+
+    async def test_test_double_embed_fn_bypasses_telemetry_entirely(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The injected `embed_fn` test seam never touches Ollama -- no metric recorded."""
+        import penguincode_cli.docs_rag.indexer as indexer_module
+
+        calls: list[tuple[str, str, float]] = []
+        monkeypatch.setattr(
+            indexer_module,
+            "record_embedding_call",
+            lambda endpoint, outcome, ms: calls.append((endpoint, outcome, ms)),
+        )
+
+        async def _fake_embed(_text: str) -> list[float]:
+            return [0.9]
+
+        indexer = DocumentationIndexer(store=_FakeVectorStore(), embed_fn=_fake_embed)
+        result = await indexer._get_embedding("hello world")
+
+        assert result == [0.9]
+        assert calls == []
+
+
 class TestChunkTextEdgeCases:
     """``_chunk_text``'s empty-input short circuit."""
 

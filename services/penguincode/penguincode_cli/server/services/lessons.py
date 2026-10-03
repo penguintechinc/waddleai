@@ -84,7 +84,7 @@ import grpc
 
 from penguincode_cli.auth.middleware import current_scope_context
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.config.settings import MemoryConfig, Settings
+from penguincode_cli.config.settings import MemoryConfig, Settings, resolve_embedding_url
 from penguincode_cli.flags import is_enabled
 from penguincode_cli.lessons.scrub import (
     LESSONS_PROMOTION_FLAG,
@@ -293,7 +293,10 @@ def _build_scoped_memory_manager(settings: Settings) -> ScopedMemoryManager:
     """
     try:
         manager = create_memory_manager(
-            settings.memory, settings.ollama.api_url, settings.models.orchestration
+            settings.memory,
+            settings.ollama.api_url,
+            settings.models.orchestration,
+            resolve_embedding_url(settings.ollama),
         )
     except Exception as exc:  # noqa: BLE001 -- mem0/Ollama outage at construction must not crash the server
         logger.warning("lessons: MemoryManager construction failed, memory disabled: %s", exc)

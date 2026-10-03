@@ -76,7 +76,12 @@ from penguincode_cli.flags.client import (
     RAG_FLAG,
     is_enabled,
 )
-from penguincode_cli.observability.otel import record_query_clamped, store_span
+from penguincode_cli.observability.otel import (
+    EmbeddingEndpoint,
+    record_embedding_call,
+    record_query_clamped,
+    store_span,
+)
 from penguincode_cli.stores.graph import GraphStore, Subgraph, create_graph_store
 from penguincode_cli.stores.vector import PgVectorStore, TableName, VectorHit, VectorStore
 
@@ -124,28 +129,41 @@ async def _get_embedding(
     embed_fn: EmbedFn | None,
     ollama_base_url: str,
     embedding_model: str,
+    embedding_endpoint: EmbeddingEndpoint = "chat_ollama",
 ) -> list[float]:
     """Embed ``query`` via the injected test double, or Ollama's ``/api/embeddings``.
 
     Raises on failure (connection error, non-2xx, missing/empty embedding
     field) -- the caller (``retrieve``) is responsible for catching and
     degrading, matching ``docs_rag/indexer.py``'s ``_get_embedding``/``search``
-    split.
+    split. Records ``observability.otel.record_embedding_call`` (duration +
+    outcome, labeled by ``embedding_endpoint``) around the live Ollama call
+    only -- ``embed_fn`` test doubles bypass Ollama entirely and are excluded.
     """
     if embed_fn is not None:
         return await embed_fn(query)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            f"{ollama_base_url}/api/embeddings",
-            json={"model": embedding_model, "prompt": query},
-        )
-        response.raise_for_status()
-        data: dict[str, Any] = response.json()
-        embedding = data.get("embedding")
-        if not embedding:
-            raise RuntimeError("ollama embeddings response missing a non-empty 'embedding' field")
-        return [float(x) for x in embedding]
+    import time
+
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{ollama_base_url}/api/embeddings",
+                json={"model": embedding_model, "prompt": query},
+            )
+            response.raise_for_status()
+            data: dict[str, Any] = response.json()
+            embedding = data.get("embedding")
+            if not embedding:
+                raise RuntimeError(
+                    "ollama embeddings response missing a non-empty 'embedding' field"
+                )
+    except Exception:
+        record_embedding_call(embedding_endpoint, "error", (time.perf_counter() - start) * 1000)
+        raise
+    record_embedding_call(embedding_endpoint, "ok", (time.perf_counter() - start) * 1000)
+    return [float(x) for x in embedding]
 
 
 async def _query_table(
@@ -257,6 +275,7 @@ async def retrieve(
     embed_fn: EmbedFn | None = None,
     ollama_base_url: str = _DEFAULT_OLLAMA_URL,
     embedding_model: str = _DEFAULT_EMBEDDING_MODEL,
+    embedding_endpoint: EmbeddingEndpoint = "chat_ollama",
     dsn: str | None = None,
     max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
     limits: LimitsConfig | None = None,
@@ -280,9 +299,16 @@ async def retrieve(
         graph_store: Test/production seam -- defaults to
             ``create_graph_store`` against the same DSN.
         embed_fn: Test seam bypassing the live Ollama HTTP call.
-        ollama_base_url: Ollama base URL for the default embedding call.
+        ollama_base_url: Ollama base URL for the default embedding call --
+            callers should resolve this via
+            ``config.settings.resolve_embedding_url`` (ops-audit O10/O5
+            bulkhead) rather than hardcoding the chat-serving Ollama URL.
         embedding_model: Ollama embedding model (768-dim ``nomic-embed-text``
             everywhere per the platform plan -- do not change casually).
+        embedding_endpoint: Bounded metric label for the embedding-call
+            telemetry (``"chat_ollama"`` vs ``"embedding_ollama"``) --
+            should match whichever endpoint ``ollama_base_url`` resolved to,
+            via ``config.settings.embedding_endpoint_label``.
         dsn: Shared-Postgres DSN for default store construction; falls back
             to the ``PGVECTOR_URL`` env var, matching ``PGVectorStoreConfig``
             / ``PostgresGraphStoreConfig``.
@@ -317,6 +343,7 @@ async def retrieve(
                 embed_fn=embed_fn,
                 ollama_base_url=ollama_base_url,
                 embedding_model=embedding_model,
+                embedding_endpoint=embedding_endpoint,
             )
         except Exception as exc:  # noqa: BLE001 -- Ollama outage degrades to empty retrieval
             logger.warning("graphrag.retrieve: query embedding failed: %s", exc)

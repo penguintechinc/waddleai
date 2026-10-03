@@ -3,7 +3,7 @@ check|  - 'per-file-ignores' -> 'lint.per-file-ignores'
 check|  - 'select' -> 'lint.select'
 check|penguincode_cli/agents/base.py:708:29: B007 Loop control variable `target` not used within loop body
 check|penguincode_cli/agents/intent.py:76:5: SIM102 Use a single `if` statement instead of nested `if` statements
-check|penguincode_cli/core/repl.py:1498:50: B023 Function definition does not bind loop variable `prompt_text`
+check|penguincode_cli/core/repl.py:1500:50: B023 Function definition does not bind loop variable `prompt_text`
 check|penguincode_cli/skills/loader.py:108:13: SIM108 Use ternary operator `name = skill_dir.name if skill_dir else skill_file.stem` instead of `if`-`else`-block
 check|penguincode_cli/tools/bash.py:87:17: SIM102 Use a single `if` statement instead of nested `if` statements
 check|shared/licensing/python_client.py:125:13: B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
@@ -107,10 +107,8 @@ format|penguincode_cli/defaults/skills/testing-api-endpoints/SKILL.md:32:28: unf
 format|penguincode_cli/defaults/skills/writing-skills/anthropic-best-practices.md:870:25: unformatted: File would be reformatted
 format|penguincode_cli/docs_rag/detector.py:94:31: unformatted: File would be reformatted
 format|penguincode_cli/docs_rag/fetcher.py:127:17: unformatted: File would be reformatted
-format|penguincode_cli/docs_rag/indexer.py:202:20: unformatted: File would be reformatted
 format|penguincode_cli/docs_rag/sources.py:385:35: unformatted: File would be reformatted
 format|penguincode_cli/lessons/scrub.py:484:39: unformatted: File would be reformatted
-format|penguincode_cli/main.py:341:35: unformatted: File would be reformatted
 format|penguincode_cli/ollama/client.py:146:43: unformatted: File would be reformatted
 format|penguincode_cli/server/models/config_store.py:254:18: unformatted: File would be reformatted
 format|penguincode_cli/server/services/admin.py:119:14: unformatted: File would be reformatted
@@ -142,7 +140,9 @@ format|tests/test_graphs_code.py:477:24: unformatted: File would be reformatted
 format|tests/test_grpc_client_tracing.py:68:35: unformatted: File would be reformatted
 format|tests/test_live_scenarios.py:101:63: unformatted: File would be reformatted
 format|tests/test_mcp_tools.py:199:33: unformatted: File would be reformatted
+format|tests/test_memory.py:342:65: unformatted: File would be reformatted
 format|tests/test_rest_api.py:73:51: unformatted: File would be reformatted
+format|tests/test_retrieval_graphrag.py:325:29: unformatted: File would be reformatted
 format|tests/test_scenarios.py:218:41: unformatted: File would be reformatted
 format|tests/test_search_engines.py:28:31: unformatted: File would be reformatted
 format|tests/test_security_audit_2026_09_14.py:332:28: unformatted: File would be reformatted

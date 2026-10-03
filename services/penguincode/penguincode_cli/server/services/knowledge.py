@@ -35,7 +35,14 @@ from google.protobuf import struct_pb2
 
 from penguincode_cli.auth.middleware import current_scope_context
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.config.settings import GraphConfig, IndexingConfig, MemoryConfig, Settings
+from penguincode_cli.config.settings import (
+    GraphConfig,
+    IndexingConfig,
+    MemoryConfig,
+    Settings,
+    embedding_endpoint_label,
+    resolve_embedding_url,
+)
 from penguincode_cli.docs_rag.indexer import DocumentationIndexer
 from penguincode_cli.docs_rag.models import Language as ModelLanguage
 from penguincode_cli.docs_rag.models import Library
@@ -327,7 +334,10 @@ def _build_scoped_memory_manager(settings: Settings) -> ScopedMemoryManager:
     """
     try:
         manager = create_memory_manager(
-            settings.memory, settings.ollama.api_url, settings.models.orchestration
+            settings.memory,
+            settings.ollama.api_url,
+            settings.models.orchestration,
+            resolve_embedding_url(settings.ollama),
         )
     except Exception as exc:  # noqa: BLE001 -- mem0/Ollama outage at construction must not crash the server
         logger.warning("knowledge: MemoryManager construction failed, memory disabled: %s", exc)
@@ -358,7 +368,14 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
         start_index_workers: bool = True,
     ) -> None:
         self._settings = settings
-        self._indexer = indexer if indexer is not None else DocumentationIndexer()
+        self._indexer = (
+            indexer
+            if indexer is not None
+            else DocumentationIndexer(
+                ollama_base_url=resolve_embedding_url(settings.ollama),
+                embedding_endpoint=embedding_endpoint_label(settings.ollama),
+            )
+        )
         self._scoped_memory = (
             scoped_memory if scoped_memory is not None else _build_scoped_memory_manager(settings)
         )
@@ -592,6 +609,8 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
             graph_depth=graph_depth,
             table_count=len(requested_tables),
         ):
+            embedding_url = resolve_embedding_url(self._settings.ollama)
+            embedding_endpoint = embedding_endpoint_label(self._settings.ollama)
             if requested_tables:
                 result = await retrieve(
                     ctx,
@@ -599,10 +618,17 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
                     n_vector=n_vector,
                     graph_depth=graph_depth,
                     vector_tables=tuple(requested_tables),
+                    ollama_base_url=embedding_url,
+                    embedding_endpoint=embedding_endpoint,
                 )
             else:
                 result = await retrieve(
-                    ctx, request.query, n_vector=n_vector, graph_depth=graph_depth
+                    ctx,
+                    request.query,
+                    n_vector=n_vector,
+                    graph_depth=graph_depth,
+                    ollama_base_url=embedding_url,
+                    embedding_endpoint=embedding_endpoint,
                 )
 
         response = QueryResponse(

@@ -54,6 +54,28 @@ streaming `DispatchStage` once that path times the streamed upstream call
 directly -- same histogram, same bounded labels, no separate instrument
 needed.
 
+## Embedding-call metrics (Ollama-embedding bulkhead, ops O10/O5)
+
+The in-cluster Ollama instance serving live chat (`waddleai_llm_*` above)
+also serves embedding traffic by default: the semantic-cache prompt
+embedding in `shared/cache/semantic.py`, plus penguincode's doc/code
+indexing, GraphRAG query embedding, and mem0 memory embedder. A bulk
+embedding burst can saturate that shared instance and degrade chat
+latency cluster-wide with no warning, unless the two are told apart.
+
+| Metric | Type | Labels | Notes |
+|---|---|---|---|
+| `waddleai_embedding_call_duration_seconds` | Histogram | `endpoint`, `outcome` | `endpoint` is the closed `chat_ollama`/`embedding_ollama` label (never the raw URL) -- `chat_ollama` means the call went to the same instance serving `waddleai_llm_*` traffic above; `embedding_ollama` means it went to a dedicated endpoint (see `OLLAMA_EMBEDDING_URL` below). `outcome` is `ok`/`error`. Buckets: `0.01`-`30.0`s. |
+| `waddleai_embedding_calls_total` | Counter | `endpoint`, `outcome` | Same labels as above. |
+
+Recorded by `shared.utils.embedding_manager.EmbeddingManager.embed()` for
+the `ollama` backend only (the bulkhead concept doesn't apply to the
+`openai`/`anthropic` backends, which have no local saturation risk).
+Cross-reference against `waddleai_llm_request_duration_seconds` (chat) and
+`waddleai_cache_lookup_duration_seconds` (semantic-cache lookup, which
+includes this embedding call) to see whether a chat-latency regression
+correlates with embedding-call volume on the SAME `chat_ollama` endpoint.
+
 ## Proxy ConcurrencyLimiter metrics (ops O10)
 
 | Metric | Type | Labels | Notes |
@@ -99,6 +121,8 @@ literal in the hot path (release-audit-2026-10-02, ops O4/O6/O10):
 | `PROXY_VALKEY_SOCKET_TIMEOUT_SECONDS` | `5` | Per-command socket timeout on those same Valkey clients. |
 | `PROXY_VALKEY_SOCKET_CONNECT_TIMEOUT_SECONDS` | `5` | Connection-establishment timeout on those same clients. |
 | `PROXY_VALKEY_HEALTH_CHECK_INTERVAL_SECONDS` | `30` | How often pooled connections are health-checked, so idle ones don't go stale against Valkey. |
+| `OLLAMA_EMBEDDING_URL` | unset | Ollama-embedding bulkhead (ops O10/O5): when set, `shared.utils.embedding_manager.create_embedding_manager()` (and therefore the proxy's semantic-cache/RAG embedding calls) routes to this dedicated endpoint instead of `OLLAMA_HOST`. Unset means the fallback chain below applies -- today's single-Ollama behavior, unchanged. Pair with `k8s/helm/waddleai`'s `ollamaEmbeddings.enabled` Deployment. |
+| `OLLAMA_HOST` | `http://localhost:11434` | Fallback target for embedding calls when `OLLAMA_EMBEDDING_URL` is unset -- the same chat-serving Ollama host used elsewhere (`shared/vectorstore/factory.py`). |
 
 ### Body-size enforcement path
 

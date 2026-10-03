@@ -199,6 +199,28 @@ class WaddleAIMetrics:
             buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0),
         )
 
+        # Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High): a bulk
+        # document-indexing burst against the same Ollama instance serving
+        # live chat completions can saturate its GPU/CPU and degrade/time
+        # out in-flight chat requests cluster-wide. `endpoint` is the closed
+        # "chat_ollama"/"embedding_ollama" label (see
+        # `shared.utils.embedding_manager.embedding_ollama_endpoint_label`)
+        # -- never the raw URL -- so saturation of each instance stays
+        # independently visible on the same metric, cross-referenced
+        # against `llm_request_duration` (chat) and the semantic-cache
+        # lookup metrics above (ops O11 stampede protection).
+        self.embedding_call_duration_seconds = Histogram(
+            "waddleai_embedding_call_duration_seconds",
+            "Embedding call duration in seconds, by target endpoint and outcome",
+            ["endpoint", "outcome"],
+            buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+        )
+        self.embedding_calls_total = Counter(
+            "waddleai_embedding_calls_total",
+            "Embedding calls, by target endpoint and outcome",
+            ["endpoint", "outcome"],
+        )
+
         # Proxy ConcurrencyLimiter observability (release-audit-2026-10-02,
         # ops O10) -- the limiter enforces a PER-WORKER ceiling
         # (PROXY_MAX_CONCURRENT_PER_WORKER); these make the real,
@@ -446,6 +468,18 @@ class WaddleAIMetrics:
         self.llm_request_duration.labels(provider=provider, model=model, status=status).observe(
             duration
         )
+
+    def record_embedding_call(self, endpoint: str, outcome: str, duration: float) -> None:
+        """Record one embedding call's latency + outcome, labeled by target endpoint.
+
+        `endpoint` must be the closed "chat_ollama"/"embedding_ollama" label
+        (ops-audit O10/O5 bulkhead) -- never the raw URL. `outcome` is
+        "ok" or "error".
+        """
+        self.embedding_call_duration_seconds.labels(endpoint=endpoint, outcome=outcome).observe(
+            duration
+        )
+        self.embedding_calls_total.labels(endpoint=endpoint, outcome=outcome).inc()
 
     def set_inflight_requests(self, count: int) -> None:
         """Report the proxy ConcurrencyLimiter's current in-flight count for this worker."""

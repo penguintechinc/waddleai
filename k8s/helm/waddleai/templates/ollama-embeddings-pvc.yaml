@@ -1,0 +1,19 @@
+{{- if and .Values.ollamaEmbeddings.enabled .Values.ollamaEmbeddings.persistence.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "waddleai.fullname" . }}-ollama-embeddings-models
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-embeddings
+spec:
+  accessModes:
+    - {{ .Values.ollamaEmbeddings.persistence.accessMode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ .Values.ollamaEmbeddings.persistence.size }}
+  {{- if .Values.ollamaEmbeddings.persistence.storageClass }}
+  storageClassName: {{ .Values.ollamaEmbeddings.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

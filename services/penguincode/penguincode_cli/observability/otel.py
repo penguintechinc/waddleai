@@ -152,6 +152,19 @@ PROMETHEUS_CONTENT_TYPE: Final = CONTENT_TYPE_LATEST
 OpKind = Literal["vector_query", "graph_query", "extraction"]
 _VALID_OP_KINDS: Final[frozenset[str]] = frozenset({"vector_query", "graph_query", "extraction"})
 
+#: Ollama-embedding bulkhead (ops-audit O10/O5): which Ollama instance an
+#: embedding call actually targeted -- ``"embedding_ollama"`` when
+#: ``config.settings.OllamaConfig.embedding_api_url`` is configured (the
+#: dedicated bulkhead deployment), else ``"chat_ollama"`` (today's single,
+#: chat-serving instance). Closed two-value set, never the raw URL, so
+#: saturation of each can be told apart on the same metric without an
+#: unbounded label -- see ``config.settings.embedding_endpoint_label``.
+EmbeddingEndpoint = Literal["chat_ollama", "embedding_ollama"]
+_VALID_EMBEDDING_ENDPOINTS: Final[frozenset[str]] = frozenset({"chat_ollama", "embedding_ollama"})
+
+EMBEDDING_CALL_DURATION_HISTOGRAM_NAME: Final = "penguincode.embedding_call.duration"
+EMBEDDING_CALL_EVENTS_COUNTER_NAME: Final = "penguincode.embedding_call.events"
+
 _tracer: trace.Tracer | None = None
 _meter: metrics.Meter | None = None
 _initialized = False
@@ -171,6 +184,8 @@ _db_pool_in_use_gauge: Any = None
 _db_pool_waiting_gauge: Any = None
 _db_pool_wait_histogram: metrics.Histogram | None = None
 _query_clamped_counter: metrics.Counter | None = None
+_embedding_call_duration_histogram: metrics.Histogram | None = None
+_embedding_call_events_counter: metrics.Counter | None = None
 
 #: Handler bridging stdlib logging to OTLP, installed on the root logger by
 #: ``init_observability()`` when a log pipeline is active. Never replaces
@@ -215,6 +230,13 @@ class ObservabilityConfig:
 def _validate_op_kind(op_kind: str) -> None:
     if op_kind not in _VALID_OP_KINDS:
         raise ValueError(f"op_kind must be one of {sorted(_VALID_OP_KINDS)}, got {op_kind!r}")
+
+
+def _validate_embedding_endpoint(endpoint: str) -> None:
+    if endpoint not in _VALID_EMBEDDING_ENDPOINTS:
+        raise ValueError(
+            f"endpoint must be one of {sorted(_VALID_EMBEDDING_ENDPOINTS)}, got {endpoint!r}"
+        )
 
 
 def build_logging_handler(logger_provider: _logs.LoggerProvider) -> logging.Handler:
@@ -483,6 +505,46 @@ def _query_clamped_counter_instrument() -> metrics.Counter:
     return _query_clamped_counter
 
 
+def _embedding_call_duration_histogram_instrument() -> metrics.Histogram:
+    global _embedding_call_duration_histogram
+    if _embedding_call_duration_histogram is None:
+        _embedding_call_duration_histogram = get_meter().create_histogram(
+            EMBEDDING_CALL_DURATION_HISTOGRAM_NAME,
+            unit="ms",
+            description="Latency of one Ollama embedding call, by endpoint (chat_ollama vs "
+            "embedding_ollama) and outcome -- see the Ollama-embedding bulkhead "
+            "(ops-audit O10/O5)",
+        )
+    return _embedding_call_duration_histogram
+
+
+def _embedding_call_events_counter_instrument() -> metrics.Counter:
+    global _embedding_call_events_counter
+    if _embedding_call_events_counter is None:
+        _embedding_call_events_counter = get_meter().create_counter(
+            EMBEDDING_CALL_EVENTS_COUNTER_NAME,
+            unit="1",
+            description="Ollama embedding calls, by endpoint (chat_ollama vs embedding_ollama) "
+            "and outcome",
+        )
+    return _embedding_call_events_counter
+
+
+def record_embedding_call(endpoint: EmbeddingEndpoint, outcome: str, duration_ms: float) -> None:
+    """Record one Ollama embedding call's latency + outcome, labeled by target endpoint.
+
+    ``endpoint`` is the closed ``chat_ollama``/``embedding_ollama`` label
+    (see ``EmbeddingEndpoint``) -- never the raw URL -- so saturation of the
+    shared chat-serving Ollama instance and the dedicated embedding bulkhead
+    deployment (when configured) stay independently visible on the same
+    metric. ``outcome`` is ``"ok"`` or ``"error"``.
+    """
+    _validate_embedding_endpoint(endpoint)
+    attrs: dict[str, AttributeValue] = {"endpoint": endpoint, "outcome": outcome}
+    _embedding_call_duration_histogram_instrument().record(duration_ms, attributes=attrs)
+    _embedding_call_events_counter_instrument().add(1, attributes=attrs)
+
+
 def update_pool_gauges(pool_size: int, pool_available: int, requests_waiting: int) -> None:
     """Record point-in-time shared-pool occupancy (`db/pool.py`'s borrow/release path).
 
@@ -535,6 +597,7 @@ def reset_for_testing() -> None:
         _prometheus_reader
     global _db_pool_in_use_gauge, _db_pool_waiting_gauge, _db_pool_wait_histogram
     global _query_clamped_counter
+    global _embedding_call_duration_histogram, _embedding_call_events_counter
     if _log_handler is not None:
         logging.getLogger().removeHandler(_log_handler)
         logging.getLogger(_DEBUG_LOGGER_NAME).removeHandler(_log_handler)
@@ -559,6 +622,8 @@ def reset_for_testing() -> None:
     _db_pool_waiting_gauge = None
     _db_pool_wait_histogram = None
     _query_clamped_counter = None
+    _embedding_call_duration_histogram = None
+    _embedding_call_events_counter = None
     _log_handler = None
 
 

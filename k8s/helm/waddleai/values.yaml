@@ -859,6 +859,115 @@ ollama:
     timeoutSeconds: 5
     failureThreshold: 60
 
+# Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High) -- an OPTIONAL,
+# dedicated Ollama Deployment serving ONLY embedding traffic (penguincode
+# doc/code indexing, GraphRAG query embedding, mem0 memory embedder, and the
+# proxy's semantic-cache embedding), so a bulk document-indexing burst can
+# no longer saturate the SAME Ollama instance serving live chat completions
+# above. Disabled by default: `enabled: false` means every embedding-call
+# site falls back to the single `ollama` block above, i.e. current behavior
+# is completely unchanged until an operator opts in. When enabling, also set
+# `OLLAMA_EMBEDDING_URL` (penguincode) so embedding calls actually route here
+# -- see docs/penguincode/ARCHITECTURE.md and docs/ARCHITECTURE.md for the
+# full wiring and when to enable this.
+ollamaEmbeddings:
+  enabled: false
+
+  # Always a Deployment (never daemonset/pool-mode like the chat-serving
+  # ollama block) -- sized by embedding request volume, not "one per GPU node".
+  replicaCount: 1
+  strategy: RollingUpdate
+
+  # Reuses the same hardened image as the chat-serving ollama block by
+  # default (digest: "" required in prod per house SHA256-pinning rule; tag
+  # OK alpha/beta, PenguinTech-owned image).
+  image:
+    repository: ghcr.io/penguintechinc/waddleai/ollama
+    tag: "hardened"
+    pullPolicy: IfNotPresent
+
+  # NOT configurable at runtime -- see templates/ollama-embeddings-service.yaml,
+  # which hardcodes ClusterIP (spec §10.3). Field kept for visibility only.
+  service:
+    port: 11434
+    targetPort: 11434
+
+  # Unset (no GPU pinning, no node pool) by default -- override to pin this
+  # workload to its own node pool/GPU, independent of the chat-serving
+  # ollama block's nodeSelector/tolerations above.
+  nodeSelector: {}
+  tolerations: []
+
+  gpu:
+    enabled: false
+    type: nvidia
+    count: 1
+
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "1000m"
+    limits:
+      memory: "8Gi"
+      cpu: "2000m"
+
+  persistence:
+    enabled: false
+    size: 20Gi
+    storageClass: ""
+    accessMode: ReadWriteMany
+
+  # Typically just the embedding model(s), e.g. ["nomic-embed-text"] -- this
+  # deployment has no chat-completion use, so it never needs a chat/LLM model.
+  models: []
+
+  env:
+    OLLAMA_HOST: "0.0.0.0"
+    OLLAMA_KEEP_ALIVE: "24h"
+    OLLAMA_MAX_LOADED_MODELS: "1"
+    OLLAMA_NUM_PARALLEL: "4"
+
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 5
+
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  startupProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 11434
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 60
+
+  # See templates/monitoring/servicemonitor-ollama-embeddings.yaml's module
+  # comment for why this is its OWN flag, independent of the global
+  # monitoring.serviceMonitor.enabled switch: upstream Ollama exposes no
+  # Prometheus /metrics endpoint today, so this stays FALSE until one
+  # actually exists (sidecar exporter or an upstream feature) -- flipping
+  # the global switch on (as beta already does) must never make this
+  # Service start getting scraped at a path that 404s every interval.
+  serviceMonitor:
+    enabled: false
+    path: /metrics
+
 # llama.cpp Inference Engine (self-managed alternative to Ollama)
 # llama-server serves exactly ONE model per process (unlike `ollama serve`, which
 # multiplexes). Each entry in `models` renders its own DaemonSet + Service, named

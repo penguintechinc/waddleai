@@ -45,6 +45,7 @@ from typing import Any
 from penguincode_cli.auth.scope import ScopeContext
 from penguincode_cli.flags.client import RAG_FLAG, is_enabled
 from penguincode_cli.graphs.knowledge import extract_knowledge
+from penguincode_cli.observability.otel import EmbeddingEndpoint, record_embedding_call
 from penguincode_cli.stores.vector import PgVectorStore, VectorItem, VectorStore
 
 from .models import DocChunk, DocSearchResult, Language, Library
@@ -91,6 +92,7 @@ class DocumentationIndexer:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         ollama_base_url: str = "http://localhost:11434",
+        embedding_endpoint: EmbeddingEndpoint = "chat_ollama",
         dsn: str | None = None,
         metadata_dir: str = "./.penguincode/docs_index",
         store: VectorStore | None = None,
@@ -100,6 +102,13 @@ class DocumentationIndexer:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.ollama_url = ollama_base_url
+        #: Bounded metric label for `_get_embedding`'s telemetry (ops-audit
+        #: O10/O5 bulkhead) -- callers construct this via
+        #: `config.settings.embedding_endpoint_label(settings.ollama)` so it
+        #: always matches whatever URL `ollama_base_url` actually resolved
+        #: to; defaults to "chat_ollama" (the pre-bulkhead, single-instance
+        #: behavior) when not supplied.
+        self._embedding_endpoint: EmbeddingEndpoint = embedding_endpoint
         self._embed_fn = embed_fn
 
         # VectorStore: default PgVectorStore against PGVECTOR_URL (same
@@ -193,22 +202,41 @@ class DocumentationIndexer:
             return False
 
     async def _get_embedding(self, text: str) -> list[float]:
-        """Get embedding for text using Ollama's `nomic-embed-text` (768-dim), or the test double."""
+        """Get embedding for text using Ollama's `nomic-embed-text` (768-dim), or the test double.
+
+        Records `observability.otel.record_embedding_call` (duration + outcome,
+        labeled by `self._embedding_endpoint`) around the live HTTP call only
+        -- the test double (`self._embed_fn`) bypasses Ollama entirely, so it
+        is excluded from this real-call latency metric.
+        """
         if self._embed_fn is not None:
             return await self._embed_fn(text)
 
+        import time
+
         import aiohttp
 
-        async with aiohttp.ClientSession() as session, session.post(
-            f"{self.ollama_url}/api/embeddings",
-            json={"model": self.embedding_model, "prompt": text},
-            timeout=30,
-        ) as response:
-            if response.status == 200:
+        start = time.perf_counter()
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(
+                    f"{self.ollama_url}/api/embeddings",
+                    json={"model": self.embedding_model, "prompt": text},
+                    timeout=30,
+                ) as response,
+            ):
+                if response.status != 200:
+                    raise RuntimeError(f"Embedding failed: {response.status}")
                 data = await response.json()
                 embedding: list[float] = data.get("embedding", [])
-                return embedding
-            raise RuntimeError(f"Embedding failed: {response.status}")
+        except Exception:
+            record_embedding_call(
+                self._embedding_endpoint, "error", (time.perf_counter() - start) * 1000
+            )
+            raise
+        record_embedding_call(self._embedding_endpoint, "ok", (time.perf_counter() - start) * 1000)
+        return embedding
 
     def _chunk_text(self, text: str, metadata: dict[str, str]) -> list[DocChunk]:
         """Split text into overlapping chunks with a stable, content-derived id."""

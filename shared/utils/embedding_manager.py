@@ -6,13 +6,66 @@ Supports three backends:
 - anthropic: Claude Haiku semantic representation — requires ANTHROPIC_API_KEY
   Note: Anthropic has no native embeddings API. Haiku generates a structured
   float array via a deterministic prompt, suitable for approximate semantic matching.
+
+**Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High).** The in-cluster
+Ollama instance proxy's semantic cache embeds against (``_embed_ollama``
+below) is the SAME instance serving live chat completions (see
+``shared.llm.llm_connectors``). A bulk document-indexing burst elsewhere in
+the platform can saturate that instance's GPU/CPU and degrade or time out
+live chat cluster-wide — there is no QoS separation. ``OLLAMA_EMBEDDING_URL``
+(see ``resolve_embedding_ollama_host`` below), when set, routes embedding
+calls to a dedicated Ollama deployment instead; unset (the default), every
+embedding call falls back to ``OLLAMA_HOST`` (or ``ollama_host``'s own
+hardcoded default) — today's single-Ollama behavior, unchanged.
 """
 
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass
+from typing import Final
 
 logger = logging.getLogger(__name__)
+
+#: Dedicated-embedding-endpoint override (ops-audit O10/O5 bulkhead). Unset
+#: by default -- every embedding call then falls back to `_CHAT_OLLAMA_HOST_ENV`
+#: (today's single, chat-serving Ollama), i.e. current behavior is unchanged
+#: unless an operator opts in by setting this.
+_EMBEDDING_OLLAMA_URL_ENV: Final = "OLLAMA_EMBEDDING_URL"
+
+#: The chat-serving Ollama host env var already used elsewhere in the proxy
+#: (`shared.vectorstore.factory`) -- the fallback target when the dedicated
+#: embedding endpoint above is not configured.
+_CHAT_OLLAMA_HOST_ENV: Final = "OLLAMA_HOST"
+
+
+def resolve_embedding_ollama_host(default: str = "http://localhost:11434") -> str:
+    """Resolve which Ollama host embedding calls should target.
+
+    Priority: ``OLLAMA_EMBEDDING_URL`` (dedicated embedding bulkhead) >
+    ``OLLAMA_HOST`` (today's single, chat-serving Ollama) > ``default``.
+    Centralizing the fallback here means every `EmbeddingManager`
+    construction site resolves identically -- see `create_embedding_manager`.
+    """
+    return (
+        os.environ.get(_EMBEDDING_OLLAMA_URL_ENV)
+        or os.environ.get(_CHAT_OLLAMA_HOST_ENV)
+        or default
+    )
+
+
+def embedding_ollama_endpoint_label() -> str:
+    """Bounded metric label for which Ollama endpoint embedding calls target.
+
+    Returns ``"embedding_ollama"`` when ``OLLAMA_EMBEDDING_URL`` is set (the
+    dedicated bulkhead), else ``"chat_ollama"`` -- the shared instance also
+    serving live chat. Deliberately a closed two-value label (never the raw
+    URL) so it stays a safe, low-cardinality metric attribute, matching
+    `shared.utils.metrics.WaddleAIMetrics.record_embedding_call`'s
+    ``endpoint`` parameter.
+    """
+    return "embedding_ollama" if os.environ.get(_EMBEDDING_OLLAMA_URL_ENV) else "chat_ollama"
 
 
 # Default embedding dimensions by backend/model
@@ -47,6 +100,13 @@ class EmbeddingConfig:
 
     dimensions: int = 768
     """Output embedding dimensions. Should match the model's native output."""
+
+    endpoint_label: str = "chat_ollama"
+    """Bounded telemetry label for `ollama_host` -- "embedding_ollama" when it
+    points at the dedicated embedding bulkhead, else "chat_ollama" (the
+    shared chat-serving instance). Only meaningful for backend='ollama';
+    `create_embedding_manager` sets this via `embedding_ollama_endpoint_label`.
+    """
 
     @classmethod
     def default_ollama(cls) -> "EmbeddingConfig":
@@ -105,9 +165,11 @@ class EmbeddingManager:
         if not text:
             return [0.0] * self.config.dimensions
 
+        is_ollama = self.config.backend == "ollama"
+        start = time.monotonic() if is_ollama else 0.0
         try:
             if self.config.backend == "ollama":
-                return self._embed_ollama(text)
+                result = self._embed_ollama(text)
             elif self.config.backend == "openai":
                 return self._embed_openai(text)
             elif self.config.backend == "anthropic":
@@ -116,7 +178,28 @@ class EmbeddingManager:
                 raise ValueError(f"Unknown embedding backend: {self.config.backend!r}")
         except Exception as exc:
             logger.error("Embedding failed (backend=%s): %s", self.config.backend, exc)
+            if is_ollama:
+                self._record_ollama_call("error", time.monotonic() - start)
             raise RuntimeError(f"Embedding generation failed: {exc}") from exc
+        if is_ollama:
+            self._record_ollama_call("ok", time.monotonic() - start)
+        return result
+
+    def _record_ollama_call(self, outcome: str, duration_seconds: float) -> None:
+        """Best-effort-record one Ollama embedding call (ops-audit O10/O5 bulkhead).
+
+        Imported lazily to avoid a module-load-order dependency between
+        `shared.utils.embedding_manager` and `shared.utils.metrics`; never
+        raises -- a metrics-registry outage must not break embedding.
+        """
+        try:
+            from shared.utils.metrics import get_proxy_metrics
+
+            get_proxy_metrics().record_embedding_call(
+                self.config.endpoint_label, outcome, duration_seconds
+            )
+        except Exception as exc:  # noqa: BLE001 -- telemetry must never break embedding
+            logger.debug("embedding_call metric recording failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Backend implementations
@@ -217,7 +300,7 @@ class EmbeddingManager:
 def create_embedding_manager(
     backend: str = "ollama",
     model: str | None = None,
-    ollama_host: str = "http://localhost:11434",
+    ollama_host: str | None = None,
     api_key: str = "",
     dimensions: int | None = None,
 ) -> EmbeddingManager:
@@ -226,7 +309,12 @@ def create_embedding_manager(
     Args:
         backend: 'ollama', 'openai', or 'anthropic'
         model: Model name; defaults to the backend's default model if None
-        ollama_host: Ollama server URL (only relevant for ollama backend)
+        ollama_host: Ollama server URL (only relevant for ollama backend).
+            ``None`` (the default) resolves via `resolve_embedding_ollama_host`
+            -- the Ollama-embedding bulkhead (ops-audit O10/O5): dedicated
+            ``OLLAMA_EMBEDDING_URL`` if set, else the shared chat-serving
+            ``OLLAMA_HOST``, else ``http://localhost:11434``. Pass an
+            explicit value to bypass that resolution entirely.
         api_key: API key (only relevant for openai/anthropic backends)
         dimensions: Embedding dimensions; auto-detected from model name if None
 
@@ -246,11 +334,24 @@ def create_embedding_manager(
         key = f"{backend}:{model}"
         dimensions = EMBEDDING_DIMENSIONS.get(key, 768)
 
+    # `ollama_host=None` means "resolve it" -- the bulkhead env-var priority
+    # chain -- rather than always defaulting to localhost regardless of any
+    # OLLAMA_HOST/OLLAMA_EMBEDDING_URL the deployment has set. An explicitly
+    # passed `ollama_host` is used verbatim and labeled "chat_ollama" (the
+    # safe default label for a caller-supplied URL of unknown intent).
+    if ollama_host is None:
+        resolved_host = resolve_embedding_ollama_host()
+        endpoint_label = embedding_ollama_endpoint_label()
+    else:
+        resolved_host = ollama_host
+        endpoint_label = "chat_ollama"
+
     config = EmbeddingConfig(
         backend=backend,
         model=model,
-        ollama_host=ollama_host,
+        ollama_host=resolved_host,
         api_key=api_key,
         dimensions=dimensions,
+        endpoint_label=endpoint_label,
     )
     return EmbeddingManager(config)

@@ -758,6 +758,8 @@ class REPLSession:
         s = self.settings
         console.print("\n[bold cyan]PenguinCode Configuration[/bold cyan]\n")
         console.print(f"[yellow]Ollama URL:[/yellow]    {s.ollama.api_url}")
+        if s.ollama.embedding_api_url:
+            console.print(f"[yellow]Embedding URL:[/yellow] {s.ollama.embedding_api_url}")
         console.print("[yellow]Models:[/yellow]")
         console.print(f"  orchestration: {s.models.orchestration}")
         console.print(f"  execution:     {s.models.execution}")

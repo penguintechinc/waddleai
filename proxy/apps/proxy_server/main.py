@@ -773,6 +773,9 @@ class ProxyServer:
 
         from shared.utils.embedding_manager import create_embedding_manager
 
+        # ollama_host resolves via the Ollama-embedding bulkhead (ops-audit
+        # O10/O5): OLLAMA_EMBEDDING_URL if set, else OLLAMA_HOST, else
+        # localhost -- see create_embedding_manager's docstring.
         embedding_manager = create_embedding_manager()
 
         embed_cache = None
@@ -1163,6 +1166,7 @@ class ProxyServer:
         try:
             from shared.utils.embedding_manager import create_embedding_manager
 
+            # Same Ollama-embedding bulkhead resolution as above (ops-audit O10/O5).
             embedder = create_embedding_manager()
         except Exception as e:  # pragma: no cover - optional dependency path
             logger.warning("Embedding manager unavailable; semantic cache layer disabled: %s", e)

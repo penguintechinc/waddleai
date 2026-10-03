@@ -492,3 +492,45 @@ class TestBoundedOpKind:
         with pytest.raises(ValueError, match="op_kind"):
             with otel.timed_store_operation(bad_op_kind, "x"):
                 pass
+
+
+class TestEmbeddingCallMetric:
+    """Ollama-embedding bulkhead (ops-audit O10/O5): `record_embedding_call`
+    must emit real data points labeled by the closed `endpoint` set, and
+    reject anything outside it -- the same bounded-label discipline as
+    `op_kind` above.
+    """
+
+    def test_record_embedding_call_emits_histogram_and_counter(
+        self,
+        in_memory_exporters: tuple[InMemorySpanExporter, InMemoryMetricReader],
+    ) -> None:
+        _, metric_reader = in_memory_exporters
+        otel.reset_for_testing()
+
+        otel.record_embedding_call("embedding_ollama", "ok", 42.0)
+
+        duration_points = _points(metric_reader, otel.EMBEDDING_CALL_DURATION_HISTOGRAM_NAME)
+        event_points = _points(metric_reader, otel.EMBEDDING_CALL_EVENTS_COUNTER_NAME)
+        assert duration_points and event_points
+        assert all(p.attributes["endpoint"] == "embedding_ollama" for p in event_points)
+        assert all(p.attributes["outcome"] == "ok" for p in event_points)
+
+    def test_chat_and_embedding_endpoints_stay_separately_labeled(
+        self,
+        in_memory_exporters: tuple[InMemorySpanExporter, InMemoryMetricReader],
+    ) -> None:
+        _, metric_reader = in_memory_exporters
+        otel.reset_for_testing()
+
+        otel.record_embedding_call("chat_ollama", "ok", 10.0)
+        otel.record_embedding_call("embedding_ollama", "ok", 20.0)
+
+        points = _points(metric_reader, otel.EMBEDDING_CALL_EVENTS_COUNTER_NAME)
+        endpoints = {p.attributes["endpoint"] for p in points}
+        assert endpoints == {"chat_ollama", "embedding_ollama"}
+
+    def test_unknown_endpoint_is_rejected(self) -> None:
+        bad_endpoint = cast(otel.EmbeddingEndpoint, "not-a-real-endpoint")
+        with pytest.raises(ValueError, match="endpoint"):
+            otel.record_embedding_call(bad_endpoint, "ok", 1.0)

@@ -207,6 +207,10 @@ def config(
             table.add_column("Setting", style="green")
             table.add_column("Value", style="yellow")
             table.add_row("API URL", settings.ollama.api_url)
+            table.add_row(
+                "Embedding API URL",
+                settings.ollama.embedding_api_url or "(unset -- falls back to API URL)",
+            )
             table.add_row("Timeout", f"{settings.ollama.timeout}s")
             console.print(table)
 
@@ -338,7 +342,9 @@ def setup(
                 if result.returncode == 0:
                     console.print("[green]✓[/green] Python dependencies installed")
                 else:
-                    console.print(f"[yellow]⚠[/yellow] Dependency install warning: {result.stderr.strip()[:200]}")
+                    console.print(
+                        f"[yellow]⚠[/yellow] Dependency install warning: {result.stderr.strip()[:200]}"
+                    )
             except subprocess.TimeoutExpired:
                 console.print("[yellow]⚠[/yellow] Dependency installation timed out")
             except Exception as e:
@@ -361,7 +367,9 @@ def setup(
                 if models:
                     console.print(f"[dim]  Found {len(models)} model(s) installed[/dim]")
             else:
-                console.print(f"[yellow]⚠[/yellow] Ollama responded with status {response.status_code}")
+                console.print(
+                    f"[yellow]⚠[/yellow] Ollama responded with status {response.status_code}"
+                )
         except httpx.ConnectError:
             console.print("[red]✗[/red] Cannot connect to Ollama")
             console.print("[dim]  Make sure Ollama is running: ollama serve[/dim]")

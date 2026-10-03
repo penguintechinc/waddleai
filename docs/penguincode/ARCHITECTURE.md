@@ -229,6 +229,49 @@ auth:
      │◀──────────────────────────────────────│
 ```
 
+## Ollama-Embedding Bulkhead
+
+The in-cluster Ollama instance serves two fundamentally different workload
+shapes from one process: real-time chat completions (low-latency,
+interactive) and bulk embedding (document/code indexing, GraphRAG query
+embedding, mem0 memory embedder) -- high-throughput, bursty. With no QoS
+separation between them, a document-indexing job can saturate Ollama's
+GPU/CPU and degrade or time out live chat requests cluster-wide.
+
+```
+                 ┌──────────────────────┐
+  chat requests ─┤  Ollama (chat)       │  always the single shared instance
+                 │  OLLAMA_API_URL      │
+                 └──────────────────────┘
+
+  default (PENGUINCODE_EMBEDDING_OLLAMA_URL unset): embedding calls
+  share the SAME instance above -- today's behavior, unchanged.
+
+  opt-in bulkhead (PENGUINCODE_EMBEDDING_OLLAMA_URL set):
+                 ┌──────────────────────┐
+  doc/code index ─┤  Ollama (embeddings) │  dedicated Deployment
+  GraphRAG query ─┤  OLLAMA_EMBEDDING_   │  (k8s/helm/waddleai's
+  mem0 embedder  ─┤  OLLAMA_URL          │   ollamaEmbeddings.enabled)
+                 └──────────────────────┘
+```
+
+- **Opt-in, safe-by-default**: unset `PENGUINCODE_EMBEDDING_OLLAMA_URL` (or
+  an unset/disabled `ollamaEmbeddings` Helm value) means embedding calls
+  fall back to the single chat-serving Ollama exactly as before -- nothing
+  changes unless you explicitly configure the dedicated endpoint.
+- **Resolution**: `config.settings.resolve_embedding_url()` is the single
+  fallback chokepoint every embedding call site uses (doc indexing,
+  GraphRAG, mem0 memory) -- see
+  [`docs/penguincode/CONFIGURATION.md`](CONFIGURATION.md#ollama-embedding-bulkhead-penguincode_embedding_ollama_url)
+  for the env var and
+  [`docs/penguincode/k8s-deployment.md`](k8s-deployment.md) for the Helm
+  deployment.
+- **Observability**: every embedding call emits
+  `penguincode.embedding_call.duration`/`.events` (OTel), labeled
+  `endpoint=chat_ollama` or `endpoint=embedding_ollama` -- so saturation of
+  each instance is independently visible rather than conflated into one
+  signal.
+
 ## Security Considerations
 
 1. **TLS Required for Remote**: Always enable TLS for non-localhost deployments
