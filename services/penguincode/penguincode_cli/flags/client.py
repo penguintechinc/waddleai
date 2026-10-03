@@ -64,6 +64,14 @@ DISABLE_TOOL_QUEUE_BOUND_FLAG = "waddleai.disable-tool-queue-bound"
 #: itself misbehaves in some environment, never the normal operating mode.
 DISABLE_DB_POOL_FLAG = "penguincode.disable-db-pool"
 
+#: Opt-out kill switch for the O10-a async index-job queue (`indexing/`).
+#: Inverted polarity from the four flags above -- unseen/OFF (the default
+#: for every flag never configured in PostHog) means the queue mechanism is
+#: ON; setting this ON reverts `Index`/`IndexCode` to running inline,
+#: synchronously, the pre-O10-a way. See `critical-rules.md`'s "Core
+#: platform mechanisms... opt-out kill-switch" convention.
+DISABLE_INDEX_QUEUE_FLAG = "penguincode.disable-index-queue"
+
 _ENV_PREFIX = "PENGUINCODE_FLAG_"
 _TRUTHY = ("1", "true", "yes", "on")
 _DEFAULT_POSTHOG_HOST = "https://license.penguintech.io"
@@ -285,6 +293,7 @@ __all__ = [
     "DISABLE_GRPC_MESSAGE_LIMITS_FLAG",
     "DISABLE_TOOL_QUEUE_BOUND_FLAG",
     "DISABLE_DB_POOL_FLAG",
+    "DISABLE_INDEX_QUEUE_FLAG",
     "ScopeContextLike",
     "SystemScope",
     "SYSTEM_SCOPE",

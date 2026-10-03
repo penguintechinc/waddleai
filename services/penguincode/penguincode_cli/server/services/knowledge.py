@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 import grpc
@@ -34,12 +35,24 @@ from google.protobuf import struct_pb2
 
 from penguincode_cli.auth.middleware import current_scope_context
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.config.settings import GraphConfig, MemoryConfig, Settings
+from penguincode_cli.config.settings import GraphConfig, IndexingConfig, MemoryConfig, Settings
 from penguincode_cli.docs_rag.indexer import DocumentationIndexer
 from penguincode_cli.docs_rag.models import Language as ModelLanguage
 from penguincode_cli.docs_rag.models import Library
-from penguincode_cli.flags import CODE_GRAPH_FLAG, is_enabled
+from penguincode_cli.flags import CODE_GRAPH_FLAG, DISABLE_INDEX_QUEUE_FLAG, is_enabled
 from penguincode_cli.graphs.code import index_code
+from penguincode_cli.indexing import (
+    IndexJob,
+    IndexJobOutcome,
+    IndexJobQueue,
+    IndexJobStore,
+    IndexJobStoreLike,
+    IndexQueueFullError,
+    IndexWorkerPool,
+    JobType,
+    QueuedIndexWork,
+)
+from penguincode_cli.indexing import metrics as index_metrics
 from penguincode_cli.observability.otel import record_query_clamped, store_span
 from penguincode_cli.proto import (
     CleanupIndexRequest,
@@ -50,6 +63,7 @@ from penguincode_cli.proto import (
     CodeGraphStatusResponse,
     IndexCodeRequest,
     IndexCodeResponse,
+    IndexJobSummary,
     IndexRequest,
     IndexResponse,
     IndexStatusRequest,
@@ -57,6 +71,8 @@ from penguincode_cli.proto import (
     KnowledgeServiceServicer,
     LanguageIndexStatus,
     LibraryIndexStatus,
+    ListIndexJobsRequest,
+    ListIndexJobsResponse,
     MemoryAddRequest,
     MemoryAddResponse,
     MemoryAddResult,
@@ -69,6 +85,8 @@ from penguincode_cli.proto import (
 )
 from penguincode_cli.proto import GraphEdge as ProtoGraphEdge
 from penguincode_cli.proto import GraphNode as ProtoGraphNode
+from penguincode_cli.proto import JobState as ProtoJobState
+from penguincode_cli.proto import JobType as ProtoJobType
 from penguincode_cli.proto import Language as ProtoLanguage
 from penguincode_cli.proto import VectorHit as ProtoVectorHit
 from penguincode_cli.retrieval.graphrag import retrieve
@@ -84,6 +102,21 @@ from penguincode_cli.tools.memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: `JobType`/`JobState` (plain str enums, `indexing/jobs.py`) <-> their proto
+#: counterparts (`JobType`/`JobState` ints, `knowledge.proto`) -- a small
+#: closed mapping, not a generic enum-name trick, so an unexpected Python
+#: value fails loudly (`KeyError`) instead of silently defaulting.
+_JOB_TYPE_TO_PROTO: dict[JobType, ProtoJobType.ValueType] = {
+    JobType.INDEX_DOCS: ProtoJobType.JOB_TYPE_INDEX_DOCS,
+    JobType.INDEX_CODE: ProtoJobType.JOB_TYPE_INDEX_CODE,
+}
+_JOB_STATE_TO_PROTO: dict[str, ProtoJobState.ValueType] = {
+    "queued": ProtoJobState.JOB_STATE_QUEUED,
+    "running": ProtoJobState.JOB_STATE_RUNNING,
+    "succeeded": ProtoJobState.JOB_STATE_SUCCEEDED,
+    "failed": ProtoJobState.JOB_STATE_FAILED,
+}
 
 
 @runtime_checkable
@@ -267,6 +300,23 @@ async def _require_scope(context: grpc.aio.ServicerContext) -> ScopeContext:
     return ctx
 
 
+def _job_status_fields(job: IndexJob) -> dict[str, Any]:
+    """`IndexJob` -> the shared field set `IndexStatusResponse`'s job-mode and
+    `IndexJobSummary` both carry (same names, same meaning in both messages).
+    """
+    return {
+        "job_id": job.id,
+        "job_type": _JOB_TYPE_TO_PROTO[job.job_type],
+        "state": _JOB_STATE_TO_PROTO[job.state.value],
+        "chunks_done": job.chunks_done,
+        "chunks_total": job.chunks_total,
+        "error": job.error or "",
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "result": _struct(job.result),
+    }
+
+
 def _build_scoped_memory_manager(settings: Settings) -> ScopedMemoryManager:
     """Construct a `ScopedMemoryManager`, degrading to disabled on construction failure.
 
@@ -301,6 +351,11 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
         indexer: _IndexerLike | None = None,
         scoped_memory: _ScopedMemoryLike | None = None,
         graph_config: GraphConfig | None = None,
+        indexing_config: IndexingConfig | None = None,
+        index_job_store: IndexJobStoreLike | None = None,
+        index_queue: IndexJobQueue | None = None,
+        index_worker_pool: IndexWorkerPool | None = None,
+        start_index_workers: bool = True,
     ) -> None:
         self._settings = settings
         self._indexer = indexer if indexer is not None else DocumentationIndexer()
@@ -311,43 +366,173 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
         # See module docstring's "CodeGraphStatus's local cache" section.
         self._code_graph_status: dict[str, tuple[int, int]] = {}
 
+        # --- Async index-job queue (O10-a) -----------------------------------
+        # Lazily constructed (see `_ensure_index_queue_infra`) unless a test
+        # injects its own doubles -- `index_job_store`/`index_queue`/
+        # `index_worker_pool` are seams, mirroring `indexer`/`scoped_memory`
+        # above. `start_index_workers=False` is a test-only knob: skip the
+        # background drain loop so a test can call
+        # `self._index_worker_pool.run_one()` deterministically instead.
+        self._indexing_config = (
+            indexing_config if indexing_config is not None else settings.indexing
+        )
+        self._index_job_store = index_job_store
+        self._index_queue = index_queue
+        self._index_worker_pool = index_worker_pool
+        self._start_index_workers = start_index_workers
+        self._index_workers_started = False
+
+    def _queue_enabled(self, ctx: ScopeContext) -> bool:
+        """Whether `Index`/`IndexCode` should enqueue rather than run inline.
+
+        Three independent reasons to fall back to the pre-O10-a inline
+        path, all treated identically (never a crash, always a clean
+        degrade, logged at WARNING once per call): the
+        `penguincode.disable-index-queue` kill switch is on; no job-store
+        DSN is configured (`IndexingConfig.dsn` empty) *and* no store/queue
+        was explicitly injected (the test-double seam); or constructing the
+        queue infra failed for any other reason.
+        """
+        if is_enabled(DISABLE_INDEX_QUEUE_FLAG, ctx):
+            return False
+        return bool(self._index_job_store is not None or self._indexing_config.dsn)
+
+    def _ensure_index_queue_infra(self) -> tuple[IndexJobStoreLike, IndexJobQueue]:
+        """Lazily construct (once) the job store/queue/worker pool, and start the pool."""
+        if self._index_job_store is None:
+            self._index_job_store = IndexJobStore(self._indexing_config.dsn)
+        if self._index_queue is None:
+            self._index_queue = IndexJobQueue(maxsize=self._indexing_config.queue_maxsize)
+        if self._index_worker_pool is None:
+            self._index_worker_pool = IndexWorkerPool(
+                self._index_queue,
+                self._index_job_store,
+                worker_count=self._indexing_config.worker_count,
+                default_timeout_seconds=self._indexing_config.job_timeout_seconds,
+            )
+        if self._start_index_workers and not self._index_workers_started:
+            self._index_worker_pool.start()
+            self._index_workers_started = True
+        return self._index_job_store, self._index_queue
+
+    async def _enqueue_index_job(
+        self,
+        context: grpc.aio.ServicerContext,
+        ctx: ScopeContext,
+        job_type: JobType,
+        *,
+        chunks_total: int,
+        team_id: str | None,
+        run: Callable[[], Awaitable[IndexJobOutcome]],
+    ) -> IndexJob:
+        """Create a QUEUED job row, enqueue its work, and return the row.
+
+        On `IndexQueueFullError`, the just-created row is marked `FAILED`
+        (never left dangling as `queued` forever) and the RPC aborts
+        `RESOURCE_EXHAUSTED` with a retry hint -- O10-a's required
+        backpressure contract: the queue never grows unbounded.
+        """
+        store, queue = self._ensure_index_queue_infra()
+        job_id = store.create_queued(ctx, job_type, chunks_total=chunks_total, team_id=team_id)
+        index_metrics.record_job_enqueued(job_type.value)
+        work = QueuedIndexWork(
+            job_id=job_id,
+            ctx=ctx,
+            job_type=job_type,
+            run=run,
+            timeout_seconds=self._indexing_config.job_timeout_seconds,
+        )
+        try:
+            queue.put_nowait(work)
+        except IndexQueueFullError as exc:
+            store.mark_failed(job_id, "rejected: queue full")
+            index_metrics.record_job_rejected(job_type.value)
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, str(exc))
+            raise AssertionError("unreachable") from exc  # abort() always raises
+        job = store.get(ctx, job_id)
+        assert job is not None  # just created under the same ctx; always found
+        return job
+
+    async def reap_interrupted_index_jobs(self) -> int:
+        """Mark every `running` index-job row `failed` ("interrupted").
+
+        Called once by `server/main.py` at startup, before the gRPC server
+        accepts traffic -- see `IndexJobStore.reap_interrupted`'s docstring
+        for why a `running` row at boot is always from a dead process.
+        A no-op (returns 0) when the queue isn't configured at all.
+        """
+        if self._index_job_store is None and not self._indexing_config.dsn:
+            return 0
+        store = self._index_job_store or IndexJobStore(self._indexing_config.dsn)
+        return store.reap_interrupted()
+
+    async def shutdown_index_workers(self, grace_period: float = 5.0) -> None:
+        """Stop the background worker pool, if one was ever started. Called at server shutdown."""
+        if self._index_worker_pool is not None and self._index_workers_started:
+            await self._index_worker_pool.stop(grace_period)
+
     async def Index(
         self, request: IndexRequest, context: grpc.aio.ServicerContext
     ) -> IndexResponse:
-        """Index a library's or a language's docs via `DocumentationIndexer`."""
+        """Index a library's or a language's docs via `DocumentationIndexer`.
+
+        **O10-a load leveling.** The actual embedding work (sequential
+        Ollama calls per chunk) used to run inline on the shared gRPC
+        executor -- a few large calls starved `Health`/`Chat`. It now
+        enqueues onto the async index-job queue by default and returns
+        immediately with `job_id`/`state=QUEUED`; poll `IndexStatus(job_id=
+        ...)` for completion. Falls back to the pre-O10-a inline behavior
+        (this RPC blocks until done, `chunks_indexed` is the real count,
+        `job_id` empty) when the `penguincode.disable-index-queue` kill
+        switch is on, or no job-store DSN is configured -- see
+        `_queue_enabled`'s docstring.
+        """
         ctx = await _require_scope(context)
         visibility = _visibility_from_proto(request.visibility, default="tenant")
         team_id = request.team_id or None
         doc_contents = list(request.doc_contents)
         target = request.WhichOneof("target")
 
-        with store_span("knowledge.Index", target=target or "none", doc_count=len(doc_contents)):
-            if target == "library":
-                library_language = _PROTO_LANGUAGE_TO_MODEL.get(request.library.language)
-                if library_language is None:
-                    await context.abort(
-                        grpc.StatusCode.INVALID_ARGUMENT, "library.language is required"
+        library: Library | None = None
+        doc_language: ModelLanguage | None = None
+        if target == "library":
+            library_language = _PROTO_LANGUAGE_TO_MODEL.get(request.library.language)
+            if library_language is None:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT, "library.language is required"
+                )
+                raise AssertionError("unreachable")  # abort() always raises
+            library = Library(
+                name=request.library.name,
+                language=library_language,
+                version=request.library.version or None,
+            )
+        elif target == "language":
+            doc_language = _PROTO_LANGUAGE_TO_MODEL.get(request.language)
+            if doc_language is None:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "language is required")
+                raise AssertionError("unreachable")  # abort() always raises
+        else:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT, "target (library or language) is required"
+            )
+            raise AssertionError("unreachable")  # abort() always raises
+
+        async def _do_index() -> int:
+            with store_span(
+                "knowledge.Index", target=target or "none", doc_count=len(doc_contents)
+            ):
+                if library is not None:
+                    return await self._indexer.index_library(
+                        ctx,
+                        library,
+                        doc_contents,
+                        force_reindex=request.force_reindex,
+                        visibility=visibility,
+                        team_id=team_id,
                     )
-                    raise AssertionError("unreachable")  # abort() always raises
-                library = Library(
-                    name=request.library.name,
-                    language=library_language,
-                    version=request.library.version or None,
-                )
-                chunks_indexed = await self._indexer.index_library(
-                    ctx,
-                    library,
-                    doc_contents,
-                    force_reindex=request.force_reindex,
-                    visibility=visibility,
-                    team_id=team_id,
-                )
-            elif target == "language":
-                doc_language = _PROTO_LANGUAGE_TO_MODEL.get(request.language)
-                if doc_language is None:
-                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "language is required")
-                    raise AssertionError("unreachable")  # abort() always raises
-                chunks_indexed = await self._indexer.index_language(
+                assert doc_language is not None  # exactly one of the two branches set a value
+                return await self._indexer.index_language(
                     ctx,
                     doc_language,
                     doc_contents,
@@ -355,13 +540,30 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
                     visibility=visibility,
                     team_id=team_id,
                 )
-            else:
-                await context.abort(
-                    grpc.StatusCode.INVALID_ARGUMENT, "target (library or language) is required"
-                )
-                raise AssertionError("unreachable")  # abort() always raises
 
-        return IndexResponse(chunks_indexed=chunks_indexed)
+        if not self._queue_enabled(ctx):
+            chunks_indexed = await _do_index()
+            return IndexResponse(
+                chunks_indexed=chunks_indexed,
+                job_id="",
+                state=ProtoJobState.JOB_STATE_SUCCEEDED,
+            )
+
+        async def _run() -> IndexJobOutcome:
+            chunks = await _do_index()
+            return IndexJobOutcome(chunks_done=chunks, chunks_total=len(doc_contents))
+
+        job = await self._enqueue_index_job(
+            context,
+            ctx,
+            JobType.INDEX_DOCS,
+            chunks_total=len(doc_contents),
+            team_id=team_id,
+            run=_run,
+        )
+        return IndexResponse(
+            chunks_indexed=0, job_id=job.id, state=_JOB_STATE_TO_PROTO[job.state.value]
+        )
 
     async def Query(
         self, request: QueryRequest, context: grpc.aio.ServicerContext
@@ -517,30 +719,70 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
     async def IndexCode(
         self, request: IndexCodeRequest, context: grpc.aio.ServicerContext
     ) -> IndexCodeResponse:
-        """(Re)build the code graph for a source tree via `graphs.code.index_code`."""
+        """(Re)build the code graph for a source tree via `graphs.code.index_code`.
+
+        Same O10-a queue-by-default / kill-switch-or-no-DSN-degrades-to-
+        inline contract as `Index` -- see that method's docstring.
+        """
         ctx = await _require_scope(context)
         visibility = _visibility_from_proto(request.visibility, default="team")
         team_id = request.team_id or None
 
-        with store_span("knowledge.IndexCode", visibility=visibility):
-            # `index_code` is a synchronous function performing blocking file
-            # I/O and psycopg calls -- run off the event loop.
-            result = await asyncio.to_thread(
-                index_code,
-                ctx,
-                request.root_path,
-                visibility=visibility,
-                team_id=team_id,
-                config=self._graph_config,
+        async def _do_index_code() -> tuple[int, int] | None:
+            with store_span("knowledge.IndexCode", visibility=visibility):
+                # `index_code` is a synchronous function performing blocking
+                # file I/O and psycopg calls -- run off the event loop.
+                result = await asyncio.to_thread(
+                    index_code,
+                    ctx,
+                    request.root_path,
+                    visibility=visibility,
+                    team_id=team_id,
+                    config=self._graph_config,
+                )
+            if result is None:
+                return None
+            node_count = len(result.nodes)
+            edge_count = len(result.edges)
+            self._code_graph_status[ctx.tenant_id] = (node_count, edge_count)
+            return node_count, edge_count
+
+        if not self._queue_enabled(ctx):
+            counts = await _do_index_code()
+            if counts is None:
+                return IndexCodeResponse(
+                    indexed=False,
+                    node_count=0,
+                    edge_count=0,
+                    job_id="",
+                    state=ProtoJobState.JOB_STATE_SUCCEEDED,
+                )
+            return IndexCodeResponse(
+                indexed=True,
+                node_count=counts[0],
+                edge_count=counts[1],
+                job_id="",
+                state=ProtoJobState.JOB_STATE_SUCCEEDED,
             )
 
-        if result is None:
-            return IndexCodeResponse(indexed=False, node_count=0, edge_count=0)
+        async def _run() -> IndexJobOutcome:
+            counts = await _do_index_code()
+            if counts is None:
+                return IndexJobOutcome(extra={"indexed": False, "node_count": 0, "edge_count": 0})
+            return IndexJobOutcome(
+                extra={"indexed": True, "node_count": counts[0], "edge_count": counts[1]}
+            )
 
-        node_count = len(result.nodes)
-        edge_count = len(result.edges)
-        self._code_graph_status[ctx.tenant_id] = (node_count, edge_count)
-        return IndexCodeResponse(indexed=True, node_count=node_count, edge_count=edge_count)
+        job = await self._enqueue_index_job(
+            context, ctx, JobType.INDEX_CODE, chunks_total=0, team_id=team_id, run=_run
+        )
+        return IndexCodeResponse(
+            indexed=False,
+            node_count=0,
+            edge_count=0,
+            job_id=job.id,
+            state=_JOB_STATE_TO_PROTO[job.state.value],
+        )
 
     async def CodeGraphStatus(
         self, request: CodeGraphStatusRequest, context: grpc.aio.ServicerContext
@@ -561,12 +803,32 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
     async def IndexStatus(
         self, request: IndexStatusRequest, context: grpc.aio.ServicerContext
     ) -> IndexStatusResponse:
-        """Report the caller's docs index status via `DocumentationIndexer.get_index_status`.
+        """Report the caller's docs index status, or (O10-a) one async job's progress.
 
-        Read-only -- no elevated scope beyond `_require_scope`'s baseline
-        authentication is required, mirroring `CodeGraphStatus`.
+        When `request.job_id` is set, reports that job's state/progress
+        (tenant + owner scoped, see `IndexJobStore.get`) instead of the
+        aggregate docs-index stats below -- `NOT_FOUND` if the job doesn't
+        exist or isn't visible to this caller. Otherwise unchanged:
+        read-only, no elevated scope beyond `_require_scope`'s baseline
+        authentication, mirroring `CodeGraphStatus`.
         """
         ctx = await _require_scope(context)
+
+        if request.job_id:
+            if self._index_job_store is None and not self._indexing_config.dsn:
+                # No queue infra ever provisioned -- this job_id can't exist.
+                await context.abort(
+                    grpc.StatusCode.NOT_FOUND, f"index job {request.job_id!r} not found"
+                )
+                raise AssertionError("unreachable")  # abort() always raises
+            store, _ = self._ensure_index_queue_infra()
+            job = store.get(ctx, request.job_id)
+            if job is None:
+                await context.abort(
+                    grpc.StatusCode.NOT_FOUND, f"index job {request.job_id!r} not found"
+                )
+                raise AssertionError("unreachable")  # abort() always raises
+            return IndexStatusResponse(**_job_status_fields(job))
 
         with store_span("knowledge.IndexStatus"):
             status = self._indexer.get_index_status(ctx)
@@ -670,6 +932,28 @@ class KnowledgeServiceImpl(KnowledgeServiceServicer):
             removed = await self._indexer.cleanup_unused(ctx, current_libraries, current_languages)
 
         return CleanupIndexResponse(removed=dict(removed))
+
+    async def ListIndexJobs(
+        self, request: ListIndexJobsRequest, context: grpc.aio.ServicerContext
+    ) -> ListIndexJobsResponse:
+        """List the caller's own async index jobs (tenant + owner scoped), most recent first.
+
+        Mirrors `IndexJobStore.list_jobs`. Returns an empty list (never an
+        error) when the queue infra was never provisioned -- no DSN means
+        no job has ever been created, so there is nothing to list.
+        """
+        ctx = await _require_scope(context)
+        if self._index_job_store is None and not self._indexing_config.dsn:
+            return ListIndexJobsResponse(jobs=[])
+
+        store, _ = self._ensure_index_queue_infra()
+        limit = request.limit or 20
+        with store_span("knowledge.ListIndexJobs", limit=limit):
+            jobs = store.list_jobs(ctx, limit=limit)
+
+        return ListIndexJobsResponse(
+            jobs=[IndexJobSummary(**_job_status_fields(job)) for job in jobs]
+        )
 
 
 __all__ = ["KnowledgeServiceImpl"]

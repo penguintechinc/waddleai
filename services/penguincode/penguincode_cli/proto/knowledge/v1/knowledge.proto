@@ -34,6 +34,26 @@ enum Visibility {
   VISIBILITY_TENANT = 3;
 }
 
+// Lifecycle state of an async index job (O10-a: `Index`/`IndexCode` load
+// leveling -- see `penguincode_cli/indexing/`'s module docstring). A job
+// never transitions back to QUEUED from RUNNING -- one interrupted by a pod
+// restart is marked FAILED at the next server startup, never re-queued.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_SUCCEEDED = 3;
+  JOB_STATE_FAILED = 4;
+}
+
+// The two kinds of background work the async index-job queue carries --
+// mirrors `penguincode_cli/indexing/jobs.py`'s `JobType`.
+enum JobType {
+  JOB_TYPE_UNSPECIFIED = 0;
+  JOB_TYPE_INDEX_DOCS = 1;
+  JOB_TYPE_INDEX_CODE = 2;
+}
+
 // Supported documentation/code languages -- mirrors
 // penguincode_cli/docs_rag/models.py's `Language` enum, verbatim set.
 enum Language {
@@ -124,6 +144,10 @@ service KnowledgeService {
   // Remove indexed docs no longer referenced by the caller's current
   // project. Mirrors `docs_rag.indexer.DocumentationIndexer.cleanup_unused`.
   rpc CleanupIndex(CleanupIndexRequest) returns (CleanupIndexResponse);
+
+  // List the caller's own async index jobs (tenant + owner scoped), most
+  // recent first. Mirrors `indexing.store.IndexJobStore.list_jobs`.
+  rpc ListIndexJobs(ListIndexJobsRequest) returns (ListIndexJobsResponse);
 }
 
 // ---- Index ----
@@ -156,7 +180,17 @@ message IndexRequest {
 }
 
 message IndexResponse {
+  // Final chunk count once the job is SUCCEEDED -- 0 while QUEUED/RUNNING,
+  // or the real inline count when the job-queue kill switch
+  // (`penguincode.disable-index-queue`) is on (see `job_id`'s comment).
   int32 chunks_indexed = 1;
+
+  // Empty when `Index` ran inline (the queue is degraded/disabled) --
+  // `state` is then always JOB_STATE_SUCCEEDED and `chunks_indexed` is the
+  // real final count already. Non-empty means the work was enqueued;
+  // poll `IndexStatus(job_id=...)` for progress/completion.
+  string job_id = 2;
+  JobState state = 3;
 }
 
 // ---- Query ----
@@ -237,10 +271,15 @@ message IndexCodeRequest {
 
 message IndexCodeResponse {
   // False when the `penguincode.code-graph` flag is off for the caller --
-  // mirrors `graphs.code.index_code` returning `None`.
+  // mirrors `graphs.code.index_code` returning `None`. Always `false` while
+  // a queued job hasn't finished yet -- poll `IndexStatus(job_id=...)`.
   bool indexed = 1;
   int32 node_count = 2;
   int32 edge_count = 3;
+
+  // See `IndexResponse.job_id`'s comment -- identical empty/queued contract.
+  string job_id = 4;
+  JobState state = 5;
 }
 
 // ---- CodeGraphStatus ----
@@ -278,12 +317,61 @@ message LanguageIndexStatus {
 
 message IndexStatusRequest {
   string api_version = 1;
+
+  // When set, report that one async job's state/progress instead of the
+  // aggregate docs-index stats below (see `IndexStatusResponse`'s comment).
+  string job_id = 2;
 }
 
 message IndexStatusResponse {
+  // Populated only when `IndexStatusRequest.job_id` was empty (the
+  // aggregate-stats mode, unchanged since before O10-a).
   map<string, LibraryIndexStatus> libraries = 1;
   map<string, LanguageIndexStatus> languages = 2;
   int32 total_chunks = 3;
+
+  // Populated only when `IndexStatusRequest.job_id` was set -- one async
+  // job's current state/progress, scoped to the caller (tenant + owner;
+  // see `indexing.store.IndexJobStore.get`). `libraries`/`languages`/
+  // `total_chunks` above are left empty/zero in this mode.
+  string job_id = 4;
+  JobType job_type = 5;
+  JobState state = 6;
+  int32 chunks_done = 7;
+  int32 chunks_total = 8;
+  string error = 9;
+  string created_at = 10;
+  string updated_at = 11;
+  // Job-type-specific extra detail not covered by the counters above --
+  // e.g. an `index_code` job's `node_count`/`edge_count`. Mirrors
+  // `indexing.store.IndexJobOutcome.extra` verbatim.
+  google.protobuf.Struct result = 12;
+}
+
+// ---- ListIndexJobs ----
+
+message ListIndexJobsRequest {
+  string api_version = 1;
+  // Most-recent-first cap -- defaults to 20 when unset/0.
+  int32 limit = 2;
+}
+
+// One row of `ListIndexJobsResponse` -- the same per-job fields
+// `IndexStatusResponse`'s job-status mode carries.
+message IndexJobSummary {
+  string job_id = 1;
+  JobType job_type = 2;
+  JobState state = 3;
+  int32 chunks_done = 4;
+  int32 chunks_total = 5;
+  string error = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  google.protobuf.Struct result = 9;
+}
+
+message ListIndexJobsResponse {
+  repeated IndexJobSummary jobs = 1;
 }
 
 // ---- ClearIndex ----

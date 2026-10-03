@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from penguincode_cli.client.knowledge_client import KnowledgeClientError
+from penguincode_cli.client.knowledge_client import IndexCodeJobResult, KnowledgeClientError
 from penguincode_cli.config.settings import Settings
 from penguincode_cli.core.repl import REPLSession
 
@@ -67,7 +67,11 @@ class TestIndexCodeCommand:
         assert "not a directory" in mock_error.call_args[0][0].lower()
 
     async def test_calls_index_code_rpc_and_reports_node_edge_counts(self, tmp_path: Path) -> None:
-        client = _fake_client(return_value=(1, 1))
+        client = _fake_client(
+            return_value=IndexCodeJobResult(
+                job_id="", state="succeeded", node_count=1, edge_count=1
+            )
+        )
         session = _session(tmp_path, knowledge_client=client)
 
         with patch("penguincode_cli.core.repl.print_success") as mock_success:
@@ -81,7 +85,11 @@ class TestIndexCodeCommand:
         assert "1 edge" in mock_success.call_args[0][0]
 
     async def test_default_path_is_project_dir_when_no_arg_given(self, tmp_path: Path) -> None:
-        client = _fake_client(return_value=(0, 0))
+        client = _fake_client(
+            return_value=IndexCodeJobResult(
+                job_id="", state="succeeded", node_count=0, edge_count=0
+            )
+        )
         session = _session(tmp_path, knowledge_client=client)
 
         await session.handle_index_code("")
@@ -100,6 +108,25 @@ class TestIndexCodeCommand:
 
         assert mock_info.called
         assert "disabled" in mock_info.call_args[0][0].lower()
+
+    async def test_no_wait_flag_passes_wait_false_and_skips_success_print(
+        self, tmp_path: Path
+    ) -> None:
+        """`--no-wait` forwards `wait=False` to the client and just reports the job id --
+        it must never print final counts it never waited for."""
+        client = _fake_client(
+            return_value=IndexCodeJobResult(
+                job_id="job-1", state="queued", node_count=0, edge_count=0
+            )
+        )
+        session = _session(tmp_path, knowledge_client=client)
+
+        with patch("penguincode_cli.core.repl.print_info") as mock_info:
+            await session.handle_index_code(f"{tmp_path} --no-wait")
+
+        _, kwargs = client.index_code.call_args
+        assert kwargs["wait"] is False
+        assert any("job-1" in call.args[0] for call in mock_info.call_args_list)
 
     async def test_server_failure_is_reported_not_raised(self, tmp_path: Path) -> None:
         """A `KnowledgeClientError` (server unreachable/auth failure) surfaces as an error

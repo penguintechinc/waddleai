@@ -369,6 +369,46 @@ class LimitsConfig:
 
 
 @dataclass(slots=True)
+class IndexingConfig:
+    """Async index-job queue configuration (O10-a -- `Index`/`IndexCode` load leveling).
+
+    `dsn` reuses the same shared-Postgres `PGVECTOR_URL` DSN as
+    `PGVectorStoreConfig`/`PostgresGraphStoreConfig` -- the `index_jobs`
+    table lives in the same `penguincode` schema. **Empty `dsn` is a
+    deliberate degrade-to-legacy signal**, not a misconfiguration:
+    `server/services/knowledge.py`'s handlers treat "no job-store DSN
+    available" exactly like the `penguincode.disable-index-queue` kill
+    switch being on -- run `Index`/`IndexCode` inline, synchronously, the
+    pre-O10-a way -- so a deployment that hasn't provisioned the queue
+    schema yet (or a fast unit test with no DB at all) degrades safely
+    instead of crashing on a bad connection string.
+    """
+
+    dsn: str = field(default_factory=lambda: os.environ.get("PGVECTOR_URL", ""))
+    #: Bounded worker-pool size draining the queue off the gRPC executor.
+    worker_count: int = field(
+        default_factory=lambda: _env_int("PENGUINCODE_INDEX_WORKERS", 2)
+    )
+    #: Backpressure limit -- `put_nowait` raises `IndexQueueFullError` beyond this,
+    #: never grows unbounded (O10-a's required design).
+    queue_maxsize: int = field(
+        default_factory=lambda: _env_int("PENGUINCODE_INDEX_QUEUE_MAXSIZE", 32)
+    )
+    #: Per-job wall-clock ceiling; a job exceeding this is marked `failed`
+    #: ("timed out after ...") rather than hanging a worker forever.
+    job_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("PENGUINCODE_INDEX_JOB_TIMEOUT_SECONDS", 900.0)
+    )
+    #: Reserved for a future per-job bounded-concurrency chunk-embedding
+    #: pass inside `docs_rag.indexer.DocumentationIndexer` (not implemented
+    #: by O10-a -- see `docs/penguincode/KNOWLEDGE_PLATFORM.md`'s "Known
+    #: follow-up" note); read today only so the env var already exists.
+    chunk_concurrency: int = field(
+        default_factory=lambda: _env_int("PENGUINCODE_INDEX_CHUNK_CONCURRENCY", 2)
+    )
+
+
+@dataclass(slots=True)
 class LessonsConfig:
     """Lessons-promotion confidentiality-verifier configuration (F2+F3, security review).
 
@@ -632,6 +672,7 @@ class Settings:
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     db: DbConfig = field(default_factory=DbConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
+    indexing: IndexingConfig = field(default_factory=IndexingConfig)
     lessons: LessonsConfig = field(default_factory=LessonsConfig)
     regulators: RegulatorsConfig = field(default_factory=RegulatorsConfig)
     usage_api: UsageAPIConfig = field(default_factory=UsageAPIConfig)
@@ -665,6 +706,7 @@ class Settings:
             sessions=cls._parse_sessions_config(data.get("sessions", {})),
             db=DbConfig(**data.get("db", {})),
             limits=LimitsConfig(**data.get("limits", {})),
+            indexing=IndexingConfig(**data.get("indexing", {})),
             lessons=cls._parse_lessons_config(data.get("lessons", {})),
             regulators=RegulatorsConfig(**data.get("regulators", {})),
             usage_api=UsageAPIConfig(**data.get("usage_api", {})),

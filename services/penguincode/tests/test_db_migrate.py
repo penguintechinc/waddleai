@@ -67,6 +67,7 @@ class TestMigrationDiscovery:
             "0005_graph_edges.sql",
             "0006_pending_lessons.sql",
             "0007_chat_sessions.sql",
+            "0008_index_jobs.sql",
         }
 
     def test_migration_files_sort_in_apply_order(self) -> None:
@@ -76,7 +77,7 @@ class TestMigrationDiscovery:
         files = _discover_migrations(MIGRATIONS_DIR)
         assert [path.name for path in files] == sorted(path.name for path in files)
         assert files[0].name.startswith("0001_")
-        assert files[-1].name.startswith("0007_")
+        assert files[-1].name.startswith("0008_")
 
     def test_every_migration_is_idempotent_sql(self) -> None:
         """Every DDL statement uses an IF NOT EXISTS / inline-constraint guard.
@@ -168,6 +169,7 @@ class TestRunMigrationsLive:
             "0005_graph_edges.sql",
             "0006_pending_lessons.sql",
             "0007_chat_sessions.sql",
+            "0008_index_jobs.sql",
         )
         assert result.skipped == ()
 
@@ -184,6 +186,7 @@ class TestRunMigrationsLive:
             "0005_graph_edges.sql",
             "0006_pending_lessons.sql",
             "0007_chat_sessions.sql",
+            "0008_index_jobs.sql",
         }
 
         with psycopg.connect(clean_dsn) as conn:
