@@ -399,9 +399,12 @@ def _quota_response(quota_ok: bool, quota_info: dict[str, Any]) -> dict[str, Any
 def authenticate_credential(credential: str) -> UserContext:
     """Verify a raw WaddleAI credential and return its authenticated context.
 
-    The single verification path for every surface: ``get_current_user`` calls
-    it for HTTP ``Authorization`` headers and ``grpc_identity_resolver`` calls
-    it for the gRPC per-caller credential, so neither can drift from the other.
+    ``grpc_identity_resolver`` ONLY. The gRPC servicer runs on its own
+    ``futures.ThreadPoolExecutor`` thread (``grpc_server.py``), never the
+    Hypercorn event loop, so a direct, synchronous
+    ``RBACManager.authenticate_api_key`` call here is not an event-loop
+    blocker -- the fix release-audit-2026-10-02 O7-a actually needs is on
+    the HTTP-facing path, :func:`authenticate_credential_async`, below.
 
     Args:
         credential: A raw ``wa-``/``sk-`` API key, or ``Bearer <jwt>``.
@@ -414,17 +417,39 @@ def authenticate_credential(credential: str) -> UserContext:
 
     """
     if credential.startswith("sk-") or credential.startswith("wa-"):
-        # Called synchronously: authenticate_api_key uses the shared PyDAL DAL,
-        # whose connections are thread-local AND it performs a write
-        # (last_used); offloading to asyncio.to_thread would open a second
-        # thread-local SQLite connection whose uncommitted write locks the
-        # file. A true async offload needs a dedicated per-worker DAL
-        # (follow-up); the brief cost of a bcrypt+query matches the original
-        # proven behavior.
         return proxy_server.rbac.authenticate_api_key(credential)
     if credential.startswith("Bearer "):
         # RS256 JWT, verified against the issuer's published JWKS by `kid`
         # (headless-auth H4) -- never against this process's own keystore.
+        return verify_token_via_jwks(credential[7:], proxy_server.jwks_verifier)
+    raise AuthenticationError("Invalid authorization format")
+
+
+async def authenticate_credential_async(credential: str) -> UserContext:
+    """Verify a raw WaddleAI credential on the HTTP (Hypercorn event-loop) path.
+
+    The counterpart to :func:`authenticate_credential` used by every
+    ASGI-facing caller (``_api_key_verifier``, ``get_current_user``'s
+    fallback): for a ``wa-``/``sk-`` credential, both the PyDAL lookup and
+    the bcrypt verify now run through :class:`ApiKeyAuthenticator`
+    (``auth_cache.py``) -- cache-fronted and executor-offloaded, never
+    inline on this coroutine (release-audit-2026-10-02 O7-a/O11). The
+    ``Bearer`` JWT branch is unchanged: JWKS verification is already
+    cached and was not flagged as blocking.
+
+    Args:
+        credential: A raw ``wa-``/``sk-`` API key, or ``Bearer <jwt>``.
+
+    Returns:
+        The :class:`UserContext` the credential belongs to.
+
+    Raises:
+        AuthenticationError: The credential is malformed, unknown, or expired.
+
+    """
+    if credential.startswith("sk-") or credential.startswith("wa-"):
+        return await proxy_server.auth_cache.authenticate(credential)
+    if credential.startswith("Bearer "):
         return verify_token_via_jwks(credential[7:], proxy_server.jwks_verifier)
     raise AuthenticationError("Invalid authorization format")
 
@@ -531,6 +556,7 @@ class ProxyServer:
         """Declare component slots as unset; real instances are wired in `startup()`."""
         self.db = None
         self.rbac = None
+        self.auth_cache = None  # ApiKeyAuthenticator (auth_cache.py), built in startup()
         self.security_scanner = None
         self.content_filter = None
         self.token_manager = None
@@ -685,6 +711,22 @@ class ProxyServer:
         except Exception as e:
             logger.warning("Memory-layer Valkey client init failed: %s", e)
             self.memory_valkey = None
+
+        # API-key auth-lookup cache (release-audit-2026-10-02 O7-a/O11).
+        # Reuses `self.memory_valkey` -- the proxy's one shared Valkey
+        # connection -- rather than opening a second `redis.from_url()`
+        # pool; `ApiKeyAuthCache` falls back to an in-process cache when
+        # this is None (Valkey never configured/reachable), and `authenticate()`
+        # always falls through to the DB either way, so auth keeps working
+        # with no Valkey at all, just without cross-process cache sharing.
+        from .auth_cache import ApiKeyAuthCache, ApiKeyAuthenticator
+
+        self.auth_cache = ApiKeyAuthenticator(
+            rbac=self.rbac,
+            cache=ApiKeyAuthCache(valkey=self.memory_valkey),
+            metrics=self.metrics,
+            features=self.features,
+        )
 
         # §6A.3 embedding/retrieval caches (fail-safe: enabled only when the
         # whole-feature flag is on at startup). Per-key `embedding_cache`/
@@ -1307,6 +1349,10 @@ class ProxyServer:
         if self.llm_manager:
             await self.llm_manager.close_all()
 
+        from .auth_cache import get_auth_executor
+
+        get_auth_executor().shutdown(wait=False, cancel_futures=True)
+
         logger.info("Proxy server shutdown complete")
 
 
@@ -1322,13 +1368,13 @@ async def _api_key_verifier(credential: str) -> dict:
     carrying the full user context. Raises AuthenticationError on an invalid key,
     which the middleware catches and turns into a 401.
 
-    ``authenticate_api_key`` is called synchronously: it uses the shared PyDAL
-    DAL (thread-local connections) and performs a write (last_used), so offloading
-    to asyncio.to_thread would open a second thread-local SQLite connection whose
-    uncommitted write locks the file. This matches the proxy's original proven
-    auth path; a true async offload would need a dedicated per-worker DAL (follow-up).
+    This callback is invoked by ``OIDCAuthMiddleware`` on *every* authenticated
+    HTTP request, directly on the Hypercorn event loop -- it is the actual hot
+    path release-audit-2026-10-02 O7-a/O11 targets. The PyDAL lookup and bcrypt
+    verify now run through :class:`~proxy.apps.proxy_server.auth_cache.ApiKeyAuthenticator`,
+    cache-fronted by ``key_id`` and executor-offloaded, never inline here.
     """
-    uc = proxy_server.rbac.authenticate_api_key(credential)
+    uc = await proxy_server.auth_cache.authenticate(credential)
     return user_context_to_claims_dict(uc)
 
 
@@ -1709,9 +1755,13 @@ async def get_current_user():
         abort(401, description="Authorization header required")
 
     try:
-        # --- paths 2 and 3: raw API key / Bearer JWT, via the one shared verifier
-        #     that the gRPC surface also uses (authenticate_credential).
-        return authenticate_credential(authorization)
+        # --- paths 2 and 3: raw API key / Bearer JWT, via the async,
+        #     cache-fronted verifier (authenticate_credential_async) --
+        #     this coroutine runs on the Hypercorn event loop, so it must
+        #     never block it (release-audit-2026-10-02 O7-a). The gRPC
+        #     surface's own thread keeps using the sync
+        #     authenticate_credential.
+        return await authenticate_credential_async(authorization)
     except AuthenticationError as e:
         abort(401, description=str(e))
     except Exception as e:

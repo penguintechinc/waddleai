@@ -8802,6 +8802,46 @@ paths:
       summary: Test provider connectivity.
       tags:
       - Providers
+  /api/v1/proxy-keys/{key_id}:
+    delete:
+      description: '
+
+        Soft-delete (``enabled=False``), mirroring ``keys.py``''s own revoke
+
+        semantics for the legacy virtual-key table, then invalidates the
+
+        proxy''s auth-lookup cache so the key stops working well before its
+
+        cache TTL would otherwise expire.'
+      operationId: delete_revoke_proxy_api_key
+      parameters:
+      - in: path
+        name: key_id
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope, matching keys.py''s
+                  own.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope, matching keys.py''s
+            own.'
+      security:
+      - bearerAuth: []
+      summary: Disable the proxy ``api_keys`` row identified by its non-secret ``key_id``.
+      tags:
+      - Keys
   /api/v1/quotas:
     get:
       description: ''

@@ -279,6 +279,36 @@ ROLE_PERMISSIONS = {
 }
 
 
+#: Valkey key prefix for the proxy's per-request api-key auth-lookup cache
+#: (``proxy/apps/proxy_server/auth_cache.py``). Defined here -- a module
+#: already shared by the proxy and management services -- rather than in
+#: the proxy's app package, so management's key-revoke endpoint can
+#: invalidate an entry without importing the proxy's application code.
+AUTH_CACHE_KEY_PREFIX = "waddleai:auth:apikey:"
+
+
+def auth_cache_key(key_id: str) -> str:
+    """Build the Valkey key an ``api_keys.key_id`` resolves to in the proxy's auth cache."""
+    return f"{AUTH_CACHE_KEY_PREFIX}{key_id}"
+
+
+def parse_wa_key_id(api_key: str) -> str:
+    """Extract the non-secret ``key_id`` segment from a ``wa-{key_id}-{secret}`` credential.
+
+    Shared by :meth:`RBACManager.authenticate_api_key` and the proxy's cached
+    auth path (``auth_cache.py``) so the two can never drift on what counts
+    as a validly-shaped key.
+
+    Raises:
+        AuthenticationError: the credential is not ``wa-{key_id}-{secret}`` shaped.
+
+    """
+    parts = api_key.split("-")
+    if len(parts) < 3 or parts[0] != "wa" or not parts[1]:
+        raise AuthenticationError("Invalid API key format")
+    return parts[1]
+
+
 class AuthenticationError(Exception):
     """Authentication failed."""
 
@@ -326,10 +356,7 @@ class RBACManager:
         bcrypt still gates the secret in constant time, so a forged ``key_id``
         cannot authenticate; failure semantics are unchanged.
         """
-        parts = api_key.split("-")
-        if len(parts) < 3 or parts[0] != "wa" or not parts[1]:
-            raise AuthenticationError("Invalid API key format")
-        key_id = parts[1]
+        key_id = parse_wa_key_id(api_key)
 
         key_record = (
             self.db(
@@ -362,6 +389,82 @@ class RBACManager:
 
         context = self._build_user_context(user)
         context.api_key_id = key_record.id
+        return context
+
+    def fetch_key_and_user(self, key_id: str):
+        """Load the ``api_keys`` row for ``key_id`` and its owning user -- no bcrypt, no write.
+
+        Split out of :meth:`authenticate_api_key` so the proxy's auth cache
+        (``auth_cache.py``) can populate itself on a cache miss without also
+        performing the per-request ``last_used`` write (debounced separately,
+        release-audit-2026-10-02 O7-a) or the bcrypt check (the caller
+        verifies the secret itself, off the event loop, against whichever
+        copy of ``key_hash`` it holds -- fresh here or cached).
+
+        Returns:
+            ``(key_record, user)`` when ``key_id`` resolves to an enabled key
+            whose owning user is enabled; ``None`` when ``key_id`` itself is
+            unknown or disabled (safe to negative-cache -- it reveals nothing
+            a failed bcrypt check wouldn't).
+
+        Raises:
+            AuthenticationError: the key_id exists but its owning user does
+                not, or is disabled -- a config fault, not a credential
+                guess, so the caller must not negative-cache this outcome.
+
+        """
+        key_record = (
+            self.db(
+                (self.db.api_keys.key_id == key_id) & (self.db.api_keys.enabled == True)  # noqa: E712
+            )
+            .select()
+            .first()
+        )
+        if key_record is None:
+            return None
+
+        user = self.db(self.db.users.id == key_record.user_id).select().first()
+        if not user or not user.enabled:
+            raise AuthenticationError("API key user is disabled")
+
+        return key_record, user
+
+    def touch_api_key_last_used(self, key_record_id: int) -> None:
+        """Write ``last_used`` for one ``api_keys`` row.
+
+        Called from a debounced background task (``auth_cache.py``), never
+        from the request path directly -- release-audit-2026-10-02 O7-a.
+        """
+        self.db(self.db.api_keys.id == key_record_id).update(last_used=datetime.utcnow())
+
+    def build_user_context(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        role: str,
+        organization_id: int,
+        managed_orgs: list[int] | None,
+        api_key_id: int | None = None,
+    ) -> UserContext:
+        """Build a :class:`UserContext` from already-resolved fields -- no DB access.
+
+        Delegates to :meth:`_build_user_context`'s role->permissions expansion
+        and ``managed_orgs`` normalization via a lightweight stand-in object,
+        so a cache-populated context (``auth_cache.py``) can never drift from
+        the DB-built one.
+        """
+        from types import SimpleNamespace
+
+        user_like = SimpleNamespace(
+            role=role,
+            managed_orgs=managed_orgs,
+            id=user_id,
+            username=username,
+            organization_id=organization_id,
+        )
+        context = self._build_user_context(user_like)
+        context.api_key_id = api_key_id
         return context
 
     def _build_user_context(self, user) -> UserContext:
