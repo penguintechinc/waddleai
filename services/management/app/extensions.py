@@ -9,6 +9,8 @@ has been removed.
 """
 
 import logging
+import os
+import random
 from datetime import datetime
 from urllib.parse import quote
 
@@ -18,6 +20,30 @@ from penguin_dal.flask_ext import init_dal
 from quart import Quart
 
 logger = logging.getLogger(__name__)
+
+#: Default DB init retry bound; see backend-database.md's documented
+#: DB_MAX_RETRIES/DB_RETRY_DELAY env convention. `create_app()` (and this
+#: function) always run at process startup before the event loop exists
+#: (services/management/asgi.py imports it synchronously at module scope),
+#: so the blocking `time.sleep` below is correct, not a hot-path violation.
+_DEFAULT_DB_MAX_RETRIES = 10
+_DEFAULT_DB_RETRY_DELAY_SECONDS = 2.0
+_DEFAULT_DB_RETRY_MAX_DELAY_SECONDS = 30.0
+
+#: Bound for the Valkey/Redis connection pool (shared across requests).
+_DEFAULT_VALKEY_MAX_CONNECTIONS = 50
+
+
+def _backoff_delay(attempt: int, base: float, cap: float) -> float:
+    """Exponential backoff with full jitter: uniform(0, min(cap, base * 2**attempt)).
+
+    The AWS-recommended jitter strategy -- spreads retrying clients out in
+    time instead of a thundering herd all retrying at the same fixed
+    interval. Not security-sensitive (connection-retry timing only).
+    """
+    exp = min(cap, base * (2**attempt))
+    return random.uniform(0, exp)  # noqa: S311 -- jitter, not a security-sensitive random use
+
 
 # Fixed, NON-secret lookup handle for the bootstrap admin key. It is the
 # `key_id` half of the `wa-{key_id}-{secret}` value (analogous to a username),
@@ -48,8 +74,11 @@ def init_db(app: Quart) -> DB:
     db_url = app.config["DATABASE_URL"]
     logger.info(f"Connecting to database: {db_url.split('@')[-1] if '@' in db_url else db_url}")
 
-    max_retries = 10
-    retry_delay = 2  # seconds
+    max_retries = int(os.getenv("DB_MAX_RETRIES", str(_DEFAULT_DB_MAX_RETRIES)))
+    retry_delay = float(os.getenv("DB_RETRY_DELAY", str(_DEFAULT_DB_RETRY_DELAY_SECONDS)))
+    retry_max_delay = float(
+        os.getenv("DB_RETRY_MAX_DELAY", str(_DEFAULT_DB_RETRY_MAX_DELAY_SECONDS))
+    )
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -84,9 +113,10 @@ def init_db(app: Quart) -> DB:
 
         except Exception as e:
             if attempt < max_retries:
+                delay = _backoff_delay(attempt, retry_delay, retry_max_delay)
                 logger.warning(f"Database connection attempt {attempt}/{max_retries} failed: {e}")
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
+                logger.info(f"Retrying in {delay:.1f} seconds (exponential backoff + jitter)...")
+                time.sleep(delay)
             else:
                 logger.error(f"Failed to connect to database after {max_retries} attempts")
                 raise
@@ -132,7 +162,16 @@ def init_cache(app: Quart) -> redis.Redis | None:
         return None
 
     try:
-        redis_client = redis.from_url(cache_url, decode_responses=True)
+        redis_client = redis.from_url(
+            cache_url,
+            decode_responses=True,
+            max_connections=int(
+                os.getenv("MANAGEMENT_VALKEY_MAX_CONNECTIONS", str(_DEFAULT_VALKEY_MAX_CONNECTIONS))
+            ),
+            socket_timeout=float(os.getenv("MANAGEMENT_VALKEY_SOCKET_TIMEOUT", "5")),
+            socket_connect_timeout=float(os.getenv("MANAGEMENT_VALKEY_CONNECT_TIMEOUT", "5")),
+            health_check_interval=int(os.getenv("MANAGEMENT_VALKEY_HEALTH_CHECK_INTERVAL", "30")),
+        )
         redis_client.ping()
         # Also set cache_client alias to same object
         cache_client = redis_client
