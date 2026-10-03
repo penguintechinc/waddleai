@@ -460,6 +460,11 @@ async def _run_live_gates(dsn: str) -> None:
             try:
                 await _run_health_and_rpc(running, dev_keypair, fixture_repo)
             finally:
+                # O10-a: stop the lazily-started index-job worker pool before
+                # the gRPC server that owns the executor it was offloaded
+                # from -- see `tests/integration/conftest.py::knowledge_server`'s
+                # identical note on why this matters.
+                await running.service.shutdown_index_workers(grace_period=10.0)
                 # Positional `grace`, not a `grace_period` kwarg -- see
                 # `tests/integration/conftest.py::knowledge_server`'s identical note.
                 await server.stop(2.0)

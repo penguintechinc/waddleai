@@ -386,9 +386,7 @@ class IndexingConfig:
 
     dsn: str = field(default_factory=lambda: os.environ.get("PGVECTOR_URL", ""))
     #: Bounded worker-pool size draining the queue off the gRPC executor.
-    worker_count: int = field(
-        default_factory=lambda: _env_int("PENGUINCODE_INDEX_WORKERS", 2)
-    )
+    worker_count: int = field(default_factory=lambda: _env_int("PENGUINCODE_INDEX_WORKERS", 2))
     #: Backpressure limit -- `put_nowait` raises `IndexQueueFullError` beyond this,
     #: never grows unbounded (O10-a's required design).
     queue_maxsize: int = field(
