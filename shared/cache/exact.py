@@ -30,6 +30,7 @@ from typing import Any
 
 import orjson
 
+from shared.cache.singleflight import InProcessSingleFlight, jittered_ttl
 from shared.utils.metrics import get_proxy_metrics
 
 logger = logging.getLogger(__name__)
@@ -62,11 +63,28 @@ class ExactCache:
     """Valkey-backed exact response cache with TTL, size bound, and per-org LRU quota."""
 
     def __init__(self, valkey: Any) -> None:
-        """Initialize with an async Valkey/redis client (redis.asyncio-compatible)."""
+        """Initialize with an async Valkey/redis client (redis.asyncio-compatible).
+
+        ``singleflight`` is a per-instance :class:`InProcessSingleFlight`
+        registry -- it lives exactly as long as this ``ExactCache``, used by
+        callers (``shared.cache.response_cache.ResponseCache``) to coordinate
+        stampede protection on a miss (ops O11, see
+        ``shared.cache.singleflight``).
+        """
         self.valkey = valkey
+        self.singleflight = InProcessSingleFlight()
 
     async def get(self, org_id: int, key: str) -> CachedResponse | None:
         """Fetch a cached response, refreshing its LRU access score on hit."""
+        start = time.monotonic()
+        try:
+            return await self._get(org_id, key)
+        finally:
+            get_proxy_metrics().record_cache_lookup_duration(
+                layer="exact", seconds=time.monotonic() - start
+            )
+
+    async def _get(self, org_id: int, key: str) -> CachedResponse | None:
         redis_key = _entry_key(org_id, key)
         raw = await self.valkey.get(redis_key)
         if raw is None:
@@ -97,7 +115,14 @@ class ExactCache:
         max_entry_kb: int,
         org_quota_kb: int,
     ) -> bool:
-        """Write a cached response. Returns False (no write) if it exceeds ``max_entry_kb``."""
+        """Write a cached response. Returns False (no write) if it exceeds ``max_entry_kb``.
+
+        ``ttl_seconds`` is jittered (+/- ``CACHE_TTL_JITTER_FRACTION``, see
+        ``shared.cache.singleflight.jittered_ttl``) before being applied to
+        the Valkey key so a burst of entries written around the same time
+        don't all expire in lockstep and re-trigger a synchronized miss
+        later (ops O11).
+        """
         payload = orjson.dumps(
             {"response": value.response, "usage": value.usage, "stored_at": value.stored_at}
         )
@@ -119,7 +144,7 @@ class ExactCache:
             org_id, needed_bytes=size_bytes - old_size, org_quota_kb=org_quota_kb
         )
 
-        await self.valkey.set(redis_key, payload, ex=ttl_seconds)
+        await self.valkey.set(redis_key, payload, ex=jittered_ttl(ttl_seconds))
         await self.valkey.zadd(_idx_key(org_id), {key: time.time()})
         await self._adjust_bytes(org_id, size_bytes - old_size)
         return True

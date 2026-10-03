@@ -1,9 +1,12 @@
 """SemanticCache: restriction matrix, should-hit/should-miss corpus, threshold (spec §6.2/§6.5)."""
 
+import datetime as _dt
 import json
 import math
 import os
 from typing import Any
+
+import orjson as _orjson
 
 from shared.cache.exact import CachedResponse
 from shared.cache.semantic import CtxFlags, SemanticCache, is_semantic_eligible
@@ -278,3 +281,126 @@ class TestThresholdAndMatching:
             threshold=0.5,
         )
         assert result is None
+
+
+class TestClassifyIntentAndCosineEdgeCases:
+    """Pure-function edge cases: default_classify_intent/_cosine_similarity/is_semantic_eligible."""
+
+    def test_empty_text_classifies_as_other(self):
+        """default_classify_intent empty/whitespace-only text classifies as other."""
+        from shared.cache.semantic import default_classify_intent
+
+        assert default_classify_intent("   ") == "other"
+        assert default_classify_intent("") == "other"
+
+    def test_non_string_last_user_content_is_ineligible(self):
+        """Non-string last-user content (e.g. multimodal blocks) is ineligible."""
+        body = {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}
+        assert is_semantic_eligible(body, _base_flags()) is False
+
+    def test_cosine_similarity_mismatched_length_is_zero(self):
+        """_cosine_similarity: mismatched vector lengths return 0.0 rather than raising."""
+        from shared.cache.semantic import _cosine_similarity
+
+        assert _cosine_similarity([1.0, 0.0], [1.0]) == 0.0
+
+    def test_cosine_similarity_zero_vector_is_zero(self):
+        """_cosine_similarity: either vector being all-zero returns 0.0 (no divide-by-zero)."""
+        from shared.cache.semantic import _cosine_similarity
+
+        assert _cosine_similarity([0.0, 0.0], [1.0, 0.0]) == 0.0
+        assert _cosine_similarity([1.0, 0.0], [0.0, 0.0]) == 0.0
+
+
+class TestEmbedBypassAndCandidateEdgeCases:
+    """Embed-budget bypass (ops O11) and _fetch_candidates/_increment_hit_count edge paths."""
+
+    async def test_lookup_returns_none_when_embedder_unhealthy(
+        self, fake_semantic_db, stub_embedder
+    ):
+        """lookup() bypasses (returns None) rather than raising when the embedder is unhealthy."""
+        stub_embedder.is_healthy = lambda: False
+        cache = SemanticCache(db=fake_semantic_db, embedder=stub_embedder)
+
+        result = await cache.lookup(
+            org_id=1,
+            model_class="gpt-4o",
+            last_user_msg="same text",
+            context_hash="ctx1",
+            threshold=0.5,
+        )
+        assert result is None
+
+    async def test_put_is_a_noop_when_embedder_unhealthy(self, fake_semantic_db, stub_embedder):
+        """put() skips the DB insert (no-op) rather than writing a row with no embedding."""
+        stub_embedder.is_healthy = lambda: False
+        cache = SemanticCache(db=fake_semantic_db, embedder=stub_embedder)
+
+        await cache.put(
+            org_id=1,
+            model_class="gpt-4o",
+            last_user_msg="same text",
+            context_hash="ctx1",
+            response=CachedResponse(response={"usage": {}}, usage={}, stored_at=0.0),
+            ttl_seconds=86400,
+        )
+        assert fake_semantic_db.rows == []
+
+    async def test_fetch_candidates_skips_rows_with_no_embedding(
+        self, fake_semantic_db, stub_embedder
+    ):
+        """A seeded row with no prompt_embedding_json is skipped, not a crash."""
+        fake_semantic_db.seed(
+            org_id=1,
+            model_class="gpt-4o",
+            context_hash="ctx1",
+            prompt_embedding_json=None,
+            response={"usage": {}},
+            hit_count=0,
+            expires_at=_dt.datetime.utcnow() + _dt.timedelta(hours=1),
+        )
+        stub_embedder.vectors = {"same text": [1.0, 0.0]}
+        stub_embedder.dimensions = 2
+        cache = SemanticCache(db=fake_semantic_db, embedder=stub_embedder)
+
+        result = await cache.lookup(
+            org_id=1,
+            model_class="gpt-4o",
+            last_user_msg="same text",
+            context_hash="ctx1",
+            threshold=0.5,
+        )
+        assert result is None
+
+    async def test_fetch_candidates_decodes_string_response_payload(
+        self, fake_semantic_db, stub_embedder
+    ):
+        """A candidate row whose `response` column is a JSON string (not a dict) decodes cleanly."""
+        fake_semantic_db.seed(
+            org_id=1,
+            model_class="gpt-4o",
+            context_hash="ctx1",
+            prompt_embedding_json="[1.0, 0.0]",
+            response=_orjson.dumps({"usage": {}}).decode(),
+            hit_count=0,
+            expires_at=_dt.datetime.utcnow() + _dt.timedelta(hours=1),
+        )
+        stub_embedder.vectors = {"same text": [1.0, 0.0]}
+        stub_embedder.dimensions = 2
+        cache = SemanticCache(db=fake_semantic_db, embedder=stub_embedder)
+
+        result = await cache.lookup(
+            org_id=1,
+            model_class="gpt-4o",
+            last_user_msg="same text",
+            context_hash="ctx1",
+            threshold=0.5,
+        )
+        assert result is not None
+        assert result.response == {"usage": {}}
+
+    def test_increment_hit_count_is_a_noop_for_a_missing_row(self, fake_semantic_db):
+        """_increment_hit_count on a non-existent entry_id is a silent no-op, never raises."""
+        cache = SemanticCache(db=fake_semantic_db, embedder=None)
+        cache._increment_hit_count(999999)
+        assert fake_semantic_db.commit_count == 0

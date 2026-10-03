@@ -35,6 +35,7 @@ theme:
 nav:
   - Home: index.md
   - Architecture: architecture.md
+  - Caching: caching.md
   - Claude Integration: claude.md
   - Getting Started:
     - Installation: getting-started/installation.md

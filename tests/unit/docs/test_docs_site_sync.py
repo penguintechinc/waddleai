@@ -24,6 +24,7 @@ _SITE_DOCS = _DOCS / "docs-site" / "docs"
 # Pages that must stay byte-identical between the repo and the published site.
 _MIRRORED = (
     "api/openai-compatible.md",
+    "caching.md",
     "getting-started/installation.md",
     "integrations/claude-code.md",
     "integrations/vscode-extension.md",

@@ -47,12 +47,31 @@ class FakeValkey:
         self._purge_if_expired(key)
         return self._store.get(key)
 
-    async def set(self, key: str, value, ex: int | None = None) -> bool:
-        """Set `key` to `value` (str auto-encoded), with an optional TTL in seconds."""
+    async def set(
+        self,
+        key: str,
+        value,
+        ex: int | None = None,
+        px: int | None = None,
+        nx: bool = False,
+    ) -> bool:
+        """Set `key` to `value` (str auto-encoded), with optional TTL and NX (set-if-absent).
+
+        `nx`/`px` support real `SET key val NX PX <ms>` semantics (not just
+        a plain TTL'd set) -- needed so
+        `shared.cache.singleflight.StampedeLease` can be tested for true
+        mutual exclusion against this fake, not just against the real
+        Valkey client.
+        """
+        self._purge_if_expired(key)
+        if nx and key in self._store:
+            return False
         if isinstance(value, str):
             value = value.encode()
         self._store[key] = value
-        if ex is not None:
+        if px is not None:
+            self._expire_at[key] = self.now() + px / 1000.0
+        elif ex is not None:
             self._expire_at[key] = self.now() + ex
         else:
             self._expire_at.pop(key, None)
