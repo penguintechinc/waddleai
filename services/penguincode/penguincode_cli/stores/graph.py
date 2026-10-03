@@ -51,6 +51,7 @@ overwrites an existing endpoint's `props`.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -59,10 +60,14 @@ from uuid import UUID
 import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.config.settings import GraphConfig
-from penguincode_cli.observability.otel import timed_store_operation
+from penguincode_cli.config.settings import GraphConfig, LimitsConfig
+from penguincode_cli.db.pool import connection as db_connection
+from penguincode_cli.observability.otel import record_query_clamped, timed_store_operation
+
+logger = logging.getLogger(__name__)
 
 VALID_GRAPH_KINDS: frozenset[str] = frozenset({"code", "knowledge", "memory"})
 VALID_VISIBILITIES: frozenset[str] = frozenset({"user", "team", "tenant"})
@@ -157,6 +162,15 @@ def _validate_kind(kind: str) -> None:
         raise ValueError(f"graph_kind must be one of {sorted(VALID_GRAPH_KINDS)}, got {kind!r}")
 
 
+def _clamp(value: int, maximum: int, *, param: str) -> int:
+    """Coerce ``value`` down to ``maximum`` (never reject), logging + counting a clamp hit."""
+    if value > maximum:
+        logger.debug("graph query clamped: param=%s requested=%d max=%d", param, value, maximum)
+        record_query_clamped(param)
+        return maximum
+    return value
+
+
 def _scope_columns(
     ctx: ScopeContext, visibility: str, team_id: str | None
 ) -> tuple[str | None, str | None, str | None]:
@@ -205,14 +219,26 @@ class PostgresGraphStore:
     """Default `GraphStore` backend: `graph_nodes`/`graph_edges` in the shared
     WaddleAI Postgres, traversed via scope-filtered recursive CTEs.
 
-    Opens a fresh connection per call (no pooling) -- correct and simple for
-    the extraction-batch and GraphRAG-expansion call patterns this backs
-    today; a pool can be added later without changing this public interface.
+    Borrows a connection per call from the shared `db/pool.py` pool (ops-audit
+    O7 -- this previously opened a fresh `psycopg.connect()` per call, with
+    no bound on total connections against Postgres `max_connections`); a
+    test/CLI caller injects an ephemeral `pool` instead of the process-wide
+    shared one. Traversal depth and result size are clamped server-side from
+    `limits` -- see `_traverse`'s docstring.
     """
 
-    def __init__(self, dsn: str, schema: str = "penguincode") -> None:
+    def __init__(
+        self,
+        dsn: str,
+        schema: str = "penguincode",
+        *,
+        pool: ConnectionPool | None = None,
+        limits: LimitsConfig | None = None,
+    ) -> None:
         self._dsn = dsn
         self._schema = schema
+        self._pool = pool
+        self._limits = limits if limits is not None else LimitsConfig()
 
     def _table(self, name: str) -> sql.Identifier:
         return sql.Identifier(self._schema, name)
@@ -252,7 +278,7 @@ class PostgresGraphStore:
             graph_kind=kind,
             count=len(nodes),
         ):
-            with psycopg.connect(self._dsn) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool) as conn:
                 with conn.cursor() as cur:
                     for node in nodes:
                         cur.execute(
@@ -356,7 +382,7 @@ class PostgresGraphStore:
             graph_kind=kind,
             count=len(edges),
         ):
-            with psycopg.connect(self._dsn) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool) as conn:
                 with conn.cursor() as cur:
                     for edge in edges:
                         src_id = self._resolve_or_create_node(
@@ -408,9 +434,24 @@ class PostgresGraphStore:
         depth: int,
         rel_types: list[str] | None,
     ) -> Subgraph:
+        """Scoped recursive-CTE traversal from ``seed_keys``, bounded on every axis (ops-audit O7).
+
+        ``depth`` is clamped to ``LimitsConfig.max_graph_depth`` -- caller
+        input is coerced down, never rejected. Independently of the depth
+        bound, the recursive term also stops extending any single traversal
+        path once it has already visited ``LimitsConfig.max_graph_nodes``
+        nodes (``array_length(r.visited, 1)``) -- a per-hop cap that keeps a
+        dense/cyclic graph from exploding mid-recursion, not just at the
+        end -- and the final result is additionally capped with a hard
+        ``LIMIT`` so the returned row count can never exceed that same bound
+        regardless of how many distinct nodes the (now-bounded) recursion
+        produced.
+        """
         _validate_kind(kind)
         if depth < 0:
             raise ValueError(f"depth must be >= 0, got {depth}")
+        depth = _clamp(depth, self._limits.max_graph_depth, param="graph_depth")
+        max_nodes = self._limits.max_graph_nodes
 
         query = sql.SQL(
             """
@@ -440,8 +481,10 @@ class PostgresGraphStore:
                  AND {node2_scope}
                 WHERE r.depth < %(depth)s
                   AND NOT (n2.id = ANY(r.visited))
+                  AND array_length(r.visited, 1) < %(max_nodes)s
             )
             SELECT DISTINCT id, node_type, key, props FROM reachable
+            LIMIT %(max_nodes)s
             """
         ).format(
             nodes=self._table("graph_nodes"),
@@ -460,6 +503,7 @@ class PostgresGraphStore:
             "user_id": ctx.user_id,
             "rel_types": list(rel_types) if rel_types else None,
             "depth": depth,
+            "max_nodes": max_nodes,
         }
 
         with timed_store_operation(
@@ -469,7 +513,7 @@ class PostgresGraphStore:
             graph_kind=kind,
             depth=depth,
         ):
-            with psycopg.connect(self._dsn) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool) as conn:
                 with conn.cursor() as cur:
                     cur.execute(query, params)
                     node_rows = cur.fetchall()
@@ -575,7 +619,7 @@ class PostgresGraphStore:
             backend="postgres",
             graph_kind=kind,
         ):
-            with psycopg.connect(self._dsn) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         query,
@@ -589,9 +633,7 @@ class PostgresGraphStore:
                     )
                 conn.commit()
 
-    def list_node_keys(
-        self, ctx: ScopeContext, kind: str, node_types: Sequence[str]
-    ) -> list[str]:
+    def list_node_keys(self, ctx: ScopeContext, kind: str, node_types: Sequence[str]) -> list[str]:
         """All distinct node keys of `node_types` anywhere in `ctx`'s tenant.
 
         Deliberately **tenant-wide** -- unlike every other read method in
@@ -625,7 +667,7 @@ class PostgresGraphStore:
         with timed_store_operation(
             "graph_query", "graph.list_node_keys", backend="postgres", graph_kind=kind
         ):
-            with psycopg.connect(self._dsn) as conn:
+            with db_connection(self._dsn, ctx, pool=self._pool) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         query,
