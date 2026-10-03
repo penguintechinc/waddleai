@@ -36,7 +36,9 @@ shared.utils.memory_integration.PgvectorMemoryStore.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -45,6 +47,14 @@ from typing import Any
 import orjson
 
 from shared.cache.exact import CachedResponse
+from shared.cache.singleflight import (
+    DEFAULT_SEMANTIC_CACHE_EMBED_TIMEOUT_MS,
+    InProcessSingleFlight,
+    dedup_embed,
+    embed_with_budget,
+    jittered_ttl,
+)
+from shared.utils.metrics import get_proxy_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +157,19 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _embed_dedup_key(last_user_msg: str) -> str:
+    """Normalized-prompt key for in-process embedding de-dup (ops O11, Gemini note).
+
+    Normalizes only whitespace/case -- the embedder itself is the source of
+    truth for semantic equivalence; this key only needs to catch byte-for-
+    byte-after-trivial-normalization duplicate concurrent prompts, not
+    semantically-similar ones.
+    """
+    normalized = " ".join(last_user_msg.strip().lower().split())
+    digest = hashlib.sha256(normalized.encode()).hexdigest()
+    return f"semantic:embed:{digest}"
+
+
 class SemanticCache:
     """pgvector-backed (or SQLite-fallback) restricted semantic response cache."""
 
@@ -155,27 +178,69 @@ class SemanticCache:
         db: Any,
         embedder: Any,
         classify_intent: Callable[[str], str] = default_classify_intent,
+        valkey: Any | None = None,
+        embed_timeout_ms: float = DEFAULT_SEMANTIC_CACHE_EMBED_TIMEOUT_MS,
     ) -> None:
         """Initialize with a penguin-dal ``db`` handle and an embedder.
 
-        ``embedder``: object with a sync ``embed(text) -> list[float]``.
+        ``embedder``: object with a sync ``embed(text) -> list[float]`` and
+        an optional sync ``is_healthy() -> bool`` (duck-typed; absent means
+        "always healthy"). ``valkey``, if given, enables a cross-process
+        stampede lease on cache population in addition to the always-on
+        in-process single-flight (``self.singleflight``) -- absent (the
+        default), this layer still de-dupes concurrent callers within one
+        worker, it just can't coordinate across processes (ops O11 item 7:
+        "Valkey down degrades to in-process single-flight only").
         """
         self.db = db
         self.embedder = embedder
         self.classify_intent = classify_intent
+        self.valkey = valkey
+        self.embed_timeout_ms = embed_timeout_ms
+        self.singleflight = InProcessSingleFlight()
 
-    async def lookup(
+    async def embed(self, text: str) -> list[float] | None:
+        """Dedup + latency-budget the embedding call (ops O11, Gemini note).
+
+        Public (not just an internal helper of ``lookup``/``put``) so
+        ``shared.cache.response_cache.ResponseCache`` can embed once up
+        front and reuse the vector for stampede-wait polling via
+        :meth:`score_candidates` without re-embedding on every poll.
+        Concurrent calls for the same normalized prompt in this process
+        share one embedding call; the call itself is bounded by
+        ``embed_timeout_ms`` and by the embedder's own health signal --
+        exceeding either returns ``None`` (bypass) rather than blocking
+        the semantic-cache path behind a saturated embedder.
+        """
+        loop = asyncio.get_event_loop()
+
+        async def _compute() -> list[float]:
+            return await loop.run_in_executor(None, self.embedder.embed, text)
+
+        is_healthy = getattr(self.embedder, "is_healthy", None)
+        budget_result: list[float] | None = await embed_with_budget(
+            lambda: dedup_embed(self.singleflight, _embed_dedup_key(text), _compute),
+            timeout_ms=self.embed_timeout_ms,
+            is_healthy=is_healthy if callable(is_healthy) else None,
+            metrics_layer="semantic",
+        )
+        return budget_result
+
+    async def score_candidates(
         self,
         org_id: int,
         model_class: str,
-        last_user_msg: str,
         context_hash: str,
+        query_embedding: list[float],
         threshold: float,
     ) -> CachedResponse | None:
-        """Return the best matching cached response, or None on miss."""
-        loop = asyncio.get_event_loop()
-        query_embedding = await loop.run_in_executor(None, self.embedder.embed, last_user_msg)
+        """Score an already-computed embedding against this scope's candidates.
 
+        Split out from :meth:`lookup` so a stampede follower polling for
+        the leader's value (``shared.cache.singleflight.guard_miss``'s
+        ``fetch_cached``) can re-check Postgres without re-embedding the
+        prompt on every poll iteration.
+        """
         candidates = await asyncio.to_thread(
             self._fetch_candidates, org_id, model_class, context_hash
         )
@@ -195,6 +260,40 @@ class SemanticCache:
         response = best_row["response"]
         return CachedResponse(response=response, usage=response.get("usage", {}), stored_at=0.0)
 
+    async def lookup(
+        self,
+        org_id: int,
+        model_class: str,
+        last_user_msg: str,
+        context_hash: str,
+        threshold: float,
+    ) -> CachedResponse | None:
+        """Return the best matching cached response, or None on miss/bypass."""
+        start = time.monotonic()
+        try:
+            return await self._lookup(org_id, model_class, last_user_msg, context_hash, threshold)
+        finally:
+            get_proxy_metrics().record_cache_lookup_duration(
+                layer="semantic", seconds=time.monotonic() - start
+            )
+
+    async def _lookup(
+        self,
+        org_id: int,
+        model_class: str,
+        last_user_msg: str,
+        context_hash: str,
+        threshold: float,
+    ) -> CachedResponse | None:
+        query_embedding = await self.embed(last_user_msg)
+        if query_embedding is None:
+            # Exceeded the embed budget or the embedder is unhealthy -- bypass
+            # (already counted by embed_with_budget) rather than block.
+            return None
+        return await self.score_candidates(
+            org_id, model_class, context_hash, query_embedding, threshold
+        )
+
     async def put(
         self,
         org_id: int,
@@ -204,9 +303,22 @@ class SemanticCache:
         response: CachedResponse,
         ttl_seconds: int,
     ) -> None:
-        """Embed and store a response entry."""
-        loop = asyncio.get_event_loop()
-        embedding = await loop.run_in_executor(None, self.embedder.embed, last_user_msg)
+        """Embed and store a response entry.
+
+        A no-op (logged, never raised) when the embedding call is bypassed
+        (budget exceeded / embedder unhealthy) -- a write that can't embed
+        the prompt isn't useful to the semantic layer and must not block
+        the caller's response. ``ttl_seconds`` is jittered on write (ops
+        O11) so hot keys don't expire in lockstep.
+        """
+        embedding = await self.embed(last_user_msg)
+        if embedding is None:
+            logger.debug(
+                "SemanticCache: embedding bypassed for org=%s model_class=%s; entry not written",
+                org_id,
+                model_class,
+            )
+            return
         await asyncio.to_thread(
             self._insert,
             org_id,
@@ -214,7 +326,7 @@ class SemanticCache:
             context_hash,
             embedding,
             response.response,
-            ttl_seconds,
+            jittered_ttl(ttl_seconds),
         )
 
     def _fetch_candidates(self, org_id: int, model_class: str, context_hash: str) -> list[dict]:

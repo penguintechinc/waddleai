@@ -129,9 +129,22 @@ class WaddleAIMetrics:
             ["endpoint", "limit_type"],
         )
 
-        # Response cache metrics (spec §6.4)
+        # Response cache metrics (spec §6.4; result vocabulary extended by the
+        # cache-stampede protection work, ops finding O11: hit|miss were the
+        # only values CacheStage recorded -- bypass|stampede_wait|
+        # stampede_fallthrough are recorded directly by shared.cache.singleflight
+        # and the exact/semantic layers for the kill-switch-off, single-flight-
+        # follower-hit, and single-flight-timeout-fallthrough paths respectively)
         self.cache_lookups_total = Counter(
-            "waddleai_cache_lookups_total", "Cache lookups by layer and result", ["layer", "result"]
+            "waddleai_cache_lookups_total",
+            "Cache lookups by layer and result "
+            "(result: hit|miss|bypass|stampede_wait|stampede_fallthrough)",
+            ["layer", "result"],
+        )
+        self.cache_lookup_duration_seconds = Histogram(
+            "waddleai_cache_lookup_duration_seconds",
+            "Cache lookup latency by layer, including any single-flight wait",
+            ["layer"],
         )
         self.cache_tokens_saved_total = Counter(
             "waddleai_cache_tokens_saved_total", "Tokens saved by cache layer", ["layer"]
@@ -292,9 +305,14 @@ class WaddleAIMetrics:
     def record_cache_lookup(self, layer: str, result: str) -> None:
         """Record a response-cache lookup outcome (spec §6.4).
 
-        layer: exact|semantic; result: hit|miss.
+        layer: exact|semantic|response; result: hit|miss|bypass|
+        stampede_wait|stampede_fallthrough (see shared.cache.singleflight).
         """
         self.cache_lookups_total.labels(layer=layer, result=result).inc()
+
+    def record_cache_lookup_duration(self, layer: str, seconds: float) -> None:
+        """Record cache lookup latency for `layer`, including any single-flight wait."""
+        self.cache_lookup_duration_seconds.labels(layer=layer).observe(max(0.0, seconds))
 
     def record_cache_tokens_saved(self, layer: str, tokens: int) -> None:
         """Record tokens saved by a cache hit on the given layer."""

@@ -44,7 +44,7 @@ class TestExactCachePutGet:
         assert result is None
 
     async def test_ttl_is_honored(self, fake_valkey):
-        """Ttl is honored."""
+        """Ttl is honored, within the write-side jitter bound (shared.cache.singleflight)."""
         cache = ExactCache(fake_valkey)
         fake_valkey.now = lambda: 0  # deterministic clock for the time-travel assertion below
         await cache.put(
@@ -58,10 +58,12 @@ class TestExactCachePutGet:
 
         redis_key = "waddleai:cache:exact:1:ttl-key"
         ttl = await fake_valkey.ttl(redis_key)
-        assert 0 < ttl <= 100
+        # Default jitter is +/-10% (CACHE_TTL_JITTER_FRACTION) -- never below
+        # base, never more than 1 second over the jittered ceiling.
+        assert 0 < ttl <= 111
 
-        # Time-travel past expiry: entry must no longer be gettable.
-        fake_valkey.now = lambda: 101
+        # Time-travel well past the jittered ceiling: entry must no longer be gettable.
+        fake_valkey.now = lambda: 112
         result = await cache.get(org_id=1, key="ttl-key")
         assert result is None
 
@@ -225,3 +227,40 @@ class TestExactCachePutGet:
         )
 
         assert _counter_value(metrics.cache_entries_evicted_total, layer="exact") == before + 1
+
+
+class TestExactCacheErrorPaths:
+    """Error/edge paths not reachable via the happy-path put/get flows above.
+
+    The corrupt-payload branch (``except orjson.JSONDecodeError`` in
+    ``ExactCache._get``) is intentionally not exercised here: in this
+    sandbox, triggering a real ``orjson.JSONDecodeError`` under
+    ``--cov-branch`` reproducibly crashes with ``SystemError:
+    _PyErr_SetObject: exception <class
+    'pydantic_core.core_schema.DataclassArgsSchema'> is not a BaseException
+    subclass`` -- a pre-existing orjson/pydantic_core/coverage.py
+    interaction in this environment (reproduces even in a 4-line throwaway
+    script with no WaddleAI code involved), not a regression from this
+    change. Documented here rather than worked around with a skip/xfail.
+    """
+
+    async def test_eviction_loop_breaks_when_index_is_empty_but_bytes_counter_is_stale(
+        self, fake_valkey
+    ):
+        """An inconsistent (stale) bytes counter with an empty LRU index never loops forever."""
+        cache = ExactCache(fake_valkey)
+        # Simulate a stale accounting state: bytes counter claims usage over
+        # quota, but the LRU index has nothing to evict -- _evict_to_fit must
+        # break out rather than spin.
+        await fake_valkey.set("waddleai:cache:bytes:1", b"999999")
+
+        ok = await cache.put(
+            org_id=1,
+            key="new-key",
+            value=_cached("small"),
+            ttl_seconds=86400,
+            max_entry_kb=256,
+            org_quota_kb=1,
+        )
+        assert ok is True
+        assert await cache.get(org_id=1, key="new-key") is not None
