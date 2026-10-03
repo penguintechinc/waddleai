@@ -140,9 +140,7 @@ format|tests/test_graphs_code.py:477:24: unformatted: File would be reformatted
 format|tests/test_grpc_client_tracing.py:68:35: unformatted: File would be reformatted
 format|tests/test_live_scenarios.py:101:63: unformatted: File would be reformatted
 format|tests/test_mcp_tools.py:199:33: unformatted: File would be reformatted
-format|tests/test_memory.py:342:65: unformatted: File would be reformatted
 format|tests/test_rest_api.py:73:51: unformatted: File would be reformatted
-format|tests/test_retrieval_graphrag.py:325:29: unformatted: File would be reformatted
 format|tests/test_scenarios.py:218:41: unformatted: File would be reformatted
 format|tests/test_search_engines.py:28:31: unformatted: File would be reformatted
 format|tests/test_security_audit_2026_09_14.py:332:28: unformatted: File would be reformatted
