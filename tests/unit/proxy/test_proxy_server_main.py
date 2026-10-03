@@ -573,6 +573,53 @@ class TestChatCompletions:
         assert body["error"]["type"] == "invalid_request_error"
         assert "messages" in body["error"]["message"]
 
+    # regression: ops O7-b (true SSE streaming)
+    async def test_stream_true_returns_real_sse_not_buffered_json(self, running_app):
+        """`stream: true` now returns a live text/event-stream response, not one JSON blob."""
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={
+                "model": "gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers["Content-Type"].startswith("text/event-stream")
+        assert resp.headers["X-Accel-Buffering"] == "no"
+
+        chunks = [c async for c in resp.iter_encode()]
+        body = b"".join(chunks)
+        frames = body.split(b"\n\n")[:-1]  # trailing split artifact after the last \n\n
+        assert len(frames) > 2  # incremental: role+content chunk, final usage chunk, [DONE]
+        assert frames[-1] == b"data: [DONE]"
+        assert b"chat.completion.chunk" in body
+        assert proxy_main._STUB_COMPLETION_TEXT.encode() in body
+
+    # regression: ops O7-b (true SSE streaming kill-switch)
+    async def test_stream_true_falls_back_to_buffered_json_when_kill_switch_on(
+        self, running_app, monkeypatch
+    ):
+        """`waddleai.disable-sse-streaming` ON restores the pre-existing buffered-JSON behavior."""
+        monkeypatch.setenv("WADDLEAI_FLAG_DISABLE_SSE_STREAMING", "1")
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers=_bearer_headers(),
+            json={
+                "model": "gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers["Content-Type"].startswith("application/json")
+        body = await resp.get_json()
+        assert body["object"] == "chat.completion"
+        assert body["choices"][0]["message"]["content"] == proxy_main._STUB_COMPLETION_TEXT
+
 
 # ---------------------------------------------------------------------------
 # Small module-level helper functions
@@ -1465,6 +1512,28 @@ class TestClaudeMessages:
         assert body["usage"]["input_tokens"] == 12
         assert body["usage"]["output_tokens"] == 11
 
+    # regression: ops O7-b (true SSE streaming)
+    async def test_stream_true_returns_real_sse_event_sequence(self, running_app):
+        """`stream: true` on /v1/messages returns the live Anthropic SSE event sequence."""
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hello world"}],
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers["Content-Type"].startswith("text/event-stream")
+
+        chunks = [c async for c in resp.iter_encode()]
+        body = b"".join(chunks)
+        assert body.startswith(b"event: message_start")
+        assert b"event: message_stop" in body
+        assert proxy_main._STUB_COMPLETION_TEXT.encode() in body
+
     async def test_prompt_injection_is_blocked_with_400(self, running_app):
         """A message matching the built-in prompt-injection pattern is blocked pre-dispatch."""
         client = running_app.test_client()
@@ -1793,6 +1862,30 @@ class TestReleaseAudit20260923Handlers:
         assert resp.status_code == 429
         body = await resp.get_json()
         assert body["error"]["type"] == "overloaded_error"
+        # regression: ops O10 follow-up -- the shed response now advertises Retry-After.
+        assert int(resp.headers["Retry-After"]) > 0
+
+    # regression: ops O10 follow-up
+    async def test_overload_retry_after_is_env_configurable(self, running_app, monkeypatch):
+        """PROXY_OVERLOAD_RETRY_AFTER_SECONDS controls the advertised Retry-After value."""
+        from proxy.apps.proxy_server.main import ConcurrencyLimiter
+
+        monkeypatch.setitem(proxy_main.proxy_server.config, "overload_retry_after_seconds", 7)
+        full = ConcurrencyLimiter(limit=1)
+        assert full.try_enter() is True
+        monkeypatch.setattr(proxy_main.proxy_server, "request_limiter", full)
+
+        client = running_app.test_client()
+        resp = await client.post(
+            "/v1/messages",
+            headers=_bearer_headers(),
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 429
+        assert resp.headers["Retry-After"] == "7"
 
     # regression: release-audit-2026-09-23
     async def test_chat_completions_allows_within_capacity(self, running_app, monkeypatch):

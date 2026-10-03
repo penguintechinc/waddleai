@@ -233,6 +233,27 @@ class WaddleAIMetrics:
             "waddleai_cache_entries_evicted_total", "Cache entries evicted (LRU/quota)", ["layer"]
         )
 
+        # True SSE streaming metrics (ops O7-b) -- `endpoint` is the bounded
+        # route template ("chat_completions"|"messages"), `provider` the LLM
+        # provider name or "cache" for a streaming cache-hit replay; NEVER a
+        # raw path, model name, or user id (unbounded-cardinality label).
+        self.stream_ttfb_seconds = Histogram(
+            "waddleai_proxy_stream_ttfb_seconds",
+            "Time to first upstream chunk for a true-SSE streaming dispatch",
+            ["provider", "endpoint"],
+            buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+        )
+        self.stream_chunks_total = Counter(
+            "waddleai_proxy_stream_chunks_total",
+            "SSE content chunks forwarded to the client",
+            ["provider", "endpoint"],
+        )
+        self.stream_errors_total = Counter(
+            "waddleai_proxy_stream_errors_total",
+            "Streaming dispatch failures (pre-stream or mid-stream)",
+            ["provider", "endpoint"],
+        )
+
         # Agent-hooks metrics (§18) -- hooks sit on the developer's
         # interactive tool-call path, so the evaluation-latency histogram is
         # the number that matters (p50/p95/p99), and fail-open vs
@@ -445,6 +466,18 @@ class WaddleAIMetrics:
     def record_cache_eviction(self, layer: str) -> None:
         """Record an LRU/quota eviction on the given cache layer."""
         self.cache_entries_evicted_total.labels(layer=layer).inc()
+
+    def observe_stream_ttfb(self, provider: str, endpoint: str, seconds: float) -> None:
+        """Record time-to-first-upstream-chunk for a true-SSE streaming dispatch (ops O7-b)."""
+        self.stream_ttfb_seconds.labels(provider=provider, endpoint=endpoint).observe(seconds)
+
+    def record_stream_chunk(self, provider: str, endpoint: str) -> None:
+        """Record one SSE content chunk forwarded to the client (ops O7-b)."""
+        self.stream_chunks_total.labels(provider=provider, endpoint=endpoint).inc()
+
+    def record_stream_error(self, provider: str, endpoint: str) -> None:
+        """Record a streaming dispatch failure, pre-stream or mid-stream (ops O7-b)."""
+        self.stream_errors_total.labels(provider=provider, endpoint=endpoint).inc()
 
     def record_hook_invocation(self, ecosystem: str, event: str, decision: str) -> None:
         """Record one agent-hook evaluation outcome (§18)."""
