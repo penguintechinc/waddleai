@@ -82,23 +82,31 @@ function registerCommands(context: vscode.ExtensionContext) {
 
     // Select Model command
     const selectModelCommand = vscode.commands.registerCommand('waddleai.selectModel', async () => {
-        // Fetch available models from WaddleAI
-        try {
-            const models = await waddleAIClient.getAvailableModels();
-            const modelNames = models.map(m => m.id);
+        // Fetch available models from WaddleAI. getAvailableModels() never
+        // throws -- a network/auth failure already surfaced its own
+        // warning/re-auth prompt, so an empty quick pick here (as opposed
+        // to the old silent `[]`) is distinguishable from a real "no
+        // models configured" response.
+        const result = await waddleAIClient.getAvailableModels();
+        if (!result.ok) {
+            return;
+        }
 
-            const selected = await vscode.window.showQuickPick(modelNames, {
-                placeHolder: 'Select a model to use with WaddleAI',
-                title: 'WaddleAI Model Selection'
-            });
+        if (result.models.length === 0) {
+            vscode.window.showInformationMessage('WaddleAI: no models are currently available from the server.');
+            return;
+        }
 
-            if (selected) {
-                const config = vscode.workspace.getConfiguration('waddleai');
-                await config.update('defaultModel', selected, vscode.ConfigurationTarget.Global);
-                vscode.window.showInformationMessage(`WaddleAI: Model set to ${selected}`);
-            }
-        } catch (error: any) {
-            vscode.window.showErrorMessage(`Failed to fetch models: ${error.message}`);
+        const modelNames = result.models.map(m => m.id);
+        const selected = await vscode.window.showQuickPick(modelNames, {
+            placeHolder: 'Select a model to use with WaddleAI',
+            title: 'WaddleAI Model Selection'
+        });
+
+        if (selected) {
+            const config = vscode.workspace.getConfiguration('waddleai');
+            await config.update('defaultModel', selected, vscode.ConfigurationTarget.Global);
+            vscode.window.showInformationMessage(`WaddleAI: Model set to ${selected}`);
         }
     });
 

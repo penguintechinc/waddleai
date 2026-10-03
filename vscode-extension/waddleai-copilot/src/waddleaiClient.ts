@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import axios, { AxiosInstance } from 'axios';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import { RetryBackoffHandle, scheduleRetryWithBackoff } from './retryBackoff';
 
 /** A single OpenAI-compatible chat message. */
 export interface ChatMessage {
@@ -55,6 +56,19 @@ export interface WaddleAIModel {
     [key: string]: unknown;
 }
 
+/**
+ * Typed outcome of `getAvailableModels()` -- distinguishes a legitimately
+ * empty model list from a failure that prevented the client from finding
+ * out (O8 Low: the old code logged-and-swallowed every error behind a bare
+ * `[]`, which looked identical to "the server has no models" to every
+ * caller). `reason: 'auth'` is a confirmed 401/403 and is never retried;
+ * `reason: 'network'` covers everything else (timeout, DNS, 5xx) and is
+ * retried with backoff.
+ */
+export type ModelFetchResult =
+    | { ok: true; models: WaddleAIModel[] }
+    | { ok: false; reason: 'auth' | 'network'; error: Error };
+
 interface DailyQuota {
     used: number;
     limit: number;
@@ -91,6 +105,11 @@ export class WaddleAIClient extends EventEmitter {
     private apiKey: string | undefined;
     private endpoint: string;
     private sessionId: string;
+    // Suppresses repeat showWarningMessage/showErrorMessage popups for
+    // consecutive getAvailableModels() failures -- reset on the next
+    // success so a *new* outage still gets its own notification.
+    private modelFetchOutageNotified = false;
+    private modelFetchRetryHandle: RetryBackoffHandle | undefined;
 
     constructor(private context: vscode.ExtensionContext) {
         super();
@@ -202,15 +221,85 @@ export class WaddleAIClient extends EventEmitter {
     }
 
     /**
-     * Get available models from WaddleAI
+     * Get available models from WaddleAI. Never throws and never swallows
+     * an error into an indistinguishable empty array -- the return value
+     * tells the caller exactly what happened, and a network failure also
+     * triggers a throttled user-facing warning + background retry (see
+     * `notifyModelFetchFailure`).
      */
-    async getAvailableModels(): Promise<WaddleAIModel[]> {
+    async getAvailableModels(): Promise<ModelFetchResult> {
         try {
             const response = await this.axiosInstance.get('/v1/models');
-            return response.data.data || [];
+            const models: WaddleAIModel[] = response.data?.data || [];
+            this.notifyModelFetchSucceeded();
+            return { ok: true, models };
         } catch (error: any) {
-            console.error('Failed to fetch models:', error);
-            return [];
+            const result = this.classifyModelFetchError(error);
+            this.notifyModelFetchFailure(result);
+            return result;
+        }
+    }
+
+    /** Maps a caught error to the typed, non-throwing `ModelFetchResult` failure shape. */
+    private classifyModelFetchError(error: any): { ok: false; reason: 'auth' | 'network'; error: Error } {
+        const status = error?.response?.status;
+        const reason: 'auth' | 'network' = status === 401 || status === 403 ? 'auth' : 'network';
+        const normalized = error instanceof Error ? error : new Error(String(error?.message ?? error));
+        return { ok: false, reason, error: normalized };
+    }
+
+    /** A successful fetch ends any outage: re-arm the warning and stop any background retry. */
+    private notifyModelFetchSucceeded(): void {
+        this.modelFetchOutageNotified = false;
+        this.stopModelFetchRetry();
+    }
+
+    /**
+     * Surfaces a getAvailableModels() failure to the user exactly once per
+     * outage window, and only ever schedules a background retry for
+     * `reason: 'network'` -- a 401/403 is a confirmed auth decision, never
+     * retried, per O8 Low (`vscode-extension/.../waddleaiClient.ts:204-212`).
+     */
+    private notifyModelFetchFailure(result: { ok: false; reason: 'auth' | 'network'; error: Error }): void {
+        console.error('[WaddleAIClient] getAvailableModels failed', {
+            reason: result.reason,
+            message: result.error.message
+        });
+
+        if (result.reason === 'auth') {
+            this.stopModelFetchRetry();
+            if (!this.modelFetchOutageNotified) {
+                this.modelFetchOutageNotified = true;
+                void this.handleAuthError();
+            }
+            return;
+        }
+
+        if (!this.modelFetchOutageNotified) {
+            this.modelFetchOutageNotified = true;
+            void vscode.window
+                .showWarningMessage(
+                    'WaddleAI: unable to reach the server to list models. Check your connection or the proxy endpoint.',
+                    'Retry'
+                )
+                .then((action) => {
+                    if (action === 'Retry') {
+                        void this.getAvailableModels();
+                    }
+                });
+        }
+
+        if (!this.modelFetchRetryHandle) {
+            this.modelFetchRetryHandle = scheduleRetryWithBackoff(() => {
+                void this.getAvailableModels();
+            });
+        }
+    }
+
+    private stopModelFetchRetry(): void {
+        if (this.modelFetchRetryHandle) {
+            this.modelFetchRetryHandle.stop();
+            this.modelFetchRetryHandle = undefined;
         }
     }
 
@@ -308,5 +397,6 @@ export class WaddleAIClient extends EventEmitter {
      */
     dispose() {
         this.removeAllListeners();
+        this.stopModelFetchRetry();
     }
 }
