@@ -51,8 +51,9 @@ Located: `penguincode_cli/db/migrations/*.sql` (idempotent SQL, applied via `pyt
 | `0004_graph_nodes.sql` | `graph_nodes` (code, knowledge, memory) |
 | `0005_graph_edges.sql` | `graph_edges` with uniqueness + cascade delete |
 | `0006_pending_lessons.sql` | `pending_lessons` — approval queue for tenant-wide promotion |
+| `0008_index_jobs.sql` | `index_jobs` — durable row backing the async index-job queue (see below) |
 
-All tables soft-scoped to tenant (queried via `WHERE tenant_id`); `graph_nodes.visibility` determines per-row visibility.
+All tables soft-scoped to tenant (queried via `WHERE tenant_id`); `graph_nodes.visibility` determines per-row visibility. `index_jobs` is scoped narrower, tenant **+ owner** (see its own section) — not the three-tier user/team/tenant model the other tables use.
 
 ### gRPC Services
 
@@ -60,9 +61,11 @@ Server runs at port 50051 (configurable `PENGUINCODE_SERVER_PORT`). Proto: `peng
 
 | Service | RPC | Purpose |
 |---|---|---|
-| `KnowledgeService` | `Index(IndexRequest)` | Trigger docs/codebase indexing; returns job ID |
+| `KnowledgeService` | `Index(IndexRequest)` | Enqueue docs indexing — returns `job_id` + `state=QUEUED` immediately (see Async Index-Job Queue below) |
+| | `IndexCode(IndexCodeRequest)` | Enqueue a code-graph (re)build — same `job_id`/`state` contract as `Index` |
 | | `Query(QueryRequest)` | Hybrid search (embedding + graph) |
-| | `IndexStatus(IndexStatusRequest)` | Job status (pending\|running\|done\|failed) |
+| | `IndexStatus(IndexStatusRequest)` | No `job_id`: aggregate docs-index stats. With `job_id`: that job's `state` (`QUEUED`\|`RUNNING`\|`SUCCEEDED`\|`FAILED`) + progress |
+| | `ListIndexJobs(ListIndexJobsRequest)` | The caller's own recent index jobs, most recent first |
 | | `ClearIndex(ClearIndexRequest)` | Flush all indexed data for a tenant |
 | | `CleanupIndex(CleanupIndexRequest)` | Archive old data, vacuum |
 | `LessonsService` | `MemoryAdd(MemoryAddRequest)` | Capture a lesson (returns ID, status=pending) |
@@ -85,6 +88,58 @@ Indexes project docs (Sphinx, MkDocs, markdown trees) into `docs_vectors` on dem
 5. **Store in pgvector**, scoped to tenant+user
 
 Triggered via `POST /docs/index` REST (blocks) or `KnowledgeService.Index` gRPC (async job).
+
+### Async Index-Job Queue (O10-a)
+
+`Index`/`IndexCode` used to run entirely inline in the unary gRPC handler —
+sequential Ollama embedding per chunk, or a blocking tree-sitter pass — on
+the same `ThreadPoolExecutor(10)` every other RPC (`Chat`, `Health`) also
+runs on. A few large `Index` calls starved that pool, timing out
+`Health.Check` and triggering a restart loop. Both RPCs now **enqueue a job
+and return immediately** (`job_id` + `state=QUEUED`); a bounded background
+worker pool (`penguincode_cli/indexing/`) drains the queue on its own
+asyncio tasks, off the gRPC executor entirely.
+
+**Job lifecycle**: `QUEUED` → `RUNNING` → `SUCCEEDED`/`FAILED`, persisted in
+`penguincode.index_jobs` (migration `0008`) so job state survives a pod
+restart gracefully. On startup, any row still `RUNNING` from a dead
+previous process is marked `FAILED` ("interrupted") — **never silently
+re-queued**, since the worker that owned it is gone and re-running an
+unknown-progress job could double-write partial results. Poll with
+`IndexStatus(job_id=...)`.
+
+**Job visibility**: tenant **+ owner** only (narrower than the three-tier
+user/team/tenant model `docs_vectors`/`graph_nodes` use) — a caller can
+never see another user's job, even within the same tenant.
+
+**Backpressure**: the queue is bounded (`PENGUINCODE_INDEX_QUEUE_MAXSIZE`,
+default 32) — a full queue rejects new work `RESOURCE_EXHAUSTED` (the job
+row is still created, then immediately marked `FAILED`) rather than growing
+unbounded. Retry after a short backoff.
+
+**Env vars**:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `PENGUINCODE_INDEX_WORKERS` | `2` | Background worker count draining the queue |
+| `PENGUINCODE_INDEX_QUEUE_MAXSIZE` | `32` | Backpressure limit |
+| `PENGUINCODE_INDEX_JOB_TIMEOUT_SECONDS` | `900` | Per-job wall-clock ceiling — exceeding it fails the job, never hangs a worker |
+| `PENGUINCODE_INDEX_POLL_INTERVAL_SECONDS` | `2.0` | CLI/client poll interval for `wait=True` (the default) on `index()`/`index_code()` |
+
+**Kill switch**: PostHog flag `penguincode.disable-index-queue` — **opt-out
+polarity**, the inverse of every other flag in this doc. Unseen/OFF (the
+default) means the queue mechanism is **ON**; setting it ON reverts
+`Index`/`IndexCode` to the pre-O10-a inline, synchronous behavior. The queue
+also degrades to this same inline path automatically when no job-store DSN
+is configured (`PGVECTOR_URL` unset) — a deployment that hasn't provisioned
+the queue schema yet, or a DSN-less test, never crashes.
+
+**Known follow-up (not implemented by O10-a)**: embedding batching and
+bounded per-job chunk concurrency inside `docs_rag.indexer.DocumentationIndexer`
+(one Ollama call per chunk, sequential, exactly as before — just moved off
+the gRPC executor into the worker pool). `PENGUINCODE_INDEX_CHUNK_CONCURRENCY`
+is read today but not yet wired to anything; a future task should consume
+it inside the indexer itself.
 
 ### Lessons-Learned Promotion
 
@@ -109,6 +164,7 @@ All features behind **PostHog feature flags** (Community Edition, env-configurab
 | `penguincode.memory-graph` | `PENGUINCODE_FLAG_MEMORY_GRAPH` | OFF | Mem0 extraction, institutional memory |
 | `penguincode.lessons-promotion` | `PENGUINCODE_FLAG_LESSONS_PROMOTION` | OFF | `/lesson` commands, approval queue |
 | `penguincode.disable-prometheus-metrics` | `PENGUINCODE_FLAG_DISABLE_PROMETHEUS_METRICS` | OFF | Opt-out kill-switch (unseen/OFF = `/metrics` route served; ON = legacy, route returns 404) |
+| `penguincode.disable-index-queue` | `PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE` | OFF (= queue mechanism **ON**) | Opt-out kill switch for the async index-job queue (O10-a) — inverted polarity, see that section |
 
 Client (gRPC + REST): check flag before invoking service. Service (gRPC): re-check flag on receive (fail-closed); client re-check is performance, not security.
 
@@ -151,6 +207,8 @@ export OTEL_SERVICE_NAME="penguincode"
 Logs: structured via `penguintechinc_utils.logging` + automatic PII redaction. Metrics: histograms (indexing latency, query time), counters (documents indexed). Traces: span per gRPC call + DB query.
 
 **Prometheus `/metrics` scrape surface**: `GET /metrics` on the REST app's existing port (the gRPC server and REST app share one process, so this covers both) — mandatory secondary scrape surface alongside OTLP push (critical-rules.md Observability), serving the same OTel instruments in Prometheus text format via `opentelemetry-exporter-prometheus`. Unauthenticated (cluster-internal scrape, same precedent as the proxy/management services' own `/metrics` routes). No dedicated port — the chart's `ServiceMonitor` scrapes the existing `rest` Service port at this path.
+
+Async index-job queue (O10-a) adds its own instruments: `penguincode.index_queue.depth` (gauge, summed across every live queue in the process), `penguincode.index_jobs.total` (counter, labeled `job_type`/`state`), `penguincode.index_job.duration` and `penguincode.index_chunk_embed.duration` (histograms, seconds).
 
 ## Deployment
 
@@ -209,6 +267,10 @@ server:
     PENGUINCODE_FLAG_KNOWLEDGE_GRAPH: "false"  # Coming soon
     PENGUINCODE_FLAG_MEMORY_GRAPH: "true"
     PENGUINCODE_FLAG_LESSONS_PROMOTION: "true"
+    # Async index-job queue (O10-a) -- defaults shown, override only if needed
+    PENGUINCODE_INDEX_WORKERS: "2"
+    PENGUINCODE_INDEX_QUEUE_MAXSIZE: "32"
+    PENGUINCODE_INDEX_JOB_TIMEOUT_SECONDS: "900"
 ```
 
 **NetworkPolicy**: Cross-namespace access to Postgres, Ollama (set via `cilium.topology.penguincodeIngress` in waddleai chart).
@@ -239,6 +301,33 @@ Trigger manual reindex:
 kubectl -n penguincode exec -it deploy/penguincode-server -- \
   python3 -c "from penguincode_cli.server.services.knowledge import KnowledgeService; await KnowledgeService().Index(...)"
 ```
+
+### Index Job Stuck QUEUED, or Queue Rejecting with RESOURCE_EXHAUSTED
+
+Check the queue depth metric (`penguincode.index_queue.depth`) and recent
+job outcomes (`penguincode.index_jobs.total`, labeled `job_type`/`state`).
+A job stuck `QUEUED` with nothing draining it usually means the worker
+pool never started (no job-store DSN configured, or the
+`penguincode.disable-index-queue` kill switch is on) — check
+`PGVECTOR_URL` is set and the flag is OFF. Steady `RESOURCE_EXHAUSTED`
+rejections mean the queue is saturated — scale `PENGUINCODE_INDEX_WORKERS`
+up, or raise `PENGUINCODE_INDEX_QUEUE_MAXSIZE` if the backlog is bursty
+rather than sustained:
+
+```bash
+kubectl set env deploy/penguincode-server PENGUINCODE_INDEX_WORKERS=4
+```
+
+Inspect job rows directly:
+```sql
+SELECT id, job_type, state, chunks_done, chunks_total, error, created_at, updated_at
+  FROM penguincode.index_jobs
+  WHERE tenant_id = '...' ORDER BY created_at DESC LIMIT 20;
+```
+
+A row stuck `running` across a pod restart is reaped to `failed`
+("interrupted") automatically on the next server startup — never silently
+re-queued; re-submit the `Index`/`IndexCode` call.
 
 ### JWKS Cache Stale
 

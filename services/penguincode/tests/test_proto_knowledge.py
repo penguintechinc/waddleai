@@ -25,16 +25,21 @@ from penguincode_cli.proto import (
     GraphNode,
     IndexCodeRequest,
     IndexCodeResponse,
+    IndexJobSummary,
     IndexRequest,
     IndexResponse,
     IndexStatusRequest,
     IndexStatusResponse,
+    JobState,
+    JobType,
     KnowledgeServiceServicer,
     KnowledgeServiceStub,
     Language,
     LanguageIndexStatus,
     LibraryIndexStatus,
     LibraryTarget,
+    ListIndexJobsRequest,
+    ListIndexJobsResponse,
     MemoryAddRequest,
     MemoryAddResponse,
     MemoryAddResult,
@@ -62,6 +67,7 @@ _REQUEST_MESSAGE_TYPES = (
     IndexStatusRequest,
     ClearIndexRequest,
     CleanupIndexRequest,
+    ListIndexJobsRequest,
 )
 
 #: Field names that would leak client-supplied identity into the scope
@@ -87,8 +93,8 @@ def test_request_never_carries_forbidden_scope_fields(message_type: type) -> Non
     assert not leaked, f"{message_type.__name__} leaks scope field(s): {leaked}"
 
 
-def test_knowledge_service_stub_has_all_nine_rpcs() -> None:
-    """`KnowledgeServiceStub` wires exactly the nine RPCs F1+C1 define.
+def test_knowledge_service_stub_has_all_ten_rpcs() -> None:
+    """`KnowledgeServiceStub` wires exactly the ten RPCs F1+C1+O10-a define.
 
     A stub's RPC attributes are only set on `channel.unary_unary(...)` calls
     inside `__init__` (a real `grpc.Channel` is F2/F3's concern, not F1's) --
@@ -105,6 +111,7 @@ def test_knowledge_service_stub_has_all_nine_rpcs() -> None:
         "IndexStatus",
         "ClearIndex",
         "CleanupIndex",
+        "ListIndexJobs",
     }
     methods = {name for name in vars(KnowledgeServiceServicer) if not name.startswith("_")}
     assert methods == expected
@@ -259,3 +266,84 @@ def test_cleanup_index_request_and_response_shapes() -> None:
     assert request.current_languages[0] == Language.LANGUAGE_RUST
     assert response.removed["old-lib"] == 4
     assert response.removed["_lang_go"] == 2
+
+
+def test_index_job_fields_serialize_and_parse_round_trip() -> None:
+    """`IndexResponse`/`IndexCodeResponse`/`IndexStatusResponse`/`IndexJobSummary`'s
+    O10-a job fields survive a real wire serialize/parse round trip (not just
+    in-process attribute access).
+    """
+    index_response = IndexResponse(
+        chunks_indexed=0, job_id="job-123", state=JobState.JOB_STATE_QUEUED
+    )
+    parsed = IndexResponse.FromString(index_response.SerializeToString())
+    assert parsed.job_id == "job-123"
+    assert parsed.state == JobState.JOB_STATE_QUEUED
+
+    index_code_response = IndexCodeResponse(
+        indexed=False,
+        node_count=0,
+        edge_count=0,
+        job_id="job-456",
+        state=JobState.JOB_STATE_RUNNING,
+    )
+    parsed_code = IndexCodeResponse.FromString(index_code_response.SerializeToString())
+    assert parsed_code.job_id == "job-456"
+    assert parsed_code.state == JobState.JOB_STATE_RUNNING
+
+    status_response = IndexStatusResponse(
+        job_id="job-789",
+        job_type=JobType.JOB_TYPE_INDEX_CODE,
+        state=JobState.JOB_STATE_SUCCEEDED,
+        chunks_done=0,
+        chunks_total=0,
+        error="",
+        created_at="2026-10-03T00:00:00",
+        updated_at="2026-10-03T00:01:00",
+    )
+    status_response.result.update({"node_count": 4, "edge_count": 6})
+    parsed_status = IndexStatusResponse.FromString(status_response.SerializeToString())
+    assert parsed_status.job_id == "job-789"
+    assert parsed_status.job_type == JobType.JOB_TYPE_INDEX_CODE
+    assert parsed_status.state == JobState.JOB_STATE_SUCCEEDED
+    assert dict(parsed_status.result) == {"node_count": 4, "edge_count": 6}
+    # Aggregate-mode fields stay at their zero-value defaults in job-status mode.
+    assert dict(parsed_status.libraries) == {}
+    assert parsed_status.total_chunks == 0
+
+    summary = IndexJobSummary(
+        job_id="job-1",
+        job_type=JobType.JOB_TYPE_INDEX_DOCS,
+        state=JobState.JOB_STATE_FAILED,
+        chunks_done=1,
+        chunks_total=3,
+        error="ollama unreachable",
+        created_at="2026-10-03T00:00:00",
+        updated_at="2026-10-03T00:01:00",
+    )
+    list_response = ListIndexJobsResponse(jobs=[summary])
+    parsed_list = ListIndexJobsResponse.FromString(list_response.SerializeToString())
+    assert len(parsed_list.jobs) == 1
+    assert parsed_list.jobs[0].error == "ollama unreachable"
+    assert parsed_list.jobs[0].state == JobState.JOB_STATE_FAILED
+
+
+def test_job_state_and_job_type_enums_have_the_expected_values() -> None:
+    """`JobState`/`JobType` are the closed sets `indexing/jobs.py`'s Python-side
+    enums map onto (see `server/services/knowledge.py`'s `_JOB_STATE_TO_PROTO`/
+    `_JOB_TYPE_TO_PROTO`)."""
+    assert JobState.JOB_STATE_UNSPECIFIED == 0
+    assert JobState.JOB_STATE_QUEUED == 1
+    assert JobState.JOB_STATE_RUNNING == 2
+    assert JobState.JOB_STATE_SUCCEEDED == 3
+    assert JobState.JOB_STATE_FAILED == 4
+
+    assert JobType.JOB_TYPE_UNSPECIFIED == 0
+    assert JobType.JOB_TYPE_INDEX_DOCS == 1
+    assert JobType.JOB_TYPE_INDEX_CODE == 2
+
+
+def test_list_index_jobs_request_default_limit_field() -> None:
+    request = ListIndexJobsRequest(api_version="v1", limit=5)
+    assert request.limit == 5
+    assert request.api_version == "v1"

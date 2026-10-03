@@ -60,6 +60,7 @@ TIER_A_PATHS: tuple[str, ...] = (
     "penguincode_cli/flags/",
     "penguincode_cli/observability/",
     "penguincode_cli/db/",
+    "penguincode_cli/indexing/",
     "penguincode_cli/docs_rag/indexer.py",
     "penguincode_cli/docs_rag/injector.py",
     "penguincode_cli/server/services/knowledge.py",

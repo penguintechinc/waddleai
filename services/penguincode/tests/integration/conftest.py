@@ -338,6 +338,18 @@ async def knowledge_server(
     try:
         yield RunningServer(host="localhost", port=port, settings=settings, service=service)
     finally:
+        # O10-a: `Index`/`IndexCode` lazily start a background index-job
+        # worker pool on first use (`KnowledgeServiceImpl._ensure_index_queue_infra`,
+        # `start_index_workers` defaults True) -- without this, any test that
+        # calls either RPC leaves that pool's asyncio tasks (and the psycopg
+        # connections a job in flight may be holding) running past this
+        # fixture's teardown, since nothing else in this harness knows about
+        # that lifecycle. Each subsequent test's event loop then orphans
+        # those tasks rather than cancelling them, and the backend count
+        # `tests/test_db_pool.py`'s live assertions depend on creeps up
+        # across the whole session. Stop it before the gRPC server that
+        # owns the executor it was offloaded from.
+        await service.shutdown_index_workers(grace_period=10.0)
         # `grpc.aio.Server.stop`'s sole parameter is positional `grace`, not a
         # `grace_period` keyword -- passing the wrong name raises `TypeError`
         # from inside this fixture's `finally`, which asyncio's async-generator

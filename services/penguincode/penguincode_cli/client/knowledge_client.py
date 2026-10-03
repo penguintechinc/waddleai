@@ -19,7 +19,9 @@ reaches the REPL; see `_call`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,8 +43,12 @@ from penguincode_cli.proto import (
     IndexResponse,
     IndexStatusRequest,
     IndexStatusResponse,
+    JobState,
+    JobType,
     KnowledgeServiceStub,
     LibraryTarget,
+    ListIndexJobsRequest,
+    ListIndexJobsResponse,
     MemoryAddRequest,
     MemoryAddResponse,
     MemorySearchRequest,
@@ -64,6 +70,31 @@ _API_VERSION = "v1"
 #: `repeated string` on the wire.
 _DEFAULT_VECTOR_TABLES: tuple[str, ...] = ("docs_vectors",)
 
+#: Default poll interval for `index()`/`index_code()`'s `wait=True` (the default) and
+#: `wait_for_index_job` -- overridable per call, or process-wide via this env var (O10-a's
+#: "poll interval env/flag" requirement).
+_DEFAULT_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("PENGUINCODE_INDEX_POLL_INTERVAL_SECONDS", "2.0")
+)
+
+#: Every state a job may report, as the plain strings this client exposes --
+#: mirrors `indexing.jobs.JobState`'s values, decoded from the proto `JobState` enum.
+_JOB_STATE_FROM_PROTO: dict[int, str] = {
+    JobState.JOB_STATE_UNSPECIFIED: "",
+    JobState.JOB_STATE_QUEUED: "queued",
+    JobState.JOB_STATE_RUNNING: "running",
+    JobState.JOB_STATE_SUCCEEDED: "succeeded",
+    JobState.JOB_STATE_FAILED: "failed",
+}
+_JOB_TYPE_FROM_PROTO: dict[int, str] = {
+    JobType.JOB_TYPE_UNSPECIFIED: "",
+    JobType.JOB_TYPE_INDEX_DOCS: "index_docs",
+    JobType.JOB_TYPE_INDEX_CODE: "index_code",
+}
+
+#: Terminal job states -- `wait_for_index_job` stops polling once it sees one of these.
+_TERMINAL_JOB_STATES = frozenset({"succeeded", "failed"})
+
 
 class KnowledgeClientError(Exception):
     """Base error for every `KnowledgeClient` failure.
@@ -80,6 +111,20 @@ class KnowledgeServerUnavailableError(KnowledgeClientError):
 class KnowledgeAuthError(KnowledgeClientError):
     """The call was rejected as `UNAUTHENTICATED`/`PERMISSION_DENIED`, or no WaddleAI token
     could be acquired at all (see `WaddleAIAuthError`).
+    """
+
+
+class KnowledgeQueueFullError(KnowledgeClientError):
+    """`Index`/`IndexCode` was rejected `RESOURCE_EXHAUSTED` -- the server's async index-job
+    queue is at capacity (O10-a backpressure). Retrying shortly is the right response, never
+    an immediate tight retry loop.
+    """
+
+
+class KnowledgeJobFailedError(KnowledgeClientError):
+    """A polled async index job reached `FAILED` -- raised by `wait_for_index_job`/
+    `index()`/`index_code()` (when `wait=True`, the default) so a failure surfaces the
+    same way a direct RPC failure would, instead of silently returning zero counts.
     """
 
 
@@ -182,6 +227,52 @@ class IndexStatus:
 
 
 @dataclass(slots=True, frozen=True)
+class IndexJobStatus:
+    """One async index job's current state -- decoded from `IndexStatusResponse`'s
+    (or `IndexJobSummary`'s) job-mode fields (O10-a).
+    """
+
+    job_id: str
+    job_type: str  # "index_docs" | "index_code" | "" (unspecified)
+    state: str  # "queued" | "running" | "succeeded" | "failed" | ""
+    chunks_done: int
+    chunks_total: int
+    error: str
+    created_at: str
+    updated_at: str
+    result: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class IndexJobResult:
+    """`index()`'s return value -- the enqueued (or, legacy-path, already-finished) job.
+
+    `job_id` is empty exactly when `Index` ran inline (the server's queue
+    is disabled/degraded) -- `state` is then always `"succeeded"` and
+    `chunks_indexed` is already the real final count. A non-empty `job_id`
+    with `wait=False` carries `chunks_indexed=0` and `state="queued"`;
+    `poll_interval`'s default (`wait=True`) instead waits for a terminal
+    state and fills in the real count.
+    """
+
+    job_id: str
+    state: str
+    chunks_indexed: int
+
+
+@dataclass(slots=True, frozen=True)
+class IndexCodeJobResult:
+    """`index_code()`'s return value -- see `IndexJobResult`'s docstring for the
+    identical empty-`job_id`-means-inline / `wait` contract.
+    """
+
+    job_id: str
+    state: str
+    node_count: int
+    edge_count: int
+
+
+@dataclass(slots=True, frozen=True)
 class LibraryRef:
     """A caller-supplied library reference (name + language + version) for
     `cleanup_index`'s `current_libraries` -- deliberately independent of
@@ -235,6 +326,34 @@ def _struct(data: dict[str, Any] | None) -> struct_pb2.Struct:
     if data:
         proto_struct.update(data)
     return proto_struct
+
+
+def _adapt_job_status(
+    *,
+    job_id: str,
+    job_type: int,
+    state: int,
+    chunks_done: int,
+    chunks_total: int,
+    error: str,
+    created_at: str,
+    updated_at: str,
+    result: struct_pb2.Struct,
+) -> IndexJobStatus:
+    """Shared decode for `IndexStatusResponse`'s job-mode and `IndexJobSummary` --
+    both carry the identical field set (see `knowledge.proto`).
+    """
+    return IndexJobStatus(
+        job_id=job_id,
+        job_type=_JOB_TYPE_FROM_PROTO.get(job_type, ""),
+        state=_JOB_STATE_FROM_PROTO.get(state, ""),
+        chunks_done=chunks_done,
+        chunks_total=chunks_total,
+        error=error,
+        created_at=created_at,
+        updated_at=updated_at,
+        result=dict(result),
+    )
 
 
 def _adapt_query_response(response: QueryResponse) -> QueryResult:
@@ -352,6 +471,8 @@ class KnowledgeClient:
                 raise KnowledgeServerUnavailableError(
                     f"penguincode server unreachable at {address}: {exc.details()}"
                 ) from exc
+            if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
+                raise KnowledgeQueueFullError(f"index queue is full: {exc.details()}") from exc
             raise KnowledgeClientError(f"server error ({code.name}): {exc.details()}") from exc
 
     async def index(
@@ -364,13 +485,24 @@ class KnowledgeClient:
         force_reindex: bool = False,
         visibility: str = "tenant",
         team_id: str = "",
-    ) -> int:
+        wait: bool = True,
+        poll_interval: float | None = None,
+    ) -> IndexJobResult:
         """Index documentation for a library (`library_name` + `language`) or a bare
-        language (`language` only). Returns the number of chunks indexed.
+        language (`language` only). Returns the job's outcome.
 
         Mirrors `docs_rag.indexer.DocumentationIndexer.index_library`/`.index_language` --
         exactly one of `library_name` or `language` must be given, matching the proto's
         `oneof target`.
+
+        **O10-a async indexing.** The server enqueues this by default and
+        returns immediately with a `job_id` -- `wait=True` (the default)
+        polls `IndexStatus(job_id=...)` every `poll_interval` seconds (env
+        `PENGUINCODE_INDEX_POLL_INTERVAL_SECONDS`, default 2.0) until the
+        job reaches a terminal state, raising `KnowledgeJobFailedError` on
+        `FAILED`. `wait=False` returns immediately with `state="queued"`
+        and `chunks_indexed=0` -- the caller is responsible for polling
+        `get_index_job(job_id)` itself.
         """
         stub = self._ensure_stub()
         common: dict[str, Any] = {
@@ -395,7 +527,18 @@ class KnowledgeClient:
             raise ValueError("index() requires either library_name or language")
 
         response: IndexResponse = await self._call(stub.Index, request)
-        return int(response.chunks_indexed)
+        state = _JOB_STATE_FROM_PROTO.get(response.state, "")
+        if not response.job_id:
+            return IndexJobResult(
+                job_id="", state=state, chunks_indexed=int(response.chunks_indexed)
+            )
+        if not wait:
+            return IndexJobResult(job_id=response.job_id, state=state, chunks_indexed=0)
+
+        status = await self.wait_for_index_job(response.job_id, poll_interval=poll_interval)
+        return IndexJobResult(
+            job_id=status.job_id, state=status.state, chunks_indexed=status.chunks_done
+        )
 
     async def query(
         self,
@@ -474,10 +617,14 @@ class KnowledgeClient:
         root_path: str,
         visibility: str = "tenant",
         team_id: str = "",
-    ) -> tuple[int, int] | None:
-        """(Re)build the code graph for *root_path*. Returns `(node_count, edge_count)`, or
+        wait: bool = True,
+        poll_interval: float | None = None,
+    ) -> IndexCodeJobResult | None:
+        """(Re)build the code graph for *root_path*. Returns the job's outcome, or
         `None` when the `penguincode.code-graph` flag is off (mirrors `graphs.code.index_code`
         returning `None`).
+
+        Same O10-a `wait`/`poll_interval` contract as `index()` -- see its docstring.
         """
         stub = self._ensure_stub()
         request = IndexCodeRequest(
@@ -487,9 +634,30 @@ class KnowledgeClient:
             team_id=team_id,
         )
         response: IndexCodeResponse = await self._call(stub.IndexCode, request)
-        if not response.indexed:
+        state = _JOB_STATE_FROM_PROTO.get(response.state, "")
+        if not response.job_id:
+            if not response.indexed:
+                return None
+            return IndexCodeJobResult(
+                job_id="",
+                state=state,
+                node_count=response.node_count,
+                edge_count=response.edge_count,
+            )
+        if not wait:
+            return IndexCodeJobResult(
+                job_id=response.job_id, state=state, node_count=0, edge_count=0
+            )
+
+        status = await self.wait_for_index_job(response.job_id, poll_interval=poll_interval)
+        if not bool(status.result.get("indexed", False)):
             return None
-        return response.node_count, response.edge_count
+        return IndexCodeJobResult(
+            job_id=status.job_id,
+            state=status.state,
+            node_count=int(status.result.get("node_count", 0)),
+            edge_count=int(status.result.get("edge_count", 0)),
+        )
 
     async def code_graph_status(self) -> tuple[bool, int, int]:
         """Report the caller-scoped code graph's current availability/size as
@@ -532,6 +700,68 @@ class KnowledgeClient:
             },
             total_chunks=response.total_chunks,
         )
+
+    async def get_index_job(self, job_id: str) -> IndexJobStatus:
+        """One async index job's current state/progress (O10-a), via `IndexStatus(job_id=...)`.
+
+        Scoped to the caller (tenant + owner) server-side -- raises
+        `KnowledgeClientError` (`NOT_FOUND`) if `job_id` doesn't exist or isn't visible to
+        this caller's WaddleAI identity.
+        """
+        stub = self._ensure_stub()
+        request = IndexStatusRequest(api_version=_API_VERSION, job_id=job_id)
+        response: IndexStatusResponse = await self._call(stub.IndexStatus, request)
+        return _adapt_job_status(
+            job_id=response.job_id,
+            job_type=response.job_type,
+            state=response.state,
+            chunks_done=response.chunks_done,
+            chunks_total=response.chunks_total,
+            error=response.error,
+            created_at=response.created_at,
+            updated_at=response.updated_at,
+            result=response.result,
+        )
+
+    async def wait_for_index_job(
+        self, job_id: str, *, poll_interval: float | None = None
+    ) -> IndexJobStatus:
+        """Poll `get_index_job(job_id)` every `poll_interval` seconds until a terminal state.
+
+        Raises `KnowledgeJobFailedError` on `FAILED` (carrying the job's recorded error);
+        returns the final `IndexJobStatus` on `SUCCEEDED`. `poll_interval` defaults to
+        `PENGUINCODE_INDEX_POLL_INTERVAL_SECONDS` (2.0s) when unset.
+        """
+        interval = poll_interval if poll_interval is not None else _DEFAULT_POLL_INTERVAL_SECONDS
+        while True:
+            status = await self.get_index_job(job_id)
+            if status.state in _TERMINAL_JOB_STATES:
+                if status.state == "failed":
+                    raise KnowledgeJobFailedError(
+                        f"index job {job_id} failed: {status.error or 'unknown error'}"
+                    )
+                return status
+            await asyncio.sleep(interval)
+
+    async def list_index_jobs(self, *, limit: int = 20) -> list[IndexJobStatus]:
+        """The caller's own async index jobs (tenant + owner scoped), most recent first."""
+        stub = self._ensure_stub()
+        request = ListIndexJobsRequest(api_version=_API_VERSION, limit=limit)
+        response: ListIndexJobsResponse = await self._call(stub.ListIndexJobs, request)
+        return [
+            _adapt_job_status(
+                job_id=job.job_id,
+                job_type=job.job_type,
+                state=job.state,
+                chunks_done=job.chunks_done,
+                chunks_total=job.chunks_total,
+                error=job.error,
+                created_at=job.created_at,
+                updated_at=job.updated_at,
+                result=job.result,
+            )
+            for job in response.jobs
+        ]
 
     async def clear_index(
         self, *, library_name: str | None = None, language: str | None = None

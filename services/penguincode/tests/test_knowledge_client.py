@@ -105,9 +105,10 @@ class TestIndex:
         stub.Index.return_value = IndexResponse(chunks_indexed=42)
         client = _client(monkeypatch, stub)
 
-        chunks = await client.index(language="python", doc_contents=["doc one", "doc two"])
+        result = await client.index(language="python", doc_contents=["doc one", "doc two"])
 
-        assert chunks == 42
+        assert result.chunks_indexed == 42
+        assert result.job_id == ""
         request, kwargs = stub.Index.call_args.args[0], stub.Index.call_args.kwargs
         assert request.api_version == "v1"
         assert request.language == ProtoLanguage.LANGUAGE_PYTHON
@@ -247,7 +248,9 @@ class TestIndexCode:
 
         result = await client.index_code(root_path="/repo")
 
-        assert result == (5, 9)
+        assert result is not None
+        assert (result.node_count, result.edge_count) == (5, 9)
+        assert result.job_id == ""
         request = stub.IndexCode.call_args.args[0]
         assert request.root_path == "/repo"
 

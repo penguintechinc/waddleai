@@ -185,8 +185,8 @@ class TestIndexQueryAndKnowledgeGraph:
                 visibility="tenant",
             )
 
-        print(f"T16 Index: {chunks_indexed} chunk(s) indexed for tenant {tenant_a}")
-        assert chunks_indexed >= 1
+        print(f"T16 Index: {chunks_indexed.chunks_indexed} chunk(s) indexed for tenant {tenant_a}")
+        assert chunks_indexed.chunks_indexed >= 1
 
         # Vector row landed for real, scoped to tenant A only.
         indexer = DocumentationIndexer(dsn=live_dsn)
@@ -346,7 +346,7 @@ class TestIndexCodeAndStatus:
 
         result = await client.index_code(root_path=str(repo), visibility="tenant")
         assert result is not None
-        node_count, edge_count = result
+        node_count, edge_count = result.node_count, result.edge_count
         print(f"T16 IndexCode: {node_count} node(s), {edge_count} edge(s)")
         assert node_count >= 3  # file + helper() + main()
         assert edge_count >= 3  # 2 defines + 1 calls
@@ -396,7 +396,7 @@ class TestFlagGatingIsANoOp:
                 doc_contents=["some text mentioning pgvector"], language="python"
             )
 
-        assert chunks_indexed >= 1
+        assert chunks_indexed.chunks_indexed >= 1
         assert llm_call_count == 0, (
             "the real extract_knowledge flag gate must short-circuit before any LLM call"
         )
@@ -428,7 +428,7 @@ class TestScopeIsolationAcrossRPCs:
 
         tenant_a_doc = "waddleai grpc knowledge service isolation fixture"
         chunks_indexed = await client_a.index(doc_contents=[tenant_a_doc], language="python")
-        assert chunks_indexed >= 1
+        assert chunks_indexed.chunks_indexed >= 1
 
         result_b = await client_b.query(query=tenant_a_doc, n_vector=5)
         print(f"T16 isolation/docs: tenant B query returned {len(result_b.vector_hits)} hit(s)")
@@ -539,7 +539,7 @@ class TestTelemetryEmission:
                 chunks_indexed = await client.index(
                     doc_contents=["penguincode uses otel for telemetry."], language="python"
                 )
-            assert chunks_indexed >= 1
+            assert chunks_indexed.chunks_indexed >= 1
 
             query_result = await client.query(
                 query="penguincode uses otel for telemetry.", n_vector=5

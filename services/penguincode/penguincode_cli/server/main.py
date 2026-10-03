@@ -240,6 +240,14 @@ class PenguinCodeServer:
         self.knowledge_service = KnowledgeServiceImpl(self.settings)
         self.lessons_service = LessonsServiceImpl(self.settings)
 
+        # O10-a: reap any index job left `running` by a dead previous
+        # process -- must happen before the gRPC server starts accepting
+        # traffic, so no client can observe a stale `running` row that will
+        # never progress. See `IndexJobStore.reap_interrupted`'s docstring.
+        reaped = await self.knowledge_service.reap_interrupted_index_jobs()
+        if reaped:
+            logger.warning("reaped %d interrupted index job(s) on startup", reaped)
+
         # Register services
         add_AuthServiceServicer_to_server(self.auth_service, self.server)
         add_ChatServiceServicer_to_server(self.chat_service, self.server)
@@ -315,6 +323,11 @@ class PenguinCodeServer:
             except (TimeoutError, Exception):
                 pass
             logger.info("REST API stopped")
+
+        # Stop the O10-a index-job worker pool, if it was ever started, before
+        # stopping the gRPC server that owns the executor it was offloaded from.
+        if self.knowledge_service:
+            await self.knowledge_service.shutdown_index_workers(grace_period)
 
         # Stop gRPC
         if self.server:

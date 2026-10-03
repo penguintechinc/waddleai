@@ -15,8 +15,11 @@ silent skip when a real gate can't run:
    entrypoint -- not the library call directly, so the entrypoint itself is
    also exercised.
 3. **Health + one real RPC**: `HealthService.Check` (unauthenticated, mirrors
-   production's exemption), then `KnowledgeService.IndexCode` +
-   `CodeGraphStatus` with a WaddleAI RS256 dev token minted the same way
+   production's exemption), then `KnowledgeService.IndexCode` (enqueued onto
+   the real O10-a async index-job queue, since a live `PGVECTOR_URL` is set)
+   + a hand-rolled `IndexStatus(job_id=...)` poll loop proving the
+   QUEUED -> RUNNING -> SUCCEEDED job-status contract, then
+   `CodeGraphStatus`, with a WaddleAI RS256 dev token minted the same way
    `tests/integration/conftest.py`'s T16 harness does -- reused directly
    (`DevKeypair`, `mint_token`, `StaticTokenProvider`, `RunningServer`,
    `_docker_available`, `_wait_for_postgres` are all imported from there,
@@ -353,6 +356,17 @@ async def _run_health_and_rpc(
 ) -> None:
     """Hit `HealthService.Check` (no auth) then one real `KnowledgeService` round trip
     (`IndexCode` + `CodeGraphStatus`) with a freshly minted WaddleAI RS256 dev token.
+
+    Also exercises O10-a's async index-job queue end to end: with a live
+    `PGVECTOR_URL` set (see `_run_live_gates`), `IndexCode` enqueues onto the
+    real queue/worker-pool infra instead of running inline, and `IndexStatus
+    (job_id=...)` is polled by hand here to prove that RPC's job-status mode
+    actually reports `QUEUED` -> ... -> `SUCCEEDED`. `IndexCode` stands in for
+    `Index` for this gate specifically because it needs no live Ollama
+    embedding call (this is a mandatory every-commit gate -- see this
+    module's docstring on why Ollama is never a dependency here); both RPCs
+    enqueue onto the identical queue/worker/`IndexStatus` machinery, so this
+    still exercises the real `Index` code path, not a special case of it.
     """
     channel = grpc.aio.insecure_channel(f"{running.host}:{running.port}")
     try:
@@ -374,16 +388,47 @@ async def _run_health_and_rpc(
     token = mint_token(dev_keypair, tenant=tenant)
     client = running.client(StaticTokenProvider(token))
     try:
-        result = await client.index_code(root_path=str(fixture_repo), visibility="tenant")
-        if result is None:
+        # `wait=False` + a hand-rolled poll loop (rather than the client's own
+        # built-in `wait=True` convenience) so this gate explicitly proves the
+        # `job_id` -> `IndexStatus(job_id=...)` -> terminal-state RPC contract,
+        # not just that the client-side helper that wraps it works.
+        queued = await client.index_code(
+            root_path=str(fixture_repo), visibility="tenant", wait=False
+        )
+        if queued is None:
             raise SmokeTestFailureError("KnowledgeService.IndexCode returned indexed=False")
-        node_count, edge_count = result
+        if not queued.job_id:
+            raise SmokeTestFailureError(
+                "KnowledgeService.IndexCode did not enqueue a job (job_id empty) -- "
+                "the O10-a async index-job queue is not wired up"
+            )
+        log.info(
+            "KnowledgeService.IndexCode enqueued: job_id=%s state=%s", queued.job_id, queued.state
+        )
+
+        status = None
+        for _ in range(50):
+            status = await client.get_index_job(queued.job_id)
+            if status.state in ("succeeded", "failed"):
+                break
+            await asyncio.sleep(0.1)
+        if status is None or status.state != "succeeded":
+            raise SmokeTestFailureError(
+                f"KnowledgeService.IndexStatus(job_id=...) never reached SUCCEEDED: {status}"
+            )
+        node_count = int(status.result.get("node_count", 0))
+        edge_count = int(status.result.get("edge_count", 0))
         if node_count < 1 or edge_count < 1:
             raise SmokeTestFailureError(
                 f"KnowledgeService.IndexCode produced an empty graph: "
                 f"node_count={node_count} edge_count={edge_count}"
             )
-        log.info("KnowledgeService.IndexCode: %d node(s), %d edge(s)", node_count, edge_count)
+        log.info(
+            "KnowledgeService.IndexStatus(job_id=...) polling: QUEUED -> SUCCEEDED, "
+            "%d node(s), %d edge(s)",
+            node_count,
+            edge_count,
+        )
 
         enabled, status_nodes, status_edges = await client.code_graph_status()
         if not enabled or (status_nodes, status_edges) != (node_count, edge_count):
@@ -415,6 +460,11 @@ async def _run_live_gates(dsn: str) -> None:
             try:
                 await _run_health_and_rpc(running, dev_keypair, fixture_repo)
             finally:
+                # O10-a: stop the lazily-started index-job worker pool before
+                # the gRPC server that owns the executor it was offloaded
+                # from -- see `tests/integration/conftest.py::knowledge_server`'s
+                # identical note on why this matters.
+                await running.service.shutdown_index_workers(grace_period=10.0)
                 # Positional `grace`, not a `grace_period` kwarg -- see
                 # `tests/integration/conftest.py::knowledge_server`'s identical note.
                 await server.stop(2.0)

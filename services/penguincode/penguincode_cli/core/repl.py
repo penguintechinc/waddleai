@@ -328,11 +328,13 @@ class REPLSession:
                 # Fetch language docs
                 docs = await self.docs_fetcher.fetch_language_docs(lang)
                 if docs:
-                    chunks = await self.knowledge_client.index(
+                    result = await self.knowledge_client.index(
                         language=lang.value, doc_contents=docs
                     )
-                    indexed_count += chunks
-                    console.print(f"[dim]  Indexed {chunks} chunks for {lang.value}[/dim]")
+                    indexed_count += result.chunks_indexed
+                    console.print(
+                        f"[dim]  Indexed {result.chunks_indexed} chunks for {lang.value}[/dim]"
+                    )
             except KnowledgeClientError as e:
                 console.print(f"[dim]  Failed to index {lang.value}: {e}[/dim]")
 
@@ -372,10 +374,10 @@ class REPLSession:
         try:
             docs = await self.docs_fetcher.fetch_language_docs(lang_enum)
             if docs:
-                chunks = await self.knowledge_client.index(
+                result = await self.knowledge_client.index(
                     language=lang_enum.value, doc_contents=docs
                 )
-                console.print(f"[dim]  Indexed {chunks} chunks[/dim]")
+                console.print(f"[dim]  Indexed {result.chunks_indexed} chunks[/dim]")
                 return True
         except KnowledgeClientError as e:
             console.print(f"[dim]  Failed: {e}[/dim]")
@@ -483,9 +485,13 @@ class REPLSession:
   /docs cleanup      Remove docs for unused libraries
 
 [yellow]Code Graph:[/yellow]
-  /index-code [path] Build the code graph for a local source tree
+  /index-code [path] [--no-wait]
+                     Build the code graph for a local source tree
                      (default: project dir; requires an authenticated
-                     ScopeContext and the penguincode.code-graph flag)
+                     ScopeContext and the penguincode.code-graph flag).
+                     Runs as an async server-side job -- waits and polls
+                     to completion by default; --no-wait prints the job
+                     id and returns immediately.
 
 [yellow]Lessons-Learned Promotion:[/yellow]
   /lesson promote <text>   Propose <text> as a firm-wide lesson (scrub+verify)
@@ -784,16 +790,27 @@ class REPLSession:
         else:
             print_error(result.error or "Execution failed")
 
-    async def handle_index_code(self, path_arg: str) -> None:
-        """Handle `/index-code [path]`: build the tree-sitter code graph for a source tree.
+    async def handle_index_code(self, args: str) -> None:
+        """Handle `/index-code [path] [--no-wait]`: build the tree-sitter code graph for a
+        source tree.
 
         Drives the server's `IndexCode` RPC (F3) -- `graphs.code.index_code` (T11) itself
         now runs entirely server-side. Identity comes from the WaddleAI JWT
         `self.knowledge_client` attaches to the call, never a local `ScopeContext`.
+
+        **O10-a async indexing.** By default (`--no-wait` absent) this
+        prints the job id immediately, then polls to completion and prints
+        the final node/edge counts -- `--no-wait` prints the job id and
+        returns right away, leaving the job running server-side (check
+        later with `self.knowledge_client.get_index_job(job_id)`).
         """
         if self.knowledge_client is None:
             print_info("Code-graph indexing requires the penguincode server -- not connected")
             return
+
+        parts = args.split()
+        wait = "--no-wait" not in parts
+        path_arg = " ".join(p for p in parts if p != "--no-wait")
 
         target = Path(path_arg).expanduser().resolve() if path_arg else self.project_dir
         if not target.exists():
@@ -805,7 +822,7 @@ class REPLSession:
 
         console.print(f"\n[cyan]Indexing code graph for {target}...[/cyan]\n")
         try:
-            result = await self.knowledge_client.index_code(root_path=str(target))
+            result = await self.knowledge_client.index_code(root_path=str(target), wait=wait)
         except KnowledgeClientError as e:
             print_error(f"Code-graph indexing failed: {e}")
             return
@@ -814,8 +831,12 @@ class REPLSession:
             print_info("Code-graph indexing is disabled (penguincode.code-graph flag is off)")
             return
 
-        node_count, edge_count = result
-        print_success(f"Code graph: {node_count} node(s), {edge_count} edge(s)")
+        if result.job_id and not wait:
+            print_info(f"Code-graph indexing queued (job {result.job_id}) -- not waiting")
+            return
+        if result.job_id:
+            console.print(f"[dim]Job {result.job_id}[/dim]")
+        print_success(f"Code graph: {result.node_count} node(s), {result.edge_count} edge(s)")
 
     async def handle_lesson_command(self, args: str) -> None:
         """Handle `/lesson <subcommand>`: the lessons-learned promotion review workflow
@@ -1114,7 +1135,7 @@ class REPLSession:
             if docs:
                 # Index docs via the server
                 try:
-                    chunks = await self.knowledge_client.index(
+                    result = await self.knowledge_client.index(
                         library_name=lib.name,
                         library_version=lib.version or "",
                         language=lib.language.value,
@@ -1123,8 +1144,8 @@ class REPLSession:
                 except KnowledgeClientError as e:
                     console.print(f"    [red]Failed: {e}[/red]")
                     continue
-                total_chunks += chunks
-                console.print(f"    Indexed {chunks} chunks")
+                total_chunks += result.chunks_indexed
+                console.print(f"    Indexed {result.chunks_indexed} chunks")
             else:
                 console.print("    [dim]No docs found[/dim]")
 

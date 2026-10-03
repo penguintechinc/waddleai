@@ -6,6 +6,7 @@ client used to gate them -- see :mod:`penguincode_cli.flags.client`.
 
 from .client import (
     CODE_GRAPH_FLAG,
+    DISABLE_INDEX_QUEUE_FLAG,
     KNOWLEDGE_GRAPH_FLAG,
     MEMORY_GRAPH_FLAG,
     RAG_FLAG,
@@ -19,6 +20,7 @@ __all__ = [
     "CODE_GRAPH_FLAG",
     "KNOWLEDGE_GRAPH_FLAG",
     "MEMORY_GRAPH_FLAG",
+    "DISABLE_INDEX_QUEUE_FLAG",
     "FlagClient",
     "ScopeContextLike",
     "is_enabled",
