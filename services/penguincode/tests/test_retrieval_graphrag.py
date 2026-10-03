@@ -24,6 +24,7 @@ import psycopg
 import pytest
 
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.config.settings import LimitsConfig
 from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.flags.client import (
     CODE_GRAPH_FLAG,
@@ -624,6 +625,47 @@ class TestLiveHybridRetrieval:
 
         assert result == RetrievalResult(vector_hits=[], subgraphs={}, context="")
         graph_store.subgraph.assert_not_called()
+
+
+@requires_postgres
+class TestRetrieveHonoursLimitsConfig:
+    """Ops-audit O7: `retrieve()`'s own clamp applies independently of store-level defaults."""
+
+    async def test_oversized_n_vector_is_clamped_by_injected_limits(
+        self, db_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("penguincode_cli.retrieval.graphrag.is_enabled", lambda flag, ctx: True)
+        ctx = _ctx(tenant_id=str(uuid.uuid4()))
+        embedding = _fixed_embedding(1.0)
+
+        docs_store = PgVectorStore(db_dsn, table="docs_vectors")
+        docs_store.upsert(
+            ctx,
+            [
+                VectorItem(
+                    id=str(uuid.uuid4()), embedding=embedding, document=f"doc-{i}", metadata={}
+                )
+                for i in range(5)
+            ],
+            visibility="tenant",
+            team_id=None,
+        )
+        graph_store = PostgresGraphStore(dsn=db_dsn, schema="penguincode")
+
+        result = await retrieve(
+            ctx,
+            "q",
+            embed_fn=_const_embed_fn(embedding),
+            vector_stores=_vector_stores(db_dsn),
+            graph_store=graph_store,
+            n_vector=10,
+            graph_depth=1,
+            limits=LimitsConfig(max_vector_results=2, max_graph_depth=1),
+        )
+
+        # 5 rows exist, n_vector=10 was requested -- only the injected
+        # limits.max_vector_results=2 explains a result of exactly 2.
+        assert len(result.vector_hits) == 2
 
 
 @requires_postgres

@@ -365,6 +365,22 @@ def register_error_handlers(app):
     async def not_found(error):
         return jsonify({"error": "Not Found", "message": "Resource not found"}), 404
 
+    @app.errorhandler(413)
+    async def payload_too_large(error):
+        """Werkzeug raises this when a request body exceeds MAX_CONTENT_LENGTH."""
+        return (
+            jsonify(
+                {
+                    "error": "Payload Too Large",
+                    "message": (
+                        "Request body exceeds the maximum allowed size "
+                        f"({app.config['MAX_CONTENT_LENGTH']} bytes)"
+                    ),
+                }
+            ),
+            413,
+        )
+
     @app.errorhandler(500)
     async def internal_error(error):
         app.logger.error(f"Internal server error: {error}")

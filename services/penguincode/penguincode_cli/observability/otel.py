@@ -32,7 +32,7 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from opentelemetry import _logs, metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
@@ -76,6 +76,14 @@ RPC_SERVER_REQUESTS_COUNTER_NAME: Final = "rpc_server_requests_total"
 #: (`enqueued`/`rejected`) -- bounded, closed label set.
 TOOL_QUEUE_EVENTS_COUNTER_NAME: Final = "penguincode.tool_queue.events"
 
+#: `db/pool.py` shared-pool occupancy gauges + borrow-wait histogram
+#: (ops-audit O7 pooling fix) and the clamp counter for `config.settings.
+#: LimitsConfig`-enforced request parameters (graph_depth/n_vector/limit).
+DB_POOL_IN_USE_GAUGE_NAME: Final = "penguincode.db_pool.in_use"
+DB_POOL_WAITING_GAUGE_NAME: Final = "penguincode.db_pool.waiting"
+DB_POOL_WAIT_HISTOGRAM_NAME: Final = "penguincode.db_pool.wait_duration"
+QUERY_CLAMPED_COUNTER_NAME: Final = "penguincode.query.clamped"
+
 #: Closed set of operation kinds accepted by every helper below. Keeping this
 #: bounded is what keeps ``op_kind`` a safe, low-cardinality metric label --
 #: an open string here would let a caller accidentally turn it into an
@@ -92,6 +100,16 @@ _events_counter: metrics.Counter | None = None
 _rpc_duration_histogram: metrics.Histogram | None = None
 _rpc_requests_counter: metrics.Counter | None = None
 _tool_queue_events_counter: metrics.Counter | None = None
+
+#: Typed `Any` -- synchronous `Gauge` is exported from `opentelemetry.metrics`
+#: only as the private `_Gauge` alias in this SDK version (still an
+#: experimental instrument kind upstream); `Meter.create_gauge`'s own return
+#: annotation resolves to the same underlying class, just under a different
+#: public name, so pinning a type here would just be re-deriving that alias.
+_db_pool_in_use_gauge: Any = None
+_db_pool_waiting_gauge: Any = None
+_db_pool_wait_histogram: metrics.Histogram | None = None
+_query_clamped_counter: metrics.Counter | None = None
 
 #: Handler bridging stdlib logging to OTLP, installed on the root logger by
 #: ``init_observability()`` when a log pipeline is active. Never replaces
@@ -288,6 +306,77 @@ def _tool_queue_events_counter_instrument() -> metrics.Counter:
     return _tool_queue_events_counter
 
 
+def _db_pool_in_use_gauge_instrument() -> Any:
+    global _db_pool_in_use_gauge
+    if _db_pool_in_use_gauge is None:
+        _db_pool_in_use_gauge = get_meter().create_gauge(
+            DB_POOL_IN_USE_GAUGE_NAME,
+            unit="1",
+            description="Connections currently borrowed from the shared db pool",
+        )
+    return _db_pool_in_use_gauge
+
+
+def _db_pool_waiting_gauge_instrument() -> Any:
+    global _db_pool_waiting_gauge
+    if _db_pool_waiting_gauge is None:
+        _db_pool_waiting_gauge = get_meter().create_gauge(
+            DB_POOL_WAITING_GAUGE_NAME,
+            unit="1",
+            description="Borrowers currently waiting for a connection from the shared db pool",
+        )
+    return _db_pool_waiting_gauge
+
+
+def _db_pool_wait_histogram_instrument() -> metrics.Histogram:
+    global _db_pool_wait_histogram
+    if _db_pool_wait_histogram is None:
+        _db_pool_wait_histogram = get_meter().create_histogram(
+            DB_POOL_WAIT_HISTOGRAM_NAME,
+            unit="ms",
+            description="Time spent waiting to borrow a connection from the shared db pool",
+        )
+    return _db_pool_wait_histogram
+
+
+def _query_clamped_counter_instrument() -> metrics.Counter:
+    global _query_clamped_counter
+    if _query_clamped_counter is None:
+        _query_clamped_counter = get_meter().create_counter(
+            QUERY_CLAMPED_COUNTER_NAME,
+            unit="1",
+            description="Requests whose graph_depth/n_vector/limit was clamped to a server max",
+        )
+    return _query_clamped_counter
+
+
+def update_pool_gauges(pool_size: int, pool_available: int, requests_waiting: int) -> None:
+    """Record point-in-time shared-pool occupancy (`db/pool.py`'s borrow/release path).
+
+    ``in_use`` is derived (``pool_size - pool_available``) rather than passed
+    in directly -- callers already have both numbers from one
+    ``ConnectionPool.get_stats()`` snapshot, so this keeps the call site to a
+    single pass-through instead of a second derived-value computation there.
+    """
+    _db_pool_in_use_gauge_instrument().set(max(pool_size - pool_available, 0))
+    _db_pool_waiting_gauge_instrument().set(requests_waiting)
+
+
+def record_pool_wait_duration(duration_ms: float) -> None:
+    """Record one borrow's wait time (ms) acquiring a connection from the shared pool."""
+    _db_pool_wait_histogram_instrument().record(duration_ms)
+
+
+def record_query_clamped(param: str) -> None:
+    """Increment the clamp counter for one server-clamped request parameter.
+
+    ``param`` must stay a small, closed, low-cardinality label -- e.g.
+    ``"graph_depth"``, ``"n_vector"``, ``"limit"``, ``"graph_nodes"`` -- never
+    a caller-supplied value.
+    """
+    _query_clamped_counter_instrument().add(1, attributes={"param": param})
+
+
 def reset_for_testing() -> None:
     """Drop cached tracer/meter/instruments so a test can install its own providers.
 
@@ -306,6 +395,8 @@ def reset_for_testing() -> None:
         _rpc_requests_counter, \
         _tool_queue_events_counter, \
         _log_handler
+    global _db_pool_in_use_gauge, _db_pool_waiting_gauge, _db_pool_wait_histogram
+    global _query_clamped_counter
     if _log_handler is not None:
         logging.getLogger().removeHandler(_log_handler)
         logging.getLogger(_DEBUG_LOGGER_NAME).removeHandler(_log_handler)
@@ -317,6 +408,10 @@ def reset_for_testing() -> None:
     _rpc_duration_histogram = None
     _rpc_requests_counter = None
     _tool_queue_events_counter = None
+    _db_pool_in_use_gauge = None
+    _db_pool_waiting_gauge = None
+    _db_pool_wait_histogram = None
+    _query_clamped_counter = None
     _log_handler = None
 
 
