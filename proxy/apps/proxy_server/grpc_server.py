@@ -32,6 +32,7 @@ from grpc_proto.waddleai.v1 import proxy_pb2_grpc as waddleai_pb2_grpc
 from shared.agents import SecurityAgent, UsageTracker
 from shared.agents.usage_tracker import UsageReport as AgentUsageReport
 from shared.routing.grpc_adapter import RoutingEngineRouteEvaluator
+from shared.utils.feature_flags import is_feature_enabled
 from shared.utils.memory_integration import WaddleAIMemoryManager
 
 logger = structlog.get_logger(__name__)
@@ -98,6 +99,51 @@ class GrpcAuthInterceptor(grpc.ServerInterceptor):
             context.abort(code, details)
 
         return grpc.unary_unary_rpc_method_handler(abort_handler)
+
+
+# ---------------------------------------------------------------------------
+# gRPC server hardening (O9/O6) -- operator-configured worker pool size and
+# message-size limits, instead of the previous hardcoded
+# `ThreadPoolExecutor(max_workers=10)` and no message-length options at all.
+# ---------------------------------------------------------------------------
+
+PROXY_GRPC_MAX_WORKERS_ENV_VAR = "PROXY_GRPC_MAX_WORKERS"
+PROXY_GRPC_MAX_MESSAGE_BYTES_ENV_VAR = "PROXY_GRPC_MAX_MESSAGE_BYTES"
+
+#: The literal value this server hardcoded before this change -- kept as the
+#: default so an unconfigured deployment's thread-pool size is unchanged.
+_DEFAULT_GRPC_MAX_WORKERS = 10
+
+#: Matches grpc-core's own historical default receive limit (the send side
+#: becomes explicitly bounded; grpc-core's default send limit is unbounded).
+_DEFAULT_GRPC_MAX_MESSAGE_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+#: Opt-out kill-switch for the message-size enforcement this change adds.
+#: Identical flag key to penguincode's own gRPC server hardening (same
+#: mechanism name) -- one PostHog flag, two independent flag clients,
+#: evaluated here via `shared.utils.feature_flags.is_feature_enabled`'s
+#: "server" distinct id (this is a process-level, not per-tenant, switch).
+DISABLE_GRPC_MESSAGE_LIMITS_FLAG = "waddleai.disable-grpc-message-limits"
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse *name*'s env var as a positive int, falling back to *default*.
+
+    Never raises: unset, blank, non-numeric, or non-positive values all fall
+    back to *default* (logged, except for the expected "unset" case).
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("invalid_grpc_env_int", env_var=name, raw=raw, default=default)
+        return default
+    if value <= 0:
+        logger.warning("non_positive_grpc_env_int", env_var=name, value=value, default=default)
+        return default
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +635,7 @@ class WaddleAIServiceServicer(waddleai_pb2_grpc.WaddleAIServiceServicer):
 def start_grpc_server(
     port: int = 50051,
     server_components: ServerComponents | None = None,
-    max_workers: int = 10,
+    max_workers: int | None = None,
     grpc_auth_token: str | None = None,
 ) -> grpc.Server:
     """Create, configure, and start the gRPC server.
@@ -604,7 +650,10 @@ def start_grpc_server(
         port: TCP port to listen on.
         server_components: Pre-built agent/memory components.  When
             ``None`` the server starts with all subsystems unavailable.
-        max_workers: Thread-pool size for the gRPC executor.
+        max_workers: Thread-pool size for the gRPC executor. ``None``
+            (the default) resolves from ``PROXY_GRPC_MAX_WORKERS``
+            (falling back to ``10``, the previous hardcoded value) so an
+            unconfigured caller behaves identically to before.
         grpc_auth_token: Pre-shared Bearer token (from PROXY_GRPC_AUTH_TOKEN env).
             If None or empty, all gRPC calls are rejected.
 
@@ -615,13 +664,38 @@ def start_grpc_server(
 
     """
     components = server_components or ServerComponents()
+    resolved_max_workers = (
+        max_workers
+        if max_workers is not None
+        else _env_int(PROXY_GRPC_MAX_WORKERS_ENV_VAR, _DEFAULT_GRPC_MAX_WORKERS)
+    )
 
     # Create auth interceptor (fail-closed if token not configured)
     auth_interceptor = GrpcAuthInterceptor(grpc_auth_token)
 
+    # O6 (gRPC server hardening): explicit receive/send message size limits
+    # (PROXY_GRPC_MAX_MESSAGE_BYTES, default 4 MiB) instead of relying on
+    # grpc-core's implicit defaults. Opt-out kill-switch reverts to
+    # grpc-core's defaults (empty options list).
+    grpc_options: list[tuple[str, Any]] = []
+    if is_feature_enabled(DISABLE_GRPC_MESSAGE_LIMITS_FLAG, distinct_id="server", default=False):
+        logger.warning(
+            "gRPC message-size limits disabled via kill-switch; using grpc-core defaults",
+            flag=DISABLE_GRPC_MESSAGE_LIMITS_FLAG,
+        )
+    else:
+        message_bytes = _env_int(
+            PROXY_GRPC_MAX_MESSAGE_BYTES_ENV_VAR, _DEFAULT_GRPC_MAX_MESSAGE_BYTES
+        )
+        grpc_options = [
+            ("grpc.max_receive_message_length", message_bytes),
+            ("grpc.max_send_message_length", message_bytes),
+        ]
+
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=max_workers),
+        futures.ThreadPoolExecutor(max_workers=resolved_max_workers),
         interceptors=[auth_interceptor],
+        options=grpc_options,
     )
 
     servicer = WaddleAIServiceServicer(components)
@@ -642,7 +716,8 @@ def start_grpc_server(
     logger.info(
         "gRPC server started",
         port=bound_port,
-        max_workers=max_workers,
+        max_workers=resolved_max_workers,
+        max_message_bytes=grpc_options[0][1] if grpc_options else "unbounded (kill-switch)",
         auth=auth_status,
         routing_agent="ok" if components.routing_agent else "unavailable",
         security_agent="ok" if components.security_agent else "unavailable",
@@ -658,7 +733,7 @@ def start_grpc_server(
 def run_grpc_in_thread(
     port: int = 50051,
     components: ServerComponents | None = None,
-    max_workers: int = 10,
+    max_workers: int | None = None,
     grpc_auth_token: str | None = None,
 ) -> grpc.Server:
     """Start the gRPC server in a daemon thread.
@@ -668,7 +743,9 @@ def run_grpc_in_thread(
     Args:
         port: TCP port to listen on.
         components: Pre-built agent/memory components.
-        max_workers: Thread-pool size for the gRPC executor.
+        max_workers: Thread-pool size for the gRPC executor. ``None``
+            resolves from ``PROXY_GRPC_MAX_WORKERS`` -- see
+            :func:`start_grpc_server`.
         grpc_auth_token: Pre-shared Bearer token (from PROXY_GRPC_AUTH_TOKEN env).
 
     Returns:

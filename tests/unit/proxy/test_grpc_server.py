@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import MagicMock, patch
 
 import grpc
 import pytest
@@ -1154,6 +1155,138 @@ class TestServerLifecycle:
             assert grpc_thread.daemon is True
         finally:
             server.stop(grace=None)
+
+
+# ---------------------------------------------------------------------------
+# gRPC server hardening (O9/O6) -- worker pool size, message-size limits,
+# and the message-limits opt-out kill-switch
+# ---------------------------------------------------------------------------
+
+
+class TestGrpcServerHardening:
+    """`start_grpc_server`'s env-driven worker pool size and message limits."""
+
+    def test_explicit_max_workers_wins_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicit `max_workers=` argument is never overridden by the env var."""
+        monkeypatch.setenv("PROXY_GRPC_MAX_WORKERS", "99")
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                max_workers=3,
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        executor = mocked_server.call_args[0][0]
+        assert executor._max_workers == 3
+
+    def test_max_workers_resolves_from_env_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`max_workers=None` resolves the thread-pool size from PROXY_GRPC_MAX_WORKERS."""
+        monkeypatch.setenv("PROXY_GRPC_MAX_WORKERS", "17")
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                max_workers=None,
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        executor = mocked_server.call_args[0][0]
+        assert executor._max_workers == 17
+
+    def test_defaults_to_ten_workers_when_nothing_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No explicit arg and no env var falls back to the pre-hardening literal (10)."""
+        monkeypatch.delenv("PROXY_GRPC_MAX_WORKERS", raising=False)
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                max_workers=None,
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        executor = mocked_server.call_args[0][0]
+        assert executor._max_workers == 10
+
+    def test_message_limits_default_to_four_mebibytes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unconfigured message limits default to 4 MiB on both receive and send."""
+        monkeypatch.delenv("PROXY_GRPC_MAX_MESSAGE_BYTES", raising=False)
+        monkeypatch.delenv("WADDLEAI_FLAG_DISABLE_GRPC_MESSAGE_LIMITS", raising=False)
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        _, kwargs = mocked_server.call_args
+        options = dict(kwargs["options"])
+        assert options["grpc.max_receive_message_length"] == 4 * 1024 * 1024
+        assert options["grpc.max_send_message_length"] == 4 * 1024 * 1024
+
+    def test_message_limits_respect_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PROXY_GRPC_MAX_MESSAGE_BYTES overrides the 4 MiB default."""
+        monkeypatch.setenv("PROXY_GRPC_MAX_MESSAGE_BYTES", "2048")
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        _, kwargs = mocked_server.call_args
+        options = dict(kwargs["options"])
+        assert options["grpc.max_receive_message_length"] == 2048
+
+    def test_message_limits_kill_switch_yields_empty_options(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The opt-out kill-switch reverts to grpc-core defaults (no options set)."""
+        monkeypatch.setenv("WADDLEAI_FLAG_DISABLE_GRPC_MESSAGE_LIMITS", "true")
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        _, kwargs = mocked_server.call_args
+        assert kwargs["options"] == []
+
+    def test_env_int_falls_back_on_non_numeric_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-numeric env value falls back to the default rather than crashing startup."""
+        monkeypatch.setenv("PROXY_GRPC_MAX_WORKERS", "not-a-number")
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        executor = mocked_server.call_args[0][0]
+        assert executor._max_workers == 10
+
+    def test_env_int_falls_back_on_non_positive_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-positive env value falls back to the default rather than disabling limits."""
+        monkeypatch.setenv("PROXY_GRPC_MAX_MESSAGE_BYTES", "-1")
+        with patch("proxy.apps.proxy_server.grpc_server.grpc.server") as mocked_server:
+            mocked_server.return_value = MagicMock()
+            start_grpc_server(
+                port=0,
+                server_components=_components(),
+                grpc_auth_token="tok",  # noqa: S106 -- test value
+            )
+        _, kwargs = mocked_server.call_args
+        options = dict(kwargs["options"])
+        assert options["grpc.max_receive_message_length"] == 4 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,73 @@
 """Configuration settings for PenguinCode."""
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+#: Default gRPC server thread-pool size (O9, gRPC server hardening) -- the
+#: same literal value `server/main.py` hardcoded before this change, kept as
+#: the default so an unconfigured deployment behaves identically.
+_DEFAULT_GRPC_MAX_WORKERS = 10
+
+#: Default multiplier applied to the resolved worker count to produce the
+#: `maximum_concurrent_rpcs` default when neither YAML nor
+#: `PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS` configures it explicitly -- bounds
+#: in-flight RPCs so the server sheds load with RESOURCE_EXHAUSTED instead of
+#: queuing unboundedly once every worker thread is busy.
+_DEFAULT_GRPC_CONCURRENT_RPCS_MULTIPLIER = 4
+
+#: Default gRPC message size limit (O6), applied to both
+#: `grpc.max_receive_message_length` and `grpc.max_send_message_length` --
+#: matches grpc-core's own historical default receive limit, so an
+#: unconfigured deployment's receive behavior is unchanged; the send side
+#: becomes explicitly bounded (grpc-core's default send limit is unbounded).
+_DEFAULT_GRPC_MAX_MESSAGE_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse *name*'s env var as a positive int, falling back to *default*.
+
+    Never raises: unset, blank, non-numeric, or non-positive values all fall
+    back to *default* with a logged warning (except "unset", which is the
+    expected, silent case) -- a malformed tunable must never crash server
+    startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %d", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("%s must be positive, got %d; using default %d", name, value, default)
+        return default
+    return value
+
+
+def _default_grpc_max_workers() -> int:
+    """Resolve the gRPC thread-pool size default from `PENGUINCODE_GRPC_MAX_WORKERS`."""
+    return _env_int("PENGUINCODE_GRPC_MAX_WORKERS", _DEFAULT_GRPC_MAX_WORKERS)
+
+
+def _default_grpc_max_concurrent_rpcs() -> int:
+    """Resolve the `maximum_concurrent_rpcs` default from the env, scaled off worker count."""
+    workers = _default_grpc_max_workers()
+    return _env_int(
+        "PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS",
+        workers * _DEFAULT_GRPC_CONCURRENT_RPCS_MULTIPLIER,
+    )
+
+
+def _default_grpc_max_message_bytes() -> int:
+    """Resolve the gRPC message size limit default from `PENGUINCODE_GRPC_MAX_MESSAGE_BYTES`."""
+    return _env_int("PENGUINCODE_GRPC_MAX_MESSAGE_BYTES", _DEFAULT_GRPC_MAX_MESSAGE_BYTES)
 
 
 @dataclass
@@ -298,6 +361,16 @@ class ServerConfig:
     - local: In-process execution (default, current behavior)
     - standalone: gRPC server on localhost
     - remote: gRPC server on remote host with JWT auth
+
+    `grpc_max_workers`/`grpc_max_concurrent_rpcs`/`grpc_max_message_bytes`
+    (O9/O6, gRPC server hardening) default from
+    `PENGUINCODE_GRPC_MAX_WORKERS` / `PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS` /
+    `PENGUINCODE_GRPC_MAX_MESSAGE_BYTES` so a bare `ServerConfig()` (no
+    `config.yaml`, e.g. `server/main.py`'s `serve()` fallback) still resolves
+    operator-configured tunables; a YAML value wins over both when present
+    (see `Settings._parse_server_config`). `client/grpc_client.py` reads
+    `grpc_max_message_bytes` from this same dataclass so client and server
+    agree on the wire message-size contract by construction.
     """
 
     mode: str = "local"  # local | standalone | remote
@@ -306,6 +379,9 @@ class ServerConfig:
     tls_enabled: bool = False
     tls_cert_path: str = ""
     tls_key_path: str = ""
+    grpc_max_workers: int = field(default_factory=_default_grpc_max_workers)
+    grpc_max_concurrent_rpcs: int = field(default_factory=_default_grpc_max_concurrent_rpcs)
+    grpc_max_message_bytes: int = field(default_factory=_default_grpc_max_message_bytes)
 
 
 @dataclass
@@ -624,7 +700,13 @@ class Settings:
 
     @staticmethod
     def _parse_server_config(data: dict[str, Any]) -> ServerConfig:
-        """Parse server configuration."""
+        """Parse server configuration, including the gRPC hardening tunables.
+
+        `grpc_max_workers`/`grpc_max_concurrent_rpcs`/`grpc_max_message_bytes`
+        fall back to `ServerConfig()`'s own env-driven defaults (see the
+        dataclass docstring) when absent from YAML.
+        """
+        default = ServerConfig()
         return ServerConfig(
             mode=data.get("mode", "local"),
             host=data.get("host", "localhost"),
@@ -632,6 +714,13 @@ class Settings:
             tls_enabled=data.get("tls_enabled", False),
             tls_cert_path=data.get("tls_cert_path", ""),
             tls_key_path=data.get("tls_key_path", ""),
+            grpc_max_workers=data.get("grpc_max_workers", default.grpc_max_workers),
+            grpc_max_concurrent_rpcs=data.get(
+                "grpc_max_concurrent_rpcs", default.grpc_max_concurrent_rpcs
+            ),
+            grpc_max_message_bytes=data.get(
+                "grpc_max_message_bytes", default.grpc_max_message_bytes
+            ),
         )
 
     @staticmethod

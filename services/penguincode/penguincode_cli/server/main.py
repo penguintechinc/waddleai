@@ -43,11 +43,19 @@ import os
 import secrets
 import signal
 from concurrent import futures
+from typing import Any
 
 import grpc
 
 from penguincode_cli.auth.middleware import WaddleAIAuthInterceptor, WaddleAIJWTValidator
 from penguincode_cli.config.settings import Settings, load_settings
+from penguincode_cli.flags.client import (
+    DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG,
+    DISABLE_GRPC_MESSAGE_LIMITS_FLAG,
+    DISABLE_GRPC_TRACING_FLAG,
+    SYSTEM_SCOPE,
+    is_enabled,
+)
 from penguincode_cli.proto import (
     add_AuthServiceServicer_to_server,
     add_ChatServiceServicer_to_server,
@@ -61,6 +69,7 @@ from .interceptors import (
     JWTValidationInterceptor,
     MethodPrefixRoutingInterceptor,
     PassthroughInterceptor,
+    TracingInterceptor,
 )
 from .models.config_store import ConfigStore
 from .rest_app import create_rest_app
@@ -147,7 +156,18 @@ class PenguinCodeServer:
         # the same RS256 gate; everything else -> the legacy HS256 gate. See
         # the module docstring's "T-L2b addendum" for why this nests rather
         # than teaching MethodPrefixRoutingInterceptor a multi-prefix table.
-        interceptors = [
+        interceptors: list[grpc.aio.ServerInterceptor] = []
+        # O1 (gRPC server hardening): outermost, so every RPC -- including
+        # ones the auth interceptors below reject -- gets a span + metric
+        # point. Opt-out kill-switch: `waddleai.disable-grpc-tracing`.
+        if is_enabled(DISABLE_GRPC_TRACING_FLAG, SYSTEM_SCOPE):
+            logger.warning(
+                "gRPC per-RPC tracing interceptor disabled via kill-switch (%s)",
+                DISABLE_GRPC_TRACING_FLAG,
+            )
+        else:
+            interceptors.append(TracingInterceptor())
+        interceptors.append(
             MethodPrefixRoutingInterceptor(
                 _KNOWLEDGE_SERVICE_METHOD_PREFIX,
                 matched=waddleai_interceptor,
@@ -157,11 +177,49 @@ class PenguinCodeServer:
                     unmatched=legacy_interceptor,
                 ),
             )
-        ]
+        )
+
+        # O9 (gRPC server hardening): worker pool size and the in-flight RPC
+        # cap are both operator-configured (PENGUINCODE_GRPC_MAX_WORKERS /
+        # PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS, see `ServerConfig`) rather
+        # than the previous hardcoded `max_workers=10` with no concurrency
+        # cap at all -- once every worker thread is busy, grpc.aio now sheds
+        # new calls with RESOURCE_EXHAUSTED instead of queuing them
+        # unboundedly. Opt-out kill-switch (`waddleai.disable-grpc-
+        # concurrency-limits`) reverts to the old unbounded behavior.
+        server_kwargs: dict[str, Any] = {}
+        if is_enabled(DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG, SYSTEM_SCOPE):
+            logger.warning(
+                "gRPC concurrent-RPC cap disabled via kill-switch (%s); server will queue "
+                "unbounded",
+                DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG,
+            )
+        else:
+            server_kwargs["maximum_concurrent_rpcs"] = self.settings.server.grpc_max_concurrent_rpcs
+
+        # O6 (gRPC server hardening): explicit receive/send message size
+        # limits (PENGUINCODE_GRPC_MAX_MESSAGE_BYTES, default 4 MiB) instead
+        # of relying on grpc-core's implicit defaults. Opt-out kill-switch
+        # (`waddleai.disable-grpc-message-limits`) reverts to grpc-core's
+        # defaults (unbounded options list).
+        grpc_options: list[tuple[str, Any]] = []
+        if is_enabled(DISABLE_GRPC_MESSAGE_LIMITS_FLAG, SYSTEM_SCOPE):
+            logger.warning(
+                "gRPC message-size limits disabled via kill-switch (%s); using grpc-core defaults",
+                DISABLE_GRPC_MESSAGE_LIMITS_FLAG,
+            )
+        else:
+            message_bytes = self.settings.server.grpc_max_message_bytes
+            grpc_options = [
+                ("grpc.max_receive_message_length", message_bytes),
+                ("grpc.max_send_message_length", message_bytes),
+            ]
 
         self.server = grpc.aio.server(
-            futures.ThreadPoolExecutor(max_workers=10),
+            futures.ThreadPoolExecutor(max_workers=self.settings.server.grpc_max_workers),
             interceptors=interceptors,
+            options=grpc_options,
+            **server_kwargs,
         )
 
         # Initialize services
