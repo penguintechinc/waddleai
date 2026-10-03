@@ -777,6 +777,75 @@ class TestDispatchStageStreamDispatch:
         assert ctx.provider == "openai"
         assert ctx.model == "gpt-4o"
 
+    async def test_stream_dispatch_records_llm_latency_on_success(self, monkeypatch):
+        """stream_dispatch times the live upstream call and records it (ops O1-c)."""
+        from proxy.apps.proxy_server.pipeline import stages as stages_module
+
+        async def stream_chunks(*args, **kwargs):
+            yield StreamChunk(delta="hi", usage={"input_tokens": 1, "output_tokens": 1}, done=True)
+
+        fake_metrics = Mock()
+        monkeypatch.setattr(stages_module, "get_proxy_metrics", lambda: fake_metrics)
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+        connector = Mock()
+        connector.stream_chat_completion = stream_chunks
+
+        stage = DispatchStage(name="dispatch", router=router, connectors={"openai": connector})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        fake_metrics.record_llm_latency.assert_called_once()
+        call_kwargs = fake_metrics.record_llm_latency.call_args.kwargs
+        assert call_kwargs["provider"] == "openai"
+        assert call_kwargs["model"] == "gpt-4o"
+        assert call_kwargs["status"] == "success"
+        assert call_kwargs["duration"] >= 0
+
+    async def test_stream_dispatch_records_llm_latency_on_mid_stream_error(self, monkeypatch):
+        """A mid-stream dispatch failure still records latency, with status=error."""
+        from proxy.apps.proxy_server.pipeline import stages as stages_module
+
+        async def stream_then_fail(*args, **kwargs):
+            yield StreamChunk(delta="partial", usage=None, done=False)
+            raise ProviderServerError(
+                provider="openai", model="gpt-4o", message="dropped", status_code=503
+            )
+
+        fake_metrics = Mock()
+        monkeypatch.setattr(stages_module, "get_proxy_metrics", lambda: fake_metrics)
+
+        router = Mock()
+        router.select_provider = Mock(return_value=("openai", "gpt-4o"))
+        connector = Mock()
+        connector.stream_chat_completion = stream_then_fail
+
+        stage = DispatchStage(name="dispatch", router=router, connectors={"openai": connector})
+        user = Mock(id=1, tenant_id="org1")
+        ctx = PipelineContext(
+            user=user,
+            body={"model": "gpt-4o"},
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        [chunk async for chunk in stage.stream_dispatch(ctx)]
+
+        fake_metrics.record_llm_latency.assert_called_once()
+        call_kwargs = fake_metrics.record_llm_latency.call_args.kwargs
+        assert call_kwargs["status"] == "error"
+        assert ctx.blocked is True
+
     async def test_stream_dispatch_without_final_usage_chunk_leaves_usage_none(self):
         """No done+usage chunk -> ctx.usage/finish_reason stay untouched, same as __call__."""
 

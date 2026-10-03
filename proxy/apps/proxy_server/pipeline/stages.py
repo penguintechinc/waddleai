@@ -1091,7 +1091,10 @@ class DispatchStage(Stage):
                 ctx.finish_reason = usage.get("finish_reason", "stop")
             await self._depseudonymize(ctx)
             get_proxy_metrics().record_llm_latency(
-                provider=provider, model=target_model, status="success", duration=time.time() - start
+                provider=provider,
+                model=target_model,
+                status="success",
+                duration=time.time() - start,
             )
         except Exception as e:
             self._record_dispatch_error(ctx, provider, e)
