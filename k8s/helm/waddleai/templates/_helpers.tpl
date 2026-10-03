@@ -325,6 +325,16 @@ spec:
         timeoutSeconds: {{ .Values.ollama.readinessProbe.timeoutSeconds }}
         failureThreshold: {{ .Values.ollama.readinessProbe.failureThreshold }}
       {{- end }}
+      {{- if .Values.ollama.startupProbe.enabled }}
+      startupProbe:
+        httpGet:
+          path: {{ .Values.ollama.startupProbe.httpGet.path }}
+          port: {{ .Values.ollama.startupProbe.httpGet.port }}
+        initialDelaySeconds: {{ .Values.ollama.startupProbe.initialDelaySeconds }}
+        periodSeconds: {{ .Values.ollama.startupProbe.periodSeconds }}
+        timeoutSeconds: {{ .Values.ollama.startupProbe.timeoutSeconds }}
+        failureThreshold: {{ .Values.ollama.startupProbe.failureThreshold }}
+      {{- end }}
       resources:
         {{- if .Values.ollama.gpu.enabled }}
         requests:

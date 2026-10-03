@@ -1,0 +1,31 @@
+{{/*
+O4: PodDisruptionBudget for the Management service. Guarded on
+podDisruptionBudget.enabled (global switch, see values.yaml -- off by
+default/alpha, on in beta) AND an effective-replica-count check: a PDB with
+minAvailable >= replica count blocks voluntary evictions (node drains,
+cluster-autoscaler, `kubectl drain`) entirely, so this only renders when
+there's more than one replica to spare -- the same effective-replica-count
+(autoscaling.minReplicas when autoscaling is on, else the fixed
+replicaCount) that management-deployment.yaml itself uses to decide whether
+to set `replicas:` at all.
+*/}}
+{{- $effectiveMin := .Values.management.replicaCount -}}
+{{- if .Values.management.autoscaling.enabled -}}
+{{- $effectiveMin = .Values.management.autoscaling.minReplicas -}}
+{{- end -}}
+{{- if and .Values.management.enabled .Values.podDisruptionBudget.enabled (gt (int $effectiveMin) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "waddleai.fullname" . }}-management
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: management
+{{- end }}
