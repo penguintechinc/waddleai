@@ -355,6 +355,8 @@ Every service reads environment variables directly — there is no `.env.example
 | `WADDLEAI_ALLOW_PLAINTEXT_CREDENTIALS` | No — **dev only** | unset → credential writes require a key | `shared/security/credential_encryption.py` |
 | `HTTP_PORT` | No | `8080` | `proxy/apps/proxy_server/main.py` |
 | `GRPC_PORT` | No | `50051` | `proxy/apps/proxy_server/main.py` |
+| `PROXY_GRPC_MAX_WORKERS` | No | `10` | `proxy/apps/proxy_server/grpc_server.py` (gRPC server thread-pool size) |
+| `PROXY_GRPC_MAX_MESSAGE_BYTES` | No | `4194304` (4 MiB) | `proxy/apps/proxy_server/grpc_server.py` (`grpc.max_receive_message_length`/`grpc.max_send_message_length`; opt-out kill-switch `waddleai.disable-grpc-message-limits`) |
 | `MANAGEMENT_SERVER_URL` | No | `http://localhost:8001` | `proxy/apps/proxy_server/main.py` |
 | `REDIS_URL` | No | `redis://localhost:6379/0` | `proxy/apps/proxy_server/main.py` (Valkey, despite the name) |
 | `CACHE_HOST`, `CACHE_PORT`, `CACHE_USER`, `CACHE_PASS` | No | unset | `services/management/app/config.py` (also honors `REDIS_URL`) |

@@ -2,14 +2,51 @@
 
 import asyncio
 import logging
+import os
 import uuid
 from collections.abc import AsyncIterator
 
 import grpc
 
+from penguincode_cli.flags.client import DISABLE_TOOL_QUEUE_BOUND_FLAG, SYSTEM_SCOPE, is_enabled
+from penguincode_cli.observability.otel import record_tool_queue_event
 from penguincode_cli.proto import ToolCallbackServiceServicer, ToolRequest, ToolResponse
 
 logger = logging.getLogger(__name__)
+
+#: O10 (gRPC server hardening): default bound on each session's pending
+#: tool-request queue -- was previously `asyncio.Queue()` with no `maxsize`
+#: at all, letting a slow/stalled client's queue grow without limit.
+_DEFAULT_TOOL_QUEUE_MAXSIZE = 256
+
+
+def _tool_queue_maxsize() -> int:
+    """Resolve the per-session tool queue bound from `PENGUINCODE_TOOL_QUEUE_MAXSIZE`.
+
+    Falls back to `_DEFAULT_TOOL_QUEUE_MAXSIZE` on unset, blank, non-numeric,
+    or non-positive values -- a malformed tunable must never crash the
+    server or silently produce an unbounded queue.
+    """
+    raw = os.environ.get("PENGUINCODE_TOOL_QUEUE_MAXSIZE")
+    if raw is None or not raw.strip():
+        return _DEFAULT_TOOL_QUEUE_MAXSIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid PENGUINCODE_TOOL_QUEUE_MAXSIZE=%r; using default %d",
+            raw,
+            _DEFAULT_TOOL_QUEUE_MAXSIZE,
+        )
+        return _DEFAULT_TOOL_QUEUE_MAXSIZE
+    if value <= 0:
+        logger.warning(
+            "PENGUINCODE_TOOL_QUEUE_MAXSIZE must be positive, got %d; using default %d",
+            value,
+            _DEFAULT_TOOL_QUEUE_MAXSIZE,
+        )
+        return _DEFAULT_TOOL_QUEUE_MAXSIZE
+    return value
 
 
 class PendingToolRequest:
@@ -44,11 +81,24 @@ class ToolCallbackServiceImpl(ToolCallbackServiceServicer):
     async def register_session(self, session_id: str) -> asyncio.Queue:
         """Register a session for tool callbacks.
 
-        Returns a queue that will receive ToolRequests.
+        Returns a queue that will receive ToolRequests. Bounded at
+        `_tool_queue_maxsize()` (O10, gRPC server hardening) unless the
+        `waddleai.disable-tool-queue-bound` kill-switch reverts to the
+        pre-hardening unbounded queue (`maxsize=0`).
         """
         async with self._lock:
             if session_id not in self._request_queues:
-                self._request_queues[session_id] = asyncio.Queue()
+                if is_enabled(DISABLE_TOOL_QUEUE_BOUND_FLAG, SYSTEM_SCOPE):
+                    logger.warning(
+                        "Tool-callback queue bound disabled via kill-switch (%s) for "
+                        "session %s; queue is unbounded",
+                        DISABLE_TOOL_QUEUE_BOUND_FLAG,
+                        session_id,
+                    )
+                    maxsize = 0
+                else:
+                    maxsize = _tool_queue_maxsize()
+                self._request_queues[session_id] = asyncio.Queue(maxsize=maxsize)
                 self._pending_requests[session_id] = {}
         return self._request_queues[session_id]
 
@@ -84,23 +134,53 @@ class ToolCallbackServiceImpl(ToolCallbackServiceServicer):
             arguments=arguments,
         )
 
+        queue_full = False
+
         async with self._lock:
             if session_id not in self._pending_requests:
                 raise RuntimeError(f"Session {session_id} not registered for tool callbacks")
             self._pending_requests[session_id][request_id] = pending
 
-            # Queue the request for the client
+            # Queue the request for the client. `put_nowait` (not `put`) --
+            # O10, gRPC server hardening: a bounded queue must reject
+            # immediately on full rather than block indefinitely, which
+            # would hang this call well past `timeout_seconds` (the
+            # `wait_for` below never even starts).
             queue = self._request_queues.get(session_id)
-            if queue:
-                await queue.put(
-                    ToolRequest(
-                        request_id=request_id,
-                        session_id=session_id,
-                        tool_name=tool_name,
-                        arguments={k: str(v) for k, v in arguments.items()},
-                        timeout_seconds=timeout_seconds,
+            if queue is not None:
+                try:
+                    queue.put_nowait(
+                        ToolRequest(
+                            request_id=request_id,
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            arguments={k: str(v) for k, v in arguments.items()},
+                            timeout_seconds=timeout_seconds,
+                        )
                     )
-                )
+                    record_tool_queue_event("enqueued")
+                except asyncio.QueueFull:
+                    queue_full = True
+
+            if queue_full:
+                self._pending_requests[session_id].pop(request_id, None)
+
+        if queue_full:
+            logger.warning(
+                "Tool request queue full for session %s (maxsize=%d); rejecting tool=%s",
+                session_id,
+                queue.maxsize if queue is not None else -1,
+                tool_name,
+            )
+            record_tool_queue_event("rejected")
+            return ToolResponse(
+                request_id=request_id,
+                success=False,
+                error=(
+                    f"Tool request queue full (max {queue.maxsize if queue is not None else '?'} "
+                    "pending); try again shortly"
+                ),
+            )
 
         try:
             # Wait for response
@@ -141,7 +221,9 @@ class ToolCallbackServiceImpl(ToolCallbackServiceServicer):
 
         try:
             # Start a task to process incoming responses
-            response_task = asyncio.create_task(self._process_responses(session_id, request_iterator))
+            response_task = asyncio.create_task(
+                self._process_responses(session_id, request_iterator)
+            )
 
             # Yield requests from the queue
             while True:

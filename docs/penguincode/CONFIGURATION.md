@@ -515,6 +515,45 @@ server:
 | `standalone` | gRPC server on localhost | Shared local server, testing |
 | `remote` | gRPC server with TLS + JWT auth | Team deployment, remote GPU |
 
+### gRPC Server Hardening (Ops/Resource Limits)
+
+These `server.*` keys (and matching env vars) bound the gRPC server's worker
+pool, in-flight RPC concurrency, and message sizes, so the server sheds
+load with `RESOURCE_EXHAUSTED` instead of queuing/accepting without limit.
+A YAML `config.yaml` value always wins over its env var; the env var wins
+over the literal default. The `client.*`/`server.*` channel on the CLI
+client (`client/grpc_client.py`) reads `grpc_max_message_bytes` from the
+same `ServerConfig`, so client and server always agree on the wire
+message-size contract.
+
+```yaml
+server:
+  grpc_max_workers: 10
+  grpc_max_concurrent_rpcs: 40
+  grpc_max_message_bytes: 4194304
+```
+
+| Key | Env Var | Default | Description |
+|-----|---------|---------|-------------|
+| `grpc_max_workers` | `PENGUINCODE_GRPC_MAX_WORKERS` | `10` | gRPC server thread-pool size. |
+| `grpc_max_concurrent_rpcs` | `PENGUINCODE_GRPC_MAX_CONCURRENT_RPCS` | `4 ×` resolved `grpc_max_workers` | Max in-flight RPCs before the server rejects new ones with `RESOURCE_EXHAUSTED`. |
+| `grpc_max_message_bytes` | `PENGUINCODE_GRPC_MAX_MESSAGE_BYTES` | `4194304` (4 MiB) | Applied to both `grpc.max_receive_message_length` and `grpc.max_send_message_length`, server and CLI client alike. |
+| N/A (tool callback queue) | `PENGUINCODE_TOOL_QUEUE_MAXSIZE` | `256` | Per-session bound on the `ToolCallbackService` pending-request queue; a full queue rejects the new tool call immediately (never blocks). |
+
+Malformed values (non-numeric, blank, zero, or negative) fall back to the
+default with a logged warning rather than crashing startup.
+
+**Opt-out kill-switches** (PostHog flags, env override `PENGUINCODE_FLAG_<NAME>`;
+unseen/OFF = the hardening mechanism is ON, ON = revert to the pre-hardening
+legacy behavior — see `flags/client.py`):
+
+| Flag | Reverts |
+|------|---------|
+| `waddleai.disable-grpc-tracing` | Skips installing the per-RPC `TracingInterceptor` (O1) — no span/metric per RPC. |
+| `waddleai.disable-grpc-concurrency-limits` | Omits `maximum_concurrent_rpcs` entirely — unbounded in-flight RPCs (O9). |
+| `waddleai.disable-grpc-message-limits` | Omits the message-length `options` — grpc-core's own defaults apply (O6). Shared with the proxy's own gRPC server (same flag key). |
+| `waddleai.disable-tool-queue-bound` | Tool-callback queue becomes unbounded (`maxsize=0`) again (O10). |
+
 ---
 
 ## Authentication Configuration

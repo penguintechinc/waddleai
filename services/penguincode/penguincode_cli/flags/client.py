@@ -45,6 +45,19 @@ CODE_GRAPH_FLAG = "penguincode.code-graph"
 KNOWLEDGE_GRAPH_FLAG = "penguincode.knowledge-graph"
 MEMORY_GRAPH_FLAG = "penguincode.memory-graph"
 
+#: Opt-out kill-switches (gRPC server hardening) for the new operational
+#: mechanisms this change introduces -- unseen/OFF = the hardening mechanism
+#: is ON (the new, bounded behavior); ON = revert to the pre-hardening
+#: legacy behavior (unbounded concurrency/queue/message size, no per-RPC
+#: tracing). Shared (identical key) with the proxy's own gRPC server, which
+#: evaluates the message-limits switch via `shared.utils.feature_flags` --
+#: one PostHog flag, two independent clients, per the house opt-out
+#: kill-switch convention.
+DISABLE_GRPC_TRACING_FLAG = "waddleai.disable-grpc-tracing"
+DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG = "waddleai.disable-grpc-concurrency-limits"
+DISABLE_GRPC_MESSAGE_LIMITS_FLAG = "waddleai.disable-grpc-message-limits"
+DISABLE_TOOL_QUEUE_BOUND_FLAG = "waddleai.disable-tool-queue-bound"
+
 _ENV_PREFIX = "PENGUINCODE_FLAG_"
 _TRUTHY = ("1", "true", "yes", "on")
 _DEFAULT_POSTHOG_HOST = "https://license.penguintech.io"
@@ -70,6 +83,29 @@ class ScopeContextLike(Protocol):
     def user_id(self) -> str: ...
     @property
     def scopes(self) -> tuple[str, ...]: ...
+
+
+@dataclass(slots=True, frozen=True)
+class SystemScope:
+    """Structural `ScopeContextLike` for process-level (non-tenant) flag checks.
+
+    gRPC server infra mechanisms (resource limits, per-RPC tracing, the tool
+    callback queue bound) are gated at server startup or per-connection --
+    before any per-request `ScopeContext` exists -- so there is no real
+    tenant to key a rollout on. `tenant_id="system"` is the fixed PostHog
+    distinct id for these process-wide flags; satisfies `ScopeContextLike`
+    structurally, same as the real `auth.scope.ScopeContext` does.
+    """
+
+    tenant_id: str = "system"
+    org_id: str | None = None
+    team_ids: tuple[str, ...] = ()
+    user_id: str = "system"
+    scopes: tuple[str, ...] = ()
+
+
+#: Shared instance for every process-level flag check -- see `SystemScope`.
+SYSTEM_SCOPE: SystemScope = SystemScope()
 
 
 def _env_var_name(flag_key: str) -> str:
@@ -238,7 +274,13 @@ __all__ = [
     "CODE_GRAPH_FLAG",
     "KNOWLEDGE_GRAPH_FLAG",
     "MEMORY_GRAPH_FLAG",
+    "DISABLE_GRPC_TRACING_FLAG",
+    "DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG",
+    "DISABLE_GRPC_MESSAGE_LIMITS_FLAG",
+    "DISABLE_TOOL_QUEUE_BOUND_FLAG",
     "ScopeContextLike",
+    "SystemScope",
+    "SYSTEM_SCOPE",
     "FlagClient",
     "is_enabled",
 ]
