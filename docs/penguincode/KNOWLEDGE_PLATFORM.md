@@ -254,9 +254,17 @@ SELECT id, visibility, created_at FROM penguincode.memory_vectors
 
 ### Query Performance
 
-Check graph traversal cost. If slow, increase BFS depth limit (default 2):
+Every vector/graph store call borrows from one process-wide, bounded
+`ConnectionPool` (`PENGUINCODE_DB_POOL_MIN`/`_MAX`, default 2/10) instead of
+opening a fresh connection per call; `graph_depth`/`n_vector`/`limit` are
+clamped server-side (default max depth 3, default max top-k 50 --
+`PENGUINCODE_MAX_GRAPH_DEPTH`/`PENGUINCODE_MAX_VECTOR_RESULTS`/
+`PENGUINCODE_MAX_GRAPH_NODES`) rather than taken unbounded from the
+request. See [Configuration Reference](CONFIGURATION.md)'s "Shared DB Pool
+& Query Limits" for the full env var list. If graph traversal is slow,
+raise the depth ceiling (traded against query cost):
 ```bash
-kubectl set env deploy/penguincode-server PENGUINCODE_GRAPH_DEPTH=3
+kubectl set env deploy/penguincode-server PENGUINCODE_MAX_GRAPH_DEPTH=5
 ```
 
 ## See Also
