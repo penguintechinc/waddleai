@@ -68,7 +68,7 @@ from typing import Any
 import httpx
 
 from penguincode_cli.auth.scope import ScopeContext
-from penguincode_cli.config.settings import GraphConfig, PostgresGraphStoreConfig
+from penguincode_cli.config.settings import GraphConfig, LimitsConfig, PostgresGraphStoreConfig
 from penguincode_cli.flags.client import (
     CODE_GRAPH_FLAG,
     KNOWLEDGE_GRAPH_FLAG,
@@ -76,7 +76,7 @@ from penguincode_cli.flags.client import (
     RAG_FLAG,
     is_enabled,
 )
-from penguincode_cli.observability.otel import store_span
+from penguincode_cli.observability.otel import record_query_clamped, store_span
 from penguincode_cli.stores.graph import GraphStore, Subgraph, create_graph_store
 from penguincode_cli.stores.vector import PgVectorStore, TableName, VectorHit, VectorStore
 
@@ -178,6 +178,25 @@ async def _expand_kind(
         return Subgraph(nodes=[], edges=[])
 
 
+def _clamp(value: int, maximum: int, *, param: str) -> int:
+    """Coerce ``value`` down to ``maximum`` (never reject), logging + counting a clamp hit.
+
+    Defense in depth alongside the identical clamp inside
+    ``PgVectorStore.query``/``PostgresGraphStore._traverse`` -- this module
+    is also a directly-callable entry point (not only reached via
+    ``server.services.knowledge``'s handlers), so it enforces the same
+    server-side bound on its own rather than trusting an upstream caller to
+    have already clamped.
+    """
+    if value > maximum:
+        logger.debug(
+            "graphrag.retrieve: clamped param=%s requested=%d max=%d", param, value, maximum
+        )
+        record_query_clamped(param)
+        return maximum
+    return value
+
+
 def _seed_keys_from_hits(hits: list[VectorHit]) -> list[str]:
     """Derive candidate graph-node seed keys from vector hits (deduped, order-preserving).
 
@@ -240,6 +259,7 @@ async def retrieve(
     embedding_model: str = _DEFAULT_EMBEDDING_MODEL,
     dsn: str | None = None,
     max_context_chars: int = _DEFAULT_MAX_CONTEXT_CHARS,
+    limits: LimitsConfig | None = None,
 ) -> RetrievalResult:
     """Hybrid GraphRAG retrieval: scoped vector top-k + scoped, flag-gated graph expansion.
 
@@ -248,9 +268,11 @@ async def retrieve(
             enforced by every store call this function makes.
         query: Free-text query to embed and search for.
         n_vector: Max vector hits to return, after merging all
-            ``vector_tables`` and ranking by score descending.
+            ``vector_tables`` and ranking by score descending. Clamped
+            server-side to ``limits.max_vector_results`` (ops-audit O7).
         graph_depth: Traversal depth passed to ``GraphStore.subgraph`` for
-            every enabled graph kind.
+            every enabled graph kind. Clamped server-side to
+            ``limits.max_graph_depth`` (ops-audit O7).
         vector_tables: Which ``PgVectorStore``-backed tables to search.
         vector_stores: Test/production seam -- a table -> ``VectorStore``
             mapping. Defaults to one ``PgVectorStore`` per table in
@@ -265,6 +287,8 @@ async def retrieve(
             to the ``PGVECTOR_URL`` env var, matching ``PGVectorStoreConfig``
             / ``PostgresGraphStoreConfig``.
         max_context_chars: Bound on the assembled ``context`` string length.
+        limits: Server-side clamp configuration; defaults to
+            ``LimitsConfig()`` (env-driven) when not injected.
 
     Returns:
         A :class:`RetrievalResult`. Never raises -- every failure mode
@@ -276,6 +300,10 @@ async def retrieve(
     if not is_enabled(RAG_FLAG, ctx):
         logger.debug("graphrag.retrieve skipped: %s is off", RAG_FLAG)
         return empty
+
+    resolved_limits = limits if limits is not None else LimitsConfig()
+    n_vector = _clamp(n_vector, resolved_limits.max_vector_results, param="n_vector")
+    graph_depth = _clamp(graph_depth, resolved_limits.max_graph_depth, param="graph_depth")
 
     with store_span(
         "graphrag.retrieve",
@@ -317,10 +345,7 @@ async def retrieve(
 
         enabled_kinds = [kind for kind, flag in _GRAPH_FLAGS.items() if is_enabled(flag, ctx)]
         kind_results = await asyncio.gather(
-            *(
-                _expand_kind(graph, ctx, kind, seed_keys, graph_depth)
-                for kind in enabled_kinds
-            )
+            *(_expand_kind(graph, ctx, kind, seed_keys, graph_depth) for kind in enabled_kinds)
         )
         subgraphs = dict(zip(enabled_kinds, kind_results, strict=True))
 

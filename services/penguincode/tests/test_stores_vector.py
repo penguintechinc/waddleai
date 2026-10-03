@@ -20,6 +20,7 @@ import psycopg
 import pytest
 
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.config.settings import LimitsConfig
 from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.stores.vector import PgVectorStore, VectorHit, VectorItem, VectorStore
 
@@ -199,6 +200,43 @@ class TestPgVectorStoreRoundTrip:
 
         assert docs_store.query(ctx, vector, n=5) != []
         assert memory_store.query(ctx, vector, n=5) == []
+
+
+@requires_postgres
+class TestPgVectorStoreQueryClamping:
+    """Ops-audit O7: `n` is clamped server-side to `LimitsConfig.max_vector_results`."""
+
+    def test_oversized_n_is_clamped_to_configured_max(self, live_dsn: str) -> None:
+        store = PgVectorStore(
+            dsn=live_dsn, table="docs_vectors", limits=LimitsConfig(max_vector_results=2)
+        )
+        ctx = _ctx(tenant_id=str(uuid.uuid4()))
+        items = [
+            VectorItem(id=str(uuid.uuid4()), embedding=_embedding(float(i)), document=f"doc-{i}")
+            for i in range(5)
+        ]
+        store.upsert(ctx, items, visibility="tenant", team_id=None)
+
+        # Requested n (10_000) vastly exceeds both the row count and the
+        # configured max -- the clamp (not the row count) is what bounds it.
+        hits = store.query(ctx, _embedding(0.0), n=10_000)
+
+        assert len(hits) == 2
+
+    def test_within_bound_n_is_unaffected(self, live_dsn: str) -> None:
+        store = PgVectorStore(
+            dsn=live_dsn, table="docs_vectors", limits=LimitsConfig(max_vector_results=50)
+        )
+        ctx = _ctx(tenant_id=str(uuid.uuid4()))
+        items = [
+            VectorItem(id=str(uuid.uuid4()), embedding=_embedding(float(i)), document=f"doc-{i}")
+            for i in range(5)
+        ]
+        store.upsert(ctx, items, visibility="tenant", team_id=None)
+
+        hits = store.query(ctx, _embedding(0.0), n=3)
+
+        assert len(hits) == 3
 
 
 @requires_postgres

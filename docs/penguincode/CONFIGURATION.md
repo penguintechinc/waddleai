@@ -732,6 +732,29 @@ services:
 | `QDRANT_URL` | `http://localhost:6333` | `memory.stores.qdrant.url` | Qdrant server URL. |
 | `PGVECTOR_URL` | - | `memory.stores.pgvector.connection_string` | PostgreSQL connection string. |
 
+#### Shared DB Pool & Query Limits (ops-audit O7)
+
+Every vector/graph store call borrows a connection from one process-wide
+`psycopg_pool.ConnectionPool` (opened at server startup, closed at
+shutdown) instead of opening a fresh `psycopg.connect()` per call -- bounds
+total connections against Postgres's `max_connections` so a traffic spike
+can't starve other consumers of the same shared database (e.g.
+`services/management`'s SQLAlchemy pool). `graph_depth`/`n_vector`/`limit`
+on every `KnowledgeService` RPC are clamped (coerced down, never rejected)
+to a server-side maximum, re-enforced at both the GraphRAG orchestration
+layer and the `PgVectorStore`/`PostgresGraphStore` chokepoints.
+
+| Variable | Default | Config Equivalent | Description |
+|----------|---------|-------------------|-------------|
+| `PENGUINCODE_DB_POOL_MIN` | `2` | `db.pool_min_size` | Minimum pooled connections kept open. |
+| `PENGUINCODE_DB_POOL_MAX` | `10` | `db.pool_max_size` | Maximum pooled connections -- a borrower beyond this waits. |
+| `PENGUINCODE_DB_POOL_TIMEOUT_SECONDS` | `30` | `db.pool_timeout_seconds` | Seconds a borrower waits for a free connection before raising `PoolTimeout`. |
+| `PENGUINCODE_DB_STATEMENT_TIMEOUT_MS` | `15000` | `db.statement_timeout_ms` | Server-side `statement_timeout` (ms) on every pooled connection -- kills a runaway query/traversal. |
+| `PENGUINCODE_MAX_GRAPH_DEPTH` | `3` | `limits.max_graph_depth` | Max graph traversal depth (`neighbors`/`subgraph`/`Query.graph_depth`) -- requests above this are clamped, not rejected. |
+| `PENGUINCODE_MAX_VECTOR_RESULTS` | `50` | `limits.max_vector_results` | Max vector top-k (`PgVectorStore.query`/`Query.n_vector`/`MemorySearch.limit`). |
+| `PENGUINCODE_MAX_GRAPH_NODES` | `500` | `limits.max_graph_nodes` | Max nodes a single graph traversal can return (also bounds per-path expansion mid-recursion, not just the final result). |
+| `PENGUINCODE_FLAG_DISABLE_DB_POOL` | `false` | PostHog flag `penguincode.disable-db-pool` | Opt-out kill-switch: `true` reverts to a direct `psycopg.connect()` per call (pre-fix behavior) -- operational escape hatch only. |
+
 #### Security & Defaults
 
 | Variable | Default | Config Equivalent | Description |
