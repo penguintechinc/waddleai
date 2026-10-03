@@ -597,6 +597,25 @@ class TestInvalidateCache:
         await provider.get_access_token()
         assert login_calls == 2
 
+    def test_invalidate_cache_is_null_safe_for_a_subclass_with_no_store(self) -> None:
+        """regression: gh-275 CI (`test_knowledge_service_e2e.py`'s `StaticTokenProvider`).
+
+        A subclass that overrides `get_access_token`/`get_auth_metadata` entirely and
+        never calls `WaddleAITokenProvider.__init__` (so it has no `self._store`) must
+        still tolerate `invalidate_cache()` as a safe no-op -- `KnowledgeClient._call`
+        calls it unconditionally on every `UNAUTHENTICATED` response regardless of which
+        concrete token-provider implementation is in use, and a raw `AttributeError`
+        escaping there used to shadow the expected `KnowledgeAuthError`.
+        """
+
+        class _BareTokenProvider(WaddleAITokenProvider):
+            def __init__(self) -> None:
+                pass  # deliberately never calls super().__init__() -- no self._store
+
+        provider = _BareTokenProvider()
+        provider.invalidate_cache()  # must not raise AttributeError
+        assert not hasattr(provider, "_store")
+
 
 class TestNeverLogsToken:
     @pytest.mark.asyncio

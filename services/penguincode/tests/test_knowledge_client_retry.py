@@ -128,3 +128,41 @@ class TestAuthErrorsNeverRetried:
 
         assert stub.Query.await_count == 1
         token_provider.invalidate_cache.assert_not_called()
+
+
+class TestUnauthenticatedWithBareTokenProvider:
+    """regression: gh-275 CI -- a REAL (non-mock) token-provider subclass with no
+    `self._store` (same shape as `tests/integration/conftest.py`'s `StaticTokenProvider`:
+    overrides `get_access_token`/`get_auth_metadata`, never calls
+    `WaddleAITokenProvider.__init__`) must surface `KnowledgeAuthError` on
+    `UNAUTHENTICATED`, never a raw `AttributeError` from `invalidate_cache()` reaching
+    into `self._store`.
+    """
+
+    async def test_unauthenticated_with_bare_provider_raises_auth_error_not_attribute_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _BareTokenProvider(WaddleAITokenProvider):
+            def __init__(self) -> None:
+                pass  # deliberately never calls super().__init__() -- no self._store
+
+            async def get_auth_metadata(self) -> list[tuple[str, str]]:
+                return _AUTH_METADATA
+
+        stub = _FakeStub()
+        stub.Query.side_effect = _rpc_error(grpc.StatusCode.UNAUTHENTICATED, "expired")
+        monkeypatch.setattr(
+            "penguincode_cli.client.knowledge_client.KnowledgeServiceStub", lambda channel: stub
+        )
+        server_config = ServerConfig(host="pc-server.internal", port=50051)
+        client = KnowledgeClient(
+            server_config,
+            token_provider=_BareTokenProvider(),
+            channel=object(),
+            client_config=ClientConfig(retry_max=5, retry_base_ms=1, retry_max_ms=5),
+        )
+
+        with pytest.raises(KnowledgeAuthError, match="expired"):
+            await client._call(stub.Query, object())
+
+        assert stub.Query.await_count == 1  # never retried

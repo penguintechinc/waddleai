@@ -405,8 +405,17 @@ class WaddleAITokenProvider:
         Deliberately synchronous and side-effect-only on the local cache: unlike
         `logout()`, this never talks to the network, so it is always safe to call from an
         exception handler.
+
+        Null-safe for subclasses that never call this class's `__init__` (e.g. a
+        fixed-token test double overriding `get_access_token`/`get_auth_metadata`
+        entirely, such as `tests/integration/conftest.py`'s `StaticTokenProvider`) and
+        therefore have no `self._store` -- those have no cache to invalidate, so this is
+        a safe no-op rather than an `AttributeError` reaching `KnowledgeClient._call`'s
+        caller instead of the expected `KnowledgeAuthError`.
         """
-        self._store.clear()
+        store = getattr(self, "_store", None)
+        if store is not None:
+            store.clear()
 
     async def logout(self) -> None:
         """Discard the cached token and best-effort notify the server (``/auth/logout``).
