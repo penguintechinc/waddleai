@@ -6,11 +6,13 @@ for gRPC services following project standards.
 
 from .client import GrpcClient
 from .interceptors import (
+    AsyncTracingClientInterceptor,
     AuditInterceptor,
     AuthInterceptor,
     CorrelationInterceptor,
     RateLimitInterceptor,
     RecoveryInterceptor,
+    TracingClientInterceptor,
 )
 from .server import create_server, register_health_check
 
@@ -23,4 +25,6 @@ __all__ = [
     "AuditInterceptor",
     "CorrelationInterceptor",
     "RecoveryInterceptor",
+    "TracingClientInterceptor",
+    "AsyncTracingClientInterceptor",
 ]

@@ -15,8 +15,81 @@ from typing import Any
 
 import grpc
 import jwt
+from opentelemetry import baggage, metrics, trace
+from opentelemetry import context as otel_context
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
+from opentelemetry.propagators.composite import CompositePropagator
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 logger = logging.getLogger(__name__)
+
+# W3C TraceContext (``traceparent``/``tracestate``) + Baggage (``baggage``) propagator
+# used for every gRPC boundary this module touches. Deliberately local to this module
+# (rather than reusing a process-wide global textmap propagator) so py_libs stays a
+# self-contained, pip-installable package with no dependency on any consuming app's
+# tracing bootstrap.
+_PROPAGATOR = CompositePropagator([TraceContextTextMapPropagator(), W3CBaggagePropagator()])
+
+_TRACER = trace.get_tracer("py_libs.grpc")
+_METER = metrics.get_meter("py_libs.grpc")
+
+#: Plain metadata key carrying the correlation id, kept alongside OTel baggage so
+#: log lines (which don't parse baggage) can still correlate across services.
+_CORRELATION_METADATA_KEY = "x-correlation-id"
+_CORRELATION_BAGGAGE_KEY = "correlation_id"
+
+# rpc.* bounded labels only -- never ids/paths/emails (critical-rules.md Observability).
+_RPC_CLIENT_DURATION = _METER.create_histogram(
+    name="rpc_client_duration_seconds",
+    description="Duration of outgoing gRPC client calls",
+    unit="s",
+)
+_RPC_CLIENT_REQUESTS = _METER.create_counter(
+    name="rpc_client_requests_total",
+    description="Count of outgoing gRPC client calls",
+)
+
+
+def _split_method(method: str | bytes | None) -> tuple[str, str]:
+    """Split a gRPC full method string ``/package.Service/Method`` into (service, method).
+
+    ``grpc.aio`` passes ``ClientCallDetails.method`` as ``bytes``; the sync API uses
+    ``str`` -- normalize before splitting so both variants share this helper.
+    """
+    if not method:
+        return "unknown", "unknown"
+    if isinstance(method, bytes):
+        method = method.decode("utf-8", errors="replace")
+    parts = method.lstrip("/").split("/", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return "unknown", parts[0]
+
+
+def _get_or_mint_correlation_id(
+    metadata: Any,
+    ctx: otel_context.Context,
+) -> str:
+    """Reuse an inbound correlation id (metadata or baggage); mint a UUID only if absent."""
+    existing = dict(metadata or ()).get(_CORRELATION_METADATA_KEY)
+    if existing:
+        return str(existing)
+    from_baggage = baggage.get_baggage(_CORRELATION_BAGGAGE_KEY, context=ctx)
+    if from_baggage:
+        return str(from_baggage)
+    return str(uuid.uuid4())
+
+
+def _merge_metadata(existing: Any, extra: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    """Append ``extra`` key/value pairs onto an existing gRPC metadata tuple."""
+    merged = list(existing or ())
+    merged.extend(extra.items())
+    return tuple(merged)
+
+
+def _status_code_name(code: grpc.StatusCode | None) -> str:
+    """Render a gRPC status code as its bounded label name, defaulting to ``OK``."""
+    return code.name if code is not None else "OK"
 
 
 class AuthInterceptor(grpc.ServerInterceptor):
@@ -280,9 +353,15 @@ class AuditInterceptor(grpc.ServerInterceptor):
 
 
 class CorrelationInterceptor(grpc.ServerInterceptor):
-    """Correlation ID interceptor for request tracing.
+    """Server-side W3C trace-context + baggage propagator and correlation-id continuity.
 
-    Adds or propagates correlation IDs across service calls.
+    Extracts an inbound ``traceparent``/``baggage`` carrier from gRPC metadata so the
+    server-side span becomes a CHILD of the caller's CLIENT span (see
+    ``TracingClientInterceptor``/``AsyncTracingClientInterceptor``), and opens that
+    SERVER span for the handler's duration. The correlation id is reused from an
+    inbound ``x-correlation-id`` metadata entry or baggage, and minted only when
+    neither is present -- any server registering this interceptor gets propagation
+    for free.
     """
 
     def intercept_service(
@@ -290,19 +369,177 @@ class CorrelationInterceptor(grpc.ServerInterceptor):
         continuation: Callable[[grpc.HandlerCallDetails], grpc.RpcMethodHandler],
         handler_call_details: grpc.HandlerCallDetails,
     ) -> grpc.RpcMethodHandler:
-        """Intercept and add correlation ID."""
+        """Extract trace context/baggage and wrap the handler in a SERVER span."""
+        method = handler_call_details.method
         metadata = dict(handler_call_details.invocation_metadata)
 
-        # Get or create correlation ID
-        correlation_id = metadata.get("x-correlation-id")
+        parent_ctx = _PROPAGATOR.extract(metadata)
+
+        correlation_id = metadata.get(_CORRELATION_METADATA_KEY)
+        if not correlation_id:
+            correlation_id = baggage.get_baggage(_CORRELATION_BAGGAGE_KEY, context=parent_ctx)
         if not correlation_id:
             correlation_id = str(uuid.uuid4())
             logger.debug(f"Generated new correlation ID: {correlation_id}")
+        parent_ctx = baggage.set_baggage(
+            _CORRELATION_BAGGAGE_KEY, correlation_id, context=parent_ctx
+        )
 
-        # Store in context for handlers to access
-        # (This would typically use contextvars in production)
+        handler = continuation(handler_call_details)
+        if not handler or not handler.unary_unary:
+            # Non-unary-unary handlers (streaming) are not yet wrapped -- same
+            # limitation as AuditInterceptor above; context is still extracted,
+            # it's just not attached around the handler body for those RPC types.
+            return handler
 
-        return continuation(handler_call_details)
+        service_name, method_name = _split_method(method)
+        original_handler = handler.unary_unary
+
+        def traced_handler(request: Any, context: grpc.ServicerContext) -> Any:
+            token = otel_context.attach(parent_ctx)
+            try:
+                with _TRACER.start_as_current_span(
+                    f"{service_name}/{method_name}",
+                    context=parent_ctx,
+                    kind=trace.SpanKind.SERVER,
+                    attributes={
+                        "rpc.system": "grpc",
+                        "rpc.service": service_name,
+                        "rpc.method": method_name,
+                    },
+                ) as span:
+                    try:
+                        response = original_handler(request, context)
+                        span.set_attribute("rpc.grpc.status_code", "OK")
+                        return response
+                    except grpc.RpcError as exc:
+                        code = exc.code() if hasattr(exc, "code") else None
+                        status_name = _status_code_name(code) if code else "UNKNOWN"
+                        span.set_attribute("rpc.grpc.status_code", status_name)
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, status_name))
+                        raise
+                    except Exception as exc:
+                        span.set_attribute("rpc.grpc.status_code", "INTERNAL")
+                        span.record_exception(exc)
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(exc)))
+                        raise
+            finally:
+                otel_context.detach(token)
+
+        return grpc.unary_unary_rpc_method_handler(
+            traced_handler,
+            request_deserializer=handler.request_deserializer,
+            response_serializer=handler.response_serializer,
+        )
+
+
+class TracingClientInterceptor(grpc.UnaryUnaryClientInterceptor):
+    """Sync gRPC client interceptor for trace propagation and RPC metrics.
+
+    Injects W3C trace context + baggage, emits a CLIENT span, and records
+    ``rpc_client_duration_seconds``/``rpc_client_requests_total``. Use via
+    ``grpc.intercept_channel(channel, TracingClientInterceptor())`` on any synchronous
+    ``grpc.Channel``. Pairs with ``CorrelationInterceptor`` on the server side so the
+    server span is a child of this client span.
+    """
+
+    def intercept_unary_unary(
+        self,
+        continuation: Callable[[grpc.ClientCallDetails, Any], grpc.Call],
+        client_call_details: grpc.ClientCallDetails,
+        request: Any,
+    ) -> grpc.Call:
+        """Inject propagation headers, open a CLIENT span, and record metrics."""
+        service_name, method_name = _split_method(client_call_details.method)
+        parent_ctx = otel_context.get_current()
+        correlation_id = _get_or_mint_correlation_id(client_call_details.metadata, parent_ctx)
+        span_ctx = baggage.set_baggage(_CORRELATION_BAGGAGE_KEY, correlation_id, parent_ctx)
+        token = otel_context.attach(span_ctx)
+        status_name = "OK"
+        start = time.monotonic()
+        try:
+            with _TRACER.start_as_current_span(
+                f"{service_name}/{method_name}",
+                kind=trace.SpanKind.CLIENT,
+                attributes={
+                    "rpc.system": "grpc",
+                    "rpc.service": service_name,
+                    "rpc.method": method_name,
+                },
+            ) as span:
+                carrier: dict[str, str] = {_CORRELATION_METADATA_KEY: correlation_id}
+                _PROPAGATOR.inject(carrier)
+                new_details = client_call_details._replace(
+                    metadata=_merge_metadata(client_call_details.metadata, carrier)
+                )
+                call = continuation(new_details, request)
+                try:
+                    status_name = _status_code_name(call.code())
+                except Exception:  # noqa: BLE001 -- status lookup must never break the call
+                    status_name = "UNKNOWN"
+                span.set_attribute("rpc.grpc.status_code", status_name)
+                if status_name not in ("OK", "UNKNOWN"):
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, status_name))
+                return call
+        finally:
+            duration = time.monotonic() - start
+            attrs = {"service": service_name, "method": method_name, "status_code": status_name}
+            _RPC_CLIENT_DURATION.record(duration, attrs)
+            _RPC_CLIENT_REQUESTS.add(1, attrs)
+            otel_context.detach(token)
+
+
+class AsyncTracingClientInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
+    """Async (``grpc.aio``) counterpart to ``TracingClientInterceptor``.
+
+    Same propagation/span/metric contract for async channels
+    (``grpc.aio.insecure_channel``/``secure_channel``), awaited instead of blocking.
+    """
+
+    async def intercept_unary_unary(
+        self,
+        continuation: Callable[[grpc.aio.ClientCallDetails, Any], Any],
+        client_call_details: grpc.aio.ClientCallDetails,
+        request: Any,
+    ) -> Any:
+        """Inject propagation headers, open a CLIENT span, and record metrics (async)."""
+        service_name, method_name = _split_method(client_call_details.method)
+        parent_ctx = otel_context.get_current()
+        correlation_id = _get_or_mint_correlation_id(client_call_details.metadata, parent_ctx)
+        span_ctx = baggage.set_baggage(_CORRELATION_BAGGAGE_KEY, correlation_id, parent_ctx)
+        token = otel_context.attach(span_ctx)
+        status_name = "OK"
+        start = time.monotonic()
+        try:
+            with _TRACER.start_as_current_span(
+                f"{service_name}/{method_name}",
+                kind=trace.SpanKind.CLIENT,
+                attributes={
+                    "rpc.system": "grpc",
+                    "rpc.service": service_name,
+                    "rpc.method": method_name,
+                },
+            ) as span:
+                carrier: dict[str, str] = {_CORRELATION_METADATA_KEY: correlation_id}
+                _PROPAGATOR.inject(carrier)
+                new_details = client_call_details._replace(
+                    metadata=_merge_metadata(client_call_details.metadata, carrier)
+                )
+                call = await continuation(new_details, request)
+                try:
+                    status_name = _status_code_name(await call.code())
+                except Exception:  # noqa: BLE001 -- status lookup must never break the call
+                    status_name = "UNKNOWN"
+                span.set_attribute("rpc.grpc.status_code", status_name)
+                if status_name not in ("OK", "UNKNOWN"):
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, status_name))
+                return call
+        finally:
+            duration = time.monotonic() - start
+            attrs = {"service": service_name, "method": method_name, "status_code": status_name}
+            _RPC_CLIENT_DURATION.record(duration, attrs)
+            _RPC_CLIENT_REQUESTS.add(1, attrs)
+            otel_context.detach(token)
 
 
 class RecoveryInterceptor(grpc.ServerInterceptor):

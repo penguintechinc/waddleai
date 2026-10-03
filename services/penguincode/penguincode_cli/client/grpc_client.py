@@ -24,6 +24,7 @@ from penguincode_cli.proto import (
 from penguincode_cli.shared.interfaces import IChatService, ToolResult
 
 from .auth import TokenManager
+from .tracing_interceptor import TracingClientInterceptor
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +79,20 @@ class GRPCClient(IChatService):
             ]
 
             # Create channel with or without TLS
+            # ops O1-d: every outgoing call carries W3C trace context + baggage
+            # (see tracing_interceptor.TracingClientInterceptor) so it appears as
+            # a child span of whatever the server does for it.
+            interceptors = [TracingClientInterceptor()]
             if self.server_config.tls_enabled:
                 # TODO: Load TLS credentials
                 credentials = grpc.ssl_channel_credentials()
                 self._channel = grpc.aio.secure_channel(
-                    address, credentials, options=channel_options
+                    address, credentials, options=channel_options, interceptors=interceptors
                 )
             else:
-                self._channel = grpc.aio.insecure_channel(address, options=channel_options)
+                self._channel = grpc.aio.insecure_channel(
+                    address, options=channel_options, interceptors=interceptors
+                )
 
             # Create stubs
             self._auth_stub = AuthServiceStub(self._channel)
