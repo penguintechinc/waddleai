@@ -108,6 +108,7 @@ All features behind **PostHog feature flags** (Community Edition, env-configurab
 | `penguincode.knowledge-graph` | `PENGUINCODE_FLAG_KNOWLEDGE_GRAPH` | OFF | LLM triple extraction, concept graph |
 | `penguincode.memory-graph` | `PENGUINCODE_FLAG_MEMORY_GRAPH` | OFF | Mem0 extraction, institutional memory |
 | `penguincode.lessons-promotion` | `PENGUINCODE_FLAG_LESSONS_PROMOTION` | OFF | `/lesson` commands, approval queue |
+| `penguincode.disable-prometheus-metrics` | `PENGUINCODE_FLAG_DISABLE_PROMETHEUS_METRICS` | OFF | Opt-out kill-switch (unseen/OFF = `/metrics` route served; ON = legacy, route returns 404) |
 
 Client (gRPC + REST): check flag before invoking service. Service (gRPC): re-check flag on receive (fail-closed); client re-check is performance, not security.
 
@@ -148,6 +149,8 @@ export OTEL_SERVICE_NAME="penguincode"
 ```
 
 Logs: structured via `penguintechinc_utils.logging` + automatic PII redaction. Metrics: histograms (indexing latency, query time), counters (documents indexed). Traces: span per gRPC call + DB query.
+
+**Prometheus `/metrics` scrape surface**: `GET /metrics` on the REST app's existing port (the gRPC server and REST app share one process, so this covers both) — mandatory secondary scrape surface alongside OTLP push (critical-rules.md Observability), serving the same OTel instruments in Prometheus text format via `opentelemetry-exporter-prometheus`. Unauthenticated (cluster-internal scrape, same precedent as the proxy/management services' own `/metrics` routes). No dedicated port — the chart's `ServiceMonitor` scrapes the existing `rest` Service port at this path.
 
 ## Deployment
 

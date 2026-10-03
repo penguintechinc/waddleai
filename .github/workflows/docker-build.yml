@@ -654,6 +654,17 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e '.[dev]'
 
+    # Ratchet gate (scripts/lint_gate.py via `make lint`, job default
+    # working-directory is services/penguincode): fails on any `ruff
+    # check`/`ruff format --check`/`mypy --strict` finding not already in
+    # the committed `.ruff-baseline.txt`/`.mypy-baseline.txt`. Replaces the
+    # old flake8/black/isort/mypy stack that was entirely `|| true`-masked
+    # and therefore never gated anything (critical-rules.md Verification
+    # Integrity) -- see docs/penguincode/CONTRIBUTING.md's "Lint Gate"
+    # section.
+    - name: Lint (ratchet gate)
+      run: make lint
+
     # A suite that collects nothing exits 5 and would otherwise read as "no
     # failures". Assert a real denominator before trusting the run.
     - name: Verify the suite collects tests

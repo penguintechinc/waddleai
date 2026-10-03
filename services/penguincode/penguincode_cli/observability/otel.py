@@ -24,6 +24,29 @@ logs+metrics+traces triad), mirroring the ``LoggerProvider`` +
 ``LoggingHandler`` pattern in ``services/management/app/observability.py``.
 The bridge is additive only -- it never replaces or reconfigures existing
 stdlib logging, it just adds a handler that also forwards records to OTLP.
+
+**Prometheus `/metrics` scrape surface (critical-rules.md Observability:
+mandatory secondary scrape surface alongside OTLP push, for
+ServiceMonitor/HPA).** A ``PrometheusMetricReader`` is always attached to
+the process ``MeterProvider`` -- unlike traces/logs, this does NOT depend on
+``OTEL_EXPORTER_OTLP_ENDPOINT`` being set, since Prometheus scrape and OTLP
+push are independent delivery paths for the same instruments (one process,
+one meter, two export surfaces). Exposition itself is a plain ``GET
+/metrics`` route on the existing Quart REST app
+(``server/rest_app.py``'s ``prometheus_metrics()``, calling
+``render_prometheus_text()`` below) rather than a second HTTP server on a
+dedicated port: the gRPC server and REST app run in the same OS process
+(``server/main.py``'s ``PenguinCodeServer.start()``), so one meter/one
+registry already covers both, and the sibling observability PR's
+``ServiceMonitor`` (``k8s/helm/penguincode/templates/monitoring/``) scrapes
+the *existing* `rest` Service port at `/metrics` -- exactly like the proxy
+and management services' own `/metrics` routes on their main HTTP port, not
+a separate dedicated port. No chart changes are needed here as a result.
+Gated by the opt-out kill-switch flag ``penguincode.disable-prometheus-metrics``
+(unseen/OFF -> served; ON -> legacy/no endpoint) -- evaluated against a
+synthetic system-level scope (see ``_SYSTEM_SCOPE`` below) since this
+decision is made at process startup, before any tenant/request context
+exists.
 """
 
 import logging
@@ -38,17 +61,50 @@ from opentelemetry import _logs, metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.propagate import extract as _propagate_extract
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.util.types import AttributeValue
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_client import REGISTRY as _PROMETHEUS_REGISTRY
+
+from penguincode_cli.flags.client import ScopeContextLike, is_enabled
 
 logger = logging.getLogger(__name__)
+
+#: Opt-out kill-switch for the Prometheus scrape endpoint (see the module
+#: docstring's "Prometheus /metrics scrape surface" section). Unseen/OFF
+#: means the mechanism is ON (endpoint served) per the standard kill-switch
+#: contract -- flipping this ON falls back to no scrape surface at all.
+_PROMETHEUS_DISABLE_FLAG: Final = "penguincode.disable-prometheus-metrics"
+
+
+@dataclass(slots=True, frozen=True)
+class _SystemScope:
+    """Synthetic process-level scope for flag checks with no request/tenant context.
+
+    ``flags.client.is_enabled`` requires a ``ScopeContextLike`` -- process-
+    startup decisions (like whether to bind the Prometheus scrape port)
+    happen before any tenant is known, so this frozen dataclass (structurally
+    satisfying the protocol exactly like the real ``ScopeContext``, per its
+    own docstring) stands in as a fixed ``"system"`` distinct id for
+    operational, non-tenant-facing flags only.
+    """
+
+    tenant_id: str = "system"
+    org_id: str | None = None
+    team_ids: tuple[str, ...] = ()
+    user_id: str = "system"
+    scopes: tuple[str, ...] = ()
+
+
+_SYSTEM_SCOPE: Final[ScopeContextLike] = _SystemScope()
 
 _SERVICE_NAME: Final = "penguincode"
 
@@ -84,6 +140,11 @@ DB_POOL_WAITING_GAUGE_NAME: Final = "penguincode.db_pool.waiting"
 DB_POOL_WAIT_HISTOGRAM_NAME: Final = "penguincode.db_pool.wait_duration"
 QUERY_CLAMPED_COUNTER_NAME: Final = "penguincode.query.clamped"
 
+#: Content-type for the `/metrics` route's response -- re-exported here so
+#: `server/rest_app.py` needs no direct `prometheus_client` import (see
+#: `render_prometheus_text()` below).
+PROMETHEUS_CONTENT_TYPE: Final = CONTENT_TYPE_LATEST
+
 #: Closed set of operation kinds accepted by every helper below. Keeping this
 #: bounded is what keeps ``op_kind`` a safe, low-cardinality metric label --
 #: an open string here would let a caller accidentally turn it into an
@@ -117,6 +178,12 @@ _query_clamped_counter: metrics.Counter | None = None
 #: handlers a caller (CLI, server) already configured.
 _log_handler: logging.Handler | None = None
 
+#: The Prometheus `MetricReader` attached to the process `MeterProvider`
+#: (tracked so `reset_for_testing()` can unregister its collector -- the
+#: global `prometheus_client.REGISTRY` raises on a second, un-unregistered
+#: registration of the same collector).
+_prometheus_reader: PrometheusMetricReader | None = None
+
 
 @dataclass(slots=True)
 class ObservabilityConfig:
@@ -132,7 +199,10 @@ class ObservabilityConfig:
         """Load configuration from the standard OTEL_EXPORTER_OTLP_* env vars.
 
         The endpoint is never hardcoded -- ``OTEL_EXPORTER_OTLP_ENDPOINT``
-        unset means telemetry is disabled for this process, by design.
+        unset means OTLP push (traces/logs/OTLP-metrics) is disabled for
+        this process, by design. The Prometheus scrape surface (see module
+        docstring) is independent of that setting and has no port of its
+        own -- it rides the existing REST app's `rest` port/route.
         """
         return cls(
             otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or None,
@@ -160,31 +230,51 @@ def build_logging_handler(logger_provider: _logs.LoggerProvider) -> logging.Hand
     return LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
 
 
+def metrics_endpoint_enabled() -> bool:
+    """Opt-out kill-switch check for the Prometheus `/metrics` scrape surface.
+
+    Unseen/OFF -> mechanism ON (route serves real metrics); ON -> legacy
+    behavior (route returns 404, see ``server/rest_app.py``'s
+    ``prometheus_metrics()``). Evaluated against ``_SYSTEM_SCOPE`` since
+    this is a process-level operational decision, not a tenant-scoped one.
+    Never raises -- ``flags.client.is_enabled`` already guarantees that.
+    """
+    return not is_enabled(_PROMETHEUS_DISABLE_FLAG, _SYSTEM_SCOPE)
+
+
+def render_prometheus_text() -> bytes:
+    """Render the current process's metrics in Prometheus text exposition format.
+
+    Thin wrapper around ``prometheus_client.generate_latest()`` against the
+    same global registry ``PrometheusMetricReader`` registers into (see
+    ``init_observability()``) -- the one seam ``server/rest_app.py``'s
+    ``/metrics`` route needs, kept here so the route module has no direct
+    ``prometheus_client`` import of its own.
+    """
+    return bytes(generate_latest(_PROMETHEUS_REGISTRY))
+
+
 def init_observability(config: ObservabilityConfig | None = None) -> None:
     """Idempotently install the tracer + meter + logger providers from OTLP env vars.
 
-    No-op (leaves the OTel API's default no-op tracer/meter in place, and
-    installs no logging handler at all) when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is
-    unset. Never raises: a misconfigured or unreachable collector at
-    construction time falls back to the no-op providers for that signal,
-    logged as a warning, instead of taking the store/extraction call path down
-    with it. The stdlib ``LoggingHandler`` installed here is additive -- it
-    never replaces or reconfigures whatever logging (penguin/stdlib) a caller
+    Traces and OTLP-push logs are a no-op (leaving the OTel API's default
+    no-op providers in place) when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset.
+    The Prometheus `/metrics` scrape surface is independent of that setting
+    -- it is always attached to the meter and (kill-switch permitting)
+    always served, since Prometheus scrape and OTLP push are two delivery
+    paths for the same instruments, not alternatives (see module docstring).
+    Never raises: a misconfigured or unreachable collector at construction
+    time falls back to the no-op provider for that signal, logged as a
+    warning, instead of taking the store/extraction call path down with it.
+    The stdlib ``LoggingHandler`` installed here is additive -- it never
+    replaces or reconfigures whatever logging (penguin/stdlib) a caller
     already has set up.
     """
-    global _initialized, _tracer, _meter, _log_handler
+    global _initialized, _tracer, _meter, _log_handler, _prometheus_reader
     if _initialized:
         return
     cfg = config or ObservabilityConfig.from_env()
     _initialized = True
-
-    if not cfg.otlp_endpoint:
-        logger.info(
-            "penguincode OTel disabled (no OTEL_EXPORTER_OTLP_ENDPOINT); using no-op providers"
-        )
-        _tracer = trace.get_tracer(cfg.service_name)
-        _meter = metrics.get_meter(cfg.service_name)
-        return
 
     resource = Resource.create(
         {
@@ -194,6 +284,56 @@ def init_observability(config: ObservabilityConfig | None = None) -> None:
         }
     )
 
+    # --- Metrics: Prometheus scrape reader (unless kill-switched), always
+    # independent of OTLP push being configured; OTLP push reader, only when
+    # an endpoint is configured. Both feed the one process MeterProvider so
+    # every instrument created via get_meter() below is visible on both
+    # surfaces. The kill-switch check happens once, up front -- when it is
+    # ON, no PrometheusMetricReader is even constructed (not just "built but
+    # not served"), so a disabled mechanism touches nothing: no
+    # `prometheus_client` global-registry registration at all. ---
+    metric_readers: list[MetricReader] = []
+    if metrics_endpoint_enabled():
+        try:
+            _prometheus_reader = PrometheusMetricReader()
+            metric_readers.append(_prometheus_reader)
+        except Exception as exc:  # pragma: no cover - prometheus_client registry failure
+            logger.warning(
+                "penguincode Prometheus metric reader init failed, continuing without "
+                "a scrape surface: %s",
+                exc,
+            )
+    else:
+        logger.info(
+            "penguincode Prometheus /metrics disabled via %s kill-switch", _PROMETHEUS_DISABLE_FLAG
+        )
+
+    if cfg.otlp_endpoint:
+        try:
+            metric_readers.append(
+                PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=cfg.otlp_endpoint))
+            )
+        except Exception as exc:  # pragma: no cover - exporter/collector setup failure
+            logger.warning(
+                "penguincode OTel metric init failed, continuing without OTLP export: %s", exc
+            )
+
+    try:
+        metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=metric_readers))
+    except Exception as exc:  # pragma: no cover - meter provider construction failure
+        logger.warning(
+            "penguincode OTel meter provider init failed, continuing with no-op metrics: %s", exc
+        )
+    _meter = metrics.get_meter(cfg.service_name)
+
+    if not cfg.otlp_endpoint:
+        logger.info(
+            "penguincode OTel traces/logs disabled (no OTEL_EXPORTER_OTLP_ENDPOINT); "
+            "using no-op providers for those signals"
+        )
+        _tracer = trace.get_tracer(cfg.service_name)
+        return
+
     try:
         tracer_provider = TracerProvider(resource=resource)
         tracer_provider.add_span_processor(
@@ -202,12 +342,6 @@ def init_observability(config: ObservabilityConfig | None = None) -> None:
         trace.set_tracer_provider(tracer_provider)
     except Exception as exc:  # pragma: no cover - exporter/collector setup failure
         logger.warning("penguincode OTel trace init failed, continuing without export: %s", exc)
-
-    try:
-        reader = PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=cfg.otlp_endpoint))
-        metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
-    except Exception as exc:  # pragma: no cover - exporter/collector setup failure
-        logger.warning("penguincode OTel metric init failed, continuing without export: %s", exc)
 
     try:
         logger_provider = LoggerProvider(resource=resource)
@@ -229,7 +363,6 @@ def init_observability(config: ObservabilityConfig | None = None) -> None:
     logging.getLogger(_DEBUG_LOGGER_NAME).addHandler(_log_handler)
 
     _tracer = trace.get_tracer(cfg.service_name)
-    _meter = metrics.get_meter(cfg.service_name)
     logger.info("penguincode OTel initialized: endpoint=%s", cfg.otlp_endpoint)
 
 
@@ -383,7 +516,11 @@ def reset_for_testing() -> None:
     Also detaches the OTLP logging handler (if one was installed) from the
     root logger -- without this, a handler bound to a previous test's
     in-memory provider would keep receiving every subsequent test's log
-    records after that provider has gone out of scope.
+    records after that provider has gone out of scope. Unregisters the
+    Prometheus reader's collector from the global `prometheus_client`
+    registry -- without this, a second `init_observability()` in the same
+    process (every subsequent test) would raise "Duplicated timeseries"
+    re-registering the same metric names.
     """
     global \
         _tracer, \
@@ -394,12 +531,22 @@ def reset_for_testing() -> None:
         _rpc_duration_histogram, \
         _rpc_requests_counter, \
         _tool_queue_events_counter, \
-        _log_handler
+        _log_handler, \
+        _prometheus_reader
     global _db_pool_in_use_gauge, _db_pool_waiting_gauge, _db_pool_wait_histogram
     global _query_clamped_counter
     if _log_handler is not None:
         logging.getLogger().removeHandler(_log_handler)
         logging.getLogger(_DEBUG_LOGGER_NAME).removeHandler(_log_handler)
+    if _prometheus_reader is not None:
+        try:
+            _prometheus_reader.shutdown()
+        except Exception:  # noqa: BLE001 -- already unregistered by the SDK's own
+            # MeterProvider atexit shutdown hook (same reader instance); a second
+            # `collector_registry.unregister()` call raises KeyError, which is not
+            # an error here -- the collector is already gone either way.
+            pass
+        _prometheus_reader = None
     _tracer = None
     _meter = None
     _initialized = False

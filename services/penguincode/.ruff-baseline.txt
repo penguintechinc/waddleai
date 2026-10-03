@@ -1,0 +1,150 @@
+check|  - 'ignore' -> 'lint.ignore'
+check|  - 'select' -> 'lint.select'
+check|penguincode_cli/agents/base.py:708:29: B007 Loop control variable `target` not used within loop body
+check|penguincode_cli/agents/intent.py:76:5: SIM102 Use a single `if` statement instead of nested `if` statements
+check|penguincode_cli/core/repl.py:1376:50: B023 Function definition does not bind loop variable `prompt_text`
+check|penguincode_cli/skills/loader.py:108:13: SIM108 Use ternary operator `name = skill_dir.name if skill_dir else skill_file.stem` instead of `if`-`else`-block
+check|penguincode_cli/tools/bash.py:87:17: SIM102 Use a single `if` statement instead of nested `if` statements
+check|shared/licensing/python_client.py:125:13: B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+check|shared/licensing/python_client.py:198:13: B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+check|shared/py_libs/py_libs/grpc/client.py:1:1: D200 One-line docstring should fit on one line
+check|shared/py_libs/py_libs/grpc/interceptors.py:185:101: E501 Line too long (104 > 100)
+check|shared/py_libs/py_libs/grpc/interceptors.py:1:1: D200 One-line docstring should fit on one line
+check|shared/py_libs/py_libs/grpc/server.py:1:1: D200 One-line docstring should fit on one line
+check|shared/py_libs/py_libs/http/client.py:138:28: S311 Standard pseudo-random generators are not suitable for cryptographic purposes
+check|shared/py_libs/py_libs/http/client.py:162:101: E501 Line too long (113 > 100)
+check|shared/py_libs/py_libs/http/client.py:193:101: E501 Line too long (109 > 100)
+check|shared/py_libs/py_libs/http/client.py:248:101: E501 Line too long (112 > 100)
+check|shared/py_libs/py_libs/http/client.py:253:101: E501 Line too long (110 > 100)
+check|shared/py_libs/py_libs/http/client.py:265:17: SIM102 Use a single `if` statement instead of nested `if` statements
+check|shared/py_libs/py_libs/validation/base.py:156:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/base.py:24:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/base.py:29:9: D105 Missing docstring in magic method
+check|shared/py_libs/py_libs/validation/base.py:36:24: UP046 Generic class `ValidationResult` uses `Generic` subclass instead of type parameters
+check|shared/py_libs/py_libs/validation/base.py:89:22: UP046 Generic class `Validator` uses `Generic` subclass instead of type parameters
+check|shared/py_libs/py_libs/validation/datetime.py:131:24: A002 Function argument `format` is shadowing a Python builtin
+check|shared/py_libs/py_libs/validation/datetime.py:131:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/datetime.py:135:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/datetime.py:179:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/datetime.py:183:9: A002 Function argument `format` is shadowing a Python builtin
+check|shared/py_libs/py_libs/validation/datetime.py:18:13: UP007 Use `X | Y` for type annotations
+check|shared/py_libs/py_libs/validation/datetime.py:191:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/datetime.py:199:9: S101 Use of `assert` detected
+check|shared/py_libs/py_libs/validation/datetime.py:19:13: UP007 Use `X | Y` for type annotations
+check|shared/py_libs/py_libs/validation/datetime.py:20:17: UP007 Use `X | Y` for type annotations
+check|shared/py_libs/py_libs/validation/datetime.py:40:24: A002 Function argument `format` is shadowing a Python builtin
+check|shared/py_libs/py_libs/validation/datetime.py:40:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/datetime.py:44:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/datetime.py:85:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/datetime.py:87:9: A002 Function argument `format` is shadowing a Python builtin
+check|shared/py_libs/py_libs/validation/datetime.py:93:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/network.py:117:101: E501 Line too long (108 > 100)
+check|shared/py_libs/py_libs/validation/network.py:150:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/network.py:160:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/network.py:210:101: E501 Line too long (111 > 100)
+check|shared/py_libs/py_libs/validation/network.py:212:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/network.py:222:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/network.py:42:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/network.py:46:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/network.py:89:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/network.py:99:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/numeric.py:107:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/numeric.py:117:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/numeric.py:124:9: S101 Use of `assert` detected
+check|shared/py_libs/py_libs/validation/numeric.py:152:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/numeric.py:162:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/numeric.py:169:9: S101 Use of `assert` detected
+check|shared/py_libs/py_libs/validation/numeric.py:196:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/numeric.py:19:16: UP007 Use `X | Y` for type annotations
+check|shared/py_libs/py_libs/validation/numeric.py:200:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/numeric.py:206:9: S101 Use of `assert` detected
+check|shared/py_libs/py_libs/validation/numeric.py:234:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/numeric.py:238:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/numeric.py:244:9: S101 Use of `assert` detected
+check|shared/py_libs/py_libs/validation/numeric.py:34:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/numeric.py:37:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/numeric.py:73:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/numeric.py:76:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/password.py:108:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/password.py:122:101: E501 Line too long (101 > 100)
+check|shared/py_libs/py_libs/validation/password.py:123:101: E501 Line too long (101 > 100)
+check|shared/py_libs/py_libs/validation/password.py:133:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/password.py:164:101: E501 Line too long (117 > 100)
+check|shared/py_libs/py_libs/validation/string.py:102:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/string.py:114:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/string.py:138:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/string.py:156:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/string.py:186:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/string.py:189:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/string.py:219:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/string.py:233:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/string.py:258:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/string.py:261:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/string.py:33:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/string.py:36:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/string.py:61:9: D107 Missing docstring in `__init__`
+check|shared/py_libs/py_libs/validation/string.py:71:9: D102 Missing docstring in public method
+check|shared/py_libs/py_libs/validation/string.py:89:5: D301 Use `r"""` if any backslashes in a docstring
+check|tests/test_security_audit_2026_09_14.py:24:7: N818 Exception name `AbortCalled` should be named with an Error suffix
+check|tests/test_security_audit_2026_09_14.py:380:16: C408 Unnecessary `dict()` call (rewrite as a literal)
+format|IMPLEMENTATION_SUMMARY.md:205:28: unformatted: File would be reformatted
+format|penguincode_cli/agents/base.py:196:46: unformatted: File would be reformatted
+format|penguincode_cli/agents/chat.py:158:29: unformatted: File would be reformatted
+format|penguincode_cli/agents/intent.py:77:92: unformatted: File would be reformatted
+format|penguincode_cli/agents/planner.py:121:29: unformatted: File would be reformatted
+format|penguincode_cli/agents/prompts.py:113:32: unformatted: File would be reformatted
+format|penguincode_cli/agents/tool_defs.py:17:36: unformatted: File would be reformatted
+format|penguincode_cli/client/bootstrap.py:104:25: unformatted: File would be reformatted
+format|penguincode_cli/client/config_writer.py:101:73: unformatted: File would be reformatted
+format|penguincode_cli/client/grpc_client.py:121:59: unformatted: File would be reformatted
+format|penguincode_cli/client/tool_executor.py:241:32: unformatted: File would be reformatted
+format|penguincode_cli/core/debug.py:55:35: unformatted: File would be reformatted
+format|penguincode_cli/core/session.py:39:87: unformatted: File would be reformatted
+format|penguincode_cli/defaults/skills/database-migrations/SKILL.md:48:17: unformatted: File would be reformatted
+format|penguincode_cli/defaults/skills/integration-testing/SKILL.md:24:1: unformatted: File would be reformatted
+format|penguincode_cli/defaults/skills/monitoring-and-logging/SKILL.md:18:28: unformatted: File would be reformatted
+format|penguincode_cli/defaults/skills/testing-api-endpoints/SKILL.md:32:28: unformatted: File would be reformatted
+format|penguincode_cli/defaults/skills/writing-skills/anthropic-best-practices.md:870:25: unformatted: File would be reformatted
+format|penguincode_cli/docs_rag/detector.py:94:31: unformatted: File would be reformatted
+format|penguincode_cli/docs_rag/fetcher.py:127:17: unformatted: File would be reformatted
+format|penguincode_cli/docs_rag/indexer.py:202:20: unformatted: File would be reformatted
+format|penguincode_cli/docs_rag/sources.py:385:35: unformatted: File would be reformatted
+format|penguincode_cli/lessons/scrub.py:484:39: unformatted: File would be reformatted
+format|penguincode_cli/main.py:341:35: unformatted: File would be reformatted
+format|penguincode_cli/ollama/client.py:146:43: unformatted: File would be reformatted
+format|penguincode_cli/retrieval/graphrag.py:320:15: unformatted: File would be reformatted
+format|penguincode_cli/server/models/config_store.py:254:18: unformatted: File would be reformatted
+format|penguincode_cli/server/services/admin.py:119:14: unformatted: File would be reformatted
+format|penguincode_cli/server/services/auth.py:169:23: unformatted: File would be reformatted
+format|penguincode_cli/server/services/provision.py:100:32: unformatted: File would be reformatted
+format|penguincode_cli/server/services/tools.py:144:49: unformatted: File would be reformatted
+format|penguincode_cli/skills/loader.py:116:20: unformatted: File would be reformatted
+format|penguincode_cli/stores/graph.py:592:24: unformatted: File would be reformatted
+format|penguincode_cli/tools/engines/factory.py:62:54: unformatted: File would be reformatted
+format|penguincode_cli/tools/engines/fireplexity.py:67:45: unformatted: File would be reformatted
+format|penguincode_cli/tools/engines/google.py:70:45: unformatted: File would be reformatted
+format|penguincode_cli/tools/engines/google_mcp.py:67:37: unformatted: File would be reformatted
+format|penguincode_cli/tools/engines/sciraai.py:65:45: unformatted: File would be reformatted
+format|penguincode_cli/tools/engines/searxng.py:52:45: unformatted: File would be reformatted
+format|penguincode_cli/tools/file_ops.py:61:35: unformatted: File would be reformatted
+format|penguincode_cli/tools/mcp/client.py:19:18: unformatted: File would be reformatted
+format|penguincode_cli/tools/web.py:118:22: unformatted: File would be reformatted
+format|shared/licensing/python_client.py:107:42: unformatted: File would be reformatted
+format|shared/py_libs/py_libs/grpc/client.py:1:69: unformatted: File would be reformatted
+format|shared/py_libs/py_libs/grpc/interceptors.py:1:84: unformatted: File would be reformatted
+format|shared/py_libs/py_libs/grpc/server.py:1:65: unformatted: File would be reformatted
+format|shared/py_libs/py_libs/http/client.py:193:32: unformatted: File would be reformatted
+format|shared/py_libs/py_libs/validation/network.py:117:45: unformatted: File would be reformatted
+format|shared/py_libs/py_libs/validation/password.py:122:49: unformatted: File would be reformatted
+format|tests/test_agents.py:31:33: unformatted: File would be reformatted
+format|tests/test_chat_orchestration.py:101:16: unformatted: File would be reformatted
+format|tests/test_docs_rag.py:422:50: unformatted: File would be reformatted
+format|tests/test_graphs_code.py:477:24: unformatted: File would be reformatted
+format|tests/test_live_scenarios.py:101:63: unformatted: File would be reformatted
+format|tests/test_mcp_tools.py:199:33: unformatted: File would be reformatted
+format|tests/test_rest_api.py:73:51: unformatted: File would be reformatted
+format|tests/test_scenarios.py:218:41: unformatted: File would be reformatted
+format|tests/test_search_engines.py:28:31: unformatted: File would be reformatted
+format|tests/test_security_audit_2026_09_14.py:332:28: unformatted: File would be reformatted
+format|tests/test_server_lessons_service_unreachable_guards.py:290:36: unformatted: File would be reformatted
+format|tests/test_skill_system.py:125:44: unformatted: File would be reformatted
