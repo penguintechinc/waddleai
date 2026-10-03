@@ -123,6 +123,11 @@ Values are layered: `values.yaml` (defaults) → `values-alpha.yaml`/`values-bet
 | `cilium.enabled` / `.networkPolicy.enabled` / `.rateLimit.enabled` | `true` | Master switches for the bootstrap `CiliumNetworkPolicy` set and the per-org rate-limit reconciler (reconciler itself additionally gated by the `waddleai.native_rate_limit` PostHog flag) |
 | `secrets.manage` | `true` | Set `false` to bring your own `waddleai-secrets` Secret instead of the chart-managed one |
 | `fleet.external.enabled` | `false` | Opt-in mTLS/token auth for bare-metal Ollama/llama.cpp nodes outside the cluster (spec §10.3) |
+| `{management,proxy,webui}.startupProbe` | `enabled: true` | Gates liveness/readiness until the first successful check — absorbs a slow cold start (e.g. proxy's `en_core_web_lg` spaCy load, observed 60-120s) without the steady-state `livenessProbe` racing it. `proxy`'s is the most generous: `failureThreshold: 30` × `periodSeconds: 5` = ~150s of grace |
+| `{management,proxy,webui}.terminationGracePeriodSeconds` / `.preStopSleepSeconds` | `60`/`5`, `300`/`10`, `30`/`5` | Pod-level SIGTERM→SIGKILL window and a `preStop` sleep before SIGTERM, so in-flight requests and Service/EndpointSlice deregistration have time to complete. `proxy`'s `300`s accounts for long-running LLM completion streams |
+| `management.workers` / `proxy.workers` | `2` / `4` | Hypercorn worker-process count — sets `HYPERCORN_WORKERS`, read by the respective Dockerfile's `CMD` (was hardcoded) |
+| `proxy.gracefulTimeoutSeconds` / `.grpcShutdownGraceSeconds` | `30` / `5` | Hypercorn's own `--graceful-timeout` (`HYPERCORN_GRACEFUL_TIMEOUT`) and the internal gRPC server's `stop(grace=...)` (`PROXY_GRPC_SHUTDOWN_GRACE_SECONDS`, `proxy/apps/proxy_server/main.py`) — both were hardcoded; keep both ≤ `terminationGracePeriodSeconds - preStopSleepSeconds` |
+| `podDisruptionBudget.enabled` / `.minAvailable` | `false` (`true` beta) / `1` | Renders one `PodDisruptionBudget` per service (`management`/`proxy`/`webui`), but only when that service's *effective* replica count (`autoscaling.minReplicas` when autoscaling is on, else `replicaCount`) is greater than 1 — a singleton deployment is never self-blocked from voluntary eviction |
 
 ## Required secrets
 
@@ -336,6 +341,36 @@ Note the asymmetry: the chart's `management.readinessProbe` points at `/healthz`
 service's `readinessProbe` does point at `/readyz` and correctly gates on the
 database. Don't assume a `Ready` management pod means its DB connection is healthy —
 check `/readyz` manually.
+
+## Health checks, graceful shutdown & disruption budgets
+
+- **WebUI liveness ≠ readiness.** They used to be byte-for-byte identical
+  (`templates/webui-deployment.yaml` ignored `values.yaml` entirely). Liveness is
+  now a cheap `tcpSocket` check on 8080 (process alive, nginx listening);
+  readiness is the full `httpGet /` that proves nginx is actually serving.
+- **Every Deployment carries a `startupProbe`.** See the Configuration table
+  above for per-service thresholds. While a pod's startup probe hasn't
+  succeeded yet, the kubelet never runs liveness/readiness at all — this is
+  what stopped a cold `proxy` pod (loading the `en_core_web_lg` spaCy model)
+  from being killed mid-load by the old `livenessProbe.initialDelaySeconds: 10`.
+- **`preStop` + `terminationGracePeriodSeconds`.** Each of `management`/
+  `proxy`/`webui` sleeps for `preStopSleepSeconds` before SIGTERM reaches the
+  process, giving the Service/EndpointSlice time to stop routing new traffic
+  here first. `proxy.terminationGracePeriodSeconds: 300` specifically covers
+  LLM completion streams that can run well past 30s — `proxy`'s own drain
+  chain (`gracefulTimeoutSeconds` for Hypercorn, `grpcShutdownGraceSeconds`
+  for the internal gRPC server) must stay under
+  `terminationGracePeriodSeconds - preStopSleepSeconds` or the pod gets
+  SIGKILLed mid-drain.
+- **Ollama is the one exception.** Its `hardened` image ships no shell at all
+  (see `values.yaml` comments), so it gets a `startupProbe` but no
+  `preStop`/`lifecycle` hook — there's nothing to `exec` into.
+- **PodDisruptionBudgets are per-service, not global.** `podDisruptionBudget.enabled`
+  is the master switch (off by default, on in beta), but each service's PDB
+  (`templates/{management,proxy,webui}-pdb.yaml`) additionally renders only
+  when that service's effective replica count is greater than 1 — otherwise
+  a `minAvailable: 1` PDB on a single-replica Deployment would permanently
+  block `kubectl drain`/cluster-autoscaler from ever evicting it.
 
 ## Beta / gamma / prod notes
 
