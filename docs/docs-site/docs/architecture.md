@@ -164,7 +164,9 @@ Simple chat → Ollama (local, fast)
 
 1. **Client Request** → Proxy Server
 2. **XDP Layer** (optional) → Packet filtering and rate limiting
-3. **Authentication** → API key validation
+3. **Authentication** → API key validation (Valkey-backed lookup cache in front of the
+   DB, keyed by the key's non-secret `key_id`; bcrypt verification still runs on every
+   request, hit or miss — see [API-Key Auth Cache](#api-key-auth-cache) below)
 4. **Security Scan** → Prompt injection detection
 5. **Quota Check** → Verify user/org limits
 6. **Model Selection**:
@@ -192,6 +194,32 @@ WaddleAI Tokens: 1500 × 1.2 (markup) = 1800
 LLM Tokens: 1500 (actual)
 Cost: $0.015 (calculated)
 ```
+
+### API-Key Auth Cache
+
+**Purpose**: Keep the proxy's hottest data-plane read (verifying a `wa-`/`sk-`
+API key on every request) off the Hypercorn event loop and off the database
+on repeat traffic.
+
+**Design**:
+- The DB lookup and the bcrypt verify both run on a dedicated, bounded
+  `ThreadPoolExecutor` (`PROXY_AUTH_EXECUTOR_WORKERS`, default 8) — never
+  inline on the request coroutine, and never the default `asyncio.to_thread`
+  pool shared with the rest of the process.
+- A Valkey-backed cache fronts the DB read, keyed by the key's non-secret
+  `key_id` segment (never the secret, never a hash of it). A cache hit still
+  bcrypt-verifies the request's secret against the cached hash — only the DB
+  round trip is skipped. Falls back to an in-process cache when Valkey is
+  unreachable; never fails open to "allowed."
+- `last_used` is written at most once per key per
+  `PROXY_AUTH_LAST_USED_INTERVAL_SECONDS` (default 60s), in the background —
+  never on the request path.
+- Kill switch: the `waddleai.disable-auth-cache` feature flag bypasses the
+  cache (DB lookup still executor-offloaded); unseen/OFF keeps the cache on.
+- Revocation: `DELETE /api/v1/proxy-keys/{key_id}` on the management API
+  disables the key and best-effort-invalidates its Valkey entry. The cache
+  TTL (`PROXY_AUTH_CACHE_TTL_SECONDS`, default 60s) bounds the worst-case
+  staleness when that invalidation itself cannot reach Valkey.
 
 ## Security Architecture
 

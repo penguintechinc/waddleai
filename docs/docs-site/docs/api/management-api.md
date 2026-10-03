@@ -182,6 +182,23 @@ curl -X POST https://your-waddleai-mgmt-host:8001/api/v1/keys \
 `budget_limit_monthly`, `tpm_limit`, `rpm_limit`, `enabled`, `expires_at`) plus the one-time raw
 key on create — store it immediately, it is never returned again.
 
+### Proxy API Keys
+
+A separate, older credential table (`api_keys`, format `wa-{key_id}-{secret}`) backs the
+proxy's own `RBACManager.authenticate_api_key` hot path — distinct from the Virtual Keys
+above (`virtual_keys`, format `wa-{secret}`). Minted via `RBACManager.create_api_key`
+(no REST creation endpoint yet); revoking one also invalidates the proxy's
+Valkey-backed auth-lookup cache so it stops working well before the cache's TTL
+(`PROXY_AUTH_CACHE_TTL_SECONDS`, default 60s) would otherwise expire — see
+[API-Key Auth Cache](../architecture.md#api-key-auth-cache).
+
+| Method | Path | Summary |
+|---|---|---|
+| DELETE | `/api/v1/proxy-keys/{key_id}` | Disable a proxy API key (soft-delete) and best-effort invalidate its auth-cache entry |
+
+Scope: `apikey:delete` bypasses ownership checks; otherwise the caller must own the key
+(or be a `resource_manager` within the key's organization).
+
 ### Providers and credentials
 
 Scope: `provider:admin`/`llm:config`.

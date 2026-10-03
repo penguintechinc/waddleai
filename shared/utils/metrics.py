@@ -110,6 +110,29 @@ class WaddleAIMetrics:
             "waddleai_auth_attempts_total", "Total authentication attempts", ["auth_type", "status"]
         )
 
+        # API-key auth-cache lookup latency (release-audit-2026-10-02 O7-a/O11).
+        # `result` is one of hit/miss/negative/bypass -- a fixed, bounded set,
+        # never a credential or key_id. Covers both the cache-hit bcrypt-only
+        # path and the cache-miss DB+bcrypt path so p50/p95/p99 are comparable
+        # across both.
+        self.auth_lookup_duration_seconds = Histogram(
+            "waddleai_auth_lookup_duration_seconds",
+            "API-key auth lookup latency (cache hit or DB fallback), by result",
+            ["result"],
+            buckets=(
+                0.001,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1.0,
+                2.5,
+            ),
+        )
+
         # Provider health metrics
         self.provider_health = Gauge(
             "waddleai_provider_health",
@@ -276,6 +299,19 @@ class WaddleAIMetrics:
         """Record authentication attempt."""
         status = "success" if success else "failure"
         self.auth_attempts_total.labels(auth_type=auth_type, status=status).inc()
+
+    def record_auth_lookup(self, result: str, duration: float) -> None:
+        """Record one api-key auth-cache lookup's outcome and latency.
+
+        ``result`` is one of hit/miss/negative/bypass (see
+        ``proxy/apps/proxy_server/auth_cache.py``); also increments the
+        existing cache-lookup counter under ``layer="api_key_auth"`` so the
+        api-key cache shows up alongside the other cache layers it is
+        tracked next to (response/semantic/exact), rather than under a
+        separately-named counter.
+        """
+        self.cache_lookups_total.labels(layer="api_key_auth", result=result).inc()
+        self.auth_lookup_duration_seconds.labels(result=result).observe(duration)
 
     def set_provider_health(self, provider: str, endpoint: str, healthy: bool):
         """Set provider health status."""

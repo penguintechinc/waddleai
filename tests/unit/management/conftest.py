@@ -341,6 +341,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.hook_rules",
     "services.management.app.api.v1.hook_metrics",
     "services.management.app.api.v1.fleet",
+    "services.management.app.api.v1.proxy_keys",
 ]
 
 
