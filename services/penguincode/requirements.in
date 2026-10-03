@@ -59,6 +59,7 @@ protobuf==5.29.6
 opentelemetry-api==1.44.0
 opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp-proto-grpc==1.44.0
+opentelemetry-exporter-prometheus==0.65b0
 
 # Code graph (T11) - penguincode_cli/graphs/code.py. MIT-licensed; see
 # pyproject.toml for the "not already present" note and license verification.

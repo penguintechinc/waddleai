@@ -126,15 +126,20 @@ test-security:
 smoke-test:
 	@bash -euo pipefail -c 'timeout 110 python3 scripts/smoke_test.py'
 
+# Ratchet lint/type gate (S2 fix -- every tool below used to be piped
+# through `|| true`, including a flake8/black/isort stack that isn't even
+# this repo's configured linter, and `mypy --ignore-missing-imports`
+# instead of this package's own `[tool.mypy] strict = true`. A gate that
+# can never fail is not a gate (critical-rules.md Verification Integrity).
+# `scripts/lint_gate.py` runs the real tools (`ruff check`, `ruff format
+# --check`, `mypy --strict`) and fails hard on any finding not already in
+# the committed `.ruff-baseline.txt` / `.mypy-baseline.txt` -- see that
+# script's module docstring for scope/denominator detail and
+# docs/penguincode/CONTRIBUTING.md's "Lint Gate" section for how to ratchet
+# the baselines down. No `|| true` anywhere in this chain.
 lint:
-	@echo "=== Linting ==="
-	@if command -v flake8 >/dev/null 2>&1; then echo "-- flake8 --"; python3 -m flake8 . --max-line-length=120 --exclude=.git,__pycache__,venv,node_modules || true; fi
-	@if command -v black >/dev/null 2>&1; then echo "-- black --"; black --check . --exclude '/(\.git|venv|__pycache__|node_modules)/' || true; fi
-	@if command -v isort >/dev/null 2>&1; then echo "-- isort --"; isort --check-only . || true; fi
-	@if command -v mypy >/dev/null 2>&1; then echo "-- mypy --"; python3 -m mypy . --ignore-missing-imports || true; fi
-	@if command -v golangci-lint >/dev/null 2>&1; then echo "-- golangci-lint --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && golangci-lint run || true'; fi
-	@if command -v hadolint >/dev/null 2>&1; then echo "-- hadolint --"; find . -name "Dockerfile*" -not -path "*/.git/*" | xargs hadolint || true; fi
-	@if command -v shellcheck >/dev/null 2>&1; then echo "-- shellcheck --"; find . -name "*.sh" -not -path "*/.git/*" | xargs shellcheck || true; fi
+	@echo "=== Linting (ratchet gate: fails on NEW ruff/mypy findings only) ==="
+	python3 scripts/lint_gate.py
 
 build:
 	@pip3 install -e .

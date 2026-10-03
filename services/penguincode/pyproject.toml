@@ -98,6 +98,19 @@ dependencies = [
     "opentelemetry-api==1.44.0",
     "opentelemetry-sdk==1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc==1.44.0",
+    # Prometheus /metrics scrape surface (critical-rules.md Observability:
+    # mandatory secondary scrape surface alongside OTLP push, for
+    # ServiceMonitor/HPA) -- bridges the same MeterProvider's instruments
+    # into prometheus_client's exposition format; `prometheus-client` itself
+    # comes along transitively. Held at 0.65b0 (not the latest 0.66b0)
+    # specifically because it is the last release still declaring
+    # `opentelemetry-sdk~=1.44.0` -- 0.66b0 requires `~=1.45.0`, and 1.45.0's
+    # `opentelemetry.util.types.AttributeValue` switched to a
+    # self-referential `|`-union type alias that trips mypy --strict's
+    # valid-type check on every existing `**attrs: AttributeValue` call site
+    # in this module (an upstream typing regression, not anything in this
+    # package) -- staying on 1.44.0 avoids that blast radius entirely.
+    "opentelemetry-exporter-prometheus==0.65b0",
 
     # Code graph (T11) - penguincode_cli/graphs/code.py. Not a prior dependency
     # despite the platform plan's Tech Stack line claiming otherwise (verified

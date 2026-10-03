@@ -61,6 +61,29 @@ def _ollama_unavailable_reason(
     return None
 
 
+@pytest.fixture(autouse=True)
+def _no_real_prometheus_metrics_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the Prometheus `/metrics` scrape server OFF for every test.
+
+    `penguincode_cli.observability.otel.init_observability()` lazily fires
+    from `get_meter()`/`get_tracer()` on first use -- the vast majority of
+    this suite's tests exercise `store_span`/`record_*`/`timed_store_operation`
+    without ever calling `init_observability()` directly, so without this
+    default every one of those tests would try to bind the real
+    `PENGUINCODE_METRICS_PORT` (9090) TCP port, racing every other test and
+    any sibling CI job on the same host (same hazard noted in the
+    skauswatch-telemetry harness: a hardcoded/collectable metrics port
+    binding in a test run). The opt-out kill-switch env override
+    (`penguincode_cli/flags/client.py`'s `PENGUINCODE_FLAG_<NAME>` convention)
+    is the one clean seam to flip this off process-wide without touching
+    every call site; tests that specifically exercise the real scrape server
+    (`tests/test_observability_otel.py::TestPrometheusMetricsServer`)
+    override it back with `monkeypatch.setenv(..., "false")` plus an
+    ephemeral `metrics_port=0`.
+    """
+    monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_PROMETHEUS_METRICS", "true")
+
+
 @pytest.fixture(scope="session")
 def ollama_ready() -> None:
     """Documented, per-test skip (never a silent whole-module skip) for any live

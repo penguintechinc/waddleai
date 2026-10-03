@@ -139,6 +139,46 @@ denominator — a scanner pointed at the wrong path reports clean otherwise.
 `pytest --cov=penguincode` above is for local iteration; `make test-coverage`
 is the actual CI gate.
 
+### Lint Gate
+
+`make lint` (what CI's `test-penguincode` job runs, via `scripts/lint_gate.py`)
+is a ratchet gate, not a pass/fail-on-any-finding gate: it runs `ruff check`,
+`ruff format --check`, and `mypy --strict` (the real tools, per this
+package's own `[tool.ruff]`/`[tool.mypy] strict = true` in `pyproject.toml`)
+and fails only on findings **not already present** in the committed
+baselines:
+
+- **`.ruff-baseline.txt`** — `ruff check` findings (`check|`-prefixed) and
+  `ruff format --check` files (`format|`-prefixed) in one file, both over
+  the whole package tree.
+- **`.mypy-baseline.txt`** — `mypy --strict` errors, scoped to
+  `penguincode_cli` only (the actual installed package per `pyproject.toml`'s
+  `packages = ["penguincode_cli"]`) — pointing mypy at the whole directory
+  crashes outright on a duplicate module name (stray root-level `app.py` /
+  `client.py` / `server/app.py`, a vendored copy of the monorepo's
+  `shared/py_libs`) that aren't this package's own code.
+
+Both baselines were seeded from this package's pre-existing debt (measured
+at write time: 150 combined ruff findings, 613 mypy errors) — this gate does
+**not** fix that debt and does **not** re-mask it (no `|| true` anywhere in
+the chain); it freezes it and fails hard on anything new.
+
+**Ratcheting a baseline down** (fixing debt, not adding more): fix the
+finding(s) in code, then regenerate just that baseline so the fix is
+reflected and nothing regresses silently:
+
+```bash
+python3 scripts/lint_gate.py --write-baseline
+```
+
+**A line-number shift (not a new bug) also reads as "new"** — the baseline
+stores exact finding lines, not fuzzy-matched by file+rule, mirroring the
+root `scripts/mypy-gate.sh`'s same deliberate tradeoff. Adding code above an
+existing (pre-existing, un-fixed) error shifts its line number, which then
+needs the same `--write-baseline` regeneration — check the diff only
+contains line-number shifts for findings you didn't touch before trusting
+it, never exempt the gate to work around this.
+
 ## Adding New Agents
 
 1. **Create Agent Module** in `penguincode/agents/your_agent.py`
