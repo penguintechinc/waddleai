@@ -70,6 +70,9 @@ callers' existing cache-and-fallback logic already handles correctly.
 
 ## Related
 
+- [`CONFIGURATION.md`](./CONFIGURATION.md) — platform-wide env var/flag index for the
+  2026-10 ops-remediation pass (proxy auth cache, Hypercorn workers, dangling
+  alert references).
 - `services/management/app/extensions.py` — DB init retry (`DB_MAX_RETRIES`,
   `DB_RETRY_DELAY`, `DB_RETRY_MAX_DELAY`, exponential backoff + full jitter)
   and the Valkey/Redis connection pool bound

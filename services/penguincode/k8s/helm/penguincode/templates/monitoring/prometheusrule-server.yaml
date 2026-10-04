@@ -1,12 +1,13 @@
 {{/*
-PrometheusRule for the penguincode server (O2 fix). Every metric name
-referenced below (rpc_server_duration_seconds, rpc_server_requests_total,
-index_queue_depth, index_jobs_total, db_pool_waiting,
-feature_flag_evaluations_total, license_checks_total) does NOT exist in
-this repo as of this PR -- they are being added by a sibling PR in this
-same audit pass (gRPC + index-pipeline + DB-pool + flag/license
-instrumentation). Marked inline; see this PR's description for the
-cross-PR dependency. `up`/kube-state-metrics series are the Prometheus
+PrometheusRule for the penguincode server (O2 fix). rpc_server_duration_seconds,
+rpc_server_requests_total, index_queue_depth, index_jobs_total, and
+db_pool_waiting now exist (penguincode_cli/observability/otel.py,
+penguincode_cli/indexing/metrics.py, 2026-10 ops-remediation pass), served
+via the server's own GET /metrics route (penguincode_cli/server/rest_app.py).
+feature_flag_evaluations_total and license_checks_total remain genuinely
+dangling for penguincode specifically: penguincode_cli/flags/client.py
+never records them (unlike the shared waddleai code management/proxy use) --
+marked inline below. `up`/kube-state-metrics series are the Prometheus
 Operator's own, available regardless.
 */}}
 {{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled .Values.server.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
@@ -123,7 +124,7 @@ spec:
             slo: availability
           annotations:
             summary: "PenguinCode server scrape target down"
-            description: "Prometheus has not successfully scraped penguincode-server for 5m -- this fires immediately on install until the sibling PR adding a /metrics route on the rest port lands (see values.yaml monitoring block header comment). See docs/operations/MONITORING.md#penguincodetargetdown."
+            description: "Prometheus has not successfully scraped penguincode-server for 5m. See docs/operations/MONITORING.md#penguincodetargetdown."
         - alert: PenguinCodeMetricsAbsent
           expr: absent(up{job="penguincode-server"})
           for: 10m
@@ -137,8 +138,6 @@ spec:
     - name: penguincode-server.cause
       rules:
         - alert: PenguinCodeIndexQueueDepthHigh
-          # index_queue_depth / index_jobs_total are added by a sibling PR
-          # in this audit pass -- see this PR's description.
           expr: index_queue_depth{job="penguincode-server"} > {{ $slo.indexQueueDepthThreshold }}
           for: 10m
           labels:
@@ -179,7 +178,40 @@ spec:
           annotations:
             summary: "PenguinCode server pod restarting repeatedly"
             description: "A server pod restarted more than 3 times in the last hour -- check `kubectl logs --previous`. See docs/operations/MONITORING.md#penguincodepodrestartingfrequently."
+        - alert: PenguinCodeHPAAtMax
+          # templates/hpa.yaml exists; mirrors Management/ProxyHPAAtMax.
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="{{ .Values.global.namespace }}", horizontalpodautoscaler=~".*server.*"}
+            >=
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="{{ .Values.global.namespace }}", horizontalpodautoscaler=~".*server.*"}
+          for: 10m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode server HPA pinned at max replicas"
+            description: "The penguincode server HPA has been at its configured maxReplicas for 10m -- raise the ceiling or investigate the load driving it. See docs/operations/MONITORING.md#penguincodehpaatmax."
+        - alert: PenguinCodePDBViolated
+          # templates/pdb.yaml exists; mirrors Management/ProxyPDBViolated.
+          expr: |
+            kube_poddisruptionbudget_status_currenthealthy{namespace="{{ .Values.global.namespace }}", poddisruptionbudget=~".*server.*"}
+            <
+            kube_poddisruptionbudget_status_desiredhealthy{namespace="{{ .Values.global.namespace }}", poddisruptionbudget=~".*server.*"}
+          for: 5m
+          labels:
+            severity: warning
+            service: penguincode
+            slo: cause
+          annotations:
+            summary: "PenguinCode server PodDisruptionBudget violated"
+            description: "Fewer penguincode server pods are healthy than the PDB's minAvailable requires -- a voluntary disruption (node drain, rollout) would be blocked, or already is. See docs/operations/MONITORING.md#penguincodepdbviolated."
         - alert: PenguinCodeFeatureFlagEvalErrors
+          # Known dangling reference: penguincode_cli/flags/client.py never
+          # records feature_flag_evaluations_total (unlike the shared
+          # waddleai code management/proxy use for the same metric name) --
+          # this alert evaluates against an absent series and will never
+          # fire until penguincode's flag client is instrumented to match.
           expr: |
             sum(rate(feature_flag_evaluations_total{service="penguincode",result="error"}[15m])) > 0
           for: 15m
@@ -191,6 +223,9 @@ spec:
             summary: "PenguinCode feature-flag evaluations failing"
             description: "PostHog/flags/client.py evaluations are erroring -- flags fall back to last-known-cached values. See docs/operations/MONITORING.md#penguincodefeatureflagevalerrors."
         - alert: PenguinCodeLicenseCheckErrors
+          # Known dangling reference: penguincode_cli/flags/client.py never
+          # records license_checks_total -- same gap as
+          # PenguinCodeFeatureFlagEvalErrors above. Never fires until fixed.
           expr: |
             sum(rate(license_checks_total{service="penguincode",status="error"}[15m])) > 0
           for: 15m

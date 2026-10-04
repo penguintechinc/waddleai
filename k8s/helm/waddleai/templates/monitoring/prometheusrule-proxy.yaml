@@ -6,10 +6,18 @@ after_request hook and per-route finally blocks) -- metrics that exist
 today. LLM routes (/v1/chat/completions, /v1/messages,
 /v1/messages/count_tokens) are excluded from the general latency SLO and
 given their own, looser budget (upstream provider latency dominates and is
-outside this service's control). proxy_inflight_requests,
-proxy_concurrency_rejections_total, proxy_stream_ttfb_seconds, and
-db_pool_waiting are added by a sibling PR in this same audit pass -- marked
-inline; see this PR's description.
+outside this service's control). waddleai_proxy_inflight_requests,
+waddleai_proxy_concurrency_rejections_total, and
+waddleai_proxy_stream_ttfb_seconds now exist (shared/utils/metrics.py,
+release-audit-2026-10-02 O10) -- marked inline below. Two references
+remain genuinely dangling (no metric was ever added for them, for
+management/proxy, in any PR of that audit pass -- only penguincode got
+db-pool instrumentation): a `proxy_concurrency_limit` gauge for the
+configured admission-limiter cap, and `db_pool_waiting` for
+management/proxy's own connection pools. Both are marked inline; the
+alerts referencing them will never fire (PromQL against an absent series
+returns no data, not an error) until that follow-up metric ships -- see
+docs/operations/MONITORING.md.
 */}}
 {{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled .Values.proxy.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
 {{- $slo := .Values.monitoring.prometheusRule.proxy.slo }}
@@ -151,11 +159,14 @@ spec:
     - name: waddleai-proxy.saturation
       rules:
         - alert: ProxyInflightSaturationHigh
-          # proxy_inflight_requests / the proxy's own concurrency cap are
-          # added by a sibling PR in this audit pass -- see this PR's
-          # description.
+          # waddleai_proxy_inflight_requests exists (shared/utils/metrics.py).
+          # proxy_concurrency_limit does NOT -- no gauge for the configured
+          # PROXY_MAX_CONCURRENT_PER_WORKER cap was ever added. This alert is
+          # a known dangling reference: the expression evaluates against an
+          # absent series and will never fire until that gauge ships. See
+          # docs/operations/MONITORING.md#proxyinflightsaturationhigh.
           expr: |
-            (proxy_inflight_requests{job="waddleai-proxy"} / proxy_concurrency_limit{job="waddleai-proxy"}) * 100 > {{ $slo.inflightSaturationPercent }}
+            (waddleai_proxy_inflight_requests{service="proxy"} / proxy_concurrency_limit{job="waddleai-proxy"}) * 100 > {{ $slo.inflightSaturationPercent }}
           for: 5m
           labels:
             severity: warning
@@ -166,7 +177,7 @@ spec:
             description: "The proxy's own request-admission limiter is near its ceiling -- expect 429 overloaded_error responses (ProxyConcurrencyRejections) and growing queueing latency. See docs/operations/MONITORING.md#proxyinflightsaturationhigh."
         - alert: ProxyConcurrencyRejectionsHigh
           expr: |
-            sum(rate(proxy_concurrency_rejections_total{job="waddleai-proxy"}[10m])) > 0
+            sum(rate(waddleai_proxy_concurrency_rejections_total{}[10m])) > 0
           for: 10m
           labels:
             severity: warning
@@ -210,8 +221,12 @@ spec:
             summary: "Proxy marked a provider endpoint unhealthy"
             description: "waddleai_provider_health is 0 for provider={{`{{ $labels.provider }}`}} endpoint={{`{{ $labels.endpoint }}`}} -- likely cause behind ProxyErrorBudgetBurn*/ProxyLLMLatencyP95High if the routing engine keeps sending traffic there. See docs/operations/MONITORING.md#proxyproviderunhealthy."
         - alert: ProxyDBPoolSaturated
-          # db_pool_waiting is added by a sibling PR in this audit pass --
-          # see this PR's description.
+          # Known dangling reference: no db_pool_waiting (or equivalent)
+          # gauge exists for the proxy's DB connections today -- only
+          # penguincode's own pool got this instrumentation in the
+          # 2026-10 ops-remediation pass. This alert evaluates against an
+          # absent series and will never fire until that metric ships.
+          # See docs/operations/MONITORING.md#proxydbpoolsaturated.
           expr: db_pool_waiting{job="waddleai-proxy"} > 0
           for: 5m
           labels:
@@ -271,8 +286,7 @@ spec:
             summary: "Proxy HPA pinned at max replicas"
             description: "The proxy HPA has been at maxReplicas for 10m. See docs/operations/MONITORING.md#proxyhpaatmax."
         - alert: ProxyPDBViolated
-          # Proxy's PodDisruptionBudget is added by the concurrent
-          # fix/helm-probes-pdb-grace PR -- see this PR's description.
+          # Proxy's PodDisruptionBudget (templates/proxy-pdb.yaml) exists.
           expr: |
             kube_poddisruptionbudget_status_currenthealthy{namespace="{{ .Values.namespace }}", poddisruptionbudget=~".*proxy.*"}
             <
@@ -286,8 +300,6 @@ spec:
             summary: "Proxy PodDisruptionBudget violated"
             description: "Fewer proxy pods are healthy than the PDB's minAvailable requires. See docs/operations/MONITORING.md#proxypdbviolated."
         - alert: ProxyFeatureFlagEvalErrors
-          # feature_flag_evaluations_total is added by a sibling PR in this
-          # audit pass -- see this PR's description.
           expr: |
             sum(rate(feature_flag_evaluations_total{service="proxy",result="error"}[15m])) > 0
           for: 15m
@@ -299,8 +311,6 @@ spec:
             summary: "Proxy feature-flag evaluations failing"
             description: "Flags are falling back to last-known-cached values; the cache is going stale if this persists. See docs/operations/MONITORING.md#proxyfeatureflagevalerrors."
         - alert: ProxyLicenseCheckErrors
-          # license_checks_total is added by a sibling PR in this audit
-          # pass -- see this PR's description.
           expr: |
             sum(rate(license_checks_total{service="proxy",status="error"}[15m])) > 0
           for: 15m

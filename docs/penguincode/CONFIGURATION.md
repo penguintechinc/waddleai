@@ -1067,6 +1067,7 @@ auth:
 
 ## Related Documentation
 
+- [Platform Configuration Reference](../deployment/CONFIGURATION.md) - proxy/management env vars and flags (separate service, separate chart)
 - [Usage Guide](USAGE.md) - Installation and setup
 - [Architecture](ARCHITECTURE.md) - Client-server architecture
 - [Security](SECURITY.md) - Security best practices

@@ -91,9 +91,9 @@ data:
           "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
         },
         {
-          "id": 9, "title": "Feature-flag / license check errors (sibling PR metrics)", "type": "timeseries",
+          "id": 9, "title": "Feature-flag / license check errors", "type": "timeseries",
           "gridPos": { "h": 6, "w": 12, "x": 12, "y": 22 },
-          "description": "feature_flag_evaluations_total / license_checks_total are added by a sibling PR in the same audit pass -- panel renders empty until that lands.",
+          "description": "feature_flag_evaluations_total / license_checks_total (shared/utils/feature_flags.py, shared/licensing/python_client.py).",
           "targets": [
             { "expr": "sum(rate(feature_flag_evaluations_total{service=\"management\",result=\"error\"}[15m]))", "legendFormat": "flag eval errors" },
             { "expr": "sum(rate(license_checks_total{service=\"management\",status=\"error\"}[15m]))", "legendFormat": "license check errors" }

@@ -425,18 +425,18 @@ autoscaling:
 # templates/installs this chart cleanly (alpha). Flip monitoring.enabled=true
 # in beta.yml/gamma.yml/production.yml once the operator is present.
 #
-# IMPORTANT (documented gap, not silently papered over): the server's REST
-# app (penguincode_cli/server/rest_app.py, port 8080) exposes NO Prometheus
-# `/metrics` route today -- only OTLP push via penguincode_cli/observability/
-# otel.py. The ServiceMonitor below scrapes `monitoring.serviceMonitor.path`
-# on the existing `rest` Service port anyway, on the documented assumption
-# (see this PR's description) that the sibling PR instrumenting
+# The server's REST app (penguincode_cli/server/rest_app.py, port 8080) now
+# exposes a Prometheus `/metrics` route (opt-out kill-switch
+# `penguincode.disable-prometheus-metrics`) alongside OTLP push
+# (penguincode_cli/observability/otel.py) -- serving
 # rpc_server_duration_seconds/rpc_server_requests_total/index_queue_depth/
-# index_jobs_total/db_pool_waiting also exposes a prometheus_client
-# `/metrics` route alongside those instruments, matching the
-# management/proxy convention (shared/utils/metrics.py). Until that lands,
-# this ServiceMonitor scrapes 404s (visible as `up == 0` -- the
-# PenguinCodeTargetDown alert -- not a silent gap).
+# index_jobs_total/db_pool_waiting, matching the management/proxy convention
+# (shared/utils/metrics.py). The ServiceMonitor below scrapes
+# `monitoring.serviceMonitor.path` on the existing `rest` Service port.
+# feature_flag_evaluations_total/license_checks_total remain unimplemented
+# for penguincode specifically (penguincode_cli/flags/client.py never
+# records them) -- see prometheusrule-server.yaml's
+# PenguinCodeFeatureFlagEvalErrors/PenguinCodeLicenseCheckErrors comments.
 monitoring:
   enabled: false
   namespace: ""
@@ -472,7 +472,7 @@ monitoring:
         shortWindow: 6h
         threshold: "0.001"
       # Index-build queue depth considered saturated above this many
-      # pending jobs (index_queue_depth, sibling PR metric).
+      # pending jobs (index_queue_depth).
       indexQueueDepthThreshold: "50"
   dashboards:
     enabled: true

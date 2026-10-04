@@ -1,10 +1,11 @@
 {{/*
 Grafana dashboard ConfigMap for the penguincode server (O2 fix). Same
 sidecar-discovery label as the waddleai chart's dashboards (shared
-Grafana/Prometheus stack). All metric names referenced are sibling-PR
-additions (see prometheusrule-server.yaml header) -- panels render empty
-until that PR lands, which is expected and documented, not a defect in
-this chart.
+Grafana/Prometheus stack). gRPC/index-queue/db-pool metric names referenced
+below now exist (see prometheusrule-server.yaml header for the current
+status of each). feature_flag_evaluations_total/license_checks_total panels
+still render empty -- penguincode_cli/flags/client.py never records them;
+see prometheusrule-server.yaml's PenguinCodeFeatureFlagEvalErrors comment.
 */}}
 {{- if and .Values.monitoring.enabled .Values.monitoring.dashboards.enabled .Values.server.enabled -}}
 apiVersion: v1

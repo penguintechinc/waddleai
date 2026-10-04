@@ -5,9 +5,13 @@ references a metric that exists TODAY in shared/utils/metrics.py
 services/management/app/observability.py (waddleai_management_db_up/
 redis_up/uptime_seconds), plus the Prometheus-generated `up`/kube-state-
 metrics series every cluster with the Prometheus Operator already has.
-Expressions referencing db_pool_waiting, feature_flag_evaluations_total, and
-license_checks_total are marked inline -- those instruments are being added
-by a sibling PR in this same audit pass; see this PR's description.
+feature_flag_evaluations_total and license_checks_total exist
+(shared/utils/feature_flags.py, shared/licensing/python_client.py,
+release-audit-2026-10-02). db_pool_waiting does NOT -- no gauge for
+management's DB connection pool was ever added in that audit pass (only
+penguincode got db-pool instrumentation); marked inline. That alert
+evaluates against an absent series and will never fire until the metric
+ships -- see docs/operations/MONITORING.md.
 
 Symptom alerts (error-budget burn, latency, availability, saturation) page;
 cause alerts (dependency down, restarts, HPA pinned at max, PDB violated)
@@ -185,9 +189,12 @@ spec:
             summary: "Management reports its Redis/Valkey connection down"
             description: "waddleai_management_redis_up has been 0 for 2m. See docs/operations/MONITORING.md#managementredisdown."
         - alert: ManagementDBPoolSaturated
-          # db_pool_waiting is added by a sibling PR in this audit pass
-          # (fix/helm-probes-pdb-grace or an adjacent finding) -- see this
-          # PR's description for the cross-PR dependency.
+          # Known dangling reference: no db_pool_waiting (or equivalent)
+          # gauge exists for management's DB connections today -- only
+          # penguincode's own pool got this instrumentation in the 2026-10
+          # ops-remediation pass. This alert evaluates against an absent
+          # series and will never fire until that metric ships. See
+          # docs/operations/MONITORING.md#managementdbpoolsaturated.
           expr: db_pool_waiting{job="waddleai-management"} > 0
           for: 5m
           labels:
@@ -222,9 +229,8 @@ spec:
             summary: "Management HPA pinned at max replicas"
             description: "The management HPA has been at its configured maxReplicas for 10m -- raise the ceiling or investigate the load driving it. See docs/operations/MONITORING.md#managementhpaatmax."
         - alert: ManagementPDBViolated
-          # Management's PodDisruptionBudget is added by the concurrent
-          # fix/helm-probes-pdb-grace PR -- this alert has no data until
-          # that lands; see this PR's description.
+          # Management's PodDisruptionBudget (templates/management-pdb.yaml)
+          # exists.
           expr: |
             kube_poddisruptionbudget_status_currenthealthy{namespace="{{ .Values.namespace }}", poddisruptionbudget=~".*management.*"}
             <
@@ -238,8 +244,6 @@ spec:
             summary: "Management PodDisruptionBudget violated"
             description: "Fewer management pods are healthy than the PDB's minAvailable requires -- a voluntary disruption (node drain, rollout) would be blocked, or already is. See docs/operations/MONITORING.md#managementpdbviolated."
         - alert: ManagementFeatureFlagEvalErrors
-          # feature_flag_evaluations_total is added by a sibling PR in this
-          # audit pass -- see this PR's description.
           expr: |
             sum(rate(feature_flag_evaluations_total{service="management",result="error"}[15m])) > 0
           for: 15m
@@ -251,8 +255,6 @@ spec:
             summary: "Management feature-flag evaluations failing"
             description: "PostHog/flag-client evaluations are erroring -- flags are falling back to last-known-cached values (critical-rules.md graceful degradation), but the cache is going stale. See docs/operations/MONITORING.md#managementfeatureflagevalerrors."
         - alert: ManagementLicenseCheckErrors
-          # license_checks_total is added by a sibling PR in this audit
-          # pass -- see this PR's description.
           expr: |
             sum(rate(license_checks_total{service="management",status="error"}[15m])) > 0
           for: 15m
