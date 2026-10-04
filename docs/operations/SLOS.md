@@ -68,38 +68,38 @@ page on every slow upstream provider.
 | Latency p95 (non-LLM) | `histogram_quantile(0.95, ...{endpoint!~"/v1/chat/completions\|/v1/messages\|/v1/messages/count_tokens"}...)` | ≤ 2s | n/a | `ProxyLatencyP95High` |
 | Latency p99 (non-LLM) | same, 0.99 | ≤ 5s | n/a | `ProxyLatencyP99High` |
 | Latency p95 (LLM routes) | same shape, `endpoint=~"..."` (LLM paths only) | ≤ 30s | n/a | `ProxyLLMLatencyP95High` |
-| Saturation (in-flight) | `proxy_inflight_requests / proxy_concurrency_limit` | ≤ 90% | n/a | `ProxyInflightSaturationHigh` *(sibling PR metric)* |
+| Saturation (in-flight) | `waddleai_proxy_inflight_requests / proxy_concurrency_limit` | ≤ 90% | n/a | `ProxyInflightSaturationHigh` *(known dangling reference -- `proxy_concurrency_limit` doesn't exist; see MONITORING.md "Known gap")* |
 
-Cause alerts: `ProxyProviderUnhealthy`, `ProxyDBPoolSaturated` *(sibling PR metric)*,
-`ProxyRateLimitExceededHigh`, `ProxyCacheHitRateLow`, `ProxyConcurrencyRejectionsHigh`
-*(sibling PR metric)*, `ProxyPodRestartingFrequently`, `ProxyHPAAtMax`, `ProxyPDBViolated`,
-`ProxyFeatureFlagEvalErrors` *(sibling PR metric)*, `ProxyLicenseCheckErrors` *(sibling PR
-metric)*.
+Cause alerts: `ProxyProviderUnhealthy`, `ProxyDBPoolSaturated` *(known dangling
+reference)*, `ProxyRateLimitExceededHigh`, `ProxyCacheHitRateLow`,
+`ProxyConcurrencyRejectionsHigh`, `ProxyPodRestartingFrequently`, `ProxyHPAAtMax`,
+`ProxyPDBViolated`, `ProxyFeatureFlagEvalErrors`, `ProxyLicenseCheckErrors`.
 
 ## PenguinCode server
 
 | SLI | PromQL | Target | Error budget | Alerting policy |
 |-----|--------|--------|---------------|------------------|
 | Availability | `up{job="penguincode-server"}` | 99.9% | 0.1% / 30d | `PenguinCodeTargetDown` (5m), `PenguinCodeMetricsAbsent` (10m) |
-| Error rate (gRPC) | `sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[w])) / sum(rate(rpc_server_requests_total{job="penguincode-server"}[w]))` *(sibling PR metric)* | 99.9% success | 0.1% / 30d | `PenguinCodeErrorBudgetBurn{Fast,Slow,Slowest}` |
-| Latency p95 | `histogram_quantile(0.95, sum(rate(rpc_server_duration_seconds_bucket{job="penguincode-server"}[15m])) by (le))` *(sibling PR metric)* | ≤ 5s | n/a | `PenguinCodeLatencyP95High` |
+| Error rate (gRPC) | `sum(rate(rpc_server_requests_total{job="penguincode-server",status!="OK"}[w])) / sum(rate(rpc_server_requests_total{job="penguincode-server"}[w]))` | 99.9% success | 0.1% / 30d | `PenguinCodeErrorBudgetBurn{Fast,Slow,Slowest}` |
+| Latency p95 | `histogram_quantile(0.95, sum(rate(rpc_server_duration_seconds_bucket{job="penguincode-server"}[15m])) by (le))` | ≤ 5s | n/a | `PenguinCodeLatencyP95High` |
 | Latency p99 | same, 0.99 | ≤ 15s | n/a | `PenguinCodeLatencyP99High` |
-| Saturation (index queue) | `index_queue_depth{job="penguincode-server"}` *(sibling PR metric)* | ≤ 50 pending jobs | n/a | `PenguinCodeIndexQueueDepthHigh` (10m sustained) |
+| Saturation (index queue) | `index_queue_depth{job="penguincode-server"}` | ≤ 50 pending jobs | n/a | `PenguinCodeIndexQueueDepthHigh` (10m sustained) |
 
 Cause alerts: `PenguinCodeIndexJobFailuresHigh`, `PenguinCodeDBPoolSaturated`,
-`PenguinCodePodRestartingFrequently`, `PenguinCodeFeatureFlagEvalErrors`,
-`PenguinCodeLicenseCheckErrors` (all *sibling PR metrics* except the restart alert).
+`PenguinCodePodRestartingFrequently`, `PenguinCodeHPAAtMax`, `PenguinCodePDBViolated`,
+`PenguinCodeFeatureFlagEvalErrors` *(known dangling reference)*,
+`PenguinCodeLicenseCheckErrors` *(known dangling reference)*.
 
-PenguinCode's gRPC/queue/pool metrics, and its `/metrics` Prometheus scrape route
-itself, do not exist in this repo as of this PR — see `docs/operations/MONITORING.md`
-"Known gap" section and the PR description for the cross-PR dependency. The alerts and
-SLIs above are the target shape; `PenguinCodeTargetDown` fires immediately on a fresh
-install until that lands, which is the intended (loud, not silent) failure mode.
+PenguinCode's gRPC/queue/pool metrics and its `/metrics` Prometheus scrape route both
+exist today (`penguincode_cli/server/rest_app.py`, `penguincode_cli/observability/
+otel.py`) — see `docs/operations/MONITORING.md` "Known gap" section for the two
+metrics (`feature_flag_evaluations_total`/`license_checks_total`) that remain
+unimplemented for penguincode specifically.
 
-## Why no HPA-at-max / PDB-violated alert for PenguinCode
+## HPA-at-max / PDB-violated coverage
 
-Management and proxy both have an HPA (`management-hpa.yaml` / `proxy-hpa.yaml`) and get
-a PodDisruptionBudget from the concurrent `fix/helm-probes-pdb-grace` PR. PenguinCode's
-chart has no HPA template today (`autoscaling.enabled` exists in `values.yaml` but no
-`hpa.yaml` renders it yet) — no HPA-at-max alert is shipped for it in this PR; add one
-alongside whichever PR adds the HPA template.
+Management, proxy, and the penguincode server all have an HPA
+(`{management,proxy}-hpa.yaml`, penguincode's `templates/hpa.yaml`) and a
+PodDisruptionBudget (`{management,proxy}-pdb.yaml`, penguincode's
+`templates/pdb.yaml`), each paired with a `*HPAAtMax`/`*PDBViolated` alert in its
+PrometheusRule.

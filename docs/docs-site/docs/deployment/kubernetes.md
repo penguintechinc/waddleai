@@ -128,6 +128,9 @@ Values are layered: `values.yaml` (defaults) → `values-alpha.yaml`/`values-bet
 | `management.workers` / `proxy.workers` | `2` / `4` | Hypercorn worker-process count — sets `HYPERCORN_WORKERS`, read by the respective Dockerfile's `CMD` (was hardcoded) |
 | `proxy.gracefulTimeoutSeconds` / `.grpcShutdownGraceSeconds` | `30` / `5` | Hypercorn's own `--graceful-timeout` (`HYPERCORN_GRACEFUL_TIMEOUT`) and the internal gRPC server's `stop(grace=...)` (`PROXY_GRPC_SHUTDOWN_GRACE_SECONDS`, `proxy/apps/proxy_server/main.py`) — both were hardcoded; keep both ≤ `terminationGracePeriodSeconds - preStopSleepSeconds` |
 | `podDisruptionBudget.enabled` / `.minAvailable` | `false` (`true` beta) / `1` | Renders one `PodDisruptionBudget` per service (`management`/`proxy`/`webui`), but only when that service's *effective* replica count (`autoscaling.minReplicas` when autoscaling is on, else `replicaCount`) is greater than 1 — a singleton deployment is never self-blocked from voluntary eviction |
+| `{management,proxy}.autoscaling.enabled` / `.minReplicas` / `.maxReplicas` | `false` / `2` / `10` | Per-service HPA (CPU + memory targets), `*-hpa.yaml`. `replicaCount` is omitted from the Deployment spec whenever this is on, so `helm upgrade` never fights the HPA |
+| `monitoring.enabled` | `false` (`true` beta/gamma/production) | Master switch for the Prometheus Operator `ServiceMonitor`/`PrometheusRule`/Grafana-dashboard set — see [`operations/MONITORING.md`](../operations/MONITORING.md) for enabling steps, dashboards, and the full alert runbook; SLO derivation in [`operations/SLOS.md`](../operations/SLOS.md) |
+| `ollamaEmbeddings.enabled` | `false` | Opt-in dedicated Ollama Deployment for embedding traffic (doc/code indexing, semantic cache, mem0), separating it from the chat-serving instance — see `docs/deployment/proxy-observability.md`'s `OLLAMA_EMBEDDING_URL` entry (repo-only, not published on this site) |
 
 ## Required secrets
 

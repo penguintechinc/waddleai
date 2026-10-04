@@ -71,11 +71,11 @@ data:
           "fieldConfig": { "defaults": { "unit": "s" } }
         },
         {
-          "id": 6, "title": "In-flight concurrency vs. cap (sibling PR metrics)", "type": "timeseries",
+          "id": 6, "title": "In-flight concurrency vs. cap", "type": "timeseries",
           "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
-          "description": "proxy_inflight_requests / proxy_concurrency_limit are added by a sibling PR in the same audit pass.",
+          "description": "waddleai_proxy_inflight_requests exists (shared/utils/metrics.py). proxy_concurrency_limit does not -- no gauge for the configured PROXY_MAX_CONCURRENT_PER_WORKER cap was ever added; that series renders as a gap until it ships (docs/operations/MONITORING.md#proxyinflightsaturationhigh).",
           "targets": [
-            { "expr": "proxy_inflight_requests{job=\"waddleai-proxy\"}", "legendFormat": "in-flight" },
+            { "expr": "waddleai_proxy_inflight_requests{service=\"proxy\"}", "legendFormat": "in-flight" },
             { "expr": "proxy_concurrency_limit{job=\"waddleai-proxy\"}", "legendFormat": "cap" }
           ]
         },
@@ -102,7 +102,7 @@ data:
           "fieldConfig": { "defaults": { "max": 1, "min": 0 } }
         },
         {
-          "id": 10, "title": "Feature-flag / license check errors (sibling PR metrics)", "type": "timeseries",
+          "id": 10, "title": "Feature-flag / license check errors", "type": "timeseries",
           "gridPos": { "h": 6, "w": 12, "x": 0, "y": 28 },
           "targets": [
             { "expr": "sum(rate(feature_flag_evaluations_total{service=\"proxy\",result=\"error\"}[15m]))", "legendFormat": "flag eval errors" },
@@ -110,8 +110,9 @@ data:
           ]
         },
         {
-          "id": 11, "title": "DB pool waiters (sibling PR metrics)", "type": "timeseries",
+          "id": 11, "title": "DB pool waiters", "type": "timeseries",
           "gridPos": { "h": 6, "w": 12, "x": 12, "y": 28 },
+          "description": "Known dangling reference: no db_pool_waiting gauge exists for the proxy's DB connections today (only penguincode's own pool got this instrumentation) -- renders empty until that metric ships (docs/operations/MONITORING.md#proxydbpoolsaturated).",
           "targets": [
             { "expr": "db_pool_waiting{job=\"waddleai-proxy\"}", "legendFormat": "waiting" }
           ]

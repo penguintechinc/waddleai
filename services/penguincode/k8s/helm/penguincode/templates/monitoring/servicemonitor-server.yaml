@@ -1,8 +1,7 @@
 {{/*
 Prometheus Operator ServiceMonitor for the penguincode server (O2 fix).
-Scrapes the `rest` Service port (8080) -- see values.yaml `monitoring`
-block's header comment for the documented gap: this port has no
-Prometheus `/metrics` route in app code as of this PR, only OTLP push
+Scrapes the `rest` Service port (8080)'s `GET /metrics` route
+(penguincode_cli/server/rest_app.py), served alongside OTLP push
 (penguincode_cli/observability/otel.py). Guarded by monitoring.enabled +
 .serviceMonitor.enabled AND a live CRD capability check so a cluster
 without the Prometheus Operator installed still renders/installs this

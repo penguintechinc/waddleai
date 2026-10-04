@@ -2,6 +2,107 @@
 
 ## Unreleased
 
+### Operational readiness remediation — 2026-10-04
+
+Sixteen fixes from an operational-readiness audit (gh-261–gh-276), merged to
+`release/v0.2.X`. Every new mechanism is safe-by-default (opt-out kill-switch,
+unseen/OFF = mechanism on) or opt-in (default OFF) — no action required to
+adopt the defaults; see each bullet for exceptions.
+
+#### Scale & resilience
+
+- **Proxy API-key auth moved off the event loop** (gh-268): the DB lookup,
+  bcrypt verify, and `last_used` write now run on a dedicated executor, fronted
+  by a Valkey-backed cache keyed on `key_id` (`PROXY_AUTH_CACHE_TTL_SECONDS`,
+  default 60s). New revoke endpoint `DELETE /api/v1/proxy-keys/{key_id}`
+  invalidates the cache entry immediately. Kill-switch:
+  `waddleai.disable-auth-cache`.
+- **True SSE streaming** for `stream: true` on `/v1/chat/completions` and
+  `/v1/messages` (gh-270) — previously buffered and sent as one blob. A
+  load-shed `429` now always carries `Retry-After`. Kill-switch:
+  `waddleai.disable-sse-streaming` (reverts to the old buffered behavior).
+- **Bounded Valkey pool, request body cap, and per-worker concurrency limit**
+  on the proxy (gh-267): `PROXY_VALKEY_MAX_CONNECTIONS`, `PROXY_MAX_BODY_BYTES`
+  (10 MiB default), `PROXY_MAX_CONCURRENT_PER_WORKER` (100 default, falls back
+  to the legacy `MAX_CONCURRENT_REQUESTS` if already set).
+- **Hypercorn worker count is now runtime-configurable** (`HYPERCORN_WORKERS`,
+  `k8s/helm/waddleai` `management.workers`/`proxy.workers`) instead of
+  hardcoded per-Dockerfile (gh-264).
+- **penguincode `Index`/`IndexCode` are now asynchronous** (gh-269): both
+  return `job_id` + `state=QUEUED` immediately; poll `IndexStatus(job_id)` or
+  list via `ListIndexJobs`. **Action required on upgrade:** apply penguincode
+  migration `0008_index_jobs.sql` (Helm migration Job, same pattern as
+  `0007_chat_sessions.sql` below) before deploying this change. Kill-switch:
+  `penguincode.disable-index-queue` (reverts to the old synchronous, inline
+  behavior).
+- **penguincode chat sessions persisted to Postgres** (gh-262), surviving pod
+  restarts — previously in-process only. **Action required on upgrade:**
+  apply migration `0007_chat_sessions.sql`. Kill-switch:
+  `penguincode.disable-shared-sessions`.
+- **penguincode shares one bounded DB connection pool** plus graph
+  depth/vector/node clamps and a server-side `statement_timeout` (gh-263),
+  instead of opening a fresh connection per call. Kill-switch:
+  `penguincode.disable-db-pool`.
+- **penguincode gRPC server hardening** (gh-265): bounded thread pool,
+  in-flight RPC concurrency limit, and message-size limits, so the server
+  sheds load with `RESOURCE_EXHAUSTED` instead of accepting without limit.
+  Kill-switches: `waddleai.disable-grpc-concurrency-limits`,
+  `waddleai.disable-grpc-message-limits`.
+- **Opt-in Ollama-embedding bulkhead** (gh-276): point embedding traffic
+  (doc/code indexing, GraphRAG, mem0) at a second dedicated Ollama deployment
+  via `OLLAMA_EMBEDDING_URL` (proxy) / `PENGUINCODE_EMBEDDING_OLLAMA_URL`
+  (penguincode), separating it from the chat-serving instance. Unset (default)
+  — unchanged single-Ollama behavior. Pair with the new `ollamaEmbeddings.*`
+  Helm values.
+- **Response-cache stampede protection** (gh-271).
+
+#### Observability
+
+- **penguincode gained a Prometheus `/metrics` route** (gh-272) alongside its
+  existing OTLP push, matching the management/proxy convention. Kill-switch:
+  `penguincode.disable-prometheus-metrics`.
+- **W3C trace-context propagation across gRPC service boundaries** (gh-274).
+- **New Grafana dashboards, PrometheusRule alerts, and SLO definitions**
+  (gh-261) for management, proxy, and the penguincode server — all behind
+  `monitoring.enabled` (default OFF; ON in beta/gamma/production). See
+  `docs/operations/MONITORING.md` and `docs/operations/SLOS.md`. Two alert
+  pairs reference metrics that don't exist for every service they're written
+  against and will never fire until a follow-up adds that instrumentation —
+  documented as known dangling references in both docs, not silently shipped
+  as if resolved.
+- **Helm probes/PDB/grace-period hardening** (gh-264): distinct
+  liveness/readiness probes, a `startupProbe` on every Deployment, per-service
+  `terminationGracePeriodSeconds`/`preStop` sleep, and a `PodDisruptionBudget`
+  once a service's effective replica count exceeds 1 — plus a new HPA for the
+  penguincode server.
+- **New CLI client observability** (gh-273/gh-275): connectivity-status
+  indicator, clearer error messages when the gRPC server or auth service is
+  unreachable.
+
+#### Graceful degradation
+
+- **Feature-flag and license-check evaluation now degrades to last-known
+  value on an outage** instead of a hardcoded default or hard denial (gh-266):
+  `FEATURE_FLAG_TTL_SECONDS`, `LICENSE_MAX_STALE_SECONDS` (7 days). Env
+  override `WADDLEAI_FLAG_<NAME>` bypasses the cache and PostHog entirely.
+  Kill-switches: `WADDLEAI_FLAG_DISABLE_FLAG_DEGRADATION_CACHE`,
+  `WADDLEAI_FLAG_DISABLE_LICENSE_STALE_CACHE`.
+- **Management request-body cap and DB/Valkey pool bounds** (gh-266/gh-267):
+  `MANAGEMENT_MAX_BODY_BYTES` (2 MiB default), `MANAGEMENT_VALKEY_MAX_CONNECTIONS`,
+  `DB_MAX_RETRIES`/`DB_RETRY_DELAY`/`DB_RETRY_MAX_DELAY` (exponential backoff +
+  full jitter on DB init).
+
+#### Clients
+
+- **penguincode CLI resilience** (gh-275): automatic retry with backoff on
+  gRPC calls, a local offline read cache (`/docs search` degrades to a stale
+  result instead of failing outright), and a silent, non-blocking startup
+  update check. Kill-switches: `penguincode.disable-client-retry`,
+  `penguincode.disable-offline-cache`, `penguincode.disable-update-check`.
+
+See `docs/deployment/CONFIGURATION.md` for the full env var/flag index, and
+`docs/api/openai-compatible.md` for the updated streaming contract.
+
 ### Models
 
 - **Gemma 4 minimum raised from `e2b` to `e4b`.** Testing on 2026-09-07 found `gemma4:e2b` too weak for stage-2 routing classification -- it does not determine tool type and complexity reliably enough to route on. `e4b` is now the supported minimum for routing and the other quick/light internal roles (summarization, docs-fetch); **`gemma4:e4b` is the shipped default for every role** — it is the supported minimum and runs on modest hardware. **`gemma4:12b` is the documented recommendation, not a default**, for more complex operations (coding especially); opt in with `WADDLEAI_LOCAL_CHAT_MODEL`.

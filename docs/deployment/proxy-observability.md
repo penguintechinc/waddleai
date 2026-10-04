@@ -76,6 +76,16 @@ Cross-reference against `waddleai_llm_request_duration_seconds` (chat) and
 includes this embedding call) to see whether a chat-latency regression
 correlates with embedding-call volume on the SAME `chat_ollama` endpoint.
 
+## API-key auth-cache metrics (ops O7-a/O11)
+
+| Metric | Type | Labels | Notes |
+|---|---|---|---|
+| `waddleai_auth_lookup_duration_seconds` | Histogram | `result` | `result` ∈ `hit`/`miss`/`negative`/`bypass`. Covers both the cache-hit bcrypt-only path and the cache-miss DB+bcrypt path, so p50/p95/p99 are comparable across both. Recorded from `proxy/apps/proxy_server/auth_cache.py`. |
+
+Env vars, the `waddleai.disable-auth-cache` kill-switch, and the
+`DELETE /api/v1/proxy-keys/{key_id}` revocation path: see
+[`CONFIGURATION.md`](./CONFIGURATION.md#proxy-api-key-auth-cache-ops-o7-ao11).
+
 ## Proxy ConcurrencyLimiter metrics (ops O10)
 
 | Metric | Type | Labels | Notes |

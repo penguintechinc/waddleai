@@ -47,20 +47,26 @@ sidecar is running and watching this namespace.
 | WaddleAI / Platform Overview | waddleai | Request rate / error ratio / p95 latency by service, scrape-target `up`, pod restarts by workload, a table of currently-firing alerts |
 | PenguinCode / Server | penguincode | gRPC RED, latency percentiles + heatmap, index queue depth/jobs, DB pool waiters, flag/license error rates |
 
-## Known gap: penguincode has no Prometheus `/metrics` route yet
+## Known gap: dangling alert/panel metric references
 
-`penguincode_cli/server/rest_app.py` (the `rest` Service port, 8080) registers only the
-`provision`/`admin` blueprints today — no Prometheus text-format endpoint. The server's
-only telemetry path is OTLP push (`penguincode_cli/observability/otel.py`). The
-`ServiceMonitor`/`PrometheusRule`/dashboard shipped in this PR scrape/reference that port
-and the metric names a sibling PR in this same audit pass is adding
-(`rpc_server_duration_seconds`, `rpc_server_requests_total`, `index_queue_depth`,
-`index_jobs_total`, `db_pool_waiting`) on the documented assumption that PR also exposes a
-`prometheus_client` `/metrics` route there, matching the management/proxy convention
-(`shared/utils/metrics.py`). Until that lands, `PenguinCodeTargetDown` fires immediately
-on a fresh install with `monitoring.enabled=true` — a loud, visible gap, not a silent one.
-This is a manifest-authoring PR (K8s-Manifest-Builder scope); adding the actual Python
-route is out of scope here and belongs to that sibling PR or a follow-up.
+Two kinds of reference in the `ServiceMonitor`/`PrometheusRule`/dashboard manifests
+point at metrics that don't exist for every service that uses them. Each is marked
+inline in its Helm template with a `# Known dangling reference` (or equivalent) comment
+— PromQL against an absent series returns no data, not an error, so these alerts
+silently never fire rather than erroring loudly.
+
+| Metric | Exists for | Missing for | Affected alerts/panels |
+|---|---|---|---|
+| `db_pool_waiting` | penguincode (`penguincode_cli/observability/otel.py`) | management, proxy — no equivalent gauge was ever added to `shared/utils/metrics.py` | `ManagementDBPoolSaturated`, `ProxyDBPoolSaturated` (never fire); `PenguinCodeDBPoolSaturated` works |
+| `proxy_concurrency_limit` | nowhere | everywhere — no gauge for the configured `PROXY_MAX_CONCURRENT_PER_WORKER` cap exists | `ProxyInflightSaturationHigh` (never fires; the numerator, `waddleai_proxy_inflight_requests`, does exist) |
+| `feature_flag_evaluations_total` / `license_checks_total` | management, proxy (`shared/utils/feature_flags.py`, `shared/licensing/python_client.py`) | penguincode — `penguincode_cli/flags/client.py` never records them | `PenguinCodeFeatureFlagEvalErrors`, `PenguinCodeLicenseCheckErrors` (never fire); the management/proxy equivalents work |
+
+`rpc_server_duration_seconds`, `rpc_server_requests_total`, `index_queue_depth`,
+`index_jobs_total`, and penguincode's own `db_pool_waiting` are all real today, served
+via `penguincode_cli/server/rest_app.py`'s `GET /metrics` route (Prometheus text format,
+opt-out kill-switch `penguincode.disable-prometheus-metrics`) alongside OTLP push —
+`PenguinCodeTargetDown`/`PenguinCodeMetricsAbsent` reflect genuine scrape health now,
+not an expected-on-every-install false positive.
 
 ## Alert runbook
 
@@ -117,8 +123,10 @@ First checks: (1) `kubectl get pods -n waddleai -l app.kubernetes.io/component=p
 default-deny change elsewhere in the namespace can silently cut this path. Mitigation:
 restart the dependency pod, or roll back whatever network/credential change coincided.
 
-**ManagementDBPoolSaturated** — Requests are queueing for a DB connection
-(`db_pool_waiting`, sibling PR metric). First checks: (1) `DB_POOL_SIZE` vs. actual
+**ManagementDBPoolSaturated** — **Known dangling reference, never fires today** — see
+"Known gap" above; `db_pool_waiting` has no equivalent gauge in management's code.
+Once fixed, this alert means requests are queueing for a DB connection. First checks:
+(1) `DB_POOL_SIZE` vs. actual
 concurrent request volume; (2) slow queries holding connections open (same DB operation
 duration panel as the latency alert); (3) a connection leak (pool size growing without
 bound). Mitigation: raise `DB_POOL_SIZE` as a stop-gap, fix the slow query/leak as the
@@ -146,7 +154,7 @@ first; the PDB is doing its job by refusing to let disruption make it worse.
 
 **ManagementFeatureFlagEvalErrors / ManagementLicenseCheckErrors** — PostHog flag
 evaluations, or license.penguintech.io entitlement checks, are erroring
-(`feature_flag_evaluations_total`/`license_checks_total`, sibling PR metrics). Per
+(`feature_flag_evaluations_total`/`license_checks_total`). Per
 critical-rules.md graceful degradation, both fall back to last-known-cached values rather
 than crashing — but the cache goes stale if this persists, and Professional/Enterprise
 features may incorrectly degrade. First checks: (1) connectivity to
@@ -181,17 +189,19 @@ all of them (one → provider-side issue, fail over; all → likely a proxy-side
 masquerading as LLM latency). Mitigation: force routing away from the slow provider if
 the routing engine isn't already doing so.
 
-**ProxyInflightSaturationHigh** — In-flight concurrent requests are above 90% of the
-proxy's own admission-limiter cap (`proxy_inflight_requests`/`proxy_concurrency_limit`,
-sibling PR metrics). Expect `ProxyConcurrencyRejectionsHigh` to follow if this persists.
-First checks: (1) is this a genuine traffic spike or a slow-downstream pileup (requests
-not completing, not more requests arriving); (2) the HPA's current replica count vs. max.
-Mitigation: scale out (raise `maxReplicas` if already there), or raise the concurrency
-cap if the pod has headroom to handle more.
+**ProxyInflightSaturationHigh** — **Known dangling reference, never fires today** — see
+"Known gap" above; the numerator (`waddleai_proxy_inflight_requests`) exists but
+`proxy_concurrency_limit` (the configured cap) does not. Once fixed, this alert means
+in-flight concurrent requests are above 90% of the proxy's own admission-limiter cap;
+expect `ProxyConcurrencyRejectionsHigh` to follow if this persists. First checks: (1) is
+this a genuine traffic spike or a slow-downstream pileup (requests not completing, not
+more requests arriving); (2) the HPA's current replica count vs. max. Mitigation: scale
+out (raise `maxReplicas` if already there), or raise the concurrency cap if the pod has
+headroom to handle more.
 
 **ProxyConcurrencyRejectionsHigh** — The proxy has been shedding load (HTTP 429
-`overloaded_error`) for 10 minutes straight (`proxy_concurrency_rejections_total`, sibling
-PR metric). First checks: same as the saturation alert above — this is usually the
+`overloaded_error`) for 10 minutes straight (`waddleai_proxy_concurrency_rejections_total`).
+First checks: same as the saturation alert above — this is usually the
 saturation alert's natural consequence once the cap is actually hit, not a separate root
 cause. Mitigation: same — scale out or raise the cap, depending on whether the pod itself
 has headroom.
@@ -208,8 +218,8 @@ Mitigation: none client-side if it's a genuine upstream outage beyond confirming
 is working; investigate the health-check logic itself if it disagrees with direct
 provider testing.
 
-**ProxyDBPoolSaturated** — Same meaning as management's, scoped to the proxy's own DB
-pool (`db_pool_waiting`, sibling PR metric).
+**ProxyDBPoolSaturated** — **Known dangling reference, never fires today** — same gap
+as `ManagementDBPoolSaturated`; see "Known gap" above.
 
 **ProxyRateLimitExceededHigh** — `waddleai_rate_limit_exceeded_total` is incrementing.
 First checks: (1) which organization/endpoint is hitting the limit (check the metric's
@@ -235,25 +245,24 @@ first-response as the management equivalents.
 ### PenguinCode server
 
 **PenguinCodeErrorBudgetBurnFast / Slow / Slowest** — Same error-budget-burn shape as
-management/proxy, over gRPC status codes (`rpc_server_requests_total`, sibling PR
-metric) instead of HTTP status codes. First checks: (1) `kubectl logs -n penguincode
+management/proxy, over gRPC status codes (`rpc_server_requests_total`) instead of
+HTTP status codes. First checks: (1) `kubectl logs -n penguincode
 deploy/penguincode-server --tail=200` for the actual gRPC error; (2)
 `PenguinCodeDBPoolSaturated`/`PenguinCodeIndexJobFailuresHigh` for a downstream-caused
 failure pattern. Mitigation: rollback/scale/flag-off as with the other services.
 
 **PenguinCodeLatencyP95High / P99High** — p95/p99 gRPC latency exceeded 5s/15s
-(`rpc_server_duration_seconds`, sibling PR metric). First checks: (1) the index queue
+(`rpc_server_duration_seconds`). First checks: (1) the index queue
 depth panel — a backed-up indexing pipeline competing for the same DB/CPU resources is
 the most likely cause; (2) `PenguinCodeDBPoolSaturated`; (3) whether a specific RPC method
 is slow (check the metric's method label) vs. all of them.
 
 **PenguinCodeTargetDown / PenguinCodeMetricsAbsent** — Same meaning as the other
-services' equivalents. **Expected to fire on every fresh install until the sibling PR
-adding a `/metrics` route on the `rest` port lands** — see "Known gap" above; don't
-treat this as a real incident until that PR has merged.
+services' equivalents; the `/metrics` route exists today, so this reflects genuine
+scrape health, not an expected-on-install false positive.
 
 **PenguinCodeIndexQueueDepthHigh** — More than 50 index-build jobs are pending
-(`index_queue_depth`, sibling PR metric) for 10 minutes straight. First checks: (1)
+(`index_queue_depth`) for 10 minutes straight. First checks: (1)
 `PenguinCodeIndexJobFailuresHigh` — a stuck/crashing worker backing up the queue is more
 common than genuine overload; (2) whether a bulk re-index was deliberately triggered.
 Mitigation: fix the stuck worker, or scale `server.replicas` if this is genuine sustained
@@ -270,8 +279,14 @@ penguincode's pgvector connection pool.
 **PenguinCodePodRestartingFrequently** — Same meaning as the other services' pod-restart
 alerts.
 
-**PenguinCodeFeatureFlagEvalErrors / PenguinCodeLicenseCheckErrors** — Same meaning as
-the other services' flag/license alerts, scoped to `penguincode_cli/flags/client.py`.
+**PenguinCodeHPAAtMax / PenguinCodePDBViolated** — Same meaning and first-response as
+the management/proxy equivalents, scoped to the penguincode server's own HPA
+(`templates/hpa.yaml`) and PodDisruptionBudget (`templates/pdb.yaml`).
+
+**PenguinCodeFeatureFlagEvalErrors / PenguinCodeLicenseCheckErrors** — **Known dangling
+reference, never fire today** — see "Known gap" above; `penguincode_cli/flags/client.py`
+never records `feature_flag_evaluations_total`/`license_checks_total`. Once fixed, same
+meaning as the other services' flag/license alerts.
 
 ## Kill-switch flags as a mitigation
 

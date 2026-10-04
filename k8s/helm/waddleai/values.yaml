@@ -1321,9 +1321,12 @@ monitoring:
           longWindow: 3d
           shortWindow: 6h
           threshold: "0.001"
-        # Saturation: in-flight requests vs. the proxy's own concurrency
-        # cap (PROXY_MAX_CONCURRENCY / proxy_inflight_requests gauge, added
-        # by sibling PR fix/helm-probes-pdb-grace's concurrency work).
+        # Saturation: in-flight requests (waddleai_proxy_inflight_requests,
+        # shared/utils/metrics.py -- exists) vs. the proxy's own concurrency
+        # cap (PROXY_MAX_CONCURRENT_PER_WORKER). No gauge publishes the
+        # configured cap itself yet (proxy_concurrency_limit is a known
+        # dangling reference -- see prometheusrule-proxy.yaml), so this
+        # threshold is currently unused by a firing alert.
         inflightSaturationPercent: "90"
   dashboards:
     enabled: true
