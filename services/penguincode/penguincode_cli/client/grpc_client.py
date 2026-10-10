@@ -28,6 +28,7 @@ from penguincode_cli.shared.interfaces import IChatService, ToolResult
 
 from .auth import TokenManager
 from .tracing_interceptor import TracingClientInterceptor
+from .waddleai_auth import WaddleAIAuthError, WaddleAITokenProvider
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +109,18 @@ class GRPCClient(IChatService):
         server_config: ServerConfig,
         client_config: ClientConfig,
         token_manager: TokenManager | None = None,
+        *,
+        waddleai_token_provider: WaddleAITokenProvider | None = None,
     ):
         self.server_config = server_config
         self.client_config = client_config
         self.token_manager = token_manager or TokenManager(client_config.token_path)
+        # Tenancy-gap fix: ChatService RPCs are now RS256-gated server-side
+        # (see server/interceptors.py), so they need a WaddleAI bearer token
+        # (like KnowledgeClient already sends), not the legacy HS256 token
+        # from `token_manager`/`_get_auth_metadata`. `waddleai_token_provider`
+        # is a test seam -- production code leaves it at its default.
+        self._waddleai_token_provider = waddleai_token_provider or WaddleAITokenProvider()
 
         self._channel: grpc.aio.Channel | None = None
         self._auth_stub: AuthServiceStub | None = None
@@ -230,11 +239,30 @@ class GRPCClient(IChatService):
             return False
 
     def _get_auth_metadata(self) -> list[tuple]:
-        """Get authentication metadata for requests."""
+        """Get authentication metadata for requests.
+
+        Legacy HS256 path -- still used for `AuthService`/`ToolCallbackService`/
+        `HealthService` calls, unchanged by the Chat RS256 gate (see
+        `_get_chat_auth_metadata`, used by every `ChatService` call instead).
+        """
         token = self.token_manager.get_token()
         if token:
             return [("authorization", f"Bearer {token}")]
         return []
+
+    async def _get_chat_auth_metadata(self) -> list[tuple[str, str]]:
+        """WaddleAI RS256 bearer metadata for `ChatService` RPCs.
+
+        `server/interceptors.py` now gates every `ChatService` call with the
+        same RS256/`ScopeContext` check `KnowledgeService`/`LessonsService`
+        already enforce (tenancy-gap fix) -- the legacy HS256 token from
+        `_get_auth_metadata` is no longer accepted there by default, so Chat
+        calls attach a `WaddleAITokenProvider`-acquired token instead,
+        mirroring `client.knowledge_client.KnowledgeClient._auth_metadata`.
+        Raises `WaddleAIAuthError` on acquisition failure -- callers should
+        treat that the same as any other "could not authenticate this call".
+        """
+        return await self._waddleai_token_provider.get_auth_metadata()
 
     async def create_session(
         self,
@@ -253,7 +281,7 @@ class GRPCClient(IChatService):
                     platform="linux",  # TODO: Detect platform
                 ),
             ),
-            metadata=self._get_auth_metadata(),
+            metadata=await self._get_chat_auth_metadata(),
         )
 
         self._current_session_id = response.session_id
@@ -274,7 +302,7 @@ class GRPCClient(IChatService):
             raise RuntimeError("Not connected to server")
 
         try:
-            metadata = self._get_auth_metadata()
+            metadata = await self._get_chat_auth_metadata()
             metadata.append(("session-id", session_id))
 
             async for response in self._chat_stub.Chat(
@@ -331,6 +359,13 @@ class GRPCClient(IChatService):
                 "message": str(e.details()),
                 "recoverable": True,
             }
+        except WaddleAIAuthError as e:
+            yield {
+                "type": "error",
+                "code": "AUTH_ERROR",
+                "message": str(e),
+                "recoverable": False,
+            }
 
     async def submit_tool_result(
         self,
@@ -360,7 +395,7 @@ class GRPCClient(IChatService):
 
         response = await self._chat_stub.GetHistory(
             GetHistoryRequest(session_id=session_id, limit=limit),
-            metadata=self._get_auth_metadata(),
+            metadata=await self._get_chat_auth_metadata(),
         )
 
         return [
@@ -379,7 +414,7 @@ class GRPCClient(IChatService):
 
         response = await self._chat_stub.CloseSession(
             CloseSessionRequest(session_id=session_id),
-            metadata=self._get_auth_metadata(),
+            metadata=await self._get_chat_auth_metadata(),
         )
 
         if response.success:

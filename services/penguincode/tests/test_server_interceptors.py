@@ -21,6 +21,7 @@ client) depends on when deciding which token to attach to which call.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -35,6 +36,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
+import penguincode_cli.auth.middleware as auth_middleware
 from penguincode_cli.auth.middleware import (
     JWTValidatorConfig,
     WaddleAIAuthInterceptor,
@@ -42,9 +44,11 @@ from penguincode_cli.auth.middleware import (
     current_scope_context,
 )
 from penguincode_cli.server.interceptors import (
+    DISABLE_CHAT_RS256_GATE_FLAG,
     JWTValidationInterceptor,
     MethodPrefixRoutingInterceptor,
     PassthroughInterceptor,
+    reset_chat_rs256_warning_for_testing,
 )
 
 KNOWLEDGE_PREFIX = "/penguincode.knowledge.v1.KnowledgeService/"
@@ -243,8 +247,12 @@ class TestReconciliation:
     async def test_legacy_method_accepts_hs256_token(
         self, router: MethodPrefixRoutingInterceptor
     ) -> None:
+        # regression: `/penguincode.ChatService/*` used to be the example "legacy"
+        # method here -- it is now RS256-gated too (tenancy-gap fix, see
+        # TestChatServiceRS256Gate below), so a genuinely still-legacy method
+        # (ToolCallbackService, untouched by that fix) is used instead.
         token = _legacy_hs256_token()
-        called, _ = await _run(router, "/penguincode.ChatService/Send", token)
+        called, _ = await _run(router, "/penguincode.ToolCallbackService/ExecuteTools", token)
         assert called is True
 
     @pytest.mark.asyncio
@@ -252,7 +260,9 @@ class TestReconciliation:
         self, router: MethodPrefixRoutingInterceptor
     ) -> None:
         token = _waddleai_rs256_token()
-        called, aborted_with = await _run(router, "/penguincode.ChatService/Send", token)
+        called, aborted_with = await _run(
+            router, "/penguincode.ToolCallbackService/ExecuteTools", token
+        )
         assert called is False
         assert aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED
 
@@ -261,5 +271,139 @@ class TestReconciliation:
         self, router: MethodPrefixRoutingInterceptor
     ) -> None:
         called, result = await _run(router, "/penguincode.HealthService/Check", token=None)
+        assert called is True
+        assert result == "handler-result"
+
+
+CHAT_METHOD = "/penguincode.ChatService/Chat"
+
+
+class TestChatServiceRS256Gate:
+    """Tenancy-gap fix: `ChatService` now shares `KnowledgeService`'s RS256 gate.
+
+    Covers both interceptors that could otherwise serve a `ChatService` call
+    (`JWTValidationInterceptor` when `settings.auth.enabled=True`,
+    `PassthroughInterceptor` when it's `False`) -- both must divert Chat
+    calls to RS256 by default, and both must fall back to their own legacy
+    behavior (plus a one-time WARN) when the opt-out kill switch is ON.
+
+    # regression: penguincode-chat-rs256-scope (tenancy gap, PR #262 follow-up)
+    """
+
+    def _waddleai_interceptor(self) -> WaddleAIAuthInterceptor:
+        return WaddleAIAuthInterceptor(
+            WaddleAIJWTValidator(
+                JWTValidatorConfig(
+                    public_key=PUBLIC_PEM,
+                    jwks_url=None,
+                    issuer=ISSUER,
+                    audience=AUDIENCE,
+                    algorithms=("RS256",),
+                )
+            )
+        )
+
+    @pytest.fixture(autouse=True)
+    def _reset_warn_latch(self) -> None:
+        reset_chat_rs256_warning_for_testing()
+
+    @pytest.fixture(autouse=True)
+    def _reset_scope_context(self) -> Iterator[None]:
+        """Isolate this class's ScopeContext assertions from any other test in this module."""
+        auth_middleware._current_scope.set(None)
+        yield
+        auth_middleware._current_scope.set(None)
+
+    @pytest.mark.asyncio
+    async def test_jwt_validation_interceptor_requires_rs256_for_chat_by_default(self) -> None:
+        interceptor = JWTValidationInterceptor(
+            jwt_secret=LEGACY_JWT_SECRET, waddleai_interceptor=self._waddleai_interceptor()
+        )
+        token = _waddleai_rs256_token()
+        called, _ = await _run(interceptor, CHAT_METHOD, token)
+        assert called is True
+        ctx = current_scope_context()
+        assert ctx is not None
+        assert ctx.tenant_id == "tenant-a"
+
+    @pytest.mark.asyncio
+    async def test_jwt_validation_interceptor_rejects_legacy_hs256_for_chat_by_default(
+        self,
+    ) -> None:
+        interceptor = JWTValidationInterceptor(
+            jwt_secret=LEGACY_JWT_SECRET, waddleai_interceptor=self._waddleai_interceptor()
+        )
+        token = _legacy_hs256_token()
+        called, aborted_with = await _run(interceptor, CHAT_METHOD, token)
+        assert called is False
+        assert aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED
+
+    @pytest.mark.asyncio
+    async def test_jwt_validation_interceptor_missing_token_for_chat_is_unauthenticated(
+        self,
+    ) -> None:
+        interceptor = JWTValidationInterceptor(
+            jwt_secret=LEGACY_JWT_SECRET, waddleai_interceptor=self._waddleai_interceptor()
+        )
+        called, aborted_with = await _run(interceptor, CHAT_METHOD, token=None)
+        assert called is False
+        assert aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_reverts_chat_to_legacy_hs256_and_warns_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_CHAT_RS256_GATE", "true")
+        interceptor = JWTValidationInterceptor(
+            jwt_secret=LEGACY_JWT_SECRET, waddleai_interceptor=self._waddleai_interceptor()
+        )
+        token = _legacy_hs256_token()
+
+        with caplog.at_level("WARNING"):
+            called_1, _ = await _run(interceptor, CHAT_METHOD, token)
+            called_2, _ = await _run(interceptor, CHAT_METHOD, token)
+
+        assert called_1 is True
+        assert called_2 is True
+        warnings = [r for r in caplog.records if DISABLE_CHAT_RS256_GATE_FLAG in r.getMessage()]
+        assert len(warnings) == 1  # warn-once, not once per call
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_on_still_rejects_rs256_token_for_chat(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flag ON reverts to legacy HS256-only -- an RS256 token is no longer valid either."""
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_CHAT_RS256_GATE", "true")
+        interceptor = JWTValidationInterceptor(
+            jwt_secret=LEGACY_JWT_SECRET, waddleai_interceptor=self._waddleai_interceptor()
+        )
+        token = _waddleai_rs256_token()
+        called, aborted_with = await _run(interceptor, CHAT_METHOD, token)
+        assert called is False
+        assert aborted_with[0] == grpc.StatusCode.UNAUTHENTICATED
+
+    @pytest.mark.asyncio
+    async def test_passthrough_interceptor_also_requires_rs256_for_chat_by_default(self) -> None:
+        """Standalone mode (`settings.auth.enabled=False`) does not exempt Chat."""
+        interceptor = PassthroughInterceptor(waddleai_interceptor=self._waddleai_interceptor())
+        token = _waddleai_rs256_token()
+        called, _ = await _run(interceptor, CHAT_METHOD, token)
+        assert called is True
+        assert current_scope_context() is not None
+
+    @pytest.mark.asyncio
+    async def test_passthrough_interceptor_non_chat_methods_still_bypass_auth(self) -> None:
+        interceptor = PassthroughInterceptor(waddleai_interceptor=self._waddleai_interceptor())
+        called, result = await _run(interceptor, "/penguincode.AuthService/RefreshToken", None)
+        assert called is True
+        assert result == "handler-result"
+
+    @pytest.mark.asyncio
+    async def test_passthrough_interceptor_kill_switch_bypasses_chat_auth_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_CHAT_RS256_GATE", "true")
+        interceptor = PassthroughInterceptor(waddleai_interceptor=self._waddleai_interceptor())
+        called, result = await _run(interceptor, CHAT_METHOD, token=None)
         assert called is True
         assert result == "handler-result"

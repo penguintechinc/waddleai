@@ -204,12 +204,19 @@ class TestKnowledgeServiceUnaffectedByNesting:
 
 
 class TestLegacyServicesUnaffectedByNesting:
+    # regression: `/penguincode.ChatService/*` used to be the example "legacy" method
+    # here -- it is now RS256-gated too (tenancy-gap fix, see
+    # `test_server_interceptors.py::TestChatServiceRS256Gate`), so a genuinely
+    # still-legacy method (ToolCallbackService, untouched by that fix) is used instead.
+
     @pytest.mark.asyncio
     async def test_legacy_method_accepts_hs256(
         self, nested_router: MethodPrefixRoutingInterceptor
     ) -> None:
         token = _legacy_hs256_token()
-        called, result = await _run(nested_router, "/penguincode.ChatService/Send", token)
+        called, result = await _run(
+            nested_router, "/penguincode.ToolCallbackService/ExecuteTools", token
+        )
         assert called is True
         assert result == "handler-result"
 
@@ -218,6 +225,8 @@ class TestLegacyServicesUnaffectedByNesting:
         self, nested_router: MethodPrefixRoutingInterceptor
     ) -> None:
         token = _waddleai_rs256_token()
-        called, aborted_with = await _run(nested_router, "/penguincode.ChatService/Send", token)
+        called, aborted_with = await _run(
+            nested_router, "/penguincode.ToolCallbackService/ExecuteTools", token
+        )
         assert called is False
         assert aborted_with is not None

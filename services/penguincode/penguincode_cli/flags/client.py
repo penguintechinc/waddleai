@@ -86,6 +86,21 @@ DISABLE_CLIENT_RETRY_FLAG = "penguincode.disable-client-retry"
 DISABLE_OFFLINE_CACHE_FLAG = "penguincode.disable-offline-cache"
 DISABLE_UPDATE_CHECK_FLAG = "penguincode.disable-update-check"
 
+#: Opt-out kill switch for `ChatService`'s RS256/`ScopeContext` gate
+#: (tenancy-gap fix, see `server/interceptors.py`'s `_maybe_route_chat_through_rs256`
+#: and `server/services/chat.py`'s module docstring). Unseen/OFF (the default) means
+#: every `ChatService` RPC requires a real, JWKS/public-key-validated WaddleAI RS256
+#: JWT -- the same gate `KnowledgeService`/`LessonsService` already enforce -- and a
+#: `ScopeContext` derived from it is what scopes `chat_sessions` rows. Setting this ON
+#: reverts `ChatService` to the pre-fix legacy path: penguincode's own local HS256
+#: client-server secret, with a synthesized single pseudo-tenant
+#: (`sessions.store.LEGACY_TENANT_ID`) keyed only by the token's `sub` -- an emergency
+#: rollback for an operator mid-migration off the legacy standalone client, never the
+#: steady-state default. Evaluated against the fixed `SYSTEM_SCOPE` (not a per-request
+#: `ScopeContext`), same reasoning as every other process-wide gRPC-wiring switch in
+#: this module: the routing decision is made before a request's own scope can exist.
+DISABLE_CHAT_RS256_GATE_FLAG = "penguincode.disable-chat-rs256-gate"
+
 _ENV_PREFIX = "PENGUINCODE_FLAG_"
 _TRUTHY = ("1", "true", "yes", "on")
 _DEFAULT_POSTHOG_HOST = "https://license.penguintech.io"
@@ -311,6 +326,7 @@ __all__ = [
     "DISABLE_CLIENT_RETRY_FLAG",
     "DISABLE_OFFLINE_CACHE_FLAG",
     "DISABLE_UPDATE_CHECK_FLAG",
+    "DISABLE_CHAT_RS256_GATE_FLAG",
     "ScopeContextLike",
     "SystemScope",
     "SYSTEM_SCOPE",

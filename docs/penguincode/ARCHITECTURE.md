@@ -88,8 +88,12 @@ never holding a DB connection open across the LLM call itself.
 
 - **Scope**: a session is visible to its own tenant AND its owning user
   only (never team- or tenant-shared) -- derived from the caller's
-  WaddleAI JWT `ScopeContext` when present, or a fixed single-tenant scope
-  keyed by the legacy HS256 token's `sub` in standalone client-server mode.
+  WaddleAI JWT `ScopeContext`, now required by default for every
+  `ChatService` RPC (same RS256 gate `KnowledgeService`/`LessonsService`
+  already enforce, see [`CONFIGURATION.md`](./CONFIGURATION.md#chatservice-rs256-gate)).
+  Falls back to a fixed single-tenant scope keyed by the legacy HS256
+  token's `sub` only when the `penguincode.disable-chat-rs256-gate` opt-out
+  kill switch is ON -- an emergency rollback, not the steady-state default.
 - **TTL**: `PENGUINCODE_SESSION_TTL_SECONDS` (default 24h) -- refreshed on
   every `Chat`/update; a background sweeper
   (`PENGUINCODE_SESSION_SWEEP_INTERVAL_SECONDS` /
