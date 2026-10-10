@@ -162,47 +162,12 @@ test-contract:
 test-security: ## Security scans over FIRST-PARTY code. Fails on findings.
 	@echo "=== Security Scans ==="
 	@fail=0; \
-	for t in bandit gitleaks; do \
-	  command -v $$t >/dev/null 2>&1 || { echo "!! MISSING TOOL: $$t -- cannot verify, counting as FAILURE"; fail=1; }; \
-	done; \
+	command -v bandit >/dev/null 2>&1 || { echo "!! MISSING TOOL: bandit -- cannot verify, counting as FAILURE"; fail=1; }; \
 	if command -v bandit >/dev/null 2>&1; then \
 	  echo "-- bandit (first-party, fails on HIGH/MEDIUM) --"; \
 	  bandit -r $(LINT_PATHS) --exclude services/penguincode,tests --severity-level medium --quiet || fail=1; \
 	fi; \
-	if command -v gitleaks >/dev/null 2>&1; then \
-	  echo "-- gitleaks --"; \
-	  gitleaks detect --source . --no-git --redact --config .gitleaks.toml \
-	    --exit-code 1 --log-level error || fail=1; \
-	fi; \
-	echo "-- pip-audit --"; \
-	if [ -x $(VENV)/bin/pip-audit ]; then \
-	  for r in requirements.txt proxy/requirements.txt services/management/requirements.txt; do \
-	    tmp=$$(mktemp); \
-	    counts=$$(awk -v target="en-core-web-lg" -v outfile="$$tmp" '{is_start=(length($$0)>0 && substr($$0,1,1) !~ /[ \t#]/); if (is_start) {name=$$0; sub(/[ \t@=\[].*/,"",name); gsub(/_/,"-",name); name=tolower(name); skip=(name==target); if (skip) excluded++; else count++} if (!skip) print > outfile} END{print count+0, excluded+0}' $$r); \
-	    set -- $$counts; audited=$$1; excluded=$$2; \
-	    echo "pip-audit: $$audited requirements audited, $$excluded excluded ($$r) -- en_core_web_lg is a spaCy model wheel from github.com/explosion release, hash-pinned in $$r, no PyPI entry"; \
-	    if [ "$$audited" -eq 0 ]; then echo "!! pip-audit: 0 requirements audited in $$r -- filter produced an empty file, counting as FAILURE"; fail=1; fi; \
-	    $(VENV)/bin/pip-audit -r $$tmp --strict $(PIP_AUDIT_IGNORES) || fail=1; \
-	    rm -f "$$tmp"; \
-	  done; \
-	else echo "!! pip-audit not in $(VENV) -- run 'make venv'; counting as FAILURE"; fail=1; fi; \
-	if [ -n "$$(find . -name go.mod -not -path './.venv/*' -not -path '*/vendor/*' -not -path './.worktrees/*' -not -path './services/penguincode/*')" ]; then \
-	  for t in gosec govulncheck; do \
-	    command -v $$t >/dev/null 2>&1 || { echo "!! Go present but $$t MISSING -- FAILURE"; fail=1; }; \
-	  done; \
-	  for t in gosec govulncheck; do \
-	    command -v $$t >/dev/null 2>&1 && find . -name go.mod -not -path './.venv/*' -not -path '*/vendor/*' -not -path './.worktrees/*' -not -path './services/penguincode/*' \
-	      | xargs -r -I{} dirname {} | xargs -r -I{} sh -c "cd {} && $$t ./..." || fail=1; \
-	  done; \
-	else echo "-- gosec/govulncheck -- (no go.mod outside vendor; skipped legitimately)"; fi; \
-	echo "-- npm audit --"; \
-	for d in $$(find . -name package.json -maxdepth 3 -not -path './.git/*' -not -path './.venv/*' -not -path './.worktrees/*' -not -path '*/node_modules/*' | xargs -r -n1 dirname); do \
-	  if [ -f "$$d/package-lock.json" ]; then \
-	    (cd $$d && npm audit --audit-level=high) || fail=1; \
-	  else \
-	    echo "!! $$d has package.json but NO package-lock.json -- dependency pinning violation (critical-rules.md); counting as FAILURE"; fail=1; \
-	  fi; \
-	done; \
+	VENV=$(VENV) PIP_AUDIT_IGNORES="$(PIP_AUDIT_IGNORES)" bash scripts/dependency-security-scan.sh || fail=1; \
 	echo "-- pip-licenses (OSI gate) --"; bash scripts/check-licenses.sh || fail=1; \
 	[ $$fail -eq 0 ] || { echo "=== SECURITY SCANS FAILED ==="; exit 1; }; \
 	echo "=== security scans clean ==="
