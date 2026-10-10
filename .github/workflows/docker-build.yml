@@ -286,6 +286,70 @@ jobs:
         flags: unittests
         name: codecov-umbrella
 
+  # The `test` job above only ever ran bandit -- `make test-security`'s
+  # gitleaks/pip-audit/npm-audit scanners (and the pip-licenses gate, already
+  # covered by the `test` job's own step) were CI-invisible: a repo-wide
+  # secrets scan, a Python dependency CVE audit, and a Node dependency CVE
+  # audit all existed as working local tooling that no workflow ever called
+  # (critical-rules.md Verification Integrity -- a gate nothing invokes is
+  # not a gate). This job runs the missing three via
+  # scripts/dependency-security-scan.sh -- the exact script `make
+  # test-security` also calls, so there is one implementation, not two
+  # (deliberately does NOT duplicate bandit, which the `test` job already
+  # gates).
+  #
+  # NOTE: as of this job's introduction, pip-audit and npm audit both report
+  # real findings on this branch (Python CVEs + 33 npm advisories incl. 1
+  # critical/11 high) -- this job is EXPECTED to be red until
+  # fix/dependency-cves lands; see that PR for the fix. Merge order: CVE fix
+  # first, then this PR, so the newly-wired gate goes green on first run
+  # instead of landing already broken.
+  dependency-security:
+    name: Dependency & secrets security scan
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      with:
+        python-version: '3.13'
+
+    - name: Install pip-audit
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        pip install 'pip-audit==2.10.1'
+
+    # Pinned to the exact version .pre-commit-config.yaml's gitleaks hook
+    # uses (rev v8.21.2) -- a version mismatch between the pre-commit hook
+    # and this CI gate would mean they can disagree on what counts as a
+    # leak. Binary fetched from the official GitHub release and verified
+    # against the published checksums file (supply-chain: official source +
+    # checksum verification, general.md Supply Chain Security), not a
+    # third-party Action.
+    - name: Install gitleaks (pinned v8.21.2)
+      run: |
+        set -euo pipefail
+        curl -sSL -o gitleaks.tar.gz \
+          https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+        echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  gitleaks.tar.gz" | sha256sum -c -
+        tar -xzf gitleaks.tar.gz gitleaks
+        sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+        rm -f gitleaks.tar.gz gitleaks
+
+    # No venv here -- scripts/dependency-security-scan.sh falls back to
+    # whatever `pip-audit` is on PATH when $VENV/bin/pip-audit doesn't exist,
+    # so this job doesn't need to install the full requirements sets just to
+    # run one tool. Real gate: no `|| true`, `set -euo pipefail` inside the
+    # script, non-zero exit fails this job, which build-platform/release both
+    # gate on via `needs:` below.
+    - name: Run dependency & secrets security scan (pip-audit, npm audit, gitleaks)
+      run: bash scripts/dependency-security-scan.sh
+
   # Python lint and typing ran only in the local pre-commit hook and `make
   # lint`, never in CI. mypy-baseline.txt drifted to 212 unrecorded errors
   # behind that gap before anyone looked -- the same failure mode that rotted
@@ -690,7 +754,7 @@ jobs:
       run: make test-coverage
 
   build-platform:
-    needs: [determine-tier, test, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e, test-penguincode]
+    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e, test-penguincode]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -943,7 +1007,7 @@ jobs:
   # here is a hard block (exit-code 1), unlike the SARIF-only, non-blocking
   # security-scan job below — Task 13 explicitly calls for a blocking gate.
   build-ollama-image:
-    needs: [determine-tier, test, lint]
+    needs: [determine-tier, test, dependency-security, lint]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1275,7 +1339,7 @@ jobs:
         docker compose -f docker-compose.test.yml down -v
 
   release:
-    needs: [test, security-scan, integration-test]
+    needs: [test, dependency-security, security-scan, integration-test]
     runs-on: ubuntu-latest
     # github.ref for a `release` event is also refs/tags/<tag>, so this must
     # be scoped to push events specifically -- otherwise the new release:
@@ -1322,7 +1386,7 @@ jobs:
           --notes-file CHANGELOG.md
 
   cleanup:
-    needs: [test, security-scan, integration-test]
+    needs: [test, dependency-security, security-scan, integration-test]
     runs-on: ubuntu-latest
     if: always()
     permissions:
