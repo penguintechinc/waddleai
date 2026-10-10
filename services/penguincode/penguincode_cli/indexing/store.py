@@ -128,8 +128,8 @@ class IndexJobStore:
                             (tenant_id, org_id, team_id, owner_user_id, job_type,
                              chunks_total)
                         VALUES (
-                            %(tenant_id)s::uuid, %(org_id)s::uuid, %(team_id)s::uuid,
-                            %(owner_user_id)s::uuid, %(job_type)s, %(chunks_total)s
+                            %(tenant_id)s, %(org_id)s, %(team_id)s,
+                            %(owner_user_id)s, %(job_type)s, %(chunks_total)s
                         )
                         RETURNING id
                         """,
@@ -208,8 +208,8 @@ class IndexJobStore:
                         f"""
                         SELECT {_SELECT_COLUMNS}
                         FROM penguincode.index_jobs
-                        WHERE id = %(id)s::uuid AND tenant_id = %(tenant_id)s::uuid
-                            AND owner_user_id = %(owner_user_id)s::uuid
+                        WHERE id = %(id)s::uuid AND tenant_id = %(tenant_id)s
+                            AND owner_user_id = %(owner_user_id)s
                         """,
                         {"id": job_id, "tenant_id": ctx.tenant_id, "owner_user_id": ctx.user_id},
                     )
@@ -229,8 +229,8 @@ class IndexJobStore:
                         f"""
                         SELECT {_SELECT_COLUMNS}
                         FROM penguincode.index_jobs
-                        WHERE tenant_id = %(tenant_id)s::uuid
-                            AND owner_user_id = %(owner_user_id)s::uuid
+                        WHERE tenant_id = %(tenant_id)s
+                            AND owner_user_id = %(owner_user_id)s
                         ORDER BY created_at DESC
                         LIMIT %(limit)s
                         """,

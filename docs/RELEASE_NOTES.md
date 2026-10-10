@@ -35,6 +35,18 @@ adopt the defaults; see each bullet for exceptions.
   `0007_chat_sessions.sql` below) before deploying this change. Kill-switch:
   `penguincode.disable-index-queue` (reverts to the old synchronous, inline
   behavior).
+- **Fix: `index_jobs` scope columns were mistyped `uuid`** — WaddleAI's real
+  `tenant`/`org`/`sub` JWT claims are opaque strings (in production, the
+  *stringified integer* `organizations.id`), never UUIDs, so every real
+  `Index`/`IndexCode` call failed with
+  `psycopg.errors.InvalidTextRepresentation`. **Action required on
+  upgrade:** apply migration `0009_index_jobs_scope_text.sql` (idempotent;
+  safe whether or not `0008` has already run). Caught by a full-suite run,
+  not by any per-PR CI gate for gh-269 — see that PR's test file for why.
+  The same `uuid`-typed-scope-column pattern predates `0008` across
+  `docs_vectors`/`graph_nodes`/`pending_lessons`/`chat_sessions`
+  (migrations `0002`/`0004`-`0007`) and is tracked as a separate follow-up,
+  out of scope here.
 - **penguincode chat sessions persisted to Postgres** (gh-262), surviving pod
   restarts — previously in-process only. **Action required on upgrade:**
   apply migration `0007_chat_sessions.sql`. Kill-switch:

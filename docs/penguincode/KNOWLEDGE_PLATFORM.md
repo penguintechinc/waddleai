@@ -101,12 +101,26 @@ worker pool (`penguincode_cli/indexing/`) drains the queue on its own
 asyncio tasks, off the gRPC executor entirely.
 
 **Job lifecycle**: `QUEUED` → `RUNNING` → `SUCCEEDED`/`FAILED`, persisted in
-`penguincode.index_jobs` (migration `0008`) so job state survives a pod
+`penguincode.index_jobs` (migration `0008`; scope columns fixed from `uuid`
+to `text` in `0009` -- WaddleAI tenant/org/user ids are opaque strings, not
+UUIDs) so job state survives a pod
 restart gracefully. On startup, any row still `RUNNING` from a dead
 previous process is marked `FAILED` ("interrupted") — **never silently
 re-queued**, since the worker that owned it is gone and re-running an
 unknown-progress job could double-write partial results. Poll with
 `IndexStatus(job_id=...)`.
+
+**Response contract when queued** (the default): `IndexResponse.chunks_indexed`
+is `0` and `IndexCodeResponse.indexed` is `false` — these fields only ever
+reflect synchronous completion, never "work in progress." The caller's
+signal that a call actually enqueued (rather than, say, the kill switch
+forcing inline success/failure) is `job_id` being non-empty and
+`state == JOB_STATE_QUEUED`; poll `IndexStatus(job_id=...)` until
+`state == JOB_STATE_SUCCEEDED` to read the real `chunks_indexed`/
+`node_count`/`edge_count` off the job's result. When the queue is disabled
+(kill switch, or no job-store DSN configured), both RPCs instead run
+inline and return the real counts immediately with `job_id=""` and
+`state == JOB_STATE_SUCCEEDED`.
 
 **Job visibility**: tenant **+ owner** only (narrower than the three-tier
 user/team/tenant model `docs_vectors`/`graph_nodes` use) — a caller can

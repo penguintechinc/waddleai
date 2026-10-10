@@ -295,8 +295,13 @@ class TestRequireScope:
 class TestIndex:
     @pytest.mark.asyncio
     async def test_library_target_calls_index_library_with_ctx(
-        self, scope_ctx: ScopeContext
+        self, scope_ctx: ScopeContext, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Pin the inline/legacy path explicitly (O10-a) -- this test asserts
+        # synchronous `chunks_indexed`/indexer-call behavior, which the
+        # async queue would short-circuit if `PGVECTOR_URL` happens to be
+        # set ambient-wide (e.g. a live-Postgres full-suite run).
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE", "true")
         indexer = _FakeIndexer(chunks=7)
         service = _service(indexer=indexer)
         request = IndexRequest(
@@ -324,8 +329,10 @@ class TestIndex:
 
     @pytest.mark.asyncio
     async def test_language_target_calls_index_language_with_ctx(
-        self, scope_ctx: ScopeContext
+        self, scope_ctx: ScopeContext, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # See `test_library_target_calls_index_library_with_ctx`'s comment.
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE", "true")
         indexer = _FakeIndexer(chunks=4)
         service = _service(indexer=indexer)
         request = IndexRequest(
@@ -932,6 +939,9 @@ class TestIndexCodeAndStatus:
                 ],
             )
 
+        # Pin the inline/legacy path explicitly (O10-a) -- see
+        # `TestIndex.test_library_target_calls_index_library_with_ctx`'s comment.
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE", "true")
         monkeypatch.setattr(knowledge_module, "index_code", _fake_index_code)
         service = _service()
         request = IndexCodeRequest(
@@ -963,6 +973,7 @@ class TestIndexCodeAndStatus:
     async def test_index_code_flag_off_returns_not_indexed(
         self, scope_ctx: ScopeContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE", "true")
         monkeypatch.setattr(knowledge_module, "index_code", lambda *a, **k: None)
         service = _service()
 
@@ -994,6 +1005,7 @@ class TestIndexCodeAndStatus:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Tenant A's `IndexCode` cache entry never leaks into tenant B's status."""
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE", "true")
         monkeypatch.setattr(
             knowledge_module,
             "index_code",
@@ -1186,6 +1198,12 @@ class TestIndexCodeLiveScopeIsolation:
         self, tmp_path: Path, knowledge_live_dsn: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("PENGUINCODE_FLAG_CODE_GRAPH", "true")
+        # This test proves GraphStore tenant isolation on a real IndexCode
+        # write, not O10-a's async-queue mechanism (covered independently by
+        # `test_server_knowledge_index_queue.py`) -- pin the inline/legacy
+        # path explicitly so a synchronous `response.indexed is True` holds
+        # regardless of whether `PGVECTOR_URL` happens to be set ambient-wide.
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE", "true")
         (tmp_path / "a.py").write_text("def foo():\n    pass\n")
 
         graph_config = GraphConfig(postgres=PostgresGraphStoreConfig(url=knowledge_live_dsn))
@@ -1254,6 +1272,11 @@ class TestDocsIndexManagementLiveEndToEnd:
         self, knowledge_live_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("PENGUINCODE_FLAG_RAG", "true")
+        # Same rationale as `TestIndexCodeLiveScopeIsolation` above: this
+        # test proves the Index/IndexStatus/ClearIndex read-your-own-write
+        # loop against a real PgVectorStore, not the async queue -- pin
+        # inline/legacy explicitly.
+        monkeypatch.setenv("PENGUINCODE_FLAG_DISABLE_INDEX_QUEUE", "true")
         indexer = DocumentationIndexer(
             store=PgVectorStore(dsn=knowledge_live_dsn, table="docs_vectors"),
             embed_fn=_fake_embed_768,

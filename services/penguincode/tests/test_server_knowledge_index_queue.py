@@ -447,11 +447,19 @@ class TestIndexStatusJobNotFound:
         self, scope_ctx: ScopeContext
     ) -> None:
         """No store injected and no DSN configured -- the handler must not try to
-        open a real DB connection with an empty DSN."""
+        open a real DB connection with an empty DSN.
+
+        `indexing_config=IndexingConfig(dsn="")` is explicit here rather than
+        relying on `Settings()`'s own `PGVECTOR_URL`-env-derived default --
+        this test's whole point is "no DSN at all", which ambient env (e.g.
+        a live-Postgres full-suite run exporting `PGVECTOR_URL` for other
+        tests in this same process) would otherwise silently defeat.
+        """
         service = KnowledgeServiceImpl(
             Settings(),
             indexer=_FakeIndexer(),
             scoped_memory=_FakeScopedMemory(),
+            indexing_config=IndexingConfig(dsn=""),
             start_index_workers=False,
         )
         context = _FakeContext()
@@ -499,10 +507,13 @@ class TestListIndexJobs:
     async def test_no_queue_infra_returns_empty_list_not_an_error(
         self, scope_ctx: ScopeContext
     ) -> None:
+        # See `test_no_queue_infra_at_all_still_aborts_not_found_not_crash`'s
+        # comment on why `indexing_config=IndexingConfig(dsn="")` is explicit.
         service = KnowledgeServiceImpl(
             Settings(),
             indexer=_FakeIndexer(),
             scoped_memory=_FakeScopedMemory(),
+            indexing_config=IndexingConfig(dsn=""),
             start_index_workers=False,
         )
 
