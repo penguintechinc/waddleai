@@ -102,14 +102,66 @@ test-e2e:
 test-functional:
 	@echo "No functional tests defined"
 
+# Real gate (gh-finding-O2 unmask, same pattern #272 used for `lint` above --
+# every scanner here used to be piped through `|| true`, so a HIGH bandit
+# finding or a known-CVE dependency could merge unnoticed
+# (critical-rules.md Verification Integrity: a gate that cannot fail is not a
+# gate). No `|| true` anywhere in this chain; a missing tool or a 0-item scan
+# counts as FAILURE, not a silent skip.
+#
+# bandit gains --severity-level medium here (root Makefile's test-security
+# already does this): unfiltered, this codebase alone reports ~190 findings,
+# nearly all LOW/Confidence noise, which would make the gate permanently red
+# on signal nobody can act on. medium+ is 17 findings (3 HIGH) -- a real,
+# actionable denominator.
 test-security:
 	@echo "=== Security Scans ==="
-	@if command -v bandit >/dev/null 2>&1; then echo "-- bandit --"; bandit -r . -x ./tests,./venv,./.git --quiet || true; fi
-	@if command -v pip-audit >/dev/null 2>&1; then echo "-- pip-audit --"; find . -name "requirements.txt" -not -path "*/.git/*" -not -path "*/venv/*" | xargs -I{} pip-audit -r {} 2>/dev/null || true; fi
-	@if command -v gosec >/dev/null 2>&1; then echo "-- gosec --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && gosec ./... || true'; fi
-	@if command -v govulncheck >/dev/null 2>&1; then echo "-- govulncheck --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && govulncheck ./... || true'; fi
-	@find . -name "package.json" -not -path "*/.git/*" -not -path "*/node_modules/*" -maxdepth 3 | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && npm audit 2>/dev/null || true'
-	@if command -v gitleaks >/dev/null 2>&1; then echo "-- gitleaks --"; gitleaks detect --source . --no-git 2>/dev/null || true; fi
+	@fail=0; \
+	for t in bandit pip-audit gitleaks; do \
+	  command -v $$t >/dev/null 2>&1 || { echo "!! MISSING TOOL: $$t -- cannot verify, counting as FAILURE"; fail=1; }; \
+	done; \
+	if command -v bandit >/dev/null 2>&1; then \
+	  echo "-- bandit --"; \
+	  bandit -r . -x ./tests,./venv,./.git --severity-level medium --quiet || fail=1; \
+	fi; \
+	echo "-- pip-audit --"; \
+	if command -v pip-audit >/dev/null 2>&1; then \
+	  reqs=$$(find . -name "requirements.txt" -not -path "*/.git/*" -not -path "*/venv/*"); \
+	  req_count=$$(printf '%s\n' "$$reqs" | grep -c . || true); \
+	  echo "pip-audit: $$req_count requirements.txt file(s) found"; \
+	  if [ "$$req_count" -eq 0 ]; then \
+	    echo "!! pip-audit: 0 requirements.txt found -- counting as FAILURE"; fail=1; \
+	  else \
+	    printf '%s\n' "$$reqs" | xargs -I{} pip-audit -r {} || fail=1; \
+	  fi; \
+	fi; \
+	if [ -n "$$(find . -name go.mod -not -path '*/.git/*' -not -path '*/vendor/*')" ]; then \
+	  for t in gosec govulncheck; do \
+	    command -v $$t >/dev/null 2>&1 || { echo "!! Go present but $$t MISSING -- FAILURE"; fail=1; }; \
+	  done; \
+	  for t in gosec govulncheck; do \
+	    command -v $$t >/dev/null 2>&1 && find . -name go.mod -not -path '*/.git/*' -not -path '*/vendor/*' \
+	      | xargs -I{} dirname {} | xargs -I{} sh -c "cd {} && $$t ./..." || fail=1; \
+	  done; \
+	else echo "-- gosec/govulncheck -- (no go.mod; skipped legitimately)"; fi; \
+	echo "-- npm audit --"; \
+	pkg_count=0; \
+	for d in $$(find . -name "package.json" -not -path "*/.git/*" -not -path "*/node_modules/*" -maxdepth 3 | xargs -r -n1 dirname); do \
+	  pkg_count=$$((pkg_count + 1)); \
+	  if [ -f "$$d/package-lock.json" ]; then \
+	    (cd $$d && npm audit --audit-level=high) || fail=1; \
+	  else \
+	    echo "!! $$d has package.json but NO package-lock.json -- dependency pinning violation; counting as FAILURE"; fail=1; \
+	  fi; \
+	done; \
+	echo "npm audit: $$pkg_count package.json dir(s) examined"; \
+	if [ "$$pkg_count" -eq 0 ]; then echo "!! npm audit: 0 package.json found -- counting as FAILURE"; fail=1; fi; \
+	if command -v gitleaks >/dev/null 2>&1; then \
+	  echo "-- gitleaks --"; \
+	  gitleaks detect --source . --no-git --redact --exit-code 1 --log-level error || fail=1; \
+	fi; \
+	[ $$fail -eq 0 ] || { echo "=== SECURITY SCANS FAILED ==="; exit 1; }; \
+	echo "=== security scans clean ==="
 
 # Real smoke gate (S1 fix -- was `echo "No smoke tests defined"`, an
 # unconditional-pass stub that meant the org's every-commit smoke gate never
