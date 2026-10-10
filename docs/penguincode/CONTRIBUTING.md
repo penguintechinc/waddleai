@@ -139,6 +139,60 @@ denominator — a scanner pointed at the wrong path reports clean otherwise.
 `pytest --cov=penguincode` above is for local iteration; `make test-coverage`
 is the actual CI gate.
 
+### Live-DB Guard Pattern (Mandatory for Any Test Touching Postgres)
+
+A test that needs a real Postgres connection must do exactly one of the
+following — never a bare, unguarded connect:
+
+- **Needs a live DB to make an assertion meaningful** (e.g. a recursive-CTE
+  traversal, a real `UPDATE ... WHERE status = 'pending'` race): gate the
+  whole test/class behind the `requires_postgres = pytest.mark.skipif(not
+  TEST_DATABASE_URL, reason="...")` pattern used throughout `tests/*.py`
+  (e.g. `tests/test_stores_graph.py`, `tests/test_lessons_store.py`).
+  `TEST_DATABASE_URL` absent → **skip with a reason**, never silently pass
+  and never hang. `TEST_DATABASE_URL` set but unreachable → the test must
+  **fail fast** (a direct `psycopg.connect()`/`run_migrations()` call against
+  a refused/closed port raises immediately; it never needs its own timeout
+  wrapper for that failure mode).
+- **Pure logic — scope checks, authz, field mapping, response shaping**:
+  inject a fake double for every store/graph-store/memory-manager dependency
+  the servicer accepts, the same way `tests/test_server_knowledge_service.py`
+  always passes `indexer=_FakeIndexer()` and
+  `tests/test_server_lessons_service.py`'s `_service()` helper always passes
+  `graph_store=_FakeGraphStoreForApprove()`. **Never rely on a service
+  class's own constructor default** for a dependency that can open a real
+  DB connection (e.g. `LessonsServiceImpl.__init__`'s
+  `create_graph_store(settings.graph)` fallback) — a unit test that doesn't
+  explicitly inject a fake silently inherits whatever real backend that
+  default wires up. This bit us directly: `PromoteLesson`/`ApproveLesson`
+  both unconditionally call `_known_identifiers` (a tenant-wide graph
+  lookup), so any test exercising either RPC without an injected
+  `graph_store` opened a real connection through the shared pool
+  (`db/pool.py`) against a nonexistent database — each of the 3 graph kinds
+  queried paid the pool's own 30s borrow timeout (~90s per call), and the
+  pool, never explicitly closed, then stalled interpreter shutdown at the
+  end of the whole run. The fix was test-only: inject the fake, the same as
+  every other dependency.
+- **A live test needs the production code's *own* DSN resolution to see the
+  ephemeral DB it just stood up**: don't assume `Settings()`'s default
+  env-var wiring reaches it. `TEST_DATABASE_URL` and `PGVECTOR_URL` are two
+  different env vars — CI's `test-penguincode` job
+  (`.github/workflows/docker-build.yml`) sets only the former. A live test
+  that constructs a dependency via `Settings()` defaults instead of an
+  explicit `dsn=` pointed at its own fixture's DSN will quietly talk to the
+  wrong (or no) database — see
+  `TestApproveLessonLiveFirmWideVisibility`'s explicit
+  `PostgresGraphStore(dsn=lessons_live_dsn)` injection for the pattern.
+- **A whole suite needs its own throwaway Postgres** (not just a skip gate):
+  follow `tests/integration/conftest.py`'s `pgvector_dsn` fixture — reuse
+  `TEST_DATABASE_URL` when set, otherwise start an ephemeral
+  `pgvector/pgvector:pg17` container with a bounded `_wait_for_postgres(...,
+  timeout=...)` readiness loop that raises (never loops forever) if the
+  container never comes up.
+
+# regression: lessons-tests-db-guard (hang, not skip/fail, when no Postgres
+# is reachable)
+
 ### Lint Gate
 
 `make lint` (what CI's `test-penguincode` job runs, via `scripts/lint_gate.py`)

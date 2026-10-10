@@ -55,6 +55,7 @@ from penguincode_cli.proto import (
     RejectLessonRequest,
 )
 from penguincode_cli.server.services.lessons import LESSONS_APPROVE_SCOPE, LessonsServiceImpl
+from penguincode_cli.stores.graph import PostgresGraphStore
 from penguincode_cli.tools.memory import MemoryManager, create_scoped_memory_manager
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -147,12 +148,36 @@ class _FakeScopedMemory:
 
 
 def _service(
-    *, store: _FakeStore | None = None, scoped_memory: _FakeScopedMemory | None = None
+    *,
+    store: _FakeStore | None = None,
+    scoped_memory: _FakeScopedMemory | None = None,
+    graph_store: Any = None,
 ) -> LessonsServiceImpl:
+    """Build a `LessonsServiceImpl` wired entirely to fakes -- never a real `GraphStore`.
+
+    `graph_store` defaults to a fresh `_FakeGraphStoreForApprove()` (empty
+    `names`, so `_known_tenant_identifier_names` contributes nothing extra)
+    rather than leaving `LessonsServiceImpl.__init__`'s own default to
+    construct a real `create_graph_store(settings.graph)`. Every RPC this
+    servicer exposes that reaches `PromoteLesson`'s/`ApproveLesson`'s
+    `_known_identifiers` call (both call it unconditionally once scope/flag/
+    status checks pass) would otherwise open a genuine Postgres connection
+    via the shared pool with no DB running -- `db.pool.connection()`'s own
+    30s borrow timeout fires per graph kind (3 kinds = ~90s), and the
+    never-opened pool is left dangling at interpreter shutdown, stalling
+    the whole test process well past any single test's own timeout. Tests
+    that want to exercise the real graph-store wiring inject one
+    explicitly (see `_service_with_graph`/`TestApproveLessonReverification`,
+    or `TestApproveLessonLiveFirmWideVisibility`'s live-Postgres class).
+
+    # regression: lessons-tests-db-guard (hang, not skip/fail, with no
+    # Postgres reachable -- ops-audit follow-up)
+    """
     return LessonsServiceImpl(
         Settings(),
         store=store or _FakeStore(),
         scoped_memory=scoped_memory or _FakeScopedMemory(),
+        graph_store=graph_store if graph_store is not None else _FakeGraphStoreForApprove(),
     )
 
 
@@ -1116,7 +1141,17 @@ class TestApproveLessonLiveFirmWideVisibility:
         manager.memory = _FakeMem0Backend()  # bypass real mem0 backend (see class docstring)
         scoped_memory = create_scoped_memory_manager(manager)
 
-        service = LessonsServiceImpl(Settings(), store=store, scoped_memory=scoped_memory)
+        # `Settings()`'s own default `graph_store` reads `PGVECTOR_URL`, not
+        # `lessons_live_dsn` (`TEST_DATABASE_URL`) -- CI sets only the latter
+        # (see `.github/workflows/docker-build.yml`'s test-penguincode job),
+        # so leaving this implicit would point `_known_identifiers` at an
+        # unreachable DB and hang on the pool borrow timeout (see `_service`'s
+        # docstring). Point it at the SAME live ephemeral DB this test's
+        # `lessons_live_dsn` fixture already migrated.
+        graph_store = PostgresGraphStore(dsn=lessons_live_dsn)
+        service = LessonsServiceImpl(
+            Settings(), store=store, scoped_memory=scoped_memory, graph_store=graph_store
+        )
 
         token = auth_middleware._current_scope.set(approver_ctx)
         try:
