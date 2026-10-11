@@ -188,3 +188,46 @@ class TestReapInterrupted:
         store.create_queued(ctx, JobType.INDEX_DOCS, chunks_total=1)
 
         assert store.reap_interrupted() == 0
+
+
+@requires_postgres
+class TestNonUuidScopeIds:
+    """Regression: `0008_index_jobs.sql` typed `tenant_id`/`org_id`/`team_id`/
+    `owner_user_id` as `uuid`, but WaddleAI's real JWT claims are opaque
+    strings -- in production, the stringified integer `organizations.id`
+    primary key (see `shared/auth/penguin_auth.py`), never a UUID. Every
+    other test in this file uses `str(uuid.uuid4())` fixtures, which never
+    exercised this -- this test deliberately uses non-UUID scope ids to
+    prove migration `0009_index_jobs_scope_text.sql` actually fixed the
+    column types, not just that UUID-shaped strings happen to work.
+
+    # regression: penguincode-index-jobs-scope-text (0009 -- uuid-vs-text tenant_id)
+    """
+
+    def test_create_get_and_list_round_trip_with_integer_like_scope_ids(
+        self, live_dsn: str
+    ) -> None:
+        store = IndexJobStore(dsn=live_dsn)
+        ctx = ScopeContext(
+            tenant_id="42",
+            org_id="7",
+            team_ids=("3",),
+            user_id="user-not-a-uuid",
+            scopes=(),
+        )
+
+        job_id = store.create_queued(ctx, JobType.INDEX_DOCS, chunks_total=2, team_id="3")
+        job = store.get(ctx, job_id)
+
+        assert job is not None
+        assert job.tenant_id == "42"
+        assert job.owner_user_id == "user-not-a-uuid"
+
+        jobs = store.list_jobs(ctx)
+        assert [j.id for j in jobs] == [job_id]
+
+        other_tenant_ctx = ScopeContext(
+            tenant_id="99", org_id=None, team_ids=(), user_id="someone-else", scopes=()
+        )
+        assert store.get(other_tenant_ctx, job_id) is None
+        assert store.list_jobs(other_tenant_ctx) == []

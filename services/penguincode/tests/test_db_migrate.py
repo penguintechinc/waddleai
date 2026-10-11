@@ -68,6 +68,7 @@ class TestMigrationDiscovery:
             "0006_pending_lessons.sql",
             "0007_chat_sessions.sql",
             "0008_index_jobs.sql",
+            "0009_index_jobs_scope_text.sql",
         }
 
     def test_migration_files_sort_in_apply_order(self) -> None:
@@ -77,15 +78,24 @@ class TestMigrationDiscovery:
         files = _discover_migrations(MIGRATIONS_DIR)
         assert [path.name for path in files] == sorted(path.name for path in files)
         assert files[0].name.startswith("0001_")
-        assert files[-1].name.startswith("0008_")
+        assert files[-1].name.startswith("0009_")
 
     def test_every_migration_is_idempotent_sql(self) -> None:
-        """Every DDL statement uses an IF NOT EXISTS / inline-constraint guard.
+        """Every DDL statement uses an IF NOT EXISTS / inline-constraint guard,
+        or (0009's `ALTER COLUMN ... TYPE`) is idempotent by construction.
 
         A bare `CREATE TABLE` or `ALTER TABLE ... ADD CONSTRAINT` (without a
         guard) would make a second run fail instead of no-op -- this is a
         static proxy for that, so a future migration author gets caught at
-        review time even without a live Postgres available.
+        review time even without a live Postgres available. `0009` is the
+        first migration needing `ALTER TABLE` at all (fixing `0008`'s
+        mistyped `uuid` scope columns to `text`) -- PostgreSQL has no
+        `IF NOT EXISTS` spelling for `ALTER COLUMN ... TYPE`, so it's allowed
+        on the narrower premise that `col::text` is a safe no-op cast when
+        `col` is already `text` (proved live by
+        `TestRunMigrationsLive.test_0009_alter_column_sql_is_itself_rerunnable`
+        below) -- `ALTER TABLE ... ADD CONSTRAINT` remains banned outright,
+        since Postgres has no equivalent safe-no-op form for it.
         """
         for path in MIGRATIONS_DIR.glob("*.sql"):
             sql = path.read_text(encoding="utf-8").upper()
@@ -102,7 +112,14 @@ class TestMigrationDiscovery:
             # ALTER TABLE ... ADD CONSTRAINT has no IF NOT EXISTS in
             # PostgreSQL -- constraints must be declared inline on CREATE
             # TABLE instead (which 0004/0005 do for their UNIQUE constraints).
-            assert "ALTER TABLE" not in sql, f"{path.name}: ALTER TABLE is not idempotent-safe here"
+            assert "ADD CONSTRAINT" not in sql, (
+                f"{path.name}: ADD CONSTRAINT is not idempotent-safe here"
+            )
+            if "ALTER TABLE" in sql and path.name != "0009_index_jobs_scope_text.sql":
+                raise AssertionError(
+                    f"{path.name}: ALTER TABLE is not idempotent-safe here "
+                    "(see 0009's documented ALTER COLUMN ... TYPE exception)"
+                )
 
 
 class TestResolveDsn:
@@ -170,6 +187,7 @@ class TestRunMigrationsLive:
             "0006_pending_lessons.sql",
             "0007_chat_sessions.sql",
             "0008_index_jobs.sql",
+            "0009_index_jobs_scope_text.sql",
         )
         assert result.skipped == ()
 
@@ -187,6 +205,7 @@ class TestRunMigrationsLive:
             "0006_pending_lessons.sql",
             "0007_chat_sessions.sql",
             "0008_index_jobs.sql",
+            "0009_index_jobs_scope_text.sql",
         }
 
         with psycopg.connect(clean_dsn) as conn:
@@ -204,6 +223,27 @@ class TestRunMigrationsLive:
         """
         for _ in range(3):
             run_migrations(dsn=clean_dsn)
+
+    def test_0009_alter_column_sql_is_itself_rerunnable(self, clean_dsn: str) -> None:
+        """Executes `0009`'s raw SQL twice, bypassing `schema_migrations`
+        tracking entirely -- the strongest form of the "every migration file
+        is itself idempotent" claim `migrate.py`'s module docstring makes,
+        and the premise `test_every_migration_is_idempotent_sql` relies on to
+        allow `0009`'s `ALTER COLUMN ... TYPE` past its static `ALTER TABLE`
+        guard. `col::text` is a safe no-op cast whether `col` is currently
+        `uuid` or already `text`.
+        """
+        run_migrations(dsn=clean_dsn)  # brings the schema up through 0008 and 0009 once
+        sql = (MIGRATIONS_DIR / "0009_index_jobs_scope_text.sql").read_text(encoding="utf-8")
+
+        with psycopg.connect(clean_dsn, autocommit=True) as conn:
+            conn.execute(sql)  # re-apply directly; must not raise
+            row = conn.execute(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_schema = 'penguincode' AND table_name = 'index_jobs' "
+                "AND column_name = 'tenant_id'"
+            ).fetchone()
+        assert row == ("text",)
 
     def test_vector_extension_present(self, clean_dsn: str) -> None:
         run_migrations(dsn=clean_dsn)
