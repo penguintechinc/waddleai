@@ -14,8 +14,10 @@ client, not just the Python object directly.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import MagicMock
 
 import grpc
 import pytest
@@ -93,9 +95,11 @@ def _open_fake_pool(monkeypatch: pytest.MonkeyPatch) -> None:
 
     `is_pool_open()` only checks the module-level `_shared_pool is not None`
     sentinel, so a `MagicMock` standing in for the real `ConnectionPool` is
-    sufficient -- no network/DB dependency for these tests.
+    sufficient -- no network/DB dependency for these tests. Must support
+    `.close()` (a plain `object()` does not) since the `_reset_shared_pool`
+    autouse fixture calls `db_pool.close_pool()` at teardown regardless.
     """
-    monkeypatch.setattr(db_pool, "_shared_pool", object())
+    monkeypatch.setattr(db_pool, "_shared_pool", MagicMock())
 
 
 async def _registered_manager() -> GrpcHealthManager:
@@ -251,6 +255,12 @@ class TestTelemetry:
         assert ("knowledge", "serving") in labels
 
 
+#: Hard ceiling for the two real-socket tests below -- a genuine hang (vs. a
+#: slow-but-working call) must fail loudly rather than stall the whole suite
+#: indefinitely, especially on a heavily loaded shared dev box.
+_REAL_CHANNEL_TIMEOUT_SECONDS = 15.0
+
+
 class TestRealChannelCheckAndWatch:
     """Proves wire-compatibility with a real `grpc_health.v1` client, not just the Python object."""
 
@@ -267,7 +277,7 @@ class TestRealChannelCheckAndWatch:
         await manager.mark_started()
         await server.start()
 
-        try:
+        async def _run() -> None:
             async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
                 stub = health_pb2_grpc.HealthStub(channel)
 
@@ -283,8 +293,11 @@ class TestRealChannelCheckAndWatch:
                 first_update = await watch_call.read()
                 assert first_update.status == _SERVING
                 watch_call.cancel()
+
+        try:
+            await asyncio.wait_for(_run(), timeout=_REAL_CHANNEL_TIMEOUT_SECONDS)
         finally:
-            await server.stop(grace_period=0)
+            await asyncio.wait_for(server.stop(0), timeout=5.0)
 
     @pytest.mark.asyncio
     async def test_check_unknown_service_returns_not_found(self) -> None:
@@ -294,11 +307,14 @@ class TestRealChannelCheckAndWatch:
         port = server.add_insecure_port("127.0.0.1:0")
         await server.start()
 
-        try:
+        async def _run() -> None:
             async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
                 stub = health_pb2_grpc.HealthStub(channel)
                 with pytest.raises(grpc.aio.AioRpcError) as exc_info:
                     await stub.Check(health_pb2.HealthCheckRequest(service="not.a.real.Service"))
                 assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+        try:
+            await asyncio.wait_for(_run(), timeout=_REAL_CHANNEL_TIMEOUT_SECONDS)
         finally:
-            await server.stop(grace_period=0)
+            await asyncio.wait_for(server.stop(0), timeout=5.0)
