@@ -52,7 +52,9 @@ def _init_logging() -> None:
     file_handler.setLevel(logging.DEBUG)  # Handler accepts all, logger filters
 
     # Format with timestamp and level
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
     file_handler.setFormatter(formatter)
     _logger.addHandler(file_handler)
 
@@ -134,7 +136,9 @@ def log_llm_request(model: str, messages: list, tools: list = None) -> None:
             _logger.debug(f"    [{i}] {role}: {content}")
 
         if tools:
-            _logger.debug(f"  Tools ({len(tools)}): {[t.get('function', {}).get('name', 'unknown') for t in tools]}")
+            _logger.debug(
+                f"  Tools ({len(tools)}): {[t.get('function', {}).get('name', 'unknown') for t in tools]}"
+            )
 
 
 def log_llm_response(response_text: str, tool_calls: list = None) -> None:

@@ -58,7 +58,9 @@ class ReadFileTool(BaseTool):
 
             # Add line numbers
             if start_line:
-                numbered_lines = [f"{i + start_line:6d}→{line.rstrip()}" for i, line in enumerate(lines)]
+                numbered_lines = [
+                    f"{i + start_line:6d}→{line.rstrip()}" for i, line in enumerate(lines)
+                ]
             else:
                 numbered_lines = [f"{i + 1:6d}→{line.rstrip()}" for i, line in enumerate(lines)]
 
@@ -290,7 +292,9 @@ class GrepTool(BaseTool):
                 files = [search_path]
             elif search_path.is_dir():
                 # Search all text files in directory recursively
-                files = [f for f in search_path.rglob("*") if f.is_file() and not self._should_ignore(f)]
+                files = [
+                    f for f in search_path.rglob("*") if f.is_file() and not self._should_ignore(f)
+                ]
             else:
                 return ToolResult(
                     success=False,

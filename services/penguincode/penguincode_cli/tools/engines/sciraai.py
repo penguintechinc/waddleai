@@ -62,7 +62,9 @@ class SciraAIEngine(BaseSearchEngine):
                 elif response.status_code == 429:
                     raise SearchEngineRateLimitError("SciraAI rate limit exceeded")
                 elif response.status_code != 200:
-                    raise SearchEngineError(f"SciraAI API error: {response.status_code} - {response.text}")
+                    raise SearchEngineError(
+                        f"SciraAI API error: {response.status_code} - {response.text}"
+                    )
 
                 data = response.json()
                 results = []

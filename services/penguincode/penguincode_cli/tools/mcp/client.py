@@ -16,7 +16,9 @@ class MCPClient:
     handshake automatically.
     """
 
-    def __init__(self, server_command: str, server_args: list[str], env: dict[str, str] | None = None):
+    def __init__(
+        self, server_command: str, server_args: list[str], env: dict[str, str] | None = None
+    ):
         """
         Initialize MCP client.
 

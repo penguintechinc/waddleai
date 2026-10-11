@@ -64,7 +64,9 @@ class FireplexityEngine(BaseSearchEngine):
                 )
 
                 if response.status_code != 200:
-                    raise SearchEngineError(f"Fireplexity API error: {response.status_code} - {response.text}")
+                    raise SearchEngineError(
+                        f"Fireplexity API error: {response.status_code} - {response.text}"
+                    )
 
                 data = response.json()
                 results = []
@@ -82,4 +84,6 @@ class FireplexityEngine(BaseSearchEngine):
         except httpx.TimeoutException as e:
             raise SearchEngineTimeoutError(f"Fireplexity search timeout: {e}") from e
         except Exception as e:
-            raise SearchEngineError(f"Fireplexity search failed (ensure instance is running): {e}") from e
+            raise SearchEngineError(
+                f"Fireplexity search failed (ensure instance is running): {e}"
+            ) from e

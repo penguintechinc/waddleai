@@ -1496,8 +1496,13 @@ class REPLSession:
             try:
                 # Get user input with full readline support
                 prompt_text = f"You ({self.active_skill}): " if self.active_skill else "You: "
+                # Bind prompt_text as a default arg (not a closure over the loop variable) --
+                # B023: each iteration's await currently resolves before prompt_text is
+                # reassigned, so this was not exploitable today, but a future change (e.g.
+                # retrying the executor call without awaiting it first) would silently pick
+                # up the *next* iteration's prompt text instead of this one's.
                 user_input = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: session.prompt(prompt_text)
+                    None, lambda pt=prompt_text: session.prompt(pt)
                 )
 
                 # Reset interrupt count on successful input

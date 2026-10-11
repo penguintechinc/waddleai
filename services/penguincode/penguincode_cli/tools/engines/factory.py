@@ -59,7 +59,8 @@ def get_search_engine(config: ResearchConfig) -> BaseSearchEngine:
 
     else:
         raise ValueError(
-            f"Unknown search engine: {engine_name}. " f"Supported: duckduckgo, sciraai, searxng, fireplexity, google"
+            f"Unknown search engine: {engine_name}. "
+            f"Supported: duckduckgo, sciraai, searxng, fireplexity, google"
         )
 
 

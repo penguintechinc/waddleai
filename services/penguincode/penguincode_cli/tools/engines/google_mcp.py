@@ -64,7 +64,9 @@ class GoogleMCPEngine(BaseSearchEngine):
             return results
 
         except Exception as e:
-            raise SearchEngineError(f"Google MCP search failed (MCP server may not be available): {e}") from e
+            raise SearchEngineError(
+                f"Google MCP search failed (MCP server may not be available): {e}"
+            ) from e
 
     async def cleanup(self):
         """Stop MCP server."""

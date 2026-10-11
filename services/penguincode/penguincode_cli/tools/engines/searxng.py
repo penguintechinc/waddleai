@@ -49,7 +49,9 @@ class SearXNGEngine(BaseSearchEngine):
                 )
 
                 if response.status_code != 200:
-                    raise SearchEngineError(f"SearXNG API error: {response.status_code} - {response.text}")
+                    raise SearchEngineError(
+                        f"SearXNG API error: {response.status_code} - {response.text}"
+                    )
 
                 data = response.json()
                 results = []

@@ -115,7 +115,9 @@ class WebFetchTool:
 
 
 # Utility functions for convenience
-async def search_web(query: str, config: ResearchConfig, max_results: int | None = None) -> list[SearchResult]:
+async def search_web(
+    query: str, config: ResearchConfig, max_results: int | None = None
+) -> list[SearchResult]:
     """
     Convenience function to perform web search.
 
