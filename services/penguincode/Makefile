@@ -2,6 +2,27 @@
 PROJECT_NAME := $(shell basename $(CURDIR))
 HELM_DIR := k8s/helm/$(PROJECT_NAME)
 
+# bandit/pip-audit MUST run under the same interpreter version this package
+# targets (`requires-python = ">=3.13"`, pyproject.toml). A machine-/CI-wide
+# `bandit`/`pip-audit` install can be shebang-pinned to a different system
+# python (observed: /usr/bin/python3 == 3.12 on a dev box that also has
+# 3.13 available) -- when that happens pip-audit's own dependency-resolution
+# venv silently ignores every PyPI release whose `Requires-Python` excludes
+# that older interpreter (e.g. quart==0.23.1 needs >=3.13) and fails with a
+# "Could not find a version that satisfies..." resolution error that reads
+# like a bad pin or a yanked release, when it is neither. This venv is
+# scoped to this package only (Makefile-local, gitignored) and pins the
+# tools to the one interpreter version this package actually requires, so
+# `test-security` below is reproducible regardless of what else happens to
+# be on PATH.
+SECURITY_VENV := .venv
+
+security-venv:
+	@if [ ! -x $(SECURITY_VENV)/bin/python ]; then uv venv -p 3.13 $(SECURITY_VENV); fi
+	@if [ ! -x $(SECURITY_VENV)/bin/bandit ] || [ ! -x $(SECURITY_VENV)/bin/pip-audit ]; then \
+	  uv pip install --python $(SECURITY_VENV)/bin/python bandit==1.8.3 pip-audit==2.10.1; \
+	fi
+
 k8s-alpha-deploy:
 	@./tests/k8s/alpha/run-all-alpha.sh
 
@@ -102,14 +123,51 @@ test-e2e:
 test-functional:
 	@echo "No functional tests defined"
 
-test-security:
+# Real gate -- every scanner below used to be piped through `|| true`,
+# so a HIGH bandit finding or a known-CVE dependency could merge unnoticed
+# (critical-rules.md Verification Integrity: a gate that cannot fail is not
+# a gate). No `|| true` anywhere in this chain; a missing tool or a 0-item
+# scan counts as FAILURE, not a silent skip.
+#
+# bandit gains --severity-level medium: unfiltered, this codebase alone
+# reports ~180 findings, nearly all LOW/Confidence noise that nobody can
+# act on; medium+ is the real, actionable denominator (0 HIGH/0 MEDIUM as
+# of this gate's un-masking -- see git history for the fixes/justified
+# `# nosec` lines).
+#
+# pip-audit/bandit run from `security-venv` (see above) rather than
+# whatever's on PATH, to avoid the python-version resolution trap documented
+# there.
+test-security: security-venv
 	@echo "=== Security Scans ==="
-	@if command -v bandit >/dev/null 2>&1; then echo "-- bandit --"; bandit -r . -x ./tests,./venv,./.git --quiet || true; fi
-	@if command -v pip-audit >/dev/null 2>&1; then echo "-- pip-audit --"; find . -name "requirements.txt" -not -path "*/.git/*" -not -path "*/venv/*" | xargs -I{} pip-audit -r {} 2>/dev/null || true; fi
-	@if command -v gosec >/dev/null 2>&1; then echo "-- gosec --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && gosec ./... || true'; fi
-	@if command -v govulncheck >/dev/null 2>&1; then echo "-- govulncheck --"; find . -name "go.mod" -not -path "*/.git/*" -not -path "*/vendor/*" | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && govulncheck ./... || true'; fi
-	@find . -name "package.json" -not -path "*/.git/*" -not -path "*/node_modules/*" -maxdepth 3 | xargs -I{} dirname {} | xargs -I{} sh -c 'cd {} && npm audit 2>/dev/null || true'
-	@if command -v gitleaks >/dev/null 2>&1; then echo "-- gitleaks --"; gitleaks detect --source . --no-git 2>/dev/null || true; fi
+	@fail=0; \
+	echo "-- bandit --"; \
+	$(SECURITY_VENV)/bin/bandit -r . -x ./tests,./venv,./$(SECURITY_VENV),./.git --severity-level medium --quiet || fail=1; \
+	echo "-- pip-audit --"; \
+	reqs=$$(find . -name "requirements.txt" -not -path "*/.git/*" -not -path "*/venv/*" -not -path "./$(SECURITY_VENV)/*"); \
+	req_count=$$(printf '%s\n' "$$reqs" | grep -c . || true); \
+	echo "pip-audit: $$req_count requirements.txt file(s) found"; \
+	if [ "$$req_count" -eq 0 ]; then \
+	  echo "!! pip-audit: 0 requirements.txt found -- counting as FAILURE"; fail=1; \
+	else \
+	  printf '%s\n' "$$reqs" | xargs -I{} $(SECURITY_VENV)/bin/pip-audit -r {} || fail=1; \
+	fi; \
+	if [ -n "$$(find . -name go.mod -not -path './.git/*' -not -path '*/vendor/*')" ]; then \
+	  for t in gosec govulncheck; do \
+	    command -v $$t >/dev/null 2>&1 || { echo "!! Go present but $$t MISSING -- FAILURE"; fail=1; }; \
+	  done; \
+	  for t in gosec govulncheck; do \
+	    command -v $$t >/dev/null 2>&1 && find . -name go.mod -not -path './.git/*' -not -path '*/vendor/*' \
+	      | xargs -I{} dirname {} | xargs -I{} sh -c "cd {} && $$t ./..." || fail=1; \
+	  done; \
+	else echo "-- gosec/govulncheck -- (no go.mod; skipped legitimately)"; fi; \
+	echo "-- npm audit -- (no package.json in this service; skipped legitimately)"; \
+	if command -v gitleaks >/dev/null 2>&1; then \
+	  echo "-- gitleaks --"; \
+	  gitleaks detect --source . --no-git --redact --config .gitleaks.toml --exit-code 1 --log-level error || fail=1; \
+	else echo "!! MISSING TOOL: gitleaks -- cannot verify, counting as FAILURE"; fail=1; fi; \
+	[ $$fail -eq 0 ] || { echo "=== SECURITY SCANS FAILED ==="; exit 1; }; \
+	echo "=== security scans clean ==="
 
 # Real smoke gate (S1 fix -- was `echo "No smoke tests defined"`, an
 # unconditional-pass stub that meant the org's every-commit smoke gate never

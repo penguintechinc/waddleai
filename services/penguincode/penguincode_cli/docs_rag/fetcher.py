@@ -91,7 +91,10 @@ class DocumentationFetcher:
 
     def _get_cache_key(self, url: str) -> str:
         """Generate cache key from URL."""
-        return hashlib.md5(url.encode()).hexdigest()
+        # usedforsecurity=False: this is a cache-bucketing key, never a
+        # security boundary (auth/integrity/signing) -- MD5 is fine here and
+        # the flag tells bandit/B324 that explicitly instead of nosec-ing it.
+        return hashlib.md5(url.encode(), usedforsecurity=False).hexdigest()
 
     def _get_cache_path(self, cache_key: str) -> Path:
         """Get cache file path for a key."""
@@ -401,7 +404,9 @@ class DocumentationFetcher:
             url=url,
             fetch_time=datetime.now().isoformat(),
             ttl_days=self.ttl_days,
-            content_hash=hashlib.md5(content.encode()).hexdigest(),
+            # usedforsecurity=False: change-detection fingerprint for cache
+            # invalidation, never a security boundary -- see _get_cache_key.
+            content_hash=hashlib.md5(content.encode(), usedforsecurity=False).hexdigest(),
             library=library_name,
             language=language,
         )

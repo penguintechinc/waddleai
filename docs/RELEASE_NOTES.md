@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Security — penguincode `make test-security` un-masked and made to pass legitimately — 2026-10-10
+
+`services/penguincode/Makefile`'s `test-security` had every scanner piped through
+`|| true` (its own gate, separate from the root `make test-security` — bandit there
+already excludes `services/penguincode`). Un-masking it surfaced 3 HIGH / 14 MEDIUM
+bandit findings (`--severity-level medium`) plus a `pip-audit` resolution error on
+`quart==0.23.1`.
+
+- **3 findings fixed by deleting dead code**: `app.py`, `client.py`, `server/app.py`
+  were stray scratch files — never imported by `penguincode_cli`, never `COPY`'d by
+  `Dockerfile.server`, already called out as known non-package debt in
+  `scripts/lint_gate.py`'s own docstring. One of them (`server/app.py`) ran a Flask
+  dev server with `debug=True` bound to `0.0.0.0` (B201 HIGH — real Werkzeug-debugger
+  RCE exposure) plus an unrelated no-timeout `requests.get` (B113) in `client.py`.
+- **2 HIGH fixed for real** (B324, `penguincode_cli/docs_rag/fetcher.py`): MD5 used
+  for a cache key and a change-detection fingerprint, never a security boundary —
+  `hashlib.md5(..., usedforsecurity=False)`.
+- **11 MEDIUM justified `# nosec B608`** (false positive — `bandit`'s hardcoded-SQL
+  heuristic flags any f-string touching a SQL keyword; every one of these interpolates
+  only a fixed module-level column-list constant or a `Literal`-typed table name, never
+  caller input, with every actual value bound via psycopg's `%(name)s`/sqlite's `?`
+  placeholders): `indexing/store.py` (2), `lessons/store.py` (2), `sessions/store.py`
+  (1), `stores/vector.py` (3), `server/models/config_store.py` (3 — also tightened
+  `table: str` to a new `_ConfigTable` Literal so mypy rejects a future non-literal
+  call site, keeping the false-positive true by construction).
+- **1 MEDIUM justified `# nosec B104`** (`penguincode_cli/main.py`'s `--host` default):
+  container listen address inside its own pod network namespace, matches the existing
+  convention in `proxy`/`services/management`.
+- **pip-audit resolution error, not a CVE**: `bandit`/`pip-audit` installed globally on
+  this dev box were shebang-pinned to a `python3.12` interpreter even though a 3.13 one
+  was also present; pip-audit's own dependency-resolution venv silently excluded every
+  PyPI release requiring `>=3.13` (including the already-pinned, genuinely-published
+  `quart==0.23.1`), which surfaces as a "could not find a version" error that reads
+  like a bad pin. Fixed by adding a `security-venv` Makefile target that pins
+  `bandit`/`pip-audit` into a local `uv venv -p 3.13` scoped to this package, so the
+  gate is reproducible regardless of what else is on `PATH`.
+- **One real CVE found once pip-audit could actually resolve the lockfile**:
+  `werkzeug` 3.1.8→3.1.9 (CVE-2026-102598, transitive via `flask-security-too`/`quart`)
+  — pinned directly in `requirements.in` and regenerated with
+  `uv pip compile --generate-hashes`.
+- `test-security` itself rewritten (no `|| true` anywhere): tool-missing and
+  zero-requirements-examined both count as FAILURE, not a silent skip; added
+  `services/penguincode/.gitleaks.toml` (test-fixture allowlist only, mirrors the
+  root config's philosophy) so gitleaks can run against first-party source without the
+  9 pre-existing credential-shaped test fixtures (redaction/scrubbing/auth tests that
+  must contain fake-secret strings to exercise what they test) failing the gate.
+  `.ruff-baseline.txt`/`.mypy-baseline.txt` regenerated after these fixes (counts
+  unchanged, 148/625 — the fixes only shifted pre-existing finding line numbers, see
+  PR for the verification diff) since the ratchet gate matches `file:line` text.
+
 ### Security — dependency CVE remediation — 2026-10-10
 
 `make test-security` pip-audit/npm audit found 8 vulnerable Python packages across the

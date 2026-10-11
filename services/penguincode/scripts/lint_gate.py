@@ -23,12 +23,15 @@ freezes the debt as a committed baseline and fails hard on anything new:
 - ``mypy --strict penguincode_cli`` -- scoped to the actual installed
   package (``pyproject.toml``'s ``packages = ["penguincode_cli"]``, the same
   scope ``coverage_gate.py`` uses) rather than the whole directory, because
-  this repo also carries stray non-package files at its root (``app.py``,
-  ``client.py``, ``server/app.py``, a vendored copy of the monorepo's
-  ``shared/py_libs``) that make mypy crash outright on a duplicate module
-  name when pointed at ``.`` -- that crash is itself caught below (a
-  "Found"/"Success" summary line failing to appear is treated as a hard
-  failure, never a silent zero-findings pass).
+  this repo also carries a vendored copy of the monorepo's ``shared/py_libs``
+  that makes mypy crash outright on a duplicate module name when pointed at
+  ``.`` -- that crash is itself caught below (a "Found"/"Success" summary
+  line failing to appear is treated as a hard failure, never a silent
+  zero-findings pass). (Historical note: three stray root-level non-package
+  scripts -- ``app.py``, ``client.py``, ``server/app.py`` -- used to live
+  here too and contributed to this same crash; they were unreferenced dead
+  code with real bandit findings (Flask ``debug=True``, no-timeout HTTP) and
+  were deleted outright rather than carried forward, see RELEASE_NOTES.md.)
 
 No ``subprocess`` call result is trusted by exit code alone: each tool's own
 summary output (ruff's ``--show-files`` list, mypy's ``Found ... source

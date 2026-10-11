@@ -204,13 +204,16 @@ class IndexJobStore:
         with store_span("index_jobs.get", job_id=job_id):
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
+                    # _SELECT_COLUMNS is a module-level constant column list,
+                    # never user input; every actual value is bound via the
+                    # params dict below, never interpolated.
                     cur.execute(
                         f"""
                         SELECT {_SELECT_COLUMNS}
                         FROM penguincode.index_jobs
                         WHERE id = %(id)s::uuid AND tenant_id = %(tenant_id)s
                             AND owner_user_id = %(owner_user_id)s
-                        """,
+                        """,  # nosec B608
                         {"id": job_id, "tenant_id": ctx.tenant_id, "owner_user_id": ctx.user_id},
                     )
                     row = cur.fetchone()
@@ -225,6 +228,9 @@ class IndexJobStore:
         with store_span("index_jobs.list", limit=limit):
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
+                    # _SELECT_COLUMNS is a module-level constant column list,
+                    # never user input; every actual value is bound via the
+                    # params dict below, never interpolated.
                     cur.execute(
                         f"""
                         SELECT {_SELECT_COLUMNS}
@@ -233,7 +239,7 @@ class IndexJobStore:
                             AND owner_user_id = %(owner_user_id)s
                         ORDER BY created_at DESC
                         LIMIT %(limit)s
-                        """,
+                        """,  # nosec B608
                         {"tenant_id": ctx.tenant_id, "owner_user_id": ctx.user_id, "limit": limit},
                     )
                     rows = cur.fetchall()
