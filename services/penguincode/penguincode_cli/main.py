@@ -85,7 +85,7 @@ def serve(
         help="REST API port",
     ),
     host: str = typer.Option(
-        "0.0.0.0",
+        "0.0.0.0",  # nosec B104 # noqa: S104 -- container listen address inside its own pod network namespace; reachability governed by Service + CiliumNetworkPolicy, matches the convention used by proxy/management (see security.md)
         "--host",
         "-H",
         help="Host to bind to",

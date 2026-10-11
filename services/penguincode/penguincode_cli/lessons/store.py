@@ -196,13 +196,16 @@ class PendingLessonStore:
         ):
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
+                    # _SELECT_COLUMNS is a module-level constant column list,
+                    # never user input; every actual value is bound via the
+                    # params dict below, never interpolated.
                     cur.execute(
                         f"""
                         SELECT {_SELECT_COLUMNS}
                         FROM penguincode.pending_lessons
                         WHERE tenant_id = %(tenant_id)s::uuid AND status = %(status)s
                         ORDER BY created_at ASC
-                        """,
+                        """,  # nosec B608
                         {"tenant_id": ctx.tenant_id, "status": status},
                     )
                     rows = cur.fetchall()
@@ -220,12 +223,15 @@ class PendingLessonStore:
         with timed_store_operation("vector_query", "pending_lessons.get", backend="postgres"):
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
+                    # _SELECT_COLUMNS is a module-level constant column list,
+                    # never user input; every actual value is bound via the
+                    # params dict below, never interpolated.
                     cur.execute(
                         f"""
                         SELECT {_SELECT_COLUMNS}
                         FROM penguincode.pending_lessons
                         WHERE tenant_id = %(tenant_id)s::uuid AND id = %(id)s::uuid
-                        """,
+                        """,  # nosec B608
                         {"tenant_id": ctx.tenant_id, "id": pending_id},
                     )
                     row = cur.fetchone()

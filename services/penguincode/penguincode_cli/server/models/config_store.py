@@ -10,11 +10,21 @@ import logging
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+# Closed set of table names the generic `_upsert`/`_get_one`/`_get_all`/
+# `_delete` helpers are ever called with (see call sites below) -- a Literal
+# rather than `str` so mypy --strict rejects any future call site that tries
+# to pass a non-literal (e.g. caller-derived) value, keeping the bandit
+# B608 false-positive on those helpers' f-string table-name interpolation
+# true by construction, not just by convention.
+_ConfigTable = Literal[
+    "models", "agents", "mcp_servers", "plugins", "skills", "tools", "github_orgs"
+]
 
 # ---------------------------------------------------------------------------
 # Data classes for each config entity
@@ -450,38 +460,45 @@ class ConfigStore:
 
     # -- generic helpers -----------------------------------------------------
 
-    async def _upsert(self, table: str, key: str, data: dict) -> None:
+    async def _upsert(self, table: _ConfigTable, key: str, data: dict) -> None:
         """Insert or replace a row."""
         assert self._db is not None
         key_col = "org" if table == "github_orgs" else "name"
         if table in ("instructions", "permissions"):
             return
         await self._db.execute(
-            f"INSERT OR REPLACE INTO {table} ({key_col}, data) VALUES (?, ?)",
+            # `table` is typed `_ConfigTable`, a fixed Literal of this
+            # module's own table names; every call site below passes a
+            # hardcoded literal, never caller input. `key`/`data` are bound
+            # via the `?` placeholders, never interpolated.
+            f"INSERT OR REPLACE INTO {table} ({key_col}, data) VALUES (?, ?)",  # nosec B608
             (key, json.dumps(data)),
         )
 
-    async def _get_one(self, table: str, key: str) -> dict | None:
+    async def _get_one(self, table: _ConfigTable, key: str) -> dict | None:
         assert self._db is not None
         key_col = "org" if table == "github_orgs" else "name"
         row = await self._db.execute_fetchall(
-            f"SELECT data FROM {table} WHERE {key_col} = ?",
+            # see _upsert: `table` is a fixed Literal, never caller input.
+            f"SELECT data FROM {table} WHERE {key_col} = ?",  # nosec B608
             (key,),
         )
         if row:
             return json.loads(row[0][0])
         return None
 
-    async def _get_all(self, table: str) -> list[dict]:
+    async def _get_all(self, table: _ConfigTable) -> list[dict]:
         assert self._db is not None
-        rows = await self._db.execute_fetchall(f"SELECT data FROM {table}")
+        # see _upsert: `table` is a fixed Literal, never caller input.
+        rows = await self._db.execute_fetchall(f"SELECT data FROM {table}")  # nosec B608
         return [json.loads(r[0]) for r in rows]
 
-    async def _delete(self, table: str, key: str) -> bool:
+    async def _delete(self, table: _ConfigTable, key: str) -> bool:
         assert self._db is not None
         key_col = "org" if table == "github_orgs" else "name"
         cursor = await self._db.execute(
-            f"DELETE FROM {table} WHERE {key_col} = ?",
+            # see _upsert: `table` is a fixed Literal, never caller input.
+            f"DELETE FROM {table} WHERE {key_col} = ?",  # nosec B608
             (key,),
         )
         await self._db.commit()

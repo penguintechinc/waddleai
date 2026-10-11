@@ -48,6 +48,11 @@ flask-security-too==5.8.2
 hypercorn==0.18.0
 websockets==17.1
 pyjwt[crypto]==2.15.0
+# Transitive pin (werkzeug is pulled in by flask-security-too/quart, not a
+# direct dependency) -- 3.1.8 carries CVE-2026-102598, fixed in 3.1.9.
+# pip-audit flagged this (O-penguincode-bandit-audit); no other change
+# required, the fixed release is a drop-in patch version.
+werkzeug==3.1.9
 
 # gRPC (Client-Server Mode) - held at 1.69.x/5.29.x to match the runtime
 # version validated by the checked-in generated proto stubs.

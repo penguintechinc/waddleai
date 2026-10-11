@@ -245,13 +245,16 @@ class PostgresSessionStore:
         with timed_session_store_operation("get"):
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
+                    # _SELECT_COLUMNS is a module-level constant column list,
+                    # never user input; every actual value is bound via the
+                    # params dict below, never interpolated.
                     cur.execute(
                         f"""
                         SELECT {_SELECT_COLUMNS}
                         FROM penguincode.chat_sessions
                         WHERE id = %(id)s::uuid AND tenant_id = %(tenant_id)s::uuid
                           AND user_id = %(user_id)s::uuid AND expires_at > now()
-                        """,
+                        """,  # nosec B608
                         {"id": session_id, "tenant_id": ctx.tenant_id, "user_id": ctx.user_id},
                     )
                     row = cur.fetchone()
