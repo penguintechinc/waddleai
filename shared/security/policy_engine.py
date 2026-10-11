@@ -116,14 +116,30 @@ class SecurityPolicyEngine:
                     auditor_call = self.content_filter._invoke_llm_auditor(
                         text, direction, violations, org_id
                     )
-                    should_block, _explanation = await asyncio.wait_for(
+                    # `_invoke_llm_auditor` returns a structured
+                    # `AuditorResult` (shared/security/content_filter.py),
+                    # not a bare tuple: an unreachable/timed-out/non-200
+                    # auditor sets `.degraded=True` instead of raising, so
+                    # unpacking it as `should_block, _ = ...` would have
+                    # silently discarded that signal and `_apply_fail_mode`
+                    # below would never have run for this class of failure
+                    # (the same gh-207-adjacent bug fixed one layer down in
+                    # `ContentFilter._filter`).
+                    audit_result = await asyncio.wait_for(
                         auditor_call,
                         timeout=timeout_s,
                     )
                     auditor_used = True
-                    tiers_run.append("tier4")
-                    llm_verdict = "block" if should_block else "allow"
-                    final_action = combine(deterministic_action, llm_verdict)
+                    if audit_result.degraded:
+                        final_action, degraded = self._apply_fail_mode(
+                            resolved.fail_mode,
+                            deterministic_action,
+                            reason=f"auditor_{(audit_result.error_class or 'unavailable').lower()}",
+                        )
+                    else:
+                        tiers_run.append("tier4")
+                        llm_verdict = "block" if audit_result.should_block else "allow"
+                        final_action = combine(deterministic_action, llm_verdict)
                 except TimeoutError:
                     final_action, degraded = self._apply_fail_mode(
                         resolved.fail_mode, deterministic_action, reason="auditor_timeout"

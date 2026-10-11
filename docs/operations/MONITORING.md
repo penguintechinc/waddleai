@@ -242,6 +242,29 @@ first-response as the management equivalents, scoped to proxy.
 **ProxyFeatureFlagEvalErrors / ProxyLicenseCheckErrors** — Same meaning and
 first-response as the management equivalents.
 
+**ProxyContentFilterAuditorFailOpen / ProxyContentFilterAuditorFailClosed** —
+`waddleai_content_filter_fail_total{mode="fail_open"|"fail_closed"}`
+(`shared/security/content_filter.py`) is incrementing. Previously a dead/
+timed-out/non-200 LLM auditor was silently indistinguishable from a real
+ALLOW verdict — neither counter ever fired for that class of failure, this
+pair of alerts, and `FilterResult.degraded`/the `content_filter_audit_log.
+degraded` column, did not exist. First checks: (1) `waddleai_security_
+auditor_duration_seconds{outcome="degraded"}` for the degraded call rate and
+latency (a dead endpoint degrades near-instantly; a genuinely overloaded one
+degrades near the 10s internal timeout); (2) whether the Ollama endpoint
+serving `SECURITY_AUDITOR_MODEL` is actually reachable/healthy; (3) logs for
+"LLM auditor degraded" (operational — the mechanism below) vs "LLM auditor
+call is broken" (a programming defect in the call path, always fails closed
+regardless of the setting below). Mitigation: fix/restore the auditor
+endpoint; `SECURITY_AUDITOR_FAIL_MODE` (`open` default / `closed`) governs
+whether a degraded auditor call lets content through (`fail_open` firing) or
+blocks it (`fail_closed` firing) while the endpoint is down — `closed`
+trades availability for safety and is a deliberate operator choice, not a
+default recommendation. The opt-out kill switch
+`waddleai.disable-auditor-fail-mode-policy` (PostHog, OFF by default)
+reverts to the pre-fix legacy behaviour (silently fail open, no counter, no
+WARN) if the new telemetry itself needs to be rolled back.
+
 ### PenguinCode server
 
 **PenguinCodeErrorBudgetBurnFast / Slow / Slowest** — Same error-budget-burn shape as

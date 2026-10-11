@@ -205,6 +205,62 @@ class TestAuditLogWritePath:
         assert "Content filter REDACT" not in caplog.text
 
 
+class TestDegradedAuditorEndToEndAuditTrail:
+    """A degraded auditor call reaches the real audit-log row via the full `_filter()` path.
+
+    Distinct from `test_degraded_is_set_explicitly` above (which calls
+    `_log_filter_event` directly with a hand-built `FilterResult`): this
+    proves `_filter()` itself actually sets `degraded=True` when
+    `_invoke_llm_auditor` returns a degraded `AuditorResult`, not just that
+    the write path persists the flag once set -- the end-to-end path the
+    silent-fail-open finding broke.
+    """
+
+    @pytest.mark.asyncio
+    async def test_degraded_auditor_call_persists_degraded_true(
+        self,
+        filter_instance: ContentFilter,
+        content_filter_db: DAL,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dead-endpoint auditor call writes `degraded=True` to the real audit-log row."""
+        from shared.security.content_filter import AuditorResult
+
+        async def _log_only_violation(text: str, target: str, org_id: int | None = None) -> list:
+            return [
+                FilterViolation(
+                    rule_name="custom_log_rule",
+                    rule_type="custom_string",
+                    matched_text="x",
+                    action="log",
+                    confidence=0.5,
+                )
+            ]
+
+        async def _degraded(*args: object, **kwargs: object) -> AuditorResult:
+            return AuditorResult(
+                should_block=False,
+                reason="auditor unavailable",
+                degraded=True,
+                error_class="ConnectionError",
+            )
+
+        monkeypatch.setattr(filter_instance, "_run_builtin_patterns", _log_only_violation)
+        monkeypatch.setattr(filter_instance, "_invoke_llm_auditor", _degraded)
+
+        result = await filter_instance.filter_input("some text", user_id=99, org_id=None)
+
+        assert result.degraded is True
+        row = (
+            content_filter_db(content_filter_db.content_filter_audit_log.user_id == 99)
+            .select()
+            .first()
+        )
+        assert row is not None
+        assert row.degraded is True
+        assert row.auditor_used is True
+
+
 class TestAuditLogInsertFailureClassification:
     """`_log_filter_event`'s own failures never raise -- classified and swallowed locally."""
 

@@ -167,12 +167,23 @@ class TestOperationalErrorsFailOpen:
     async def test_llm_auditor_timeout_still_uses_rule_based_decision(
         self, filter_instance: ContentFilter, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An auditor timeout (existing, expected operational path) is unaffected by the split."""
+        """An auditor timeout (existing, expected operational path) is unaffected by the split.
 
-        async def _timeout(*args: object, **kwargs: object) -> tuple[bool, str]:
-            return False, "auditor timeout"
+        Regression (silent-fail-open finding): a timed-out/unreachable
+        auditor must never be indistinguishable from a real ALLOW verdict
+        -- `result.degraded` and the fail-mode counter must both reflect it,
+        even though (with the default fail_mode="open") the rule-based
+        action itself is unchanged.
+        """
+        from shared.security.content_filter import AuditorResult, FilterViolation
 
-        from shared.security.content_filter import FilterViolation
+        async def _timeout(*args: object, **kwargs: object) -> AuditorResult:
+            return AuditorResult(
+                should_block=False,
+                reason="auditor timeout",
+                degraded=True,
+                error_class="TimeoutError",
+            )
 
         async def _log_only_violation(text: str, target: str, org_id: int | None = None) -> list:
             return [
@@ -187,12 +198,16 @@ class TestOperationalErrorsFailOpen:
 
         monkeypatch.setattr(filter_instance, "_run_builtin_patterns", _log_only_violation)
         monkeypatch.setattr(filter_instance, "_invoke_llm_auditor", _timeout)
+        before = _counter_value("input", "fail_open")
 
         result = await filter_instance.filter_input("some text")
 
-        # Auditor merely timed out (returned its own "no block" tuple, did
-        # not raise) -- rule-based action (log-only -> allowed) stands.
+        # Auditor merely timed out (returned a degraded AuditorResult, did
+        # not raise) -- with fail_mode="open" the rule-based action
+        # (log-only -> allowed) stands, but the degradation is now visible.
         assert result.allowed is True
+        assert result.degraded is True
+        assert _counter_value("input", "fail_open") == before + 1
         assert result.action == "log"
 
 
@@ -235,8 +250,10 @@ class TestAuditorOverridesRuleBasedAction:
                 )
             ]
 
-        async def _blocking_auditor(*args: object, **kwargs: object) -> tuple[bool, str]:
-            return True, "BLOCK - contains a credential"
+        from shared.security.content_filter import AuditorResult
+
+        async def _blocking_auditor(*args: object, **kwargs: object) -> AuditorResult:
+            return AuditorResult(should_block=True, reason="BLOCK - contains a credential")
 
         monkeypatch.setattr(filter_instance, "_run_builtin_patterns", _log_only_violation)
         monkeypatch.setattr(filter_instance, "_invoke_llm_auditor", _blocking_auditor)
@@ -435,3 +452,285 @@ class TestFailModeAuditTrail:
         assert db.rows[0]["action_taken"] == "fail_closed"
         assert db.rows[0]["text_sample"] == ""
         assert _SSN not in json.dumps(db.rows[0], default=str)
+
+
+def _log_only_violation_factory() -> object:
+    """Build a `_run_builtin_patterns` replacement returning one log-only violation.
+
+    Shared by the fail-mode-policy tests below: a log-only violation is what
+    makes `_should_invoke_auditor` return True without otherwise forcing a
+    block/redact decision, isolating the auditor's own contribution to the
+    final action.
+    """
+
+    async def _log_only_violation(text: str, target: str, org_id: int | None = None) -> list:
+        return [
+            FilterViolation(
+                rule_name="custom_log_rule",
+                rule_type="custom_string",
+                matched_text="x",
+                action="log",
+                confidence=0.5,
+            )
+        ]
+
+    return _log_only_violation
+
+
+class _KillSwitchFeatures:
+    """Minimal `features` stub for `_auditor_fail_mode_policy_disabled`."""
+
+    def __init__(self, disabled: bool) -> None:
+        self.disabled = disabled
+        self.calls: list[str] = []
+
+    def is_feature_enabled(self, flag_key: str, distinct_id: str = "server") -> bool:
+        self.calls.append(flag_key)
+        return self.disabled
+
+
+class _PerOrgKillSwitchFeatures:
+    """Flag stub whose answer depends on `distinct_id`, modeling an org-targeted PostHog flag."""
+
+    def __init__(self, disabled_distinct_ids: set[str]) -> None:
+        self.disabled_distinct_ids = disabled_distinct_ids
+        self.calls: list[tuple[str, str]] = []
+
+    def is_feature_enabled(self, flag_key: str, distinct_id: str = "server") -> bool:
+        self.calls.append((flag_key, distinct_id))
+        return distinct_id in self.disabled_distinct_ids
+
+
+class TestAuditorFailModePolicy:
+    """`SECURITY_AUDITOR_FAIL_MODE` (`ContentFilter.auditor_fail_mode`) governs degraded calls.
+
+    Regression (silent-fail-open finding): a degraded auditor call used to
+    be indistinguishable from a real ALLOW in both logs and metrics. These
+    tests cover the full matrix this fix introduces: `fail_mode="open"`
+    (preserves the historical allow-through behaviour, but now visibly),
+    `fail_mode="closed"` (blocks instead), an invalid configured value
+    (defaults to "open" with a warning), and the opt-out kill switch
+    (reverts to the pre-fix silent behaviour).
+    """
+
+    @pytest.mark.asyncio
+    async def test_fail_mode_closed_blocks_on_degraded_auditor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`auditor_fail_mode="closed"` blocks when the auditor is degraded."""
+        from shared.security.content_filter import AuditorResult
+
+        async def _degraded(*args: object, **kwargs: object) -> AuditorResult:
+            return AuditorResult(
+                should_block=False,
+                reason="auditor unavailable",
+                degraded=True,
+                error_class="ConnectionError",
+            )
+
+        cf = ContentFilter(db=None, license_client=_LicensedForNER(), auditor_fail_mode="closed")
+        monkeypatch.setattr(cf, "_run_builtin_patterns", _log_only_violation_factory())
+        monkeypatch.setattr(cf, "_invoke_llm_auditor", _degraded)
+        before = _counter_value("input", "fail_closed")
+
+        result = await cf.filter_input("some text")
+
+        assert result.allowed is False
+        assert result.action == "block"
+        assert result.degraded is True
+        assert _counter_value("input", "fail_closed") == before + 1
+
+    @pytest.mark.asyncio
+    async def test_fail_mode_open_keeps_rule_based_action_on_degraded_auditor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`auditor_fail_mode="open"` (the default) keeps the rule-based action, but visibly."""
+        from shared.security.content_filter import AuditorResult
+
+        async def _degraded(*args: object, **kwargs: object) -> AuditorResult:
+            return AuditorResult(
+                should_block=False,
+                reason="auditor unavailable",
+                degraded=True,
+                error_class="ConnectionError",
+            )
+
+        cf = ContentFilter(db=None, license_client=_LicensedForNER(), auditor_fail_mode="open")
+        monkeypatch.setattr(cf, "_run_builtin_patterns", _log_only_violation_factory())
+        monkeypatch.setattr(cf, "_invoke_llm_auditor", _degraded)
+        before = _counter_value("input", "fail_open")
+
+        result = await cf.filter_input("some text")
+
+        # log-only rule-based action -> allowed, but now traceable as degraded.
+        assert result.allowed is True
+        assert result.action == "log"
+        assert result.degraded is True
+        assert _counter_value("input", "fail_open") == before + 1
+
+    def test_invalid_fail_mode_defaults_to_open_with_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unrecognised `auditor_fail_mode` value falls back to 'open', logged loudly."""
+        with caplog.at_level(logging.WARNING):
+            cf = ContentFilter(db=None, auditor_fail_mode="bogus")
+
+        assert cf.auditor_fail_mode == "open"
+        assert "Invalid auditor_fail_mode" in caplog.text
+
+    def test_fail_mode_value_is_normalized_case_and_whitespace(self) -> None:
+        """`" CLOSED "` normalizes to `"closed"` rather than falling back to the default."""
+        cf = ContentFilter(db=None, auditor_fail_mode=" CLOSED ")
+        assert cf.auditor_fail_mode == "closed"
+
+    @pytest.mark.asyncio
+    async def test_degraded_warn_log_is_rate_limited_per_org_and_phase(
+        self, filter_instance: ContentFilter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A second degraded call for the same (org, phase) in the same window logs nothing more.
+
+        The Prometheus counter and `FilterResult.degraded` are never
+        throttled -- only this specific log statement, so an extended
+        outage doesn't flood logs at full request volume.
+        """
+        with caplog.at_level(logging.WARNING):
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=1)
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=1)
+
+        assert caplog.text.count("LLM auditor degraded") == 1
+
+    @pytest.mark.asyncio
+    async def test_degraded_warn_rate_limit_does_not_cross_orgs(
+        self, filter_instance: ContentFilter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Org B's first degraded WARN is never suppressed by org A's rate limit."""
+        with caplog.at_level(logging.WARNING):
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=1)
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=2)
+
+        assert caplog.text.count("LLM auditor degraded") == 2
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_reverts_to_legacy_silent_behaviour(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`waddleai.disable-auditor-fail-mode-policy` ON reproduces the pre-fix bug on purpose.
+
+        This is the kill switch's documented escape hatch, not a residual
+        bug: with it ON, a degraded auditor call is once again silently
+        treated as an ordinary ALLOW -- no counter increment, no
+        `FilterResult.degraded`.
+        """
+        from shared.security.content_filter import AuditorResult
+
+        async def _degraded(*args: object, **kwargs: object) -> AuditorResult:
+            return AuditorResult(
+                should_block=False,
+                reason="auditor unavailable",
+                degraded=True,
+                error_class="ConnectionError",
+            )
+
+        features = _KillSwitchFeatures(disabled=True)
+        cf = ContentFilter(db=None, license_client=_LicensedForNER(), features=features)
+        monkeypatch.setattr(cf, "_run_builtin_patterns", _log_only_violation_factory())
+        monkeypatch.setattr(cf, "_invoke_llm_auditor", _degraded)
+        before = _counter_value("input", "fail_open")
+
+        result = await cf.filter_input("some text")
+
+        assert result.allowed is True
+        assert result.action == "log"
+        assert result.degraded is False
+        assert result.auditor_used is True
+        assert _counter_value("input", "fail_open") == before
+        assert "waddleai.disable-auditor-fail-mode-policy" in features.calls
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_off_keeps_new_mechanism_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The kill switch OFF (the default) is a no-op -- the new mechanism stays active."""
+        from shared.security.content_filter import AuditorResult
+
+        async def _degraded(*args: object, **kwargs: object) -> AuditorResult:
+            return AuditorResult(
+                should_block=False,
+                reason="auditor timeout",
+                degraded=True,
+                error_class="TimeoutError",
+            )
+
+        features = _KillSwitchFeatures(disabled=False)
+        cf = ContentFilter(db=None, license_client=_LicensedForNER(), features=features)
+        monkeypatch.setattr(cf, "_run_builtin_patterns", _log_only_violation_factory())
+        monkeypatch.setattr(cf, "_invoke_llm_auditor", _degraded)
+
+        result = await cf.filter_input("some text")
+
+        assert result.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_check_is_cached_within_the_ttl(self) -> None:
+        """A second check for the same org inside the TTL window reuses the cached value."""
+        features = _KillSwitchFeatures(disabled=True)
+        cf = ContentFilter(db=None, features=features)
+
+        first = await cf._auditor_fail_mode_policy_disabled(org_id=None)
+        second = await cf._auditor_fail_mode_policy_disabled(org_id=None)
+
+        assert first is True
+        assert second is True
+        # Only one real flag check -- the second call hit the TTL cache.
+        assert features.calls == ["waddleai.disable-auditor-fail-mode-policy"]
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_check_failure_fails_toward_visibility(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising flag client keeps the new mechanism ON rather than crashing the filter."""
+
+        class _RaisingFeatures:
+            def is_feature_enabled(self, flag_key: str, distinct_id: str = "server") -> bool:
+                raise RuntimeError("PostHog unreachable")
+
+        cf = ContentFilter(db=None, features=_RaisingFeatures())
+
+        with caplog.at_level(logging.WARNING):
+            disabled = await cf._auditor_fail_mode_policy_disabled(org_id=None)
+
+        assert disabled is False
+        assert "kill-switch check failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_fail_mode_flag_cache_does_not_bleed_across_orgs(self) -> None:
+        """Org A's resolved kill-switch state is never served to org B.
+
+        Regression: `_auditor_fail_mode_flag_cache` was originally a single
+        process-wide `(checked_at, disabled)` tuple -- the FIRST org to
+        trigger the check cached its answer for every org for
+        `_AUDITOR_FAIL_MODE_FLAG_CACHE_TTL` seconds. The flag
+        (`waddleai.disable-auditor-fail-mode-policy`) can be org-targeted in
+        PostHog, so that was a cross-tenant leak: org A's kill switch being
+        ON would silently disable org B's fail-mode-policy telemetry too.
+        """
+        features = _PerOrgKillSwitchFeatures(disabled_distinct_ids={"1"})
+        cf = ContentFilter(db=None, features=features)
+
+        org_a_disabled = await cf._auditor_fail_mode_policy_disabled(org_id=1)
+        org_b_disabled = await cf._auditor_fail_mode_policy_disabled(org_id=2)
+        # Re-check org A again (within the TTL) -- must still come back True,
+        # not be overwritten/shadowed by org B's cache entry.
+        org_a_disabled_again = await cf._auditor_fail_mode_policy_disabled(org_id=1)
+
+        assert org_a_disabled is True
+        assert org_b_disabled is False
+        assert org_a_disabled_again is True
+        # One real flag check per org -- org A's second call hit its own
+        # cache entry, not org B's.
+        assert features.calls == [
+            ("waddleai.disable-auditor-fail-mode-policy", "1"),
+            ("waddleai.disable-auditor-fail-mode-policy", "2"),
+        ]
+        # Two independent cache entries, keyed by org_id.
+        assert set(cf._auditor_fail_mode_flag_cache.keys()) == {1, 2}

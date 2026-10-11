@@ -321,4 +321,31 @@ spec:
           annotations:
             summary: "Proxy license checks failing"
             description: "Calls to license.penguintech.io are erroring; entitlement checks are falling back to cached state. See docs/operations/MONITORING.md#proxylicensecheckerrors."
+        - alert: ProxyContentFilterAuditorFailOpen
+          # ops-remediation (content-filter guard degraded traceability): the
+          # LLM auditor (shared/security/content_filter.py) being
+          # unreachable/timing-out used to be silently indistinguishable from
+          # an ordinary ALLOW -- waddleai_content_filter_fail_total{mode=
+          # "fail_open"} is the counter that now actually increments for it.
+          expr: |
+            sum(rate(waddleai_content_filter_fail_total{mode="fail_open"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Content-filter LLM auditor degraded, failing open"
+            description: "The LLM auditor is unreachable/timing out/returning non-200 and SECURITY_AUDITOR_FAIL_MODE=open is letting the rule-based tiers-1-3 decision through unaudited. Check Ollama/the auditor endpoint directly; waddleai_security_auditor_duration_seconds{outcome=\"degraded\"} shows the failure rate. See docs/operations/MONITORING.md#proxycontentfilterauditorfailopen."
+        - alert: ProxyContentFilterAuditorFailClosed
+          expr: |
+            sum(rate(waddleai_content_filter_fail_total{mode="fail_closed"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: proxy
+            slo: cause
+          annotations:
+            summary: "Content-filter blocking traffic due to a degraded/defective auditor"
+            description: "Either SECURITY_AUDITOR_FAIL_MODE=closed is blocking requests because the LLM auditor is degraded, or a programming defect in the auditor call path is blocking unconditionally -- check logs for \"LLM auditor degraded\" vs \"LLM auditor call is broken\" to tell them apart. See docs/operations/MONITORING.md#proxycontentfilterauditorfailclosed."
 {{- end }}

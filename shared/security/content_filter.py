@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 import aiohttp
-from prometheus_client import Counter
+from prometheus_client import Counter, Histogram
 
 from shared.licensing.gate_cache import LicenseGateCacheEntry
 from shared.observability.metrics import pii_detected_counter
@@ -66,6 +66,17 @@ _content_filter_fail_total = Counter(
     "waddleai_content_filter_fail_total",
     "ContentFilter internal failures, split by outcome",
     ["phase", "mode"],  # mode: fail_open (operational) | fail_closed (programming defect)
+)
+
+# §_invoke_llm_auditor latency, labeled by outcome so a degraded (auditor
+# unreachable/timeout/non-200) spell is visible as its own series rather
+# than blending into "block"/"allow" timings -- bounded label set only
+# (never a model name or error string), per critical-rules.md Observability.
+_auditor_duration_seconds = Histogram(
+    "waddleai_security_auditor_duration_seconds",
+    "LLM content-filter auditor invocation latency, by outcome",
+    ["outcome"],  # allow | block | degraded
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0),
 )
 
 
@@ -183,6 +194,49 @@ class FilterResult:
     # without the auditor's judgment must be visible in the audit trail,
     # not silently indistinguishable from a fully-evaluated one.
     degraded: bool = False
+
+
+@dataclass(slots=True)
+class AuditorResult:
+    """Structured outcome of one `ContentFilter._invoke_llm_auditor` call.
+
+    Replaces a bare `tuple[bool, str]`, which let every call site
+    destructure as `should_block, _ = await self._invoke_llm_auditor(...)`
+    and silently discard whether the auditor was actually reachable --
+    exactly the gh-207-adjacent silent-fail-open bug this type closes.
+    `degraded=True` whenever the verdict came from an operational fallback
+    (timeout, connection failure, non-200 response) rather than a genuine
+    model response, so every caller is forced to see and act on it instead
+    of treating a dead guard as an ordinary ALLOW.
+    """
+
+    should_block: bool
+    reason: str
+    degraded: bool = False
+    error_class: str | None = None
+
+
+# Opt-out kill-switch for the auditor fail-mode-policy/degraded-telemetry
+# mechanism below (unseen/OFF = mechanism ON, the default; ON = revert to
+# the pre-fix legacy behaviour of silently treating a degraded auditor call
+# as an ordinary ALLOW, with no counter increment, no WARN, no audit-log
+# `degraded` flag). Evaluated via `self._features` (the same
+# `FeatureFlagsHelper` instance passed in for the NER-tier gate), not a
+# dedicated client -- see `_auditor_fail_mode_policy_disabled`.
+DISABLE_AUDITOR_FAIL_MODE_POLICY_FLAG = "waddleai.disable-auditor-fail-mode-policy"
+_AUDITOR_FAIL_MODE_FLAG_CACHE_TTL = 30.0
+
+# `ContentFilter(auditor_fail_mode=...)` / `SECURITY_AUDITOR_FAIL_MODE` valid
+# values. "open" preserves the historical behaviour (an unreachable auditor
+# never blocks by itself); "closed" blocks instead, trading availability for
+# safety when the auditor itself cannot be trusted to have run.
+_VALID_AUDITOR_FAIL_MODES = ("open", "closed")
+
+# How often `_warn_auditor_degraded` is allowed to actually emit a WARN per
+# phase, so an extended auditor outage doesn't flood logs at full request
+# volume -- every individual degraded call still increments the Prometheus
+# counter and sets `FilterResult.degraded` regardless of this throttle.
+_AUDITOR_DEGRADED_WARN_INTERVAL_SECONDS = 60.0
 
 
 # Cached result of the NER-tier flag+licence gate for one org, expired after
@@ -339,13 +393,16 @@ class ContentFilter:
         auditor_model: str = "shieldgemma:2b",
         license_client: Any = None,
         features: Any = None,
+        auditor_fail_mode: str = "open",
     ) -> None:
         """Initialize content filter.
 
         license_client / features gate the NER tier only (see
         _ner_tier_enabled). Both default to None, which means "unlicensed":
         tiers 1 and 2 still run, so a caller that passes neither gets baseline
-        PII protection rather than none.
+        PII protection rather than none. ``features`` is also consulted for
+        the auditor fail-mode-policy kill switch (see
+        ``_auditor_fail_mode_policy_disabled``).
 
         Args:
             db: penguin-dal database instance
@@ -353,6 +410,13 @@ class ContentFilter:
             auditor_model: Model name for LLM auditor
             license_client: ``penguin_licensing`` client. None means the NER
                 tier stays off; the ungated pattern tiers still run.
+            auditor_fail_mode: ``"open"`` (default, preserves historical
+                behaviour) or ``"closed"``. Governs what `_filter()` does
+                when the auditor comes back `degraded` (unreachable,
+                timeout, non-200): "open" keeps the rule-based tiers-1-3
+                action; "closed" blocks instead. An invalid value falls
+                back to "open" with a logged warning. Normally sourced from
+                ``SECURITY_AUDITOR_FAIL_MODE`` by the caller.
             features: Feature-flag helper exposing ``is_feature_enabled``.
                 None skips the flag check, leaving the licence check to decide.
 
@@ -360,6 +424,31 @@ class ContentFilter:
         self.db = db
         self.ollama_base_url = ollama_base_url
         self.auditor_model = auditor_model
+
+        normalized_fail_mode = auditor_fail_mode.strip().lower()
+        if normalized_fail_mode not in _VALID_AUDITOR_FAIL_MODES:
+            logger.warning(
+                "Invalid auditor_fail_mode=%r (expected one of %s); defaulting to 'open'.",
+                auditor_fail_mode,
+                _VALID_AUDITOR_FAIL_MODES,
+            )
+            normalized_fail_mode = "open"
+        self.auditor_fail_mode = normalized_fail_mode
+
+        # Rate-limits `_warn_auditor_degraded`'s log line per (org_id, phase)
+        # (the Prometheus counter/FilterResult.degraded/audit-log flag are
+        # never throttled, only this log statement). Keyed by org to match
+        # every other per-org cache in this class -- see
+        # _auditor_fail_mode_flag_cache below for why a global key is wrong
+        # here (the flag it gates can be org-targeted).
+        self._last_auditor_degraded_warn: dict[tuple[int | None, str], float] = {}
+        # Short TTL cache for the auditor fail-mode-policy kill switch (see
+        # _auditor_fail_mode_policy_disabled), keyed by org_id -- same shape
+        # as _builtin_disable_cache/_ner_disable_cache/_ner_tier_cache below.
+        # `waddleai.disable-auditor-fail-mode-policy` can be org-targeted in
+        # PostHog, so a single process-wide cache entry would leak org A's
+        # resolved kill-switch state to org B.
+        self._auditor_fail_mode_flag_cache: dict[int | None, tuple[float, bool]] = {}
 
         # Compile built-in patterns
         self.compiled_patterns: dict[str, re.Pattern[str]] = {}
@@ -507,14 +596,37 @@ class ContentFilter:
             # Phase 3: Invoke LLM auditor for uncertain cases
             if self._should_invoke_auditor(violations, action):
                 try:
-                    should_block, _ = await self._invoke_llm_auditor(
+                    audit_result = await self._invoke_llm_auditor(
                         text,
                         phase,
                         violations,
                         org_id,
                     )
                     auditor_used = True
-                    if should_block:
+                    if audit_result.degraded:
+                        # The auditor did not produce a real verdict (dead
+                        # endpoint, timeout, non-200) -- this used to be
+                        # silently indistinguishable from an ordinary ALLOW
+                        # (gh-207-adjacent finding). Make it observable
+                        # unless the kill switch reverts to that legacy
+                        # behaviour.
+                        if await self._auditor_fail_mode_policy_disabled(org_id):
+                            pass
+                        else:
+                            auditor_degraded = True
+                            effective_mode = self.auditor_fail_mode
+                            _record_fail_mode(
+                                phase,
+                                "fail_closed" if effective_mode == "closed" else "fail_open",
+                            )
+                            self._warn_auditor_degraded(phase, audit_result.error_class, org_id)
+                            if effective_mode == "closed":
+                                action = "block"
+                            # else ("open"): keep the rule-based `action` --
+                            # the deliberate availability trade-off, now
+                            # traceable via the counter/WARN/audit flag
+                            # above instead of silent.
+                    elif audit_result.should_block:
                         action = "block"
                 except (TypeError, AttributeError, KeyError, NameError, ImportError) as e:
                     # Programming defect in the auditor call path (e.g. a bad
@@ -536,6 +648,14 @@ class ContentFilter:
                     auditor_used = False
                     _record_fail_mode(phase, "fail_closed")
                 except Exception as e:
+                    # `_invoke_llm_auditor` itself no longer raises for
+                    # operational failures (timeout/connection/non-200) --
+                    # it returns a `degraded=True` AuditorResult, handled
+                    # above. Reaching here means an unexpected defect in
+                    # this call site's own code (e.g. `_auditor_fail_mode_
+                    # policy_disabled`/`_warn_auditor_degraded`) -- a rare
+                    # backstop, not the primary degraded path, so it always
+                    # fails open regardless of `self.auditor_fail_mode`.
                     logger.warning(
                         f"LLM auditor failed (phase={phase}): {e}. "
                         f"Continuing with rule-based decision."
@@ -799,13 +919,88 @@ class ContentFilter:
 
         return violations
 
+    async def _auditor_fail_mode_policy_disabled(self, org_id: int | None) -> bool:
+        """Whether the `DISABLE_AUDITOR_FAIL_MODE_POLICY_FLAG` kill switch is ON.
+
+        Unseen/OFF (the default) keeps the fix active: a degraded auditor
+        call increments the fail-mode counter, logs a rate-limited WARN,
+        and sets `FilterResult.degraded` (-> the gh-207 audit-log flag),
+        resolved via `self.auditor_fail_mode`. ON reverts to the pre-fix
+        legacy behaviour -- a degraded call is silently treated as an
+        ordinary ALLOW, with none of the above. A short TTL cache keeps a
+        PostHog outage (or a cluster of degraded calls in one incident)
+        from re-checking the flag on every single one. Cached per `org_id`
+        (not globally) because the flag itself can be org-targeted in
+        PostHog -- see `_auditor_fail_mode_flag_cache`'s docstring in
+        `__init__`.
+        """
+        if self._features is None:
+            return False
+
+        now = time.monotonic()
+        cached = self._auditor_fail_mode_flag_cache.get(org_id)
+        if cached is not None:
+            checked_at, disabled = cached
+            if now - checked_at < _AUDITOR_FAIL_MODE_FLAG_CACHE_TTL:
+                return disabled
+
+        try:
+            disabled = await asyncio.to_thread(
+                self._features.is_feature_enabled,
+                DISABLE_AUDITOR_FAIL_MODE_POLICY_FLAG,
+                distinct_id=str(org_id) if org_id else "server",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Auditor fail-mode-policy kill-switch check failed; keeping the "
+                "mechanism ON (fail toward visibility): %s",
+                exc,
+            )
+            disabled = False
+
+        self._auditor_fail_mode_flag_cache[org_id] = (now, disabled)
+        return bool(disabled)
+
+    def _warn_auditor_degraded(
+        self, phase: str, error_class: str | None, org_id: int | None
+    ) -> None:
+        """Log a rate-limited WARN the first time the auditor degrades in a window.
+
+        Every individual degraded call still increments
+        `_content_filter_fail_total` and sets `FilterResult.degraded`/the
+        audit-log flag unconditionally -- this only throttles the log
+        statement itself (once per `(org_id, phase)` per
+        `_AUDITOR_DEGRADED_WARN_INTERVAL_SECONDS`) so an extended outage
+        doesn't flood logs at full request volume. Keyed by org (not just
+        phase) for the same cross-tenant reason as
+        `_auditor_fail_mode_flag_cache`: an outage scoped to one org's
+        auditor configuration shouldn't suppress another org's first WARN.
+        Never logs prompt content.
+        """
+        now = time.monotonic()
+        key = (org_id, phase)
+        last = self._last_auditor_degraded_warn.get(key, 0.0)
+        if now - last < _AUDITOR_DEGRADED_WARN_INTERVAL_SECONDS:
+            return
+        self._last_auditor_degraded_warn[key] = now
+        logger.warning(
+            "LLM auditor degraded (org=%s, phase=%s, error_class=%s, fail_mode=%s) -- "
+            "a rule-based tiers-1-3 decision is being used instead of a real "
+            "auditor verdict. (Further occurrences in this window are "
+            "suppressed from logs but still counted and audit-logged.)",
+            org_id,
+            phase,
+            error_class or "unknown",
+            self.auditor_fail_mode,
+        )
+
     async def _invoke_llm_auditor(
         self,
         text: str,
         phase: str,
         violations: list[FilterViolation],
         org_id: int | None = None,
-    ) -> tuple[bool, str]:
+    ) -> AuditorResult:
         """Invoke local Ollama LLM auditor for uncertain cases.
 
         Args:
@@ -815,7 +1010,11 @@ class ContentFilter:
             org_id: Organization ID for custom system prompt
 
         Returns:
-            Tuple of (should_block, explanation)
+            An `AuditorResult`. Every network/IO return path below sets
+            `degraded` explicitly -- a dead/timing-out/non-200 auditor is
+            never allowed to look like an ordinary successful verdict to
+            the caller (see `AuditorResult`'s docstring and `_filter()`'s
+            call site).
 
         """
         is_shieldgemma = "shieldgemma" in self.auditor_model.lower()
@@ -874,9 +1073,18 @@ class ContentFilter:
             ]
 
         # Everything past this point is genuine network/IO. Operational
-        # failures here (unreachable host, timeout, malformed upstream
-        # response) are the deliberate, documented fail-open policy for
-        # this method -- distinct from the message-building defects above.
+        # failures here (unreachable host, timeout, non-200, malformed
+        # upstream response) are the deliberate, documented fail-open
+        # *default* for this method -- distinct from the message-building
+        # defects above -- but every such path now returns
+        # `degraded=True` instead of a bare tuple, so the caller (not this
+        # method) decides what "fail-open" actually means via
+        # `self.auditor_fail_mode` (see `_filter()`'s call site).
+        start = time.monotonic()
+
+        def _observe(outcome: str) -> None:
+            _auditor_duration_seconds.labels(outcome=outcome).observe(time.monotonic() - start)
+
         try:
             async with aiohttp.ClientSession() as session:
                 try:
@@ -915,12 +1123,15 @@ class ContentFilter:
                                     # ContentFilter has no fail_mode concept of
                                     # its own (that is SecurityPolicyEngine's
                                     # job, layered on top) -- its own safe
-                                    # default is fail-closed.
+                                    # default is fail-closed. Not `degraded`:
+                                    # the model DID respond, it just couldn't
+                                    # be parsed into a verdict.
                                     logger.warning(
                                         f"Granite Guardian unparseable verdict ({phase}): "
                                         f"{response_text[:100]!r} -- failing closed"
                                     )
-                                    return True, "unparseable"
+                                    _observe("block")
+                                    return AuditorResult(should_block=True, reason="unparseable")
                                 should_block = verdict == "block"
                             else:
                                 should_block = "BLOCK" in response_text.upper()
@@ -930,20 +1141,49 @@ class ContentFilter:
                                 f"{'BLOCK' if should_block else 'ALLOW'} "
                                 f"(response: {response_text[:100]})"
                             )
-                            return should_block, response_text
+                            _observe("block" if should_block else "allow")
+                            return AuditorResult(should_block=should_block, reason=response_text)
+
+                        logger.warning(
+                            f"LLM auditor non-200 status ({phase}): {resp.status}. "
+                            f"Allowing content (fail-open policy)."
+                        )
+                        _observe("degraded")
+                        return AuditorResult(
+                            should_block=False,
+                            reason=f"auditor http {resp.status}",
+                            degraded=True,
+                            error_class="HTTPStatus",
+                        )
 
                 except TimeoutError:
                     logger.warning(
                         f"LLM auditor timeout ({phase}). Allowing content (fail-open policy)."
                     )
-                    return False, "auditor timeout"
+                    _observe("degraded")
+                    return AuditorResult(
+                        should_block=False,
+                        reason="auditor timeout",
+                        degraded=True,
+                        error_class="TimeoutError",
+                    )
 
         except Exception as e:
             logger.warning(
                 f"LLM auditor error ({phase}): {e}. Allowing content (fail-open policy)."
             )
+            _observe("degraded")
+            return AuditorResult(
+                should_block=False,
+                reason="auditor unavailable",
+                degraded=True,
+                error_class=type(e).__name__,
+            )
 
-        return False, "auditor unavailable"
+        # Unreachable: every branch above (200/non-200/TimeoutError/generic
+        # Exception) returns explicitly. Kept for mypy --strict completeness
+        # and as a loud failure if a future edit adds a silent fall-through.
+        raise AssertionError("unreachable: _invoke_llm_auditor fell through all return paths")
 
     def _load_system_prompt(self, org_id: int | None) -> str:
         """Load custom system prompt from DB, or fall back to default.

@@ -61,12 +61,11 @@ class TestStandardChatModelAuditor:
         session = _mock_ollama_session(200, {"message": {"content": "BLOCK - contains PII"}})
         _patch_session(monkeypatch, session)
 
-        should_block, explanation = await cf._invoke_llm_auditor(
-            "some text", "input", [], org_id=None
-        )
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is True
-        assert "BLOCK" in explanation
+        assert result.should_block is True
+        assert "BLOCK" in result.reason
+        assert result.degraded is False
 
     async def test_allow_response_returns_should_block_false(
         self, monkeypatch: pytest.MonkeyPatch
@@ -76,12 +75,11 @@ class TestStandardChatModelAuditor:
         session = _mock_ollama_session(200, {"message": {"content": "ALLOW"}})
         _patch_session(monkeypatch, session)
 
-        should_block, explanation = await cf._invoke_llm_auditor(
-            "some text", "input", [], org_id=None
-        )
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is False
-        assert explanation == "ALLOW"
+        assert result.should_block is False
+        assert result.reason == "ALLOW"
+        assert result.degraded is False
 
     async def test_pattern_and_ner_violations_both_summarized_in_user_message(
         self, monkeypatch: pytest.MonkeyPatch
@@ -138,9 +136,10 @@ class TestShieldGemmaAuditor:
         session = _mock_ollama_session(200, {"message": {"content": "YES"}})
         _patch_session(monkeypatch, session)
 
-        should_block, _ = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is True
+        assert result.should_block is True
+        assert result.degraded is False
 
     async def test_no_maps_to_should_block_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A 'NO' response allows."""
@@ -148,9 +147,10 @@ class TestShieldGemmaAuditor:
         session = _mock_ollama_session(200, {"message": {"content": "NO"}})
         _patch_session(monkeypatch, session)
 
-        should_block, _ = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is False
+        assert result.should_block is False
+        assert result.degraded is False
 
 
 class TestGraniteGuardianAuditor:
@@ -162,9 +162,10 @@ class TestGraniteGuardianAuditor:
         session = _mock_ollama_session(200, {"message": {"content": "Yes"}})
         _patch_session(monkeypatch, session)
 
-        should_block, _ = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is True
+        assert result.should_block is True
+        assert result.degraded is False
 
     async def test_no_maps_to_should_block_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A 'No' response allows."""
@@ -172,9 +173,10 @@ class TestGraniteGuardianAuditor:
         session = _mock_ollama_session(200, {"message": {"content": "No"}})
         _patch_session(monkeypatch, session)
 
-        should_block, _ = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is False
+        assert result.should_block is False
+        assert result.degraded is False
 
     async def test_unparseable_verdict_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A hedging, non-Yes/No response is never treated as a safe default -- it blocks.
@@ -188,22 +190,40 @@ class TestGraniteGuardianAuditor:
         )
         _patch_session(monkeypatch, session)
 
-        should_block, explanation = await cf._invoke_llm_auditor(
-            "some text", "input", [], org_id=None
-        )
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is True
-        assert explanation == "unparseable"
+        # Unparseable fails CLOSED (should_block=True) but is NOT `degraded`
+        # -- the model did respond, it just couldn't be parsed into a
+        # verdict; distinct from "the auditor never ran at all" below.
+        assert result.should_block is True
+        assert result.reason == "unparseable"
+        assert result.degraded is False
 
 
 class TestAuditorOperationalFailures:
-    """Timeout / non-200 / malformed-JSON: the method's own documented fail-open policy."""
+    """Timeout / non-200 / malformed-JSON: the method's own documented fail-open *default*.
+
+    Regression (silent-fail-open finding): every path here used to return a
+    bare `tuple[bool, str]` indistinguishable from a real ALLOW verdict once
+    a caller destructured and discarded the second element. Each case here
+    now asserts `degraded=True` and a specific `error_class`, and that the
+    auditor-duration histogram recorded the call under the "degraded"
+    outcome label -- the signal `_filter()`'s call site depends on to ever
+    increment the fail-mode counter / set `FilterResult.degraded`.
+    """
+
+    @staticmethod
+    def _degraded_observation_count() -> float:
+        """Sum of all `outcome="degraded"` histogram observations recorded so far."""
+        metric = content_filter_module._auditor_duration_seconds.labels(outcome="degraded")
+        return metric._sum.get()  # type: ignore[no-any-return]
 
     async def test_timeout_returns_fail_open_signal(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A request timeout returns should_block=False with an explanatory string.
+        """A request timeout returns should_block=False, degraded=True, error_class set.
 
-        This is `_invoke_llm_auditor`'s own operational fail-open policy
-        (an unreachable auditor never blocks by itself); it is distinct from
+        This is `_invoke_llm_auditor`'s own operational fail-open *default*
+        (an unreachable auditor never blocks by itself unless
+        `ContentFilter.auditor_fail_mode == "closed"`); it is distinct from
         `_filter()`'s fail-closed handling of *programming* defects in the
         auditor call path (see test_content_filter_fail_mode.py).
         """
@@ -213,28 +233,30 @@ class TestAuditorOperationalFailures:
         session.__aenter__ = AsyncMock(return_value=session)
         session.__aexit__ = AsyncMock(return_value=False)
         _patch_session(monkeypatch, session)
+        before = self._degraded_observation_count()
 
-        should_block, explanation = await cf._invoke_llm_auditor(
-            "some text", "input", [], org_id=None
-        )
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is False
-        assert explanation == "auditor timeout"
+        assert result.should_block is False
+        assert result.reason == "auditor timeout"
+        assert result.degraded is True
+        assert result.error_class == "TimeoutError"
+        assert self._degraded_observation_count() > before
 
     async def test_non_200_status_returns_fail_open_signal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A non-200 response (e.g. Ollama overloaded) never parses a body, and fails open."""
+        """A non-200 response (e.g. Ollama overloaded) never parses a body, and degrades."""
         cf = ContentFilter(db=None, auditor_model="llama3.2:3b")
         session = _mock_ollama_session(503, {})
         _patch_session(monkeypatch, session)
 
-        should_block, explanation = await cf._invoke_llm_auditor(
-            "some text", "input", [], org_id=None
-        )
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is False
-        assert explanation == "auditor unavailable"
+        assert result.should_block is False
+        assert result.reason == "auditor http 503"
+        assert result.degraded is True
+        assert result.error_class == "HTTPStatus"
 
     async def test_malformed_json_response_fails_open(
         self, monkeypatch: pytest.MonkeyPatch
@@ -244,15 +266,15 @@ class TestAuditorOperationalFailures:
         session = _mock_ollama_session(200, json_error=True)
         _patch_session(monkeypatch, session)
 
-        should_block, explanation = await cf._invoke_llm_auditor(
-            "some text", "input", [], org_id=None
-        )
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is False
-        assert explanation == "auditor unavailable"
+        assert result.should_block is False
+        assert result.reason == "auditor unavailable"
+        assert result.degraded is True
+        assert result.error_class == "ValueError"
 
     async def test_connection_refused_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Ollama being entirely unreachable (connection refused) also fails open."""
+        """Ollama being entirely unreachable (connection refused) also degrades."""
         cf = ContentFilter(db=None, auditor_model="llama3.2:3b")
 
         class _RefusingSession:
@@ -266,12 +288,12 @@ class TestAuditorOperationalFailures:
             content_filter_module.aiohttp, "ClientSession", lambda *a, **kw: _RefusingSession()
         )
 
-        should_block, explanation = await cf._invoke_llm_auditor(
-            "some text", "input", [], org_id=None
-        )
+        result = await cf._invoke_llm_auditor("some text", "input", [], org_id=None)
 
-        assert should_block is False
-        assert explanation == "auditor unavailable"
+        assert result.should_block is False
+        assert result.reason == "auditor unavailable"
+        assert result.degraded is True
+        assert result.error_class == "ConnectionRefusedError"
 
 
 class TestShouldInvokeAuditor:

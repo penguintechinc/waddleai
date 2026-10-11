@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from shared.security.content_filter import AuditorResult
 from shared.security.output_guardrails import OutputGuardrails
 from shared.security.policy_engine import SecurityPolicyEngine
 from shared.security.policy_resolver import ResolvedPolicy
@@ -61,8 +62,8 @@ class StubOutputContentFilter:
 
     async def _invoke_llm_auditor(
         self, text: str, direction: str, violations: list[Any], org_id: Any
-    ) -> tuple[bool, str]:
-        return False, "allow"
+    ) -> AuditorResult:
+        return AuditorResult(should_block=False, reason="allow")
 
 
 def _policy(**overrides: Any) -> ResolvedPolicy:
