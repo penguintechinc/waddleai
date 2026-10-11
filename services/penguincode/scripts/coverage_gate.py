@@ -73,6 +73,9 @@ TIER_A_PATHS: tuple[str, ...] = (
     "penguincode_cli/client/offline_cache.py",
     "penguincode_cli/client/update_check.py",
     "penguincode_cli/tools/memory.py",
+    "penguincode_cli/docs_rag/fetcher.py",
+    "penguincode_cli/core/repl.py",
+    "penguincode_cli/main.py",
 )
 
 
