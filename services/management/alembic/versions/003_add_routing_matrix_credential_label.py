@@ -17,7 +17,16 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add nullable routing_matrix.credential_label column."""
+    """Widen alembic_version.version_num, then add nullable routing_matrix.credential_label.
+
+    Alembic creates ``alembic_version.version_num`` as VARCHAR(32) but this revision's id is
+    39 chars, so a DB stamped at 001/002 (still VARCHAR(32)) died with StringDataRightTruncation
+    when Alembic recorded it (gh-215). Widen first, idempotently (255 matches 001_baseline; an
+    already-widened column is left as-is). SQLite's column is TEXT, so Postgres only.
+    """
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)")
     op.add_column(
         "routing_matrix",
         sa.Column("credential_label", sa.String(255), nullable=True),

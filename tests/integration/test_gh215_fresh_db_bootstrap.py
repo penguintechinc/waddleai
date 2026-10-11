@@ -380,3 +380,69 @@ def test_populated_mid_chain_db_upgrades_through_the_normal_chain(
     # 011 folds a per-org policy row for each org with filter config, beside the global row:
     # proves the pre-existing data went through the real migration, not a rebuild.
     assert _scalar(url, "SELECT count(*) FROM security_policies") == 2
+
+
+# regression: gh-215
+def test_db_stamped_at_002_with_varchar32_version_num_reaches_head(
+    empty_db: _EmptyPostgres,
+) -> None:
+    """A DB sitting at 002 on a VARCHAR(32) ``alembic_version`` still upgrades to head.
+
+    Revision 003's id is 39 chars; only 001's widening protected fresh bootstraps, so a DB
+    stamped at 001/002 (column still VARCHAR(32), as Alembic creates it) died at 002 -> 003
+    with StringDataRightTruncation. 003 now widens the column itself.
+    """
+    url = empty_db.database_url
+    assert _run_alembic(url, "upgrade", "002_add_provider_credentials").returncode == 0
+    # Recreate the stamped-at-002 state: Alembic's own default width (001 widened it).
+    engine = sa.create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(32)")
+        )
+    engine.dispose()
+    assert (
+        _scalar(
+            url,
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_name='alembic_version' AND column_name='version_num'",
+        )
+        == 32
+    )
+    assert _revision(url) == ["002_add_provider_credentials"]
+
+    result = _run_job_command(url)
+
+    assert result.returncode == 0, (
+        f"upgrade from VARCHAR(32) stamp failed:\n{result.stderr[-2000:]}"
+    )
+    assert _revision(url) == [_head_revision()]
+
+
+# regression: gh-215
+def test_baseline_free_text_columns_are_text_not_varchar(empty_db: _EmptyPostgres) -> None:
+    """The frozen baseline keeps the pre-Alembic unbounded columns as ``text``, not varchar.
+
+    Checked at ``001_baseline`` (not head): 007 later drops the two ailb_* tables.
+    """
+    url = empty_db.database_url
+    assert _run_alembic(url, "upgrade", "001_baseline").returncode == 0
+    for table, column in (
+        ("memory_embeddings", "content"),
+        ("memory_embeddings", "embedding_json"),
+        ("rag_documents", "content"),
+        ("rag_documents", "embedding_json"),
+        ("organizations", "description"),
+        ("security_logs", "prompt_sample"),
+        ("usage_logs", "error_message"),
+        ("ailb_usage_events", "error_message"),
+        ("marchproxy_ailb_sync", "sync_error"),
+    ):
+        data_type = _scalar(
+            url,
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name=:t AND column_name=:c",
+            t=table,
+            c=column,
+        )
+        assert data_type == "text", f"{table}.{column} is {data_type!r}, expected 'text'"
