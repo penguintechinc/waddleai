@@ -929,9 +929,14 @@ grpcio==1.69.0 \
     --hash=sha256:fc18a4de8c33491ad6f70022af5c460b39611e39578a4d84de0fe92f12d5d47b
     # via
     #   -r services/penguincode/requirements.in
+    #   grpcio-health-checking
     #   grpcio-tools
     #   opentelemetry-exporter-otlp-proto-grpc
     #   qdrant-client
+grpcio-health-checking==1.69.0 \
+    --hash=sha256:d2d0eec7e3af245863fd4997e2942d27c0868fbd61ffa4d14bc492c3e2c67127 \
+    --hash=sha256:ff6e1d38c2a300b1bbd296916fbd9165667bc4b5a8557f99dd4226d4f9e8f4c1
+    # via -r services/penguincode/requirements.in
 grpcio-tools==1.69.0 \
     --hash=sha256:00adf628259e8c314a02ca1580d6a8b14eeef266f5dd5e15bf92c1efbbcf63c0 \
     --hash=sha256:01121b6570932bfb7d8b2ce2c0055dba902a415477079e249d85fe4494f72db2 \
@@ -2192,6 +2197,7 @@ protobuf==5.29.6 \
     # via
     #   -r services/penguincode/requirements.in
     #   googleapis-common-protos
+    #   grpcio-health-checking
     #   grpcio-tools
     #   mem0ai
     #   opentelemetry-proto

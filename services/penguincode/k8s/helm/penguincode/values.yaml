@@ -45,25 +45,27 @@ server:
       cpu: 500m
       memory: 1Gi
 
-  # gRPC health check configuration. The exec-based grpc.channel_ready_future
-  # check (templates/server-deployment.yaml) only proves the TCP/HTTP2
-  # channel accepts connections, never that the server is actually serving
-  # (penguincode_cli/server/services/health.py's HealthServiceImpl is a
-  # custom, non-standard RPC). nativeGrpcProbe switches both probes to K8s's
-  # native `grpc:` probe type (GA since 1.27) against the standard
-  # `grpc.health.v1.Health` service -- but that service is not currently
-  # registered by penguincode_cli/server/main.py (shared/py_libs/py_libs/
-  # grpc/server.py's register_health_check exists and is unused there).
-  # Defaults OFF until that server-side wiring lands (separate, non-Helm
-  # change, tracked outside this PR) -- flipping this on before then means
-  # every probe fails closed (UNIMPLEMENTED) and the pod never goes Ready.
+  # gRPC health check configuration. penguincode_cli/server/main.py now
+  # registers the standard grpc.health.v1.Health service
+  # (server/grpc_health.py), driven by the real server lifecycle (db pool,
+  # index workers, startup/shutdown drain) -- so nativeGrpcProbe defaults ON:
+  # liveness checks overall health (`grpcServiceName: ""`), readiness checks
+  # `penguincode.knowledge.v1.KnowledgeService` specifically (hardcoded in
+  # templates/server-deployment.yaml's readinessProbe -- the capability this
+  # server exists to provide). Set `nativeGrpcProbe: false` ONLY for a
+  # cluster older than K8s 1.27 (the native `grpc:` probe type went GA in
+  # 1.27) -- that reverts both probes to the exec-based
+  # grpc.channel_ready_future check, which only proves the TCP/HTTP2 channel
+  # accepts connections, never that the server is actually serving.
   healthCheck:
     enabled: true
     grpc:
       port: 50051
-    nativeGrpcProbe: false
-    # grpc.health.v1.Health service name to check once nativeGrpcProbe is
-    # true -- empty string is the conventional "overall server health" name.
+    nativeGrpcProbe: true
+    # grpc.health.v1.Health service name for the LIVENESS probe only --
+    # empty string is the conventional "overall server health" name.
+    # Readiness always checks KnowledgeService (see template); this knob
+    # does not affect readiness.
     grpcServiceName: ""
 
   # O4-b: generous enough to cover a slow model-registry/config load on
