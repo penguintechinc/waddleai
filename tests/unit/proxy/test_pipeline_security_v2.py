@@ -20,6 +20,7 @@ from proxy.apps.proxy_server.pipeline.stages import (
     SecurityOutStage,
 )
 from shared.security.bypass import BYPASS_SCOPE, BypassGrant, BypassResolver, BypassStore
+from shared.security.content_filter import AuditorResult
 from shared.security.intent_classifier import IntentResult
 from shared.security.output_guardrails import OutputGuardrails
 from shared.security.policy_engine import SecurityPolicyEngine, SecurityVerdict
@@ -55,9 +56,9 @@ class _StubCF:
         self.calls.append("tier3")
         return []
 
-    async def _invoke_llm_auditor(self, *args: Any, **kwargs: Any) -> tuple[bool, str]:
+    async def _invoke_llm_auditor(self, *args: Any, **kwargs: Any) -> AuditorResult:
         self.calls.append("tier4")
-        return False, "allow"
+        return AuditorResult(should_block=False, reason="allow")
 
     def _determine_action(self, text: str, violations: list[Any]) -> tuple[str, str]:
         if not violations:

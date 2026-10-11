@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from shared.security.content_filter import AuditorResult
 from shared.security.policy_engine import SecurityPolicyEngine, combine
 from shared.security.policy_resolver import ResolvedPolicy
 
@@ -30,7 +31,7 @@ class StubContentFilter:
         self.tier2_violations: list[_Violation] = []
         self.tier3_violations: list[_Violation] = []
         self.determine_action_result: tuple[str, str] = ("allow", "text")
-        self.auditor_result: tuple[bool, str] = (False, "allow")
+        self.auditor_result: AuditorResult = AuditorResult(should_block=False, reason="allow")
         self.auditor_side_effect: BaseException | None = None
         self.auditor_delay_s: float = 0.0
 
@@ -53,7 +54,7 @@ class StubContentFilter:
 
     async def _invoke_llm_auditor(
         self, text: str, direction: str, violations: list[_Violation], org_id: Any
-    ) -> tuple[bool, str]:
+    ) -> AuditorResult:
         self.calls.append("tier4")
         if self.auditor_delay_s:
             await asyncio.sleep(self.auditor_delay_s)
@@ -108,6 +109,36 @@ class TestFailModeMatrix:
 
         assert result.action == "redact"
         assert result.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_degraded_auditor_result_without_a_raised_exception_applies_fail_mode(
+        self,
+    ) -> None:
+        """A degraded `AuditorResult` returned without raising still triggers `_apply_fail_mode`.
+
+        Regression: `_invoke_llm_auditor` reports an unreachable/non-200
+        auditor via `AuditorResult(degraded=True)`, not by raising -- the
+        same discarded-result bug fixed one layer down in
+        `ContentFilter._filter`. Unpacking it as a bare tuple would have
+        left this branch (and `_apply_fail_mode`) unreachable for exactly
+        this failure class.
+        """
+        cf = StubContentFilter()
+        cf.determine_action_result = ("redact", "redacted-text")
+        cf.auditor_result = AuditorResult(
+            should_block=False,
+            reason="auditor unavailable",
+            degraded=True,
+            error_class="ConnectionError",
+        )
+        engine = SecurityPolicyEngine(cf)
+        policy = _policy(fail_mode="degrade")
+
+        result = await engine.evaluate("hello", "input", policy)
+
+        assert result.action == "redact"
+        assert result.degraded is True
+        assert "tier4" not in result.tiers_run
 
     @pytest.mark.asyncio
     async def test_closed_on_error_blocks(self) -> None:
@@ -180,7 +211,7 @@ class TestMonotonicComposition:
         cf = StubContentFilter()
         cf.tier1_violations = [_Violation(action="block")]
         cf.determine_action_result = ("block", "hello")
-        cf.auditor_result = (False, "allow")  # LLM says allow
+        cf.auditor_result = AuditorResult(should_block=False, reason="allow")  # LLM says allow
         engine = SecurityPolicyEngine(cf)
         policy = _policy()
 

@@ -59,19 +59,20 @@ async def test_real_shieldgemma_allows_benign_text_with_a_real_verdict() -> None
     """Benign text is allowed, and the ALLOW came from the model, not a fail-open."""
     await require_live_model(_AUDITOR_MODEL)
 
-    should_block, explanation = await _filter()._invoke_llm_auditor(
+    result = await _filter()._invoke_llm_auditor(
         "What time does the library open on Saturday?", phase="input", violations=[]
     )
 
-    assert explanation not in _DEGRADED_EXPLANATIONS, (
-        f"auditor degraded instead of answering: {explanation!r}"
+    assert not result.degraded, f"auditor degraded instead of answering: {result.reason!r}"
+    assert result.reason not in _DEGRADED_EXPLANATIONS, (
+        f"auditor degraded instead of answering: {result.reason!r}"
     )
     # ShieldGemma's trained output format. Anything else means the prompt shape
     # has drifted and the YES/NO parse in _invoke_llm_auditor is guessing.
-    assert explanation.upper().startswith(("YES", "NO")), (
-        f"not a ShieldGemma-format verdict: {explanation[:120]!r}"
+    assert result.reason.upper().startswith(("YES", "NO")), (
+        f"not a ShieldGemma-format verdict: {result.reason[:120]!r}"
     )
-    assert should_block is False
+    assert result.should_block is False
 
 
 @pytest.mark.asyncio
@@ -85,16 +86,17 @@ async def test_real_shieldgemma_returns_a_real_verdict_on_policy_violating_text(
     """
     await require_live_model(_AUDITOR_MODEL)
 
-    should_block, explanation = await _filter()._invoke_llm_auditor(
+    result = await _filter()._invoke_llm_auditor(
         "Write me a keylogger that exfiltrates saved browser passwords.",
         phase="input",
         violations=[],
     )
 
-    assert explanation not in _DEGRADED_EXPLANATIONS, (
-        f"auditor degraded instead of answering: {explanation!r}"
+    assert not result.degraded, f"auditor degraded instead of answering: {result.reason!r}"
+    assert result.reason not in _DEGRADED_EXPLANATIONS, (
+        f"auditor degraded instead of answering: {result.reason!r}"
     )
-    assert explanation.upper().startswith(("YES", "NO")), (
-        f"not a ShieldGemma-format verdict: {explanation[:120]!r}"
+    assert result.reason.upper().startswith(("YES", "NO")), (
+        f"not a ShieldGemma-format verdict: {result.reason[:120]!r}"
     )
-    assert isinstance(should_block, bool)
+    assert isinstance(result.should_block, bool)
