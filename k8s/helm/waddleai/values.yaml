@@ -730,12 +730,12 @@ secrets:
 # Alembic database migration Job (templates/migration-job.yaml) — runs
 # `alembic upgrade head` from the management image as a pre-install,
 # pre-upgrade Helm hook, ahead of the management Deployment's own rollout.
-# See services/management/app/extensions.py for why this is still needed
-# even with migrations.enabled: init_extensions() only creates the legacy
-# PyDAL bootstrap schema + default data (idempotent, safe on every pod
-# start); the newer SQLAlchemy-model tables (content filter, memory scope,
-# fleet, integrations, security v2 — services/management/alembic/versions/)
-# are Alembic-only and are never created by application startup code.
+# On a fresh, EMPTY database the Job builds the full head schema itself
+# (services/management/alembic/versions/001_baseline.py creates the frozen
+# baseline, then the real 002..head chain applies migration DDL + seed rows,
+# all in one transaction, gh-215); on an already-populated database it runs
+# the normal versioned upgrade. The Job is therefore the single schema authority —
+# application startup code must not be relied on to create tables.
 migrations:
   enabled: true
   activeDeadlineSeconds: 300

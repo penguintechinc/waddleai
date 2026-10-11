@@ -141,7 +141,7 @@ docker run -d --name waddleai-valkey \
 
 No manual step is needed the first time you start the management service: `init_schema()` (`services/management/app/models_sqlalchemy.py`) enables the `pgvector` extension and creates any missing tables automatically and idempotently on startup.
 
-Alembic (`services/management/alembic/`) is the schema of record for applying versioned migrations after that — it is run manually, never automatically at app startup:
+Alembic (`services/management/alembic/`) is the schema of record for applying versioned migrations after that — it is run manually, never automatically at app startup. `alembic upgrade head` also builds a completely EMPTY database from scratch (gh-215): `001_baseline` creates the frozen pre-Alembic baseline when it finds no tables, then the real chain (`002`..head) runs on top in the same transaction, so migration-only DDL (pgvector columns, generated `content_tsv`, hook tables) and seed rows (`model_registry`, `model_assignments`, `security_policies`, …) exist exactly as on a migrated database. It fails loudly — and rolls back everything — if pgvector is unavailable. A database that already has application tables beyond the baseline but no `alembic_version` row (e.g. one the app's `init_schema()` already built) is refused with an explicit error: run `alembic stamp head` for it instead.
 
 ```bash
 cd services/management

@@ -33,6 +33,45 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _ensure_llamacpp_deployments() -> None:
+    """Create ``llamacpp_deployments`` (pre-013 shape) when no earlier revision did.
+
+    The table was added to the models on 2026-05-23 WITHOUT a migration, so
+    databases built by ``create_all()`` already hold it (this is then a no-op),
+    but a database walked through the chain from scratch (gh-215) does not --
+    and the ALTERs below would die on ``UndefinedTable``. Columns here are the
+    model's as of this revision, minus the four 013 adds right after.
+    """
+    if "llamacpp_deployments" in sa.inspect(op.get_bind()).get_table_names():
+        return
+    op.create_table(
+        "llamacpp_deployments",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("name", sa.String(255), unique=True, nullable=False),
+        sa.Column("deployment_type", sa.String(50), nullable=False),
+        sa.Column("status", sa.String(50), nullable=False),
+        sa.Column("status_message", sa.Text, nullable=True),
+        sa.Column("model_name", sa.String(255), nullable=False),
+        sa.Column("model_url", sa.String(512), nullable=True),
+        sa.Column("model_filename", sa.String(255), nullable=True),
+        sa.Column("n_ctx", sa.Integer, nullable=True),
+        sa.Column("n_gpu_layers", sa.Integer, nullable=True),
+        sa.Column("gpu_count", sa.Integer, nullable=True),
+        sa.Column("endpoint_url", sa.String(512), nullable=True),
+        sa.Column("k8s_namespace", sa.String(255), nullable=True),
+        sa.Column("k8s_daemonset_name", sa.String(255), nullable=True),
+        sa.Column("node_selector", sa.JSON, nullable=True),
+        sa.Column("node_affinity", sa.JSON, nullable=True),
+        sa.Column("model_cache_claim", sa.String(255), nullable=True),
+        sa.Column("cpu_request", sa.String(50), nullable=True),
+        sa.Column("cpu_limit", sa.String(50), nullable=True),
+        sa.Column("memory_request", sa.String(50), nullable=True),
+        sa.Column("memory_limit", sa.String(50), nullable=True),
+        sa.Column("created_at", sa.DateTime, nullable=True),
+        sa.Column("modified_at", sa.DateTime, nullable=True),
+    )
+
+
 def upgrade() -> None:
     """Create ``fleet_backends`` and extend both deployment tables."""
     op.create_table(
@@ -72,6 +111,8 @@ def upgrade() -> None:
         ["org_id", "name"],
         unique=True,
     )
+
+    _ensure_llamacpp_deployments()
 
     for table in ("ollama_deployments", "llamacpp_deployments"):
         # batch_alter_table: SQLite cannot ALTER-add a column with an inline

@@ -38,6 +38,7 @@ the real local head keeps the graph valid until reconciliation.
 """
 
 from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -116,6 +117,13 @@ _DOCS_SOURCES_SEED = [
         "rate_limit_rps": 0.5,
     },
 ]
+
+
+def _add_column_if_missing(table: str, column: sa.Column[Any]) -> None:
+    """Add ``column`` to ``table`` unless an earlier migration already added it."""
+    existing = {c["name"] for c in sa.inspect(op.get_bind()).get_columns(table)}
+    if column.name not in existing:
+        op.add_column(table, column)
 
 
 def _add_vector_column(table: str, bind_name: str) -> None:
@@ -281,22 +289,30 @@ def upgrade() -> None:  # noqa: D103 -- alembic entrypoint, module docstring cov
     op.create_index("idx_ragdoc_status", "rag_documents", ["status"])
 
     # memory_embeddings: extend the 006 column set. scope_type/author_user_id
-    # already exist (006) -- do NOT re-add them here.
-    op.add_column("memory_embeddings", sa.Column("scope_ref", sa.String(255), nullable=True))
-    op.add_column(
+    # already exist (006) -- do NOT re-add them here. 009b_proxy_memory ALSO adds
+    # scope_ref/trust_tier/version/superseded_by/status/expires_at (it was
+    # developed in parallel and re-parented below 012), so a database walked
+    # through the chain from scratch already has them here: add only what is
+    # missing (gh-215 -- the chain had never been run end-to-end before).
+    _add_column_if_missing(
+        "memory_embeddings", sa.Column("scope_ref", sa.String(255), nullable=True)
+    )
+    _add_column_if_missing(
         "memory_embeddings",
         sa.Column("trust_tier", sa.String(20), nullable=False, server_default="unverified"),
     )
-    op.add_column(
+    _add_column_if_missing(
         "memory_embeddings", sa.Column("version", sa.Integer, nullable=False, server_default="1")
     )
-    op.add_column("memory_embeddings", sa.Column("superseded_by", sa.Integer, nullable=True))
-    op.add_column(
+    _add_column_if_missing(
+        "memory_embeddings", sa.Column("superseded_by", sa.Integer, nullable=True)
+    )
+    _add_column_if_missing(
         "memory_embeddings",
         sa.Column("status", sa.String(20), nullable=False, server_default="active"),
     )
-    op.add_column("memory_embeddings", sa.Column("expires_at", sa.DateTime, nullable=True))
-    op.add_column("memory_embeddings", sa.Column("provenance", sa.JSON, nullable=True))
+    _add_column_if_missing("memory_embeddings", sa.Column("expires_at", sa.DateTime, nullable=True))
+    _add_column_if_missing("memory_embeddings", sa.Column("provenance", sa.JSON, nullable=True))
     op.create_index("idx_mememb_status", "memory_embeddings", ["status"])
 
 

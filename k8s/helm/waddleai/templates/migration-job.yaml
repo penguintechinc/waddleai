@@ -2,12 +2,15 @@
 Alembic database migration Job — runs `alembic upgrade head` from the
 management image, once, before the management Deployment rolls out new
 pods. services/management/app/extensions.py's init_extensions() only
-bootstraps the legacy PyDAL schema + default data (idempotent on every pod
-start); the newer SQLAlchemy-model tables (content filter, memory scope,
-fleet, integrations, security v2) only ever land via versioned Alembic
-migrations (services/management/alembic/versions/*.py), which per house
-rule must never run from application startup code — hence this dedicated
-Job instead of a container CMD/entrypoint hack.
+bootstraps default data (idempotent on every pod start); schema changes
+only ever land via versioned Alembic migrations
+(services/management/alembic/versions/*.py), which per house rule must
+never run from application startup code — hence this dedicated Job instead
+of a container CMD/entrypoint hack. On a fresh, EMPTY database 001_baseline
+creates the frozen pre-Alembic baseline and the real chain (002..head, incl.
+seed rows + pgvector DDL) runs on top in one transaction (gh-215), so a first
+`helm install` needs no manual create_all; it fails loudly (rolled back) if
+pgvector is unavailable.
 
 Hook ordering: templates/secret.yaml is ALSO a pre-install,pre-upgrade hook
 (weight -20) specifically so waddleai-secrets (this Job's DATABASE_URL
