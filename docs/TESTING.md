@@ -137,24 +137,46 @@ Fast verification that basic functionality works after code changes or a deploy.
 
 ### Current State
 
-`make smoke-test` runs `pytest tests/smoke -v`, but **`tests/smoke/` has no
-`pytest`-discoverable `test_*.py` files today** — only two standalone bash scripts. Running
-`make smoke-test` as-is collects zero tests. Run the scripts directly instead:
+`make smoke-test` runs two standalone scripts directly (neither is `pytest`-discoverable
+despite one carrying a `test_*.py` filename — `pytest tests/smoke -v` still collects zero
+items):
 
 ```
 tests/smoke/
-├── test-production.sh          # Hits a live BASE_URL (default: https://waddleai.penguintech.io)
-└── test_management_build.sh    # Static/build checks for services/management — see caveat below
+├── test-production.sh              # Hits a live BASE_URL (default: https://waddleai.penguintech.io) -- NOT run by `make smoke-test`, invoke directly
+├── test_management_build.sh        # File existence, Python syntax, Docker build, requirements.txt checks for services/management
+└── test_telemetry_emission.py      # Real OTel emission + hand-rolled-logging conformance gate (see below)
 ```
+
+`test_telemetry_emission.py` closes a verification-integrity gap: `make smoke-test`
+previously asserted only file existence/syntax, never that the app actually emits
+telemetry. It drives one synthetic HTTP request through
+`services/management/app/observability.py`'s real `OTelASGIMiddleware` against freshly
+installed in-memory span/metric/log exporters (the same technique
+`tests/unit/management/test_management_observability.py::test_all_three_signals_present`
+uses), then asserts and **prints** the actual counts:
+
+| Assertion | Threshold | On zero |
+|---|---|---|
+| Spans received | >=1 | FAIL |
+| Counter (`http.server.requests`) data points | >=1 | FAIL |
+| Histogram (`http.server.request.duration`) data points | >=1 | FAIL |
+| Log records received | >=1 | FAIL |
+
+It then scans `shared/`, `proxy/`, and `services/management/app` for hand-rolled
+`logging.basicConfig(`/bare `print(` calls that bypass the OTel-bridged logging this
+service actually uses, printing the number of files scanned (0 scanned = FAIL, not a
+silent pass) and the number of violations found (non-zero = FAIL).
 
 ### Execution
 
 ```bash
-# Against a live deployment
+# Against a live deployment (not part of `make smoke-test`)
 BASE_URL=https://waddleai.penguintech.io ./tests/smoke/test-production.sh
 
-# Static file/build checks for the management service
+# Everything `make smoke-test` runs
 ./tests/smoke/test_management_build.sh
+python3 tests/smoke/test_telemetry_emission.py
 ```
 
 `test-production.sh` checks: WebUI homepage loads (200 or 403 — Cloudflare may challenge),
@@ -427,17 +449,18 @@ and the "fully green" auto-merge gate was passing on unbuilt code.
 |---|---|
 | `determine-tier` | Resolves the five-tier model (pre-alpha/alpha/beta/gamma/prod) to a tag prefix and whether to push |
 | `test` | Python unit tests (`pytest tests/unit`) + `bandit -lll` (HIGH severity gates the build) |
+| `dependency-security` | `scripts/dependency-security-scan.sh` — gitleaks, pip-audit, npm audit (and gosec/govulncheck if a `go.mod` ever appears outside vendored paths). Previously these existed only as working `make test-security` tooling that no workflow ever invoked; `test`'s bandit step is deliberately not duplicated here |
 | `test-webui` | ESLint + vitest (coverage-gated) + build, for `services/webui` |
 | `openapi-lint` | `spectral lint openapi/v1.yaml` |
 | `test-contract` | `pytest tests/contract` |
 | `test-integration` | Runs the full `tests/integration/` directory with no live services provisioned — tests needing one self-skip (unreachable Ollama/Qdrant, missing `ANTHROPIC_API_KEY`), so only the acceptance-level suite actually executes |
 | `test-e2e` | Playwright suite setup/smoke check |
-| `build-platform` | Multi-arch image builds — needs `determine-tier`, `test`, `test-webui`, `openapi-lint`, `test-contract`, `test-integration`, `test-e2e` all green |
+| `build-platform` | Multi-arch image builds — needs `determine-tier`, `test`, `dependency-security`, `test-webui`, `openapi-lint`, `test-contract`, `test-integration`, `test-e2e` all green |
 | `merge-manifests` | Merges per-arch manifests into one tag — skipped on PRs (nothing was pushed to merge) |
-| `build-ollama-image` | Builds the Ollama sidecar image — needs `determine-tier`, `test` |
+| `build-ollama-image` | Builds the Ollama sidecar image — needs `determine-tier`, `test`, `dependency-security` |
 | `security-scan` | Trivy on the merged images — needs `merge-manifests` |
 | `integration-test` | Ephemeral docker-compose stack (CI-only, not a local-dev artifact), health + auth checks — `continue-on-error`, skipped on PRs |
-| `release` / `cleanup` | On a GitHub pre-release/release event / always, respectively |
+| `release` / `cleanup` | On a GitHub pre-release/release event / always, respectively — needs `test`, `dependency-security`, `security-scan`, `integration-test` |
 
 There is no separate nightly or performance-test CI job. Note the naming trap: `test-integration`
 (runs on every trigger, no live services) and `integration-test` (skipped on PRs, spins up

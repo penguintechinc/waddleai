@@ -175,6 +175,9 @@ test-security: ## Security scans over FIRST-PARTY code. Fails on findings.
 smoke-test:
 	@echo "Running smoke tests..."
 	@bash tests/smoke/test_management_build.sh
+	@echo ""
+	@echo "Running telemetry emission + logging conformance smoke gate..."
+	@$(PY) tests/smoke/test_telemetry_emission.py
 
 smoke-test-production: ## Live prod checks (network + real deployment required) -- not part of pre-commit
 	@echo "Running production smoke tests..."
