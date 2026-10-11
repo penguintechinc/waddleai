@@ -92,15 +92,16 @@ spec:
         {{- end }}
         {{- if .Values.server.healthCheck.enabled }}
         {{- /*
-        O4: nativeGrpcProbe (default OFF, see values.yaml comment) swaps
+        O4: nativeGrpcProbe (default ON, see values.yaml comment) swaps
         both probes to K8s's native `grpc:` probe type against the standard
-        grpc.health.v1.Health service -- readiness checks the knowledge
-        service specifically (the capability this server exists to provide),
-        liveness checks overall server health (empty service name). Stays on
-        the exec/grpc.channel_ready_future check otherwise, which only
-        proves the channel accepts connections, not that the server is
-        actually serving -- a known, documented gap (values.yaml) until
-        grpc.health.v1 is registered server-side.
+        grpc.health.v1.Health service (server/grpc_health.py) -- readiness
+        checks the knowledge service specifically (the capability this
+        server exists to provide), liveness checks overall server health
+        (empty service name). Set `nativeGrpcProbe: false` only for a
+        cluster older than K8s 1.27 (native `grpc:` probe GA version) --
+        that falls back to the exec/grpc.channel_ready_future check, which
+        only proves the channel accepts connections, not that the server is
+        actually serving.
         */}}
         {{- if .Values.server.healthCheck.nativeGrpcProbe }}
         livenessProbe:

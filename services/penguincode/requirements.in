@@ -59,6 +59,9 @@ werkzeug==3.1.9
 grpcio==1.69.0
 grpcio-tools==1.69.0
 protobuf==5.29.6
+# Standard grpc.health.v1.Health servicer (server/grpc_health.py) - same
+# 1.69.x line as grpcio/grpcio-tools above, bump together.
+grpcio-health-checking==1.69.0
 
 # Observability (OTel) - see pyproject.toml for the direct-pin rationale.
 opentelemetry-api==1.44.0
