@@ -15,7 +15,7 @@ class GoogleMCPEngine(BaseSearchEngine):
     If no official MCP server exists, this will fall back to direct API in factory.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize Google MCP engine."""
         super().__init__(name="google-mcp")
         # This is a placeholder - adjust based on actual MCP server availability
@@ -64,15 +64,17 @@ class GoogleMCPEngine(BaseSearchEngine):
             return results
 
         except Exception as e:
-            raise SearchEngineError(f"Google MCP search failed (MCP server may not be available): {e}") from e
+            raise SearchEngineError(
+                f"Google MCP search failed (MCP server may not be available): {e}"
+            ) from e
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Stop MCP server."""
         if self._started:
             await self.client.stop()
             self._started = False
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Cleanup on deletion."""
         if self._started:
             import asyncio

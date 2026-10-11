@@ -1,5 +1,7 @@
 """Factory for creating search engine instances."""
 
+from typing import Any
+
 from penguincode_cli.config.settings import ResearchConfig
 
 from .base import BaseSearchEngine
@@ -59,7 +61,8 @@ def get_search_engine(config: ResearchConfig) -> BaseSearchEngine:
 
     else:
         raise ValueError(
-            f"Unknown search engine: {engine_name}. " f"Supported: duckduckgo, sciraai, searxng, fireplexity, google"
+            f"Unknown search engine: {engine_name}. "
+            f"Supported: duckduckgo, sciraai, searxng, fireplexity, google"
         )
 
 
@@ -96,7 +99,7 @@ def _get_mcp_engine(engine_name: str, config: ResearchConfig) -> BaseSearchEngin
     raise ImportError(f"MCP not implemented for {engine_name}")
 
 
-def list_available_engines() -> dict[str, dict]:
+def list_available_engines() -> dict[str, dict[str, Any]]:
     """
     List all available search engines and their capabilities.
 

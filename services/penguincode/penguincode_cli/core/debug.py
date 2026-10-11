@@ -52,7 +52,9 @@ def _init_logging() -> None:
     file_handler.setLevel(logging.DEBUG)  # Handler accepts all, logger filters
 
     # Format with timestamp and level
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
     file_handler.setFormatter(formatter)
     _logger.addHandler(file_handler)
 
@@ -118,7 +120,7 @@ def exception(message: str, *args: Any, **kwargs: Any) -> None:
     _logger.exception(message, *args, **kwargs)
 
 
-def log_llm_request(model: str, messages: list, tools: list = None) -> None:
+def log_llm_request(model: str, messages: list[Any], tools: list[Any] | None = None) -> None:
     """Log an LLM request (INFO level, details at DEBUG)."""
     _logger.info(f"LLM REQUEST to model={model}")
 
@@ -134,10 +136,12 @@ def log_llm_request(model: str, messages: list, tools: list = None) -> None:
             _logger.debug(f"    [{i}] {role}: {content}")
 
         if tools:
-            _logger.debug(f"  Tools ({len(tools)}): {[t.get('function', {}).get('name', 'unknown') for t in tools]}")
+            _logger.debug(
+                f"  Tools ({len(tools)}): {[t.get('function', {}).get('name', 'unknown') for t in tools]}"
+            )
 
 
-def log_llm_response(response_text: str, tool_calls: list = None) -> None:
+def log_llm_response(response_text: str, tool_calls: list[Any] | None = None) -> None:
     """Log an LLM response (INFO level, details at DEBUG)."""
     _logger.info(f"LLM RESPONSE ({len(response_text)} chars)")
 
@@ -157,7 +161,7 @@ def log_llm_response(response_text: str, tool_calls: list = None) -> None:
                 _logger.debug(f"    - {name}: {args}")
 
 
-def log_tool_execution(tool_name: str, args: dict, result: Any) -> None:
+def log_tool_execution(tool_name: str, args: dict[str, Any], result: Any) -> None:
     """Log a tool execution (INFO level, details at DEBUG)."""
     _logger.info(f"TOOL EXECUTE: {tool_name}")
 
@@ -170,7 +174,7 @@ def log_tool_execution(tool_name: str, args: dict, result: Any) -> None:
         _logger.debug(f"  Result: {result_str}")
 
 
-def log_agent_spawn(agent_type: str, task: str, complexity: str = None) -> None:
+def log_agent_spawn(agent_type: str, task: str, complexity: str | None = None) -> None:
     """Log an agent spawn (INFO level, task at DEBUG)."""
     extra = f" (complexity={complexity})" if complexity else ""
     _logger.info(f"AGENT SPAWN: {agent_type}{extra}")

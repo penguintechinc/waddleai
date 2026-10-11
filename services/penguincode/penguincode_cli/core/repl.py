@@ -1,8 +1,10 @@
 """Interactive REPL loop for PenguinCode chat."""
 
 import asyncio
+import functools
 import logging
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
@@ -45,6 +47,7 @@ logger = logging.getLogger(__name__)
 # Lazy imports to avoid circular dependency
 if TYPE_CHECKING:
     from penguincode_cli.agents import ChatAgent
+    from penguincode_cli.docs_rag import ContextInjector, DocumentationFetcher, ProjectContext
 
 
 class REPLSession:
@@ -78,7 +81,7 @@ class REPLSession:
 
         # Chat agent (main orchestrator) and specialized agents
         self.chat_agent: ChatAgent | None = None
-        self.agents = {}
+        self.agents: dict[str, Any] = {}
 
         # Thin gRPC client (F3): the CLI's only path to the server-side knowledge
         # platform -- docs-RAG indexing, hybrid GraphRAG retrieval, scoped memory, and the
@@ -95,9 +98,9 @@ class REPLSession:
         # Docs RAG components (initialized if enabled) -- `docs_fetcher` still fetches raw
         # doc text/HTML client-side; the embedding + vector-store write happens server-side
         # via `knowledge_client.index()`.
-        self.project_context = None
-        self.docs_fetcher = None
-        self.context_injector = None
+        self.project_context: ProjectContext | None = None
+        self.docs_fetcher: DocumentationFetcher | None = None
+        self.context_injector: ContextInjector | None = None
 
         # Vestigial (penguincode-knowledge-platform F3): docs-RAG/index-code/memory identity
         # now comes exclusively from the WaddleAI JWT `self.knowledge_client` attaches to
@@ -144,7 +147,7 @@ class REPLSession:
                 "where available; write commands will fail until it's back"
             )
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "REPLSession":
         """Async context manager entry."""
         # Lazy import agents to avoid circular import
         from penguincode_cli.agents import ChatAgent, ExecutorAgent, ExplorerAgent
@@ -154,7 +157,7 @@ class REPLSession:
             base_url=self.settings.ollama.api_url,
             timeout=self.settings.ollama.timeout,
         )
-        await self.ollama_client.__aenter__()
+        await self.ollama_client.__aenter__()  # type: ignore[no-untyped-call]  # OllamaClient dunder is unannotated in penguincode_cli/ollama (outside this slice)
 
         # Thin gRPC client (F3): shared for the whole session -- docs-RAG, memory, and
         # code-graph all route through this one `KnowledgeClient`. Construction never fails
@@ -420,7 +423,12 @@ class REPLSession:
 
         return False
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Async context manager exit."""
         # Save session
         self.session_manager.save_session(self.session)
@@ -431,7 +439,7 @@ class REPLSession:
 
         # Close Ollama client
         if self.ollama_client:
-            await self.ollama_client.__aexit__(exc_type, exc_val, exc_tb)
+            await self.ollama_client.__aexit__(exc_type, exc_val, exc_tb)  # type: ignore[no-untyped-call]  # see __aenter__ above
 
         # Close the gRPC channel to the penguincode server (F3)
         if self.knowledge_client:
@@ -782,14 +790,14 @@ class REPLSession:
 
     def _show_config_full(self) -> None:
         """Show full config as YAML with sensitive values masked."""
-        import yaml as _yaml
+        import yaml as _yaml  # type: ignore[import-untyped]  # types-PyYAML not pinned in hashed requirements
 
         data = settings_to_dict(self.settings)
 
         # Mask sensitive values
         sensitive_keys = {"jwt_secret", "jwt_token", "api_key", "firecrawl_api_key"}
 
-        def _mask(d):
+        def _mask(d: Any) -> Any:
             if isinstance(d, dict):
                 return {
                     k: ("****" if k in sensitive_keys and v else _mask(v)) for k, v in d.items()
@@ -1074,15 +1082,15 @@ class REPLSession:
                 f"\n[yellow]Detected Libraries ({len(self.project_context.libraries)}):[/yellow]"
             )
             # Group by language
-            by_lang = {}
+            by_lang: dict[str, list[str]] = {}
             for lib in self.project_context.libraries[:20]:  # Show first 20
-                lang = lib.language.value
-                if lang not in by_lang:
-                    by_lang[lang] = []
-                by_lang[lang].append(lib.name)
+                lang_key = lib.language.value
+                if lang_key not in by_lang:
+                    by_lang[lang_key] = []
+                by_lang[lang_key].append(lib.name)
 
-            for lang, libs in by_lang.items():
-                console.print(f"  [{lang}] {', '.join(libs[:10])}")
+            for lang_key, libs in by_lang.items():
+                console.print(f"  [{lang_key}] {', '.join(libs[:10])}")
                 if len(libs) > 10:
                     console.print(f"        ... and {len(libs) - 10} more")
         else:
@@ -1156,6 +1164,9 @@ class REPLSession:
             return
         if self.knowledge_client is None:
             print_error("Not connected to the penguincode server")
+            return
+        if self.docs_fetcher is None:
+            print_error("Documentation fetcher is not initialized")
             return
 
         from penguincode_cli.docs_rag import get_priority_docs_for_project
@@ -1325,6 +1336,9 @@ class REPLSession:
         if not self.project_context:
             print_error("Run /docs detect first")
             return
+        if self.docs_fetcher is None:
+            print_error("Documentation fetcher is not initialized")
+            return
 
         # Cleanup cache (client-side -- raw doc fetch cache, not the vector index)
         cache_removed = self.docs_fetcher.cleanup_unused_libraries(self.project_context.libraries)
@@ -1359,7 +1373,7 @@ class REPLSession:
         else:
             console.print()
 
-    def _detect_languages_in_message(self, message: str) -> list:
+    def _detect_languages_in_message(self, message: str) -> list[Any]:
         """Detect programming languages mentioned in user message.
 
         Args:
@@ -1406,6 +1420,10 @@ class REPLSession:
         """
         # Save user message to session
         self.session.add_message("user", message)
+
+        if self.chat_agent is None:
+            print_error("Chat agent is not initialized")
+            return
 
         console.print()  # Add some spacing
 
@@ -1482,7 +1500,7 @@ class REPLSession:
             }
         )
 
-        session: PromptSession = PromptSession(
+        session: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_file)),
             auto_suggest=AutoSuggestFromHistory(),
             style=prompt_style,
@@ -1496,8 +1514,10 @@ class REPLSession:
             try:
                 # Get user input with full readline support
                 prompt_text = f"You ({self.active_skill}): " if self.active_skill else "You: "
+                # partial() binds this iteration's prompt_text (B023: a bare lambda would close
+                # over the loop variable and could pick up a later iteration's value).
                 user_input = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: session.prompt(prompt_text)
+                    None, functools.partial(session.prompt, prompt_text)
                 )
 
                 # Reset interrupt count on successful input

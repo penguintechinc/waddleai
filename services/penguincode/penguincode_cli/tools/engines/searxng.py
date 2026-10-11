@@ -8,7 +8,7 @@ from .base import BaseSearchEngine, SearchEngineError, SearchEngineTimeoutError,
 class SearXNGEngine(BaseSearchEngine):
     """SearXNG metasearch engine implementation."""
 
-    def __init__(self, url: str = "https://searx.be", categories: list[str] = None):
+    def __init__(self, url: str = "https://searx.be", categories: list[str] | None = None):
         """
         Initialize SearXNG search engine.
 
@@ -49,7 +49,9 @@ class SearXNGEngine(BaseSearchEngine):
                 )
 
                 if response.status_code != 200:
-                    raise SearchEngineError(f"SearXNG API error: {response.status_code} - {response.text}")
+                    raise SearchEngineError(
+                        f"SearXNG API error: {response.status_code} - {response.text}"
+                    )
 
                 data = response.json()
                 results = []

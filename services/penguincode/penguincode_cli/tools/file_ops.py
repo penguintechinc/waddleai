@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]  # types-aiofiles not pinned in hashed requirements
 
 from .base import BaseTool, ToolResult
 
@@ -10,7 +10,7 @@ from .base import BaseTool, ToolResult
 class ReadFileTool(BaseTool):
     """Tool for reading file contents."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("read", "Read file contents with optional line range")
 
     async def execute(
@@ -58,7 +58,9 @@ class ReadFileTool(BaseTool):
 
             # Add line numbers
             if start_line:
-                numbered_lines = [f"{i + start_line:6d}→{line.rstrip()}" for i, line in enumerate(lines)]
+                numbered_lines = [
+                    f"{i + start_line:6d}→{line.rstrip()}" for i, line in enumerate(lines)
+                ]
             else:
                 numbered_lines = [f"{i + 1:6d}→{line.rstrip()}" for i, line in enumerate(lines)]
 
@@ -254,7 +256,7 @@ class EditFileTool(BaseTool):
 class GrepTool(BaseTool):
     """Tool for searching text in files."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("grep", "Search for pattern in files")
 
     async def execute(
@@ -290,7 +292,9 @@ class GrepTool(BaseTool):
                 files = [search_path]
             elif search_path.is_dir():
                 # Search all text files in directory recursively
-                files = [f for f in search_path.rglob("*") if f.is_file() and not self._should_ignore(f)]
+                files = [
+                    f for f in search_path.rglob("*") if f.is_file() and not self._should_ignore(f)
+                ]
             else:
                 return ToolResult(
                     success=False,
@@ -387,7 +391,7 @@ class GrepTool(BaseTool):
 class GlobTool(BaseTool):
     """Tool for finding files by pattern."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("glob", "Find files matching pattern")
 
     async def execute(

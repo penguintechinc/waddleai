@@ -4,9 +4,10 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
-@dataclass
+@dataclass(slots=True)
 class Message:
     """Chat message in a session."""
 
@@ -15,7 +16,7 @@ class Message:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
-@dataclass
+@dataclass(slots=True)
 class Session:
     """Represents a chat session."""
 
@@ -23,26 +24,27 @@ class Session:
     created_at: str
     project_dir: str
     messages: list[Message] = field(default_factory=list)
-    metadata: dict[str, any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def add_message(self, role: str, content: str) -> None:
         """Add a message to the session."""
         self.messages.append(Message(role=role, content=content))
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert session to dictionary."""
         return {
             "session_id": self.session_id,
             "created_at": self.created_at,
             "project_dir": self.project_dir,
             "messages": [
-                {"role": msg.role, "content": msg.content, "timestamp": msg.timestamp} for msg in self.messages
+                {"role": msg.role, "content": msg.content, "timestamp": msg.timestamp}
+                for msg in self.messages
             ],
             "metadata": self.metadata,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Session":
+    def from_dict(cls, data: dict[str, Any]) -> "Session":
         """Create session from dictionary."""
         messages = [Message(**msg) for msg in data.get("messages", [])]
         return cls(
@@ -111,7 +113,7 @@ class SessionManager:
             data = json.load(f)
         return Session.from_dict(data)
 
-    def list_sessions(self, limit: int = 50) -> list[dict]:
+    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
         """
         List recent sessions.
 
@@ -121,7 +123,9 @@ class SessionManager:
         Returns:
             List of session metadata dictionaries
         """
-        session_files = sorted(self.session_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        session_files = sorted(
+            self.session_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
 
         sessions = []
         for session_file in session_files[:limit]:

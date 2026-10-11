@@ -3,6 +3,7 @@
 import asyncio
 import os
 from pathlib import Path
+from typing import Any
 
 from penguincode_cli.shared.command_safety import (
     ConfirmCallback,
@@ -84,10 +85,12 @@ class BashTool(BaseTool):
         for pattern in blocking_patterns:
             if pattern in cmd_lower:
                 # Allow docker compose up -d (detached)
-                if "docker" in pattern and "compose up" in pattern:
-                    if "-d" in cmd_lower or "--detach" in cmd_lower:
-                        return False
-                return True
+                is_detached_compose_up = (
+                    "docker" in pattern
+                    and "compose up" in pattern
+                    and ("-d" in cmd_lower or "--detach" in cmd_lower)
+                )
+                return not is_detached_compose_up
 
         return False
 
@@ -95,7 +98,7 @@ class BashTool(BaseTool):
         self,
         command: str,
         timeout: int | None = None,
-        env: dict | None = None,
+        env: dict[str, Any] | None = None,
     ) -> ToolResult:
         """
         Execute bash command.
@@ -225,7 +228,7 @@ async def execute_bash(
     command: str,
     timeout: int = 30,
     working_dir: str | None = None,
-    env: dict | None = None,
+    env: dict[str, Any] | None = None,
     allow_destructive: bool = False,
 ) -> ToolResult:
     """

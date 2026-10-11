@@ -3,9 +3,7 @@ check|  - 'per-file-ignores' -> 'lint.per-file-ignores'
 check|  - 'select' -> 'lint.select'
 check|penguincode_cli/agents/base.py:708:29: B007 Loop control variable `target` not used within loop body
 check|penguincode_cli/agents/intent.py:76:5: SIM102 Use a single `if` statement instead of nested `if` statements
-check|penguincode_cli/core/repl.py:1500:50: B023 Function definition does not bind loop variable `prompt_text`
 check|penguincode_cli/skills/loader.py:108:13: SIM108 Use ternary operator `name = skill_dir.name if skill_dir else skill_file.stem` instead of `if`-`else`-block
-check|penguincode_cli/tools/bash.py:87:17: SIM102 Use a single `if` statement instead of nested `if` statements
 check|shared/licensing/python_client.py:125:13: B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
 check|shared/licensing/python_client.py:198:13: B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
 check|shared/py_libs/py_libs/grpc/client.py:1:1: D200 One-line docstring should fit on one line
@@ -98,8 +96,6 @@ format|penguincode_cli/agents/tool_defs.py:17:36: unformatted: File would be ref
 format|penguincode_cli/client/bootstrap.py:104:25: unformatted: File would be reformatted
 format|penguincode_cli/client/config_writer.py:101:73: unformatted: File would be reformatted
 format|penguincode_cli/client/tool_executor.py:241:32: unformatted: File would be reformatted
-format|penguincode_cli/core/debug.py:55:35: unformatted: File would be reformatted
-format|penguincode_cli/core/session.py:39:87: unformatted: File would be reformatted
 format|penguincode_cli/defaults/skills/database-migrations/SKILL.md:48:17: unformatted: File would be reformatted
 format|penguincode_cli/defaults/skills/integration-testing/SKILL.md:24:1: unformatted: File would be reformatted
 format|penguincode_cli/defaults/skills/monitoring-and-logging/SKILL.md:18:28: unformatted: File would be reformatted
@@ -115,15 +111,6 @@ format|penguincode_cli/server/services/admin.py:119:14: unformatted: File would 
 format|penguincode_cli/server/services/auth.py:169:23: unformatted: File would be reformatted
 format|penguincode_cli/server/services/provision.py:100:32: unformatted: File would be reformatted
 format|penguincode_cli/skills/loader.py:116:20: unformatted: File would be reformatted
-format|penguincode_cli/tools/engines/factory.py:62:54: unformatted: File would be reformatted
-format|penguincode_cli/tools/engines/fireplexity.py:67:45: unformatted: File would be reformatted
-format|penguincode_cli/tools/engines/google.py:70:45: unformatted: File would be reformatted
-format|penguincode_cli/tools/engines/google_mcp.py:67:37: unformatted: File would be reformatted
-format|penguincode_cli/tools/engines/sciraai.py:65:45: unformatted: File would be reformatted
-format|penguincode_cli/tools/engines/searxng.py:52:45: unformatted: File would be reformatted
-format|penguincode_cli/tools/file_ops.py:61:35: unformatted: File would be reformatted
-format|penguincode_cli/tools/mcp/client.py:19:18: unformatted: File would be reformatted
-format|penguincode_cli/tools/web.py:118:22: unformatted: File would be reformatted
 format|shared/licensing/python_client.py:107:42: unformatted: File would be reformatted
 format|shared/py_libs/py_libs/grpc/client.py:1:69: unformatted: File would be reformatted
 format|shared/py_libs/py_libs/grpc/interceptors.py:1:84: unformatted: File would be reformatted

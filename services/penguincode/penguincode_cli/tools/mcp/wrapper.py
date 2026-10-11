@@ -35,7 +35,7 @@ class MCPToolWrapper(BaseTool):
         self.original_tool_name = tool_name
         self.mcp_client = mcp_client
 
-    async def execute(self, **kwargs) -> ToolResult:
+    async def execute(self, *args: Any, **kwargs: Any) -> ToolResult:
         """Call the MCP tool and return a normalised ToolResult."""
         try:
             result = await self.mcp_client.call_tool(self.original_tool_name, kwargs)

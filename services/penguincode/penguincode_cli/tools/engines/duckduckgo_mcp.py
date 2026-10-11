@@ -12,7 +12,7 @@ class DuckDuckGoMCPEngine(BaseSearchEngine):
     MCP server: npx -y @nickclyde/duckduckgo-mcp-server
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize DuckDuckGo MCP engine."""
         super().__init__(name="duckduckgo-mcp")
         self.client = MCPClient(
@@ -61,13 +61,13 @@ class DuckDuckGoMCPEngine(BaseSearchEngine):
         except Exception as e:
             raise SearchEngineError(f"DuckDuckGo MCP search failed: {e}") from e
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Stop MCP server."""
         if self._started:
             await self.client.stop()
             self._started = False
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Cleanup on deletion."""
         if self._started:
             import asyncio
