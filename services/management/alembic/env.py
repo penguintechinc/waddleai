@@ -5,12 +5,13 @@ import sys
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from alembic.script import ScriptDirectory
+from sqlalchemy import Connection, engine_from_config, inspect, pool
 
 # Make app importable from alembic context
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.models_sqlalchemy import Base
+from app.models_sqlalchemy import Base, init_schema
 
 config = context.config
 
@@ -29,6 +30,58 @@ def get_url() -> str:
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
     return url
+
+
+def is_fresh_database(connection: Connection) -> bool:
+    """Return True when the database holds no schema at all (nothing to migrate from).
+
+    Fresh means: no application tables AND no recorded Alembic revision. A
+    database that already has an ``alembic_version`` row, or any table at all
+    (a legacy ``create_all()`` database awaiting ``alembic stamp``), is NOT
+    fresh and must keep going through the normal ``upgrade`` path.
+    """
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names()) - {"alembic_version"}
+    if tables:
+        return False
+    if "alembic_version" in inspector.get_table_names():
+        row = connection.exec_driver_sql("SELECT 1 FROM alembic_version LIMIT 1").first()
+        return row is None
+    return True
+
+
+def targets_head() -> bool:
+    """Return True only when this run was asked to move the database TO head.
+
+    ``upgrade <older-rev>``, ``downgrade``, ``current``, ``history`` etc. must
+    never trigger the fresh-database bootstrap -- only ``upgrade head`` (and
+    ``stamp head``, whose end state is identical) may.
+    """
+    try:
+        destination = context.get_revision_argument()
+    except KeyError:  # `current`/`history`: no destination revision supplied
+        return False
+    heads = ScriptDirectory.from_config(config).get_heads()
+    return destination is not None and destination in heads
+
+
+def bootstrap_fresh_database(connection: Connection) -> None:
+    """Create the full head schema on an empty database and stamp it at ``head``.
+
+    ``001_baseline`` is a documented no-op and ``002``+ ALTER/assume
+    pre-existing tables, so the migration chain cannot build a schema from
+    nothing (gh-215). The current models ARE the head schema, so a fresh
+    database is built from them (``init_schema`` -- the same routine the app
+    uses, incl. pgvector columns/indexes) and stamped at head, leaving it
+    indistinguishable from one migrated to head. Runs inside the migration
+    Job so schema provenance is single-sourced and not left to app startup.
+    """
+    init_schema(get_url())
+    script = ScriptDirectory.from_config(config)
+    with context.begin_transaction():
+        context.get_context().stamp(script, "head")
+    # `connection` is the same one configured for this run; commit the stamp.
+    connection.commit()
 
 
 def run_migrations_offline() -> None:
@@ -60,6 +113,13 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
         )
+        fresh = targets_head() and is_fresh_database(connection)
+        # Release the read-only inspection transaction before DDL runs on a
+        # separate engine / before Alembic opens its own migration transaction.
+        connection.commit()
+        if fresh:
+            bootstrap_fresh_database(connection)
+            return
         with context.begin_transaction():
             context.run_migrations()
 

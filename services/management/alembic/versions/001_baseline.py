@@ -17,7 +17,9 @@ def upgrade() -> None:
     """No-op — baseline tables were already created via `create_all()`, stamp only."""
     # No-op: all tables in this baseline were created by SQLAlchemy create_all()
     # before Alembic was introduced. Run `alembic stamp 001_baseline` on existing
-    # databases to register this baseline without re-running DDL.
+    # databases to register this baseline without re-running DDL. A completely
+    # EMPTY database never reaches this chain: alembic/env.py bootstraps it from
+    # the models and stamps head instead (gh-215).
     pass
 
 
