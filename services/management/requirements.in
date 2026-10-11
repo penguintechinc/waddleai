@@ -46,7 +46,8 @@ penguin-licensing>=0.1.0
 # string, which bcrypt 5 rejects with "password cannot be longer than 72
 # bytes" instead of truncating. That failed every auth/key/quota test in CI.
 bcrypt>=4.1.0,<5.0
-PyJWT>=2.13.0
+# PYSEC-2026-4140..4183: floor raised past the vulnerable 2.13.0 line.
+PyJWT>=2.15.0
 passlib>=1.7.4
 argon2-cffi>=23.1.0
 cryptography>=50.0.0
@@ -90,7 +91,8 @@ docker>=7.0.0
 # CodeRAG worker (app/services/coderag_worker.py): clone/fetch/checkout
 # registered repos server-side. GitPython over subprocess+shlex to avoid
 # shell-injection surface on user-supplied branch/URL values.
-GitPython>=3.1.44
+# GHSA fix line: floor raised past the vulnerable 3.1.59.
+GitPython>=3.1.60
 # CodeRAG chunker (shared/knowledge/code_chunker.py, lazy import in
 # _chunk_with_tree_sitter): function/class/module-boundary chunking grammars
 # for the tree-sitter parser (MIT). Was only present because it happens to be
@@ -103,7 +105,8 @@ markdownify>=0.13.1
 # Manual knowledge ingestion (app/api/v1/knowledge.py, lazy import in
 # _extract_text): PDF -> text extraction (BSD-3). The AGPL-licensed fitz
 # binding is banned -- never substitute it here.
-pypdf>=4.0.0
+# First fixed release for the pypdf 6.16.1 advisories.
+pypdf>=6.17.0
 
 # YAML for config generation
 pyyaml>=6.0.1
