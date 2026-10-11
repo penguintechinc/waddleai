@@ -32,6 +32,7 @@ Revises: 022_service_account_fields
 Create Date: 2026-10-11
 """
 
+import logging
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -42,10 +43,17 @@ down_revision: str | None = "022_service_account_fields"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+logger = logging.getLogger(__name__)
+
 
 def _has_column(bind: sa.engine.Connection, table: str, column: str) -> bool:
     """True if `column` already exists on `table` (guard for pre-migration ORM drift)."""
     return column in {c["name"] for c in sa.inspect(bind).get_columns(table)}
+
+
+def _has_index(bind: sa.engine.Connection, table: str, index: str) -> bool:
+    """True if `index` exists on `table` (create_all/bootstrapped DBs never created ours)."""
+    return index in {i["name"] for i in sa.inspect(bind).get_indexes(table)}
 
 
 def _pgvector_available(bind: sa.engine.Connection) -> bool:
@@ -55,7 +63,11 @@ def _pgvector_available(bind: sa.engine.Connection) -> bool:
     try:
         with bind.begin_nested():
             bind.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
-    except Exception:  # noqa: BLE001 -- no pgvector installed: degrade like init_schema()
+    except Exception as exc:  # noqa: BLE001 -- no pgvector installed: degrade like init_schema()
+        logger.warning(
+            "pgvector extension not available, memory_embeddings.embedding column skipped: %s",
+            exc,
+        )
         return False
     return True
 
@@ -85,7 +97,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the guard-added columns (and their indexes)."""
+    """Drop the guard-added columns (and their indexes), tolerating create_all-built DBs.
+
+    A database built by ``init_schema()``/``create_all`` (dev/e2e, gh-215 bootstrap)
+    has the columns but not ``idx_security_logs_api_key_id`` (the ORM column carries
+    no ``index=True``), so every drop is IF EXISTS / inspector-guarded rather than
+    assumed present. Dropping the columns is lossy by nature; it just must not crash.
+    """
     bind = op.get_bind()
 
     if bind.dialect.name == "postgresql" and _has_column(bind, "memory_embeddings", "embedding"):
@@ -93,5 +111,6 @@ def downgrade() -> None:
         op.execute("ALTER TABLE memory_embeddings DROP COLUMN IF EXISTS embedding")
 
     if _has_column(bind, "security_logs", "api_key_id"):
-        op.drop_index("idx_security_logs_api_key_id", table_name="security_logs")
+        if _has_index(bind, "security_logs", "idx_security_logs_api_key_id"):
+            op.drop_index("idx_security_logs_api_key_id", table_name="security_logs")
         op.drop_column("security_logs", "api_key_id")

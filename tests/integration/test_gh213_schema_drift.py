@@ -307,3 +307,115 @@ class TestMigration023OnLegacyDatabase:
         assert "embedding" not in _columns(url, "memory_embeddings")
         command.upgrade(cfg, "023_schema_drift_gh213")
         assert "api_key_id" in _columns(url, "security_logs")
+
+
+def _index_names(db_url: str, table: str) -> set[str]:
+    engine = sa.create_engine(db_url)
+    try:
+        return {str(i["name"]) for i in sa.inspect(engine).get_indexes(table)}
+    finally:
+        engine.dispose()
+
+
+def _create_all_db_with_no_ix(pg_admin_dsn: str) -> str:
+    """Fresh DB via init_schema(); asserts it lacks the index 023 would have created."""
+    url = _fresh_database(pg_admin_dsn)
+    _init_schema(url)
+    assert "api_key_id" in _columns(url, "security_logs")
+    assert "idx_security_logs_api_key_id" not in _index_names(url, "security_logs")
+    return url
+
+
+# regression: gh-213
+class TestMigration023DowngradeOnCreateAllDatabase:
+    """Downgrade must not crash on a DB whose schema came from create_all (no 023 index)."""
+
+    def test_straight_downgrade_on_create_all_db(self, pg_admin_dsn: str) -> None:
+        """Stamp a create_all DB at 023 and downgrade: previously DROP INDEX on a missing index."""
+        from alembic import command
+
+        url = _create_all_db_with_no_ix(pg_admin_dsn)
+        os.environ["DATABASE_URL"] = url
+        cfg = _alembic_config(url)
+        command.stamp(cfg, "023_schema_drift_gh213")
+
+        command.downgrade(cfg, "022_service_account_fields")
+
+        assert "api_key_id" not in _columns(url, "security_logs")
+        assert "embedding" not in _columns(url, "memory_embeddings")
+
+    def test_upgrade_then_downgrade_on_create_all_db(self, pg_admin_dsn: str) -> None:
+        """Upgrade is a guarded no-op on create_all, and the following downgrade still succeeds."""
+        from alembic import command
+
+        url = _create_all_db_with_no_ix(pg_admin_dsn)
+        os.environ["DATABASE_URL"] = url
+        cfg = _alembic_config(url)
+        command.stamp(cfg, "022_service_account_fields")
+        command.upgrade(cfg, "023_schema_drift_gh213")
+        # Guarded no-op: the index must NOT have been invented by upgrade on this shape.
+        assert "idx_security_logs_api_key_id" not in _index_names(url, "security_logs")
+
+        command.downgrade(cfg, "022_service_account_fields")
+
+        assert "api_key_id" not in _columns(url, "security_logs")
+        assert "embedding" not in _columns(url, "memory_embeddings")
+
+    def test_downgrade_still_drops_index_when_upgrade_created_it(self, pg_admin_dsn: str) -> None:
+        """Legacy shape: upgrade creates the index, downgrade removes it along with the column."""
+        from alembic import command
+
+        url = _create_all_db_with_no_ix(pg_admin_dsn)
+        engine = sa.create_engine(url, isolation_level="AUTOCOMMIT")
+        with engine.connect() as conn:
+            conn.execute(sa.text("ALTER TABLE security_logs DROP COLUMN api_key_id"))
+        engine.dispose()
+        os.environ["DATABASE_URL"] = url
+        cfg = _alembic_config(url)
+        command.stamp(cfg, "022_service_account_fields")
+        command.upgrade(cfg, "023_schema_drift_gh213")
+        assert "idx_security_logs_api_key_id" in _index_names(url, "security_logs")
+
+        command.downgrade(cfg, "022_service_account_fields")
+
+        assert "idx_security_logs_api_key_id" not in _index_names(url, "security_logs")
+        assert "api_key_id" not in _columns(url, "security_logs")
+
+
+# regression: gh-213
+class TestPgvectorUnavailableIsLogged:
+    """A failed CREATE EXTENSION must degrade loudly (WARNING), not silently."""
+
+    def test_warning_logged_when_extension_cannot_be_created(
+        self, pg_admin_dsn: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unprivileged real role cannot CREATE EXTENSION; the skip is logged, returns False."""
+        import importlib.util  # noqa: PLC0415
+        import logging  # noqa: PLC0415
+
+        url = _fresh_database(pg_admin_dsn)
+        db_name = url.rsplit("/", 1)[1]
+        admin = sa.create_engine(url, isolation_level="AUTOCOMMIT")
+        role = f"nopriv_{uuid.uuid4().hex[:8]}"
+        with admin.connect() as conn:
+            conn.execute(sa.text(f"CREATE ROLE {role} LOGIN PASSWORD 'x'"))  # noqa: S608
+            conn.execute(sa.text(f'REVOKE ALL ON DATABASE "{db_name}" FROM PUBLIC'))
+            conn.execute(sa.text(f'GRANT CONNECT ON DATABASE "{db_name}" TO {role}'))
+        admin.dispose()
+
+        spec = importlib.util.spec_from_file_location(
+            "migration_023", MANAGEMENT_DIR / "alembic" / "versions" / "023_schema_drift_gh213.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        host_port = url.split("@", 1)[1].split("/", 1)[0]
+        engine = sa.create_engine(f"postgresql://{role}:x@{host_port}/{db_name}")
+        try:
+            with engine.connect() as conn, caplog.at_level(logging.WARNING):
+                assert mod._pgvector_available(conn) is False
+        finally:
+            engine.dispose()
+
+        assert any("pgvector extension not available" in r.getMessage() for r in caplog.records)
