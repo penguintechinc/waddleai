@@ -151,11 +151,20 @@ def create_app(config_class=Config):
     app = Quart(__name__)
     app.config.from_object(config_class)
 
-    # Configure logging
-    logging.basicConfig(
-        level=logging.DEBUG if app.config["DEBUG"] else logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    # Configure logging explicitly rather than via logging.basicConfig(), which
+    # silently no-ops once any handler already exists on the root logger (a
+    # footgun against init_observability()'s own OTel LoggingHandler, added
+    # later in this factory) and is the exact hand-rolled pattern
+    # testing.md's smoke-test logging-conformance gate forbids
+    # (tests/smoke/test_telemetry_emission.py, gh-finding-O3).
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG if app.config["DEBUG"] else logging.INFO)
+    if not root_logger.handlers:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        root_logger.addHandler(console_handler)
     app.logger.info("Initializing WaddleAI Management Server")
 
     # Fail closed before anything is served: a missing credential-encryption
