@@ -503,6 +503,12 @@ class SecurityLog(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
     virtual_key_id = Column(Integer, ForeignKey("virtual_keys.id"))
+    # gh-213: shared/security/prompt_security.py (_log_threat / the rate-limit
+    # read) and the PyDAL runtime model only ever read/write ``api_key_id``
+    # (FK api_keys, same as gh-207's token_usage fix). ``virtual_key_id`` is
+    # left in place, unread by any runtime path. Added by migration
+    # 023_schema_drift_gh213.
+    api_key_id = Column(Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     organization_id = Column(Integer, ForeignKey("organizations.id"))
     request_hash = Column(String(255))
@@ -542,6 +548,12 @@ class MemoryEmbedding(Base):
     embedding_json = Column(
         Text
     )  # JSON-serialized float array; replaced by pgvector column after extension is confirmed
+    # gh-213: the native ``embedding vector(768)`` column PgvectorMemoryStore
+    # writes is intentionally NOT declared here -- a pgvector type would make
+    # create_all() fail on a Postgres without the extension (and on SQLite).
+    # init_schema() adds it via ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``
+    # when pgvector is available; migration 023_schema_drift_gh213 does the
+    # same for already-provisioned databases that never got it.
     role = Column(String(50), nullable=False)  # user, assistant
     created_at = Column(DateTime, default=datetime.utcnow)
     metadata_ = Column("metadata", JSON, default=dict)
