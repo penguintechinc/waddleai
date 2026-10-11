@@ -66,6 +66,7 @@ from penguincode_cli.proto import (
     add_ToolCallbackServiceServicer_to_server,
 )
 
+from .grpc_health import GrpcHealthManager
 from .interceptors import (
     JWTValidationInterceptor,
     MethodPrefixRoutingInterceptor,
@@ -118,6 +119,10 @@ class PenguinCodeServer:
         self.rest_port = rest_port
         self.server: grpc.aio.Server | None = None
         self.config_store: ConfigStore | None = None
+        #: Standard grpc.health.v1.Health servicer -- see grpc_health.py's
+        #: module docstring. Instantiated unconditionally; `register()`
+        #: inside `start()` is what actually honors the opt-out kill-switch.
+        self.grpc_health = GrpcHealthManager()
 
         # Service implementations
         self.auth_service: AuthServiceImpl | None = None
@@ -232,6 +237,15 @@ class PenguinCodeServer:
             **server_kwargs,
         )
 
+        # Standard grpc.health.v1.Health service (resolves the ops-audit
+        # finding that Helm PR #264's native `grpc:` probe toggle had
+        # nothing server-side to check against). Registered before any
+        # other servicer so the health channel is available from the
+        # moment the port opens; every tracked service starts NOT_SERVING
+        # until `mark_started()` below confirms the real dependency state.
+        self.grpc_health.register(self.server)
+        await self.grpc_health.mark_starting()
+
         # Initialize services
         self.auth_service = AuthServiceImpl(self.settings.auth)
         self.chat_service = ChatServiceImpl(self.settings)
@@ -280,6 +294,13 @@ class PenguinCodeServer:
         await self.server.start()
         logger.info("PenguinCode gRPC Server started")
 
+        # Flip the standard Health service's statuses from the NOT_SERVING
+        # seed above to their real values now that the db pool, index
+        # workers, and every servicer are confirmed up -- this is the
+        # transition K8s's native `grpc:` liveness probe (overall, "") and
+        # readiness probe (KnowledgeService) are waiting on.
+        await self.grpc_health.mark_started()
+
         # --- REST API -------------------------------------------------------
         jwt_secret = self.settings.auth.jwt_secret or secrets.token_hex(32)
 
@@ -314,6 +335,14 @@ class PenguinCodeServer:
 
     async def stop(self, grace_period: float = 5.0) -> None:
         """Stop both gRPC and REST servers gracefully."""
+        # Flip the standard Health service to NOT_SERVING (permanently, for
+        # this process) FIRST -- before anything else stops -- so K8s's
+        # native readiness probe fails and the endpoint is pulled from
+        # Service/EndpointSlice while in-flight RPCs still have the full
+        # `grace_period` to drain, exactly mirroring O5-a's existing
+        # preStop-sleep rationale for the REST/gRPC drain window below.
+        await self.grpc_health.mark_draining()
+
         # Stop REST API
         if hasattr(self, "_rest_shutdown"):
             self._rest_shutdown.set()

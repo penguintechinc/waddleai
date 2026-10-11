@@ -101,6 +101,19 @@ def open_pool(dsn: str, config: DbConfig | None = None) -> ConnectionPool:
         return pool
 
 
+def is_pool_open() -> bool:
+    """Report whether the process-wide shared pool is currently open.
+
+    Non-raising, read-only check used by `server/grpc_health.py` to derive
+    the standard `grpc.health.v1.Health` service's per-service SERVING/
+    NOT_SERVING status for `KnowledgeService`/`LessonsService` -- both are
+    backed by this pool, so a never-opened or already-closed pool means
+    they cannot actually serve traffic even though the gRPC channel itself
+    is still reachable.
+    """
+    return _shared_pool is not None
+
+
 def get_pool(dsn: str | None = None, config: DbConfig | None = None) -> ConnectionPool:
     """Return the shared pool, lazily opening it from `dsn`/env defaults if not already open."""
     if _shared_pool is not None:

@@ -132,6 +132,12 @@ RPC_SERVER_REQUESTS_COUNTER_NAME: Final = "rpc_server_requests_total"
 #: (`enqueued`/`rejected`) -- bounded, closed label set.
 TOOL_QUEUE_EVENTS_COUNTER_NAME: Final = "penguincode.tool_queue.events"
 
+#: Standard `grpc.health.v1.Health` servicer (`server/grpc_health.py`)
+#: SERVING/NOT_SERVING transitions, labeled by service name (closed set:
+#: overall/knowledge/lessons/chat) and the new status -- lifecycle events,
+#: no latency dimension, so a counter only (no histogram).
+HEALTH_STATUS_TRANSITIONS_COUNTER_NAME: Final = "penguincode.health.status_transitions"
+
 #: `db/pool.py` shared-pool occupancy gauges + borrow-wait histogram
 #: (ops-audit O7 pooling fix) and the clamp counter for `config.settings.
 #: LimitsConfig`-enforced request parameters (graph_depth/n_vector/limit).
@@ -174,6 +180,7 @@ _events_counter: metrics.Counter | None = None
 _rpc_duration_histogram: metrics.Histogram | None = None
 _rpc_requests_counter: metrics.Counter | None = None
 _tool_queue_events_counter: metrics.Counter | None = None
+_health_status_transitions_counter: metrics.Counter | None = None
 
 #: Typed `Any` -- synchronous `Gauge` is exported from `opentelemetry.metrics`
 #: only as the private `_Gauge` alias in this SDK version (still an
@@ -461,6 +468,20 @@ def _tool_queue_events_counter_instrument() -> metrics.Counter:
     return _tool_queue_events_counter
 
 
+def _health_status_transitions_counter_instrument() -> metrics.Counter:
+    global _health_status_transitions_counter
+    if _health_status_transitions_counter is None:
+        _health_status_transitions_counter = get_meter().create_counter(
+            HEALTH_STATUS_TRANSITIONS_COUNTER_NAME,
+            unit="1",
+            description=(
+                "grpc.health.v1.Health servicer SERVING/NOT_SERVING transitions, "
+                "by service name and new status"
+            ),
+        )
+    return _health_status_transitions_counter
+
+
 def _db_pool_in_use_gauge_instrument() -> Any:
     global _db_pool_in_use_gauge
     if _db_pool_in_use_gauge is None:
@@ -593,6 +614,7 @@ def reset_for_testing() -> None:
         _rpc_duration_histogram, \
         _rpc_requests_counter, \
         _tool_queue_events_counter, \
+        _health_status_transitions_counter, \
         _log_handler, \
         _prometheus_reader
     global _db_pool_in_use_gauge, _db_pool_waiting_gauge, _db_pool_wait_histogram
@@ -618,6 +640,7 @@ def reset_for_testing() -> None:
     _rpc_duration_histogram = None
     _rpc_requests_counter = None
     _tool_queue_events_counter = None
+    _health_status_transitions_counter = None
     _db_pool_in_use_gauge = None
     _db_pool_waiting_gauge = None
     _db_pool_wait_histogram = None
@@ -755,3 +778,15 @@ def record_tool_queue_event(outcome: str) -> None:
     label set (see ``server/services/tools.py``'s queue-bound handling).
     """
     _tool_queue_events_counter_instrument().add(1, attributes={"outcome": outcome})
+
+
+def record_health_status_transition(service: str, status: str) -> None:
+    """Increment the health-transition counter for one SERVING/NOT_SERVING change.
+
+    ``service`` and ``status`` are both closed, bounded label sets (service
+    name is one of overall/knowledge/lessons/chat; status is "serving" or
+    "not_serving") -- see ``server/grpc_health.py``.
+    """
+    _health_status_transitions_counter_instrument().add(
+        1, attributes={"service": service, "status": status}
+    )

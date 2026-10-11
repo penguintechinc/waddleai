@@ -58,6 +58,15 @@ DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG = "waddleai.disable-grpc-concurrency-limits
 DISABLE_GRPC_MESSAGE_LIMITS_FLAG = "waddleai.disable-grpc-message-limits"
 DISABLE_TOOL_QUEUE_BOUND_FLAG = "waddleai.disable-tool-queue-bound"
 
+#: Opt-out kill-switch for the standard `grpc.health.v1.Health` servicer
+#: (`server/grpc_health.py`). Unseen/OFF (the default) = the standard
+#: service is registered and its SERVING/NOT_SERVING transitions are wired
+#: into the server lifecycle (K8s native `grpc:` probes, Helm chart
+#: `nativeGrpcProbe`, depend on it); ON = registration is skipped entirely,
+#: reverting to the pre-fix state where only the custom `HealthServiceImpl`
+#: RPC and the `grpc.channel_ready_future` connectivity-only probe exist.
+DISABLE_GRPC_HEALTH_SERVICE_FLAG = "waddleai.disable-grpc-health-service"
+
 #: Opt-out kill-switch for `db/pool.py`'s shared `ConnectionPool` (ops-audit
 #: O7). Unseen/OFF (the default) = pooled connections; ON = legacy behavior,
 #: a fresh `psycopg.connect()` per store call -- an escape hatch if the pool
@@ -320,6 +329,7 @@ __all__ = [
     "DISABLE_GRPC_TRACING_FLAG",
     "DISABLE_GRPC_CONCURRENCY_LIMITS_FLAG",
     "DISABLE_GRPC_MESSAGE_LIMITS_FLAG",
+    "DISABLE_GRPC_HEALTH_SERVICE_FLAG",
     "DISABLE_TOOL_QUEUE_BOUND_FLAG",
     "DISABLE_DB_POOL_FLAG",
     "DISABLE_INDEX_QUEUE_FLAG",

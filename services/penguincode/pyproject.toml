@@ -89,6 +89,11 @@ dependencies = [
     "grpcio==1.69.0",
     "grpcio-tools==1.69.0",
     "protobuf==5.29.6",
+    # Standard grpc.health.v1.Health servicer (server/grpc_health.py) --
+    # held at the same 1.69.x line as grpcio/grpcio-tools above since
+    # grpcio-health-checking's release numbering tracks grpcio's; bump all
+    # three together.
+    "grpcio-health-checking==1.69.0",
 
     # Observability (OTel) - pinned to the same 1.44.0 line as the root
     # repo's requirements.in so both trees resolve one consistent OTel SDK
