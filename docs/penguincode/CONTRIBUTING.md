@@ -208,9 +208,12 @@ baselines:
 - **`.mypy-baseline.txt`** — `mypy --strict` errors, scoped to
   `penguincode_cli` only (the actual installed package per `pyproject.toml`'s
   `packages = ["penguincode_cli"]`) — pointing mypy at the whole directory
-  crashes outright on a duplicate module name (stray root-level `app.py` /
-  `client.py` / `server/app.py`, a vendored copy of the monorepo's
-  `shared/py_libs`) that aren't this package's own code.
+  crashes outright on a duplicate module name (a vendored copy of the
+  monorepo's `shared/py_libs` that isn't this package's own code). Three
+  stray root-level non-package scripts (`app.py`, `client.py`,
+  `server/app.py`) used to contribute to the same crash and also carried
+  real bandit findings (Flask `debug=True`, no-timeout HTTP) — deleted
+  outright as dead code rather than fixed in place; see RELEASE_NOTES.md.
 
 Both baselines were seeded from this package's pre-existing debt (measured
 at write time: 150 combined ruff findings, 613 mypy errors) — this gate does
@@ -232,6 +235,43 @@ existing (pre-existing, un-fixed) error shifts its line number, which then
 needs the same `--write-baseline` regeneration — check the diff only
 contains line-number shifts for findings you didn't touch before trusting
 it, never exempt the gate to work around this.
+
+### Security Gate
+
+`make test-security` runs `bandit` (`--severity-level medium`), `pip-audit`
+against `requirements.txt`, and `gitleaks` — unlike the lint gate above, this
+is a real pass/fail (no baseline/ratchet): every finding must be fixed or
+justified before merge.
+
+- **bandit/pip-audit run from a package-local `.venv`** (`security-venv`
+  target, `uv venv -p 3.13 .venv`), not whatever's on `PATH`. A machine-wide
+  `bandit`/`pip-audit` install can be pinned to an older system Python;
+  `pip-audit`'s own resolver then silently excludes any PyPI release
+  requiring a newer Python (this package pins `quart==0.23.1`, which needs
+  `>=3.13`), producing a "could not find a version" error that looks like a
+  bad pin or a yanked release when it's neither.
+- **B608 ("possible SQL injection") false positives**: bandit's heuristic
+  flags any f-string that touches a SQL keyword, regardless of whether the
+  interpolated value is actually attacker-controlled. The real pattern in
+  this package's `*/store.py` and `stores/vector.py` modules is a
+  module-level constant column list (`_SELECT_COLUMNS`) or a `Literal`-typed
+  table name interpolated into the query *shape*, with every actual value
+  bound separately via psycopg's `%(name)s` / sqlite's `?` placeholders —
+  never caller input. Justify with a targeted, trailing `# nosec B608` **on
+  the exact line bandit reports** (for a multi-line f-string this is the
+  closing `"""` line, never the opening one — a comment placed there would
+  land *inside* the string literal, not suppress the finding) plus a short
+  rationale comment on the line(s) above explaining why the interpolated
+  value is safe. Never a file-level or blanket `# nosec`.
+- **B104 ("binding to all interfaces")**: a `0.0.0.0` server-listen default
+  is the correct container pattern (reachability is governed by the
+  Kubernetes Service + CiliumNetworkPolicy in front of it, not the bind
+  address) — justify with `# nosec B104`, matching the convention already
+  used in `proxy`/`services/management`.
+- **Dead code with a real finding gets deleted, not nosec'd.** If the
+  flagged code isn't reachable from any shipped entrypoint (check
+  `Dockerfile.server`'s `COPY` list and `pyproject.toml`'s `packages`), fix
+  the actual problem by removing it.
 
 ## Adding New Agents
 

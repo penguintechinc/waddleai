@@ -185,6 +185,9 @@ class PgVectorStore:
             with db_connection(self._dsn, ctx, pool=self._pool, autocommit=True) as conn:
                 with conn.cursor() as cur:
                     for item in items:
+                        # self._table is typed `TableName = Literal["docs_vectors",
+                        # "memory_vectors"]`, never user input; every actual value
+                        # is bound via the params dict below, never interpolated.
                         cur.execute(
                             f"""
                             INSERT INTO penguincode.{self._table}
@@ -204,7 +207,7 @@ class PgVectorStore:
                                 team_id = EXCLUDED.team_id,
                                 owner_user_id = EXCLUDED.owner_user_id,
                                 visibility = EXCLUDED.visibility
-                            """,
+                            """,  # nosec B608
                             {
                                 "id": item.id,
                                 "embedding": _vector_literal(item.embedding),
@@ -252,6 +255,10 @@ class PgVectorStore:
             where_sql = "AND metadata @> %(metadata_filter)s"
             params["metadata_filter"] = Jsonb(where)
 
+        # self._table is typed `TableName = Literal["docs_vectors",
+        # "memory_vectors"]` and where_sql is one of two fixed literal
+        # fragments, never user input; every actual value is bound via the
+        # params dict below, never interpolated.
         sql = f"""
             SELECT id, document, metadata,
                    1 - (embedding <=> %(embedding)s::vector) AS score
@@ -265,7 +272,7 @@ class PgVectorStore:
               {where_sql}
             ORDER BY embedding <=> %(embedding)s::vector
             LIMIT %(n)s
-        """
+        """  # nosec B608
 
         with timed_store_operation("vector_query", "pgvector.query", table=self._table, n=n):
             with db_connection(self._dsn, ctx, pool=self._pool) as conn:
@@ -293,6 +300,9 @@ class PgVectorStore:
         if not ids:
             return
 
+        # self._table is typed `TableName = Literal["docs_vectors",
+        # "memory_vectors"]`, never user input; every actual value is bound
+        # via the params dict below, never interpolated.
         sql = f"""
             DELETE FROM penguincode.{self._table}
             WHERE id = ANY(%(ids)s::uuid[])
@@ -302,7 +312,7 @@ class PgVectorStore:
                  OR (visibility = 'team' AND team_id = ANY(%(team_ids)s::uuid[]))
                  OR (visibility = 'user' AND owner_user_id = %(user_id)s::uuid)
               )
-        """
+        """  # nosec B608
         params = {
             "ids": ids,
             "tenant_id": ctx.tenant_id,
