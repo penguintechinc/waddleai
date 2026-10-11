@@ -3,6 +3,7 @@
 import asyncio
 import os
 from pathlib import Path
+from typing import Any
 
 from penguincode_cli.shared.command_safety import (
     ConfirmCallback,
@@ -97,7 +98,7 @@ class BashTool(BaseTool):
         self,
         command: str,
         timeout: int | None = None,
-        env: dict | None = None,
+        env: dict[str, Any] | None = None,
     ) -> ToolResult:
         """
         Execute bash command.
@@ -227,7 +228,7 @@ async def execute_bash(
     command: str,
     timeout: int = 30,
     working_dir: str | None = None,
-    env: dict | None = None,
+    env: dict[str, Any] | None = None,
     allow_destructive: bool = False,
 ) -> ToolResult:
     """

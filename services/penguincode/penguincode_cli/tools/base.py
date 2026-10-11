@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass
+@dataclass(slots=True)
 class ToolResult:
     """Result from a tool execution."""
 
@@ -18,7 +18,7 @@ class ToolResult:
 class BaseTool(ABC):
     """Abstract base class for all tools."""
 
-    def __init__(self, name: str, description: str):
+    def __init__(self, name: str, description: str) -> None:
         """
         Initialize tool.
 
@@ -30,11 +30,12 @@ class BaseTool(ABC):
         self.description = description
 
     @abstractmethod
-    async def execute(self, **kwargs) -> ToolResult:
+    async def execute(self, *args: Any, **kwargs: Any) -> ToolResult:
         """
         Execute the tool.
 
         Args:
+            *args: Unused; accepted so subclasses may declare named parameters
             **kwargs: Tool-specific arguments
 
         Returns:

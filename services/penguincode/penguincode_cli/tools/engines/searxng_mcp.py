@@ -69,13 +69,13 @@ class SearXNGMCPEngine(BaseSearchEngine):
         except Exception as e:
             raise SearchEngineError(f"SearXNG MCP search failed: {e}") from e
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Stop MCP server."""
         if self._started:
             await self.client.stop()
             self._started = False
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Cleanup on deletion."""
         if self._started:
             import asyncio

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from typing import Any
 
 import httpx
@@ -18,7 +19,7 @@ class MCPClient:
 
     def __init__(
         self, server_command: str, server_args: list[str], env: dict[str, str] | None = None
-    ):
+    ) -> None:
         """
         Initialize MCP client.
 
@@ -30,7 +31,7 @@ class MCPClient:
         self.server_command = server_command
         self.server_args = server_args
         self.env = env or {}
-        self.process = None
+        self.process: asyncio.subprocess.Process | None = None
         self._next_id = 1
 
     def _get_next_id(self) -> int:
@@ -39,7 +40,7 @@ class MCPClient:
         self._next_id += 1
         return msg_id
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the MCP server process and perform the protocol handshake."""
         if self.process:
             return
@@ -50,7 +51,7 @@ class MCPClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**asyncio.subprocess.os.environ, **self.env},
+            env={**os.environ, **self.env},
         )
 
         # MCP initialize handshake
@@ -66,10 +67,11 @@ class MCPClient:
         # Send initialized notification (no id — it's a notification)
         notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
         notification_json = json.dumps(notification) + "\n"
-        self.process.stdin.write(notification_json.encode())
-        await self.process.stdin.drain()
+        stdin = self._stdin()
+        stdin.write(notification_json.encode())
+        await stdin.drain()
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the MCP server process."""
         if not self.process:
             return
@@ -77,6 +79,18 @@ class MCPClient:
         self.process.terminate()
         await self.process.wait()
         self.process = None
+
+    def _stdin(self) -> asyncio.StreamWriter:
+        """Return the running server's stdin pipe, or raise if it is unavailable."""
+        if self.process is None or self.process.stdin is None:
+            raise RuntimeError("MCP server not started")
+        return self.process.stdin
+
+    def _stdout(self) -> asyncio.StreamReader:
+        """Return the running server's stdout pipe, or raise if it is unavailable."""
+        if self.process is None or self.process.stdout is None:
+            raise RuntimeError("MCP server not started")
+        return self.process.stdout
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         """
@@ -111,9 +125,10 @@ class MCPClient:
             raise RuntimeError("MCP server not started")
 
         result = await self._send_request("tools/list")
-        return result.get("tools", []) if isinstance(result, dict) else []
+        tools: list[dict[str, Any]] = result.get("tools", []) if isinstance(result, dict) else []
+        return tools
 
-    async def _send_request(self, method: str, params: dict | None = None) -> Any:
+    async def _send_request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         """Send a JSON-RPC request and read the response."""
         msg_id = self._get_next_id()
         request: dict[str, Any] = {
@@ -125,10 +140,11 @@ class MCPClient:
             request["params"] = params
 
         request_json = json.dumps(request) + "\n"
-        self.process.stdin.write(request_json.encode())
-        await self.process.stdin.drain()
+        stdin = self._stdin()
+        stdin.write(request_json.encode())
+        await stdin.drain()
 
-        response_line = await self.process.stdout.readline()
+        response_line = await self._stdout().readline()
         response = json.loads(response_line.decode())
 
         if "error" in response:
@@ -197,4 +213,5 @@ class HTTPMCPClient:
                 raise RuntimeError(f"MCP HTTP error: {response.status_code} - {response.text}")
 
             result = response.json()
-            return result.get("tools", [])
+            http_tools: list[dict[str, Any]] = result.get("tools", [])
+            return http_tools

@@ -59,7 +59,7 @@ class MCPToolManager:
     def __init__(self, mcp_config: MCPConfig):
         self._config = mcp_config
         self._tools: dict[str, MCPToolWrapper] | None = None
-        self._tool_defs: list[dict] | None = None
+        self._tool_defs: list[dict[str, Any]] | None = None
         self._clients: list[Any] = []  # running MCPClient instances
         self._lock = asyncio.Lock()
 
@@ -67,7 +67,7 @@ class MCPToolManager:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get_tools(self) -> tuple[dict[str, MCPToolWrapper], list[dict]]:
+    async def get_tools(self) -> tuple[dict[str, MCPToolWrapper], list[dict[str, Any]]]:
         """Return ``(tools_dict, ollama_tool_defs)`` — lazy-discovers on first call."""
         async with self._lock:
             if self._tools is None:
@@ -135,7 +135,7 @@ class MCPToolManager:
     async def _discover_server_tools(
         self,
         config: MCPServerConfig,
-    ) -> tuple[dict[str, MCPToolWrapper], list[dict]]:
+    ) -> tuple[dict[str, MCPToolWrapper], list[dict[str, Any]]]:
         """Start a client, list tools, and build wrappers + schemas."""
         client = self._create_client(config)
 
@@ -147,7 +147,7 @@ class MCPToolManager:
         raw_tools = await client.list_tools()
 
         tools: dict[str, MCPToolWrapper] = {}
-        defs: list[dict] = []
+        defs: list[dict[str, Any]] = []
 
         for mcp_tool in raw_tools:
             wrapper = MCPToolWrapper(

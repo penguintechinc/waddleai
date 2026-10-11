@@ -8,7 +8,7 @@ from .base import BaseSearchEngine, SearchEngineError, SearchEngineTimeoutError,
 class SearXNGEngine(BaseSearchEngine):
     """SearXNG metasearch engine implementation."""
 
-    def __init__(self, url: str = "https://searx.be", categories: list[str] = None):
+    def __init__(self, url: str = "https://searx.be", categories: list[str] | None = None):
         """
         Initialize SearXNG search engine.
 

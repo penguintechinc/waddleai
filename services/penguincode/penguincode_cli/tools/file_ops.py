@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]  # types-aiofiles not pinned in hashed requirements
 
 from .base import BaseTool, ToolResult
 
@@ -10,7 +10,7 @@ from .base import BaseTool, ToolResult
 class ReadFileTool(BaseTool):
     """Tool for reading file contents."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("read", "Read file contents with optional line range")
 
     async def execute(
@@ -256,7 +256,7 @@ class EditFileTool(BaseTool):
 class GrepTool(BaseTool):
     """Tool for searching text in files."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("grep", "Search for pattern in files")
 
     async def execute(
@@ -391,7 +391,7 @@ class GrepTool(BaseTool):
 class GlobTool(BaseTool):
     """Tool for finding files by pattern."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("glob", "Find files matching pattern")
 
     async def execute(

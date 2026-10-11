@@ -1,5 +1,7 @@
 """Web search and fetch tools for PenguinCode."""
 
+from typing import Any
+
 import httpx
 from bs4 import BeautifulSoup
 
@@ -53,7 +55,7 @@ class WebFetchTool:
         """
         self.timeout = timeout
 
-    async def fetch(self, url: str, extract_text: bool = True) -> dict:
+    async def fetch(self, url: str, extract_text: bool = True) -> dict[str, Any]:
         """
         Fetch and optionally parse web content.
 
@@ -133,7 +135,7 @@ async def search_web(
     return await tool.search(query, max_results)
 
 
-async def fetch_url(url: str, extract_text: bool = True, timeout: int = 30) -> dict:
+async def fetch_url(url: str, extract_text: bool = True, timeout: int = 30) -> dict[str, Any]:
     """
     Convenience function to fetch URL content.
 

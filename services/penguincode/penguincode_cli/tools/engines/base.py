@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(slots=True)
 class SearchResult:
     """Search result from any search engine."""
 
@@ -13,7 +13,7 @@ class SearchResult:
     snippet: str
     source: str  # Engine name (e.g., "duckduckgo", "google", "sciraai")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str]:
         """Convert to dictionary representation."""
         return {
             "title": self.title,
