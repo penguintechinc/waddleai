@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Security — dependency CVE remediation — 2026-10-10
+
+`make test-security` pip-audit/npm audit found 8 vulnerable Python packages across the
+root/proxy/management lockfiles and 4 vulnerable npm packages in `services/webui`
+(root and `tests/e2e` were already clean). All fixed by bumping to the first
+non-vulnerable release and regenerating hash-pinned lockfiles — no code changes
+required; `jwt.decode`/`PyJWKClient` and `werkzeug.exceptions.RequestEntityTooLarge`
+call sites verified unaffected (213 + 148 targeted unit tests green).
+
+- **Python**: `pyjwt` 2.13.0→2.15.1 (PYSEC-2026-4140..4183), `multidict` 6.7.1→6.9.1
+  (CVE-2026-104874), `urllib3` 2.7.0→2.8.0 (PYSEC-2026-4175..4177), `tornado`
+  6.5.8→6.5.10 (GHSA-3hv7/c2m8/chx6), `werkzeug` 3.1.8→3.1.9, `gitpython` 3.1.59→3.2.0,
+  `oauthlib` 3.3.1→4.0.0, `pypdf` 6.16.1→6.20.0 — across `requirements.{in,txt}`,
+  `proxy/requirements.{in,txt}`, `services/management/requirements.{in,txt}`,
+  `docs/requirements.txt`, `docs/docs-site/requirements.txt`.
+- **npm**: `services/webui` — `axios` 1.18.0→1.20.0 (direct dep, 12 advisories
+  including SSRF/ReDoS/prototype-pollution), `brace-expansion`, `js-yaml`,
+  `source-map-js` (transitive, via `npm audit fix`).
+- **Known gap, not fixed here (out of this change's assigned scope)**:
+  `vscode-extension/waddleai-copilot/package-lock.json` carries 33 vulnerabilities
+  (1 critical: handlebars; 11 high: undici, qs, axios, brace-expansion, fast-uri,
+  braces) — needs a dedicated pass since several fixes there require major/breaking
+  bumps (`@vscode/vsce` 4.0.0, `ts-jest` 27.x).
+
 ### Operational readiness remediation — 2026-10-04
 
 Sixteen fixes from an operational-readiness audit (gh-261–gh-276), merged to
