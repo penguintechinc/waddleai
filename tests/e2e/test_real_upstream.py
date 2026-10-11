@@ -91,6 +91,9 @@ remains open (tracked in gh-207, not fixed by this module):
    ran ``create_all()`` by hand, once, long ago. This module's own
    ``_bootstrap_schema`` works around it by calling ``init_schema()``
    itself before ``alembic stamp head`` (not ``upgrade head``).
+   (Since gh-215 ``001_baseline`` builds an empty database and the real chain
+   runs on top, so ``upgrade head`` DOES bootstrap a fresh Postgres now; this
+   harness keeps the create_all + stamp path, which is still supported.)
 
 Two additional, previously-reported bugs (gh-130) were checked for and did
 NOT reproduce on this checkout (``shared/auth/rbac.py:310`` already uses
