@@ -27,12 +27,15 @@ a different user within the same tenant are all indistinguishable `None`/
 `LookupError` outcomes, so a caller can never use this store to probe
 whether a given session id exists elsewhere.
 
-**Legacy standalone mode.** Penguincode's local client-server mode (HS256
-shared-key auth, no WaddleAI JWT) has no tenant concept at all --
-`server/services/chat.py`'s `_scope_for_request` synthesizes a fixed
-single pseudo-tenant (`_LEGACY_TENANT_ID`) for that mode, scoped by the
-authenticated caller's `sub` only. Both modes go through the exact same
-`SessionStore` methods below.
+**Legacy standalone mode (kill-switch only).** Every `ChatService` RPC is
+now RS256-gated by default (`server/interceptors.py`'s Chat RS256 gate --
+tenancy-gap fix), so `server/services/chat.py`'s `_scope_for_request`
+synthesizes a fixed single pseudo-tenant (`LEGACY_TENANT_ID`), scoped by
+the authenticated caller's HS256 token `sub` only, exclusively when an
+operator has explicitly set the `penguincode.disable-chat-rs256-gate`
+opt-out kill switch -- an emergency rollback, never the steady-state
+default. Both modes go through the exact same `SessionStore` methods
+below.
 
 **TTL and expiry.** Every `create`/`update_state` call sets `expires_at` to
 `now() + settings.sessions.ttl_seconds` (`PENGUINCODE_SESSION_TTL_SECONDS`

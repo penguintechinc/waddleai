@@ -208,6 +208,16 @@ Exchanged for JWT via `POST /api/v1/auth/token`, then used for all subsequent gR
 
 Precedence: machine key → interactive login → local dev (fail-closed to PenguinTech domains).
 
+**`ChatService` shares this gate too.** `CreateSession`/`Chat`/`GetHistory`/`CloseSession`
+used to run under a separate, legacy HS256 client-server secret, with multi-tenant
+scoping faked via a synthesized pseudo-tenant keyed on that token's `sub` -- a tenancy
+gap flagged when chat sessions moved to shared Postgres (migration `0007`). `ChatService`
+now requires the same RS256-validated `ScopeContext` as `KnowledgeService`/
+`LessonsService` by default; a session is visible to its own tenant **+ owning user**
+only (narrower than the three-tier user/team/tenant model above, matching `index_jobs`'
+tenant-+-owner pattern) -- never team- or tenant-shared. Opt-out kill switch:
+`penguincode.disable-chat-rs256-gate` (see [`CONFIGURATION.md`](./CONFIGURATION.md#chatservice-rs256-gate)).
+
 ### Observability (OTel)
 
 All signals (logs, metrics, traces) via OpenTelemetry; endpoint env-configurable:

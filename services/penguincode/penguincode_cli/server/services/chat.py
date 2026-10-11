@@ -16,10 +16,22 @@ row's `project_dir` + serialized message history on every `Chat`/
 
 Scope: a session is visible to its own tenant AND its owning user only --
 see `sessions.store`'s module docstring for the full scope/TTL/kill-switch
-contract, and `_scope_for_request` below for how that scope is derived
-(the real WaddleAI `ScopeContext` when present, or a synthesized
-single-tenant scope for penguincode's legacy standalone client-server
-mode).
+contract, and `_scope_for_request` below for how that scope is derived.
+
+**Tenancy-gap fix (RS256 gate).** Every `ChatService` RPC used to run
+exclusively under `server/interceptors.py`'s legacy HS256 path, with real
+multi-tenant scoping faked via a synthesized `_legacy` pseudo-tenant keyed
+on the HS256 token's `sub` -- unlike `KnowledgeService`/`LessonsService`,
+which already required a WaddleAI-issued RS256 JWT and derived a real
+tenant-bounded `ScopeContext`. `server/interceptors.py` now routes every
+`ChatService` call through that same RS256 gate by default (see its module
+docstring's "Chat RS256 gate" section), so `current_scope_context()` below
+is populated by the time any RPC handler runs -- the only way
+`_scope_for_request` still falls through to the synthesized pseudo-tenant
+is the explicit `penguincode.disable-chat-rs256-gate` opt-out kill switch
+(`flags.client.DISABLE_CHAT_RS256_GATE_FLAG`), an emergency rollback for an
+operator mid-migration off the legacy standalone client, never the
+steady-state default.
 """
 
 import asyncio
@@ -66,12 +78,13 @@ logger = logging.getLogger(__name__)
 def _legacy_user_id(context: grpc.aio.ServicerContext) -> str:
     """Best-effort `sub` extraction from penguincode's legacy HS256 token.
 
-    Only called when no WaddleAI `ScopeContext` is present (local
-    standalone client-server mode, gated upstream by
-    `server.interceptors.JWTValidationInterceptor`). That interceptor has
-    already verified the token's signature before this RPC ever runs, so
-    decoding it again here *without* re-verifying reads already-trusted
-    data -- it is not a new trust boundary, just a convenience read.
+    Only called when no WaddleAI `ScopeContext` is present -- by default
+    that now only happens with `penguincode.disable-chat-rs256-gate` ON
+    (see module docstring "Tenancy-gap fix"); the interceptor gating this
+    RPC has already verified the token's signature before this RPC ever
+    runs, so decoding it again here *without* re-verifying reads
+    already-trusted data -- it is not a new trust boundary, just a
+    convenience read.
     """
     token = extract_token_from_grpc_metadata(list(context.invocation_metadata() or []))
     if not token:
@@ -87,12 +100,14 @@ def _scope_for_request(context: grpc.aio.ServicerContext) -> ScopeContext:
     """The caller's `ScopeContext` for session scoping.
 
     Prefers the real, tenant-bounded `ScopeContext` set by
-    `WaddleAIAuthInterceptor` (multi-tenant/SaaS deployments). Falls back
-    to a synthesized single-tenant scope for penguincode's legacy
-    standalone client-server mode (local HS256 auth, no WaddleAI JWT) --
-    that mode has no tenant concept at all today, so every legacy session
-    lives under one fixed pseudo-tenant (`LEGACY_TENANT_ID`), scoped only
-    by the authenticated caller's `sub`.
+    `WaddleAIAuthInterceptor` -- by default this is the *only* path, since
+    `server/interceptors.py` now routes every `ChatService` call through
+    that gate (see module docstring "Tenancy-gap fix"). Falls back to a
+    synthesized single-tenant scope, scoped only by the authenticated
+    caller's HS256 token `sub`, exclusively when
+    `penguincode.disable-chat-rs256-gate` is ON (the kill switch's
+    emergency-rollback legacy behavior) -- never as a silent universal
+    fallback.
     """
     ctx = current_scope_context()
     if ctx is not None:

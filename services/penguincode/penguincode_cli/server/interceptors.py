@@ -1,6 +1,30 @@
-"""gRPC interceptors for authentication and request processing."""
+"""gRPC interceptors for authentication and request processing.
+
+**Chat RS256 gate (tenancy-gap fix).** `ChatService` RPCs used to run
+entirely under the legacy HS256 path below (`JWTValidationInterceptor`/
+`PassthroughInterceptor`), with real multi-tenant scoping faked via a
+synthesized `_legacy` pseudo-tenant keyed on the HS256 token's `sub` (see
+`server/services/chat.py`'s module docstring) -- unlike `KnowledgeService`/
+`LessonsService`, which `server/main.py`'s `MethodPrefixRoutingInterceptor`
+already routes to `auth.middleware.WaddleAIAuthInterceptor` (RS256,
+JWKS/public-key-validated, derives a real tenant-bounded `ScopeContext`).
+
+Rather than teaching `server/main.py`'s nested `MethodPrefixRoutingInterceptor`
+a third prefix (which would require every caller of `JWTValidationInterceptor`/
+`PassthroughInterceptor` to also thread a shared `WaddleAIAuthInterceptor`
+instance through unrelated call sites), the gate is applied *inside* both
+classes below via `_maybe_route_chat_through_rs256`: any call whose method
+starts with `_CHAT_SERVICE_METHOD_PREFIX` is diverted to a `WaddleAIAuthInterceptor`
+instead of this module's own HS256/passthrough logic, unless the
+`penguincode.disable-chat-rs256-gate` opt-out kill switch is ON (see
+`flags.client.DISABLE_CHAT_RS256_GATE_FLAG`) -- the emergency rollback to the
+pre-fix legacy behavior, logged at WARN exactly once per process. Every
+construction site (`server/main.py`'s `legacy_interceptor`, today's sole
+caller) gets this for free with no change to its own call site.
+"""
 
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any
@@ -9,9 +33,98 @@ import grpc
 import jwt
 from opentelemetry import trace
 
+from penguincode_cli.auth.middleware import WaddleAIAuthInterceptor, WaddleAIJWTValidator
+from penguincode_cli.flags.client import DISABLE_CHAT_RS256_GATE_FLAG, SYSTEM_SCOPE, is_enabled
 from penguincode_cli.observability import otel
 
 logger = logging.getLogger(__name__)
+
+#: Method path prefix for every `ChatService` RPC (see
+#: `proto/penguincode.proto`'s `service ChatService` -- the top-level
+#: `package penguincode;`, mirroring `/penguincode.AuthService/...` and
+#: `/penguincode.HealthService/...` below). Used by both
+#: `JWTValidationInterceptor` and `PassthroughInterceptor` to divert Chat
+#: calls to the RS256 gate -- see module docstring.
+_CHAT_SERVICE_METHOD_PREFIX = "/penguincode.ChatService/"
+
+#: Warn-once latch for the kill-switch fallback (see
+#: `_maybe_route_chat_through_rs256`) -- a live deployment with the switch ON
+#: would otherwise log this on every single `ChatService` call.
+_chat_rs256_gate_disabled_warned = False
+_chat_rs256_gate_disabled_warn_lock = threading.Lock()
+
+
+def _warn_chat_rs256_gate_disabled_once() -> None:
+    """Log, exactly once per process, that the Chat RS256 gate is disabled."""
+    global _chat_rs256_gate_disabled_warned
+    with _chat_rs256_gate_disabled_warn_lock:
+        if _chat_rs256_gate_disabled_warned:
+            return
+        _chat_rs256_gate_disabled_warned = True
+    logger.warning(
+        "%s is ON -- ChatService RPCs are falling back to legacy HS256 auth with a "
+        "synthesized pseudo-tenant scope instead of the RS256 WaddleAI ScopeContext "
+        "gate; this is an emergency rollback path only, not the steady-state default",
+        DISABLE_CHAT_RS256_GATE_FLAG,
+    )
+
+
+def reset_chat_rs256_warning_for_testing() -> None:
+    """Clear the warn-once latch -- test isolation only, never called in production."""
+    global _chat_rs256_gate_disabled_warned
+    with _chat_rs256_gate_disabled_warn_lock:
+        _chat_rs256_gate_disabled_warned = False
+
+
+class _ChatWaddleAIInterceptorHolder:
+    """Lazily resolves the `WaddleAIAuthInterceptor` used to gate `ChatService` calls.
+
+    *override*, when given (test seam, or a future caller wiring a shared
+    instance), is always preferred -- this mirrors every other
+    constructor-injection test seam in this codebase (e.g.
+    `ChatServiceImpl.__init__`'s `session_store`). Without an override, one
+    instance is built lazily, from env, the first time any `ChatService`
+    call needs it, and reused for the lifetime of the holder -- the JWKS
+    cache (if `WADDLEAI_JWT_JWKS_URL` is configured) is therefore warmed at
+    most once per process per holder, not once per call.
+    """
+
+    def __init__(self, override: grpc.aio.ServerInterceptor | None = None) -> None:
+        """Bind this holder to *override*, or defer to lazy env-driven construction."""
+        self._override = override
+        self._built: grpc.aio.ServerInterceptor | None = None
+
+    def get(self) -> grpc.aio.ServerInterceptor:
+        """Return the bound `WaddleAIAuthInterceptor`, building the default on first use."""
+        if self._override is not None:
+            return self._override
+        if self._built is None:
+            self._built = WaddleAIAuthInterceptor(WaddleAIJWTValidator())
+        return self._built
+
+
+async def _maybe_route_chat_through_rs256(
+    chat_gate: _ChatWaddleAIInterceptorHolder,
+    method: str,
+    continuation: Callable[[grpc.HandlerCallDetails], Any],
+    handler_call_details: grpc.HandlerCallDetails,
+) -> tuple[bool, Any]:
+    """Divert a `ChatService` call to the RS256 gate, unless the kill switch is ON.
+
+    Returns `(True, result)` when *method* was a `ChatService` call that this
+    function fully handled (the caller must return `result` immediately,
+    never falling through to its own HS256/passthrough logic) and
+    `(False, None)` for every other method, or when the kill switch is ON
+    (logged at WARN exactly once -- see `_warn_chat_rs256_gate_disabled_once`)
+    and the caller should proceed with its own legacy behavior instead.
+    """
+    if not method.startswith(_CHAT_SERVICE_METHOD_PREFIX):
+        return False, None
+    if is_enabled(DISABLE_CHAT_RS256_GATE_FLAG, SYSTEM_SCOPE):
+        _warn_chat_rs256_gate_disabled_once()
+        return False, None
+    result = await chat_gate.get().intercept_service(continuation, handler_call_details)
+    return True, result
 
 
 class JWTValidationInterceptor(grpc.aio.ServerInterceptor):
@@ -25,9 +138,12 @@ class JWTValidationInterceptor(grpc.aio.ServerInterceptor):
         self,
         jwt_secret: str,
         excluded_methods: list[str] | None = None,
+        *,
+        waddleai_interceptor: grpc.aio.ServerInterceptor | None = None,
     ):
         self.jwt_secret = jwt_secret
         self.excluded_methods = set(excluded_methods or [])
+        self._chat_gate = _ChatWaddleAIInterceptorHolder(waddleai_interceptor)
 
     async def intercept_service(
         self,
@@ -36,6 +152,16 @@ class JWTValidationInterceptor(grpc.aio.ServerInterceptor):
     ):
         """Intercept and validate requests."""
         method = handler_call_details.method
+
+        # Chat RS256 gate (tenancy-gap fix) -- see module docstring. Checked
+        # ahead of `excluded_methods`/HS256 validation: a ChatService call
+        # must never fall through to this interceptor's own HS256 logic
+        # while the gate is active.
+        handled, result = await _maybe_route_chat_through_rs256(
+            self._chat_gate, method, continuation, handler_call_details
+        )
+        if handled:
+            return result
 
         # Skip validation for excluded methods
         if method in self.excluded_methods:
@@ -96,14 +222,30 @@ class PassthroughInterceptor(grpc.aio.ServerInterceptor):  # type: ignore[misc]
     (``settings.auth.enabled=False``) but `KnowledgeService`'s RS256 gate must
     still be installed unconditionally -- see ``server/main.py``'s module
     docstring ("Interceptor reconciliation").
+
+    `ChatService` calls are the one exception to "no auth check at all" --
+    they still go through the Chat RS256 gate (module docstring above)
+    unless the kill switch is ON, exactly like `JWTValidationInterceptor`.
+    Local standalone mode having no local HS256 secret configured does not
+    exempt it from the tenancy fix: a `ChatService` caller in that mode
+    still needs a real WaddleAI RS256 JWT by default.
     """
+
+    def __init__(self, *, waddleai_interceptor: grpc.aio.ServerInterceptor | None = None) -> None:
+        """Bind this passthrough's Chat RS256 gate to *waddleai_interceptor* (test seam)."""
+        self._chat_gate = _ChatWaddleAIInterceptorHolder(waddleai_interceptor)
 
     async def intercept_service(
         self,
         continuation: Callable[[grpc.HandlerCallDetails], Any],
         handler_call_details: grpc.HandlerCallDetails,
     ) -> Any:
-        """Delegate unconditionally to *continuation* -- no auth check at all."""
+        """Delegate unconditionally to *continuation* -- except a gated `ChatService` call."""
+        handled, result = await _maybe_route_chat_through_rs256(
+            self._chat_gate, handler_call_details.method, continuation, handler_call_details
+        )
+        if handled:
+            return result
         return await continuation(handler_call_details)
 
 

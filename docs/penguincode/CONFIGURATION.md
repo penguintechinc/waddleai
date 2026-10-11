@@ -618,6 +618,21 @@ auth:
 - Use strong, random secrets (minimum 32 characters)
 - Rotate API keys periodically
 
+### ChatService RS256 Gate
+
+`ChatService` (`CreateSession`/`Chat`/`GetHistory`/`CloseSession`) requires a
+WaddleAI-issued RS256 JWT by default, validated the same way as
+`KnowledgeService`/`LessonsService` (`WADDLEAI_JWT_*` env vars, see
+`auth/middleware.py`'s `JWTValidatorConfig`) -- the local `auth.*` HS256 secret
+above is no longer accepted for `ChatService` calls unless the kill switch
+below is ON. A session row's tenant/org/team/user scope columns
+(`db/migrations/0007_chat_sessions.sql`) are stamped and enforced from the
+JWT's derived `ScopeContext`, not a client-supplied value.
+
+| Flag | Env Var | Default | Reverts |
+|------|---------|---------|---------|
+| `penguincode.disable-chat-rs256-gate` | `PENGUINCODE_FLAG_DISABLE_CHAT_RS256_GATE` | unseen/OFF (gate ON) | `ChatService` reverts to the legacy HS256 `auth.*` secret, with sessions scoped to a synthesized single pseudo-tenant keyed only by the token's `sub` -- an emergency rollback for an operator mid-migration off the standalone client, never the steady-state default. Logs a WARN once when enabled. |
+
 ---
 
 ## Client Configuration
