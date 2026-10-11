@@ -12,60 +12,60 @@ Ollama instance proxy's semantic cache embeds against (``_embed_ollama``
 below) is the SAME instance serving live chat completions (see
 ``shared.llm.llm_connectors``). A bulk document-indexing burst elsewhere in
 the platform can saturate that instance's GPU/CPU and degrade or time out
-live chat cluster-wide — there is no QoS separation. ``OLLAMA_EMBEDDING_URL``
-(see ``resolve_embedding_ollama_host`` below), when set, routes embedding
-calls to a dedicated Ollama deployment instead; unset (the default), every
-embedding call falls back to ``OLLAMA_HOST`` (or ``ollama_host``'s own
-hardcoded default) — today's single-Ollama behavior, unchanged.
+live chat cluster-wide — there is no QoS separation. ``resolve_embedding_ollama_host``
+below delegates to ``shared.utils.ollama_endpoint`` (config-hygiene ops-audit
+2026-10-09): ``WADDLEAI_OLLAMA_EMBEDDING_URL`` (canonical) or legacy
+``OLLAMA_EMBEDDING_URL``, when set, routes embedding calls to a dedicated
+Ollama deployment instead; unset (the default), every embedding call falls
+back to the resolved chat URL (``WADDLEAI_OLLAMA_URL`` canonical, or legacy
+``OLLAMA_API_URL``/``OLLAMA_URL``/``OLLAMA_HOST``/``OLLAMA_BASE_URL``, or
+``ollama_host``'s own hardcoded default) — today's single-Ollama behavior,
+unchanged.
 """
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
-from typing import Final
+
+from shared.utils.ollama_endpoint import embedding_endpoint_label as _embedding_endpoint_label
+from shared.utils.ollama_endpoint import (
+    resolve_ollama_embedding_url as _resolve_ollama_embedding_url,
+)
+from shared.utils.ollama_endpoint import resolve_ollama_url as _resolve_ollama_url
 
 logger = logging.getLogger(__name__)
-
-#: Dedicated-embedding-endpoint override (ops-audit O10/O5 bulkhead). Unset
-#: by default -- every embedding call then falls back to `_CHAT_OLLAMA_HOST_ENV`
-#: (today's single, chat-serving Ollama), i.e. current behavior is unchanged
-#: unless an operator opts in by setting this.
-_EMBEDDING_OLLAMA_URL_ENV: Final = "OLLAMA_EMBEDDING_URL"
-
-#: The chat-serving Ollama host env var already used elsewhere in the proxy
-#: (`shared.vectorstore.factory`) -- the fallback target when the dedicated
-#: embedding endpoint above is not configured.
-_CHAT_OLLAMA_HOST_ENV: Final = "OLLAMA_HOST"
 
 
 def resolve_embedding_ollama_host(default: str = "http://localhost:11434") -> str:
     """Resolve which Ollama host embedding calls should target.
 
-    Priority: ``OLLAMA_EMBEDDING_URL`` (dedicated embedding bulkhead) >
-    ``OLLAMA_HOST`` (today's single, chat-serving Ollama) > ``default``.
-    Centralizing the fallback here means every `EmbeddingManager`
-    construction site resolves identically -- see `create_embedding_manager`.
+    Delegates to `shared.utils.ollama_endpoint`'s canonical/legacy chain for
+    both halves: the embedding endpoint itself (canonical
+    `WADDLEAI_OLLAMA_EMBEDDING_URL` or legacy `OLLAMA_EMBEDDING_URL`/
+    `PENGUINCODE_EMBEDDING_OLLAMA_URL`), falling back to the resolved chat
+    URL (canonical `WADDLEAI_OLLAMA_URL` or legacy `OLLAMA_API_URL`/
+    `OLLAMA_URL`/`OLLAMA_HOST`/`OLLAMA_BASE_URL`, or *default* if none of
+    those are set either). Centralizing the fallback here means every
+    `EmbeddingManager` construction site resolves identically -- see
+    `create_embedding_manager`.
     """
-    return (
-        os.environ.get(_EMBEDDING_OLLAMA_URL_ENV)
-        or os.environ.get(_CHAT_OLLAMA_HOST_ENV)
-        or default
-    )
+    chat_url = _resolve_ollama_url(default=default)
+    return _resolve_ollama_embedding_url(chat_url=chat_url)
 
 
 def embedding_ollama_endpoint_label() -> str:
     """Bounded metric label for which Ollama endpoint embedding calls target.
 
-    Returns ``"embedding_ollama"`` when ``OLLAMA_EMBEDDING_URL`` is set (the
-    dedicated bulkhead), else ``"chat_ollama"`` -- the shared instance also
-    serving live chat. Deliberately a closed two-value label (never the raw
-    URL) so it stays a safe, low-cardinality metric attribute, matching
+    Returns ``"embedding_ollama"`` when a dedicated bulkhead endpoint
+    (canonical or legacy) is set, else ``"chat_ollama"`` -- the shared
+    instance also serving live chat. Deliberately a closed two-value label
+    (never the raw URL) so it stays a safe, low-cardinality metric
+    attribute, matching
     `shared.utils.metrics.WaddleAIMetrics.record_embedding_call`'s
     ``endpoint`` parameter.
     """
-    return "embedding_ollama" if os.environ.get(_EMBEDDING_OLLAMA_URL_ENV) else "chat_ollama"
+    return _embedding_endpoint_label()
 
 
 # Default embedding dimensions by backend/model

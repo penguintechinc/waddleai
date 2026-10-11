@@ -23,29 +23,61 @@ api_url: "${API_URL:-http://localhost}"  # Optional - uses default if not set
 
 ```yaml
 ollama:
-  api_url: "${OLLAMA_API_URL:-http://localhost:11434}"
+  # api_url is deliberately left unset here -- see "Ollama endpoints" below.
   timeout: 120
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `api_url` | string | `http://localhost:11434` | Ollama API endpoint. Supports local or remote instances. |
+| `api_url` | string | resolved (see "Ollama endpoints" below) | Ollama API endpoint. Supports local or remote instances. Setting this explicitly in `config.yaml` overrides env resolution entirely. |
 | `timeout` | integer | `120` | Request timeout in seconds for Ollama API calls. |
-| `embedding_api_url` | string | `""` (unset) | Dedicated Ollama endpoint for embedding calls only -- see "Ollama-Embedding Bulkhead" below. Read directly from `PENGUINCODE_EMBEDDING_OLLAMA_URL` (no `${...}` substitution needed in `config.yaml`). |
+| `embedding_api_url` | string | `""` (unset) | Dedicated Ollama endpoint for embedding calls only -- see "Ollama-Embedding Bulkhead" below. |
+
+### Ollama endpoints (config-hygiene ops-audit 2026-10-09)
+
+"Where is Ollama" was spelled five different ways across the repo
+(`OLLAMA_URL`, `OLLAMA_API_URL`, `OLLAMA_HOST`, `OLLAMA_BASE_URL`,
+`OLLAMA_EMBEDDING_URL`, `PENGUINCODE_EMBEDDING_OLLAMA_URL`) -- several
+defaulting to `localhost`, so a process that set one name could still
+silently land on localhost via a different code path. `api_url`/
+`embedding_api_url` now resolve through
+`penguincode_cli/config/ollama_endpoint.py` -- a tested twin of this repo's
+root `shared/utils/ollama_endpoint.py` (PenguinCode cannot import the root
+`shared/` package) -- which logs the resolved URL and the env var that
+supplied it once at INFO, plus a one-time DEPRECATION warning when a legacy
+name wins.
+
+| Env var | Scope | Precedence | Default |
+|---|---|---|---|
+| `WADDLEAI_OLLAMA_URL` | Chat/completions -- **canonical** | 1st | -- |
+| `OLLAMA_API_URL` | Chat/completions -- legacy | 2nd | -- |
+| `OLLAMA_URL` | Chat/completions -- legacy | 3rd | -- |
+| `OLLAMA_HOST` | Chat/completions -- legacy | 4th | -- |
+| `OLLAMA_BASE_URL` | Chat/completions -- legacy | 5th | -- |
+| (none set) | Chat/completions | -- | `http://localhost:11434` |
+| `WADDLEAI_OLLAMA_EMBEDDING_URL` | Embedding bulkhead -- **canonical** | 1st | -- |
+| `OLLAMA_EMBEDDING_URL` | Embedding bulkhead -- legacy | 2nd | -- |
+| `PENGUINCODE_EMBEDDING_OLLAMA_URL` | Embedding bulkhead -- legacy | 3rd | -- |
+| (none set) | Embedding bulkhead | -- | the resolved chat `api_url` above |
+
+No breaking change: every legacy name keeps working at lower precedence than
+the canonical name. See
+[`docs/deployment/CONFIGURATION.md`](../deployment/CONFIGURATION.md#ollama-endpoints-config-hygiene-ops-audit-2026-10-09)
+for the proxy/shared-side mirror of this table.
 
 **Remote Ollama Examples:**
 ```bash
 # LAN server
-export OLLAMA_API_URL="http://192.168.1.100:11434"
+export WADDLEAI_OLLAMA_URL="http://192.168.1.100:11434"
 
 # Cloud GPU instance
-export OLLAMA_API_URL="http://gpu-server.example.com:11434"
+export WADDLEAI_OLLAMA_URL="http://gpu-server.example.com:11434"
 
 # Docker network
-export OLLAMA_API_URL="http://ollama:11434"
+export WADDLEAI_OLLAMA_URL="http://ollama:11434"
 ```
 
-### Ollama-Embedding Bulkhead (`PENGUINCODE_EMBEDDING_OLLAMA_URL`)
+### Ollama-Embedding Bulkhead (`WADDLEAI_OLLAMA_EMBEDDING_URL`)
 
 **Problem:** the same Ollama instance that serves live chat completions
 (`api_url` above) also serves every embedding call -- document/code
@@ -57,12 +89,14 @@ workload types on one shared instance.
 **Fix:** point embedding traffic at a second, dedicated Ollama deployment:
 
 ```bash
-export PENGUINCODE_EMBEDDING_OLLAMA_URL="http://ollama-embeddings.waddleai.svc:11434"
+export WADDLEAI_OLLAMA_EMBEDDING_URL="http://ollama-embeddings.waddleai.svc:11434"
 ```
 
-- **Unset (default):** every embedding call falls back to `ollama.api_url` --
-  today's single-Ollama behavior, completely unchanged. Nothing breaks if
-  you never set this.
+- **Unset (default):** every embedding call falls back to the resolved
+  `ollama.api_url` -- today's single-Ollama behavior, completely unchanged.
+  Nothing breaks if you never set this. The legacy
+  `PENGUINCODE_EMBEDDING_OLLAMA_URL`/`OLLAMA_EMBEDDING_URL` names still work
+  too, at lower precedence.
 - **Set:** `config.settings.resolve_embedding_url()` routes every embedding
   call site (doc indexing in `docs_rag/indexer.py`, GraphRAG query embedding
   in `retrieval/graphrag.py`, and the mem0 memory embedder in
@@ -714,7 +748,7 @@ On startup, the entrypoint script automatically generates `/app/config.yaml` fro
 docker compose up -d
 
 # With remote Ollama
-OLLAMA_HOST=192.168.1.100 docker compose up -d
+WADDLEAI_OLLAMA_URL=http://192.168.1.100:11434 docker compose up -d
 
 # With authentication
 JWT_SECRET=your-32-char-secret PENGUINCODE_API_KEY=your-key docker compose up -d
@@ -736,7 +770,7 @@ services:
       - "${PENGUINCODE_SERVER_PORT:-50051}:50051"
     environment:
       # All config via ENV - no config.yaml needed!
-      - OLLAMA_HOST=${OLLAMA_HOST:-host.docker.internal}
+      - WADDLEAI_OLLAMA_URL=${WADDLEAI_OLLAMA_URL:-http://host.docker.internal:11434}
       - PENGUINCODE_MODEL_EXECUTION=${PENGUINCODE_MODEL_EXECUTION:-qwen2.5-coder:7b}
       - PENGUINCODE_MEMORY_ENABLED=${PENGUINCODE_MEMORY_ENABLED:-true}
       - PENGUINCODE_USE_ENV_CONFIG=true
@@ -750,12 +784,15 @@ services:
 
 #### Ollama Connection
 
+See "Ollama endpoints" above for the full canonical/legacy precedence chain.
+
 | Variable | Default | Config Equivalent | Description |
 |----------|---------|-------------------|-------------|
-| `OLLAMA_HOST` | `host.docker.internal` | `ollama.api_url` | Ollama server hostname. |
-| `OLLAMA_API_URL` | `http://localhost:11434` | `ollama.api_url` | Full Ollama API URL (overrides `OLLAMA_HOST`). |
+| `WADDLEAI_OLLAMA_URL` | `http://host.docker.internal:11434` | `ollama.api_url` | Full Ollama API URL -- canonical. |
+| `OLLAMA_API_URL` / `OLLAMA_URL` / `OLLAMA_HOST` / `OLLAMA_BASE_URL` | unset | `ollama.api_url` | Legacy aliases, still honored (lower precedence, DEPRECATION-warned). |
 | `OLLAMA_TIMEOUT` | `120` | `ollama.timeout` | Request timeout in seconds. |
-| `PENGUINCODE_EMBEDDING_OLLAMA_URL` | unset | `ollama.embedding_api_url` | Dedicated Ollama endpoint for embedding calls only (ops-audit O10/O5 bulkhead). Unset falls back to `ollama.api_url` -- see "Ollama-Embedding Bulkhead" above. |
+| `WADDLEAI_OLLAMA_EMBEDDING_URL` | unset | `ollama.embedding_api_url` | Dedicated Ollama endpoint for embedding calls only (ops-audit O10/O5 bulkhead) -- canonical. Unset falls back to `ollama.api_url` -- see "Ollama-Embedding Bulkhead" above. |
+| `OLLAMA_EMBEDDING_URL` / `PENGUINCODE_EMBEDDING_OLLAMA_URL` | unset | `ollama.embedding_api_url` | Legacy aliases, still honored (lower precedence, DEPRECATION-warned). |
 
 #### Server Configuration
 
@@ -894,8 +931,8 @@ docker compose up -d
 
 **Connect to remote Ollama:**
 ```bash
-export OLLAMA_HOST="192.168.1.100"
-# or
+export WADDLEAI_OLLAMA_URL="http://192.168.1.100:11434"
+# or (legacy, still honored)
 export OLLAMA_API_URL="http://gpu-server.local:11434"
 docker compose up -d
 ```
@@ -1029,7 +1066,10 @@ server:
 ```yaml
 # Production remote server configuration
 ollama:
-  api_url: "${OLLAMA_API_URL}"
+  # Prefer leaving api_url unset (resolves via WADDLEAI_OLLAMA_URL -- see
+  # "Ollama endpoints" above); shown explicitly here only to illustrate the
+  # `${VAR:-default}` substitution syntax.
+  api_url: "${WADDLEAI_OLLAMA_URL:-http://localhost:11434}"
   timeout: 300
 
 models:

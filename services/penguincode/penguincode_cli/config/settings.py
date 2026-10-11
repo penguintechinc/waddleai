@@ -7,6 +7,13 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from penguincode_cli.config.ollama_endpoint import (
+    resolve_ollama_embedding_url as _env_resolve_ollama_embedding_url,
+)
+from penguincode_cli.config.ollama_endpoint import (
+    resolve_ollama_url as _env_resolve_ollama_url,
+)
+
 if TYPE_CHECKING:
     from penguincode_cli.observability.otel import EmbeddingEndpoint
 
@@ -141,23 +148,33 @@ def _default_update_check_interval_hours() -> float:
 class OllamaConfig:
     """Ollama API configuration.
 
+    ``api_url`` resolves via `penguincode_cli.config.ollama_endpoint`'s
+    canonical/legacy env-var chain (``WADDLEAI_OLLAMA_URL`` canonical;
+    ``OLLAMA_API_URL``/``OLLAMA_URL``/``OLLAMA_HOST``/``OLLAMA_BASE_URL``
+    legacy, in that order) -- see that module's docstring for the full
+    ops-audit rationale (2026-10-09: five different env-var spellings for
+    "where is Ollama" across the repo meant setting one name could still
+    silently land on localhost via another).
+
     ``embedding_api_url`` is the Ollama-embedding bulkhead (ops-audit O10/O5,
     Gemini High): a bulk document-indexing burst against the same Ollama
     instance that serves live chat completions can saturate its GPU/CPU and
     degrade or time out in-flight chat requests cluster-wide. When set
-    (``PENGUINCODE_EMBEDDING_OLLAMA_URL``), every embedding call (doc
-    indexing, GraphRAG query embedding, mem0 memory embedder) routes to this
-    dedicated endpoint instead of ``api_url``; left unset (the default), all
-    embedding calls fall back to ``api_url`` -- today's single-Ollama
-    behavior, unchanged. See ``resolve_embedding_url``/``embedding_endpoint_label``
-    below, which every embedding call site uses instead of reading
+    (``WADDLEAI_OLLAMA_EMBEDDING_URL`` canonical, or legacy
+    ``OLLAMA_EMBEDDING_URL``/``PENGUINCODE_EMBEDDING_OLLAMA_URL``), every
+    embedding call (doc indexing, GraphRAG query embedding, mem0 memory
+    embedder) routes to this dedicated endpoint instead of ``api_url``; left
+    unset (the default), all embedding calls fall back to ``api_url`` --
+    today's single-Ollama behavior, unchanged. See
+    ``resolve_embedding_url``/``embedding_endpoint_label`` below, which every
+    embedding call site uses instead of reading
     ``api_url``/``embedding_api_url`` directly.
     """
 
-    api_url: str = "http://localhost:11434"
+    api_url: str = field(default_factory=_env_resolve_ollama_url)
     timeout: int = 120
     embedding_api_url: str = field(
-        default_factory=lambda: os.environ.get("PENGUINCODE_EMBEDDING_OLLAMA_URL", "")
+        default_factory=lambda: _env_resolve_ollama_embedding_url(chat_url="")
     )
 
 

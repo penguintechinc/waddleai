@@ -63,6 +63,7 @@ from shared.utils.health_checks import WaddleAIHealthMonitor
 from shared.utils.llm_connectors import create_llm_connection_manager
 from shared.utils.memory_integration import create_memory_manager
 from shared.utils.metrics import get_proxy_metrics
+from shared.utils.ollama_endpoint import resolve_ollama_url
 from shared.utils.request_router import RoutingStrategy, create_request_router
 from shared.utils.token_manager import create_token_manager
 
@@ -708,9 +709,15 @@ class ProxyServer:
         self.features = FeatureFlagsHelper()
 
         self.security_scanner = create_security_scanner(self.db, self.config["security_policy"])
+        # ollama_base_url resolves via the canonical Ollama-endpoint chain
+        # (config-hygiene ops-audit 2026-10-09; see
+        # shared/utils/ollama_endpoint.py's module docstring) --
+        # WADDLEAI_OLLAMA_URL (canonical) > legacy OLLAMA_API_URL/OLLAMA_URL/
+        # OLLAMA_HOST/OLLAMA_BASE_URL (this proxy's own prior, undocumented
+        # spelling, kept working) > localhost default.
         self.content_filter = ContentFilter(
             db=self.db,
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            ollama_base_url=resolve_ollama_url(),
             auditor_model=os.getenv("SECURITY_AUDITOR_MODEL", "shieldgemma:2b"),
             license_client=_get_license_client(),
             features=self.features,

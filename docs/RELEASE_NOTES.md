@@ -100,6 +100,24 @@ adopt the defaults; see each bullet for exceptions.
   update check. Kill-switches: `penguincode.disable-client-retry`,
   `penguincode.disable-offline-cache`, `penguincode.disable-update-check`.
 
+#### Config hygiene
+
+- **Ollama endpoint env vars collapsed to one canonical pair** (config-hygiene
+  ops-audit 2026-10-09): "where is Ollama" was spelled five different ways
+  across the repo (`OLLAMA_URL`, `OLLAMA_API_URL`, `OLLAMA_HOST`,
+  `OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_URL`,
+  `PENGUINCODE_EMBEDDING_OLLAMA_URL`), several defaulting to `localhost`, so
+  setting one name could still silently land on localhost via another code
+  path. `WADDLEAI_OLLAMA_URL` (chat/completions) and
+  `WADDLEAI_OLLAMA_EMBEDDING_URL` (embedding bulkhead) are now canonical,
+  resolved through a single shared helper
+  (`shared/utils/ollama_endpoint.py`, with a tested PenguinCode-side twin)
+  that logs the resolved URL once at INFO. **No breaking change:** every
+  legacy name keeps working at lower precedence, with a one-time
+  DEPRECATION warning naming the canonical replacement. See
+  `docs/deployment/CONFIGURATION.md`/`docs/penguincode/CONFIGURATION.md`
+  "Ollama endpoints" for the full precedence table.
+
 See `docs/deployment/CONFIGURATION.md` for the full env var/flag index, and
 `docs/api/openai-compatible.md` for the updated streaming contract.
 

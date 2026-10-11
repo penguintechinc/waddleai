@@ -106,6 +106,12 @@ spec:
                   key: {{ .key }}
             {{- end }}
             {{- if .Values.ollama.enabled }}
+            # Canonical Ollama endpoint (config-hygiene ops-audit 2026-10-09;
+            # see docs/deployment/CONFIGURATION.md "Ollama endpoints" table).
+            # OLLAMA_HOST kept alongside, DEPRECATED, for any consumer not
+            # yet migrated to the canonical/legacy resolver chain.
+            - name: WADDLEAI_OLLAMA_URL
+              value: "http://{{ include "waddleai.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"
             - name: OLLAMA_HOST
               value: "http://{{ include "waddleai.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"
             {{- end }}

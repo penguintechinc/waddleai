@@ -235,9 +235,10 @@ ollama:
 
 # Ollama-embedding bulkhead (ops-audit O10/O5, Gemini High) -- commented out
 # deliberately: beta's chat Ollama above has handled combined chat+embedding
-# load fine so far. Uncomment (and set the matching OLLAMA_EMBEDDING_URL env
-# var on penguincode/proxy) if/when a doc-indexing burst is observed
-# degrading live chat latency on svr01/svr02-dal2.
+# load fine so far. Uncomment (the proxy chart wires
+# WADDLEAI_OLLAMA_EMBEDDING_URL automatically; also set it -- or legacy
+# OLLAMA_EMBEDDING_URL -- on penguincode) if/when a doc-indexing burst is
+# observed degrading live chat latency on svr01/svr02-dal2.
 # ollamaEmbeddings:
 #   enabled: true
 #   nodeSelector:

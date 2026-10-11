@@ -30,7 +30,10 @@ server:
     PENGUINCODE_MAX_CONCURRENT: "1"
     PENGUINCODE_MAX_MODELS: "1"
     PENGUINCODE_USE_ENV_CONFIG: "true"
-    OLLAMA_HOST: "localhost:11434"
+    # Canonical Ollama endpoint (config-hygiene ops-audit 2026-10-09) -- was
+    # the bare, scheme-less "localhost:11434" under the legacy OLLAMA_HOST
+    # key, which the resolver's httpx calls would have rejected.
+    WADDLEAI_OLLAMA_URL: "http://localhost:11434"
 
 ollama:
   enabled: false

@@ -1,6 +1,5 @@
 """Shared pytest fixtures for PenguinCode tests."""
 
-import os
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,6 +7,7 @@ import httpx
 import jwt as pyjwt
 import pytest
 
+from penguincode_cli.config.ollama_endpoint import resolve_ollama_url
 from penguincode_cli.server.models.config_store import ConfigStore
 from penguincode_cli.server.rest_app import create_rest_app
 
@@ -25,7 +25,6 @@ from penguincode_cli.server.rest_app import create_rest_app
 # so both `tests/integration/*.py` (via pytest's normal conftest inheritance
 # down the directory tree) and `tests/test_memory.py` share one
 # implementation instead of two independent copies drifting apart.
-_OLLAMA_BASE_URL = "http://localhost:11434"
 _OLLAMA_EMBED_MODEL = "nomic-embed-text"
 
 
@@ -35,15 +34,17 @@ def _ollama_unavailable_reason(
     """Return a human-readable skip reason if `model` isn't ready at `base_url`,
     or `None` when Ollama is reachable and has the model pulled.
 
-    `base_url` defaults to the `OLLAMA_URL` env var (falling back to the
+    `base_url` defaults to `resolve_ollama_url()` (the canonical
+    `WADDLEAI_OLLAMA_URL`, falling back to legacy
+    `OLLAMA_API_URL`/`OLLAMA_URL`/`OLLAMA_HOST`/`OLLAMA_BASE_URL`, then the
     standard local port) -- looked up at call time, not import time -- so
     this probes the exact endpoint `tests/test_memory.py`'s `MemoryManager`
     construction and `tests/test_retrieval_graphrag.py`'s own probe will
     actually use, letting a test simulate "Ollama unreachable" by pointing
-    `OLLAMA_URL` at a dead port instead of needing a real outage.
+    any of those env vars at a dead port instead of needing a real outage.
     """
     if base_url is None:
-        base_url = os.environ.get("OLLAMA_URL", _OLLAMA_BASE_URL)
+        base_url = resolve_ollama_url()
     try:
         response = httpx.get(f"{base_url}/api/tags", timeout=5)
         response.raise_for_status()
