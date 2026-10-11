@@ -489,6 +489,18 @@ class _KillSwitchFeatures:
         return self.disabled
 
 
+class _PerOrgKillSwitchFeatures:
+    """Flag stub whose answer depends on `distinct_id`, modeling an org-targeted PostHog flag."""
+
+    def __init__(self, disabled_distinct_ids: set[str]) -> None:
+        self.disabled_distinct_ids = disabled_distinct_ids
+        self.calls: list[tuple[str, str]] = []
+
+    def is_feature_enabled(self, flag_key: str, distinct_id: str = "server") -> bool:
+        self.calls.append((flag_key, distinct_id))
+        return distinct_id in self.disabled_distinct_ids
+
+
 class TestAuditorFailModePolicy:
     """`SECURITY_AUDITOR_FAIL_MODE` (`ContentFilter.auditor_fail_mode`) governs degraded calls.
 
@@ -572,20 +584,31 @@ class TestAuditorFailModePolicy:
         assert cf.auditor_fail_mode == "closed"
 
     @pytest.mark.asyncio
-    async def test_degraded_warn_log_is_rate_limited_per_phase(
+    async def test_degraded_warn_log_is_rate_limited_per_org_and_phase(
         self, filter_instance: ContentFilter, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A second degraded call in the same window logs no additional WARN line.
+        """A second degraded call for the same (org, phase) in the same window logs nothing more.
 
         The Prometheus counter and `FilterResult.degraded` are never
         throttled -- only this specific log statement, so an extended
         outage doesn't flood logs at full request volume.
         """
         with caplog.at_level(logging.WARNING):
-            filter_instance._warn_auditor_degraded("input", "TimeoutError")
-            filter_instance._warn_auditor_degraded("input", "TimeoutError")
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=1)
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=1)
 
         assert caplog.text.count("LLM auditor degraded") == 1
+
+    @pytest.mark.asyncio
+    async def test_degraded_warn_rate_limit_does_not_cross_orgs(
+        self, filter_instance: ContentFilter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Org B's first degraded WARN is never suppressed by org A's rate limit."""
+        with caplog.at_level(logging.WARNING):
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=1)
+            filter_instance._warn_auditor_degraded("input", "TimeoutError", org_id=2)
+
+        assert caplog.text.count("LLM auditor degraded") == 2
 
     @pytest.mark.asyncio
     async def test_kill_switch_reverts_to_legacy_silent_behaviour(
@@ -678,3 +701,36 @@ class TestAuditorFailModePolicy:
 
         assert disabled is False
         assert "kill-switch check failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_fail_mode_flag_cache_does_not_bleed_across_orgs(self) -> None:
+        """Org A's resolved kill-switch state is never served to org B.
+
+        Regression: `_auditor_fail_mode_flag_cache` was originally a single
+        process-wide `(checked_at, disabled)` tuple -- the FIRST org to
+        trigger the check cached its answer for every org for
+        `_AUDITOR_FAIL_MODE_FLAG_CACHE_TTL` seconds. The flag
+        (`waddleai.disable-auditor-fail-mode-policy`) can be org-targeted in
+        PostHog, so that was a cross-tenant leak: org A's kill switch being
+        ON would silently disable org B's fail-mode-policy telemetry too.
+        """
+        features = _PerOrgKillSwitchFeatures(disabled_distinct_ids={"1"})
+        cf = ContentFilter(db=None, features=features)
+
+        org_a_disabled = await cf._auditor_fail_mode_policy_disabled(org_id=1)
+        org_b_disabled = await cf._auditor_fail_mode_policy_disabled(org_id=2)
+        # Re-check org A again (within the TTL) -- must still come back True,
+        # not be overwritten/shadowed by org B's cache entry.
+        org_a_disabled_again = await cf._auditor_fail_mode_policy_disabled(org_id=1)
+
+        assert org_a_disabled is True
+        assert org_b_disabled is False
+        assert org_a_disabled_again is True
+        # One real flag check per org -- org A's second call hit its own
+        # cache entry, not org B's.
+        assert features.calls == [
+            ("waddleai.disable-auditor-fail-mode-policy", "1"),
+            ("waddleai.disable-auditor-fail-mode-policy", "2"),
+        ]
+        # Two independent cache entries, keyed by org_id.
+        assert set(cf._auditor_fail_mode_flag_cache.keys()) == {1, 2}

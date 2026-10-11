@@ -435,13 +435,20 @@ class ContentFilter:
             normalized_fail_mode = "open"
         self.auditor_fail_mode = normalized_fail_mode
 
-        # Rate-limits `_warn_auditor_degraded`'s log line per phase (the
-        # Prometheus counter/FilterResult.degraded/audit-log flag are never
-        # throttled, only this log statement).
-        self._last_auditor_degraded_warn: dict[str, float] = {}
+        # Rate-limits `_warn_auditor_degraded`'s log line per (org_id, phase)
+        # (the Prometheus counter/FilterResult.degraded/audit-log flag are
+        # never throttled, only this log statement). Keyed by org to match
+        # every other per-org cache in this class -- see
+        # _auditor_fail_mode_flag_cache below for why a global key is wrong
+        # here (the flag it gates can be org-targeted).
+        self._last_auditor_degraded_warn: dict[tuple[int | None, str], float] = {}
         # Short TTL cache for the auditor fail-mode-policy kill switch (see
-        # _auditor_fail_mode_policy_disabled) -- (checked_at, disabled).
-        self._auditor_fail_mode_flag_cache: tuple[float, bool] | None = None
+        # _auditor_fail_mode_policy_disabled), keyed by org_id -- same shape
+        # as _builtin_disable_cache/_ner_disable_cache/_ner_tier_cache below.
+        # `waddleai.disable-auditor-fail-mode-policy` can be org-targeted in
+        # PostHog, so a single process-wide cache entry would leak org A's
+        # resolved kill-switch state to org B.
+        self._auditor_fail_mode_flag_cache: dict[int | None, tuple[float, bool]] = {}
 
         # Compile built-in patterns
         self.compiled_patterns: dict[str, re.Pattern[str]] = {}
@@ -612,7 +619,7 @@ class ContentFilter:
                                 phase,
                                 "fail_closed" if effective_mode == "closed" else "fail_open",
                             )
-                            self._warn_auditor_degraded(phase, audit_result.error_class)
+                            self._warn_auditor_degraded(phase, audit_result.error_class, org_id)
                             if effective_mode == "closed":
                                 action = "block"
                             # else ("open"): keep the rule-based `action` --
@@ -922,14 +929,18 @@ class ContentFilter:
         legacy behaviour -- a degraded call is silently treated as an
         ordinary ALLOW, with none of the above. A short TTL cache keeps a
         PostHog outage (or a cluster of degraded calls in one incident)
-        from re-checking the flag on every single one.
+        from re-checking the flag on every single one. Cached per `org_id`
+        (not globally) because the flag itself can be org-targeted in
+        PostHog -- see `_auditor_fail_mode_flag_cache`'s docstring in
+        `__init__`.
         """
         if self._features is None:
             return False
 
         now = time.monotonic()
-        if self._auditor_fail_mode_flag_cache is not None:
-            checked_at, disabled = self._auditor_fail_mode_flag_cache
+        cached = self._auditor_fail_mode_flag_cache.get(org_id)
+        if cached is not None:
+            checked_at, disabled = cached
             if now - checked_at < _AUDITOR_FAIL_MODE_FLAG_CACHE_TTL:
                 return disabled
 
@@ -947,30 +958,37 @@ class ContentFilter:
             )
             disabled = False
 
-        self._auditor_fail_mode_flag_cache = (now, disabled)
+        self._auditor_fail_mode_flag_cache[org_id] = (now, disabled)
         return bool(disabled)
 
-    def _warn_auditor_degraded(self, phase: str, error_class: str | None) -> None:
+    def _warn_auditor_degraded(
+        self, phase: str, error_class: str | None, org_id: int | None
+    ) -> None:
         """Log a rate-limited WARN the first time the auditor degrades in a window.
 
         Every individual degraded call still increments
         `_content_filter_fail_total` and sets `FilterResult.degraded`/the
         audit-log flag unconditionally -- this only throttles the log
-        statement itself (once per `phase` per
+        statement itself (once per `(org_id, phase)` per
         `_AUDITOR_DEGRADED_WARN_INTERVAL_SECONDS`) so an extended outage
-        doesn't flood logs at full request volume. Never logs prompt
-        content.
+        doesn't flood logs at full request volume. Keyed by org (not just
+        phase) for the same cross-tenant reason as
+        `_auditor_fail_mode_flag_cache`: an outage scoped to one org's
+        auditor configuration shouldn't suppress another org's first WARN.
+        Never logs prompt content.
         """
         now = time.monotonic()
-        last = self._last_auditor_degraded_warn.get(phase, 0.0)
+        key = (org_id, phase)
+        last = self._last_auditor_degraded_warn.get(key, 0.0)
         if now - last < _AUDITOR_DEGRADED_WARN_INTERVAL_SECONDS:
             return
-        self._last_auditor_degraded_warn[phase] = now
+        self._last_auditor_degraded_warn[key] = now
         logger.warning(
-            "LLM auditor degraded (phase=%s, error_class=%s, fail_mode=%s) -- "
+            "LLM auditor degraded (org=%s, phase=%s, error_class=%s, fail_mode=%s) -- "
             "a rule-based tiers-1-3 decision is being used instead of a real "
             "auditor verdict. (Further occurrences in this window are "
             "suppressed from logs but still counted and audit-logged.)",
+            org_id,
             phase,
             error_class or "unknown",
             self.auditor_fail_mode,
