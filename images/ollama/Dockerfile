@@ -39,7 +39,7 @@ FROM ollama/ollama:0.32.13@sha256:77f1a2a54460f0380f2611e1464233d9b82cb6e58afc8f
 # ---------------------------------------------------------------------------
 # Stage 2: runtime-base — shared by both final targets.
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS runtime-base
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS runtime-base
 
 # ca-certificates + libvulkan1 + libopenblas0 mirror upstream's own apt-get
 # install list for this exact release (read via `docker buildx imagetools
@@ -63,15 +63,13 @@ FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3
 # against the bare base image.
 #
 # libpcre2-8-0 is likewise already in debian:trixie-slim's base rootfs (pulled
-# in by grep/libselinux), not a new dependency. At the version this base digest
-# ships (10.46-1~deb13u1) it carries CVE-2026-86145/-89157/-89161 (pcre2
-# out-of-bounds write / memory corruption, Trivy: HIGH x3, status "fixed").
-# That is Trivy DB drift, not a regression from any change here -- the
-# identical Dockerfile scanned green on 2026-09-11 and red on 2026-09-21; the
-# CVEs were published in between. A patched 10.46-1~deb13u2 is already the apt
-# Candidate on trixie/main against this exact base digest (confirmed via
-# `apt-cache policy libpcre2-8-0`), so it gets pinned here rather than
-# suppressed -- same treatment as the util-linux family above, and per
+# in by grep/libselinux), not a new dependency. Same DB-drift pattern a third
+# time: the 10.46-1~deb13u2 pin above (added 2026-09-21 for CVE-2026-86145/
+# -89157/-89161) itself went red on 2026-10-09 for CVE-2026-103111 (pcre2
+# HIGH, status "fixed"), with 10.46-1~deb13u3 already the apt Candidate on
+# trixie-security against the base digest bump above (confirmed via
+# `apt-cache policy libpcre2-8-0`) -- so it gets re-pinned to u3 here rather
+# than suppressed, same treatment as the util-linux family above and per
 # .trivyignore's stated policy that suppressions are only for no-fix findings
 # awaiting a vendor patch.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -89,7 +87,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         login=1:4.16.0-2+really2.41.5-0+deb13u1 \
         mount=2.41.5-0+deb13u1 \
         util-linux=2.41.5-0+deb13u1 \
-        libpcre2-8-0=10.46-1~deb13u2 \
+        libpcre2-8-0=10.46-1~deb13u3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user, UID/GID 1000 (regular range, not --system — 1000 is above
@@ -160,8 +158,15 @@ USER root
 # "adds a shell for kubectl exec troubleshooting", and curl pulls in
 # libcurl4t64/libssh2 with their own unfixed-upstream CVEs (see
 # .trivyignore) for no capability this tag actually needs.
+#
+# bash's exact build number drifted with the 2026-10-09 base digest bump
+# (debian rebuilt the package against the same 5.2.37-2 source, bumping only
+# the trailing binary-rebuild suffix) -- 5.2.37-2+b9 no longer resolves
+# against trixie/main at the new digest, only +b10 does (confirmed via
+# `apt-cache policy bash` against the pinned base above). coreutils/procps
+# versions were unaffected.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash=5.2.37-2+b9 \
+        bash=5.2.37-2+b10 \
         coreutils=9.7-3 \
         procps=2:4.0.4-9 \
     && rm -rf /var/lib/apt/lists/*
