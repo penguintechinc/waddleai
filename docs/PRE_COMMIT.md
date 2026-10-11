@@ -40,14 +40,25 @@ are the only supported entry points.
   `shellcheck`, and `hadolint` missing from `PATH` counts as a **failure**, not a skip —
   there is no silent "tool not installed, skipping" path for those three
 - `make test-security` — bandit, gitleaks, pip-audit, npm audit, OSI license gate
-  (`scripts/check-licenses.sh`) — see [gitleaks canary](#gitleaks-canary-verify-the-scanner-itself)
+  (`scripts/check-licenses.sh`) — see [gitleaks canary](#gitleaks-canary-verify-the-scanner-itself).
+  The gitleaks/pip-audit/npm-audit portion lives in `scripts/dependency-security-scan.sh`
+  (this target also calls it) — `.github/workflows/docker-build.yml`'s `dependency-security`
+  job runs that same script directly on every push/PR, gating `build-platform` /
+  `build-ollama-image` / `release` / `cleanup`. Previously CI only ever ran bandit (the
+  `test` job); the other three scanners existed as working local tooling nothing invoked.
 - `make test-unit` — `pytest tests/unit`
 - `make test-integration` — `pytest tests/integration` (directory currently has no test
   files; the target passes trivially — see [TESTING.md](TESTING.md#integration-tests))
 - `make test-contract` — `pytest tests/contract` (request/response snapshot tests)
-- `make smoke-test` — `pytest tests/smoke` (directory currently has no `pytest`-discoverable
-  tests, only standalone shell scripts — see
-  [TESTING.md](TESTING.md#smoke-tests))
+- `make smoke-test` — the two standalone bash scripts in `tests/smoke/`, plus
+  `tests/smoke/test_telemetry_emission.py` (a standalone script, not a `pytest`-discoverable
+  suite despite the `test_` filename — `pytest tests/smoke` still collects zero items from
+  it). That script asserts real OTel emission (>=1 span, >=1 counter point, >=1 histogram
+  point, >=1 log record, via in-memory exporters driving `services/management/app/
+  observability.py`'s real instrumentation) and scans `shared/`, `proxy/`,
+  `services/management/app` for hand-rolled `logging.basicConfig()`/bare `print()` — both
+  print the exact counts examined; a zero count or 0 files scanned fails the gate — see
+  [TESTING.md](TESTING.md#smoke-tests)
 - `make seed-mock-data` — currently a no-op placeholder (no seeder scripts exist yet)
 
 ---
@@ -87,9 +98,10 @@ Before committing, run in this order (or use `make pre-commit` for the first thr
 - [ ] **Build & Run**: Verify each service's container builds (see
       [Docker / Containers](#docker--containers) below)
 - [ ] **Smoke tests**: `make smoke-test`
-  - Currently collects zero tests (`tests/smoke/` has two standalone bash scripts,
-    `test-production.sh` and `test_management_build.sh`, but no `pytest`-discoverable
-    `test_*.py` files) — run the scripts directly if you need smoke coverage today
+  - Runs `tests/smoke/test_management_build.sh` (file existence/syntax/docker build) and
+    `tests/smoke/test_telemetry_emission.py` (real OTel emission + hand-rolled-logging
+    conformance gate) — neither is `pytest`-discoverable (`pytest tests/smoke` still
+    collects zero items); run them directly if you need smoke coverage without `make`
   - See: [Testing Documentation - Smoke Tests](TESTING.md#smoke-tests)
 
 ### Feature Testing & Documentation
