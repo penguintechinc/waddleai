@@ -122,11 +122,15 @@ class TestCacheKeyAndPath:
 
     def test_same_url_yields_same_key(self, tmp_path: Path) -> None:
         fetcher = DocumentationFetcher(cache_dir=str(tmp_path / "docs"))
-        assert fetcher._get_cache_key("https://a.test/") == fetcher._get_cache_key("https://a.test/")
+        assert fetcher._get_cache_key("https://a.test/") == fetcher._get_cache_key(
+            "https://a.test/"
+        )
 
     def test_different_urls_yield_different_keys(self, tmp_path: Path) -> None:
         fetcher = DocumentationFetcher(cache_dir=str(tmp_path / "docs"))
-        assert fetcher._get_cache_key("https://a.test/") != fetcher._get_cache_key("https://b.test/")
+        assert fetcher._get_cache_key("https://a.test/") != fetcher._get_cache_key(
+            "https://b.test/"
+        )
 
     def test_cache_path_is_under_cache_dir_with_md_suffix(self, tmp_path: Path) -> None:
         fetcher = DocumentationFetcher(cache_dir=str(tmp_path / "docs"))
@@ -351,7 +355,7 @@ class _FakeResponse:
         self.status = status
         self._text = text
 
-    async def __aenter__(self) -> "_FakeResponse":
+    async def __aenter__(self) -> _FakeResponse:
         return self
 
     async def __aexit__(self, *_exc: object) -> bool:
@@ -367,7 +371,7 @@ class _RaisingResponse:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    async def __aenter__(self) -> "_RaisingResponse":
+    async def __aenter__(self) -> _RaisingResponse:
         raise self._exc
 
     async def __aexit__(self, *_exc: object) -> bool:
@@ -385,7 +389,7 @@ class _FakeSession:
         self._responses = responses
         self.requested_urls: list[str] = []
 
-    async def __aenter__(self) -> "_FakeSession":
+    async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *_exc: object) -> bool:
@@ -415,9 +419,7 @@ class TestFetchLibraryAndLanguageDocs:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fetcher = DocumentationFetcher(cache_dir=str(tmp_path / "docs"))
-        monkeypatch.setattr(
-            "penguincode_cli.docs_rag.fetcher.get_doc_source", lambda name: None
-        )
+        monkeypatch.setattr("penguincode_cli.docs_rag.fetcher.get_doc_source", lambda name: None)
         library = Library(name="unknown-lib", language=Language.PYTHON)
         assert await fetcher.fetch_library_docs(library) == []
 
@@ -426,9 +428,7 @@ class TestFetchLibraryAndLanguageDocs:
     ) -> None:
         fetcher = DocumentationFetcher(cache_dir=str(tmp_path / "docs"))
         source = DocSource(base_url="https://fastapi.test/")
-        monkeypatch.setattr(
-            "penguincode_cli.docs_rag.fetcher.get_doc_source", lambda name: source
-        )
+        monkeypatch.setattr("penguincode_cli.docs_rag.fetcher.get_doc_source", lambda name: source)
         monkeypatch.setattr(
             "aiohttp.ClientSession",
             lambda: _FakeSession({"https://fastapi.test/": _FakeResponse(200, _SAMPLE_HTML)}),
@@ -503,9 +503,7 @@ class TestFetchDocsFromSource:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fetcher = DocumentationFetcher(cache_dir=str(tmp_path / "docs"), max_pages_per_library=1)
-        source = DocSource(
-            base_url="https://rust.test/", api_docs_path="std/", guide_path="book/"
-        )
+        source = DocSource(base_url="https://rust.test/", api_docs_path="std/", guide_path="book/")
         session = _FakeSession(
             {
                 "https://rust.test/": _FakeResponse(200, _SAMPLE_HTML),
@@ -624,9 +622,7 @@ class TestFetchAndConvert:
         assert "Title" in result
         assert fetcher.is_cache_valid("https://x.test/") is True
 
-    async def test_too_short_content_returns_none_and_does_not_cache(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_too_short_content_returns_none_and_does_not_cache(self, tmp_path: Path) -> None:
         fetcher = DocumentationFetcher(cache_dir=str(tmp_path / "docs"))
         tiny_html = "<html><body><main><p>short</p></main></body></html>"
         session = _FakeSession({"https://x.test/": _FakeResponse(200, tiny_html)})
