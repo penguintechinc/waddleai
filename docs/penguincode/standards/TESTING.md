@@ -851,3 +851,13 @@ docker buildx build --platform linux/amd64 -t app:test-amd64 .
 ```
 
 This catches architecture-specific bugs (endianness, pointer sizes, etc.).
+
+## PenguinCode `make smoke-test` (real embeddings + telemetry)
+
+`services/penguincode/scripts/smoke_test.py` indexes a 3-doc fixture through the real `KnowledgeService.Index` RPC with real `nomic-embed-text` embeddings, then asserts: job `SUCCEEDED`, `chunks_total > 0`, `chunks_done == chunks_total`, a `Query` returns the seeded chunk, and the `penguincode.embedding_call.events` counter recorded `endpoint=embedding_ollama outcome=ok`. It also asserts OTel emission (spans, metric points, histograms, log records >= 1, counts printed) and zero hand-rolled `print`/`logging.basicConfig` in service source.
+
+| Env | Effect |
+|---|---|
+| `WADDLEAI_OLLAMA_EMBEDDING_URL` / `WADDLEAI_OLLAMA_URL` (or legacy names) | Ollama endpoint with `nomic-embed-text` pulled; unreachable/model missing = FAIL |
+| none set | FAIL, process exit code `3` (via `make`, shown as `2`) |
+| none set + `SMOKE_ALLOW_NO_OLLAMA=1` | loud `SKIP:` banner, embedding gate not run (CI sets this: no model on runners) |

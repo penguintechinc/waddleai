@@ -688,6 +688,12 @@ jobs:
           --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql://postgres:penguincode-ci@localhost:5432/postgres
+      # CI runners have no Ollama/embedding model, so `make smoke-test`'s
+      # real-embedding docs-RAG gate cannot run here; this opt-out prints a
+      # loud SKIP banner instead of failing (exit 3). Developers and the
+      # beta/GPU environments run it for real by setting
+      # WADDLEAI_OLLAMA_EMBEDDING_URL (never set this flag there).
+      SMOKE_ALLOW_NO_OLLAMA: "1"
     defaults:
       run:
         working-directory: services/penguincode

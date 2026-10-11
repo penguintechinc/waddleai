@@ -36,8 +36,8 @@ silent skip when a real gate can't run:
    never exercises real embeddings" gap -- `IndexCode`/`CodeGraphStatus`
    above are tree-sitter-only and need no Ollama call by design, see that
    step's note). When an Ollama endpoint is configured (`_resolve_ollama_
-   endpoint`: `WADDLEAI_OLLAMA_EMBEDDING_URL` / `WADDLEAI_OLLAMA_URL` /
-   `PENGUINCODE_EMBEDDING_OLLAMA_URL` / `OLLAMA_API_URL` / `OLLAMA_URL`,
+   endpoint`: canonical `WADDLEAI_OLLAMA_EMBEDDING_URL` / `WADDLEAI_OLLAMA_URL`, then
+   the legacy names `config/ollama_endpoint.py` still honours;
    first non-empty wins), this indexes a small fixture doc set via the real
    `KnowledgeService.Index` RPC with real `nomic-embed-text` embeddings and
    asserts: the async job reaches `SUCCEEDED`, `chunks_total > 0`,
@@ -133,6 +133,12 @@ from penguincode_cli.auth.middleware import (  # noqa: E402
     WaddleAIAuthInterceptor,
     WaddleAIJWTValidator,
 )
+from penguincode_cli.config.ollama_endpoint import (  # noqa: E402
+    CANONICAL_CHAT_URL_ENV,
+    CANONICAL_EMBEDDING_URL_ENV,
+    LEGACY_CHAT_URL_ENVS,
+    LEGACY_EMBEDDING_URL_ENVS,
+)
 from penguincode_cli.config.settings import Settings  # noqa: E402
 from penguincode_cli.observability import otel  # noqa: E402
 from penguincode_cli.proto import (  # noqa: E402
@@ -164,19 +170,15 @@ _SMOKE_PG_PASSWORD = "penguincode-smoke"  # nosec B105 -- ephemeral local smoke-
 _KNOWLEDGE_SERVICE_PREFIX = "/penguincode.knowledge.v1.KnowledgeService/"
 _NO_DOCKER_ESCAPE_HATCH = "PENGUINCODE_SMOKE_ALLOW_NO_DOCKER"
 
-#: Resolution order for the real-Ollama embedding gate's endpoint (ops-audit
-#: #276): dedicated-embedding canonical name, general canonical name,
-#: dedicated-embedding legacy name (`config.settings.OllamaConfig.
-#: embedding_api_url`'s own env knob), then the two legacy names this repo's
-#: test suite (`tests/conftest.py::_ollama_unavailable_reason`) and the
-#: never-wired `OLLAMA_API_URL` convention already use elsewhere. First
-#: non-empty value wins -- see `_resolve_ollama_endpoint`.
+#: Names that count as "an Ollama endpoint is configured" (ops-audit #276),
+#: derived from the shared resolver's own constants so they cannot drift:
+#: canonical embedding, legacy embedding, canonical chat, legacy chat, rest.
 _OLLAMA_ENDPOINT_ENV_VARS: tuple[str, ...] = (
-    "WADDLEAI_OLLAMA_EMBEDDING_URL",
-    "WADDLEAI_OLLAMA_URL",
-    "PENGUINCODE_EMBEDDING_OLLAMA_URL",
-    "OLLAMA_API_URL",
-    "OLLAMA_URL",
+    CANONICAL_EMBEDDING_URL_ENV,
+    LEGACY_EMBEDDING_URL_ENVS[0],
+    CANONICAL_CHAT_URL_ENV,
+    *LEGACY_CHAT_URL_ENVS,
+    *LEGACY_EMBEDDING_URL_ENVS[1:],
 )
 _ALLOW_NO_OLLAMA_ENV = "SMOKE_ALLOW_NO_OLLAMA"
 _EXIT_NO_OLLAMA_CONFIGURED = 3
@@ -453,13 +455,10 @@ def _count_named_metric_points(
 def _resolve_ollama_endpoint() -> str | None:
     """First non-empty Ollama endpoint across `_OLLAMA_ENDPOINT_ENV_VARS`, or `None`.
 
-    `config.settings.OllamaConfig.embedding_api_url` only reads
-    `PENGUINCODE_EMBEDDING_OLLAMA_URL` (its one env knob) -- this resolver
-    layers the canonical `WADDLEAI_OLLAMA*` names (not yet read by any
-    settings code as of this change) and the `OLLAMA_API_URL`/`OLLAMA_URL`
-    legacy conventions on top, entirely within this script, so `_run_live_
-    gates` can set `PENGUINCODE_EMBEDDING_OLLAMA_URL` to whatever resolved
-    without needing to touch `config/settings.py`.
+    Presence check only -- `config.ollama_endpoint`'s own resolvers always fall
+    back to localhost, so they cannot say whether an endpoint was *configured*.
+    `_run_live_gates` exports the winner as the canonical embedding var so the
+    real resolver (and the `embedding_ollama` metric label) picks it up.
     """
     for var in _OLLAMA_ENDPOINT_ENV_VARS:
         value = os.environ.get(var, "").strip()
@@ -765,12 +764,10 @@ async def _run_live_gates(dsn: str, ollama_endpoint: str | None) -> None:
     """Everything that needs the live Postgres + gRPC server: migrate, start, RPC, assert."""
     os.environ["PENGUINCODE_FLAG_CODE_GRAPH"] = "true"
     os.environ["PGVECTOR_URL"] = dsn
-    # Bridges `_resolve_ollama_endpoint`'s wider name set onto the one env
-    # knob `config.settings.OllamaConfig.embedding_api_url` actually reads
-    # (see `_resolve_ollama_endpoint`'s docstring) -- read at `Settings()`
-    # construction time below, so this must be set first.
+    # Export the winner as the canonical embedding var (read at `Settings()`
+    # construction below, so set first) -> dedicated-embedding label.
     if ollama_endpoint is not None:
-        os.environ["PENGUINCODE_EMBEDDING_OLLAMA_URL"] = ollama_endpoint
+        os.environ[CANONICAL_EMBEDDING_URL_ENV] = ollama_endpoint
     _run_migrate_cli(dsn)
 
     with tempfile.TemporaryDirectory(prefix="penguincode-smoke-") as tmp_dir_str:
@@ -867,9 +864,9 @@ def main() -> int:
         if ollama_endpoint is None:
             if _no_ollama_allowed():
                 print(
-                    f"SKIP: no Ollama endpoint configured (set {_OLLAMA_ENDPOINT_ENV_VARS[0]} "
-                    f"or {_OLLAMA_ENDPOINT_ENV_VARS[1]}) -- {_ALLOW_NO_OLLAMA_ENV}=1 was "
-                    "explicitly set, so the real-embedding docs-RAG gate did NOT run. ***"
+                    f"SKIP: no Ollama endpoint configured (set {CANONICAL_EMBEDDING_URL_ENV} "
+                    f"or {CANONICAL_CHAT_URL_ENV}) -- {_ALLOW_NO_OLLAMA_ENV}=1 was "
+                    "explicitly set, so the real-embedding docs-RAG gate did NOT run."
                 )
             else:
                 raise SmokeTestNoOllamaConfiguredError(
@@ -899,7 +896,7 @@ def main() -> int:
             print(
                 "*** WARNING: docker unavailable and TEST_DATABASE_URL unset -- "
                 f"{_NO_DOCKER_ESCAPE_HATCH}=1 was explicitly set, so only the "
-                "import-smoke subset ran. The live-server + telemetry gates did NOT run. ***"
+                "import-smoke subset ran. The live-server + telemetry gates did NOT run."
             )
         else:
             raise SmokeTestFailureError(
