@@ -26,6 +26,48 @@ call sites verified unaffected (213 + 148 targeted unit tests green).
   braces) — needs a dedicated pass since several fixes there require major/breaking
   bumps (`@vscode/vsce` 4.0.0, `ts-jest` 27.x).
 
+### Security — remaining npm CVE follow-up (vscode extensions + penguincode node libs) — 2026-10-10
+
+Closes the `vscode-extension/waddleai-copilot` gap noted above plus two
+`services/penguincode` Node packages not previously audited. `npm audit
+--audit-level=high` is 0/0 in all touched directories; `services/webui`
+untouched (already fixed above). Compile/tests verified green per package
+(`npm run compile` + `npx jest --coverage`: 40/40 passed, 100% stmt/100%
+branch-adjacent coverage unaffected; webpack compile for the penguincode
+vsix extension unaffected since `@vscode/vsce` is a packaging-only
+devDependency, not in its compile/test path).
+
+- **`vscode-extension/waddleai-copilot`**: 33→1 vuln (1 critical, 11 high, 21
+  moderate → 0 critical/high, 20 moderate package nodes / 1 distinct
+  advisory). `axios` 1.19.0→1.20.0 (non-breaking, direct dep). `@vscode/vsce`
+  3.9.2→**4.0.0** (breaking major, packaging-only devDependency — requires
+  Node ≥22; no CI pins an older Node for this project) — clears the
+  braces/fast-glob/globby/micromatch/secretlint chain. `npm audit fix`
+  (non-force) separately bumped handlebars 4.7.9→4.7.10 in-range, clearing
+  the one critical advisory.
+- **`services/penguincode/shared/node_libs`**: `npm audit fix` (non-breaking)
+  cleared `brace-expansion` and `source-map-js` (2 high) → 0 vulnerabilities.
+- **`services/penguincode/vsix-extension`**: `@vscode/vsce` `^3.7.1`→**4.0.0**
+  (breaking major, pinned exact, packaging-only devDependency) clears the
+  same undici/braces/secretlint chain (13 vulns: 11 high/2 moderate) →
+  0 vulnerabilities. `npm run compile` (webpack) verified unaffected.
+- **Documented exception — `sprintf-js` (GHSA-hp3w-g68c-fv3c, moderate, all
+  20 remaining package nodes in `waddleai-copilot` trace to this one
+  advisory)**: no upstream patch exists (`first_patched_version: null`).
+  Reached only via `ts-jest` → `@jest/transform` → `babel-plugin-istanbul` →
+  `@istanbuljs/load-nyc-config`'s pinned `js-yaml@^3.13.1` → `argparse@1.0.10`
+  → `sprintf-js`; that chain uses `js-yaml` as a library only (`safeLoad`),
+  never the CLI's `argparse`/`sprintf-js` arg-formatting code path, so the
+  vulnerable code is unreachable in this usage. Forcing an override to
+  `js-yaml@4.x` was evaluated and rejected: 4.x removed `safeLoad`/`safeDump`
+  and would break `@istanbuljs/load-nyc-config`'s coverage-config loading at
+  runtime — a worse outcome than an unreachable, unpatched dev-only advisory.
+- **Not touched (outside assigned scope)**: `services/penguincode/shared/react_libs`
+  has no `package-lock.json` (pre-existing `^`-range pinning gap, not npm-CVE
+  related, not reached by `scripts/dependency-security-scan.sh`'s
+  `-maxdepth 3` package.json search) — flagged for a separate pinning pass,
+  not fixed here.
+
 ### Operational readiness remediation — 2026-10-04
 
 Sixteen fixes from an operational-readiness audit (gh-261–gh-276), merged to
