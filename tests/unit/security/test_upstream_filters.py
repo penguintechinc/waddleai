@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from shared.security.content_filter import AuditorResult
 from shared.security.upstream_filters import PRESETS, UpstreamFilter, expand_preset
 
 _SSN = "123-45-6789"  # noqa: S105 -- test fixture SSN pattern, not a credential
@@ -49,9 +50,9 @@ class StubUpstreamContentFilter:
         self.calls.append("tier3")
         return []
 
-    async def _invoke_llm_auditor(self, *args: Any, **kwargs: Any) -> tuple[bool, str]:
+    async def _invoke_llm_auditor(self, *args: Any, **kwargs: Any) -> AuditorResult:
         self.calls.append("tier4")
-        return False, "allow"
+        return AuditorResult(should_block=False, reason="allow")
 
     def _determine_action(self, text: str, violations: list[Any]) -> tuple[str, str]:
         redacted = text

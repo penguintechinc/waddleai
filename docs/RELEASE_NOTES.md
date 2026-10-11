@@ -167,6 +167,25 @@ See `docs/deployment/CONFIGURATION.md` for the full env var/flag index, and
 ### Security
 
 - **Ollama image (`images/ollama/Dockerfile`): patched CVE-2026-103111** (gh-191) by bumping the `debian:trixie-slim` runtime-base digest (ships `libpcre2-8-0 10.46-1~deb13u3`, fixing the pcre2 HIGH finding that was failing the push-only Trivy gate on both `hardened` and `debug`) and re-pinning the `debug` target's `bash` build number (`5.2.37-2+b9` → `+b10`, which drifted off trixie/main at the new digest). `.trivyignore` re-triaged per its two-week review policy: 12 entries removed (Debian/Go findings now fixed — `libssl3t64`, `libsqlite3-0`, and 9 others), 3 new no-fix Go-stdlib findings added, the remaining 48 entries re-verified and dated `2026-10-24`. Gate re-confirmed clean (0 HIGH/CRITICAL with `--ignorefile`) on both targets.
+- **Content-filter LLM auditor degradation is now observable and
+  configurable, not silent.** A dead/timed-out/non-200 auditor used to be
+  indistinguishable from a genuine ALLOW verdict in both logs and metrics
+  (`shared/security/content_filter.py`'s `_invoke_llm_auditor` caught the
+  failure internally and returned a bare tuple whose explanation every
+  caller discarded). `_invoke_llm_auditor` now returns a structured
+  `AuditorResult(should_block, reason, degraded, error_class)`; a degraded
+  call increments `waddleai_content_filter_fail_total{mode=...}`, sets
+  `FilterResult.degraded` (-> the gh-207 `content_filter_audit_log.degraded`
+  column), and logs a rate-limited WARN. New `SECURITY_AUDITOR_FAIL_MODE`
+  (`open` default, preserves today's availability trade-off; `closed` blocks
+  instead) and a new `waddleai_security_auditor_duration_seconds` histogram
+  (labeled `outcome=allow|block|degraded`). Kill-switch:
+  `waddleai.disable-auditor-fail-mode-policy` (OFF by default; ON reverts to
+  the pre-fix silent behavior). New alerts `ProxyContentFilterAuditorFailOpen`
+  / `ProxyContentFilterAuditorFailClosed` — see
+  `docs/operations/MONITORING.md`. `SecurityPolicyEngine.evaluate`
+  (`shared/security/policy_engine.py`) had the identical discarded-result bug
+  one layer up and is fixed the same way.
 - **Dropped the chromadb memory/RAG backend** (`ChromaDBMemoryStore` in `shared/utils/memory_integration.py`, `ChromaDBRAGStore` in `shared/utils/rag_integration.py`, and the `chromadb` dependency itself). PYSEC-2026-311 is a pre-authentication code injection vulnerability in chromadb's server component with no fixed release in any version >=1.0.0; it had been carried as an accepted `pip-audit` exception. pgvector (the default) and qdrant already cover the same ground, so the backend was removed instead of the exception being carried forward.
 - `create_memory_manager(backend="chromadb")` and `create_rag_manager(backend="chromadb")` now fail fast with a `ValueError` naming `pgvector`/`mem0`/`qdrant` as replacements, instead of silently falling back to a different backend. `create_memory_manager(backend="mem0")` without `mem0ai` installed now raises `ImportError` rather than silently falling back to the removed ChromaDB store.
 - **Migration:** if you were running with `backend="chromadb"`, switch to `backend="pgvector"` (default) or `backend="mem0"`. There is no automated migration tool -- re-index/re-populate memory and RAG documents from source data after switching backends.

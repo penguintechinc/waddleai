@@ -721,6 +721,12 @@ class ProxyServer:
             auditor_model=os.getenv("SECURITY_AUDITOR_MODEL", "shieldgemma:2b"),
             license_client=_get_license_client(),
             features=self.features,
+            # "open" (default) preserves the historical availability
+            # trade-off (a dead auditor never blocks by itself); "closed"
+            # blocks instead when the auditor is degraded. See
+            # shared/security/content_filter.py's ContentFilter docstring
+            # and docs/operations/MONITORING.md.
+            auditor_fail_mode=os.getenv("SECURITY_AUDITOR_FAIL_MODE", "open"),
         )
         self.token_manager = create_token_manager(self.db)
         self.llm_manager = create_llm_connection_manager(self.db)
