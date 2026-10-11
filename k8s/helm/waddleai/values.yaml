@@ -866,10 +866,14 @@ ollama:
 # no longer saturate the SAME Ollama instance serving live chat completions
 # above. Disabled by default: `enabled: false` means every embedding-call
 # site falls back to the single `ollama` block above, i.e. current behavior
-# is completely unchanged until an operator opts in. When enabling, also set
-# `OLLAMA_EMBEDDING_URL` (penguincode) so embedding calls actually route here
-# -- see docs/penguincode/ARCHITECTURE.md and docs/ARCHITECTURE.md for the
-# full wiring and when to enable this.
+# is completely unchanged until an operator opts in. The proxy chart wires
+# `WADDLEAI_OLLAMA_EMBEDDING_URL` (canonical; see
+# docs/deployment/CONFIGURATION.md "Ollama endpoints") automatically once
+# `enabled: true` here -- for penguincode (deployed separately, its own
+# chart), also set `WADDLEAI_OLLAMA_EMBEDDING_URL` (or legacy
+# `OLLAMA_EMBEDDING_URL`/`PENGUINCODE_EMBEDDING_OLLAMA_URL`) so its embedding
+# calls actually route here -- see docs/penguincode/ARCHITECTURE.md and
+# docs/ARCHITECTURE.md for the full wiring and when to enable this.
 ollamaEmbeddings:
   enabled: false
 

@@ -111,8 +111,22 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- if .Values.ollama.enabled }}
+            # Canonical Ollama endpoint (config-hygiene ops-audit 2026-10-09;
+            # see docs/deployment/CONFIGURATION.md "Ollama endpoints" table
+            # and shared/utils/ollama_endpoint.py). OLLAMA_BASE_URL kept
+            # alongside, DEPRECATED -- it was this proxy's own prior,
+            # undocumented env-var spelling for the same setting.
+            - name: WADDLEAI_OLLAMA_URL
+              value: "http://{{ include "waddleai.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"
             - name: OLLAMA_BASE_URL
               value: "http://{{ include "waddleai.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"
+            {{- end }}
+            {{- if .Values.ollamaEmbeddings.enabled }}
+            # Ollama-embedding bulkhead (ops-audit O10/O5) -- canonical name;
+            # see values.yaml ollamaEmbeddings' own comment for when to
+            # enable this block.
+            - name: WADDLEAI_OLLAMA_EMBEDDING_URL
+              value: "http://{{ include "waddleai.fullname" . }}-ollama-embeddings:{{ .Values.ollamaEmbeddings.service.port }}"
             {{- end }}
             {{- range .Values.proxy.secretEnv }}
             - name: {{ .name }}

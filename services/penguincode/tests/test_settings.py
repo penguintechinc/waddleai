@@ -17,6 +17,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from penguincode_cli.config.ollama_endpoint import (
+    CANONICAL_CHAT_URL_ENV,
+    CANONICAL_EMBEDDING_URL_ENV,
+    LEGACY_CHAT_URL_ENVS,
+    LEGACY_EMBEDDING_URL_ENVS,
+)
 from penguincode_cli.config.settings import (
     GraphConfig,
     LessonsConfig,
@@ -33,11 +39,27 @@ from penguincode_cli.config.settings import (
     resolve_embedding_url,
 )
 
+_ALL_OLLAMA_URL_ENVS = (CANONICAL_CHAT_URL_ENV, *LEGACY_CHAT_URL_ENVS)
+_ALL_OLLAMA_EMBEDDING_ENVS = (CANONICAL_EMBEDDING_URL_ENV, *LEGACY_EMBEDDING_URL_ENVS)
+
 
 @pytest.fixture
 def clean_pgvector_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure PGVECTOR_URL is unset so default-value tests are deterministic."""
     monkeypatch.delenv("PGVECTOR_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def clean_ollama_url_envs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure every Ollama chat/embedding env var is unset by default.
+
+    Every `OllamaConfig()` test in this module relies on a deterministic
+    default -- a `WADDLEAI_OLLAMA_URL`/`OLLAMA_API_URL`/etc. already present
+    in the ambient environment (the dev box, CI runner) would otherwise
+    silently change which value the resolver picks.
+    """
+    for name in (*_ALL_OLLAMA_URL_ENVS, *_ALL_OLLAMA_EMBEDDING_ENVS):
+        monkeypatch.delenv(name, raising=False)
 
 
 class TestChromaRemoved:
@@ -429,3 +451,115 @@ class TestOllamaEmbeddingBulkhead:
 
         assert settings.ollama.embedding_api_url == "http://ollama-embeddings:11434"
         assert resolve_embedding_url(settings.ollama) == "http://ollama-embeddings:11434"
+
+
+class TestOllamaUrlResolution:
+    """`OllamaConfig.api_url` resolves via the canonical/legacy env-var chain
+    in `penguincode_cli.config.ollama_endpoint` (ops-audit 2026-10-09:
+    config-hygiene finding -- five different env-var spellings for "where is
+    Ollama" across the repo).
+
+    `clean_ollama_url_envs` (module-level autouse fixture) guarantees every
+    test here starts with none of the chat/embedding env vars set.
+    """
+
+    def test_default_when_nothing_set(self) -> None:
+        assert OllamaConfig().api_url == "http://localhost:11434"
+
+    @pytest.mark.parametrize("env_name", LEGACY_CHAT_URL_ENVS)
+    def test_each_legacy_name_sets_api_url(
+        self, env_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(env_name, "http://legacy-ollama:11434")
+        assert OllamaConfig().api_url == "http://legacy-ollama:11434"
+
+    def test_canonical_wins_over_every_legacy_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env_name in LEGACY_CHAT_URL_ENVS:
+            monkeypatch.setenv(env_name, "http://legacy-ollama:11434")
+        monkeypatch.setenv(CANONICAL_CHAT_URL_ENV, "http://canonical-ollama:11434")
+        assert OllamaConfig().api_url == "http://canonical-ollama:11434"
+
+    def test_legacy_precedence_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Earlier names in `LEGACY_CHAT_URL_ENVS` win over later ones."""
+        monkeypatch.setenv("OLLAMA_URL", "http://second:11434")
+        monkeypatch.setenv("OLLAMA_HOST", "http://third:11434")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://fourth:11434")
+        assert OllamaConfig().api_url == "http://second:11434"
+        monkeypatch.setenv("OLLAMA_API_URL", "http://first:11434")
+        assert OllamaConfig().api_url == "http://first:11434"
+
+    def test_explicit_yaml_value_overrides_env_entirely(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `api_url` in YAML still wins -- env resolution only
+        fills in when the key is absent from the config file."""
+        monkeypatch.setenv(CANONICAL_CHAT_URL_ENV, "http://from-env:11434")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump({"ollama": {"api_url": "http://from-yaml:11434"}}))
+
+        settings = Settings.from_yaml(str(config_path))
+
+        assert settings.ollama.api_url == "http://from-yaml:11434"
+
+    def test_embedding_url_falls_back_to_resolved_chat_url_not_localhost(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`resolve_embedding_url` falls back to the resolved `api_url`
+        (which may itself come from a legacy/canonical env var), not a bare
+        localhost literal."""
+        monkeypatch.setenv(CANONICAL_CHAT_URL_ENV, "http://canonical-ollama:11434")
+        cfg = OllamaConfig()
+        assert resolve_embedding_url(cfg) == "http://canonical-ollama:11434"
+
+    @pytest.mark.parametrize("env_name", LEGACY_EMBEDDING_URL_ENVS)
+    def test_each_legacy_embedding_name_sets_embedding_api_url(
+        self, env_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(env_name, "http://legacy-embeddings:11434")
+        assert OllamaConfig().embedding_api_url == "http://legacy-embeddings:11434"
+
+    def test_canonical_embedding_wins_over_legacy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env_name in LEGACY_EMBEDDING_URL_ENVS:
+            monkeypatch.setenv(env_name, "http://legacy-embeddings:11434")
+        monkeypatch.setenv(CANONICAL_EMBEDDING_URL_ENV, "http://canonical-embeddings:11434")
+        assert OllamaConfig().embedding_api_url == "http://canonical-embeddings:11434"
+
+
+class TestOllamaUrlDeprecationLogging:
+    """`resolve_ollama_url`/`resolve_ollama_embedding_url` log the resolved
+    source once at INFO, plus a DEPRECATION warning the first time a legacy
+    (non-canonical, non-default) name supplies the value.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_logged_once_state(self) -> None:
+        """Reset the module's one-time log flags so each test observes a fresh emission."""
+        import penguincode_cli.config.ollama_endpoint as ollama_endpoint
+
+        ollama_endpoint._logged_chat = False
+        ollama_endpoint._logged_embedding = False
+        yield
+        ollama_endpoint._logged_chat = False
+        ollama_endpoint._logged_embedding = False
+
+    def test_legacy_chat_name_emits_one_deprecation_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from penguincode_cli.config.ollama_endpoint import resolve_ollama_url
+
+        monkeypatch.setenv("OLLAMA_API_URL", "http://legacy-ollama:11434")
+        with caplog.at_level("WARNING", logger="penguincode_cli.config.ollama_endpoint"):
+            resolve_ollama_url()
+            resolve_ollama_url()
+        deprecation_warnings = [r for r in caplog.records if "DEPRECATED" in r.message]
+        assert len(deprecation_warnings) == 1
+
+    def test_canonical_chat_name_emits_no_deprecation_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from penguincode_cli.config.ollama_endpoint import resolve_ollama_url
+
+        monkeypatch.setenv(CANONICAL_CHAT_URL_ENV, "http://canonical-ollama:11434")
+        with caplog.at_level("WARNING", logger="penguincode_cli.config.ollama_endpoint"):
+            resolve_ollama_url()
+        assert not [r for r in caplog.records if "DEPRECATED" in r.message]

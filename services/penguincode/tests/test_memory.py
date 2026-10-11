@@ -26,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.config.ollama_endpoint import resolve_ollama_url
 from penguincode_cli.config.settings import (
     MemoryConfig,
     MemoryStoresConfig,
@@ -1033,9 +1034,7 @@ class TestLiveScopedMemoryPgvector:
                 )
             ),
         )
-        manager = MemoryManager(
-            config, ollama_url=os.environ.get("OLLAMA_URL", "http://localhost:11434")
-        )
+        manager = MemoryManager(config, ollama_url=resolve_ollama_url())
         return ScopedMemoryManager(manager)
 
     @pytest.mark.asyncio

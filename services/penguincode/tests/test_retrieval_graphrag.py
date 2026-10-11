@@ -24,6 +24,7 @@ import psycopg
 import pytest
 
 from penguincode_cli.auth.scope import ScopeContext
+from penguincode_cli.config.ollama_endpoint import resolve_ollama_url
 from penguincode_cli.config.settings import LimitsConfig
 from penguincode_cli.db.migrate import run_migrations
 from penguincode_cli.flags.client import (
@@ -43,7 +44,7 @@ from penguincode_cli.stores.graph import (
 from penguincode_cli.stores.vector import PgVectorStore, VectorHit, VectorItem, VectorStore
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-_TEST_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+_TEST_OLLAMA_URL = resolve_ollama_url()
 
 requires_postgres = pytest.mark.skipif(
     not TEST_DATABASE_URL,

@@ -4,12 +4,16 @@
 
 # Ollama Configuration (local or remote)
 # Supports local Ollama or remote instances (LAN server, cloud GPU, etc.)
+# `api_url` is deliberately left unset here -- it resolves via
+# `penguincode_cli.config.ollama_endpoint` (canonical `WADDLEAI_OLLAMA_URL`,
+# falling back to legacy OLLAMA_API_URL/OLLAMA_URL/OLLAMA_HOST/OLLAMA_BASE_URL,
+# then localhost; see docs/penguincode/CONFIGURATION.md "Ollama endpoints").
+# Setting `api_url` here would override that resolution entirely -- for a
+# remote Ollama, set the env var instead:
+#   export WADDLEAI_OLLAMA_URL="http://192.168.1.100:11434"
+#   export WADDLEAI_OLLAMA_URL="http://gpu-server.local:11434"
 ollama:
-  api_url: "${OLLAMA_API_URL:-http://localhost:11434}"  # Use env var or default
   timeout: 120                    # Request timeout in seconds
-  # For remote Ollama, set OLLAMA_API_URL environment variable:
-  #   export OLLAMA_API_URL="http://192.168.1.100:11434"
-  #   export OLLAMA_API_URL="http://gpu-server.local:11434"
 
 # Global model roles (fallback defaults - optimized for 8GB VRAM)
 # Uses tiered approach: lite models for simple tasks, full models for complex

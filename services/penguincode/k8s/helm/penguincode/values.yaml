@@ -102,8 +102,11 @@ server:
 
   # Environment configuration
   env:
-    # Ollama connection
-    OLLAMA_HOST: "host.docker.internal"
+    # Ollama connection -- canonical (config-hygiene ops-audit 2026-10-09;
+    # see docs/penguincode/CONFIGURATION.md "Ollama endpoints" table).
+    # Legacy OLLAMA_API_URL/OLLAMA_URL/OLLAMA_HOST/OLLAMA_BASE_URL still
+    # resolve (lower precedence, DEPRECATION-warned) if set instead.
+    WADDLEAI_OLLAMA_URL: "http://host.docker.internal:11434"
     OLLAMA_TIMEOUT: "120"
 
     # Server configuration
