@@ -216,7 +216,11 @@ build_and_import() {
 # Mirror the pgvector postgres image into the local registry (idempotent).
 mirror_postgres_image() {
     print_info "Mirroring ${PGVECTOR_SRC} -> ${PGVECTOR_DST}"
-    docker pull "${PGVECTOR_SRC}" || { print_error "Failed to pull ${PGVECTOR_SRC}"; return 1; }
+    # pgvector/pgvector is a multi-arch manifest list: force a concrete
+    # single-platform image (always fresh, never a stale/partial local copy) so
+    # the tag+push to the single-platform local registry has real layers to send.
+    # Pulled by the pinned index digest, so the digest pin is preserved.
+    docker pull --platform linux/amd64 "${PGVECTOR_SRC}" || { print_error "Failed to pull ${PGVECTOR_SRC} (linux/amd64)"; return 1; }
     docker tag "${PGVECTOR_SRC}" "${PGVECTOR_DST}" || return 1
     docker push "${PGVECTOR_DST}" || { print_error "Failed to push ${PGVECTOR_DST}"; return 1; }
     print_success "Mirrored: ${PGVECTOR_DST}"
