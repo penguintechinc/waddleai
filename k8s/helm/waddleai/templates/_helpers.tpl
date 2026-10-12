@@ -726,3 +726,77 @@ pulling in CILIUM_TOPOLOGY would add a second hook-ordering dependency
       name: waddleai-secrets
       key: database-url
 {{- end }}
+
+{{/*
+wait-for-schema-head initContainer — BLOCKS (never migrates) until the
+Alembic `alembic_version` table equals the script directory's head(s).
+
+Why it exists: the migration Job (migration-job.yaml) is a post-install,
+post-upgrade hook so Postgres (a plain, non-hook resource that must survive
+`helm upgrade` with its data) exists before the Job's wait-for-postgres
+runs. That means the management/proxy Deployments are created BEFORE the
+migration runs. Both services call SQLAlchemy/PyDAL create_all on startup
+(management: app/models_sqlalchemy.py init_schema; proxy:
+shared/database/models.py define_tables), and gh-215's 001_baseline REFUSES
+a database that already holds tables beyond its frozen baseline — so the
+app containers must never start ahead of the migration. This initContainer
+enforces that ordering. It only waits: the single hook Job stays the sole
+migration runner (running `alembic upgrade` per replica would race at 3+
+replicas). It runs from the management image (the only one that ships
+alembic + the versions/ directory), so the proxy pod uses it too.
+
+CAVEAT: a bare `helm ... --wait` (watcher/legacy) makes Helm wait for
+Deployment readiness BEFORE it runs post-* hooks, which deadlocks against
+this gate on a fresh install or an upgrade carrying a new migration. Helm 4's
+default (no --wait flag = hookOnly) is correct: it still waits for, and
+fails the release on, the migration hook. Use `kubectl rollout status`
+afterwards for readiness.
+*/}}
+{{- define "waddleai.waitForSchemaHead" -}}
+{{- if .Values.migrations.enabled }}
+- name: wait-for-schema-head
+  image: {{ include "waddleai.management.image" . }}
+  imagePullPolicy: {{ .Values.management.image.pullPolicy }}
+  workingDir: /app
+  securityContext:
+    {{- $ctx := mergeOverwrite (deepCopy .Values.securityContext) (dict "readOnlyRootFilesystem" true) (.Values.management.securityContext | default dict) }}
+    {{- toYaml $ctx | nindent 4 }}
+  command:
+    - /opt/venv/bin/python3
+    - -c
+    - |
+      import os, sys, time
+      from alembic.config import Config
+      from alembic.script import ScriptDirectory
+      from sqlalchemy import create_engine, text
+      url = os.environ["DATABASE_URL"]
+      if url.startswith("postgres://"):
+          url = url.replace("postgres://", "postgresql://", 1)
+      heads = set(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
+      deadline = time.time() + {{ int .Values.migrations.waitForHead.timeoutSeconds }}
+      engine = create_engine(url)
+      while True:
+          try:
+              with engine.connect() as conn:
+                  cur = {r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))}
+              if cur == heads:
+                  print("schema at alembic head: %s" % sorted(cur), flush=True)
+                  sys.exit(0)
+              print("waiting for migration: current=%s head=%s" % (sorted(cur), sorted(heads)), flush=True)
+          except Exception as exc:
+              print("waiting for alembic_version (%s)" % type(exc).__name__, flush=True)
+          if time.time() > deadline:
+              print("timed out waiting for alembic head", file=sys.stderr, flush=True)
+              sys.exit(1)
+          time.sleep(3)
+  env:
+    {{- include "waddleai.management.databaseUrlEnv" . | nindent 4 }}
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+{{- end }}
+{{- end }}

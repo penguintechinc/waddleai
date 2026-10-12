@@ -59,6 +59,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+        {{- include "waddleai.waitForSchemaHead" . | nindent 8 }}
       containers:
         - name: proxy
           securityContext:

@@ -69,9 +69,14 @@ do_deploy() {
         return 1
     fi
 
+    # NO bare --wait: it makes Helm block on Deployment readiness BEFORE running
+    # the post-install/post-upgrade migration hook, but management/proxy gate on
+    # that hook (wait-for-schema-head initContainer) -> deadlock. Helm 4's default
+    # (hookOnly) still waits for and fails on the migration Job; Deployment
+    # readiness is verified by verify_deployment() below.
     local helm_args=("upgrade" "--install" "$RELEASE_NAME" "$CHART_PATH" \
         "--kube-context=$KUBE_CONTEXT" "--namespace=$NAMESPACE" "--create-namespace" \
-        "--values=$VALUES_FILE" "--wait" "--timeout=10m")
+        "--values=$VALUES_FILE" "--timeout=10m")
 
     for svc in "${SERVICES[@]}"; do
         if [ -n "$SERVICE" ] && [ "$SERVICE" != "$svc" ]; then continue; fi
@@ -97,7 +102,11 @@ do_rollback() {
 verify_deployment() {
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
     log_section "Verifying Deployment"
-    kubectl --context="$KUBE_CONTEXT" -n "$NAMESPACE" rollout status deployment/"$RELEASE_NAME" --timeout=300s
+    local svc
+    for svc in "${SERVICES[@]}"; do
+        if [ -n "$SERVICE" ] && [ "$SERVICE" != "$svc" ]; then continue; fi
+        kubectl --context="$KUBE_CONTEXT" -n "$NAMESPACE" rollout status deployment/"${RELEASE_NAME}-${svc}" --timeout=600s || return 1
+    done
     kubectl --context="$KUBE_CONTEXT" -n "$NAMESPACE" get pods
 }
 

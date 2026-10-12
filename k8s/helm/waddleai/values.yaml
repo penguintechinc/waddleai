@@ -32,12 +32,15 @@ management:
     port: 8001
     targetPort: 8001
 
+  # Presidio loads spaCy en_core_web_lg (NER_SPACY_MODEL, a deliberate
+  # project choice) in EACH hypercorn worker (workers: 2 below) -- observed
+  # OOMKilled at 256Mi and 1Gi, Ready only at 3Gi.
   resources:
     requests:
-      memory: "256Mi"
+      memory: "2Gi"
       cpu: "250m"
     limits:
-      memory: "512Mi"
+      memory: "3Gi"
       cpu: "500m"
 
   # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Stateless behind
@@ -382,9 +385,14 @@ postgres:
   enabled: true
   replicaCount: 1
   image:
-    repository: postgres
-    tag: "17-bookworm"
-    digest: "sha256:5530681ea5d3e2ed4ce396f9b5cb443efbac6baf2a8a19c0c0635e40ae7eadce"
+    # pgvector/pgvector = stock postgres + the `vector` extension the Alembic
+    # chain's DDL requires (stock postgres fails: extension "vector" is not
+    # available). pg17 keeps the PG17 major of the previous postgres:17-bookworm
+    # pin, so existing PGDATA volumes stay compatible. Digest is the multi-arch
+    # (amd64+arm64) index digest of pgvector/pgvector:pg17.
+    repository: pgvector/pgvector
+    tag: "pg17"
+    digest: "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d"
     pullPolicy: IfNotPresent
 
   service:
@@ -728,8 +736,9 @@ secrets:
   credentialEncryptionKey: ""
 
 # Alembic database migration Job (templates/migration-job.yaml) — runs
-# `alembic upgrade head` from the management image as a pre-install,
-# pre-upgrade Helm hook, ahead of the management Deployment's own rollout.
+# `alembic upgrade head` from the management image as a post-install,
+# post-upgrade Helm hook (Postgres, a plain resource, must exist first); the
+# management/proxy pods gate on it via a wait-for-schema-head initContainer.
 # On a fresh, EMPTY database the Job builds the full head schema itself
 # (services/management/alembic/versions/001_baseline.py creates the frozen
 # baseline, then the real 002..head chain applies migration DDL + seed rows,
@@ -740,6 +749,12 @@ migrations:
   enabled: true
   activeDeadlineSeconds: 300
   backoffLimit: 3
+  # wait-for-schema-head initContainer on management + proxy (see
+  # _helpers.tpl "waddleai.waitForSchemaHead"): max seconds to block for the
+  # post-install/post-upgrade migration hook before the init container fails
+  # (and kubelet restarts it).
+  waitForHead:
+    timeoutSeconds: 900
   resources:
     requests:
       memory: "256Mi"

@@ -62,6 +62,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+        {{- include "waddleai.waitForSchemaHead" . | nindent 8 }}
       containers:
         - name: management
           # trivy KSV-0014. readOnlyRootFilesystem is forced on here rather
