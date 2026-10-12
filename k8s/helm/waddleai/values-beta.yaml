@@ -48,12 +48,13 @@ proxy:
     tag: beta-1776182785
     pullPolicy: Always
 
+  # Inherits proxy.workers: 2 from values.yaml; spaCy-lg x2 workers needs ~3Gi.
   resources:
     requests:
-      memory: "128Mi"
+      memory: "2Gi"
       cpu: "100m"
     limits:
-      memory: "256Mi"
+      memory: "3Gi"
       cpu: "250m"
 
   env:

@@ -243,11 +243,10 @@ do_deploy() {
         return 1
     fi
 
-    # Create namespace if missing
-    if ! kctl get namespace "${NAMESPACE}" &>/dev/null; then
-        print_info "Creating namespace: ${NAMESPACE}"
-        kctl create namespace "${NAMESPACE}"
-    fi
+    # Do NOT pre-create the namespace with kubectl: the chart templates its own
+    # Namespace resource (PSA labels), and a kubectl-created one has no Helm
+    # ownership metadata -> "cannot be imported into the current release".
+    # `helm --create-namespace` below owns creation.
 
     # Render/apply the Helm chart
     if [[ "${DRY_RUN}" == "true" ]]; then
