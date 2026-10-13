@@ -30,9 +30,13 @@ spec:
             - port: "50051"
               protocol: TCP
     {{- else }}
-    # Default: no selectors allowed (fail-closed). The empty rule keeps
-    # ingress default-deny enforced for the selected pods. Explicitly
-    # configure allowedPodSelectors in values to permit access.
+    # Default: no selectors allowed (fail-closed). `- {}` is ONE ingress rule
+    # with no from*/toPorts, so it matches no peer (allows nothing) but its
+    # presence puts the selected pods into ingress default-deny. Do NOT
+    # replace it with `ingress: []`: Cilium derives default-deny from
+    # len(ingress) > 0 (pkg/policy/api/rule_validation.go Sanitize), so an
+    # empty list enforces nothing and leaves the pods open (fail-OPEN).
+    # Explicitly configure allowedPodSelectors in values to permit access.
     - {}
     {{- end }}
 {{- end }}
