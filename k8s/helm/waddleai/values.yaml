@@ -272,6 +272,9 @@ proxy:
   env:
     LOG_LEVEL: INFO
     HTTP_PORT: "8080"
+    # mem0 creates its cache dir at import time. The proxy runs with
+    # readOnlyRootFilesystem: true, so point it at the writable /tmp emptyDir.
+    MEM0_DIR: "/tmp/.mem0"
     GRPC_PORT: "50051"
     # See management.env above for the same three keys — proxy reads them
     # too (proxy/apps/proxy_server/main.py, shared/security/ner_filter.py).
