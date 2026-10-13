@@ -1,30 +1,38 @@
-{{- if .Values.proxy.grpc.networkPolicy.enabled }}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+{{/*
+Proxy internal-gRPC ingress policy. CiliumNetworkPolicy (house rule: never
+plain NetworkPolicy), same intent as the prior networking.k8s.io/v1 policy:
+only pods matching proxy.grpc.networkPolicy.allowedPodSelectors (same
+namespace) may reach the proxy pods on TCP 50051; fail-closed when the list is
+empty. Guarded on the cilium.io/v2 capability like cilium-network-policy.yaml
+so non-Cilium clusters (plain MicroK8s alpha) still install cleanly.
+*/}}
+{{- if and .Values.proxy.grpc.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
 metadata:
   name: {{ include "waddleai.fullname" . }}-grpc
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "waddleai.labels" . | nindent 4 }}
     app: waddleai-proxy
 spec:
-  podSelector:
+  endpointSelector:
     matchLabels:
       app: waddleai-proxy
-  policyTypes:
-    - Ingress
   ingress:
-    - from:
-        {{- if .Values.proxy.grpc.networkPolicy.allowedPodSelectors }}
+    {{- if .Values.proxy.grpc.networkPolicy.allowedPodSelectors }}
+    - fromEndpoints:
         {{- range .Values.proxy.grpc.networkPolicy.allowedPodSelectors }}
-        - podSelector:
-            {{- toYaml . | nindent 14 }}
+        - {{- toYaml . | nindent 10 }}
         {{- end }}
-        {{- else }}
-        # Default: no selectors allowed (fail-closed).
-        # Explicitly configure allowedPodSelectors in values to permit access.
-        []
-        {{- end }}
-      ports:
-        - protocol: TCP
-          port: 50051
+      toPorts:
+        - ports:
+            - port: "50051"
+              protocol: TCP
+    {{- else }}
+    # Default: no selectors allowed (fail-closed). The empty rule keeps
+    # ingress default-deny enforced for the selected pods. Explicitly
+    # configure allowedPodSelectors in values to permit access.
+    - {}
+    {{- end }}
 {{- end }}
