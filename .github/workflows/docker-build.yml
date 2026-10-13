@@ -62,6 +62,14 @@ on:
 permissions:
   contents: read
 
+# Serialize runs per event+ref. cancel-in-progress is PR-only: superseded PR
+# builds are safe to kill, but push/tag/release runs publish images and must
+# NEVER be cancelled (a tag's prereleased -> released events share a ref; a
+# cancel would kill a pending prod publish).
+concurrency:
+  group: docker-build-${{ github.event_name }}-${{ github.event.action }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME_PROXY: ${{ github.repository }}/proxy
@@ -830,9 +838,9 @@ jobs:
           type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-alpha,enable=${{ needs.determine-tier.outputs.tier == 'alpha' && needs.determine-tier.outputs.version_changed == 'true' }}
           type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ needs.determine-tier.outputs.tier == 'beta' && needs.determine-tier.outputs.version_changed == 'true' }}
           type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ needs.determine-tier.outputs.tier == 'gamma' }}
-          type=raw,value=${{ needs.determine-tier.outputs.tag_prefix }}-${{ needs.determine-tier.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier != 'prod' }}
-          type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
-          type=sha,prefix=ci-${{ steps.arch.outputs.suffix }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
+          type=raw,value=${{ needs.determine-tier.outputs.tag_prefix }}-${{ needs.determine-tier.outputs.epoch64 }}-${{ github.run_id }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier != 'prod' }}
+          type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ github.run_id }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
+          type=raw,value=ci-${{ steps.arch.outputs.suffix }}-${{ github.sha }}-${{ github.run_id }},enable=${{ github.event_name != 'pull_request' }}
 
     # provenance/sbom explicitly disabled -- root cause of the release-branch
     # "manifest unknown" (integration-test pull) / "content ... not found"
@@ -958,9 +966,9 @@ jobs:
           type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-alpha,enable=${{ needs.determine-tier.outputs.tier == 'alpha' && needs.determine-tier.outputs.version_changed == 'true' }}
           type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ needs.determine-tier.outputs.tier == 'beta' && needs.determine-tier.outputs.version_changed == 'true' }}
           type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ needs.determine-tier.outputs.tier == 'gamma' }}
-          type=raw,value=${{ needs.determine-tier.outputs.tag_prefix }}-${{ needs.determine-tier.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier != 'prod' }}
-          type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
-          type=sha,prefix=ci-${{ steps.arch.outputs.suffix }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
+          type=raw,value=${{ needs.determine-tier.outputs.tag_prefix }}-${{ needs.determine-tier.outputs.epoch64 }}-${{ github.run_id }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier != 'prod' }}
+          type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ github.run_id }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
+          type=raw,value=ci-${{ steps.arch.outputs.suffix }}-${{ github.sha }}-${{ github.run_id }},enable=${{ github.event_name != 'pull_request' }}
 
     # provenance/sbom explicitly disabled -- root cause of the release-branch
     # "manifest unknown" (integration-test pull) / "content ... not found"
@@ -1120,11 +1128,14 @@ jobs:
         read -ra TAG_ARGS <<< "$STEPS_TAGS_OUTPUTS_TAGS"
         max_attempts=5
         delay=5
-        SOURCES=("${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-amd64")
-        # arm64 disabled (amd64-first): its per-arch tag only exists when
-        # build-platform-arm64 ran, i.e. repo variable ENABLE_ARM64_BUILDS=true.
-        if [[ "$ENABLE_ARM64_BUILDS" == "true" ]]; then
-          SOURCES+=("${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-arm64")
+        # Per-arch sources carry this run's id so a concurrent run on the
+        # same tier/epoch can never be combined with another run's images.
+        SOURCES=("${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-${RUN_ID}-amd64")
+        # arm64 disabled (amd64-first): include it only if build-platform-arm64
+        # actually succeeded in THIS run (job result, not a re-read of
+        # vars.ENABLE_ARM64_BUILDS, which could flip mid-run).
+        if [[ "$ARM64_RESULT" == "success" ]]; then
+          SOURCES+=("${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-${RUN_ID}-arm64")
         fi
         for attempt in $(seq 1 "$max_attempts"); do
           if docker buildx imagetools create "${TAG_ARGS[@]}" "${SOURCES[@]}"; then
@@ -1138,7 +1149,8 @@ jobs:
         echo "::error::imagetools create failed after ${max_attempts} attempts"
         exit 1
       env:
-        ENABLE_ARM64_BUILDS: ${{ vars.ENABLE_ARM64_BUILDS }}
+        ARM64_RESULT: ${{ needs.build-platform-arm64.result }}
+        RUN_ID: ${{ github.run_id }}
         REGISTRY_IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
         STEPS_TAGS_OUTPUTS_TAGS: ${{ steps.tags.outputs.tags }}
         STEPS_TAGS_OUTPUTS_SOURCE_TAG: ${{ steps.tags.outputs.source_tag }}
@@ -1182,6 +1194,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    # Pre-gate push is a run-unique tag ONLY. The floating hardened/debug tags
+    # (and the prod version-suffixed tag) are applied by "Promote floating
+    # tags" below, strictly AFTER the Trivy gate passes -- a build failing
+    # HIGH/CRITICAL is never live at a floating tag. (Old note follows.)
     # Fixed floating tag (hardened/debug — matches spec §10.2's two named
     # tags exactly, consumed as-is by ollama.image.tag in values.yaml) plus
     # one immutable per-run tag the Trivy step below scans, so the gate
@@ -1194,9 +1210,7 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}
         tags: |
-          type=raw,value=${{ matrix.target }}
-          type=raw,value=${{ matrix.target }}-v${{ needs.determine-tier.outputs.semver }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
-          type=sha,prefix=ci-${{ matrix.target }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
+          type=raw,value=ci-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}
 
     # provenance/sbom disabled for the same reason as build-platform above --
     # same build-push-action version, same attestation-manifest bug class.
@@ -1263,6 +1277,27 @@ jobs:
       with:
         sarif_file: 'trivy-results-ollama-${{ matrix.target }}.sarif'
 
+    # Promote only after the blocking Trivy gate above passed (a failed gate
+    # fails the job, so this step never runs). Retags the exact scanned
+    # digest -- no rebuild. Tier set is unchanged from before (every tier
+    # that pushes moves the floating tags); only the ORDER changed.
+    - name: Promote floating tags (post-gate)
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      env:
+        IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_OLLAMA }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+        TARGET: ${{ matrix.target }}
+        TIER: ${{ needs.determine-tier.outputs.tier }}
+        SEMVER: ${{ needs.determine-tier.outputs.semver }}
+      run: |
+        set -euo pipefail
+        [[ -n "$DIGEST" ]] || { echo "::error::empty build digest -- refusing to promote"; exit 1; }
+        TAG_ARGS=(--tag "${IMAGE}:${TARGET}")
+        if [[ "$TIER" == "prod" ]]; then
+          TAG_ARGS+=(--tag "${IMAGE}:${TARGET}-v${SEMVER}")
+        fi
+        docker buildx imagetools create "${TAG_ARGS[@]}" "${IMAGE}@${DIGEST}"
+
   security-scan:
     needs: merge-manifests
     runs-on: ubuntu-latest
@@ -1277,7 +1312,7 @@ jobs:
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
       if: github.event_name != 'pull_request'
       with:
-        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:ci-amd64-${{ github.sha }}
+        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:ci-amd64-${{ github.sha }}-${{ github.run_id }}
         format: 'sarif'
         output: 'trivy-results-${{ matrix.service }}.sarif'
         version: 'v0.69.3'
@@ -1290,7 +1325,7 @@ jobs:
 
   integration-test:
     # Deliberately build-platform, not merge-manifests: this job's compose
-    # heredoc below pulls the per-arch ci-amd64-<sha> tags that build-platform
+    # heredoc below pulls the per-arch ci-amd64-<sha>-<run_id> tags that build-platform
     # pushes directly -- it never touches the multi-arch manifest that
     # merge-manifests produces. needs: merge-manifests was a false
     # dependency that let an unrelated manifest-merge failure (see the retry
@@ -1329,7 +1364,7 @@ jobs:
         cat << EOF > docker-compose.test.yml
         services:
           proxy:
-            image: ${{ env.REGISTRY }}/${{ github.repository }}/proxy:ci-amd64-${{ github.sha }}
+            image: ${{ env.REGISTRY }}/${{ github.repository }}/proxy:ci-amd64-${{ github.sha }}-${{ github.run_id }}
             ports:
               # host 8000 -> container 8080: the app listens on 8080
               # (proxy/Dockerfile EXPOSE/CMD/HEALTHCHECK, k8s values.yaml
@@ -1344,7 +1379,7 @@ jobs:
                 condition: service_healthy
 
           management:
-            image: ${{ env.REGISTRY }}/${{ github.repository }}/management:ci-amd64-${{ github.sha }}
+            image: ${{ env.REGISTRY }}/${{ github.repository }}/management:ci-amd64-${{ github.sha }}-${{ github.run_id }}
             ports:
               - "8001:8001"
             environment:
@@ -1537,18 +1572,31 @@ jobs:
       packages: write
 
     steps:
+    # Age-guarded + paginated: only untagged versions older than 24h are
+    # deleted, so a just-pushed, transiently-untagged child digest of a live
+    # manifest index is never removed. Runs are serialized by the workflow
+    # concurrency group. Scope stays proxy-only.
     - name: Delete untagged images
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
       with:
         script: |
-          const response = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
-            package_type: 'container',
-            package_name: 'waddleai/proxy',
-            org: context.repo.owner,
-          });
+          const MIN_AGE_MS = 24 * 60 * 60 * 1000;
+          const now = Date.now();
+          const versions = await github.paginate(
+            github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg,
+            {
+              package_type: 'container',
+              package_name: 'waddleai/proxy',
+              org: context.repo.owner,
+              per_page: 100,
+            },
+          );
+          console.log(`Examined ${versions.length} package versions`);
 
-          for (const version of response.data) {
-            if (version.metadata.container.tags.length === 0) {
+          for (const version of versions) {
+            const tags = version.metadata.container.tags;
+            const ageMs = now - Date.parse(version.created_at);
+            if (tags.length === 0 && ageMs >= MIN_AGE_MS) {
               console.log(`Deleting untagged version: ${version.id}`);
               await github.rest.packages.deletePackageVersionForOrg({
                 package_type: 'container',
