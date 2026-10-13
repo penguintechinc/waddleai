@@ -745,6 +745,14 @@ migration runner (running `alembic upgrade` per replica would race at 3+
 replicas). It runs from the management image (the only one that ships
 alembic + the versions/ directory), so the proxy pod uses it too.
 
+ROLLBACK SAFETY: `helm rollback` runs only rollback hooks, never the
+post-upgrade migration Job, so the DB stays at the NEWER head. The gate
+therefore starts when the DB is at OR AHEAD of this image's head (a revision
+this image's script directory doesn't know), logging a WARNING; it keeps
+waiting only for an empty DB or a known-but-behind revision. Safe rollback
+requires expand/contract (backward-compatible) migrations. The gate timeout
+is kept below the Deployments' progressDeadlineSeconds (timeout + 300).
+
 CAVEAT: a bare `helm ... --wait` (watcher/legacy) makes Helm wait for
 Deployment readiness BEFORE it runs post-* hooks, which deadlocks against
 this gate on a fresh install or an upgrade carrying a new migration. Helm 4's
@@ -765,26 +773,38 @@ afterwards for readiness.
     - /opt/venv/bin/python3
     - -c
     - |
-      import os, sys, time
+      import os, re, sys, time
       from alembic.config import Config
       from alembic.script import ScriptDirectory
       from sqlalchemy import create_engine, text
       url = os.environ["DATABASE_URL"]
       if url.startswith("postgres://"):
           url = url.replace("postgres://", "postgresql://", 1)
-      heads = set(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
+      script = ScriptDirectory.from_config(Config("alembic.ini"))
+      heads = set(script.get_heads())
+      def known(rev):
+          try:
+              return script.get_revision(rev) is not None
+          except Exception:
+              return False
+      def clean(exc):
+          return re.sub(r"(://[^:/@\s]*):[^@\s]*@", r"\1:***@", (str(exc).splitlines() or [""])[0])[:300]
       deadline = time.time() + {{ int .Values.migrations.waitForHead.timeoutSeconds }}
       engine = create_engine(url)
       while True:
           try:
               with engine.connect() as conn:
                   cur = {r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))}
-              if cur == heads:
+              if cur and cur == heads:
                   print("schema at alembic head: %s" % sorted(cur), flush=True)
                   sys.exit(0)
-              print("waiting for migration: current=%s head=%s" % (sorted(cur), sorted(heads)), flush=True)
+              unknown = sorted(r for r in cur if not known(r))
+              if unknown:
+                  print("WARNING: database revision(s) %s are NEWER than this image (head %s) -- rollback or older image; proceeding, assuming a backward-compatible (expand/contract) schema" % (unknown, sorted(heads)), flush=True)
+                  sys.exit(0)
+              print("waiting for migration: current=%s head=%s" % (sorted(cur) or "none (empty database)", sorted(heads)), flush=True)
           except Exception as exc:
-              print("waiting for alembic_version (%s)" % type(exc).__name__, flush=True)
+              print("waiting for alembic_version: %s: %s" % (type(exc).__name__, clean(exc)), flush=True)
           if time.time() > deadline:
               print("timed out waiting for alembic head", file=sys.stderr, flush=True)
               sys.exit(1)

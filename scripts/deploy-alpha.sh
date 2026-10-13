@@ -284,13 +284,17 @@ do_deploy() {
 wait_for_rollout() {
     print_info "Waiting for deployments to roll out..."
 
-    # Get all deployments in namespace
+    # A kubectl failure or an empty list is an ERROR, never "nothing to wait for":
+    # a gate that cannot fail is not a gate (critical-rules.md Verification Integrity).
     local deployments
-    deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if ! deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}'); then
+        print_error "Failed to list deployments in namespace ${NAMESPACE}"
+        return 1
+    fi
 
     if [[ -z "${deployments}" ]]; then
-        print_warning "No deployments found in namespace ${NAMESPACE}"
-        return 0
+        print_error "No deployments found in namespace ${NAMESPACE} (0 examined) -- the install did not create any"
+        return 1
     fi
 
     local failed=false
@@ -304,7 +308,10 @@ wait_for_rollout() {
 
     # Also check statefulsets
     local statefulsets
-    statefulsets=$(kctl get statefulsets -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if ! statefulsets=$(kctl get statefulsets -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}'); then
+        print_error "Failed to list statefulsets in namespace ${NAMESPACE}"
+        return 1
+    fi
 
     for sts in ${statefulsets}; do
         print_info "Waiting for statefulset/${sts}..."
@@ -318,7 +325,7 @@ wait_for_rollout() {
         return 1
     fi
 
-    print_success "All workloads rolled out successfully"
+    print_success "All workloads rolled out successfully ($(echo ${deployments} | wc -w | tr -d ' ') deployments checked)"
 }
 
 # =============================================================================
@@ -349,7 +356,10 @@ do_rollback() {
     print_warning "Rolling back deployments in ${NAMESPACE}..."
 
     local deployments
-    deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if ! deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}'); then
+        print_error "Failed to list deployments in namespace ${NAMESPACE}"
+        return 1
+    fi
 
     if [[ -z "${deployments}" ]]; then
         print_error "No deployments found in namespace ${NAMESPACE}"
@@ -464,9 +474,10 @@ main() {
 
     # Handle rollback
     if [[ "${DO_ROLLBACK}" == "true" ]]; then
-        do_rollback
-        show_status
-        exit $?
+        local rc=0
+        do_rollback || rc=$?
+        show_status || true
+        exit "${rc}"
     fi
 
     # Build images
@@ -491,7 +502,11 @@ main() {
     do_deploy || exit 1
 
     if [[ "${DRY_RUN}" != "true" ]]; then
-        wait_for_rollout || print_warning "Some workloads did not roll out cleanly"
+        if ! wait_for_rollout; then
+            show_status || true
+            print_error "Alpha deployment FAILED: workloads did not roll out"
+            exit 1
+        fi
         show_status
         print_success "Alpha deployment complete!"
     else

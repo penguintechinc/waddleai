@@ -24,7 +24,7 @@ management:
       memory: "2Gi"
       cpu: "500m"
     limits:
-      memory: "3Gi"
+      memory: "4Gi"
       cpu: "1000m"
 
   env:
@@ -48,13 +48,13 @@ proxy:
     tag: beta-1776182785
     pullPolicy: Always
 
-  # Inherits proxy.workers: 2 from values.yaml; spaCy-lg x2 workers needs ~3Gi.
+  # Inherits proxy.workers: 2 from values.yaml; spaCy-lg x2 workers needs ~3Gi (4Gi limit = headroom).
   resources:
     requests:
       memory: "2Gi"
       cpu: "100m"
     limits:
-      memory: "3Gi"
+      memory: "4Gi"
       cpu: "250m"
 
   env:

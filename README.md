@@ -205,9 +205,10 @@ cd waddleai
 # (secrets.manage: true) — do NOT pre-create one with the same name,
 # `helm install` will fail with "already exists". Override the two
 # secret values instead:
-kubectl create namespace waddleai
+# No `kubectl create namespace`: the chart templates its own Namespace; a
+# pre-created one fails with "cannot be imported into the current release".
 helm install waddleai k8s/helm/waddleai \
-  --namespace waddleai \
+  --namespace waddleai --create-namespace \
   --values k8s/helm/waddleai/values-beta.yaml \
   --set secrets.postgresPassword="$(openssl rand -hex 16)" \
   --set secrets.jwtSecret="$(openssl rand -hex 32)"

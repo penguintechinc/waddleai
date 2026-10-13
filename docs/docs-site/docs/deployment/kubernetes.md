@@ -231,6 +231,14 @@ Schema handling is two mechanisms:
    until `alembic_version` is at head — the single hook Job stays the sole migration
    runner. Timeout: `migrations.waitForHead.timeoutSeconds` (default 900).
 
+   !!! warning "Helm flags and migration compatibility (gamma/prod)"
+       (a) Do **not** use `--wait`, `--atomic` or `--rollback-on-failure` with this chart:
+       the migration is a post-install/post-upgrade hook and the app pods gate on it, which
+       relies on Helm 4's default hookOnly wait — `--wait` deadlocks.
+       (b) Migrations must be **expand/contract (backward-compatible)**: new pods wait for the
+       new schema while old pods keep serving the DB mid-upgrade, and `helm rollback` does
+       NOT revert the schema (the gate starts old pods against a newer DB, logging a warning).
+
    **Do not pass a bare `helm --wait`**: Helm would wait for Deployment readiness
    *before* running post-* hooks, deadlocking against the initContainer. Helm 4's
    default (no flag, hookOnly) still waits for and fails on the migration Job; check

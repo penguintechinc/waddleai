@@ -40,7 +40,7 @@ management:
       memory: "2Gi"
       cpu: "250m"
     limits:
-      memory: "3Gi"
+      memory: "4Gi"
       cpu: "500m"
 
   # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Stateless behind
@@ -54,8 +54,9 @@ management:
     enabled: true
     minReplicas: 1
     maxReplicas: 4
+    # CPU only: spaCy en_core_web_lg is a high FIXED memory baseline, so a
+    # memory-% target would peg the HPA at max replicas permanently.
     targetCPUUtilizationPercentage: 75
-    targetMemoryUtilizationPercentage: 80
 
   livenessProbe:
     enabled: true
@@ -194,7 +195,7 @@ proxy:
       memory: "2Gi"
       cpu: "100m"
     limits:
-      memory: "3Gi"
+      memory: "4Gi"
       cpu: "250m"
 
   # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Proxy is the data-plane
@@ -206,8 +207,8 @@ proxy:
     enabled: true
     minReplicas: 1
     maxReplicas: 6
+    # CPU only (fixed spaCy-lg memory baseline; see management.autoscaling).
     targetCPUUtilizationPercentage: 70
-    targetMemoryUtilizationPercentage: 80
 
   livenessProbe:
     enabled: true
@@ -1169,6 +1170,8 @@ tetragon:
         allowedExecs:
           - /usr/local/bin/python3
           - /usr/local/bin/hypercorn
+          # wait-for-schema-head initContainer runs from the management image (venv)
+          - /opt/venv/bin/python3
       # Management — this repo's own image (services/management/Dockerfile),
       # installed into a venv at /opt/venv.
       management:
