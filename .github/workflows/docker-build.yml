@@ -768,7 +768,137 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [linux/amd64, linux/arm64]
+        platform: [linux/amd64]
+        # amd64-only for now: the arm64 build lives in build-platform-arm64
+        # (gated by repo variable ENABLE_ARM64_BUILDS).
+        # webui MUST stay in this base list, not live only in `include` below.
+        # `include` entries whose keys don't already appear in the matrix
+        # (webui previously had no `platform:` key) create one standalone
+        # combination instead of merging into the platform x service cross
+        # product -- so webui built once, with `matrix.platform` unset, and
+        # never produced the `-amd64`/`-arm64` tags merge-manifests (and
+        # security-scan) already expect for it. Putting webui here first
+        # expands it across both platforms; the `include` entry below then
+        # merges context/dockerfile onto each of those two combinations,
+        # exactly as it already does for `management`.
+        service: [proxy, management, webui]
+        include:
+          - service: webui
+            context: ./services/webui
+            dockerfile: ./services/webui/Dockerfile
+          # management moved to services/ in the Phase-1 consolidation; the
+          # default ./{service}/Dockerfile no longer exists. Context stays the
+          # repo root so the image can COPY the shared/ package it imports.
+          - service: management
+            context: .
+            dockerfile: ./services/management/Dockerfile
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Determine arch suffix
+      id: arch
+      run: |
+        ARCH=${{ matrix.platform }}
+        SUFFIX=${ARCH#linux/}
+        echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
+
+    - name: Extract metadata for Docker
+      id: meta
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+        tags: |
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-alpha,enable=${{ needs.determine-tier.outputs.tier == 'alpha' && needs.determine-tier.outputs.version_changed == 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-beta,enable=${{ needs.determine-tier.outputs.tier == 'beta' && needs.determine-tier.outputs.version_changed == 'true' }}
+          type=raw,value=v${{ needs.determine-tier.outputs.semver }}-${{ steps.arch.outputs.suffix }}-gamma,enable=${{ needs.determine-tier.outputs.tier == 'gamma' }}
+          type=raw,value=${{ needs.determine-tier.outputs.tag_prefix }}-${{ needs.determine-tier.outputs.epoch64 }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier != 'prod' }}
+          type=raw,value=${{ needs.determine-tier.outputs.release_tag }}-${{ steps.arch.outputs.suffix }},enable=${{ needs.determine-tier.outputs.tier == 'prod' }}
+          type=sha,prefix=ci-${{ steps.arch.outputs.suffix }}-,format=long,enable=${{ github.event_name != 'pull_request' }}
+
+    # provenance/sbom explicitly disabled -- root cause of the release-branch
+    # "manifest unknown" (integration-test pull) / "content ... not found"
+    # (merge-manifests imagetools create) failures: build-push-action v7's
+    # default provenance=true makes buildx attach a second "unknown/unknown"
+    # attestation manifest to the pushed index (docker/build-push-action#851,
+    # #764, #900; docker/buildx community discussion #45969). imagetools
+    # create then tries to copy that attestation manifest's blobs too, and a
+    # plain `docker pull`/`compose pull` of the tag can likewise resolve to
+    # the broken index -- both match exactly what CI showed: build-platform
+    # (proxy) reports success, but the very next pull/merge 404s on a blob,
+    # a different digest missing each retry (not simple read-after-write
+    # lag, which converges on the *same* digest). The proxy image is the
+    # one that surfaces it (multi-GB torch+spaCy layers stress the extra
+    # attestation write most), but the bug applies to every service pushed
+    # through this step, so it's disabled here for all of them.
+    - name: Build and push Docker image for ${{ matrix.platform }}
+      id: build
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+      with:
+        context: ${{ matrix.context || '.' }}
+        file: ${{ matrix.dockerfile || format('./{0}/Dockerfile', matrix.service) }}
+        platforms: ${{ matrix.platform }}
+        push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
+        provenance: false
+        sbom: false
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha,scope=${{ matrix.service }}-${{ steps.arch.outputs.suffix }}
+        cache-to: type=gha,scope=${{ matrix.service }}-${{ steps.arch.outputs.suffix }},mode=max
+        build-args: |
+          BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          VCS_REF=${{ github.sha }}
+
+    # G9/R1: SBOM generation re-enabled, but deliberately NOT via
+    # build-push-action's own `sbom: true` -- that's the exact
+    # attestation-manifest mechanism disabled above for the documented
+    # buildx bug. Syft scans the just-pushed image directly by digest
+    # (registry pull, reusing the docker/login-action session above),
+    # producing a standalone SPDX file with no OCI index/attestation
+    # involvement -- same coverage, none of the "manifest unknown" blast
+    # radius.
+    - name: Generate SBOM for ${{ matrix.service }} (${{ matrix.platform }})
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+      with:
+        image: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+        format: spdx-json
+        artifact-name: sbom-${{ matrix.service }}-${{ steps.arch.outputs.suffix }}.spdx.json
+        output-file: sbom-${{ matrix.service }}-${{ steps.arch.outputs.suffix }}.spdx.json
+        upload-release-assets: false
+
+  # arm64 builds disabled (amd64-first). Re-enable by setting repo variable ENABLE_ARM64_BUILDS=true.
+  # Mirror of build-platform for linux/arm64 only; pushes the same per-arch
+  # `-arm64` tags merge-manifests folds into the multi-arch index when enabled.
+  build-platform-arm64:
+    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e, test-penguincode]
+    if: ${{ vars.ENABLE_ARM64_BUILDS == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/arm64]
         # webui MUST stay in this base list, not live only in `include` below.
         # `include` entries whose keys don't already appear in the matrix
         # (webui previously had no `platform:` key) create one standalone
@@ -884,14 +1014,16 @@ jobs:
         upload-release-assets: false
 
   merge-manifests:
-    needs: [determine-tier, build-platform]
+    needs: [determine-tier, build-platform, build-platform-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     # Nothing to merge when build-platform didn't push (pre-alpha branches) --
     # the per-arch source tags below were never uploaded to the registry.
-    if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+    # build-platform-arm64 is skipped while ENABLE_ARM64_BUILDS is unset, so
+    # success() would skip this job too -- accept 'skipped' for arm64 explicitly.
+    if: ${{ !cancelled() && needs.build-platform.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.build-platform-arm64.result) && github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -988,10 +1120,14 @@ jobs:
         read -ra TAG_ARGS <<< "$STEPS_TAGS_OUTPUTS_TAGS"
         max_attempts=5
         delay=5
+        SOURCES=("${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-amd64")
+        # arm64 disabled (amd64-first): its per-arch tag only exists when
+        # build-platform-arm64 ran, i.e. repo variable ENABLE_ARM64_BUILDS=true.
+        if [[ "$ENABLE_ARM64_BUILDS" == "true" ]]; then
+          SOURCES+=("${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-arm64")
+        fi
         for attempt in $(seq 1 "$max_attempts"); do
-          if docker buildx imagetools create "${TAG_ARGS[@]}" \
-            "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-amd64" \
-            "${REGISTRY_IMAGE}:${STEPS_TAGS_OUTPUTS_SOURCE_TAG}-arm64"; then
+          if docker buildx imagetools create "${TAG_ARGS[@]}" "${SOURCES[@]}"; then
             echo "imagetools create succeeded on attempt ${attempt}/${max_attempts}"
             exit 0
           fi
@@ -1002,6 +1138,7 @@ jobs:
         echo "::error::imagetools create failed after ${max_attempts} attempts"
         exit 1
       env:
+        ENABLE_ARM64_BUILDS: ${{ vars.ENABLE_ARM64_BUILDS }}
         REGISTRY_IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
         STEPS_TAGS_OUTPUTS_TAGS: ${{ steps.tags.outputs.tags }}
         STEPS_TAGS_OUTPUTS_SOURCE_TAG: ${{ steps.tags.outputs.source_tag }}
@@ -1063,14 +1200,15 @@ jobs:
 
     # provenance/sbom disabled for the same reason as build-platform above --
     # same build-push-action version, same attestation-manifest bug class.
-    - name: Build and push ${{ matrix.target }} (multi-arch)
+    - name: Build and push ${{ matrix.target }}
       id: build
       uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
       with:
         context: ./images/ollama
         file: ./images/ollama/Dockerfile
         target: ${{ matrix.target }}
-        platforms: linux/amd64,linux/arm64
+        # arm64 disabled (amd64-first). Re-enable by setting repo variable ENABLE_ARM64_BUILDS=true.
+        platforms: ${{ vars.ENABLE_ARM64_BUILDS == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
         push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
         provenance: false
         sbom: false
