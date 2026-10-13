@@ -4,7 +4,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
 **Spec:** [`../specs/2026-10-13-teams-subsystem-design.md`](../specs/2026-10-13-teams-subsystem-design.md) §4, §9 (migration step 1).
-**Run tests with:** `.venv/bin/python -m pytest <path> --no-cov -q` (targeted runs skip the coverage addopts; the 90% coverage gate runs in Task 28).
+**Run tests with:** `.venv/bin/python -m pytest <path> --no-cov -q` (targeted runs skip the coverage addopts; the 90% coverage gate runs in Task 32).
 **Prerequisite:** Phase 1a (models exist; the `real_schema_db` fixture exists).
 
 ---

@@ -10,9 +10,9 @@
 
 **Spec:** [`../specs/2026-10-13-teams-subsystem-design.md`](../specs/2026-10-13-teams-subsystem-design.md) (authoritative -- read it alongside this plan).
 
-**Branch:** `feature/teams-subsystem` in a worktree cut from `release/v0.2.X`; the PR targets `release/v0.2.X` (never `main`). Run Python as `.venv/bin/python` (`make venv` per worktree). Targeted test runs use `--no-cov`; the coverage gate is Task 28.
+**Branch:** `feature/teams-subsystem` in a worktree cut from `release/v0.2.X`; the PR targets `release/v0.2.X` (never `main`). Run Python as `.venv/bin/python` (`make venv` per worktree). Targeted test runs use `--no-cov`; the coverage gate is Task 32.
 
-**Verification provenance:** every code block in the phase files was taken from an implementation that was built and run task-by-task in a throwaway scratch worktree (full unit suite `5022 passed, 10 skipped`, total coverage `94.31%`; `ruff check`/`ruff format --check` clean; mypy clean; the Postgres migration test passed against `postgres:17-bookworm`), then discarded. Only these plan files are committed. Where a step says "Expected: N passed", N is what that run produced.
+**Verification provenance:** every code block in the phase files was taken from an implementation that was built and run task-by-task in a throwaway scratch worktree (full unit suite `5068 passed, 10 skipped`, total coverage `94.31%`; `ruff check`/`ruff format --check` clean; mypy clean; the Postgres migration test passed against `postgres:17-bookworm`), then discarded. Only these plan files are committed. Where a step says "Expected: N passed", N is what that run produced.
 
 **Reading the code blocks:** a ```` ```python ```` block under "Create" is the complete new file. A ```` ```diff ```` block is a unified diff against the file as the previous task left it -- apply it by context (hunk line numbers are indicative, not exact). Tasks are ordered so each one's pre-state is the previous task's post-state; Tasks 15 and 16 touch disjoint files and are independent of each other (both follow Task 14).
 
@@ -30,8 +30,8 @@
 - **Feature flag, default OFF = mechanism ON:** teams are a core mechanism, so the flag is the opt-out kill switch `waddleai.disable-teams` (env `WADDLEAI_FLAG_DISABLE_TEAMS`) -- unseen/OFF keeps teams on; the flag layer failing fails open to teams on. Confirmed against the codebase's existing `waddleai.disable-*` switches.
 - **Fail loud, fail closed:** unknown/malformed team roles expand to no permissions; a missing/forged team never grants access; no stubs, no `|| true`, no silent fallbacks. A failing Valkey invalidation is logged (never raised) and the proxy cache TTL bounds the staleness.
 - **No new dependencies.** (Pin rules are unaffected.) **No secrets in logs/spans.**
-- **File size limit: 25,000 characters** per code/markdown file -- every plan file here is under 24k. (`shared/auth/rbac.py` was 22.7k and grows to ~31k; the repo already carries files over the limit, e.g. `models_sqlalchemy.py`, `auth.py`. Splitting `rbac.py` is a recommended follow-up, deliberately not done here because it would churn every import.)
-- **Docs ship with the change** (Task 28). **Auth-capability change: adversarial review is required before any release-branch merge** (spec §12; Task 28 step 6).
+- **File size limit: 25,000 characters** per code/markdown file (`CLAUDE.md`). Every plan file here is under 24k. `shared/auth/rbac.py` (22.7k) would grow to ~31k, so **Task 31 splits it in-plan** into `permissions.py` + `team_rbac.py` (re-exports keep every import working; a test guards the sizes). No file the feature touches *newly* crosses 25k; the files below were **already over** the limit and grow modestly (listed with sizes in Task 31): `models_sqlalchemy.py`, `api/v1/auth.py`, `api/v1/keys.py`, `shared/database/models.py`, `tests/unit/management/conftest.py` (reduced by ~6k in Task 31), `test_rbac_additional.py`, `test_auth_cache.py`. Splitting those legacy files is a separate effort.
+- **Docs ship with the change** (Task 32). **Auth-capability change: adversarial review is required before any release-branch merge** (spec §12; Task 32 step 6).
 - **Commit trailers** on every commit:
   `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` / `Claude-Session: https://claude.ai/code/session_0188NpnJPoTXybsHQLSxDk6S`
 - Tests that guard a reported bug are tagged `# regression: gh-303` (the key path) or named for the Review Focus case they pin.
@@ -48,7 +48,8 @@ The input/failure classes most likely to bite, and the task whose tests pin each
 | 4 | **Cross-team access attempt.** `check_permission` pins team permissions to the caller's own team; `authorize_team` re-reads live membership (a stale token claim never wins); key issuance authorizes before checking the owner's membership (no probing); owner-escalation guards; another tenant's team is a 404. | Task 8, 9, 17, 19, 22-25, 27 |
 | 5 | **Migration on an org with no admin user** (and an org with no users, a key whose owner lives in another org, a DB that already has a Default team with a custom role, a re-run, Postgres-only paths). No owner is ever auto-assigned. | Task 4, 5 |
 | 6 | **Kill switch flipped mid-flight.** Team API 404s; keys act teamless; cached entries clear on expiry/invalidation; keys keep authenticating. | Task 7, 10, 13, 17, 24, 27 |
-| 7 | **Residual (documented, not fixed):** team scopes minted into an already-issued JWT stay valid on the proxy's JWT path until the token expires (<= its TTL). Management re-reads live membership so it is immune; spec §6 only says "consider jti-denylist". | Task 28 step 6 item 5 |
+| 7 | **Orgs/users created after 024 have no team** (migration 024 only seats existing data): new orgs get a Default team, new users join it, the first-boot bootstrap seeds its admin + master key, and key creation requires the owner to be in a team (409) so no new key is teamless. Seating is independent of the kill switch. | Task 28, 29, 30 |
+| 8 | **Residual (documented, not fixed):** team scopes minted into an already-issued JWT stay valid on the proxy's JWT path until the token expires (<= its TTL). Management re-reads live membership so it is immune; spec §6 only says "consider jti-denylist". | Task 32 step 6 item 5 |
 
 ## Spec decisions this plan makes beyond the letter of the spec (review these)
 
@@ -59,10 +60,15 @@ The input/failure classes most likely to bite, and the task whose tests pin each
 5. **Owner rules (spec silent):** only an Owner or the org admin may grant/edit/remove `owner`; a team that has an owner always keeps one; the migration seats no owner (spec §9) so one is designated afterwards.
 6. **Key issuance for a teammate** by a team Admin (spec §5 "team key issuance") needs an explicit `team_id`; the legacy "only admin/resource_manager may create keys for others" rule is otherwise unchanged.
 7. **DSAR manifest** lists `team_members` (Task 26).
+8. **New orgs/users are seated automatically and key creation requires a team** (Tasks 28-30) -- the spec's §9 only seats existing data. Creating a key for a user in no team is a 409; existing teamless keys keep working and are adopted when their owner joins a team. `POST /users` has no `team_id` parameter (move users with the membership API).
+9. **`rbac.py` is split** (Task 31) to honour the 25k limit; behaviour is unchanged and every old import path still works.
+
+## Notes on specific tasks
+
+**Task 18 -- alternative considered (dual-write key mint).** Consolidating on `api_keys` only -- making management create/revoke/rotate/list operate on `api_keys` and dropping `virtual_keys` as a credential table -- would remove the dual-table root cause of #303 and is the cleaner end state, but it touches many more management-plane flows (list/get/update/usage/quotas all read `virtual_keys`). The dual-write + `api_key_id` link bridge was chosen for lower risk and a smaller diff. **Flagged as future cleanup:** retire the duplicated credential columns once the management endpoints are migrated onto `api_keys`.
 
 ## Open items (not planned; decide in review)
 
-- Organizations/users created **after** 024 are not auto-seated in a Default team (spec §9 only covers existing data), so their keys are teamless until an admin adds them.
 - Pre-024 management keys stay in the legacy `wa-{secret}` format and never authenticate at the proxy; rotating one does not upgrade it (Task 20 scope note). A data migration would have to mint `api_keys` rows for them.
 - `api_keys.expires_at` is not enforced on the proxy auth path today (pre-existing); management-minted keys now reach that path.
 - The proxy's `check_permission` Team branch (D9) is implemented and tested, but no proxy pipeline stage passes `resource_team_id` yet -- the quota sub-project is its first caller.
@@ -77,6 +83,8 @@ The input/failure classes most likely to bite, and the task whose tests pin each
 | `mint_token`, `real_db_client` | Task 13 (`tests/unit/management/conftest.py`) | signed JWTs with team context; a Quart client over the real DB |
 | `team_headers`, `redis_spy` | Task 24 (same conftest) | `team_headers("mia")` bearer headers; a recording Valkey stand-in |
 | `shared_valkey` | Task 27 (same conftest) | one fake Valkey seen by both planes |
+
+Task 31 moves `real_db_client`, `team_headers`, `redis_spy`, `shared_valkey` and the autouse mock-DB guard into `tests/unit/management/team_fixtures.py` (re-imported by `conftest.py`, so pytest still registers them); `mint_token` stays in `conftest.py`.
 
 ## Tasks
 
@@ -109,7 +117,11 @@ The input/failure classes most likely to bite, and the task whose tests pin each
 | 25 | Membership + ownership routes | [6d](2026-10-13-teams-subsystem-phase6d-member-routes.md) |
 | 26 | DSAR manifest + regenerate OpenAPI | [7a](2026-10-13-teams-subsystem-phase7a-e2e.md) |
 | 27 | Cross-plane end-to-end tests | [7a](2026-10-13-teams-subsystem-phase7a-e2e.md) |
-| 28 | Docs, release notes, full verification gate, adversarial review, PR | [7b](2026-10-13-teams-subsystem-phase7b-docs-verify.md) |
+| 28 | New organizations (and the bootstrap org) get a Default team | [7b](2026-10-13-teams-subsystem-phase7b-seat-orgs.md) |
+| 29 | New users are seated in the Default team | [7c](2026-10-13-teams-subsystem-phase7c-seat-users-keys.md) |
+| 30 | Key creation requires the owner to be in a team | [7c](2026-10-13-teams-subsystem-phase7c-seat-users-keys.md) |
+| 31 | Split `rbac.py` + move teams fixtures (25k-character limit) | [7d](2026-10-13-teams-subsystem-phase7d-file-size.md) |
+| 32 | Docs, release notes, full verification gate, adversarial review, PR | [7e](2026-10-13-teams-subsystem-phase7e-docs-verify.md) |
 
 ## Spec coverage map
 
@@ -118,9 +130,10 @@ The input/failure classes most likely to bite, and the task whose tests pin each
 | §4 Data model (dual schema) | 1, 2, 3 |
 | §5 Membership and roles | 6, 8, 22, 23 |
 | §6 JWT / claims (`ext`), membership freshness (D7) | 12, 13, 14, 15 |
-| §7 Acting team, `UserContext`/`CachedKeyRecord`, key-path fix (D10) | 10, 11, 16-21 |
+| §7 Acting team, `UserContext`/`CachedKeyRecord`, key-path fix (D10) | 10, 11, 16-21, 30 |
 | §8 Pre-existing issues (#303; both planes enforce) | 8, 9, 18-21 |
-| §9 Migration and compatibility | 3, 4, 5 |
+| §9 Migration and compatibility (existing data: 3-5; data created after the upgrade: 28-30) | 3, 4, 5, 28, 29, 30 |
 | §10 Admin API | 24, 25, 19 (key `team_id`), 26 |
-| §11 Testing (unit, auth, migration, key path, E2E, coverage) | every task; 27, 28 |
-| §12 Adversarial review flags | 14, 20, 28 |
+| §11 Testing (unit, auth, migration, key path, E2E, coverage) | every task; 27, 32 |
+| §12 Adversarial review flags | 14, 20, 32 |
+| CLAUDE.md 25k-character file limit | 31 |
