@@ -1,0 +1,15 @@
+# uv overrides for proxy/requirements.txt (CPU-only PII proxy image).
+#
+# An always-false marker removes the package and everything reachable only
+# through it from the resolved graph. Without this the root direct deps
+# (torch, transformers, sentence-transformers) resolve the CUDA stack:
+# torch -> nvidia-*-cu13, cuda-toolkit, triton (~GBs of GPU libraries).
+#
+# Why it is safe for PII redaction: shared/security/ner_filter.py uses
+# Presidio + spaCy (en_core_web_lg) first. The transformers NER fallback is
+# opt-in (WADDLEAI_NER_ALLOW_DOWNLOAD=1) and never reached in this image.
+# sentence-transformers is only constructed by the Supabase/Qdrant RAG stores,
+# which the proxy does not instantiate (PgvectorRAGStore uses Ollama embeddings).
+torch; sys_platform == "never"
+transformers; sys_platform == "never"
+sentence-transformers; sys_platform == "never"
