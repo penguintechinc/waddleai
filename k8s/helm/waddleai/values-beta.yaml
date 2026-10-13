@@ -19,11 +19,12 @@ management:
     pullPolicy: Always
 
   resources:
+    # Presidio + spaCy en_core_web_lg x2 workers needs ~2.x Gi (OOMKilled at 1Gi).
     requests:
-      memory: "512Mi"
+      memory: "2Gi"
       cpu: "500m"
     limits:
-      memory: "1Gi"
+      memory: "4Gi"
       cpu: "1000m"
 
   env:
@@ -47,12 +48,13 @@ proxy:
     tag: beta-1776182785
     pullPolicy: Always
 
+  # Inherits proxy.workers: 2 from values.yaml; spaCy-lg x2 workers needs ~3Gi (4Gi limit = headroom).
   resources:
     requests:
-      memory: "128Mi"
+      memory: "2Gi"
       cpu: "100m"
     limits:
-      memory: "256Mi"
+      memory: "4Gi"
       cpu: "250m"
 
   env:

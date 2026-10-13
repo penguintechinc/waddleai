@@ -13,14 +13,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # this must be qualified as proxy/requirements.txt -- an unqualified
 # `COPY requirements.txt .` silently resolves to the ROOT requirements.txt
 # instead (both exist at context root), which is missing hypercorn/quart/
-# redis/celery/grpc (proxy/requirements.in's `-r ../requirements.txt` pulls
-# the root file in as a *subset*, then adds proxy-only deps on top -- the two
-# files are not interchangeable). That mismatch let `pip install` succeed
-# and the image build/push green while the container silently couldn't run:
-# `exec: "hypercorn": executable file not found in $PATH` at container start,
-# caught by integration-test's "Start services" step. Mirrors the explicit
-# full-path COPY services/management/Dockerfile already uses for the same
-# repo-root-context reason.
+# redis/celery/grpc. That mismatch let `pip install` succeed and the image
+# build/push green while the container silently couldn't run.
+#
+# proxy/requirements.txt is a CPU-only lock: it is compiled from the root
+# direct deps with the torch/transformers/sentence-transformers trio removed
+# (proxy/requirements-overrides.txt), so no nvidia-*/cuda-*/triton wheels are
+# pulled. PII redaction needs only Presidio + spaCy en_core_web_lg (CPU).
+# Do NOT re-add `-r ../requirements.txt` to proxy/requirements.in -- that
+# re-pins the root lock and brings the CUDA stack back (~GBs).
 COPY proxy/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 

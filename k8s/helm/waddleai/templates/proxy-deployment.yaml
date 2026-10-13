@@ -8,6 +8,10 @@ metadata:
     {{- include "waddleai.labels" . | nindent 4 }}
     app.kubernetes.io/component: proxy
 spec:
+  {{- if .Values.migrations.enabled }}
+  # Must exceed the wait-for-schema-head gate timeout so the gate's own message surfaces.
+  progressDeadlineSeconds: {{ add (int .Values.migrations.waitForHead.timeoutSeconds) 300 }}
+  {{- end }}
   # Omitted entirely when autoscaling is enabled -- see management-deployment.yaml.
   {{- if not .Values.proxy.autoscaling.enabled }}
   replicas: {{ .Values.proxy.replicaCount }}
@@ -59,6 +63,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+        {{- include "waddleai.waitForSchemaHead" . | nindent 8 }}
       containers:
         - name: proxy
           securityContext:

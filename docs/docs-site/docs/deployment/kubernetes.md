@@ -219,15 +219,30 @@ Schema handling is two mechanisms:
 2. **Versioned Alembic migrations** (`services/management/alembic/versions/*.py`) —
    these run automatically as a **Helm hook Job**
    (`templates/migration-job.yaml`, `waddleai-migration`), gated by
-   `migrations.enabled` (default `true`). It's a `pre-install,pre-upgrade` hook at
-   weight `-10` (after the `waddleai-secrets` Secret hook at weight `-20`, so its
-   `DATABASE_URL` secretKeyRef always resolves), and it runs `alembic upgrade head`
-   from the management image's own `/opt/venv/bin/python3 -m alembic` — the image
-   now bundles `alembic.ini` and `alembic/` alongside `app/`
-   (`services/management/Dockerfile:60-61`), so this is no longer a manual,
-   out-of-band step. The Job runs **before** the management Deployment rolls out new
-   pods, so schema and code land together automatically on every
-   `helm install`/`helm upgrade`.
+   `migrations.enabled` (default `true`). It's a `post-install,post-upgrade` hook
+   (Postgres is a plain resource — never a hook, or `helm upgrade` would recreate the
+   database — so the Job must run after it exists; the `waddleai-secrets` Secret is a
+   pre-* hook at weight `-20`, so the `DATABASE_URL` secretKeyRef always resolves). It runs
+   `alembic upgrade head` from the management image's own `/opt/venv/bin/python3 -m alembic`
+   (`services/management/Dockerfile:60-61` bundles `alembic.ini` + `alembic/`).
+   The management and proxy Deployments are created before the Job runs, and both
+   call `create_all` on startup (which `001_baseline` refuses to migrate over), so each
+   has a **`wait-for-schema-head` initContainer** that only *waits* (never migrates)
+   until `alembic_version` is at head — the single hook Job stays the sole migration
+   runner. Timeout: `migrations.waitForHead.timeoutSeconds` (default 900).
+
+   !!! warning "Helm flags and migration compatibility (gamma/prod)"
+       (a) Do **not** use `--wait`, `--atomic` or `--rollback-on-failure` with this chart:
+       the migration is a post-install/post-upgrade hook and the app pods gate on it, which
+       relies on Helm 4's default hookOnly wait — `--wait` deadlocks.
+       (b) Migrations must be **expand/contract (backward-compatible)**: new pods wait for the
+       new schema while old pods keep serving the DB mid-upgrade, and `helm rollback` does
+       NOT revert the schema (the gate starts old pods against a newer DB, logging a warning).
+
+   **Do not pass a bare `helm --wait`**: Helm would wait for Deployment readiness
+   *before* running post-* hooks, deadlocking against the initContainer. Helm 4's
+   default (no flag, hookOnly) still waits for and fails on the migration Job; check
+   readiness afterwards with `kubectl rollout status`.
 
    Watch it:
 
@@ -239,14 +254,14 @@ Schema handling is two mechanisms:
    Disable it (e.g. to run migrations out-of-band yourself) with
    `--set migrations.enabled=false`.
 
-   **On failure**: `backoffLimit: 3` and `activeDeadlineSeconds: 300` bound the Job,
-   but a failing or stuck Job blocks the whole `helm install`/`helm upgrade` — Helm
-   waits on pre-install/pre-upgrade hooks before touching any other resource, so the
-   management/proxy/webui Deployments never roll out until the migration succeeds.
-   Fix DB connectivity (check `kubectl -n waddleai logs job/waddleai-migration` and
-   confirm `DATABASE_URL` resolves and Postgres is reachable), then re-run
-   `helm upgrade` — `hook-delete-policy: before-hook-creation,hook-succeeded` cleans
-   up the failed Job automatically so the retry doesn't hit "already exists".
+   **On failure**: `backoffLimit: 3` and `activeDeadlineSeconds: 300` bound the Job, and
+   a failed Job fails the `helm install`/`helm upgrade` (the app pods stay parked in
+   `Init:` on `wait-for-schema-head`). Fix DB connectivity (check
+   `kubectl -n waddleai logs job/waddleai-migration` and confirm `DATABASE_URL`
+   resolves and Postgres is reachable), then re-run `helm upgrade` —
+   `hook-delete-policy: before-hook-creation` removes the stale Job on retry so it
+   doesn't hit "already exists". The Job is deliberately **not** deleted on success, so
+   its log survives for inspection.
 
 ## Licence activation
 
@@ -403,4 +418,4 @@ check `/readyz` manually.
 | `management` pod shows `Ready` but the app 500s on every DB-backed request | `management.readinessProbe` checks `/healthz`, which returns 200 regardless of DB state (see [Verifying](#verifying)) | Check `/readyz` manually, or `kubectl -n <ns> logs deploy/waddleai-management` for connection errors |
 | `proxy` pod never becomes `Ready` | `proxy.readinessProbe` hits `/readyz`, which returns 503 whenever the database check fails | `kubectl -n <ns> logs deploy/waddleai-proxy`; confirm `DATABASE_URL` (via the `waddleai-secrets` Secret) resolves and Postgres is `Ready` first — the init containers (`wait-for-postgres`, `wait-for-valkey`) block pod start on a raw TCP check, but that doesn't guarantee the DB is accepting the actual configured user/db |
 | Admin login fails right after install | `secrets.adminInitialPassword` wasn't set, so the admin account got an unrecoverable random password | Redeploy with `--set secrets.adminInitialPassword=<your-password>` (see [Required secrets](#required-secrets)); there is no way to recover the auto-generated one |
-| `helm install`/`helm upgrade` hangs, or fails with a hook error referencing `waddleai-migration` | The `waddleai-migration` Job (`migrations.enabled: true`) is `Pending` (can't schedule — e.g. no node capacity) or its `alembic upgrade head` run failed — a pre-install/pre-upgrade hook blocks all other resources until it succeeds | `kubectl -n <ns> get jobs`, `kubectl -n <ns> logs job/waddleai-migration`; fix DB connectivity/scheduling, then re-run `helm upgrade` — the failed Job is cleaned up automatically (`hook-delete-policy: before-hook-creation,hook-succeeded`) |
+| `helm install`/`helm upgrade` hangs, or fails with a hook error referencing `waddleai-migration` | The `waddleai-migration` Job (`migrations.enabled: true`) is `Pending` (can't schedule — e.g. no node capacity) or its `alembic upgrade head` run failed — a failed hook fails the release and app pods wait in `Init:` for the schema | `kubectl -n <ns> get jobs`, `kubectl -n <ns> logs job/waddleai-migration`; fix DB connectivity/scheduling, then re-run `helm upgrade` — the stale Job is cleaned up automatically on retry (`hook-delete-policy: before-hook-creation`) |

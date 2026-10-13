@@ -12,9 +12,9 @@
 #   ./scripts/deploy-alpha.sh [OPTIONS]
 #
 # Options:
-#   --build               Build Docker images and import into MicroK8s (default)
+#   --build               Build Docker images and push to the local registry (default)
 #   --skip-build          Skip Docker build, use existing images
-#   --tag TAG             Image tag to use (default: alpha)
+#   --tag TAG             Image tag to use (default: alpha-latest; must match values-alpha.yaml)
 #   --service SERVICE     Build/deploy specific service only
 #   --dry-run             Show what would be deployed without applying
 #   --rollback            Rollback deployments to previous revision
@@ -49,13 +49,13 @@ readonly HELM_CHART_PATH="${HELM_CHART_PATH:-k8s/helm/waddleai}"
 readonly HELM_VALUES_FILE="${HELM_VALUES_FILE:-k8s/helm/waddleai/values-alpha.yaml}"
 
 # Services with Dockerfiles (customize per repo)
-declare -a SERVICES=("management" "webui")
+declare -a SERVICES=("management" "proxy" "webui")
 
 # Image name prefix (used for docker build tags)
 readonly IMAGE_PREFIX="${APP_NAME}"
 
 # Defaults
-declare TAG="alpha"
+declare TAG="alpha-latest"
 declare SERVICE_FILTER=""
 declare SKIP_BUILD=false
 declare DRY_RUN=false
@@ -103,7 +103,7 @@ check_prerequisites() {
     print_info "Checking prerequisites..."
     local missing=()
 
-    for cmd in kubectl docker microk8s helm; do
+    for cmd in kubectl docker helm; do
         if ! command -v "${cmd}" &>/dev/null; then
             missing+=("${cmd}")
         fi
@@ -145,51 +145,87 @@ check_prerequisites() {
 }
 
 # =============================================================================
-# Docker build and MicroK8s import
+# Docker build and push to the local registry (sudo-free)
 # =============================================================================
+
+# The cluster pulls from the local registry (values-alpha.yaml:
+# global.imageRegistry = localhost:32000), so images are `docker push`ed there
+# instead of imported with `microk8s ctr` (which needs sudo -- never used here).
+readonly LOCAL_REGISTRY="${LOCAL_REGISTRY:-localhost:32000}"
+
+# External postgres image: pgvector build, pinned by digest -- KEEP IN SYNC with
+# k8s/helm/waddleai/values.yaml postgres.image. Mirrored (tag only, no digest) to
+# the local registry as values-alpha.yaml expects.
+readonly PGVECTOR_SRC="pgvector/pgvector:pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d"
+readonly PGVECTOR_DST="${LOCAL_REGISTRY}/pgvector/pgvector:pg17"
+
+# Echo "<build-context>|<dockerfile>" (both relative to PROJECT_ROOT) for a service.
+# management and proxy COPY shared/ and their own tree by repo-root-relative
+# path (same as CI, .github/workflows/docker-build.yml), so their context is the
+# repo root; webui is self-contained and builds from its own directory.
+service_build_spec() {
+    case "$1" in
+        management) echo ".|services/management/Dockerfile" ;;
+        proxy)      echo ".|proxy/Dockerfile" ;;
+        webui)      echo "services/webui|services/webui/Dockerfile" ;;
+        *)          return 1 ;;
+    esac
+}
 
 build_and_import() {
     local service="$1"
     local tag="$2"
-    local service_path="${PROJECT_ROOT}/services/${service}"
+    local spec context dockerfile
 
-    if [[ ! -d "${service_path}" ]]; then
-        print_warning "Service directory not found: services/${service} — skipping"
-        return 0
+    if ! spec="$(service_build_spec "${service}")"; then
+        print_error "No build spec for service '${service}'"
+        return 1
     fi
-
-    # Find Dockerfile (prefer Dockerfile.notests for faster alpha builds)
-    local dockerfile="${service_path}/Dockerfile"
-    if [[ -f "${service_path}/Dockerfile.notests" ]]; then
-        dockerfile="${service_path}/Dockerfile.notests"
-        print_info "Using Dockerfile.notests for ${service} (faster alpha build)"
-    fi
+    context="${PROJECT_ROOT}/${spec%%|*}"
+    dockerfile="${PROJECT_ROOT}/${spec##*|}"
 
     if [[ ! -f "${dockerfile}" ]]; then
-        print_warning "No Dockerfile found for ${service} — skipping"
-        return 0
+        print_error "Dockerfile not found: ${dockerfile}"
+        return 1
     fi
 
     local image_name="${IMAGE_PREFIX}/${service}:${tag}"
+    local registry_image="${LOCAL_REGISTRY}/${image_name}"
 
-    print_info "Building image: ${image_name}"
+    print_info "Building image: ${image_name} (context: ${context}, file: ${dockerfile})"
     if ! docker build \
         --file "${dockerfile}" \
         --tag "${image_name}" \
+        --tag "${registry_image}" \
         --label "environment=alpha" \
         --label "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        "${service_path}"; then
+        "${context}"; then
         print_error "Failed to build ${service}"
         return 1
     fi
 
-    print_info "Importing ${image_name} into MicroK8s..."
-    if ! docker save "${image_name}" | microk8s ctr image import -; then
-        print_error "Failed to import ${image_name} into MicroK8s"
+    print_info "Pushing ${registry_image}..."
+    if ! docker push "${registry_image}"; then
+        print_error "Failed to push ${registry_image} (is the MicroK8s registry addon enabled on ${LOCAL_REGISTRY}?)"
         return 1
     fi
 
-    print_success "Built and imported: ${image_name}"
+    print_success "Built and pushed: ${registry_image}"
+}
+
+# Mirror the pgvector postgres image into the local registry (idempotent).
+mirror_postgres_image() {
+    print_info "Mirroring ${PGVECTOR_SRC} -> ${PGVECTOR_DST}"
+    # pgvector/pgvector is a multi-arch manifest list. Pull+tag+push of the index
+    # produces a local image record that `docker push` cannot resolve to a
+    # platform ("found but does not provide any platform"). Building a one-line
+    # FROM the same pinned digest yields a concrete single-platform image with
+    # real layers that pushes cleanly. The digest pin is preserved.
+    printf 'FROM %s\n' "${PGVECTOR_SRC}" \
+        | docker build --platform linux/amd64 -t "${PGVECTOR_DST}" - \
+        || { print_error "Failed to build ${PGVECTOR_DST} from ${PGVECTOR_SRC}"; return 1; }
+    docker push "${PGVECTOR_DST}" || { print_error "Failed to push ${PGVECTOR_DST}"; return 1; }
+    print_success "Mirrored: ${PGVECTOR_DST}"
 }
 
 # =============================================================================
@@ -204,11 +240,19 @@ do_deploy() {
     print_info "  Values:    ${HELM_VALUES_FILE}"
     print_info "  Host:      ${APP_HOST}"
 
-    # Create namespace if missing
-    if ! kctl get namespace "${NAMESPACE}" &>/dev/null; then
-        print_info "Creating namespace: ${NAMESPACE}"
-        kctl create namespace "${NAMESPACE}"
+    # Subchart tarballs (gpu-operator) are gitignored (*.tgz), but Helm refuses to
+    # render/install while a Chart.yaml dependency is missing from charts/ -- even
+    # when its condition is off. Chart.lock pins the exact versions. Needs network.
+    print_info "Building Helm chart dependencies (Chart.lock pinned)..."
+    if ! helm dependency build "${PROJECT_ROOT}/${HELM_CHART_PATH}" >/dev/null; then
+        print_error "helm dependency build failed (network access to helm.ngc.nvidia.com required)"
+        return 1
     fi
+
+    # Do NOT pre-create the namespace with kubectl: the chart templates its own
+    # Namespace resource (PSA labels), and a kubectl-created one has no Helm
+    # ownership metadata -> "cannot be imported into the current release".
+    # `helm --create-namespace` below owns creation.
 
     # Render/apply the Helm chart
     if [[ "${DRY_RUN}" == "true" ]]; then
@@ -240,13 +284,17 @@ do_deploy() {
 wait_for_rollout() {
     print_info "Waiting for deployments to roll out..."
 
-    # Get all deployments in namespace
+    # A kubectl failure or an empty list is an ERROR, never "nothing to wait for":
+    # a gate that cannot fail is not a gate (critical-rules.md Verification Integrity).
     local deployments
-    deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if ! deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}'); then
+        print_error "Failed to list deployments in namespace ${NAMESPACE}"
+        return 1
+    fi
 
     if [[ -z "${deployments}" ]]; then
-        print_warning "No deployments found in namespace ${NAMESPACE}"
-        return 0
+        print_error "No deployments found in namespace ${NAMESPACE} (0 examined) -- the install did not create any"
+        return 1
     fi
 
     local failed=false
@@ -260,7 +308,10 @@ wait_for_rollout() {
 
     # Also check statefulsets
     local statefulsets
-    statefulsets=$(kctl get statefulsets -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if ! statefulsets=$(kctl get statefulsets -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}'); then
+        print_error "Failed to list statefulsets in namespace ${NAMESPACE}"
+        return 1
+    fi
 
     for sts in ${statefulsets}; do
         print_info "Waiting for statefulset/${sts}..."
@@ -274,7 +325,7 @@ wait_for_rollout() {
         return 1
     fi
 
-    print_success "All workloads rolled out successfully"
+    print_success "All workloads rolled out successfully ($(echo ${deployments} | wc -w | tr -d ' ') deployments checked)"
 }
 
 # =============================================================================
@@ -305,7 +356,10 @@ do_rollback() {
     print_warning "Rolling back deployments in ${NAMESPACE}..."
 
     local deployments
-    deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if ! deployments=$(kctl get deployments -n "${NAMESPACE}" -o jsonpath='{.items[*].metadata.name}'); then
+        print_error "Failed to list deployments in namespace ${NAMESPACE}"
+        return 1
+    fi
 
     if [[ -z "${deployments}" ]]; then
         print_error "No deployments found in namespace ${NAMESPACE}"
@@ -332,9 +386,9 @@ Usage: $(basename "$0") [OPTIONS]
 Deploy ${APP_NAME} to local MicroK8s alpha environment using Helm.
 
 OPTIONS:
-    --build               Build images and import into MicroK8s (default)
+    --build               Build images and push to the local registry (default)
     --skip-build          Skip Docker build, use existing images
-    --tag TAG             Image tag (default: alpha)
+    --tag TAG             Image tag (default: alpha-latest; must match values-alpha.yaml)
     --service SERVICE     Build specific service only (e.g., management)
     --dry-run             Render manifests without applying
     --rollback            Rollback deployments to previous revision
@@ -420,14 +474,15 @@ main() {
 
     # Handle rollback
     if [[ "${DO_ROLLBACK}" == "true" ]]; then
-        do_rollback
-        show_status
-        exit $?
+        local rc=0
+        do_rollback || rc=$?
+        show_status || true
+        exit "${rc}"
     fi
 
     # Build images
     if [[ "${SKIP_BUILD}" != "true" ]]; then
-        print_info "Building and importing Docker images..."
+        print_info "Building and pushing Docker images to ${LOCAL_REGISTRY}..."
         for service in "${SERVICES[@]}"; do
             if [[ -z "${SERVICE_FILTER}" ]] || [[ "${SERVICE_FILTER}" == "${service}" ]]; then
                 build_and_import "${service}" "${TAG}" || {
@@ -436,6 +491,9 @@ main() {
                 }
             fi
         done
+        if [[ -z "${SERVICE_FILTER}" ]]; then
+            mirror_postgres_image || exit 1
+        fi
     else
         print_info "Skipping build (--skip-build)"
     fi
@@ -444,7 +502,11 @@ main() {
     do_deploy || exit 1
 
     if [[ "${DRY_RUN}" != "true" ]]; then
-        wait_for_rollout || print_warning "Some workloads did not roll out cleanly"
+        if ! wait_for_rollout; then
+            show_status || true
+            print_error "Alpha deployment FAILED: workloads did not roll out"
+            exit 1
+        fi
         show_status
         print_success "Alpha deployment complete!"
     else

@@ -1,7 +1,6 @@
 {{/*
 Alembic database migration Job — runs `alembic upgrade head` from the
-management image, once, before the management Deployment rolls out new
-pods. services/management/app/extensions.py's init_extensions() only
+management image, once per release (see Hook ordering below). services/management/app/extensions.py's init_extensions() only
 bootstraps default data (idempotent on every pod start); schema changes
 only ever land via versioned Alembic migrations
 (services/management/alembic/versions/*.py), which per house rule must
@@ -12,19 +11,33 @@ seed rows + pgvector DDL) runs on top in one transaction (gh-215), so a first
 `helm install` needs no manual create_all; it fails loudly (rolled back) if
 pgvector is unavailable.
 
-Hook ordering: templates/secret.yaml is ALSO a pre-install,pre-upgrade hook
-(weight -20) specifically so waddleai-secrets (this Job's DATABASE_URL
-source) is guaranteed to exist before this Job's hook runs — Helm applies
-plain (non-hook) resources only after all pre-install hooks complete, so
-without that, a fresh `helm install` would dangle this Job's secretKeyRef.
-This Job's weight (-10) sorts after the Secret but before the management
-Deployment rollout (a plain resource, applied in the normal
-create/update phase that follows all pre-install/pre-upgrade hooks).
+Hook ordering (post-install,post-upgrade): Postgres is a PLAIN resource and
+must stay one -- never a hook: a hook with before-hook-creation would delete
+and recreate the database on every `helm upgrade` of gamma/prod (in-place
+upgrade, real data). Helm applies plain resources only after all pre-*
+hooks finish, so a pre-install migration hook on an EMPTY namespace waited
+forever for a Postgres that did not exist yet (DeadlineExceeded). As a
+post-* hook this Job runs after Postgres/Valkey/Secret/ServiceAccount exist
+and its wait-for-postgres init container succeeds. It stays a hook (not a
+plain Job) because a Job spec is immutable -- Helm's delete+recreate via
+before-hook-creation is what lets it re-run on every upgrade.
 
-hook-delete-policy includes hook-succeeded (unlike the Secret) — the Job
-itself is disposable once the migration has run; before-hook-creation
-additionally cleans up a stale Job from a previous failed attempt so
-retrying `helm upgrade` doesn't hit "already exists".
+Because the management/proxy Deployments now exist before this Job runs,
+and both call create_all on startup (which gh-215's 001_baseline refuses to
+migrate over), each runs a wait-for-schema-head initContainer
+(_helpers.tpl "waddleai.waitForSchemaHead") that blocks until alembic_version
+is at head. This single Job is the only migration runner. A failed Job still
+fails the release (hook failure is fatal; Helm 4's default hookOnly wait
+covers it) -- do NOT pass a bare `--wait` (see the helper's CAVEAT).
+
+templates/secret.yaml is a pre-install,pre-upgrade hook (weight -20) so
+waddleai-secrets (this Job's DATABASE_URL source) exists regardless of hook
+phase.
+
+hook-delete-policy is before-hook-creation only (NOT hook-succeeded): the
+last run's log must survive for inspection; the next upgrade's
+before-hook-creation deletes the stale Job so re-running never hits
+"already exists".
 */}}
 {{- if .Values.migrations.enabled -}}
 apiVersion: batch/v1
@@ -36,9 +49,9 @@ metadata:
     {{- include "waddleai.labels" . | nindent 4 }}
     app.kubernetes.io/component: management
   annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
-    "helm.sh/hook-weight": "-10"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: {{ .Values.migrations.backoffLimit }}
   activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
@@ -77,6 +90,17 @@ spec:
           image: {{ include "waddleai.management.image" . }}
           imagePullPolicy: {{ .Values.management.image.pullPolicy }}
           workingDir: /app
+          # This pod keeps component=management (the Cilium/Tetragon policies and the
+          # management-runtime reconciler key on that label, so changing it would cut
+          # the Job's Postgres access), which also matches the management Service and
+          # PDB selectors. A never-passing readiness probe keeps it OUT of the Service
+          # endpoints (no blackholed traffic) for the Job's short life. Probe runs the
+          # allowlisted venv python (Tetragon-safe).
+          readinessProbe:
+            exec:
+              command: ["/opt/venv/bin/python3", "-c", "raise SystemExit(1)"]
+            periodSeconds: 10
+            failureThreshold: 1000
           # /app/alembic.ini has script_location = alembic (relative to
           # cwd), so no -c flag is needed as long as workingDir matches the
           # image's WORKDIR (services/management/Dockerfile). Invoked as

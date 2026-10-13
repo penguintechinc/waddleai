@@ -32,12 +32,15 @@ management:
     port: 8001
     targetPort: 8001
 
+  # Presidio loads spaCy en_core_web_lg (NER_SPACY_MODEL, a deliberate
+  # project choice) in EACH hypercorn worker (workers: 2 below) -- observed
+  # OOMKilled at 256Mi and 1Gi, Ready only at 3Gi.
   resources:
     requests:
-      memory: "256Mi"
+      memory: "2Gi"
       cpu: "250m"
     limits:
-      memory: "512Mi"
+      memory: "4Gi"
       cpu: "500m"
 
   # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Stateless behind
@@ -51,8 +54,9 @@ management:
     enabled: true
     minReplicas: 1
     maxReplicas: 4
+    # CPU only: spaCy en_core_web_lg is a high FIXED memory baseline, so a
+    # memory-% target would peg the HPA at max replicas permanently.
     targetCPUUtilizationPercentage: 75
-    targetMemoryUtilizationPercentage: 80
 
   livenessProbe:
     enabled: true
@@ -183,12 +187,15 @@ proxy:
     grpcPort: 50051
     grpcTargetPort: 50051
 
+  # en_core_web_lg (NER_SPACY_MODEL) loads in EACH hypercorn worker at ~1.3-1.5Gi
+  # apiece (proxy OOMKilled at 256Mi x4 workers). Keep limit >= workers x ~1.5Gi;
+  # scale throughput with replicas/HPA, not workers.
   resources:
     requests:
-      memory: "128Mi"
+      memory: "2Gi"
       cpu: "100m"
     limits:
-      memory: "256Mi"
+      memory: "4Gi"
       cpu: "250m"
 
   # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Proxy is the data-plane
@@ -200,8 +207,8 @@ proxy:
     enabled: true
     minReplicas: 1
     maxReplicas: 6
+    # CPU only (fixed spaCy-lg memory baseline; see management.autoscaling).
     targetCPUUtilizationPercentage: 70
-    targetMemoryUtilizationPercentage: 80
 
   livenessProbe:
     enabled: true
@@ -251,7 +258,7 @@ proxy:
   # O9: Hypercorn worker count -- previously hardcoded `--workers 4` in
   # proxy/Dockerfile's CMD. Wired to HYPERCORN_WORKERS, read at container
   # start.
-  workers: 4
+  workers: 2
   # O5-a: Hypercorn's own in-process graceful drain window (stops accepting
   # new connections, waits up to this long for in-flight requests/streams to
   # finish before closing). Wired to HYPERCORN_GRACEFUL_TIMEOUT. Keep
@@ -266,6 +273,9 @@ proxy:
   env:
     LOG_LEVEL: INFO
     HTTP_PORT: "8080"
+    # mem0 creates its cache dir at import time. The proxy runs with
+    # readOnlyRootFilesystem: true, so point it at the writable /tmp emptyDir.
+    MEM0_DIR: "/tmp/.mem0"
     GRPC_PORT: "50051"
     # See management.env above for the same three keys — proxy reads them
     # too (proxy/apps/proxy_server/main.py, shared/security/ner_filter.py).
@@ -382,9 +392,14 @@ postgres:
   enabled: true
   replicaCount: 1
   image:
-    repository: postgres
-    tag: "17-bookworm"
-    digest: "sha256:5530681ea5d3e2ed4ce396f9b5cb443efbac6baf2a8a19c0c0635e40ae7eadce"
+    # pgvector/pgvector = stock postgres + the `vector` extension the Alembic
+    # chain's DDL requires (stock postgres fails: extension "vector" is not
+    # available). pg17 keeps the PG17 major of the previous postgres:17-bookworm
+    # pin, so existing PGDATA volumes stay compatible. Digest is the multi-arch
+    # (amd64+arm64) index digest of pgvector/pgvector:pg17.
+    repository: pgvector/pgvector
+    tag: "pg17"
+    digest: "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d"
     pullPolicy: IfNotPresent
 
   service:
@@ -728,8 +743,9 @@ secrets:
   credentialEncryptionKey: ""
 
 # Alembic database migration Job (templates/migration-job.yaml) — runs
-# `alembic upgrade head` from the management image as a pre-install,
-# pre-upgrade Helm hook, ahead of the management Deployment's own rollout.
+# `alembic upgrade head` from the management image as a post-install,
+# post-upgrade Helm hook (Postgres, a plain resource, must exist first); the
+# management/proxy pods gate on it via a wait-for-schema-head initContainer.
 # On a fresh, EMPTY database the Job builds the full head schema itself
 # (services/management/alembic/versions/001_baseline.py creates the frozen
 # baseline, then the real 002..head chain applies migration DDL + seed rows,
@@ -740,6 +756,12 @@ migrations:
   enabled: true
   activeDeadlineSeconds: 300
   backoffLimit: 3
+  # wait-for-schema-head initContainer on management + proxy (see
+  # _helpers.tpl "waddleai.waitForSchemaHead"): max seconds to block for the
+  # post-install/post-upgrade migration hook before the init container fails
+  # (and kubelet restarts it).
+  waitForHead:
+    timeoutSeconds: 900
   resources:
     requests:
       memory: "256Mi"
@@ -1148,6 +1170,8 @@ tetragon:
         allowedExecs:
           - /usr/local/bin/python3
           - /usr/local/bin/hypercorn
+          # wait-for-schema-head initContainer runs from the management image (venv)
+          - /opt/venv/bin/python3
       # Management — this repo's own image (services/management/Dockerfile),
       # installed into a venv at /opt/venv.
       management:

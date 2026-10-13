@@ -43,9 +43,10 @@ that is never logged and leaves the `admin` account unusable until reset:
 ```bash
 ADMIN_PASSWORD=$(openssl rand -hex 16)
 
-kubectl create namespace waddleai
+# No `kubectl create namespace`: the chart templates its own Namespace; a
+# pre-created one fails with "cannot be imported into the current release".
 helm install waddleai k8s/helm/waddleai \
-  --namespace waddleai \
+  --namespace waddleai --create-namespace \
   --values k8s/helm/waddleai/values-beta.yaml \
   --set secrets.postgresPassword="$(openssl rand -hex 16)" \
   --set secrets.jwtSecret="$(openssl rand -hex 32)" \

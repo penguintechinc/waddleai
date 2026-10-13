@@ -7,6 +7,9 @@ metadata:
   labels:
     {{- include "waddleai.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgres
+  annotations:
+    # helm uninstall must never delete the database volume (gamma/prod data).
+    "helm.sh/resource-policy": keep
 spec:
   accessModes:
     - ReadWriteOnce

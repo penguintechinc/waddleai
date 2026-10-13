@@ -33,6 +33,10 @@ spec:
   endpointSelector: {}
   ingress: []
   egress: []
+{{- /* Kind-level guard: a cluster can serve cilium.io/v2 with only the namespaced
+CiliumNetworkPolicy CRD installed (e.g. local MicroK8s alpha); the group-version
+check above is not enough, and a missing CCNP kind fails the whole install. */}}
+{{- if .Capabilities.APIVersions.Has "cilium.io/v2/CiliumClusterwideNetworkPolicy" }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
@@ -51,6 +55,7 @@ spec:
     - fromEntities:
         - world
         - cluster
+{{- end }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

@@ -3,20 +3,28 @@
 
 environment: alpha
 
+# Alpha pulls from the local MicroK8s registry (scripts/deploy-alpha.sh does a
+# sudo-free `docker push localhost:32000/waddleai/<svc>:alpha-latest`); the
+# base value points at registry-dal2, which alpha never uses.
+global:
+  imageRegistry: localhost:32000
+
 # Management Service - Alpha
 management:
   replicaCount: 1
   image:
     tag: alpha-latest
-    pullPolicy: Never
+    pullPolicy: Always
 
+  # Presidio loads spaCy en_core_web_lg in each of the 2 hypercorn workers
+  # (~2.x Gi total) -- OOMKilled at 256Mi and 1Gi, Ready only at 3Gi.
   resources:
     requests:
-      memory: "128Mi"
+      memory: "2Gi"
       cpu: "100m"
     limits:
-      memory: "256Mi"
-      cpu: "250m"
+      memory: "3Gi"
+      cpu: "500m"
 
   env:
     LOG_LEVEL: DEBUG
@@ -30,17 +38,22 @@ management:
 
 # AIProxy Service - Alpha
 proxy:
+  # Core data plane -- always deployed in a representative alpha release test.
+  enabled: true
   replicaCount: 1
   image:
     tag: alpha-latest
-    pullPolicy: Never
+    pullPolicy: Always
 
+  # 1 hypercorn worker (base default 2): each worker loads spaCy en_core_web_lg
+  # (~1.3-1.5Gi); proxy was OOMKilled at 256Mi with 4 workers.
+  workers: 1
   resources:
     requests:
-      memory: "128Mi"
+      memory: "1536Mi"
       cpu: "100m"
     limits:
-      memory: "256Mi"
+      memory: "3Gi"
       cpu: "250m"
 
   env:
@@ -54,7 +67,7 @@ webui:
   replicaCount: 1
   image:
     tag: alpha-latest
-    pullPolicy: Never
+    pullPolicy: Always
 
   resources:
     requests:
@@ -70,6 +83,14 @@ webui:
 # PostgreSQL - Alpha
 postgres:
   replicaCount: 1
+
+  # Local-registry copy of pgvector/pgvector:pg17 (the deploy step pushes it
+  # there). Local tag, so no digest.
+  image:
+    repository: localhost:32000/pgvector/pgvector
+    tag: pg17
+    digest: ""
+    pullPolicy: IfNotPresent
 
   resources:
     requests:

@@ -1,5 +1,16 @@
 # Proxy Server Specific Requirements
--r ../requirements.txt
+#
+# Inherits the ROOT direct-dependency set (../requirements.in), not the root
+# lock. `-r ../requirements.txt` pinned the whole root lock as direct inputs,
+# which dragged the torch/CUDA closure (torch, nvidia-*, cuda-toolkit, triton,
+# transformers, sentence-transformers) into this CPU-only PII proxy image.
+#
+# Root pins are applied as constraints (`-c requirements.txt`, see the compile
+# command in proxy/requirements.txt) so every shared package resolves to the
+# same version as the root lock. The ML trio is removed from the graph by
+# proxy/requirements-overrides.txt -- the proxy's PII path is Presidio + spaCy
+# (shared/security/ner_filter.py) and needs no torch/transformers.
+-r ../requirements.in
 
 # Quart ASGI Framework (replaces FastAPI)
 quart>=0.19.0
