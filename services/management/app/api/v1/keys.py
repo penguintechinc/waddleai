@@ -15,6 +15,11 @@ from quart_schema import security_scheme, tag, validate_request, validate_respon
 from shared.auth.rbac import Permission
 
 from ...extensions import db
+from ...services.key_minting import (
+    KeyTeamError,
+    mint_proxy_key,
+    resolve_key_team,
+)
 from . import api_v1_bp
 from ._pagination import PageRequest
 from .auth import require_auth
@@ -155,6 +160,8 @@ class CreateKeyRequest:
     budget_limit_monthly: float | None = None
     tpm_limit: int | None = 10000
     rpm_limit: int | None = 60
+    #: Acting team for the key (teams spec D3). Omitted = the key owner's own team, if any.
+    team_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -254,6 +261,7 @@ class CreateKeyResponse:
     key_prefix: str
     expires_at: str | None
     message: str
+    team_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -441,20 +449,40 @@ async def create_key(data: CreateKeyRequest):
     target_user_id = data.user_id if data.user_id is not None else user_id
     target_org_id = data.organization_id if data.organization_id is not None else org_id
 
-    # Permission check
+    # Permission check. A plain user may also issue a key for a teammate, but only by naming the
+    # team explicitly in their own tenant -- ``resolve_key_team`` below then demands a live
+    # ``team:key_admin`` membership in that team (teams spec §5: Admin = team key issuance).
     if target_user_id != user_id or target_org_id != org_id:
-        if user_role not in ["admin", "resource_manager"]:
+        team_issuance = data.team_id is not None and target_org_id == org_id
+        if user_role not in ["admin", "resource_manager"] and not team_issuance:
             return jsonify({"error": "Cannot create keys for other users"}), 403
         if user_role == "resource_manager" and target_org_id != org_id:
             return jsonify({"error": "Cannot create keys for other organizations"}), 403
+
+    # Acting team the key will act in (teams spec D3): validated against what THIS caller may
+    # issue, never trusted from the body. Resolved BEFORE the target-user lookup below so an
+    # unauthorized caller gets the same 403 whether or not the target exists (no id probing).
+    try:
+        team_id = await asyncio.to_thread(
+            resolve_key_team,
+            _db(),
+            org_id=target_org_id,
+            target_user_id=target_user_id,
+            requested_team_id=data.team_id,
+            caller_user_id=user_id,
+            caller_scopes=set(g.user.get("scope") or []),
+        )
+    except KeyTeamError as exc:
+        return jsonify({"error": exc.message}), exc.status
 
     # Vuln A fix: when creating a key for ANOTHER user, validate the target
     # exists, belongs to target_org_id, and has a role no higher than the
     # caller's. Creating a key for oneself needs no such lookup (the caller is
     # authenticated and clearly exists).
+    target_row: Any = None
     if target_user_id != user_id:
 
-        def _validate_target_user() -> tuple[object, int]:
+        def _validate_target_user() -> tuple[Any, int]:
             """Fetch target user and validate org membership + role hierarchy."""
             database = _db()
             target = database(database.users.id == target_user_id).select().first()
@@ -467,49 +495,44 @@ async def create_key(data: CreateKeyRequest):
                 return None, 403
             return target, 200
 
-        _, status_code = await asyncio.to_thread(_validate_target_user)
+        target_row, status_code = await asyncio.to_thread(_validate_target_user)
         if status_code == 404:
             return jsonify({"error": "Target user not found"}), 404
         if status_code != 200:
             return jsonify({"error": "Cannot create key for target user"}), 403
 
-    # Generate API key
-    key_secret = secrets.token_urlsafe(32)
-    api_key = f"wa-{key_secret}"
-    key_prefix = f"wa-{key_secret[:8]}..."
+    owner_role = user_role if target_user_id == user_id else target_row.role
 
     # Default expiration (1 year)
     expires_days = data.expires_days
     expires_at = datetime.utcnow() + timedelta(days=expires_days) if expires_days else None
 
-    def _insert():
-        new_key_id = db.virtual_keys.insert(
-            user_id=target_user_id,
-            organization_id=target_org_id,
-            name=data.name,
-            key_prefix=key_prefix,
-            key_hash=bcrypt.hash(api_key),
-            allowed_models=data.allowed_models,
-            allowed_providers=data.allowed_providers,
-            budget_limit_daily=data.budget_limit_daily,
-            budget_limit_monthly=data.budget_limit_monthly,
-            tpm_limit=data.tpm_limit,
-            rpm_limit=data.rpm_limit,
-            enabled=True,
-            expires_at=expires_at,
-            created_at=datetime.utcnow(),
-        )
-        db.commit()
-        return new_key_id
-
-    key_id = await asyncio.to_thread(_insert)
+    # Mint ``wa-{key_id}-{secret}`` into api_keys (what the proxy authenticates, carrying the
+    # team) AND virtual_keys (limits/metadata), linked -- closes #303.
+    minted = await asyncio.to_thread(
+        mint_proxy_key,
+        _db(),
+        user_id=target_user_id,
+        org_id=target_org_id,
+        name=data.name,
+        owner_role=owner_role,
+        team_id=team_id,
+        expires_at=expires_at,
+        allowed_models=data.allowed_models,
+        allowed_providers=data.allowed_providers,
+        budget_limit_daily=data.budget_limit_daily,
+        budget_limit_monthly=data.budget_limit_monthly,
+        tpm_limit=data.tpm_limit,
+        rpm_limit=data.rpm_limit,
+    )
 
     return {
-        "id": key_id,
+        "id": minted.virtual_key_id,
         "name": data.name,
-        "api_key": api_key,
-        "key_prefix": key_prefix,
+        "api_key": minted.api_key,
+        "key_prefix": minted.key_prefix,
         "expires_at": expires_at.isoformat() if expires_at else None,
+        "team_id": team_id,
         "message": "Key created successfully. Save the api_key - it will not be shown again.",
     }, 201
 

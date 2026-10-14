@@ -5198,6 +5198,12 @@ paths:
                   - type: 'null'
                   default: 60
                   title: Rpm Limit
+                team_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Team Id
                 tpm_limit:
                   anyOf:
                   - type: integer
@@ -5246,6 +5252,12 @@ paths:
                   name:
                     title: Name
                     type: string
+                  team_id:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    default: null
+                    title: Team Id
                 required:
                 - id
                 - name

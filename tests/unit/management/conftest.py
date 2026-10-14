@@ -833,6 +833,9 @@ def _teamless_tokens_for_mock_db_tests(request, monkeypatch):
         "services.management.app.api.v1.auth._acting_team",
         AsyncMock(return_value=(None, None)),
     )
+    monkeypatch.setattr(
+        "services.management.app.api.v1.keys.resolve_key_team", lambda *a, **kw: None
+    )
 
 
 #: Route modules whose module-level ``db`` the real-database fixture below repoints.
