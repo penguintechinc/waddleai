@@ -827,10 +827,19 @@ def _teamless_tokens_for_mock_db_tests(request, monkeypatch):
 
     Those tests wire ONE canned row to every ``db(...).select().first()`` call, so the new
     live team lookup in ``auth._acting_team`` would read that row as a ``team_members`` row.
-    Tests that opt in to a real database (the ``team_world`` fixture) keep the real lookup.
+    Tests that opt in to a real database (``team_world`` / ``real_schema_db``) keep the real
+    behaviour. The same canned rows would also confuse the Default-team seeding, so the
+    org-create route and the bootstrap seed are stubbed out here too.
     """
-    if "team_world" in request.fixturenames:
+    if {"team_world", "real_schema_db"} & set(request.fixturenames):
         return
+    monkeypatch.setattr(
+        "services.management.app.api.v1.organizations.ensure_default_team", lambda *a, **kw: 1
+    )
+    monkeypatch.setattr(
+        "services.management.app.services.teams.ensure_default_team", lambda *a, **kw: 1
+    )
+    monkeypatch.setattr("services.management.app.services.teams.seat_new_user", lambda *a, **kw: 1)
     monkeypatch.setattr(
         "services.management.app.api.v1.auth._acting_team",
         AsyncMock(return_value=(None, None)),

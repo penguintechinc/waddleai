@@ -252,6 +252,11 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
             raise RuntimeError("default organization vanished between select and first()")
         org_id = existing_org.id
 
+    # Every organization has a Default team; the admin and the master key join it below.
+    from .services.teams import ensure_default_team, seat_new_user
+
+    default_team_id = ensure_default_team(db, org_id)
+
     # Create admin user if doesn't exist
     if not db(db.users.username == "admin").select():
         admin_id = db.users.insert(
@@ -265,6 +270,8 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
             enabled=True,
             created_at=datetime.utcnow(),
         )
+
+        seat_new_user(db, admin_id, org_id, "admin")
 
         # Create the admin master key. audit-2026-09-23 M3: the O(1) API-key
         # lookups now resolve a key from the value itself, so the value MUST
@@ -306,6 +313,7 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
             name="Admin Master Key",
             api_access_level="admin_api",
             permissions={"*": True},
+            team_id=default_team_id,
         )
 
         logger.info("Created admin user, API key, and virtual key")

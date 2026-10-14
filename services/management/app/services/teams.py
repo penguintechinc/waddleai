@@ -22,10 +22,14 @@ from typing import Any
 from penguin_dal.db import DB
 from sqlalchemy.exc import IntegrityError
 
-from shared.auth.rbac import TeamRole
+from shared.auth.rbac import ROLE_PERMISSIONS, Permission, Role, TeamRole
 
 _ROLES = frozenset(r.value for r in TeamRole)
 _MAX_NAME = 255
+
+#: Name of the team every organization gets (migration 024 seeds it for existing orgs;
+#: the org-create route and the bootstrap seed it for new ones).
+DEFAULT_TEAM_NAME = "Default"
 
 
 class TeamError(Exception):
@@ -134,6 +138,56 @@ def delete_team(database: DB, team: Any) -> list[int]:
     database(database.teams.id == team.id).delete()
     database.commit()
     return stale
+
+
+def ensure_default_team(database: DB, org_id: int) -> int:
+    """Return the id of ``org_id``'s Default team, creating it if absent (idempotent).
+
+    Used for organizations created after migration 024. A concurrent creator that wins the
+    ``UNIQUE(organization_id, name)`` race is handled by re-reading instead of failing.
+    """
+    query = (database.teams.organization_id == org_id) & (database.teams.name == DEFAULT_TEAM_NAME)
+    existing = database(query).select().first()
+    if existing is not None:
+        return int(existing.id)
+    try:
+        return create_team(database, org_id, DEFAULT_TEAM_NAME)
+    except TeamError:
+        raced = database(query).select().first()
+        if raced is None:
+            raise
+        return int(raced.id)
+
+
+def default_team_role(org_role: str) -> str:
+    """Team role a newly seated user gets: ``admin`` for org-admin-scope holders, else ``member``.
+
+    The same rule migration 024 applies to existing users; never ``owner`` (an org admin
+    designates one explicitly). An unrecognized org role is a plain member.
+    """
+    try:
+        role = Role(org_role)
+    except ValueError:
+        return "member"
+    return "admin" if Permission.ORG_ADMIN_UPDATE in ROLE_PERMISSIONS[role] else "member"
+
+
+def seat_new_user(database: DB, user_id: int, org_id: int, org_role: str) -> int:
+    """Seat a just-created user in their organization's Default team; return the team id.
+
+    A brand-new user has no membership and no keys, so this skips ``add_member``'s
+    validation and adoption steps and inserts the membership directly.
+    """
+    team_id = ensure_default_team(database, org_id)
+    database.team_members.insert(
+        team_id=team_id,
+        user_id=user_id,
+        organization_id=org_id,
+        team_role=default_team_role(org_role),
+        created_at=datetime.utcnow(),
+    )
+    database.commit()
+    return team_id
 
 
 def add_member(
