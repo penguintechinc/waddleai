@@ -161,3 +161,31 @@ def test_rotation_keeps_the_key_id_and_swaps_the_secret_on_both_rows(team_world)
     assert rbac.authenticate_api_key(new_key).user_id == w.u["mia"]
     with pytest.raises(AuthenticationError):
         rbac.authenticate_api_key(minted.api_key)
+
+
+def test_mint_and_rotate_log_paths_never_emit_the_secret(team_world, caplog) -> None:
+    """Mint, rotate and the dangling-link error paths must not log the credential or secret."""
+    # regression: codeql-clear-text-logging
+    import logging
+
+    w = team_world
+    with caplog.at_level(logging.DEBUG):
+        minted = _mint(w)
+        vk = w.db.virtual_keys[minted.virtual_key_id]
+        rotated = mint_rotated_credential(w.db, vk)
+        assert rotated is not None
+        w.db(w.db.api_keys.id == vk.api_key_id).delete()
+        w.db.commit()
+        assert mint_rotated_credential(w.db, vk) is None
+        assert sync_linked_proxy_key(w.db, vk, enabled=False) is None
+
+    assert any("links to missing proxy-credential row" in r.getMessage() for r in caplog.records)
+    leaked = [
+        minted.api_key,
+        rotated[0],
+        minted.api_key.rsplit("-", 1)[1],
+        rotated[0].rsplit("-", 1)[1],
+    ]
+    for rec in caplog.records:
+        text = rec.getMessage() + str(rec.exc_text or "") + str(rec.args)
+        assert not any(sec in text for sec in leaked)
