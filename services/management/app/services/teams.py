@@ -73,6 +73,14 @@ def member_user_ids(database: DB, team_id: int) -> list[int]:
     return [int(r.user_id) for r in rows]
 
 
+def _owner_ids(database: DB, team_id: int) -> list[int]:
+    """Return the user ids currently holding ``owner`` in ``team_id``."""
+    rows = database(
+        (database.team_members.team_id == team_id) & (database.team_members.team_role == "owner")
+    ).select()
+    return [int(r.user_id) for r in rows]
+
+
 def _name_taken(database: DB, org_id: int, name: str, exclude_id: int | None = None) -> bool:
     """True if another team in ``org_id`` already uses ``name``."""
     query = (database.teams.organization_id == org_id) & (database.teams.name == name)
@@ -181,3 +189,56 @@ def add_member(
     ).update(team_id=team.id)
     database.commit()
     return [user_id]
+
+
+def set_member_role(
+    database: DB, team: Any, user_id: int, new_role: object, *, can_manage_owner: bool
+) -> list[int]:
+    """Change a member's role; ``owner`` is granted/edited only by an owner-capable actor."""
+    if not isinstance(new_role, str) or new_role not in _ROLES:
+        raise TeamError(f"team_role must be one of {sorted(_ROLES)}", 400)
+    member = get_member(database, team.id, user_id)
+    if member is None:
+        raise TeamError("User is not a member of this team", 404)
+    touches_owner = new_role == "owner" or member.team_role == "owner"
+    if touches_owner and not can_manage_owner:
+        raise TeamError("Only a team owner or organization admin may grant or change owner", 403)
+    last_owner = len(_owner_ids(database, team.id)) <= 1
+    if member.team_role == "owner" and new_role != "owner" and last_owner:
+        raise TeamError("A team must keep an owner; transfer ownership instead", 409)
+    database(database.team_members.id == member.id).update(team_role=new_role)
+    database.commit()
+    return [user_id]
+
+
+def remove_member(database: DB, team: Any, user_id: int, *, can_manage_owner: bool) -> list[int]:
+    """Remove a member and unbind the keys they had bound to this team."""
+    member = get_member(database, team.id, user_id)
+    if member is None:
+        raise TeamError("User is not a member of this team", 404)
+    if member.team_role == "owner":
+        if not can_manage_owner:
+            raise TeamError("Only a team owner or organization admin may remove an owner", 403)
+        if len(_owner_ids(database, team.id)) <= 1:
+            raise TeamError("A team must keep an owner; transfer ownership instead", 409)
+    database(
+        (database.api_keys.user_id == user_id) & (database.api_keys.team_id == team.id)
+    ).update(team_id=None)
+    database(database.team_members.id == member.id).delete()
+    database.commit()
+    return [user_id]
+
+
+def transfer_ownership(database: DB, team: Any, new_owner_id: int) -> list[int]:
+    """Make ``new_owner_id`` the sole owner; every previous owner becomes admin."""
+    member = get_member(database, team.id, new_owner_id)
+    if member is None:
+        raise TeamError("New owner must already be a member of this team", 404)
+    previous = [u for u in _owner_ids(database, team.id) if u != new_owner_id]
+    for user_id in previous:
+        database(
+            (database.team_members.team_id == team.id) & (database.team_members.user_id == user_id)
+        ).update(team_role="admin")
+    database(database.team_members.id == member.id).update(team_role="owner")
+    database.commit()
+    return [new_owner_id, *previous]
