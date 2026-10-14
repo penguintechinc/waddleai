@@ -256,9 +256,18 @@ def _mock_rbac(key_record=None, user=None, found=None) -> MagicMock:
     rbac = MagicMock()
     rbac.fetch_key_and_user.return_value = found
     rbac.touch_api_key_last_used.return_value = None
+    rbac.resolve_key_team.return_value = (None, None)  # teamless key: no team_members lookup
 
     def _build_user_context(
-        *, user_id, username, role, organization_id, managed_orgs, api_key_id=None
+        *,
+        user_id,
+        username,
+        role,
+        organization_id,
+        managed_orgs,
+        api_key_id=None,
+        team_id=None,
+        team_role=None,
     ):
         from shared.auth.rbac import ROLE_PERMISSIONS, UserContext
 

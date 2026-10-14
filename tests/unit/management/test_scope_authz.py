@@ -117,10 +117,14 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.ROUTING_POLICY_DELETE.value,
     Permission.SECURITY_POLICY_ADMIN.value,
     Permission.MODEL_ACCESS_POLICY_DELETE.value,
+    # Not a require_role migration: the teams subsystem's org-layer scope (POST /teams).
+    # Team-layer routes authorize via ``_team_authz.authorize_team`` on live membership
+    # instead, so they carry no ``_required_scopes`` -- ``test_teams_routes.py`` enumerates them.
+    Permission.TEAM_ORG_ADMIN.value,
 }
 
-_EXPECTED_ROUTE_COUNT = 113  # audited require_role call sites, both migration waves,
-#   +3 net-new (not a require_role migration):
+_EXPECTED_ROUTE_COUNT = 114  # audited require_role call sites, both migration waves,
+#   +4 net-new (not a require_role migration; +1 teams: POST /teams -> TEAM_ORG_ADMIN):
 #   94 from the original OIDC migration, +16 from branches cut before it landed
 #   (6 fleet, 9 hook_rules, 1 hook_metrics), +3 from the model-access-policy
 #   CRUD blueprint (POST/PUT -> MODEL_ACCESS_POLICY_WRITE, DELETE ->

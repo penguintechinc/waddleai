@@ -48,6 +48,7 @@ nav:
     - Examples: api/examples.md
   - Administration:
     - User Management: administration/user-management.md
+    - Teams: administration/teams.md
     - AI Security Recommendations: administration/ai-security-recommendations.md
   - Operations:
     - Monitoring: operations/MONITORING.md

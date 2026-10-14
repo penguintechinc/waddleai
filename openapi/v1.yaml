@@ -1712,6 +1712,27 @@ components:
       - timestamp
       title: McpEndpointActionMeta
       type: object
+    MemberItem:
+      description: 'A membership: the user id (never a name or email) and their team
+        role.'
+      properties:
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        team_role:
+          title: Team Role
+          type: string
+        user_id:
+          title: User Id
+          type: integer
+      required:
+      - user_id
+      - team_role
+      - created_at
+      title: MemberItem
+      type: object
     ModelUsage:
       description: Per-model aggregate.
       properties:
@@ -2807,6 +2828,35 @@ components:
       - route_synced
       - route_id
       title: SyncModelStatus
+      type: object
+    TeamItem:
+      description: A team as returned by the API -- exactly these fields, never the
+        raw row.
+      properties:
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        enabled:
+          title: Enabled
+          type: boolean
+        id:
+          title: Id
+          type: integer
+        name:
+          title: Name
+          type: string
+        organization_id:
+          title: Organization Id
+          type: integer
+      required:
+      - id
+      - organization_id
+      - name
+      - enabled
+      - created_at
+      title: TeamItem
       type: object
     TimestampMeta:
       description: '`meta` for an update response (timestamp only).'
@@ -5198,6 +5248,12 @@ paths:
                   - type: 'null'
                   default: 60
                   title: Rpm Limit
+                team_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Team Id
                 tpm_limit:
                   anyOf:
                   - type: integer
@@ -5246,6 +5302,12 @@ paths:
                   name:
                     title: Name
                     type: string
+                  team_id:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    default: null
+                    title: Team Id
                 required:
                 - id
                 - name
@@ -11123,6 +11185,425 @@ paths:
                 type: object
           description: Response body for POST /api/v1/system/signing-key/rotate.
       summary: Rotate the OIDC signing keystore's active key (admin only).
+  /api/v1/teams:
+    get:
+      description: ''
+      operationId: get_list_teams
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/teams.
+                properties:
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+                  teams:
+                    items:
+                      $ref: '#/components/schemas/TeamItem'
+                    title: Teams
+                    type: array
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - teams
+                - total
+                - pagination
+                title: TeamListResponse
+                type: object
+          description: Response body for GET /api/v1/teams.
+      security:
+      - bearerAuth: []
+      summary: 'List the caller''s tenant''s teams: all of them for an org admin,
+        else only their own.'
+      tags:
+      - Teams
+    post:
+      description: ''
+      operationId: post_create_team
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /api/v1/teams (tenant comes from
+                the token, never the body).
+              properties:
+                name:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Name
+              title: CreateTeamRequest
+              type: object
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /api/v1/teams.
+                properties:
+                  id:
+                    title: Id
+                    type: integer
+                  message:
+                    title: Message
+                    type: string
+                  name:
+                    title: Name
+                    type: string
+                required:
+                - id
+                - name
+                - message
+                title: CreateTeamResponse
+                type: object
+          description: Response body for POST /api/v1/teams.
+      security:
+      - bearerAuth: []
+      summary: Create a team in the caller's own organization (org-admin scope).
+      tags:
+      - Teams
+  /api/v1/teams/{team_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_team
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Delete a team (team Owner or org admin); its members' keys become teamless.
+      tags:
+      - Teams
+    get:
+      description: ''
+      operationId: get_get_team
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/teams/<team_id>.
+                properties:
+                  member_count:
+                    title: Member Count
+                    type: integer
+                  team:
+                    $ref: '#/components/schemas/TeamItem'
+                  your_team_role:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Your Team Role
+                required:
+                - team
+                - member_count
+                - your_team_role
+                title: TeamDetailResponse
+                type: object
+          description: Response body for GET /api/v1/teams/<team_id>.
+      security:
+      - bearerAuth: []
+      summary: Get one team (any member, including Viewer, or the org admin).
+      tags:
+      - Teams
+    put:
+      description: ''
+      operationId: put_update_team
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /api/v1/teams/<team_id>. Partial update.
+              properties:
+                enabled:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+                  title: Enabled
+                name:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Name
+              title: UpdateTeamRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Rename or enable/disable a team (team Admin+ or org admin).
+      tags:
+      - Teams
+  /api/v1/teams/{team_id}/members:
+    get:
+      description: ''
+      operationId: get_list_members
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/teams/<team_id>/members.
+                properties:
+                  members:
+                    items:
+                      $ref: '#/components/schemas/MemberItem'
+                    title: Members
+                    type: array
+                  team_id:
+                    title: Team Id
+                    type: integer
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - team_id
+                - members
+                - total
+                title: MemberListResponse
+                type: object
+          description: Response body for GET /api/v1/teams/<team_id>/members.
+      security:
+      - bearerAuth: []
+      summary: 'List a team''s members (any member or the org admin): user ids and
+        roles only.'
+      tags:
+      - Teams
+    post:
+      description: ''
+      operationId: post_add_team_member
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /api/v1/teams/<team_id>/members.
+              properties:
+                team_role:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: member
+                  title: Team Role
+                user_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: User Id
+              title: AddMemberRequest
+              type: object
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Add a user to the team (team Admin+ or org admin); 409 if they already
+        have a team here.
+      tags:
+      - Teams
+  /api/v1/teams/{team_id}/members/{user_id}:
+    delete:
+      description: ''
+      operationId: delete_remove_team_member
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Remove a member (team Admin+ or org admin; removing an owner needs
+        an owner).
+      tags:
+      - Teams
+    put:
+      description: ''
+      operationId: put_set_member_role
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /api/v1/teams/<team_id>/members/<user_id>.
+              properties:
+                team_role:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Team Role
+              title: SetMemberRoleRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Change a member's team role (team Admin+ or org admin; owner changes
+        need an owner).
+      tags:
+      - Teams
+  /api/v1/teams/{team_id}/transfer-ownership:
+    post:
+      description: ''
+      operationId: post_transfer_team_ownership
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /api/v1/teams/<team_id>/transfer-ownership.
+              properties:
+                new_owner_user_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: New Owner User Id
+              title: TransferOwnershipRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Make an existing member the sole owner (team Owner or org admin).
+      tags:
+      - Teams
   /api/v1/usage/by-key:
     get:
       description: ''

@@ -16,7 +16,15 @@ import jwt as _jwt
 import pytest
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
-from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
+from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext, expand_team_permissions
+from tests.unit.management.team_fixtures import (  # noqa: F401 -- registers fixtures
+    SharedValkey,
+    _teamless_tokens_for_mock_db_tests,
+    real_db_client,
+    redis_spy,
+    shared_valkey,
+    team_headers,
+)
 
 # Ensure management service is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../services/management"))
@@ -342,6 +350,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.hook_metrics",
     "services.management.app.api.v1.fleet",
     "services.management.app.api.v1.proxy_keys",
+    "services.management.app.api.v1.teams",
 ]
 
 
@@ -442,8 +451,14 @@ def make_token(
     username: str = "testuser",
     secret: str = TEST_ONLY_JWT_SECRET,  # unused, kept for call-site compat
     expires_hours: int = 1,
+    team_id: int | None = None,
+    team_role: str | None = None,
 ) -> str:
-    """Encode a JWT via penguin-aaa (RS256), or a raw expired token when expires_hours<=0."""
+    """Encode a JWT via penguin-aaa (RS256), or a raw expired token when expires_hours<=0.
+
+    ``team_id``/``team_role`` mint the teams-subsystem acting-team context into ``ext`` and
+    union the team role's scopes into the token, exactly as a real login would.
+    """
     from datetime import UTC
 
     provider = _test_oidc_provider()
@@ -470,7 +485,7 @@ def make_token(
     # UserContext.permissions is `set[Permission]`; downstream
     # user_context_to_claims() extracts `.value` from each member itself, so
     # pass the enums through unconverted rather than pre-stringifying here.
-    permissions = ROLE_PERMISSIONS.get(role_enum, set())
+    permissions = set(ROLE_PERMISSIONS.get(role_enum, set())) | expand_team_permissions(team_role)
     user_context = UserContext(
         user_id=user_id,
         username=username,
@@ -478,8 +493,20 @@ def make_token(
         organization_id=org_id,
         managed_orgs=[],
         permissions=permissions,
+        team_id=team_id,
+        team_role=team_role,
     )
     return issue_token(user_context, provider)
+
+
+@pytest.fixture
+def mint_token():
+    """Factory fixture: ``mint_token(role=, user_id=, org_id=, team_id=, team_role=)``.
+
+    A fixture (not an import of ``make_token``) so the token is signed by the same cached OIDC
+    keypair ``flask_app`` patched into the app -- see ``rm_org2_auth_headers`` for why.
+    """
+    return make_token
 
 
 @pytest.fixture
@@ -644,6 +671,7 @@ def make_mock_key(
     key.expires_at = None
     key.last_used = None
     key.created_at = datetime(2025, 1, 1, 12, 0, 0)
+    key.api_key_id = None  # legacy virtual key: no linked proxy credential to sync
     return key
 
 

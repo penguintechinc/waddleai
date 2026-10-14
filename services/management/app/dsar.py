@@ -122,6 +122,12 @@ def data_holding_manifest() -> list[dict[str, Any]]:
             "reference": "primary identity row (subject of this export/erasure)",
         },
         {
+            "table": "team_members",
+            "description": "The user's team membership and team role (ids only, no personal data).",
+            "contains_pii": False,
+            "reference": "team_members.user_id -> users.id",
+        },
+        {
             "table": "api_keys",
             "description": "API credentials issued to the user; keys are stored hashed.",
             "contains_pii": False,

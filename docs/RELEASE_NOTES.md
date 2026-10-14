@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added — Teams subsystem (design: `docs/superpowers/specs/2026-10-13-teams-subsystem-design.md`)
+
+Teams are a first-class scope tier between organization and user. Migration `024_teams` adds
+`teams`, `team_members` (one team per user per organization), `api_keys.team_id` and
+`virtual_keys.api_key_id`, and seats every existing user in a per-org **Default** team. New
+team roles (Owner/Admin/Member/Viewer) expand to `team:*` scopes; `UserContext` and the proxy
+auth cache carry `team_id`/`team_role` (JWT `ext.team_id`/`ext.team_role`); the team API lives at
+`/api/v1/teams`. Kill switch: `waddleai.disable-teams`. New organizations get a Default team and new
+users join it automatically; creating a key for a user in no team is a 409. See
+`administration/teams.md` in the docs site. Team membership is covered by DSAR export/erasure.
+
+### Fixed — management keys now authenticate at the proxy (gh-303)
+
+`POST /api/v1/keys` minted `wa-{secret}` into `virtual_keys` only, a credential the proxy can
+never authenticate. It now mints `wa-{key_id}-{secret}` into `api_keys` (with `team_id`) and
+`virtual_keys`, linked; revoke, disable and rotate reach the proxy credential and its auth cache.
+Also fixed: the proxy's auth cache answered from its process-local copy after Valkey had been
+invalidated, so a revoked key or changed membership stayed live for up to the cache TTL.
+Keys created before this change keep the legacy format and still do not authenticate at the proxy.
+
 ### Security — penguincode `make test-security` un-masked and made to pass legitimately — 2026-10-10
 
 `services/penguincode/Makefile`'s `test-security` had every scanner piped through

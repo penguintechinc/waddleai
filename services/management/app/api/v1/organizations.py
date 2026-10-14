@@ -12,6 +12,7 @@ from shared.auth.rbac import Permission
 
 from ...extensions import db
 from ...services.cilium_policy import CiliumPolicyReconciler
+from ...services.teams import ensure_default_team
 from . import api_v1_bp
 from ._pagination import PageRequest
 from .auth import require_auth, require_scope
@@ -315,6 +316,9 @@ async def create_organization(data: CreateOrgRequest):
             created_at=datetime.utcnow(),
         )
         database.commit()
+        # Every organization gets a Default team (teams spec: migration 024 only seats
+        # data that exists at upgrade time; new orgs need theirs created here).
+        ensure_default_team(database, new_org_id)
         return new_org_id
 
     org_id = await asyncio.to_thread(_insert)

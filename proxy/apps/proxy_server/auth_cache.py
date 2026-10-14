@@ -147,6 +147,10 @@ class CachedKeyRecord:
     organization_id: int
     managed_orgs: list[int]
     user_enabled: bool
+    #: Resolved acting team (teams spec D3) at cache-fill time; ``None`` = teamless. Defaults
+    #: keep entries written by pre-teams replicas readable during a rolling deploy.
+    team_id: int | None = None
+    team_role: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for ``json.dumps``."""
@@ -164,6 +168,8 @@ class CachedKeyRecord:
             organization_id=payload["organization_id"],
             managed_orgs=list(payload.get("managed_orgs") or []),
             user_enabled=bool(payload.get("user_enabled", True)),
+            team_id=payload.get("team_id"),
+            team_role=payload.get("team_role"),
         )
 
 
@@ -274,6 +280,12 @@ class ApiKeyAuthCache:
                     # return bytes -- decode defensively rather than
                     # `str(b"...")`, which would wrap the bytes repr.
                     return value.decode() if isinstance(value, bytes) else str(value)
+                # A reachable Valkey that has no entry is AUTHORITATIVE: it is the store
+                # management's invalidation deletes from, so answering from this process's own
+                # local copy here would resurrect an entry that was just invalidated (a revoked
+                # key or a changed team membership) for up to the local TTL. The local dict is
+                # only a fallback for Valkey being unreachable, below.
+                return None
             except Exception as exc:  # noqa: BLE001 -- fail open to DB, never to "allowed"
                 logger.warning("Auth cache: Valkey read failed for key_id=%s: %s", key_id, exc)
         return self._read_local(key_id)
@@ -331,6 +343,7 @@ def _db_lookup_and_verify(
         return None
     key_record, user = found
     secret_ok = bool(bcrypt.verify(credential, key_record.key_hash))
+    team_id, team_role = rbac.resolve_key_team(key_record, user)
     record = CachedKeyRecord(
         key_record_id=key_record.id,
         key_hash=key_record.key_hash,
@@ -340,6 +353,8 @@ def _db_lookup_and_verify(
         organization_id=user.organization_id,
         managed_orgs=_normalize_managed_orgs(user.managed_orgs),
         user_enabled=bool(user.enabled),
+        team_id=team_id,
+        team_role=team_role,
     )
     return record, secret_ok
 
@@ -433,6 +448,8 @@ class ApiKeyAuthenticator:
             organization_id=cached.organization_id,
             managed_orgs=cached.managed_orgs,
             api_key_id=cached.key_record_id,
+            team_id=cached.team_id,
+            team_role=cached.team_role,
         )
         self._schedule_last_used_touch(cached.key_record_id)
         return context
@@ -466,6 +483,8 @@ class ApiKeyAuthenticator:
             organization_id=record.organization_id,
             managed_orgs=record.managed_orgs,
             api_key_id=record.key_record_id,
+            team_id=record.team_id,
+            team_role=record.team_role,
         )
         self._schedule_last_used_touch(record.key_record_id)
         return context

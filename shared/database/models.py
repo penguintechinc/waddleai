@@ -159,6 +159,28 @@ def define_tables(db):
         Field("enabled", "boolean", default=True),
     )
 
+    # Teams (teams subsystem spec §4). The proxy reads ``team_members`` at auth time to
+    # resolve ``UserContext.team_role`` and ``api_keys.team_id`` for the acting team, so
+    # both need a runtime definition here. SQLAlchemy (models_sqlalchemy.py) stays the schema
+    # authority; the composite UNIQUE constraints live only there and in Alembic 024_teams.
+    _define_table_if_absent(
+        db,
+        "teams",
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("name", "string", notnull=True),
+        Field("enabled", "boolean", default=True),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+    _define_table_if_absent(
+        db,
+        "team_members",
+        Field("team_id", "reference teams", notnull=True),
+        Field("user_id", "reference users", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("team_role", "string", notnull=True),  # owner, admin, member, viewer
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+
     # API Keys with Usage Limits
     _define_table_if_absent(
         db,
@@ -179,6 +201,7 @@ def define_tables(db):
         Field("permissions", "json"),  # Scoped permissions
         Field("allowed_endpoints", "list:string"),  # Endpoint restrictions
         Field("api_access_level", "string"),  # admin_api, management_api, proxy_api
+        Field("team_id", "reference teams"),  # Acting team (spec D3); NULL = teamless
     )
 
     # Connection Links (LLM Providers)

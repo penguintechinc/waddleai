@@ -4,143 +4,22 @@ Handles authentication and authorization for WaddleAI.
 """
 
 import functools
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import Enum
 
 from passlib.hash import bcrypt
 
-
-class Role(Enum):
-    """User roles with hierarchical permissions."""
-
-    ADMIN = "admin"
-    RESOURCE_MANAGER = "resource_manager"
-    REPORTER = "reporter"
-    USER = "user"
-
-
-class Permission(Enum):
-    """System permissions."""
-
-    # System administration
-    SYSTEM_CONFIG = "system:config"
-    SYSTEM_MONITOR = "system:monitor"
-    SYSTEM_HEALTH = "system:health"
-
-    # User management
-    USER_CREATE = "user:create"
-    USER_READ = "user:read"
-    USER_UPDATE = "user:update"
-    USER_DELETE = "user:delete"
-
-    # Organization management
-    ORG_CREATE = "org:create"
-    ORG_READ = "org:read"
-    ORG_UPDATE = "org:update"
-    ORG_DELETE = "org:delete"
-
-    # API key management
-    APIKEY_CREATE = "apikey:create"
-    APIKEY_READ = "apikey:read"
-    APIKEY_UPDATE = "apikey:update"
-    APIKEY_DELETE = "apikey:delete"
-
-    # Quota management
-    QUOTA_READ = "quota:read"
-    QUOTA_UPDATE = "quota:update"
-    QUOTA_RESET = "quota:reset"
-
-    # Analytics and reporting
-    ANALYTICS_READ = "analytics:read"
-    ANALYTICS_SYSTEM = "analytics:system"
-    ANALYTICS_SECURITY = "analytics:security"
-
-    # LLM management
-    LLM_CONFIG = "llm:config"
-    LLM_MODELS = "llm:models"
-
-    # Proxy usage
-    PROXY_USE = "proxy:use"
-    PROXY_ROUTE = "proxy:route"
-
-    # Memory (org-scoped shared memory moderation)
-    MEMORY_MODERATE = "memory:moderate"
-
-    # ------------------------------------------------------------------
-    # Route-scoped permissions (OIDC scope migration, feature/oidc-scope-authz)
-    #
-    # Each of these corresponds 1:1 to a former `require_role(...)` call site
-    # in services/management/app/api/v1/*.py. They were minted as new,
-    # dedicated scopes -- rather than reusing a pre-existing Permission whose
-    # role membership didn't exactly match the route's former role list --
-    # so the migration cannot silently widen access. The authoritative,
-    # enforced route -> scope mapping (and the "admin+resource_manager" vs
-    # "admin only" tier split) lives in
-    # tests/unit/management/test_scope_authz.py, enumerated live from the
-    # blueprint rather than hand-documented so it can't drift from reality.
-    # ------------------------------------------------------------------
-
-    # "Admin + resource_manager" tier (former require_role("admin", "resource_manager"))
-    CACHE_CONFIG_WRITE = "cache_config:write"
-    HOOK_RULE_ADMIN = "hook_rule:admin"
-    HOOK_METRICS_READ = "hook_metrics:read"
-    KNOWLEDGE_WRITE = "knowledge:write"
-    MODEL_ALIAS_WRITE = "model_alias:write"
-    QUOTA_LIST = "quota:list"
-    ROUTING_ASSIGNMENT_WRITE = "routing_assignment:write"
-    ROUTING_POLICY_WRITE = "routing_policy:write"
-    ROUTING_RULE_WRITE = "routing_rule:write"
-    SECURITY_BYPASS_GRANT_WRITE = "security_bypass_grant:write"
-    USAGE_READ_BY_USER = "usage:read_by_user"
-    USER_MANAGE = "user:manage"
-
-    # "Admin only" tier (former require_role("admin"))
-    CILIUM_ADMIN = "cilium:admin"
-    FLEET_ADMIN = "fleet:admin"
-    INTEGRATION_ADMIN = "integration:admin"
-    LLAMACPP_ADMIN = "llamacpp:admin"
-    MEMORY_CONFIG_ADMIN = "memory_config:admin"
-    MEMORY_SCOPING_ADMIN = "memory_scoping:admin"
-    OLLAMA_ADMIN = "ollama:admin"
-    OLLAMA_MODEL_ADMIN = "ollama_model:admin"
-    ORG_ADMIN_UPDATE = "org:admin_update"
-    PROVIDER_ADMIN = "provider:admin"
-    QUOTA_ORG_UPDATE = "quota:org_update"
-    ROUTING_ASSIGNMENT_ADMIN = "routing_assignment:admin"
-    ROUTING_DRY_RUN_ADMIN = "routing_dry_run:admin"
-    ROUTING_POLICY_DELETE = "routing_policy:delete"
-    SECURITY_POLICY_ADMIN = "security_policy:admin"
-
-    # ------------------------------------------------------------------
-    # Model access policy CRUD (model-access-policy design spec §8) --
-    # NOT part of the OIDC-scope migration above (new feature, minted
-    # fresh), but enumerated by the same `test_scope_authz.py` regression
-    # guard, so it lives in `_B_TIER_SCOPES`/`_MIGRATED_SCOPES` there too.
-    # ------------------------------------------------------------------
-    MODEL_ACCESS_POLICY_WRITE = "model_access_policy:write"  # admin + resource_manager
-    MODEL_ACCESS_POLICY_DELETE = "model_access_policy:delete"  # admin only
-
-    # ------------------------------------------------------------------
-    # Admin-exclusive cross-org "bypass" scopes (audit-2026-09-14 wave-2
-    # authz reconciliation). Each expresses the "an admin may act on / see
-    # ANY org's resource" privilege that used to be a bare `role == "admin"`
-    # check inside a route handler. They are admin-ONLY (added only to
-    # Role.ADMIN below) precisely because the pre-existing *_WRITE scope for
-    # each resource is ALSO held by resource_manager -- gating a cross-org
-    # bypass on that shared scope would let a resource_manager escalate
-    # across tenants (an IDOR). See services/management/app/api/v1/{keys,
-    # quotas,model_aliases,routing_rules,routing_policies,
-    # model_access_policies,cache_configs,routing_decisions}.py.
-    # ------------------------------------------------------------------
-    APIKEY_ADMIN = "apikey:admin"
-    QUOTA_ADMIN = "quota:admin"
-    MODEL_ALIAS_ADMIN = "model_alias:admin"
-    ROUTING_RULE_ADMIN = "routing_rule:admin"
-    ROUTING_POLICY_ADMIN = "routing_policy:admin"
-    MODEL_ACCESS_POLICY_ADMIN = "model_access_policy:admin"
-    CACHE_CONFIG_ADMIN = "cache_config:admin"
-    ROUTING_DECISION_READ = "routing_decision:read"
+from shared.auth.permissions import Permission, Role
+from shared.auth.team_rbac import (
+    TEAM_ROLE_PERMISSIONS,  # noqa: F401 -- re-exported
+    TEAM_SCOPED_PERMISSIONS,  # noqa: F401 -- re-exported
+    TeamRole,  # noqa: F401 -- re-exported
+    expand_team_permissions,
+    lookup_key_team,
+    lookup_user_team,  # noqa: F401 -- re-exported
+    team_permission_allowed,
+)
 
 
 @dataclass
@@ -154,6 +33,9 @@ class UserContext:
     managed_orgs: list[int]
     permissions: set[Permission]
     api_key_id: int | None = None
+    #: Acting team (teams spec D3) and the caller's role in it; ``None`` = teamless.
+    team_id: int | None = None
+    team_role: str | None = None
 
 
 # Role-based permission mapping
@@ -227,6 +109,17 @@ ROLE_PERMISSIONS = {
         Permission.MODEL_ACCESS_POLICY_ADMIN,
         Permission.CACHE_CONFIG_ADMIN,
         Permission.ROUTING_DECISION_READ,
+        # Team scope tier: the org admin holds the org-layer scope plus every team-layer
+        # scope (it may act on any team in its tenant -- the route layer enforces tenancy).
+        Permission.TEAM_ORG_ADMIN,
+        Permission.TEAM_READ,
+        Permission.TEAM_USE,
+        Permission.TEAM_KEY_CREATE,
+        Permission.TEAM_KEY_ADMIN,
+        Permission.TEAM_MEMBER_MANAGE,
+        Permission.TEAM_ADMIN,
+        Permission.TEAM_DELETE,
+        Permission.TEAM_TRANSFER_OWNER,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,
@@ -309,6 +202,27 @@ def parse_wa_key_id(api_key: str) -> str:
     return parts[1]
 
 
+def mint_wa_credential() -> tuple[str, str]:
+    """Mint a fresh ``wa-{key_id}-{secret}`` credential; return ``(key_id, api_key)``.
+
+    The single place the proxy-authenticated credential format is produced: ``key_id`` is 16 hex
+    chars (never contains ``-``) so :func:`parse_wa_key_id` recovers it from the credential
+    alone, and the secret is 43 urlsafe chars (it may contain ``-``). Used by both
+    :meth:`RBACManager.create_api_key` and the management key-create endpoint.
+    """
+    key_id = secrets.token_hex(8)
+    return key_id, f"wa-{key_id}-{secrets.token_urlsafe(32)}"
+
+
+def access_level_for_role(role: str) -> str:
+    """Map an org role string to the ``api_keys.api_access_level`` a key it owns is issued at."""
+    if role == Role.ADMIN.value:
+        return "admin_api"
+    if role == Role.RESOURCE_MANAGER.value:
+        return "management_api"
+    return "proxy_api"
+
+
 class AuthenticationError(Exception):
     """Authentication failed."""
 
@@ -387,7 +301,8 @@ class RBACManager:
         if not user or not user.enabled:
             raise AuthenticationError("API key user is disabled")
 
-        context = self._build_user_context(user)
+        team_id, team_role = self.resolve_key_team(key_record, user)
+        context = self._build_user_context(user, team_id=team_id, team_role=team_role)
         context.api_key_id = key_record.id
         return context
 
@@ -446,13 +361,16 @@ class RBACManager:
         organization_id: int,
         managed_orgs: list[int] | None,
         api_key_id: int | None = None,
+        team_id: int | None = None,
+        team_role: str | None = None,
     ) -> UserContext:
         """Build a :class:`UserContext` from already-resolved fields -- no DB access.
 
         Delegates to :meth:`_build_user_context`'s role->permissions expansion
         and ``managed_orgs`` normalization via a lightweight stand-in object,
         so a cache-populated context (``auth_cache.py``) can never drift from
-        the DB-built one.
+        the DB-built one. ``team_id``/``team_role`` are the already-resolved acting
+        team; the team role is expanded into team-layer scopes exactly like the org role.
         """
         from types import SimpleNamespace
 
@@ -463,14 +381,22 @@ class RBACManager:
             username=username,
             organization_id=organization_id,
         )
-        context = self._build_user_context(user_like)
+        context = self._build_user_context(user_like, team_id=team_id, team_role=team_role)
         context.api_key_id = api_key_id
         return context
 
-    def _build_user_context(self, user) -> UserContext:
-        """Build user context from database record."""
+    def resolve_key_team(self, key_record, user) -> tuple[int | None, str | None]:
+        """Acting ``(team_id, team_role)`` for an authenticated key row and its owning user."""
+        return lookup_key_team(
+            self.db, user.id, user.organization_id, getattr(key_record, "team_id", None)
+        )
+
+    def _build_user_context(
+        self, user, team_id: int | None = None, team_role: str | None = None
+    ) -> UserContext:
+        """Build user context from database record (org bundle ∪ acting-team bundle)."""
         role = Role(user.role)
-        permissions = ROLE_PERMISSIONS.get(role, set())
+        permissions = set(ROLE_PERMISSIONS.get(role, set())) | expand_team_permissions(team_role)
 
         managed_orgs = []
         if user.managed_orgs:
@@ -486,6 +412,8 @@ class RBACManager:
             organization_id=user.organization_id,
             managed_orgs=managed_orgs,
             permissions=permissions,
+            team_id=team_id,
+            team_role=team_role,
         )
 
     def check_permission(
@@ -494,8 +422,16 @@ class RBACManager:
         permission: Permission,
         resource_org_id: int | None = None,
         resource_user_id: int | None = None,
+        resource_team_id: int | None = None,
     ) -> bool:
-        """Check if user has permission for specific resource."""
+        """Check if user has permission for specific resource.
+
+        Effective permissions are ``user ∪ org-role ∪ team-role``, each confined to its own
+        layer (teams spec D5): a team-layer permission is honoured only against the caller's
+        own team (``resource_team_id`` must equal ``user_context.team_id``) and only if the
+        caller's resolved ``team_role`` grants it, so a stale or forged scope claim can never
+        exceed the role. Org-layer checks are unchanged -- a team role never widens them.
+        """
         # Check base permission — permissions may be stored as strings (e.g. from JWT)
         perm_value = permission.value if isinstance(permission, Permission) else permission
         if (
@@ -507,6 +443,15 @@ class RBACManager:
         # Admin has access to everything
         if user_context.role == Role.ADMIN:
             return True
+
+        # Team branch: team-layer permissions are pinned to the caller's own team and role.
+        if not team_permission_allowed(
+            perm_value,
+            team_id=user_context.team_id,
+            team_role=user_context.team_role,
+            resource_team_id=resource_team_id,
+        ):
+            return False
 
         # Resource-specific checks
         if resource_org_id is not None:
@@ -560,14 +505,11 @@ class RBACManager:
         name: str,
         permissions: dict[str, bool] | None = None,
         expires_days: int | None = None,
+        team_id: int | None = None,
     ) -> tuple[str, str]:
-        """Create new API key for user."""
-        import secrets
-
+        """Create new API key for user, optionally bound to an acting team (teams spec D3)."""
         # Generate API key
-        key_id = secrets.token_hex(8)
-        secret = secrets.token_urlsafe(32)
-        api_key = f"wa-{key_id}-{secret}"
+        key_id, api_key = mint_wa_credential()
 
         # Hash the API key
         key_hash = bcrypt.hash(api_key)
@@ -577,11 +519,7 @@ class RBACManager:
             expires_at = datetime.utcnow() + timedelta(days=expires_days)
 
         # Determine access level based on user role
-        access_level = "proxy_api"
-        if user_context.role in [Role.ADMIN, Role.RESOURCE_MANAGER]:
-            access_level = "management_api"
-        if user_context.role == Role.ADMIN:
-            access_level = "admin_api"
+        access_level = access_level_for_role(user_context.role.value)
 
         # Insert into database
         key_record_id = self.db.api_keys.insert(
@@ -593,6 +531,10 @@ class RBACManager:
             permissions=permissions or {},
             api_access_level=access_level,
             expires_at=expires_at,
+            team_id=team_id,
+            # Explicit: auth filters ``enabled == True`` and a SQLAlchemy-built schema has no
+            # server-side default, so omitting it mints a key that can never authenticate.
+            enabled=True,
         )
 
         return api_key, key_record_id
