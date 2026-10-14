@@ -280,6 +280,12 @@ class ApiKeyAuthCache:
                     # return bytes -- decode defensively rather than
                     # `str(b"...")`, which would wrap the bytes repr.
                     return value.decode() if isinstance(value, bytes) else str(value)
+                # A reachable Valkey that has no entry is AUTHORITATIVE: it is the store
+                # management's invalidation deletes from, so answering from this process's own
+                # local copy here would resurrect an entry that was just invalidated (a revoked
+                # key or a changed team membership) for up to the local TTL. The local dict is
+                # only a fallback for Valkey being unreachable, below.
+                return None
             except Exception as exc:  # noqa: BLE001 -- fail open to DB, never to "allowed"
                 logger.warning("Auth cache: Valkey read failed for key_id=%s: %s", key_id, exc)
         return self._read_local(key_id)

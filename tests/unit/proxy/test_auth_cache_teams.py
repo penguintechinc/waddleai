@@ -114,3 +114,32 @@ class TestMembershipChangeCoherence:
         ctx = await auth.authenticate(_SECRET)
         assert ctx.team_id is None
         assert P.TEAM_USE not in ctx.permissions
+
+
+class TestValkeyMissIsAuthoritative:
+    """A reachable Valkey with no entry must not be answered from this process's local copy."""
+
+    async def test_deleted_valkey_entry_is_a_miss_despite_a_local_copy(self):
+        """Invalidation deletes only Valkey; the stale local write must not resurrect the entry."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        valkey = MagicMock()
+        valkey.get = AsyncMock(return_value=None)  # management already deleted it
+        valkey.set = AsyncMock(return_value=True)
+        cache = ApiKeyAuthCache(valkey=valkey)
+        await cache.set("k1", _record(team_id=1, team_role="member"))  # also written locally
+
+        assert await cache.get("k1") is None
+
+    async def test_unreachable_valkey_still_falls_back_to_the_local_copy(self):
+        """Outage degradation is unchanged: Valkey errors read from the local dict."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        valkey = MagicMock()
+        valkey.get = AsyncMock(side_effect=ConnectionError("valkey down"))
+        valkey.set = AsyncMock(return_value=True)
+        cache = ApiKeyAuthCache(valkey=valkey)
+        record = _record(team_id=1, team_role="member")
+        await cache.set("k1", record)
+
+        assert await cache.get("k1") == record
