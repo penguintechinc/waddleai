@@ -34,4 +34,5 @@ from . import (  # noqa: I001 -- append-only order, see comment above
     fleet,
     signing_keys,
     proxy_keys,
+    teams,
 )

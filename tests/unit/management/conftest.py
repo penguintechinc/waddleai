@@ -342,6 +342,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.hook_metrics",
     "services.management.app.api.v1.fleet",
     "services.management.app.api.v1.proxy_keys",
+    "services.management.app.api.v1.teams",
 ]
 
 
@@ -840,7 +841,7 @@ def _teamless_tokens_for_mock_db_tests(request, monkeypatch):
 
 
 #: Route modules whose module-level ``db`` the real-database fixture below repoints.
-_REAL_DB_ROUTE_MODULES = ("auth", "users", "organizations", "keys", "proxy_keys")
+_REAL_DB_ROUTE_MODULES = ("auth", "users", "organizations", "keys", "proxy_keys", "teams")
 
 
 @pytest.fixture
@@ -869,3 +870,45 @@ async def real_db_client(flask_app, team_world, monkeypatch) -> AsyncGenerator:
     reset_login_throttle()
     reset_auth_rate_limiter()
     reset_token_denylist()
+
+
+#: team_world users -> (team key, team role); ``boss``/``loner`` have no team, ``carl`` is org b's.
+_TEAM_OF = {"olive": "a1", "adam": "a1", "mia": "a1", "vic": "a1", "nat": "a2", "carl": "b1"}
+_TEAM_ROLE_OF = {
+    "olive": "owner", "adam": "admin", "mia": "member", "vic": "viewer", "nat": "member",
+    "carl": "owner",
+}  # fmt: skip
+
+
+@pytest.fixture
+def team_headers(team_world, mint_token):
+    """Factory ``team_headers("mia")`` -> bearer headers for a ``team_world`` user.
+
+    The token carries the same team context + scopes a real login would mint (``boss`` is the
+    org-a admin; ``loner`` a teamless org-a user; ``carl`` org b's team owner).
+    """
+
+    def _make(user: str) -> dict[str, str]:
+        w = team_world
+        org = "b" if user == "carl" else "a"
+        team_key = _TEAM_OF.get(user)
+        token = mint_token(
+            role="admin" if user == "boss" else "user",
+            user_id=w.u[user],
+            org_id=w.org[org],
+            team_id=w.t[team_key] if team_key else None,
+            team_role=_TEAM_ROLE_OF.get(user),
+        )
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    return _make
+
+
+@pytest.fixture
+def redis_spy(monkeypatch) -> MagicMock:
+    """A recording stand-in for management's Valkey client (``extensions.redis_client``)."""
+    import services.management.app.extensions as ext_mod
+
+    client = MagicMock()
+    monkeypatch.setattr(ext_mod, "redis_client", client)
+    return client
