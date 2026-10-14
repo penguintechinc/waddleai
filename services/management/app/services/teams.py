@@ -8,6 +8,9 @@ Decisions encoded here (each has a test in ``test_team_service.py``):
 
 * D2 -- one team per (user, tenant): checked here for a clear 409 and enforced again by the
   ``UNIQUE(user_id, organization_id)`` constraint, which also closes a concurrent-add race.
+* No explicit rollback after a caught ``IntegrityError``: penguin-dal runs every statement in
+  its own ``engine.begin()`` transaction (``DB`` has no ``rollback()``), so the failed statement
+  is already rolled back and no aborted transaction can leak into the next call.
 * D3 -- joining a team adopts the user's unbound (NULL-team) keys; leaving or deleting unbinds.
 * A team that has an owner always keeps one; only an owner (or org admin) may grant, hold, edit
   or remove ``owner`` -- a team Admin cannot escalate.
@@ -105,7 +108,12 @@ def update_team(database: DB, team: Any, *, name: object | None, enabled: bool |
     if enabled is not None and enabled != was_enabled:
         fields["enabled"] = enabled
     if fields:
-        database(database.teams.id == team.id).update(**fields)
+        try:
+            database(database.teams.id == team.id).update(**fields)
+        except IntegrityError as exc:  # rename lost a race to UNIQUE(organization_id, name)
+            raise TeamError(
+                "A team with that name already exists in this organization", 409
+            ) from exc
         database.commit()
     return member_user_ids(database, team.id) if "enabled" in fields else []
 

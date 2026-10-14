@@ -186,3 +186,53 @@ def test_add_unknown_or_disabled_user_is_rejected(team_world) -> None:
     with pytest.raises(TeamError) as disabled:
         add_member(w.db, _team(w, "a2"), w.u["loner"], "member")
     assert disabled.value.status == 400
+
+
+# ------------------------------------------------- UNIQUE-race backstops (409, not 500)
+
+
+def test_concurrent_add_member_race_maps_integrity_error_to_409(team_world, monkeypatch) -> None:
+    """D2 backstop: a clash row lands after the pre-check, so the real UNIQUE fires -> 409."""
+    from penguin_dal.table_proxy import TableProxy
+
+    w = team_world
+    real_insert = TableProxy.insert
+    state = {"fired": False}
+
+    def racing_insert(self, **kwargs):
+        """Slip a competing membership in just before this insert, as a concurrent add would."""
+        if self.table.name == "team_members" and not state["fired"]:
+            state["fired"] = True
+            real_insert(
+                self, team_id=w.t["a1"], user_id=kwargs["user_id"],
+                organization_id=kwargs["organization_id"], team_role="member",
+            )  # fmt: skip
+        return real_insert(self, **kwargs)
+
+    monkeypatch.setattr(TableProxy, "insert", racing_insert)
+    with pytest.raises(TeamError) as exc:
+        add_member(w.db, _team(w, "a2"), w.u["loner"], "member")
+    assert exc.value.status == 409
+    assert w.db(w.db.team_members.user_id == w.u["loner"]).count() == 1
+
+
+def test_create_team_race_maps_integrity_error_to_409(team_world, monkeypatch) -> None:
+    """A duplicate name that slips past the pre-check hits UNIQUE(org, name) -> 409."""
+    from services.management.app.services import teams as svc
+
+    monkeypatch.setattr(svc, "_name_taken", lambda *a, **k: False)
+    with pytest.raises(TeamError) as exc:
+        create_team(team_world.db, team_world.org["a"], "Alpha")
+    assert exc.value.status == 409
+
+
+def test_rename_race_maps_integrity_error_to_409(team_world, monkeypatch) -> None:
+    """A rename clash that slips past the pre-check hits the UNIQUE constraint -> 409."""
+    from services.management.app.services import teams as svc
+
+    w = team_world
+    monkeypatch.setattr(svc, "_name_taken", lambda *a, **k: False)
+    with pytest.raises(TeamError) as exc:
+        update_team(w.db, _team(w, "a1"), name="Beta", enabled=None)
+    assert exc.value.status == 409
+    assert w.db.teams[w.t["a1"]].name == "Alpha"
