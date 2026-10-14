@@ -904,6 +904,37 @@ def team_headers(team_world, mint_token):
     return _make
 
 
+class SharedValkey:
+    """One dict seen through BOTH planes' client shapes: management (sync) and proxy (async)."""
+
+    def __init__(self) -> None:
+        """Start empty."""
+        self.store: dict[str, str] = {}
+
+    def delete(self, *keys: str) -> int:
+        """Management's sync ``delete`` (what ``invalidate_key_ids`` calls)."""
+        return sum(self.store.pop(k, None) is not None for k in keys)
+
+    async def get(self, key: str) -> str | None:
+        """The proxy's async ``get``."""
+        return self.store.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> bool:
+        """The proxy's async ``set`` (TTL ignored by the fake)."""
+        self.store[key] = value
+        return True
+
+
+@pytest.fixture
+def shared_valkey(monkeypatch) -> SharedValkey:
+    """A fake Valkey wired in as management's ``redis_client`` and usable as the proxy's client."""
+    import services.management.app.extensions as ext_mod
+
+    fake = SharedValkey()
+    monkeypatch.setattr(ext_mod, "redis_client", fake)
+    return fake
+
+
 @pytest.fixture
 def redis_spy(monkeypatch) -> MagicMock:
     """A recording stand-in for management's Valkey client (``extensions.redis_client``)."""
