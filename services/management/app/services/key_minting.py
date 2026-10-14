@@ -121,6 +121,21 @@ def resolve_key_team(
     return int(requested_team_id)
 
 
+def _discard_orphan_api_key(database: DB, api_row_id: Any) -> None:
+    """Best-effort removal of a half-minted ``api_keys`` row; never raises.
+
+    penguin-dal runs every statement in its own ``engine.begin()`` transaction, so the failed
+    insert is already rolled back by the engine (``DB`` has no ``rollback()``; ``__getattr__``
+    would treat the name as a table) and only the committed first row needs deleting. The
+    delete's own failure is swallowed so the caller's ORIGINAL exception propagates.
+    """
+    try:
+        database(database.api_keys.id == api_row_id).delete()
+        database.commit()
+    except Exception:
+        logger.exception("mint_proxy_key: failed to remove orphan api_keys row %s", api_row_id)
+
+
 def mint_proxy_key(
     database: DB,
     *,
@@ -186,8 +201,7 @@ def mint_proxy_key(
             api_key_id=api_row_id,
         )
     except Exception:
-        database(database.api_keys.id == api_row_id).delete()
-        database.commit()
+        _discard_orphan_api_key(database, api_row_id)
         raise
     database.commit()
     return MintedKey(

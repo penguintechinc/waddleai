@@ -10,7 +10,7 @@ from datetime import datetime
 
 import pytest
 from passlib.hash import bcrypt
-from sqlalchemy.exc import StatementError
+from sqlalchemy.exc import IntegrityError, StatementError
 
 from services.management.app.api.v1 import auth as auth_mod
 from services.management.app.services.key_minting import (
@@ -101,6 +101,17 @@ def test_failed_second_insert_leaves_no_orphan_api_key(team_world) -> None:
     before = w.db(w.db.api_keys.id > 0).count()
     with pytest.raises(StatementError):
         _mint(w, allowed_models=[object()])  # not JSON-serializable -> virtual_keys insert fails
+    assert w.db(w.db.api_keys.id > 0).count() == before
+
+
+def test_db_side_failure_on_second_insert_propagates_original_and_leaves_no_orphan(
+    team_world,
+) -> None:
+    """A failure INSIDE the database (NOT NULL violation) re-raises as-is; no orphan api_keys."""
+    w = team_world
+    before = w.db(w.db.api_keys.id > 0).count()
+    with pytest.raises(IntegrityError):
+        _mint(w, name=None)  # virtual_keys.name is NOT NULL; api_keys.name accepts it
     assert w.db(w.db.api_keys.id > 0).count() == before
 
 
