@@ -192,4 +192,4 @@ def test_single_alembic_head_no_divergent_branches() -> None:
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "023_schema_drift_gh213"
+    assert heads[0] == "024_teams"
