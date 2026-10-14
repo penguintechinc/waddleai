@@ -142,6 +142,32 @@ class Permission(Enum):
     CACHE_CONFIG_ADMIN = "cache_config:admin"
     ROUTING_DECISION_READ = "routing_decision:read"
 
+    # ------------------------------------------------------------------
+    # Team scope tier (teams subsystem spec §5). TEAM_ORG_ADMIN is the ORG-layer
+    # scope ("act on any team in my tenant"): held by Role.ADMIN only, never by a
+    # team role. Every other team:* permission is TEAM-layer -- granted by a team
+    # role bundle (TEAM_ROLE_PERMISSIONS) and only honoured against the caller's
+    # own team (see RBACManager.check_permission's Team branch).
+    # ------------------------------------------------------------------
+    TEAM_ORG_ADMIN = "team:org_admin"
+    TEAM_READ = "team:read"
+    TEAM_USE = "team:use"
+    TEAM_KEY_CREATE = "team:key_create"
+    TEAM_KEY_ADMIN = "team:key_admin"
+    TEAM_MEMBER_MANAGE = "team:member_manage"
+    TEAM_ADMIN = "team:admin"
+    TEAM_DELETE = "team:delete"
+    TEAM_TRANSFER_OWNER = "team:transfer_owner"
+
+
+class TeamRole(Enum):
+    """Per-team roles (``team_members.team_role``); expanded to scopes like org roles are."""
+
+    OWNER = "owner"
+    ADMIN = "admin"
+    MEMBER = "member"
+    VIEWER = "viewer"
+
 
 @dataclass
 class UserContext:
@@ -227,6 +253,17 @@ ROLE_PERMISSIONS = {
         Permission.MODEL_ACCESS_POLICY_ADMIN,
         Permission.CACHE_CONFIG_ADMIN,
         Permission.ROUTING_DECISION_READ,
+        # Team scope tier: the org admin holds the org-layer scope plus every team-layer
+        # scope (it may act on any team in its tenant -- the route layer enforces tenancy).
+        Permission.TEAM_ORG_ADMIN,
+        Permission.TEAM_READ,
+        Permission.TEAM_USE,
+        Permission.TEAM_KEY_CREATE,
+        Permission.TEAM_KEY_ADMIN,
+        Permission.TEAM_MEMBER_MANAGE,
+        Permission.TEAM_ADMIN,
+        Permission.TEAM_DELETE,
+        Permission.TEAM_TRANSFER_OWNER,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,
@@ -277,6 +314,46 @@ ROLE_PERMISSIONS = {
         Permission.PROXY_USE,
     },
 }
+
+
+_TEAM_VIEWER = {Permission.TEAM_READ}
+_TEAM_MEMBER = _TEAM_VIEWER | {Permission.TEAM_USE, Permission.TEAM_KEY_CREATE}
+_TEAM_ADMIN = _TEAM_MEMBER | {
+    Permission.TEAM_ADMIN,
+    Permission.TEAM_MEMBER_MANAGE,
+    Permission.TEAM_KEY_ADMIN,
+}
+_TEAM_OWNER = _TEAM_ADMIN | {Permission.TEAM_DELETE, Permission.TEAM_TRANSFER_OWNER}
+
+#: Team role -> the team-layer permissions it expands to (cumulative: owner > admin > member
+#: > viewer). Expanded at UserContext build time, exactly as ``ROLE_PERMISSIONS`` is for org roles.
+TEAM_ROLE_PERMISSIONS: dict[TeamRole, set[Permission]] = {
+    TeamRole.VIEWER: _TEAM_VIEWER,
+    TeamRole.MEMBER: _TEAM_MEMBER,
+    TeamRole.ADMIN: _TEAM_ADMIN,
+    TeamRole.OWNER: _TEAM_OWNER,
+}
+
+#: Every team-LAYER permission: honoured only against the caller's own team. ``TEAM_ORG_ADMIN``
+#: is deliberately absent -- it is an org-layer scope no team role can grant.
+TEAM_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
+    p for p in Permission if p.value.startswith("team:") and p is not Permission.TEAM_ORG_ADMIN
+)
+
+
+def expand_team_permissions(team_role: object) -> set[Permission]:
+    """Expand a ``team_members.team_role`` string to a fresh set of team-layer permissions.
+
+    Fails closed: ``None``, a non-string, or any value that is not exactly a ``TeamRole`` wire
+    value (case-sensitive, no whitespace tolerance) expands to nothing, so a corrupt row or a
+    forged claim can never widen access. Always returns a new set so callers may mutate it.
+    """
+    if not isinstance(team_role, str):
+        return set()
+    try:
+        return set(TEAM_ROLE_PERMISSIONS[TeamRole(team_role)])
+    except (ValueError, KeyError):
+        return set()
 
 
 #: Valkey key prefix for the proxy's per-request api-key auth-lookup cache
