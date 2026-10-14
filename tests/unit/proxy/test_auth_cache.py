@@ -632,3 +632,13 @@ class TestExecutorOffload:
         # Two real bcrypt verifies (tens of ms each) run concurrently; this
         # is a generous ceiling, not a tight latency assertion.
         assert elapsed < 2.0
+
+
+def test_get_auth_executor_recreates_after_shutdown():
+    """A shut-down auth executor is lazily rebuilt so an in-process restart can still auth."""
+    old = get_auth_executor()
+    old.shutdown(wait=True)
+    fresh = get_auth_executor()
+    assert fresh is not old
+    assert fresh._shutdown is False
+    assert fresh.submit(lambda: 7).result(timeout=5) == 7

@@ -455,14 +455,19 @@ async def create_key(data: CreateKeyRequest):
     target_user_id = data.user_id if data.user_id is not None else user_id
     target_org_id = data.organization_id if data.organization_id is not None else org_id
 
+    # Scope-derived capabilities (never the role NAME): apikey:admin is the admin-only cross-org
+    # bypass; user:manage (admin + resource_manager) is the right to mint keys for other users.
+    can_admin = _has_scope(Permission.APIKEY_ADMIN)
+    can_issue_for_others = _has_scope(Permission.USER_MANAGE)
+
     # Permission check. A plain user may also issue a key for a teammate, but only by naming the
     # team explicitly in their own tenant -- ``resolve_key_team`` below then demands a live
     # ``team:key_admin`` membership in that team (teams spec §5: Admin = team key issuance).
     if target_user_id != user_id or target_org_id != org_id:
         team_issuance = data.team_id is not None and target_org_id == org_id
-        if user_role not in ["admin", "resource_manager"] and not team_issuance:
+        if not can_issue_for_others and not team_issuance:
             return jsonify({"error": "Cannot create keys for other users"}), 403
-        if user_role == "resource_manager" and target_org_id != org_id:
+        if not can_admin and can_issue_for_others and target_org_id != org_id:
             return jsonify({"error": "Cannot create keys for other organizations"}), 403
 
     # Acting team the key will act in (teams spec D3): validated against what THIS caller may
@@ -497,11 +502,11 @@ async def create_key(data: CreateKeyRequest):
             if target.organization_id != target_org_id:
                 return None, 403
             # Non-admin can only create keys for users with role <= their own
-            if user_role != "admin" and target.role == "admin":
+            if not can_admin and target.role == "admin":
                 return None, 403
             # A caller without global key-issuing rights (the team key_admin path) may never
             # mint a credential above their own org role -- fail closed, never silently cap.
-            if user_role not in ("admin", "resource_manager") and _ROLE_RANK.get(
+            if not can_issue_for_others and _ROLE_RANK.get(
                 str(target.role), len(_ROLE_RANK)
             ) > _ROLE_RANK.get(str(user_role), 0):
                 return None, 403

@@ -199,3 +199,15 @@ async def test_team_list_total_is_the_full_count_not_the_page_size(real_db_clien
     resp = await real_db_client.get("/api/v1/teams?limit=1&page=1", headers=team_headers("boss"))
     body = await resp.get_json()
     assert (len(body["teams"]), body["total"], body["pagination"]["total"]) == (1, 2, 2)
+
+
+async def test_member_list_echoes_pagination_like_the_team_list(
+    real_db_client, team_headers, team_world
+):
+    """Team a1 has 4 members: limit=3&page=2 -> 1 row, pagination page/limit/pages/total echoed."""
+    url = f"/api/v1/teams/{team_world.t['a1']}/members?limit=3&page=2"
+    resp = await real_db_client.get(url, headers=team_headers("boss"))
+    assert resp.status_code == 200
+    body = await resp.get_json()
+    assert (len(body["members"]), body["total"]) == (1, 4)
+    assert body["pagination"] == {"page": 2, "limit": 3, "total": 4, "pages": 2}

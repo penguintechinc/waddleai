@@ -149,6 +149,7 @@ class MemberListResponse:
     team_id: int
     members: list[MemberItem]
     total: int
+    pagination: PaginationMeta
 
 
 def _team_item(team: Any) -> dict[str, Any]:
@@ -314,7 +315,7 @@ async def list_members(team_id: int):
         }
         for r in rows
     ]
-    return {"team_id": team_id, "members": members, "total": total}
+    return {"team_id": team_id, "members": members, "total": total, **page.meta(total)}
 
 
 @api_v1_bp.route("/teams/<int:team_id>/members", methods=["POST"])

@@ -159,7 +159,9 @@ class APIKey(Base):
     proxy_memory = Column(JSON, nullable=True)
     # Acting team (teams spec D3): the team a request authenticated by this key acts
     # in. NULL = teamless (legacy/unassigned). Backfilled by migration 024_teams.
-    team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
 
 class AIProvider(Base):
@@ -381,7 +383,9 @@ class VirtualKey(Base):
     # The proxy-auth ``api_keys`` row minted alongside this key (teams spec D10 /
     # issue #303) so revoke/rotate/disable here can reach the credential the proxy
     # actually authenticates. NULL = legacy key that never authenticated at the proxy.
-    api_key_id = Column(Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True)
+    api_key_id = Column(
+        Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
 
 class TokenUsage(Base):
