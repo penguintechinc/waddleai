@@ -2058,7 +2058,7 @@ components:
       title: PageMeta
       type: object
     PaginationMeta:
-      description: Bounded-window metadata attached to the list response.
+      description: Bounded-window metadata attached to every list response.
       properties:
         limit:
           title: Limit

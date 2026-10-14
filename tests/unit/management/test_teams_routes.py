@@ -158,5 +158,37 @@ async def test_kill_switch_turns_team_crud_off(
     hdr = team_headers("boss")
     created = await real_db_client.post("/api/v1/teams", json={"name": "z"}, headers=hdr)
     listed = await real_db_client.get("/api/v1/teams", headers=hdr)
-    got = await real_db_client.get(f"/api/v1/teams/{team_world.t['a1']}", headers=hdr)
-    assert (created.status_code, listed.status_code, got.status_code) == (404, 404, 404)
+    url = f"/api/v1/teams/{team_world.t['a1']}"
+    got = await real_db_client.get(url, headers=hdr)
+    put = await real_db_client.put(url, json={"name": "z"}, headers=hdr)
+    deleted = await real_db_client.delete(url, headers=hdr)
+    statuses = [r.status_code for r in (created, listed, got, put, deleted)]
+    assert statuses == [404] * 5
+    assert team_world.db.teams[team_world.t["a1"]] is not None
+
+
+async def test_deleting_a_team_invalidates_its_members_cached_keys(
+    team_world, real_db_client, team_headers, redis_spy
+):
+    """Review focus: DELETE unbinds the team's keys, so the owners' cached auth entries go."""
+    w = team_world
+    w.db.api_keys.insert(
+        key_id="kmia", key_hash="h", user_id=w.u["mia"], organization_id=w.org["a"], name="k",
+        enabled=True, team_id=w.t["a1"],
+    )  # fmt: skip
+    w.db.commit()
+    resp = await real_db_client.delete(f"/api/v1/teams/{w.t['a1']}", headers=team_headers("olive"))
+    assert resp.status_code == 200
+    redis_spy.delete.assert_any_call(auth_cache_key("kmia"))
+
+
+async def test_create_ignores_a_body_organization_id(team_world, real_db_client, team_headers):
+    """Tenancy comes from the token: a body ``organization_id`` naming org b is ignored."""
+    w = team_world
+    resp = await real_db_client.post(
+        "/api/v1/teams",
+        json={"name": "Sneaky", "organization_id": w.org["b"]},
+        headers=team_headers("boss"),
+    )
+    assert resp.status_code == 201
+    assert w.db.teams[(await resp.get_json())["id"]].organization_id == w.org["a"]

@@ -50,7 +50,7 @@ class MessageResponse:
 
 @dataclass(slots=True)
 class PaginationMeta:
-    """Bounded-window metadata attached to the list response."""
+    """Bounded-window metadata attached to every list response."""
 
     page: int
     limit: int
