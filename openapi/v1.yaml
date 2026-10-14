@@ -1712,6 +1712,27 @@ components:
       - timestamp
       title: McpEndpointActionMeta
       type: object
+    MemberItem:
+      description: 'A membership: the user id (never a name or email) and their team
+        role.'
+      properties:
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        team_role:
+          title: Team Role
+          type: string
+        user_id:
+          title: User Id
+          type: integer
+      required:
+      - user_id
+      - team_role
+      - created_at
+      title: MemberItem
+      type: object
     ModelUsage:
       description: Per-model aggregate.
       properties:
@@ -11361,6 +11382,226 @@ paths:
       security:
       - bearerAuth: []
       summary: Rename or enable/disable a team (team Admin+ or org admin).
+      tags:
+      - Teams
+  /api/v1/teams/{team_id}/members:
+    get:
+      description: ''
+      operationId: get_list_members
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/teams/<team_id>/members.
+                properties:
+                  members:
+                    items:
+                      $ref: '#/components/schemas/MemberItem'
+                    title: Members
+                    type: array
+                  team_id:
+                    title: Team Id
+                    type: integer
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - team_id
+                - members
+                - total
+                title: MemberListResponse
+                type: object
+          description: Response body for GET /api/v1/teams/<team_id>/members.
+      security:
+      - bearerAuth: []
+      summary: 'List a team''s members (any member or the org admin): user ids and
+        roles only.'
+      tags:
+      - Teams
+    post:
+      description: ''
+      operationId: post_add_team_member
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /api/v1/teams/<team_id>/members.
+              properties:
+                team_role:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: member
+                  title: Team Role
+                user_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: User Id
+              title: AddMemberRequest
+              type: object
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Add a user to the team (team Admin+ or org admin); 409 if they already
+        have a team here.
+      tags:
+      - Teams
+  /api/v1/teams/{team_id}/members/{user_id}:
+    delete:
+      description: ''
+      operationId: delete_remove_team_member
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Remove a member (team Admin+ or org admin; removing an owner needs
+        an owner).
+      tags:
+      - Teams
+    put:
+      description: ''
+      operationId: put_set_member_role
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /api/v1/teams/<team_id>/members/<user_id>.
+              properties:
+                team_role:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Team Role
+              title: SetMemberRoleRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Change a member's team role (team Admin+ or org admin; owner changes
+        need an owner).
+      tags:
+      - Teams
+  /api/v1/teams/{team_id}/transfer-ownership:
+    post:
+      description: ''
+      operationId: post_transfer_team_ownership
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /api/v1/teams/<team_id>/transfer-ownership.
+              properties:
+                new_owner_user_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: New Owner User Id
+              title: TransferOwnershipRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Make an existing member the sole owner (team Owner or org admin).
       tags:
       - Teams
   /api/v1/usage/by-key:

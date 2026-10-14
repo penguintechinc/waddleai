@@ -1,6 +1,6 @@
 """WaddleAI Management API v1 - Teams (teams spec §10).
 
-Team CRUD (membership and ownership routes are added in the next task). Authorization:
+Team CRUD plus membership and ownership. Authorization:
 
 * Org-layer routes (create, list) use ``team:org_admin`` / authentication + a tenant filter.
 * Team-layer routes call :func:`._team_authz.authorize_team`, which re-derives the caller's team
@@ -19,7 +19,7 @@ from penguin_dal.db import DB
 from quart import g, jsonify
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
-from shared.auth.rbac import Permission
+from shared.auth.rbac import Permission, expand_team_permissions
 from shared.auth.team_flags import teams_enabled
 
 from ...extensions import db
@@ -28,7 +28,7 @@ from ...services.auth_cache_invalidation import invalidate_user_auth_cache
 from ...services.teams import TeamError
 from . import api_v1_bp
 from ._pagination import PageRequest
-from ._team_authz import authorize_team
+from ._team_authz import TeamAccess, authorize_team
 from .auth import require_auth, require_scope
 
 _BEARER_AUTH: list[dict[str, list[str]]] = [{"bearerAuth": []}]
@@ -74,6 +74,28 @@ class UpdateTeamRequest:
 
 
 @dataclass(slots=True)
+class AddMemberRequest:
+    """Request body for POST /api/v1/teams/<team_id>/members."""
+
+    user_id: int | None = None
+    team_role: str | None = "member"
+
+
+@dataclass(slots=True)
+class SetMemberRoleRequest:
+    """Request body for PUT /api/v1/teams/<team_id>/members/<user_id>."""
+
+    team_role: str | None = None
+
+
+@dataclass(slots=True)
+class TransferOwnershipRequest:
+    """Request body for POST /api/v1/teams/<team_id>/transfer-ownership."""
+
+    new_owner_user_id: int | None = None
+
+
+@dataclass(slots=True)
 class TeamItem:
     """A team as returned by the API -- exactly these fields, never the raw row."""
 
@@ -103,12 +125,30 @@ class CreateTeamResponse:
 
 
 @dataclass(slots=True)
+class MemberItem:
+    """A membership: the user id (never a name or email) and their team role."""
+
+    user_id: int
+    team_role: str
+    created_at: str | None
+
+
+@dataclass(slots=True)
 class TeamDetailResponse:
     """Response body for GET /api/v1/teams/<team_id>."""
 
     team: TeamItem
     member_count: int
     your_team_role: str | None
+
+
+@dataclass(slots=True)
+class MemberListResponse:
+    """Response body for GET /api/v1/teams/<team_id>/members."""
+
+    team_id: int
+    members: list[MemberItem]
+    total: int
 
 
 def _team_item(team: Any) -> dict[str, Any]:
@@ -120,6 +160,13 @@ def _team_item(team: Any) -> dict[str, Any]:
         "enabled": team.enabled is not False,
         "created_at": team.created_at.isoformat() if team.created_at else None,
     }
+
+
+def _can_manage_owner(access: TeamAccess) -> bool:
+    """True for the org admin or a live team Owner (``team:transfer_owner``)."""
+    return access.is_org_admin or Permission.TEAM_TRANSFER_OWNER in expand_team_permissions(
+        access.team_role
+    )
 
 
 def _error(exc: TeamError) -> tuple[Any, int]:
@@ -235,3 +282,135 @@ async def delete_team(team_id: int):
     stale = await asyncio.to_thread(team_svc.delete_team, _db(), access.team)
     await invalidate_user_auth_cache(_db(), stale)
     return {"message": "Team deleted"}
+
+
+@api_v1_bp.route("/teams/<int:team_id>/members", methods=["GET"])
+@tag(["Teams"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@validate_response(MemberListResponse, 200)
+async def list_members(team_id: int):
+    """List a team's members (any member or the org admin): user ids and roles only."""
+    access, error = await authorize_team(_db(), team_id, Permission.TEAM_READ)
+    if error is not None or access is None:
+        return error
+    database = _db()
+    page = PageRequest.from_request()
+    rows = await asyncio.to_thread(
+        lambda: list(
+            database(database.team_members.team_id == team_id).select(
+                limitby=page.limitby, orderby=database.team_members.id
+            )
+        )
+    )
+    members = [
+        {
+            "user_id": r.user_id,
+            "team_role": r.team_role,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+    return {"team_id": team_id, "members": members, "total": len(members)}
+
+
+@api_v1_bp.route("/teams/<int:team_id>/members", methods=["POST"])
+@tag(["Teams"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@validate_response(MessageResponse, 201)
+@validate_request(AddMemberRequest)
+async def add_team_member(team_id: int, data: AddMemberRequest):
+    """Add a user to the team (team Admin+ or org admin); 409 if they already have a team here."""
+    access, error = await authorize_team(_db(), team_id, Permission.TEAM_MEMBER_MANAGE)
+    if error is not None or access is None:
+        return error
+    if data.user_id is None:
+        return jsonify({"error": "user_id is required"}), 400
+    new_member_id: int = data.user_id
+    try:
+        stale = await asyncio.to_thread(
+            lambda: team_svc.add_member(
+                _db(),
+                access.team,
+                new_member_id,
+                data.team_role,
+                can_manage_owner=_can_manage_owner(access),
+            )  # fmt: skip
+        )
+    except TeamError as exc:
+        return _error(exc)
+    await invalidate_user_auth_cache(_db(), stale)
+    return {"message": "Member added"}, 201
+
+
+@api_v1_bp.route("/teams/<int:team_id>/members/<int:user_id>", methods=["PUT"])
+@tag(["Teams"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@validate_response(MessageResponse, 200)
+@validate_request(SetMemberRoleRequest)
+async def set_member_role(team_id: int, user_id: int, data: SetMemberRoleRequest):
+    """Change a member's team role (team Admin+ or org admin; owner changes need an owner)."""
+    access, error = await authorize_team(_db(), team_id, Permission.TEAM_MEMBER_MANAGE)
+    if error is not None or access is None:
+        return error
+    try:
+        stale = await asyncio.to_thread(
+            lambda: team_svc.set_member_role(
+                _db(),
+                access.team,
+                user_id,
+                data.team_role,
+                can_manage_owner=_can_manage_owner(access),
+            )  # fmt: skip
+        )
+    except TeamError as exc:
+        return _error(exc)
+    await invalidate_user_auth_cache(_db(), stale)
+    return {"message": "Member role updated"}
+
+
+@api_v1_bp.route("/teams/<int:team_id>/members/<int:user_id>", methods=["DELETE"])
+@tag(["Teams"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@validate_response(MessageResponse, 200)
+async def remove_team_member(team_id: int, user_id: int):
+    """Remove a member (team Admin+ or org admin; removing an owner needs an owner)."""
+    access, error = await authorize_team(_db(), team_id, Permission.TEAM_MEMBER_MANAGE)
+    if error is not None or access is None:
+        return error
+    try:
+        stale = await asyncio.to_thread(
+            lambda: team_svc.remove_member(
+                _db(), access.team, user_id, can_manage_owner=_can_manage_owner(access)
+            )
+        )
+    except TeamError as exc:
+        return _error(exc)
+    await invalidate_user_auth_cache(_db(), stale)
+    return {"message": "Member removed"}
+
+
+@api_v1_bp.route("/teams/<int:team_id>/transfer-ownership", methods=["POST"])
+@tag(["Teams"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@validate_response(MessageResponse, 200)
+@validate_request(TransferOwnershipRequest)
+async def transfer_team_ownership(team_id: int, data: TransferOwnershipRequest):
+    """Make an existing member the sole owner (team Owner or org admin)."""
+    access, error = await authorize_team(_db(), team_id, Permission.TEAM_TRANSFER_OWNER)
+    if error is not None or access is None:
+        return error
+    if data.new_owner_user_id is None:
+        return jsonify({"error": "new_owner_user_id is required"}), 400
+    try:
+        stale = await asyncio.to_thread(
+            team_svc.transfer_ownership, _db(), access.team, data.new_owner_user_id
+        )
+    except TeamError as exc:
+        return _error(exc)
+    await invalidate_user_auth_cache(_db(), stale)
+    return {"message": "Ownership transferred"}
