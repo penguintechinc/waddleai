@@ -223,6 +223,11 @@ def mint_rotated_credential(database: DB, virtual_key: Any) -> tuple[str, str] |
         return None
     row = database(database.api_keys.id == virtual_key.api_key_id).select().first()
     if row is None:
+        logger.error(
+            "mint_rotated_credential: virtual key %s links to missing api_keys row %s",
+            virtual_key.id,
+            virtual_key.api_key_id,
+        )
         return None
     api_key = f"wa-{row.key_id}-{secrets.token_urlsafe(32)}"
     return api_key, virtual_key_prefix(api_key)
@@ -240,6 +245,11 @@ def sync_linked_proxy_key(
         return None
     row = database(database.api_keys.id == virtual_key.api_key_id).select().first()
     if row is None:
+        logger.error(
+            "sync_linked_proxy_key: virtual key %s links to missing api_keys row %s",
+            virtual_key.id,
+            virtual_key.api_key_id,
+        )
         return None
     fields: dict[str, Any] = {}
     if enabled is not None:

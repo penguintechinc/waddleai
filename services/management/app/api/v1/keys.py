@@ -15,10 +15,13 @@ from quart_schema import security_scheme, tag, validate_request, validate_respon
 from shared.auth.rbac import Permission
 
 from ...extensions import db
+from ...services.auth_cache_invalidation import invalidate_key_ids
 from ...services.key_minting import (
     KeyTeamError,
     mint_proxy_key,
+    mint_rotated_credential,
     resolve_key_team,
+    sync_linked_proxy_key,
 )
 from . import api_v1_bp
 from ._pagination import PageRequest
@@ -620,11 +623,18 @@ async def update_key(key_id, data: UpdateKeyRequest):
 
     if update_fields:
 
-        def _update():
-            db(db.virtual_keys.id == key_id).update(**update_fields)
-            db.commit()
+        def _update() -> str | None:
+            database = _db()
+            database(database.virtual_keys.id == key_id).update(**update_fields)
+            database.commit()
+            # Disable/enable must reach the credential the proxy authenticates (issue #303).
+            if "enabled" in update_fields:
+                return sync_linked_proxy_key(database, key, enabled=update_fields["enabled"])
+            return None
 
-        await asyncio.to_thread(_update)
+        linked_key_id = await asyncio.to_thread(_update)
+        if linked_key_id:
+            await invalidate_key_ids([linked_key_id])
 
     return {"message": "Key updated successfully."}
 
@@ -660,11 +670,16 @@ async def delete_key(key_id):
             return jsonify({"error": "Access denied"}), 403
 
     # Soft delete by disabling
-    def _disable():
-        db(db.virtual_keys.id == key_id).update(enabled=False)
-        db.commit()
+    def _disable() -> str | None:
+        database = _db()
+        database(database.virtual_keys.id == key_id).update(enabled=False)
+        database.commit()
+        # A revoked key must stop authenticating at the proxy too, not just in management.
+        return sync_linked_proxy_key(database, key, enabled=False)
 
-    await asyncio.to_thread(_disable)
+    linked_key_id = await asyncio.to_thread(_disable)
+    if linked_key_id:
+        await invalidate_key_ids([linked_key_id])
 
     return {"message": "Key revoked successfully"}
 
@@ -693,18 +708,28 @@ async def rotate_key(key_id):
         elif user_role not in ["resource_manager"] and key.user_id != user_id:
             return jsonify({"error": "Access denied"}), 403
 
-    # Generate new key
-    key_secret = secrets.token_urlsafe(32)
-    new_api_key = f"wa-{key_secret}"
-    key_prefix = f"wa-{key_secret[:8]}..."
+    # A key linked to a proxy credential keeps its key_id and gets a fresh secret in the
+    # ``wa-{key_id}-{secret}`` format; a legacy unlinked key keeps its old ``wa-{secret}`` shape.
+    rotated = await asyncio.to_thread(mint_rotated_credential, _db(), key)
+    if rotated is not None:
+        new_api_key, key_prefix = rotated
+    else:
+        key_secret = secrets.token_urlsafe(32)
+        new_api_key = f"wa-{key_secret}"
+        key_prefix = f"wa-{key_secret[:8]}..."
 
-    def _rotate():
-        db(db.virtual_keys.id == key_id).update(
-            key_hash=bcrypt.hash(new_api_key), key_prefix=key_prefix
+    def _rotate() -> str | None:
+        database = _db()
+        new_hash = bcrypt.hash(new_api_key)
+        database(database.virtual_keys.id == key_id).update(
+            key_hash=new_hash, key_prefix=key_prefix
         )
-        db.commit()
+        database.commit()
+        return sync_linked_proxy_key(database, key, key_hash=new_hash)
 
-    await asyncio.to_thread(_rotate)
+    linked_key_id = await asyncio.to_thread(_rotate)
+    if linked_key_id:
+        await invalidate_key_ids([linked_key_id])
 
     return {
         "id": key_id,

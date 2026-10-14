@@ -662,6 +662,7 @@ def make_mock_key(
     key.expires_at = None
     key.last_used = None
     key.created_at = datetime(2025, 1, 1, 12, 0, 0)
+    key.api_key_id = None  # legacy virtual key: no linked proxy credential to sync
     return key
 
 
