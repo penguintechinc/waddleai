@@ -410,6 +410,24 @@ async def _acting_team(user_id: int, organization_id: int) -> tuple[int | None, 
     return await asyncio.to_thread(lookup_user_team, _db(), user_id, organization_id)
 
 
+async def _acting_team_or_teamless(
+    user_id: int, organization_id: int
+) -> tuple[int | None, str | None]:
+    """Resolve the acting team, degrading to teamless if the lookup fails.
+
+    Used after an irreversible step (token revoke / password commit) so a transient
+    team-read error cannot 500 the request and strand the caller with a dead session.
+    """
+    try:
+        return await _acting_team(user_id, organization_id)
+    except Exception:
+        logger.warning(
+            "auth: team resolution failed after an irreversible step; minting teamless token",
+            exc_info=True,
+        )
+        return None, None
+
+
 def create_token(
     user_id: int,
     username: str,
@@ -997,7 +1015,7 @@ async def refresh_token():
 
     await _revoke_presented_token()
 
-    team_id, team_role = await _acting_team(user["user_id"], user["organization_id"])
+    team_id, team_role = await _acting_team_or_teamless(user["user_id"], user["organization_id"])
     issued = issue_access_token(
         user_id=user["user_id"],
         username=user["username"],
@@ -1108,7 +1126,7 @@ async def change_password(data: ChangePasswordRequest):
     # authenticated with the now-revoked bearer token re-authenticate with the
     # new password, which is the expected post-change behaviour.
     await _revoke_presented_token()
-    team_id, team_role = await _acting_team(user.id, user.organization_id)
+    team_id, team_role = await _acting_team_or_teamless(user.id, user.organization_id)
     reissued = issue_access_token(
         user_id=user.id,
         username=user.username,

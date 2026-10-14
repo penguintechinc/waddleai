@@ -107,6 +107,49 @@ async def test_refresh_picks_up_a_membership_change(team_world, real_db_client) 
     assert P.TEAM_READ.value in claims["scope"]
 
 
+async def _boom(*_a, **_kw):
+    """Stand-in team lookup simulating a transient DB error."""
+    raise RuntimeError("transient db error")
+
+
+async def test_refresh_survives_team_read_error(
+    team_world, real_db_client, monkeypatch, caplog
+) -> None:
+    """A transient team-read error after the revoke mints a teamless token, never a 500."""
+    _login_user(team_world, "tina", "a", "a1", "admin")
+    body = await _login(real_db_client, "tina")
+    monkeypatch.setattr(auth_mod, "_acting_team", _boom)
+
+    with caplog.at_level("WARNING"):
+        resp = await real_db_client.post(
+            "/api/v1/auth/refresh", headers={"Authorization": f"Bearer {body['access_token']}"}
+        )
+    assert resp.status_code == 200
+    claims = _claims((await resp.get_json())["access_token"])
+    assert claims["ext"]["team_id"] is None
+    assert any(
+        r.levelname == "WARNING" and "team resolution failed" in r.message for r in caplog.records
+    )
+
+
+async def test_change_password_survives_team_read_error(
+    team_world, real_db_client, monkeypatch, caplog
+) -> None:
+    """The password is already committed: a team-read error must not 500 the change."""
+    _login_user(team_world, "tina", "a", "a1", "admin")
+    body = await _login(real_db_client, "tina")
+    monkeypatch.setattr(auth_mod, "_acting_team", _boom)
+
+    with caplog.at_level("WARNING"):
+        resp = await real_db_client.post(
+            "/api/v1/auth/change-password",
+            headers={"Authorization": f"Bearer {body['access_token']}"},
+            json={"current_password": "pw-12345-xyz", "new_password": "New-pw-98765-abc!"},
+        )
+    assert resp.status_code == 200, await resp.get_data()
+    assert any("team resolution failed" in r.message for r in caplog.records)
+
+
 async def test_kill_switch_login_is_teamless(team_world, real_db_client, monkeypatch) -> None:
     """``waddleai.disable-teams`` ON: login still works and mints no team context."""
     _login_user(team_world, "tina", "a", "a1", "admin")
