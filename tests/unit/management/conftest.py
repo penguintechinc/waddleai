@@ -10,13 +10,13 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import jwt as _jwt
 import pytest
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
-from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext
+from shared.auth.rbac import ROLE_PERMISSIONS, Role, UserContext, expand_team_permissions
 
 # Ensure management service is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../services/management"))
@@ -442,8 +442,14 @@ def make_token(
     username: str = "testuser",
     secret: str = TEST_ONLY_JWT_SECRET,  # unused, kept for call-site compat
     expires_hours: int = 1,
+    team_id: int | None = None,
+    team_role: str | None = None,
 ) -> str:
-    """Encode a JWT via penguin-aaa (RS256), or a raw expired token when expires_hours<=0."""
+    """Encode a JWT via penguin-aaa (RS256), or a raw expired token when expires_hours<=0.
+
+    ``team_id``/``team_role`` mint the teams-subsystem acting-team context into ``ext`` and
+    union the team role's scopes into the token, exactly as a real login would.
+    """
     from datetime import UTC
 
     provider = _test_oidc_provider()
@@ -470,7 +476,7 @@ def make_token(
     # UserContext.permissions is `set[Permission]`; downstream
     # user_context_to_claims() extracts `.value` from each member itself, so
     # pass the enums through unconverted rather than pre-stringifying here.
-    permissions = ROLE_PERMISSIONS.get(role_enum, set())
+    permissions = set(ROLE_PERMISSIONS.get(role_enum, set())) | expand_team_permissions(team_role)
     user_context = UserContext(
         user_id=user_id,
         username=username,
@@ -478,8 +484,20 @@ def make_token(
         organization_id=org_id,
         managed_orgs=[],
         permissions=permissions,
+        team_id=team_id,
+        team_role=team_role,
     )
     return issue_token(user_context, provider)
+
+
+@pytest.fixture
+def mint_token():
+    """Factory fixture: ``mint_token(role=, user_id=, org_id=, team_id=, team_role=)``.
+
+    A fixture (not an import of ``make_token``) so the token is signed by the same cached OIDC
+    keypair ``flask_app`` patched into the app -- see ``rm_org2_auth_headers`` for why.
+    """
+    return make_token
 
 
 @pytest.fixture
@@ -799,3 +817,51 @@ def rbac_manager(mock_db):
     from shared.auth.rbac import RBACManager
 
     return RBACManager(mock_db)
+
+
+@pytest.fixture(autouse=True)
+def _teamless_tokens_for_mock_db_tests(request, monkeypatch):
+    """Keep token mints teamless in the legacy MagicMock-DB route tests.
+
+    Those tests wire ONE canned row to every ``db(...).select().first()`` call, so the new
+    live team lookup in ``auth._acting_team`` would read that row as a ``team_members`` row.
+    Tests that opt in to a real database (the ``team_world`` fixture) keep the real lookup.
+    """
+    if "team_world" in request.fixturenames:
+        return
+    monkeypatch.setattr(
+        "services.management.app.api.v1.auth._acting_team",
+        AsyncMock(return_value=(None, None)),
+    )
+
+
+#: Route modules whose module-level ``db`` the real-database fixture below repoints.
+_REAL_DB_ROUTE_MODULES = ("auth", "users", "organizations", "keys", "proxy_keys")
+
+
+@pytest.fixture
+async def real_db_client(flask_app, team_world, monkeypatch) -> AsyncGenerator:
+    """A Quart test client whose route modules talk to ``team_world``'s REAL database.
+
+    ``flask_app`` patches every route module's ``db`` with one shared MagicMock; this repoints
+    the modules the teams tests exercise at the real SQLAlchemy-schema database instead, and
+    resets the process-wide auth singletons (throttle, rate limiter, denylist) so a lockout in
+    one test cannot leak into the next.
+    """
+    import importlib
+
+    from services.management.app.services.login_throttle import reset_login_throttle
+    from services.management.app.services.rate_limiter import reset_auth_rate_limiter
+    from services.management.app.services.token_denylist import reset_token_denylist
+
+    for name in _REAL_DB_ROUTE_MODULES:
+        module = importlib.import_module(f"services.management.app.api.v1.{name}")
+        monkeypatch.setattr(module, "db", team_world.db)
+    reset_login_throttle()
+    reset_auth_rate_limiter()
+    reset_token_denylist()
+    async with flask_app.test_client() as client:
+        yield client
+    reset_login_throttle()
+    reset_auth_rate_limiter()
+    reset_token_denylist()

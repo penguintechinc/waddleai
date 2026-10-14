@@ -18,7 +18,14 @@ from quart_schema import security_scheme, tag, validate_request, validate_respon
 
 from shared.auth.penguin_auth import create_oidc_provider, issue_token
 from shared.auth.penguin_auth import verify_token as _aaa_verify_token
-from shared.auth.rbac import ROLE_PERMISSIONS, Permission, Role, UserContext
+from shared.auth.rbac import (
+    ROLE_PERMISSIONS,
+    Permission,
+    Role,
+    UserContext,
+    expand_team_permissions,
+    lookup_user_team,
+)
 
 from ...extensions import db
 from ...services.login_throttle import ThrottleDecision, account_key, get_login_throttle
@@ -356,8 +363,13 @@ def issue_access_token(
     role: str,
     organization_id: int,
     expires_hours: int | None = None,
+    team_id: int | None = None,
+    team_role: str | None = None,
 ) -> IssuedToken:
     """Issue an RS256 access token and report the lifetime actually applied.
+
+    ``team_id``/``team_role`` are the caller's resolved acting team (teams spec D3/D6): the
+    team role's scopes are unioned into the token and the pair rides in the ``ext`` claim.
 
     Returning the real TTL alongside the token is the point: the previous code
     advertised `expires_in: 86400` on every login while penguin-aaa signed a
@@ -373,7 +385,8 @@ def issue_access_token(
         role_enum = Role(role)
     except ValueError:
         role_enum = Role.USER
-    permissions: set[Permission] = ROLE_PERMISSIONS.get(role_enum, set())
+    permissions: set[Permission] = set(ROLE_PERMISSIONS.get(role_enum, set()))
+    permissions |= expand_team_permissions(team_role)
     user_context = UserContext(
         user_id=user_id,
         username=username,
@@ -381,9 +394,20 @@ def issue_access_token(
         organization_id=organization_id,
         managed_orgs=[],
         permissions=permissions,
+        team_id=team_id,
+        team_role=team_role,
     )
     token = issue_token(user_context, _provider_for_ttl(hours))
     return IssuedToken(access_token=token, expires_in=hours * 3600)
+
+
+async def _acting_team(user_id: int, organization_id: int) -> tuple[int | None, str | None]:
+    """Resolve the user's live ``(team_id, team_role)`` off the event loop for a token mint.
+
+    Re-resolved on every mint (login, key exchange, refresh, password change) so a refresh
+    picks up a membership change instead of carrying a stale team forward.
+    """
+    return await asyncio.to_thread(lookup_user_team, _db(), user_id, organization_id)
 
 
 def create_token(
@@ -423,6 +447,8 @@ def _decode_token(token: str) -> dict | None:
         "scope": sorted(user_context.permissions),
         "jti": raw.get("jti"),
         "exp": raw.get("exp"),
+        "team_id": user_context.team_id,
+        "team_role": user_context.team_role,
     }
 
 
@@ -810,11 +836,14 @@ async def login(data: LoginRequest):
     await asyncio.to_thread(_update_login)
 
     # Create token
+    team_id, team_role = await _acting_team(user.id, user.organization_id)
     issued = issue_access_token(
         user_id=user.id,
         username=user.username,
         role=user.role,
         organization_id=user.organization_id,
+        team_id=team_id,
+        team_role=team_role,
     )
 
     # Additionally hand the browser an HttpOnly cookie carrying the same token
@@ -890,11 +919,14 @@ async def token_exchange():
         logger.info("auth: token exchange refused for an invalid or disabled API key")
         return jsonify({"error": "Invalid or expired token"}), 401
 
+    team_id, team_role = await _acting_team(user_ctx["user_id"], user_ctx["organization_id"])
     issued = issue_access_token(
         user_id=user_ctx["user_id"],
         username=user_ctx["username"],
         role=user_ctx["role"],
         organization_id=user_ctx["organization_id"],
+        team_id=team_id,
+        team_role=team_role,
     )
 
     return {
@@ -965,11 +997,14 @@ async def refresh_token():
 
     await _revoke_presented_token()
 
+    team_id, team_role = await _acting_team(user["user_id"], user["organization_id"])
     issued = issue_access_token(
         user_id=user["user_id"],
         username=user["username"],
         role=user["role"],
         organization_id=user["organization_id"],
+        team_id=team_id,
+        team_role=team_role,
     )
 
     # Browser clients authenticate from the HttpOnly cookie, which still holds
@@ -1073,11 +1108,14 @@ async def change_password(data: ChangePasswordRequest):
     # authenticated with the now-revoked bearer token re-authenticate with the
     # new password, which is the expected post-change behaviour.
     await _revoke_presented_token()
+    team_id, team_role = await _acting_team(user.id, user.organization_id)
     reissued = issue_access_token(
         user_id=user.id,
         username=user.username,
         role=user.role,
         organization_id=user.organization_id,
+        team_id=team_id,
+        team_role=team_role,
     )
     _set_access_cookie(reissued.access_token, reissued.expires_in)
 
