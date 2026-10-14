@@ -254,6 +254,18 @@ def build_rbac_enforcer() -> RBACEnforcer:
 # ---------------------------------------------------------------------------
 
 
+def _parse_team_id(raw: object) -> int | None:
+    """Parse a claim-borne team id; only an ASCII-digit string yields an id, anything else None."""
+    if isinstance(raw, str) and raw.isascii() and raw.isdigit():
+        return int(raw)
+    return None
+
+
+def _parse_team_role(raw: object) -> str | None:
+    """Return a claim-borne team role only if it is a string (scope expansion validates it)."""
+    return raw if isinstance(raw, str) else None
+
+
 def user_context_to_claims(user_context: UserContext) -> Claims:
     """Convert WaddleAI UserContext to penguin-aaa Claims."""
     scopes: list[str] = []
@@ -277,6 +289,10 @@ def user_context_to_claims(user_context: UserContext) -> Claims:
             "api_key_id": (
                 str(user_context.api_key_id) if user_context.api_key_id is not None else None
             ),
+            # Team context rides in ``ext`` (teams spec D6): penguin-aaa hard-codes the
+            # top-level ``teams`` wire key, so it cannot be renamed without forking the lib.
+            "team_id": str(user_context.team_id) if user_context.team_id is not None else None,
+            "team_role": user_context.team_role,
         },
     )
 
@@ -309,6 +325,8 @@ def claims_to_user_context(claims: Claims) -> UserContext:
         managed_orgs=[int(t) for t in (claims.teams or []) if t.isdigit()],
         permissions=permissions,
         api_key_id=api_key_id,
+        team_id=_parse_team_id(claims.ext.get("team_id") if claims.ext else None),
+        team_role=_parse_team_role(claims.ext.get("team_role") if claims.ext else None),
     )
 
 
@@ -332,6 +350,8 @@ def user_context_to_claims_dict(uc: UserContext) -> dict:
         "tenant": str(uc.organization_id),
         "teams": [str(o) for o in (uc.managed_orgs or [])],
         "api_key_id": (str(uc.api_key_id) if uc.api_key_id is not None else None),
+        "team_id": (str(uc.team_id) if uc.team_id is not None else None),
+        "team_role": uc.team_role,
     }
 
 
@@ -368,6 +388,8 @@ def claims_dict_to_user_context(d: dict) -> UserContext:
         managed_orgs=[int(t) for t in (d.get("teams", [])) if str(t).isdigit()],
         permissions=permissions,
         api_key_id=api_key_id,
+        team_id=_parse_team_id(d.get("team_id")),
+        team_role=_parse_team_role(d.get("team_role")),
     )
 
 
