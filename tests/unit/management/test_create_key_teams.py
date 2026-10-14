@@ -122,3 +122,19 @@ async def test_kill_switch_rejects_an_explicit_team_and_mints_teamless(
     assert bad.status_code == 404
     assert ok.status_code == 201
     assert (await ok.get_json())["team_id"] is None
+
+
+@pytest.mark.parametrize("target_role", ["reporter", "resource_manager"])
+async def test_team_admin_cannot_mint_above_their_org_role(
+    team_world, real_db_client, mint_token, target_role
+) -> None:
+    """A team key_admin (org role ``user``) may not mint a key for a higher-org-role teammate."""
+    w = team_world
+    w.db(w.db.users.id == w.u["mia"]).update(role=target_role)
+    resp = await real_db_client.post(
+        "/api/v1/keys",
+        json={"name": "k", "user_id": w.u["mia"], "organization_id": w.org["a"],
+              "team_id": w.t["a1"]},
+        headers=_hdr(mint_token, w, "adam", team="a1"),
+    )  # fmt: skip
+    assert resp.status_code == 403, await resp.get_data()

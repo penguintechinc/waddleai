@@ -26,6 +26,9 @@ from .auth import require_auth
 
 _BEARER_AUTH: list[dict[str, list[str]]] = [{"bearerAuth": []}]
 
+#: Org role rank for key issuance (higher = more privileged); unknown roles rank above all.
+_ROLE_RANK: dict[str, int] = {"user": 0, "reporter": 1, "resource_manager": 2, "admin": 3}
+
 
 @dataclass(slots=True)
 class PaginationMeta:
@@ -492,6 +495,12 @@ async def create_key(data: CreateKeyRequest):
                 return None, 403
             # Non-admin can only create keys for users with role <= their own
             if user_role != "admin" and target.role == "admin":
+                return None, 403
+            # A caller without global key-issuing rights (the team key_admin path) may never
+            # mint a credential above their own org role -- fail closed, never silently cap.
+            if user_role not in ("admin", "resource_manager") and _ROLE_RANK.get(
+                str(target.role), len(_ROLE_RANK)
+            ) > _ROLE_RANK.get(str(user_role), 0):
                 return None, 403
             return target, 200
 
