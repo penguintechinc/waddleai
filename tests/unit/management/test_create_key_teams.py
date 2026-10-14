@@ -135,3 +135,28 @@ async def test_team_admin_cannot_mint_above_their_org_role(
         headers=_hdr(mint_token, w, "adam", team="a1"),
     )  # fmt: skip
     assert resp.status_code == 403, await resp.get_data()
+
+
+@pytest.mark.parametrize(
+    ("role", "target", "status"),
+    [
+        ("admin", "mia", 201),               # admin: same-org other user
+        ("admin", "carl", 201),              # admin: cross-org (apikey:admin bypass)
+        ("resource_manager", "mia", 201),    # RM: same-org other user
+        ("resource_manager", "carl", 403),   # RM: never cross-org
+        ("user", "mia", 403),                # plain user: no teamless cross-user issuance
+        ("user", "carl", 403),
+    ],
+)  # fmt: skip
+async def test_cross_user_create_gate_outcomes_are_scope_derived(
+    team_world, real_db_client, mint_token, role, target, status
+) -> None:
+    """Cross-org/cross-user create gate allow/deny matrix (same outcomes as the old role gate)."""
+    w = team_world
+    target_org = "b" if target == "carl" else "a"
+    resp = await real_db_client.post(
+        "/api/v1/keys",
+        json={"name": "k", "user_id": w.u[target], "organization_id": w.org[target_org]},
+        headers=_hdr(mint_token, w, "boss", role=role),
+    )
+    assert resp.status_code == status, await resp.get_data()
