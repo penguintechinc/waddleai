@@ -180,6 +180,9 @@ class UserContext:
     managed_orgs: list[int]
     permissions: set[Permission]
     api_key_id: int | None = None
+    #: Acting team (teams spec D3) and the caller's role in it; ``None`` = teamless.
+    team_id: int | None = None
+    team_role: str | None = None
 
 
 # Role-based permission mapping
@@ -571,8 +574,16 @@ class RBACManager:
         permission: Permission,
         resource_org_id: int | None = None,
         resource_user_id: int | None = None,
+        resource_team_id: int | None = None,
     ) -> bool:
-        """Check if user has permission for specific resource."""
+        """Check if user has permission for specific resource.
+
+        Effective permissions are ``user ∪ org-role ∪ team-role``, each confined to its own
+        layer (teams spec D5): a team-layer permission is honoured only against the caller's
+        own team (``resource_team_id`` must equal ``user_context.team_id``) and only if the
+        caller's resolved ``team_role`` grants it, so a stale or forged scope claim can never
+        exceed the role. Org-layer checks are unchanged -- a team role never widens them.
+        """
         # Check base permission — permissions may be stored as strings (e.g. from JWT)
         perm_value = permission.value if isinstance(permission, Permission) else permission
         if (
@@ -584,6 +595,17 @@ class RBACManager:
         # Admin has access to everything
         if user_context.role == Role.ADMIN:
             return True
+
+        # Team branch: team-layer permissions are pinned to the caller's own team and role.
+        try:
+            perm_enum: Permission | None = Permission(perm_value)
+        except ValueError:
+            perm_enum = None
+        if perm_enum in TEAM_SCOPED_PERMISSIONS:
+            if resource_team_id is None or user_context.team_id != resource_team_id:
+                return False
+            if perm_enum not in expand_team_permissions(user_context.team_role):
+                return False
 
         # Resource-specific checks
         if resource_org_id is not None:
