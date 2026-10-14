@@ -113,6 +113,7 @@ class TestAuthenticateApiKey:
         mock_key_record.user_id = 5
         mock_key_record.key_hash = hashed_key
         mock_key_record.enabled = True
+        mock_key_record.team_id = None  # teamless key: no team_members lookup is made
 
         # 1) key_id lookup: db(...).select().first() -> the one candidate row
         mock_key_lookup = MagicMock()

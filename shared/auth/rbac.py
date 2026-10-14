@@ -10,6 +10,8 @@ from enum import Enum
 
 from passlib.hash import bcrypt
 
+from shared.auth.team_flags import teams_enabled
+
 
 class Role(Enum):
     """User roles with hierarchical permissions."""
@@ -359,6 +361,49 @@ def expand_team_permissions(team_role: object) -> set[Permission]:
         return set()
 
 
+def _live_team_membership(
+    database, user_id: int, organization_id: int, team_id: int | None
+) -> tuple[int | None, str | None]:
+    """Resolve ``(team_id, team_role)`` from the live ``team_members``/``teams`` rows.
+
+    ``team_id`` ``None`` means "the user's one team in this tenant" (D2 guarantees at most one);
+    an int pins the lookup to that team. Returns ``(None, None)`` -- teamless, never an error --
+    when the kill switch is on, no matching membership exists in this tenant, or the team is
+    explicitly disabled. The tenant filter stops a key row naming another tenant's team.
+    """
+    if not teams_enabled(str(organization_id)):
+        return None, None
+    members = database.team_members
+    query = (members.user_id == user_id) & (members.organization_id == organization_id)
+    if team_id is not None:
+        query = query & (members.team_id == team_id)
+    member = database(query).select().first()
+    if member is None:
+        return None, None
+    team = database(database.teams.id == member.team_id).select().first()
+    if team is None or team.enabled is False:
+        return None, None
+    return int(member.team_id), str(member.team_role)
+
+
+def lookup_key_team(
+    database, user_id: int, organization_id: int, key_team_id: int | None
+) -> tuple[int | None, str | None]:
+    """Acting team for a request authenticated by an API key (spec D3).
+
+    The key names its team (``api_keys.team_id``); NULL means the key acts teamless. The role
+    is looked up live so a removal or demotion is honoured even though the key row is unchanged.
+    """
+    if key_team_id is None:
+        return None, None
+    return _live_team_membership(database, user_id, organization_id, key_team_id)
+
+
+def lookup_user_team(database, user_id: int, organization_id: int) -> tuple[int | None, str | None]:
+    """Acting team for a login/JWT with no key: the user's single team in their tenant, if any."""
+    return _live_team_membership(database, user_id, organization_id, None)
+
+
 #: Valkey key prefix for the proxy's per-request api-key auth-lookup cache
 #: (``proxy/apps/proxy_server/auth_cache.py``). Defined here -- a module
 #: already shared by the proxy and management services -- rather than in
@@ -467,7 +512,8 @@ class RBACManager:
         if not user or not user.enabled:
             raise AuthenticationError("API key user is disabled")
 
-        context = self._build_user_context(user)
+        team_id, team_role = self.resolve_key_team(key_record, user)
+        context = self._build_user_context(user, team_id=team_id, team_role=team_role)
         context.api_key_id = key_record.id
         return context
 
@@ -526,13 +572,16 @@ class RBACManager:
         organization_id: int,
         managed_orgs: list[int] | None,
         api_key_id: int | None = None,
+        team_id: int | None = None,
+        team_role: str | None = None,
     ) -> UserContext:
         """Build a :class:`UserContext` from already-resolved fields -- no DB access.
 
         Delegates to :meth:`_build_user_context`'s role->permissions expansion
         and ``managed_orgs`` normalization via a lightweight stand-in object,
         so a cache-populated context (``auth_cache.py``) can never drift from
-        the DB-built one.
+        the DB-built one. ``team_id``/``team_role`` are the already-resolved acting
+        team; the team role is expanded into team-layer scopes exactly like the org role.
         """
         from types import SimpleNamespace
 
@@ -543,14 +592,22 @@ class RBACManager:
             username=username,
             organization_id=organization_id,
         )
-        context = self._build_user_context(user_like)
+        context = self._build_user_context(user_like, team_id=team_id, team_role=team_role)
         context.api_key_id = api_key_id
         return context
 
-    def _build_user_context(self, user) -> UserContext:
-        """Build user context from database record."""
+    def resolve_key_team(self, key_record, user) -> tuple[int | None, str | None]:
+        """Acting ``(team_id, team_role)`` for an authenticated key row and its owning user."""
+        return lookup_key_team(
+            self.db, user.id, user.organization_id, getattr(key_record, "team_id", None)
+        )
+
+    def _build_user_context(
+        self, user, team_id: int | None = None, team_role: str | None = None
+    ) -> UserContext:
+        """Build user context from database record (org bundle ∪ acting-team bundle)."""
         role = Role(user.role)
-        permissions = ROLE_PERMISSIONS.get(role, set())
+        permissions = set(ROLE_PERMISSIONS.get(role, set())) | expand_team_permissions(team_role)
 
         managed_orgs = []
         if user.managed_orgs:
@@ -566,6 +623,8 @@ class RBACManager:
             organization_id=user.organization_id,
             managed_orgs=managed_orgs,
             permissions=permissions,
+            team_id=team_id,
+            team_role=team_role,
         )
 
     def check_permission(

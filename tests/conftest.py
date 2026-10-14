@@ -309,7 +309,7 @@ def team_world(real_schema_db) -> TeamWorld:
     team a2: nat=member | loner(user, no team);   org b: team b1: carl=owner.
     """
     db = real_schema_db
-    org = {k: int(db.organizations.insert(name=k)) for k in ("a", "b")}
+    org = {k: int(db.organizations.insert(name=k, enabled=True)) for k in ("a", "b")}
     seed = [  # (username, org role, org, team key, team role)
         ("boss", "admin", "a", None, None),
         ("olive", "user", "a", "a1", "owner"),
@@ -321,7 +321,10 @@ def team_world(real_schema_db) -> TeamWorld:
         ("carl", "user", "b", "b1", "owner"),
     ]
     teams = {"a1": ("a", "Alpha"), "a2": ("a", "Beta"), "b1": ("b", "Gamma")}
-    t = {k: int(db.teams.insert(organization_id=org[o], name=n)) for k, (o, n) in teams.items()}
+    t = {
+        k: int(db.teams.insert(organization_id=org[o], name=n, enabled=True))
+        for k, (o, n) in teams.items()
+    }
     u: dict[str, int] = {}
     for name, role, o, team_key, team_role in seed:
         u[name] = int(
@@ -330,8 +333,9 @@ def team_world(real_schema_db) -> TeamWorld:
                 email=f"{name}@example.com",
                 password_hash=_PLACEHOLDER_HASH,
                 role=role,
+                enabled=True,
                 organization_id=org[o],
-            )  # fmt: skip
+            )
         )
         if team_key:
             db.team_members.insert(
