@@ -1,11 +1,13 @@
 """Pytest configuration and shared fixtures for WaddleAI tests."""
 
+import dataclasses
 import importlib
 import os
 import shutil
 import sys
 import tempfile
 import types
+from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -284,3 +286,56 @@ def real_schema_db(tmp_path):
     Base.metadata.create_all(engine)
     engine.dispose()
     return get_db(url)
+
+
+_PLACEHOLDER_HASH = "x"  # noqa: S105 -- placeholder, never a loginable hash
+
+
+@dataclasses.dataclass
+class TeamWorld:
+    """Seeded teams fixture data: ``db`` plus name->id maps for orgs, users and teams."""
+
+    db: Any
+    org: dict[str, int]
+    u: dict[str, int]
+    t: dict[str, int]
+
+
+@pytest.fixture
+def team_world(real_schema_db) -> TeamWorld:
+    """Two orgs, three teams and eight users covering every team role, on a real schema.
+
+    org a: boss(admin, no team) | team a1: olive=owner adam=admin mia=member vic=viewer |
+    team a2: nat=member | loner(user, no team);   org b: team b1: carl=owner.
+    """
+    db = real_schema_db
+    org = {k: int(db.organizations.insert(name=k)) for k in ("a", "b")}
+    seed = [  # (username, org role, org, team key, team role)
+        ("boss", "admin", "a", None, None),
+        ("olive", "user", "a", "a1", "owner"),
+        ("adam", "user", "a", "a1", "admin"),
+        ("mia", "user", "a", "a1", "member"),
+        ("vic", "user", "a", "a1", "viewer"),
+        ("nat", "user", "a", "a2", "member"),
+        ("loner", "user", "a", None, None),
+        ("carl", "user", "b", "b1", "owner"),
+    ]
+    teams = {"a1": ("a", "Alpha"), "a2": ("a", "Beta"), "b1": ("b", "Gamma")}
+    t = {k: int(db.teams.insert(organization_id=org[o], name=n)) for k, (o, n) in teams.items()}
+    u: dict[str, int] = {}
+    for name, role, o, team_key, team_role in seed:
+        u[name] = int(
+            db.users.insert(
+                username=name,
+                email=f"{name}@example.com",
+                password_hash=_PLACEHOLDER_HASH,
+                role=role,
+                organization_id=org[o],
+            )  # fmt: skip
+        )
+        if team_key:
+            db.team_members.insert(
+                team_id=t[team_key], user_id=u[name], organization_id=org[o], team_role=team_role
+            )
+    db.commit()
+    return TeamWorld(db=db, org=org, u=u, t=t)
