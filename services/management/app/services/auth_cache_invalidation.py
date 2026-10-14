@@ -20,6 +20,30 @@ from .. import extensions as _ext
 logger = logging.getLogger(__name__)
 
 
+async def invalidate_key_ids(key_ids: Iterable[str]) -> int:
+    """Delete the proxy auth-cache entry for each ``api_keys.key_id``; best-effort, never raises.
+
+    Returns how many keys were targeted. A missing cache client or a Valkey error is logged
+    and swallowed -- the proxy's own cache TTL then bounds the staleness.
+    """
+    ids = sorted({str(k) for k in key_ids})
+    if not ids:
+        return 0
+    redis_client = getattr(_ext, "redis_client", None)
+    if redis_client is None:
+        logger.warning(
+            "teams: no cache client configured; auth-cache invalidation for %d key(s) skipped "
+            "(bounded by the proxy's cache TTL instead)",
+            len(ids),
+        )
+        return len(ids)
+    try:
+        await asyncio.to_thread(redis_client.delete, *[auth_cache_key(k) for k in ids])
+    except Exception as exc:  # noqa: BLE001 -- cache outage must not fail the triggering write
+        logger.warning("teams: failed to invalidate %d auth-cache key(s): %s", len(ids), exc)
+    return len(ids)
+
+
 async def invalidate_user_auth_cache(database: DB, user_ids: Iterable[int]) -> int:
     """Delete the proxy auth-cache entry of every API key owned by ``user_ids``.
 
@@ -35,20 +59,4 @@ async def invalidate_user_auth_cache(database: DB, user_ids: Iterable[int]) -> i
         rows = database(database.api_keys.user_id.belongs(ids)).select(database.api_keys.key_id)
         return [str(r.key_id) for r in rows]
 
-    key_ids = await asyncio.to_thread(_key_ids)
-    if not key_ids:
-        return 0
-
-    redis_client = getattr(_ext, "redis_client", None)
-    if redis_client is None:
-        logger.warning(
-            "teams: no cache client configured; auth-cache invalidation for %d key(s) skipped "
-            "(bounded by the proxy's cache TTL instead)",
-            len(key_ids),
-        )
-        return len(key_ids)
-    try:
-        await asyncio.to_thread(redis_client.delete, *[auth_cache_key(k) for k in key_ids])
-    except Exception as exc:  # noqa: BLE001 -- cache outage must not fail the membership write
-        logger.warning("teams: failed to invalidate %d auth-cache key(s): %s", len(key_ids), exc)
-    return len(key_ids)
+    return await invalidate_key_ids(await asyncio.to_thread(_key_ids))

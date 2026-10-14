@@ -13,9 +13,11 @@ import logging
 import pytest
 from passlib.hash import bcrypt
 
+import proxy.apps.proxy_server.auth_cache as auth_cache_mod
 import services.management.app.extensions as ext_mod
 from proxy.apps.proxy_server.auth_cache import ApiKeyAuthCache, ApiKeyAuthenticator
 from services.management.app.services.auth_cache_invalidation import (
+    invalidate_key_ids,
     invalidate_user_auth_cache,
 )
 from shared.auth.rbac import RBACManager, auth_cache_key
@@ -123,6 +125,9 @@ def planes(team_world, monkeypatch):
     """Proxy authenticator + management invalidation wired to ONE shared fake Valkey."""
     store = _Store()
     monkeypatch.setattr(ext_mod, "redis_client", _SyncValkey(store))
+    # ProxyServer.shutdown() in earlier proxy tests leaves the process-wide auth executor shut
+    # down; hand this test a fresh one (monkeypatch restores the original on teardown).
+    monkeypatch.setattr(auth_cache_mod, "_executor", None)
     cache = ApiKeyAuthCache(valkey=_AsyncValkey(store))
     auth = ApiKeyAuthenticator(rbac=RBACManager(team_world.db), cache=cache)
     return auth, store
@@ -146,3 +151,22 @@ async def test_membership_change_reaches_the_proxy_after_invalidation(team_world
     await invalidate_user_auth_cache(db, [team_world.u["mia"]])
 
     assert (await auth.authenticate(_SECRET)).team_role == "admin"
+
+
+async def test_invalidate_key_ids_deletes_exactly_those_keys(monkeypatch) -> None:
+    """Direct key-id invalidation (used by revoke/rotate parity) targets only the named keys."""
+    store = _Store({auth_cache_key(k): "x" for k in ("a", "b", "c")})
+    monkeypatch.setattr(ext_mod, "redis_client", _SyncValkey(store))
+    assert await invalidate_key_ids(["a", "c", "a"]) == 2
+    assert set(store) == {auth_cache_key("b")}
+
+
+async def test_invalidate_key_ids_empty_is_a_noop(monkeypatch) -> None:
+    """No ids -> no cache call at all (a bare ``delete()`` with no keys is a Valkey error)."""
+
+    class _Boom:
+        def delete(self, *keys):
+            raise AssertionError("must not be called")
+
+    monkeypatch.setattr(ext_mod, "redis_client", _Boom())
+    assert await invalidate_key_ids([]) == 0
