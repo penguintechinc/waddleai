@@ -8,6 +8,7 @@ fake Valkey between them. No mocks of any code under test.
 import pytest
 
 from proxy.apps.proxy_server.auth_cache import ApiKeyAuthCache, ApiKeyAuthenticator
+from services.management.app.services.key_minting import mint_proxy_key
 from shared.auth.rbac import Permission, RBACManager
 
 P = Permission
@@ -30,7 +31,7 @@ async def _create_key(client, headers, **extra) -> dict:
 async def test_lifecycle_membership_changes_reach_the_proxy(
     team_world, real_db_client, team_headers, proxy
 ) -> None:
-    """Org admin builds a team; the member's mgmt-created key acts in it at the proxy.
+    """Org admin builds a team; a member's keys act in it at the proxy.
 
     # regression: gh-303 (key works at the proxy) + D7 (every membership change is visible there
     once management invalidates): added -> promoted -> removed, same key throughout.
@@ -42,8 +43,18 @@ async def test_lifecycle_membership_changes_reach_the_proxy(
     assert created.status_code == 201
     ops = (await created.get_json())["id"]
 
-    # loner has no team yet: their management-created key is teamless but works at the proxy.
-    first = await _create_key(real_db_client, loner)
+    # loner is in no team, so the API refuses to mint them a key (every key acts in a team).
+    refused = await real_db_client.post("/api/v1/keys", json={"name": "e2e"}, headers=loner)
+    assert refused.status_code == 409
+
+    # A pre-existing teamless key (e.g. minted before they left their team) still works at the
+    # proxy, teamless -- and is adopted when they join a team.
+    legacy = mint_proxy_key(
+        w.db, user_id=w.u["loner"], org_id=w.org["a"], name="old", owner_role="user",
+        team_id=None, expires_at=None, allowed_models=None, allowed_providers=None,
+        budget_limit_daily=None, budget_limit_monthly=None, tpm_limit=None, rpm_limit=None,
+    )  # fmt: skip
+    first = {"api_key": legacy.api_key}
     ctx = await proxy.authenticate(first["api_key"])
     assert (ctx.user_id, ctx.team_id) == (w.u["loner"], None)
 

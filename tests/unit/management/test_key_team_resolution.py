@@ -27,9 +27,15 @@ def _resolve(w, *, caller: str, target: str | None = None, team: str | None = No
 
 
 def test_default_is_the_target_users_own_team(team_world) -> None:
-    """No team requested: bind the key to the owner's single team, or None if teamless."""
+    """No team requested: bind the key to the owner's single team."""
     assert _resolve(team_world, caller="mia") == team_world.t["a1"]
-    assert _resolve(team_world, caller="loner") is None
+
+
+def test_default_requires_the_owner_to_be_in_a_team(team_world) -> None:
+    """An owner in no team cannot get a key: 409 (every key acts in a team)."""
+    with pytest.raises(KeyTeamError) as exc:
+        _resolve(team_world, caller="loner")
+    assert exc.value.status == 409
 
 
 def test_default_for_another_user_uses_that_users_team(team_world) -> None:

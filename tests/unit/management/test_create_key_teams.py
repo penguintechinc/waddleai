@@ -39,17 +39,14 @@ async def test_gh303_created_key_authenticates_at_the_proxy_with_the_default_tea
     assert (ctx.team_id, ctx.team_role) == (team_world.t["a1"], "member")
 
 
-async def test_teamless_user_gets_a_teamless_but_working_key(
-    team_world, real_db_client, mint_token
-) -> None:
-    """Loner has no team: the key is created teamless and still authenticates."""
+async def test_user_in_no_team_cannot_create_a_key(team_world, real_db_client, mint_token) -> None:
+    """Loner is in no team: key creation is refused (409) and nothing is minted."""
+    before = team_world.db(team_world.db.api_keys.id > 0).count()
     resp = await real_db_client.post(
         "/api/v1/keys", json={"name": "ci"}, headers=_hdr(mint_token, team_world, "loner")
     )
-    assert resp.status_code == 201
-    body = await resp.get_json()
-    assert body["team_id"] is None
-    assert RBACManager(team_world.db).authenticate_api_key(body["api_key"]).team_id is None
+    assert resp.status_code == 409
+    assert team_world.db(team_world.db.api_keys.id > 0).count() == before
 
 
 @pytest.mark.parametrize(
