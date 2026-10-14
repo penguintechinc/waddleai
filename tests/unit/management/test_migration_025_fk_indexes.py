@@ -79,7 +79,7 @@ def test_models_declare_the_same_indexes() -> None:
 
     def names(table: str) -> set[str]:
         """Index names declared on the model table."""
-        return {i.name for i in Base.metadata.tables[table].indexes}
+        return {str(i.name) for i in Base.metadata.tables[table].indexes}
 
     assert "ix_api_keys_team_id" in names("api_keys")
     assert "ix_virtual_keys_api_key_id" in names("virtual_keys")
