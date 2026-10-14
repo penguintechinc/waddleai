@@ -151,5 +151,5 @@ async def test_dangling_api_key_link_is_logged_not_silent(
         )
 
     assert resp.status_code == 200
-    assert "missing api_keys row" in caplog.text
+    assert "missing proxy-credential row" in caplog.text
     redis.delete.assert_not_called()
