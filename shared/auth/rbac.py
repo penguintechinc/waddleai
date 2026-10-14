@@ -7,169 +7,19 @@ import functools
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import Enum
 
 from passlib.hash import bcrypt
 
-from shared.auth.team_flags import teams_enabled
-
-
-class Role(Enum):
-    """User roles with hierarchical permissions."""
-
-    ADMIN = "admin"
-    RESOURCE_MANAGER = "resource_manager"
-    REPORTER = "reporter"
-    USER = "user"
-
-
-class Permission(Enum):
-    """System permissions."""
-
-    # System administration
-    SYSTEM_CONFIG = "system:config"
-    SYSTEM_MONITOR = "system:monitor"
-    SYSTEM_HEALTH = "system:health"
-
-    # User management
-    USER_CREATE = "user:create"
-    USER_READ = "user:read"
-    USER_UPDATE = "user:update"
-    USER_DELETE = "user:delete"
-
-    # Organization management
-    ORG_CREATE = "org:create"
-    ORG_READ = "org:read"
-    ORG_UPDATE = "org:update"
-    ORG_DELETE = "org:delete"
-
-    # API key management
-    APIKEY_CREATE = "apikey:create"
-    APIKEY_READ = "apikey:read"
-    APIKEY_UPDATE = "apikey:update"
-    APIKEY_DELETE = "apikey:delete"
-
-    # Quota management
-    QUOTA_READ = "quota:read"
-    QUOTA_UPDATE = "quota:update"
-    QUOTA_RESET = "quota:reset"
-
-    # Analytics and reporting
-    ANALYTICS_READ = "analytics:read"
-    ANALYTICS_SYSTEM = "analytics:system"
-    ANALYTICS_SECURITY = "analytics:security"
-
-    # LLM management
-    LLM_CONFIG = "llm:config"
-    LLM_MODELS = "llm:models"
-
-    # Proxy usage
-    PROXY_USE = "proxy:use"
-    PROXY_ROUTE = "proxy:route"
-
-    # Memory (org-scoped shared memory moderation)
-    MEMORY_MODERATE = "memory:moderate"
-
-    # ------------------------------------------------------------------
-    # Route-scoped permissions (OIDC scope migration, feature/oidc-scope-authz)
-    #
-    # Each of these corresponds 1:1 to a former `require_role(...)` call site
-    # in services/management/app/api/v1/*.py. They were minted as new,
-    # dedicated scopes -- rather than reusing a pre-existing Permission whose
-    # role membership didn't exactly match the route's former role list --
-    # so the migration cannot silently widen access. The authoritative,
-    # enforced route -> scope mapping (and the "admin+resource_manager" vs
-    # "admin only" tier split) lives in
-    # tests/unit/management/test_scope_authz.py, enumerated live from the
-    # blueprint rather than hand-documented so it can't drift from reality.
-    # ------------------------------------------------------------------
-
-    # "Admin + resource_manager" tier (former require_role("admin", "resource_manager"))
-    CACHE_CONFIG_WRITE = "cache_config:write"
-    HOOK_RULE_ADMIN = "hook_rule:admin"
-    HOOK_METRICS_READ = "hook_metrics:read"
-    KNOWLEDGE_WRITE = "knowledge:write"
-    MODEL_ALIAS_WRITE = "model_alias:write"
-    QUOTA_LIST = "quota:list"
-    ROUTING_ASSIGNMENT_WRITE = "routing_assignment:write"
-    ROUTING_POLICY_WRITE = "routing_policy:write"
-    ROUTING_RULE_WRITE = "routing_rule:write"
-    SECURITY_BYPASS_GRANT_WRITE = "security_bypass_grant:write"
-    USAGE_READ_BY_USER = "usage:read_by_user"
-    USER_MANAGE = "user:manage"
-
-    # "Admin only" tier (former require_role("admin"))
-    CILIUM_ADMIN = "cilium:admin"
-    FLEET_ADMIN = "fleet:admin"
-    INTEGRATION_ADMIN = "integration:admin"
-    LLAMACPP_ADMIN = "llamacpp:admin"
-    MEMORY_CONFIG_ADMIN = "memory_config:admin"
-    MEMORY_SCOPING_ADMIN = "memory_scoping:admin"
-    OLLAMA_ADMIN = "ollama:admin"
-    OLLAMA_MODEL_ADMIN = "ollama_model:admin"
-    ORG_ADMIN_UPDATE = "org:admin_update"
-    PROVIDER_ADMIN = "provider:admin"
-    QUOTA_ORG_UPDATE = "quota:org_update"
-    ROUTING_ASSIGNMENT_ADMIN = "routing_assignment:admin"
-    ROUTING_DRY_RUN_ADMIN = "routing_dry_run:admin"
-    ROUTING_POLICY_DELETE = "routing_policy:delete"
-    SECURITY_POLICY_ADMIN = "security_policy:admin"
-
-    # ------------------------------------------------------------------
-    # Model access policy CRUD (model-access-policy design spec §8) --
-    # NOT part of the OIDC-scope migration above (new feature, minted
-    # fresh), but enumerated by the same `test_scope_authz.py` regression
-    # guard, so it lives in `_B_TIER_SCOPES`/`_MIGRATED_SCOPES` there too.
-    # ------------------------------------------------------------------
-    MODEL_ACCESS_POLICY_WRITE = "model_access_policy:write"  # admin + resource_manager
-    MODEL_ACCESS_POLICY_DELETE = "model_access_policy:delete"  # admin only
-
-    # ------------------------------------------------------------------
-    # Admin-exclusive cross-org "bypass" scopes (audit-2026-09-14 wave-2
-    # authz reconciliation). Each expresses the "an admin may act on / see
-    # ANY org's resource" privilege that used to be a bare `role == "admin"`
-    # check inside a route handler. They are admin-ONLY (added only to
-    # Role.ADMIN below) precisely because the pre-existing *_WRITE scope for
-    # each resource is ALSO held by resource_manager -- gating a cross-org
-    # bypass on that shared scope would let a resource_manager escalate
-    # across tenants (an IDOR). See services/management/app/api/v1/{keys,
-    # quotas,model_aliases,routing_rules,routing_policies,
-    # model_access_policies,cache_configs,routing_decisions}.py.
-    # ------------------------------------------------------------------
-    APIKEY_ADMIN = "apikey:admin"
-    QUOTA_ADMIN = "quota:admin"
-    MODEL_ALIAS_ADMIN = "model_alias:admin"
-    ROUTING_RULE_ADMIN = "routing_rule:admin"
-    ROUTING_POLICY_ADMIN = "routing_policy:admin"
-    MODEL_ACCESS_POLICY_ADMIN = "model_access_policy:admin"
-    CACHE_CONFIG_ADMIN = "cache_config:admin"
-    ROUTING_DECISION_READ = "routing_decision:read"
-
-    # ------------------------------------------------------------------
-    # Team scope tier (teams subsystem spec §5). TEAM_ORG_ADMIN is the ORG-layer
-    # scope ("act on any team in my tenant"): held by Role.ADMIN only, never by a
-    # team role. Every other team:* permission is TEAM-layer -- granted by a team
-    # role bundle (TEAM_ROLE_PERMISSIONS) and only honoured against the caller's
-    # own team (see RBACManager.check_permission's Team branch).
-    # ------------------------------------------------------------------
-    TEAM_ORG_ADMIN = "team:org_admin"
-    TEAM_READ = "team:read"
-    TEAM_USE = "team:use"
-    TEAM_KEY_CREATE = "team:key_create"
-    TEAM_KEY_ADMIN = "team:key_admin"
-    TEAM_MEMBER_MANAGE = "team:member_manage"
-    TEAM_ADMIN = "team:admin"
-    TEAM_DELETE = "team:delete"
-    TEAM_TRANSFER_OWNER = "team:transfer_owner"
-
-
-class TeamRole(Enum):
-    """Per-team roles (``team_members.team_role``); expanded to scopes like org roles are."""
-
-    OWNER = "owner"
-    ADMIN = "admin"
-    MEMBER = "member"
-    VIEWER = "viewer"
+from shared.auth.permissions import Permission, Role
+from shared.auth.team_rbac import (
+    TEAM_ROLE_PERMISSIONS,  # noqa: F401 -- re-exported
+    TEAM_SCOPED_PERMISSIONS,  # noqa: F401 -- re-exported
+    TeamRole,  # noqa: F401 -- re-exported
+    expand_team_permissions,
+    lookup_key_team,
+    lookup_user_team,  # noqa: F401 -- re-exported
+    team_permission_allowed,
+)
 
 
 @dataclass
@@ -320,89 +170,6 @@ ROLE_PERMISSIONS = {
         Permission.PROXY_USE,
     },
 }
-
-
-_TEAM_VIEWER = {Permission.TEAM_READ}
-_TEAM_MEMBER = _TEAM_VIEWER | {Permission.TEAM_USE, Permission.TEAM_KEY_CREATE}
-_TEAM_ADMIN = _TEAM_MEMBER | {
-    Permission.TEAM_ADMIN,
-    Permission.TEAM_MEMBER_MANAGE,
-    Permission.TEAM_KEY_ADMIN,
-}
-_TEAM_OWNER = _TEAM_ADMIN | {Permission.TEAM_DELETE, Permission.TEAM_TRANSFER_OWNER}
-
-#: Team role -> the team-layer permissions it expands to (cumulative: owner > admin > member
-#: > viewer). Expanded at UserContext build time, exactly as ``ROLE_PERMISSIONS`` is for org roles.
-TEAM_ROLE_PERMISSIONS: dict[TeamRole, set[Permission]] = {
-    TeamRole.VIEWER: _TEAM_VIEWER,
-    TeamRole.MEMBER: _TEAM_MEMBER,
-    TeamRole.ADMIN: _TEAM_ADMIN,
-    TeamRole.OWNER: _TEAM_OWNER,
-}
-
-#: Every team-LAYER permission: honoured only against the caller's own team. ``TEAM_ORG_ADMIN``
-#: is deliberately absent -- it is an org-layer scope no team role can grant.
-TEAM_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
-    p for p in Permission if p.value.startswith("team:") and p is not Permission.TEAM_ORG_ADMIN
-)
-
-
-def expand_team_permissions(team_role: object) -> set[Permission]:
-    """Expand a ``team_members.team_role`` string to a fresh set of team-layer permissions.
-
-    Fails closed: ``None``, a non-string, or any value that is not exactly a ``TeamRole`` wire
-    value (case-sensitive, no whitespace tolerance) expands to nothing, so a corrupt row or a
-    forged claim can never widen access. Always returns a new set so callers may mutate it.
-    """
-    if not isinstance(team_role, str):
-        return set()
-    try:
-        return set(TEAM_ROLE_PERMISSIONS[TeamRole(team_role)])
-    except (ValueError, KeyError):
-        return set()
-
-
-def _live_team_membership(
-    database, user_id: int, organization_id: int, team_id: int | None
-) -> tuple[int | None, str | None]:
-    """Resolve ``(team_id, team_role)`` from the live ``team_members``/``teams`` rows.
-
-    ``team_id`` ``None`` means "the user's one team in this tenant" (D2 guarantees at most one);
-    an int pins the lookup to that team. Returns ``(None, None)`` -- teamless, never an error --
-    when the kill switch is on, no matching membership exists in this tenant, or the team is
-    explicitly disabled. The tenant filter stops a key row naming another tenant's team.
-    """
-    if not teams_enabled(str(organization_id)):
-        return None, None
-    members = database.team_members
-    query = (members.user_id == user_id) & (members.organization_id == organization_id)
-    if team_id is not None:
-        query = query & (members.team_id == team_id)
-    member = database(query).select().first()
-    if member is None:
-        return None, None
-    team = database(database.teams.id == member.team_id).select().first()
-    if team is None or team.enabled is False:
-        return None, None
-    return int(member.team_id), str(member.team_role)
-
-
-def lookup_key_team(
-    database, user_id: int, organization_id: int, key_team_id: int | None
-) -> tuple[int | None, str | None]:
-    """Acting team for a request authenticated by an API key (spec D3).
-
-    The key names its team (``api_keys.team_id``); NULL means the key acts teamless. The role
-    is looked up live so a removal or demotion is honoured even though the key row is unchanged.
-    """
-    if key_team_id is None:
-        return None, None
-    return _live_team_membership(database, user_id, organization_id, key_team_id)
-
-
-def lookup_user_team(database, user_id: int, organization_id: int) -> tuple[int | None, str | None]:
-    """Acting team for a login/JWT with no key: the user's single team in their tenant, if any."""
-    return _live_team_membership(database, user_id, organization_id, None)
 
 
 #: Valkey key prefix for the proxy's per-request api-key auth-lookup cache
@@ -678,15 +445,13 @@ class RBACManager:
             return True
 
         # Team branch: team-layer permissions are pinned to the caller's own team and role.
-        try:
-            perm_enum: Permission | None = Permission(perm_value)
-        except ValueError:
-            perm_enum = None
-        if perm_enum in TEAM_SCOPED_PERMISSIONS:
-            if resource_team_id is None or user_context.team_id != resource_team_id:
-                return False
-            if perm_enum not in expand_team_permissions(user_context.team_role):
-                return False
+        if not team_permission_allowed(
+            perm_value,
+            team_id=user_context.team_id,
+            team_role=user_context.team_role,
+            resource_team_id=resource_team_id,
+        ):
+            return False
 
         # Resource-specific checks
         if resource_org_id is not None:
