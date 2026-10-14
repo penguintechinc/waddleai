@@ -176,8 +176,20 @@ def seat_new_user(database: DB, user_id: int, org_id: int, org_role: str) -> int
     """Seat a just-created user in their organization's Default team; return the team id.
 
     A brand-new user has no membership and no keys, so this skips ``add_member``'s
-    validation and adoption steps and inserts the membership directly.
+    validation and adoption steps and inserts the membership directly. Idempotent: a user who
+    already has a membership in this org (a retried create) keeps it and its team is returned,
+    honouring ``UNIQUE(user_id, organization_id)`` instead of inserting a duplicate.
     """
+    existing = (
+        database(
+            (database.team_members.user_id == user_id)
+            & (database.team_members.organization_id == org_id)
+        )
+        .select()
+        .first()
+    )
+    if existing is not None:
+        return int(existing.team_id)
     team_id = ensure_default_team(database, org_id)
     database.team_members.insert(
         team_id=team_id,

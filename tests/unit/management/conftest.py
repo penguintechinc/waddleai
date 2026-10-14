@@ -836,6 +836,7 @@ def _teamless_tokens_for_mock_db_tests(request, monkeypatch):
     monkeypatch.setattr(
         "services.management.app.api.v1.organizations.ensure_default_team", lambda *a, **kw: 1
     )
+    monkeypatch.setattr("services.management.app.api.v1.users.seat_new_user", lambda *a, **kw: 1)
     monkeypatch.setattr(
         "services.management.app.services.teams.ensure_default_team", lambda *a, **kw: 1
     )

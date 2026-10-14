@@ -13,6 +13,7 @@ from shared.auth.rbac import Permission
 
 from ... import dsar
 from ...extensions import db
+from ...services.teams import seat_new_user
 from . import api_v1_bp
 from ._pagination import PageRequest
 from .auth import require_auth, require_scope
@@ -393,6 +394,9 @@ async def create_user(data: CreateUserRequest):
             created_at=datetime.utcnow(),
         )
         database.commit()
+        # Seat the user in their org's Default team (migration 024 only seats users that exist
+        # at upgrade time); admin for an org admin, else member.
+        seat_new_user(database, new_user_id, target_org_id, role)
         return new_user_id
 
     user_id = await asyncio.to_thread(_insert)
