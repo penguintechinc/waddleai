@@ -6,18 +6,45 @@ which team a new key acts in and mints the proxy-parsable ``wa-{key_id}-{secret}
 """
 
 import logging
+import secrets
 from collections.abc import Collection
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
+from passlib.hash import bcrypt
 from penguin_dal.db import DB
 
 from shared.auth.rbac import (
     Permission,
+    access_level_for_role,
     expand_team_permissions,
     lookup_user_team,
+    mint_wa_credential,
 )
 from shared.auth.team_flags import teams_enabled
 
 logger = logging.getLogger(__name__)
+
+#: A management-verified virtual key is matched by its first 11 characters (``wa-`` + 8) plus
+#: ``...`` -- must stay equal to ``api.v1.auth._virtual_key_prefix`` (a test pins the pair).
+_VIRTUAL_KEY_PREFIX_LEN = 11
+
+
+@dataclass(slots=True)
+class MintedKey:
+    """A freshly minted proxy key: both row ids, the non-secret key_id, and the one-time secret."""
+
+    virtual_key_id: int
+    api_key_row_id: int
+    key_id: str
+    api_key: str
+    key_prefix: str
+
+
+def virtual_key_prefix(api_key: str) -> str:
+    """Return the ``virtual_keys.key_prefix`` a presented ``api_key`` must match."""
+    return f"{api_key[:_VIRTUAL_KEY_PREFIX_LEN]}..."
 
 
 class KeyTeamError(Exception):
@@ -92,3 +119,120 @@ def resolve_key_team(
     if _membership(database, requested_team_id, target_user_id) is None:
         raise KeyTeamError("Key owner is not a member of that team", 400)
     return int(requested_team_id)
+
+
+def mint_proxy_key(
+    database: DB,
+    *,
+    user_id: int,
+    org_id: int,
+    name: str,
+    owner_role: str,
+    team_id: int | None,
+    expires_at: datetime | None,
+    allowed_models: list[str] | None,
+    allowed_providers: list[str] | None,
+    budget_limit_daily: float | None,
+    budget_limit_monthly: float | None,
+    tpm_limit: int | None,
+    rpm_limit: int | None,
+) -> MintedKey:
+    """Mint one ``wa-{key_id}-{secret}`` credential into BOTH key tables (issue #303).
+
+    ``api_keys`` is what the proxy authenticates (carries ``team_id``, the acting team);
+    ``virtual_keys`` keeps the limits/metadata every other management endpoint reads, and links
+    back via ``api_key_id`` so revoke/rotate can reach the proxy credential. The same
+    plaintext is hashed once and stored in both rows -- mirroring the bootstrap admin key.
+    ``enabled`` and ``created_at`` are written explicitly: a SQLAlchemy-built schema has no
+    server-side defaults and auth filters on ``enabled == True``.
+
+    There is no cross-table transaction in penguin-dal, so if the second insert fails the first
+    row is deleted before the error propagates -- never a half-minted key.
+    """
+    key_id, api_key = mint_wa_credential()
+    key_hash = bcrypt.hash(api_key)
+    now = datetime.utcnow()
+
+    api_row_id = database.api_keys.insert(
+        key_id=key_id,
+        key_hash=key_hash,
+        user_id=user_id,
+        organization_id=org_id,
+        name=name,
+        rate_limit_rpm=rpm_limit,
+        enabled=True,
+        expires_at=expires_at,
+        created_at=now,
+        api_access_level=access_level_for_role(owner_role),
+        team_id=team_id,
+    )
+    prefix = virtual_key_prefix(api_key)
+    try:
+        virtual_row_id = database.virtual_keys.insert(
+            user_id=user_id,
+            organization_id=org_id,
+            name=name,
+            key_prefix=prefix,
+            key_hash=key_hash,
+            allowed_models=allowed_models,
+            allowed_providers=allowed_providers,
+            budget_limit_daily=budget_limit_daily,
+            budget_limit_monthly=budget_limit_monthly,
+            tpm_limit=tpm_limit,
+            rpm_limit=rpm_limit,
+            enabled=True,
+            expires_at=expires_at,
+            created_at=now,
+            api_key_id=api_row_id,
+        )
+    except Exception:
+        database(database.api_keys.id == api_row_id).delete()
+        database.commit()
+        raise
+    database.commit()
+    return MintedKey(
+        virtual_key_id=int(virtual_row_id),
+        api_key_row_id=int(api_row_id),
+        key_id=key_id,
+        api_key=api_key,
+        key_prefix=prefix,
+    )
+
+
+def mint_rotated_credential(database: DB, virtual_key: Any) -> tuple[str, str] | None:
+    """New ``(api_key, key_prefix)`` for a LINKED virtual key, keeping its ``key_id``; else None.
+
+    Rotation swaps only the secret half, so the proxy's ``key_id`` lookup and the virtual key's
+    prefix stay stable. ``None`` means a legacy unlinked key: the caller keeps its old format.
+    """
+    if virtual_key.api_key_id is None:
+        return None
+    row = database(database.api_keys.id == virtual_key.api_key_id).select().first()
+    if row is None:
+        return None
+    api_key = f"wa-{row.key_id}-{secrets.token_urlsafe(32)}"
+    return api_key, virtual_key_prefix(api_key)
+
+
+def sync_linked_proxy_key(
+    database: DB, virtual_key: Any, *, enabled: bool | None = None, key_hash: str | None = None
+) -> str | None:
+    """Mirror an ``enabled`` / ``key_hash`` change onto the linked ``api_keys`` row.
+
+    Returns the proxy ``key_id`` whose auth-cache entry the caller must now invalidate, or
+    ``None`` when the virtual key has no linked proxy credential (legacy) -- nothing to sync.
+    """
+    if virtual_key.api_key_id is None:
+        return None
+    row = database(database.api_keys.id == virtual_key.api_key_id).select().first()
+    if row is None:
+        return None
+    fields: dict[str, Any] = {}
+    if enabled is not None:
+        fields["enabled"] = enabled
+    if key_hash is not None:
+        fields["key_hash"] = key_hash
+    if fields:
+        database(database.api_keys.id == row.id).update(**fields)
+        database.commit()
+    return str(row.key_id)
