@@ -11406,6 +11406,8 @@ paths:
                       $ref: '#/components/schemas/MemberItem'
                     title: Members
                     type: array
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
                   team_id:
                     title: Team Id
                     type: integer
@@ -11416,6 +11418,7 @@ paths:
                 - team_id
                 - members
                 - total
+                - pagination
                 title: MemberListResponse
                 type: object
           description: Response body for GET /api/v1/teams/<team_id>/members.
