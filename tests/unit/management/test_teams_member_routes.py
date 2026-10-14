@@ -257,7 +257,7 @@ async def test_demoted_owners_stale_token_cannot_transfer_or_manage_owners(
     stale_headers = team_headers("olive")  # minted while olive is still the owner
     w.db(
         (w.db.team_members.team_id == w.t["a1"]) & (w.db.team_members.user_id == w.u["olive"])
-    ).update(team_role="member")
+    ).update(team_role="admin")
     w.db.commit()
     base = f"/api/v1/teams/{w.t['a1']}"
     transfer = await real_db_client.post(
@@ -267,3 +267,14 @@ async def test_demoted_owners_stale_token_cannot_transfer_or_manage_owners(
         f"{base}/members/{w.u['mia']}", json={"team_role": "owner"}, headers=stale_headers
     )
     assert (transfer.status_code, grant.status_code) == (403, 403)
+
+
+async def test_member_list_total_is_the_full_count_not_the_page_size(
+    team_world, real_db_client, team_headers
+):
+    """Page 1 with limit=2 of a 4-member team: 2 items, but total says 4."""
+    resp = await real_db_client.get(
+        f"/api/v1/teams/{team_world.t['a1']}/members?limit=2&page=1", headers=team_headers("vic")
+    )
+    body = await resp.get_json()
+    assert (len(body["members"]), body["total"]) == (2, 4)

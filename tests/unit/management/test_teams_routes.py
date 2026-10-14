@@ -192,3 +192,10 @@ async def test_create_ignores_a_body_organization_id(team_world, real_db_client,
     )
     assert resp.status_code == 201
     assert w.db.teams[(await resp.get_json())["id"]].organization_id == w.org["a"]
+
+
+async def test_team_list_total_is_the_full_count_not_the_page_size(real_db_client, team_headers):
+    """Page 1 with limit=1 of org a's 2 teams: 1 item, but total (and pagination) say 2."""
+    resp = await real_db_client.get("/api/v1/teams?limit=1&page=1", headers=team_headers("boss"))
+    body = await resp.get_json()
+    assert (len(body["teams"]), body["total"], body["pagination"]["total"]) == (1, 2, 2)

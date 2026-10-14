@@ -215,16 +215,17 @@ async def list_teams():
     page = PageRequest.from_request()
     database = _db()
 
-    def _fetch() -> list[Any]:
+    def _fetch() -> tuple[list[Any], int]:
         query = database.teams.organization_id == org_id
         if not is_org_admin:
             mine = database(database.team_members.user_id == user_id).select()
             query = query & database.teams.id.belongs([int(m.team_id) for m in mine] or [0])
-        return list(database(query).select(limitby=page.limitby, orderby=database.teams.id))
+        page_rows = list(database(query).select(limitby=page.limitby, orderby=database.teams.id))
+        return page_rows, int(database(query).count())
 
-    rows = await asyncio.to_thread(_fetch)
+    rows, total = await asyncio.to_thread(_fetch)
     items = [_team_item(r) for r in rows]
-    return {"teams": items, "total": len(items), **page.meta()}
+    return {"teams": items, "total": total, **page.meta(total)}
 
 
 @api_v1_bp.route("/teams/<int:team_id>", methods=["GET"])
@@ -296,13 +297,15 @@ async def list_members(team_id: int):
         return error
     database = _db()
     page = PageRequest.from_request()
-    rows = await asyncio.to_thread(
-        lambda: list(
-            database(database.team_members.team_id == team_id).select(
-                limitby=page.limitby, orderby=database.team_members.id
-            )
+
+    def _fetch() -> tuple[list[Any], int]:
+        query = database.team_members.team_id == team_id
+        page_rows = list(
+            database(query).select(limitby=page.limitby, orderby=database.team_members.id)
         )
-    )
+        return page_rows, int(database(query).count())
+
+    rows, total = await asyncio.to_thread(_fetch)
     members = [
         {
             "user_id": r.user_id,
@@ -311,7 +314,7 @@ async def list_members(team_id: int):
         }
         for r in rows
     ]
-    return {"team_id": team_id, "members": members, "total": len(members)}
+    return {"team_id": team_id, "members": members, "total": total}
 
 
 @api_v1_bp.route("/teams/<int:team_id>/members", methods=["POST"])
