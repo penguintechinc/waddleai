@@ -264,3 +264,23 @@ def mock_sentence_transformer():
     transformer_mock = Mock()
     transformer_mock.encode = Mock(return_value=[0.1, 0.2, 0.3, 0.4])
     return transformer_mock
+
+
+@pytest.fixture
+def real_schema_db(tmp_path):
+    """A real penguin-dal handle over the SQLAlchemy ``create_all`` schema (SQLite, no mocks).
+
+    SQLAlchemy models are the schema authority, so building the file from
+    ``Base.metadata`` and letting penguin-dal reflect it exercises the same
+    tables/constraints production has. Used by the teams-subsystem tests.
+    """
+    import sqlalchemy as sa
+
+    from services.management.app.models_sqlalchemy import Base
+    from shared.database.models import get_db
+
+    url = f"sqlite:///{tmp_path}/real_schema.db"
+    engine = sa.create_engine(url)
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    return get_db(url)

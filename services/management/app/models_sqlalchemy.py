@@ -97,6 +97,40 @@ class User(Base):
     service_kind = Column(String(50), nullable=True)
 
 
+class Team(Base):
+    """A team nested under one organization (tenant): the authz tier between org and user."""
+
+    __tablename__ = "teams"
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_teams_org_name"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TeamMember(Base):
+    """A user's membership and role (owner/admin/member/viewer) in exactly one team per tenant.
+
+    ``organization_id`` is denormalized from the team purely so
+    ``UNIQUE(user_id, organization_id)`` can enforce "one team per (user, tenant)" (D2).
+    """
+
+    __tablename__ = "team_members"
+    __table_args__ = (
+        UniqueConstraint("user_id", "organization_id", name="uq_team_members_user_org"),
+        UniqueConstraint("team_id", "user_id", name="uq_team_members_team_user"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    team_role = Column(String(20), nullable=False)  # owner | admin | member | viewer
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class APIKey(Base):
     """A hashed API credential issued to a user, carrying its own quotas, rate limit, and scopes."""
 
@@ -123,6 +157,9 @@ class APIKey(Base):
     # embedding_cache/schema_dedup). NULL = feature defaults apply.
     # See shared/memory/config.py::resolve_proxy_memory_config.
     proxy_memory = Column(JSON, nullable=True)
+    # Acting team (teams spec D3): the team a request authenticated by this key acts
+    # in. NULL = teamless (legacy/unassigned). Backfilled by migration 024_teams.
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
 
 
 class AIProvider(Base):
@@ -341,6 +378,10 @@ class VirtualKey(Base):
     expires_at = Column(DateTime)
     last_used = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # The proxy-auth ``api_keys`` row minted alongside this key (teams spec D10 /
+    # issue #303) so revoke/rotate/disable here can reach the credential the proxy
+    # actually authenticates. NULL = legacy key that never authenticated at the proxy.
+    api_key_id = Column(Integer, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True)
 
 
 class TokenUsage(Base):
