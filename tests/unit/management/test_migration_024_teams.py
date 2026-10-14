@@ -132,6 +132,150 @@ def test_downgrade_removes_tables_and_columns(scratch_db) -> None:
     assert "api_key_id" not in _columns(engine, "virtual_keys")
 
 
+def _seed_populated(engine) -> None:
+    """Insert 3 orgs: acme (admin+user+rm+disabled user), globex (no admin), empty (no users)."""
+    stmts = (
+        "INSERT INTO organizations (name) VALUES ('acme'), ('globex'), ('empty')",
+        "INSERT INTO users (username, role, organization_id, enabled) VALUES "
+        "('boss', 'admin', 1, 1), ('dev', 'user', 1, 1), ('mgr', 'resource_manager', 1, 1), "
+        "('gone', 'user', 1, 0), ('gx', 'user', 2, 1)",
+        # k4's owner (user 5) lives in org 2 but the key claims org 1: no membership there.
+        "INSERT INTO api_keys (key_id, user_id, organization_id, name) VALUES "
+        "('k1', 1, 1, 'a'), ('k2', 2, 1, 'b'), ('k3', 5, 2, 'c'), ('k4', 5, 1, 'd')",
+    )
+    with engine.begin() as conn:
+        for stmt in stmts:
+            conn.execute(sa.text(stmt))
+
+
+def _rows(engine, sql: str) -> list[tuple]:
+    """Run ``sql`` and return all rows as plain tuples."""
+    with engine.connect() as conn:
+        return [tuple(r) for r in conn.execute(sa.text(sql))]
+
+
+def test_backfill_creates_one_default_team_per_org_including_empty_orgs(scratch_db) -> None:
+    """Every org gets exactly one 'Default' team -- even an org with no users."""
+    db_url, engine = scratch_db
+    _seed_populated(engine)
+    command.upgrade(alembic_config(db_url), "024_teams")
+
+    assert _rows(engine, "SELECT organization_id, name FROM teams ORDER BY organization_id") == [
+        (1, "Default"), (2, "Default"), (3, "Default"),
+    ]  # fmt: skip
+
+
+def test_backfill_assigns_admin_to_org_admins_and_member_to_everyone_else(scratch_db) -> None:
+    """Org-admin (``org:admin_update``) users become team admin; all others member; never owner."""
+    db_url, engine = scratch_db
+    _seed_populated(engine)
+    command.upgrade(alembic_config(db_url), "024_teams")
+
+    roles = dict(
+        _rows(
+            engine,
+            "SELECT u.username, tm.team_role FROM team_members tm "
+            "JOIN users u ON u.id = tm.user_id",
+        )
+    )
+    assert roles == {
+        "boss": "admin", "dev": "member", "mgr": "member", "gone": "member", "gx": "member",
+    }  # fmt: skip
+    assert "owner" not in roles.values()
+
+
+def test_backfill_org_without_an_admin_user_is_left_with_no_admin_or_owner(scratch_db) -> None:
+    """An org with no admin user gets a Default team whose members are all plain members."""
+    db_url, engine = scratch_db
+    _seed_populated(engine)
+    command.upgrade(alembic_config(db_url), "024_teams")
+
+    globex_roles = _rows(engine, "SELECT team_role FROM team_members WHERE organization_id = 2")
+    assert globex_roles == [("member",)]
+
+
+def test_backfill_points_each_key_at_its_owners_team_in_the_keys_org(scratch_db) -> None:
+    """``api_keys.team_id`` = the owner's team in the key's org; a non-member owner stays NULL."""
+    db_url, engine = scratch_db
+    _seed_populated(engine)
+    command.upgrade(alembic_config(db_url), "024_teams")
+
+    by_key = dict(_rows(engine, "SELECT key_id, team_id FROM api_keys"))
+    org1_team = _rows(engine, "SELECT id FROM teams WHERE organization_id = 1")[0][0]
+    org2_team = _rows(engine, "SELECT id FROM teams WHERE organization_id = 2")[0][0]
+    assert by_key == {"k1": org1_team, "k2": org1_team, "k3": org2_team, "k4": None}
+
+
+def test_backfill_is_idempotent(scratch_db) -> None:
+    """Running the data step again changes nothing (no duplicate teams/members, no re-pointing)."""
+    db_url, engine = scratch_db
+    _seed_populated(engine)
+    cfg = alembic_config(db_url)
+    command.upgrade(cfg, "024_teams")
+    before = (
+        _rows(engine, "SELECT id, organization_id, name FROM teams ORDER BY id"),
+        _rows(engine, "SELECT team_id, user_id, team_role FROM team_members ORDER BY id"),
+        _rows(engine, "SELECT key_id, team_id FROM api_keys ORDER BY id"),
+    )
+
+    module = ScriptDirectory.from_config(cfg).get_revision("024_teams").module
+    with engine.begin() as conn:
+        module._backfill(conn)
+
+    after = (
+        _rows(engine, "SELECT id, organization_id, name FROM teams ORDER BY id"),
+        _rows(engine, "SELECT team_id, user_id, team_role FROM team_members ORDER BY id"),
+        _rows(engine, "SELECT key_id, team_id FROM api_keys ORDER BY id"),
+    )
+    assert after == before
+
+
+def test_backfill_respects_an_existing_membership_and_default_team(tmp_path, monkeypatch) -> None:
+    """Over an ORM-built DB that already has a Default team + custom role, nothing is clobbered."""
+    from services.management.app.models_sqlalchemy import Base
+
+    db_url = f"sqlite:///{tmp_path / 'preexisting.db'}"
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    engine = sa.create_engine(db_url)
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(sa.text("INSERT INTO organizations (name) VALUES ('acme')"))
+        conn.execute(
+            sa.text(
+                "INSERT INTO users (username, email, password_hash, role, organization_id) "
+                "VALUES ('boss', 'b@x.io', 'x', 'admin', 1)"
+            )
+        )
+        conn.execute(sa.text("INSERT INTO teams (organization_id, name) VALUES (1, 'Default')"))
+        conn.execute(
+            sa.text(
+                "INSERT INTO team_members (team_id, user_id, organization_id, team_role) "
+                "VALUES (1, 1, 1, 'owner')"
+            )
+        )
+    command.stamp(alembic_config(db_url), "023_schema_drift_gh213")
+    command.upgrade(alembic_config(db_url), "024_teams")
+
+    assert _rows(engine, "SELECT name FROM teams") == [("Default",)]
+    assert _rows(engine, "SELECT user_id, team_role FROM team_members") == [(1, "owner")]
+    engine.dispose()
+
+
+def test_migration_admin_role_set_matches_the_org_admin_scope_holders() -> None:
+    """024's frozen admin-role constant must equal the roles that hold ``org:admin_update``."""
+    from shared.auth.rbac import ROLE_PERMISSIONS, Permission
+
+    holders = {
+        role.value
+        for role, perms in ROLE_PERMISSIONS.items()
+        if Permission.ORG_ADMIN_UPDATE in perms
+    }
+    module = (
+        ScriptDirectory.from_config(alembic_config("sqlite://")).get_revision("024_teams").module
+    )
+    assert set(module._ADMIN_ROLES) == holders
+
+
 def test_alembic_chain_is_single_headed_with_024() -> None:
     """024 extends 023 and leaves exactly one resolvable head."""
     script = ScriptDirectory.from_config(alembic_config("sqlite://"))

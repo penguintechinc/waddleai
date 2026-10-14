@@ -17,6 +17,7 @@ Create Date: 2026-10-13
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 
 import sqlalchemy as sa
 from alembic import op
@@ -25,6 +26,13 @@ revision: str = "024_teams"
 down_revision: str | None = "023_schema_drift_gh213"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+_DEFAULT_TEAM_NAME = "Default"
+
+# Roles holding the org-admin scope (``org:admin_update``) -- they become team ``admin`` in the
+# backfill. Frozen here (a historical migration must not import live app code); a unit test
+# asserts it equals the roles that hold that scope in ``ROLE_PERMISSIONS``.
+_ADMIN_ROLES = ("admin",)
 
 
 def _has_table(bind: sa.engine.Connection, table: str) -> bool:
@@ -53,8 +61,47 @@ def _add_nullable_fk_column(
         op.create_foreign_key(fk_name, table, ref_table, [column], ["id"], ondelete="SET NULL")
 
 
+def _backfill(bind: sa.engine.Connection) -> None:
+    """Give every org a Default team, seat its users, and point each key at its owner's team.
+
+    Set-based and idempotent (every INSERT/UPDATE is guarded by NOT EXISTS / ``IS NULL``), so a
+    re-run, or a run over a DB that already has teams, neither duplicates nor overwrites. The
+    migration never assigns ``owner`` -- an org admin designates one afterwards (spec §9).
+    """
+    now = datetime.utcnow()
+    bind.execute(
+        sa.text(
+            "INSERT INTO teams (organization_id, name, enabled, created_at) "
+            "SELECT o.id, :name, :enabled, :now FROM organizations o "
+            "WHERE NOT EXISTS (SELECT 1 FROM teams t "
+            "WHERE t.organization_id = o.id AND t.name = :name)"
+        ),
+        {"name": _DEFAULT_TEAM_NAME, "enabled": True, "now": now},
+    )
+    bind.execute(
+        sa.text(
+            "INSERT INTO team_members (team_id, user_id, organization_id, team_role, created_at) "
+            "SELECT t.id, u.id, u.organization_id, "
+            "CASE WHEN u.role IN :admin_roles THEN 'admin' ELSE 'member' END, :now "
+            "FROM users u JOIN teams t "
+            "ON t.organization_id = u.organization_id AND t.name = :name "
+            "WHERE NOT EXISTS (SELECT 1 FROM team_members tm "
+            "WHERE tm.user_id = u.id AND tm.organization_id = u.organization_id)"
+        ).bindparams(sa.bindparam("admin_roles", expanding=True)),
+        {"name": _DEFAULT_TEAM_NAME, "admin_roles": list(_ADMIN_ROLES), "now": now},
+    )
+    bind.execute(
+        sa.text(
+            "UPDATE api_keys SET team_id = (SELECT tm.team_id FROM team_members tm "
+            "WHERE tm.user_id = api_keys.user_id "
+            "AND tm.organization_id = api_keys.organization_id) "
+            "WHERE team_id IS NULL"
+        )
+    )
+
+
 def upgrade() -> None:
-    """Create ``teams``/``team_members``; add ``api_keys.team_id``/``virtual_keys.api_key_id``."""
+    """Create the team tables, add the link columns, then backfill the Default teams."""
     bind = op.get_bind()
 
     if not _has_table(bind, "teams"):
@@ -94,6 +141,7 @@ def upgrade() -> None:
     _add_nullable_fk_column(
         bind, "virtual_keys", "api_key_id", "api_keys", "fk_virtual_keys_api_key_id"
     )
+    _backfill(bind)
 
 
 def downgrade() -> None:
