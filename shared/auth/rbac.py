@@ -4,6 +4,7 @@ Handles authentication and authorization for WaddleAI.
 """
 
 import functools
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -434,6 +435,27 @@ def parse_wa_key_id(api_key: str) -> str:
     return parts[1]
 
 
+def mint_wa_credential() -> tuple[str, str]:
+    """Mint a fresh ``wa-{key_id}-{secret}`` credential; return ``(key_id, api_key)``.
+
+    The single place the proxy-authenticated credential format is produced: ``key_id`` is 16 hex
+    chars (never contains ``-``) so :func:`parse_wa_key_id` recovers it from the credential
+    alone, and the secret is 43 urlsafe chars (it may contain ``-``). Used by both
+    :meth:`RBACManager.create_api_key` and the management key-create endpoint.
+    """
+    key_id = secrets.token_hex(8)
+    return key_id, f"wa-{key_id}-{secrets.token_urlsafe(32)}"
+
+
+def access_level_for_role(role: str) -> str:
+    """Map an org role string to the ``api_keys.api_access_level`` a key it owns is issued at."""
+    if role == Role.ADMIN.value:
+        return "admin_api"
+    if role == Role.RESOURCE_MANAGER.value:
+        return "management_api"
+    return "proxy_api"
+
+
 class AuthenticationError(Exception):
     """Authentication failed."""
 
@@ -718,14 +740,11 @@ class RBACManager:
         name: str,
         permissions: dict[str, bool] | None = None,
         expires_days: int | None = None,
+        team_id: int | None = None,
     ) -> tuple[str, str]:
-        """Create new API key for user."""
-        import secrets
-
+        """Create new API key for user, optionally bound to an acting team (teams spec D3)."""
         # Generate API key
-        key_id = secrets.token_hex(8)
-        secret = secrets.token_urlsafe(32)
-        api_key = f"wa-{key_id}-{secret}"
+        key_id, api_key = mint_wa_credential()
 
         # Hash the API key
         key_hash = bcrypt.hash(api_key)
@@ -735,11 +754,7 @@ class RBACManager:
             expires_at = datetime.utcnow() + timedelta(days=expires_days)
 
         # Determine access level based on user role
-        access_level = "proxy_api"
-        if user_context.role in [Role.ADMIN, Role.RESOURCE_MANAGER]:
-            access_level = "management_api"
-        if user_context.role == Role.ADMIN:
-            access_level = "admin_api"
+        access_level = access_level_for_role(user_context.role.value)
 
         # Insert into database
         key_record_id = self.db.api_keys.insert(
@@ -751,6 +766,10 @@ class RBACManager:
             permissions=permissions or {},
             api_access_level=access_level,
             expires_at=expires_at,
+            team_id=team_id,
+            # Explicit: auth filters ``enabled == True`` and a SQLAlchemy-built schema has no
+            # server-side default, so omitting it mints a key that can never authenticate.
+            enabled=True,
         )
 
         return api_key, key_record_id
