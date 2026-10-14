@@ -105,11 +105,15 @@ _executor_lock = threading.Lock()
 
 
 def get_auth_executor() -> ThreadPoolExecutor:
-    """Return the process-wide, lazily-built auth executor (Borg-style singleton)."""
+    """Return the process-wide, lazily-built auth executor (Borg-style singleton).
+
+    Rebuilds the pool when the cached one was shut down (``ProxyServer.shutdown()``), so an
+    in-process restart/reuse never hits "cannot schedule new futures after shutdown".
+    """
     global _executor
-    if _executor is None:
+    if _executor is None or _executor._shutdown:
         with _executor_lock:
-            if _executor is None:
+            if _executor is None or _executor._shutdown:
                 workers = max(
                     1, int(os.getenv(_ENV_EXECUTOR_WORKERS, str(_DEFAULT_EXECUTOR_WORKERS)))
                 )
