@@ -26,5 +26,15 @@ module.exports = {
       files: ['src/test/**/*.{js,jsx}'],
       env: { node: true },
     },
+    {
+      // Express static/proxy server and its test run under Node, not the browser.
+      files: ['server.js'],
+      env: { node: true, browser: false },
+      parserOptions: { sourceType: 'script' },
+    },
+    {
+      files: ['server.test.js'],
+      env: { node: true, browser: false },
+    },
   ],
 }
