@@ -65,6 +65,7 @@ from typing import Any
 
 from shared.cache.response_cache import RESPONSE_CACHE_FLAG, ResponseCache
 from shared.observability.tracing import get_tracer
+from shared.quota.credits import estimate_io_tokens
 from shared.routing.aliases import explicit_tool_type
 from shared.routing.capability import ModelOffer
 from shared.routing.engine import RoutingEngine, RoutingInput
@@ -436,10 +437,7 @@ class TokenBudgetStage(Stage):
             return ctx
 
         vkey_id = ctx.user.vkey_id
-        # Estimate input tokens (simplified: ~4 chars per token)
-        estimated_input = sum(len(m.get("content", "")) // 4 for m in ctx.messages) or 1
-        # Conservative estimate: 2x input for output
-        estimated_output = estimated_input * 2
+        estimated_input, estimated_output = estimate_io_tokens(ctx.messages)
         total_estimated = estimated_input + estimated_output
 
         # Get limits for this key (mock scenario; in production fetch from DB/config)
