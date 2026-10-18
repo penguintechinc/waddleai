@@ -2135,7 +2135,7 @@ async def chat_completions():
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
                 # refund the held reservation instead of leaking it, then propagate.
-                await release_held_quota(final_ctx)
+                await release_held_quota(final_ctx, proxy_server.quota_engine)
                 raise
 
             await reconcile_quota(
@@ -2554,7 +2554,7 @@ async def claude_messages():
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
                 # refund the held reservation instead of leaking it, then propagate.
-                await release_held_quota(final_ctx)
+                await release_held_quota(final_ctx, proxy_server.quota_engine)
                 raise
 
             await reconcile_quota(

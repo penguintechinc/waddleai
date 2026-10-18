@@ -5,12 +5,12 @@ after ``process_usage`` so the credits come from ``token_usage.waddleai_tokens``
 context's release hook first, so a request that completed normally is never also released.
 """
 
-import asyncio
 import logging
 import os
 from typing import Any
 
-from .pipeline.stages import PipelineContext
+from .pipeline.quota_stage import _fault
+from .pipeline.stages import PipelineContext, settle_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +56,23 @@ def build_quota_engine(valkey: Any, *, db: Any, token_manager: Any) -> tuple[Any
     return engine, limiter
 
 
-async def release_held_quota(ctx: PipelineContext) -> None:
-    """Refund a still-held reservation once (finalize failed before reconcile); never raises."""
+async def release_held_quota(ctx: PipelineContext, engine: Any = None) -> None:
+    """Settle a still-held reservation once (finalize failed before reconcile); never raises.
+
+    The hook is the reconcile-aware closure: consumed tokens are charged, zero-usage refunded.
+    Runs shielded so a cancellation cannot abandon it; the cancellation is re-raised afterwards.
+    """
     release = ctx.quota_release
     ctx.quota_release = None
     ctx.quota_reservation = None
     if release is None:
         return
     try:
-        await release()
-    except Exception as exc:  # noqa: BLE001 -- the sweeper is the backstop
-        logger.error("quota release failed: %s: %s", type(exc).__name__, exc)
+        await settle_shielded(release())
+    except Exception as exc:  # noqa: BLE001 -- logged + faulted, never a response failure
+        logger.error("quota settle failed: %s: %s", type(exc).__name__, exc)
+        if engine is not None:
+            _fault(engine, "release_failed")
 
 
 async def reconcile_quota(
@@ -74,7 +80,8 @@ async def reconcile_quota(
 ) -> None:
     """Settle ``ctx.quota_reservation`` against the actual credits; never raises.
 
-    Cancellation (client disconnect) mid-reconcile releases the reservation and re-raises.
+    The reconcile runs shielded to completion: a cancellation (client disconnect) during it
+    CHARGES the actual usage like any other request and is re-raised only afterwards.
     """
     reservation = ctx.quota_reservation
     if engine is None or reservation is None:
@@ -82,18 +89,15 @@ async def reconcile_quota(
     ctx.quota_reservation = None
     ctx.quota_release = None
     try:
-        await engine.reconcile(
-            reservation,
-            actual_credits=waddleai_tokens,
-            provider=provider,
-            model=model,
-            cache_hit=bool(ctx.cache_hit),
+        await settle_shielded(
+            engine.reconcile(
+                reservation,
+                actual_credits=waddleai_tokens,
+                provider=provider,
+                model=model,
+                cache_hit=bool(ctx.cache_hit),
+            )
         )
-    except asyncio.CancelledError:
-        try:
-            await asyncio.shield(engine.release(reservation))
-        except Exception as exc:  # noqa: BLE001 -- best effort; sweeper is the backstop
-            logger.error("quota release after cancel failed: %s: %s", type(exc).__name__, exc)
-        raise
     except Exception as exc:  # noqa: BLE001 -- the user already has their answer
         logger.error("quota reconcile failed: %s: %s", type(exc).__name__, exc)
+        _fault(engine, "reconcile_error")

@@ -124,6 +124,29 @@ async def _resolve_flag(
     )
 
 
+async def settle_shielded(coro: Awaitable[Any]) -> Any:
+    """Run a money-path settlement to COMPLETION even if the awaiting task is cancelled.
+
+    The settlement runs as its own task behind ``asyncio.shield``; every cancellation that lands
+    while it runs (including repeated ones) is deferred and re-raised only once it has finished,
+    so a client disconnect can never abandon a charge or refund half-done.
+    """
+    task = asyncio.ensure_future(coro)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        if not task.cancelled():
+            task.exception()  # mark retrieved; the cancellation takes precedence
+        raise cancelled
+    return task.result()
+
+
 @dataclass(slots=True)
 class PipelineContext:
     """Request context threaded through pipeline stages."""
@@ -364,8 +387,8 @@ class ProxyPipeline:
         ctx.quota_release = None
         ctx.quota_reservation = None
         try:
-            await release()
-        except Exception as exc:  # noqa: BLE001 -- the sweeper is the backstop for a failed refund
+            await settle_shielded(release())
+        except Exception as exc:  # noqa: BLE001 -- never fail the response over a failed settlement
             logger.error("quota release failed: %s: %s", type(exc).__name__, exc)
 
     @staticmethod

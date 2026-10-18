@@ -95,9 +95,22 @@ async def test_successful_stream_leaves_the_hook_for_finalize():
     pipeline = _miss_pipeline(connector)
     ctx = _ctx(stream=True)
     release = _held(ctx)
-    _ = [f async for f in streaming.stream_openai_chat_completion(ctx, pipeline, _metrics())]
+    seen = []
+
+    async def finalize(final_ctx):
+        """Stand in for _finalize: the hook is still set here, then reconcile clears it."""
+        seen.append(final_ctx.quota_release)
+        final_ctx.quota_release = None
+        final_ctx.quota_reservation = None
+
+    _ = [
+        f
+        async for f in streaming.stream_openai_chat_completion(
+            ctx, pipeline, _metrics(), finalize=finalize
+        )
+    ]
     release.assert_not_awaited()
-    assert ctx.quota_release is release
+    assert seen == [release]
 
 
 async def test_anthropic_stream_disconnect_releases_once():

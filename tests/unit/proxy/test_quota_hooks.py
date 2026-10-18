@@ -83,12 +83,24 @@ async def test_reconcile_failure_never_raises():
     assert len(engine.calls) == 1
 
 
-async def test_cancel_during_reconcile_releases_then_reraises():
-    """A disconnect mid-reconcile still resolves the reservation (release), then propagates."""
-    engine = Engine(exc=asyncio.CancelledError())
+async def test_cancel_during_reconcile_charges_actual_then_reraises():
+    """A disconnect mid-reconcile CHARGES the actual credits (never a refund), then propagates."""
+
+    class Slow(Engine):
+        async def reconcile(self, reservation, **kw):
+            await asyncio.sleep(0.05)
+            await super().reconcile(reservation, **kw)
+
+    engine, ctx = Slow(), _ctx()
+    task = asyncio.ensure_future(
+        reconcile_quota(engine, ctx, waddleai_tokens=9, provider="p", model="m")
+    )
+    await asyncio.sleep(0.01)
+    task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await reconcile_quota(engine, _ctx(), waddleai_tokens=1, provider="p", model="m")
-    assert engine.released == [RES]
+        await task
+    assert len(engine.calls) == 1 and engine.calls[0][1]["actual_credits"] == 9
+    assert engine.released == []
 
 
 async def test_release_held_quota_releases_once_and_clears():

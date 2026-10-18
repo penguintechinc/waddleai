@@ -50,15 +50,28 @@ async def settle_aborted(engine: Any, ctx: PipelineContext, reservation: Any) ->
         await engine.release(reservation)
         return
     model = ctx.model or reservation.model_requested or ""
-    tm = engine.token_manager
-    in_tokens = usage.get("input_tokens") or tm.count_tokens(
-        _message_text(ctx.messages), provider, model
-    )
-    out_tokens = usage.get("output_tokens") or tm.count_tokens(text, provider, model)
-    credits = tm.calculate_waddleai_tokens(in_tokens, out_tokens, provider, model)
+    try:
+        tm = engine.token_manager
+        in_tokens = usage.get("input_tokens") or tm.count_tokens(
+            _message_text(ctx.messages), provider, model
+        )
+        out_tokens = usage.get("output_tokens") or tm.count_tokens(text, provider, model)
+        credits = tm.calculate_waddleai_tokens(in_tokens, out_tokens, provider, model)
+    except Exception as exc:  # noqa: BLE001 -- never fall back to a refund of consumed tokens
+        logger.error("quota abort credit calc failed, charging the reservation: %s", exc)
+        _fault(engine, "reconcile_error")
+        credits = int(reservation.credits_reserved)
     await engine.reconcile(
         reservation, actual_credits=credits, provider=provider, model=model, cache_hit=False
     )
+
+
+def _fault(engine: Any, kind: str) -> None:
+    """Emit a quota fault signal; telemetry trouble never reaches the request path."""
+    try:
+        engine.telemetry.fault(kind)
+    except Exception:  # noqa: BLE001 -- telemetry is best-effort
+        logger.debug("quota fault emission failed (%s)", kind, exc_info=True)
 
 
 class QuotaStage(Stage):

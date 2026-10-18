@@ -186,19 +186,24 @@ async def stream_openai_chat_completion(
         raise
     ctx = await pipeline.run_after(ctx, "dispatch")
 
-    if ctx.blocked:
-        metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
-        logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
-        yield _sse_error_openai(ctx.block_reason or "stream_error", ctx.status_code)
-        return
+    try:
+        if ctx.blocked:
+            metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
+            logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
+            yield _sse_error_openai(ctx.block_reason or "stream_error", ctx.status_code)
+            return
 
-    if not sent_role:
-        yield _frame({"role": "assistant"})
-    yield _frame({}, finish_reason=ctx.finish_reason or "stop", usage=ctx.usage)
-    yield b"data: [DONE]\n\n"
+        if not sent_role:
+            yield _frame({"role": "assistant"})
+        yield _frame({}, finish_reason=ctx.finish_reason or "stop", usage=ctx.usage)
+        yield b"data: [DONE]\n\n"
 
-    if finalize is not None:
-        await finalize(ctx)
+        if finalize is not None:
+            await finalize(ctx)
+    finally:
+        # Client disconnect at a final-frame yield skips finalize: settle here so fully
+        # consumed tokens are never left reserved (idempotent; reconcile already cleared it).
+        await ProxyPipeline._release_quota(ctx)
 
 
 async def stream_anthropic_messages(
@@ -290,35 +295,40 @@ async def stream_anthropic_messages(
         raise
     ctx = await pipeline.run_after(ctx, "dispatch")
 
-    if ctx.blocked:
-        metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
-        logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
-        if opened_block:
-            yield _sse_event_anthropic(
-                "content_block_stop", {"type": "content_block_stop", "index": 0}
-            )
-        yield _sse_error_anthropic(ctx.block_reason or "stream_error", ctx.status_code)
-        return
+    try:
+        if ctx.blocked:
+            metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
+            logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
+            if opened_block:
+                yield _sse_event_anthropic(
+                    "content_block_stop", {"type": "content_block_stop", "index": 0}
+                )
+            yield _sse_error_anthropic(ctx.block_reason or "stream_error", ctx.status_code)
+            return
 
-    if not opened_block:
+        if not opened_block:
+            yield _sse_event_anthropic(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+        yield _sse_event_anthropic("content_block_stop", {"type": "content_block_stop", "index": 0})
         yield _sse_event_anthropic(
-            "content_block_start",
+            "message_delta",
             {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
+                "type": "message_delta",
+                "delta": {"stop_reason": ctx.finish_reason or "end_turn", "stop_sequence": None},
+                "usage": ctx.usage or {},
             },
         )
-    yield _sse_event_anthropic("content_block_stop", {"type": "content_block_stop", "index": 0})
-    yield _sse_event_anthropic(
-        "message_delta",
-        {
-            "type": "message_delta",
-            "delta": {"stop_reason": ctx.finish_reason or "end_turn", "stop_sequence": None},
-            "usage": ctx.usage or {},
-        },
-    )
-    yield _sse_event_anthropic("message_stop", {"type": "message_stop"})
+        yield _sse_event_anthropic("message_stop", {"type": "message_stop"})
 
-    if finalize is not None:
-        await finalize(ctx)
+        if finalize is not None:
+            await finalize(ctx)
+    finally:
+        # Client disconnect at a final-frame yield skips finalize: settle here so fully
+        # consumed tokens are never left reserved (idempotent; reconcile already cleared it).
+        await ProxyPipeline._release_quota(ctx)
