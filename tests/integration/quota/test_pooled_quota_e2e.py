@@ -40,9 +40,12 @@ async def test_exhaust_reservation_lease_buffer_then_429_and_other_reservations_
     assert outcomes[7].blocked and outcomes[7].reason == "quota_exhausted"
     assert await _n(valkey_async, keys.user_counter(w.u["mia"], 0)) == 20
     assert await _n(valkey_async, keys.buffer_counter(w.team, 0)) == 8
+    olive_key = keys.user_counter(w.u["olive"], 0)
+    assert await _n(valkey_async, olive_key) == 0  # mia's buffer leases never touched olive
     olive = await w.engine.reserve(
         user_of(w, "olive"), "gpt-4o", MSG
     )  # buffer is nearly empty, her guarantee is not
+    assert await _n(valkey_async, olive_key) == 4
     assert olive.blocked is False and (
         olive.reservation.from_reservation,
         olive.reservation.from_buffer,
@@ -54,7 +57,7 @@ async def test_exhaust_reservation_lease_buffer_then_429_and_other_reservations_
 
 
 async def test_reconcile_refunds_and_the_ledger_records_the_final_split(team_world, valkey_async):
-    """Actual 1 < reserved 4: the counter drops to 1 and the durable ledger shows mia: 1 in."""
+    """Actual 1 < reserved 4: the counter drops to 1 and the ledger shows mia: 1 in cycle 0."""
     w = build_world(team_world, valkey_async, credits=4)
     out = await w.engine.reserve(user_of(w, "mia"), "gpt-4o", MSG)
     await w.engine.reconcile(out.reservation, actual_credits=1, provider="openai", model="gpt-4o")
@@ -66,7 +69,7 @@ async def test_reconcile_refunds_and_the_ledger_records_the_final_split(team_wor
 async def test_cycle_boundary_restores_capacity_and_leaves_the_old_cycle_alone(
     team_world, valkey_async
 ):
-    """Day 30 starts cycle 1: mia is allowed again from a fresh reservation; cycle-0 counter."""
+    """Day 30 starts cycle 1: mia is allowed again; cycle-0 counters are untouched."""
     w = build_world(team_world, valkey_async, credits=4)
     await _burn(w, "mia", 8)
     assert (await w.engine.reserve(user_of(w, "mia"), "gpt-4o", MSG)).blocked is True
@@ -125,15 +128,68 @@ async def test_valkey_outage_fails_open_without_a_reservation(team_world, valkey
     await dead.aclose()
 
 
+async def _consumption_keys(client):
+    """All quota consumption/reservation keys (every ``wa:quota:*`` except the config cache)."""
+    return sorted(
+        [k async for k in client.scan_iter(match="wa:quota:*") if not k.startswith("wa:quota:cfg:")]
+    )
+
+
+async def _positive_control(w, valkey):
+    """Prove the scan matches real quota keys: an enabled org+team reserve writes some."""
+    out = await w.engine.reserve(user_of(w, "olive"), "gpt-4o", MSG)
+    assert out.blocked is False and out.reservation is not None
+    assert await _consumption_keys(valkey) != []
+
+
 async def test_unconfigured_org_writes_nothing_to_valkey(team_world, valkey_async):
-    """Disabled org: reserve is a strict no-op -- no counter."""
+    """Disabled org: N reserves are strict no-ops -- no consumption key; control proves the scan."""
     w = build_world(team_world, valkey_async, credits=4)
     qp.set_org_pool(w.db, w.org, cycle_anchor_date=None, pool_credits=None, enabled=False)
     await valkey_async.delete(keys.org_config(w.org))
-    out = await w.engine.reserve(user_of(w, "mia"), "gpt-4o", MSG)
-    assert (out.blocked, out.reservation) == (False, None)
-    assert [k async for k in valkey_async.scan_iter(match="wa:quota:user:*")] == []
-    assert [k async for k in valkey_async.scan_iter(match="wa:quota:resv*")] == []
+    for _ in range(10):
+        out = await w.engine.reserve(user_of(w, "mia"), "gpt-4o", MSG)
+        assert (out.blocked, out.reservation) == (False, None)
+    assert await _consumption_keys(valkey_async) == []
+    qp.set_org_pool(w.db, w.org, cycle_anchor_date=None, pool_credits=None, enabled=True)
+    await valkey_async.delete(keys.org_config(w.org))
+    await _positive_control(w, valkey_async)
+
+
+async def test_teamless_user_is_a_noop_with_zero_valkey_writes(team_world, valkey_async):
+    """Org ENABLED with a pool; only the user is teamless -> N reserves write nothing at all."""
+    w = build_world(team_world, valkey_async, credits=4)
+    loner = SimpleNamespace(user_id=w.u["mia"], organization_id=w.org, team_id=None)
+    for _ in range(10):
+        out = await w.engine.reserve(loner, "gpt-4o", MSG)
+        assert (out.blocked, out.reservation) == (False, None)
+    assert await _consumption_keys(valkey_async) == []
+    await _positive_control(w, valkey_async)  # same enabled org: a teamed user does write
+
+
+async def test_team_without_a_pool_is_a_noop_with_zero_valkey_writes(team_world, valkey_async):
+    """Org enabled, but team a2 was never configured (no pool row) -> no consumption key."""
+    w = build_world(team_world, valkey_async, credits=4)
+    bare = SimpleNamespace(user_id=w.u["adam"], organization_id=w.org, team_id=team_world.t["a2"])
+    for _ in range(10):
+        out = await w.engine.reserve(bare, "gpt-4o", MSG)
+        assert (out.blocked, out.reservation) == (False, None)
+    assert await _consumption_keys(valkey_async) == []
+    await _positive_control(w, valkey_async)
+
+
+async def test_future_anchor_enforces_nothing_and_writes_no_counters(team_world, valkey_async):
+    """Before the anchor nothing is enforced and NO consumption key is written; control after."""
+    w = build_world(team_world, valkey_async, credits=4)
+    qp.set_org_pool(
+        w.db, w.org, cycle_anchor_date=date(2026, 3, 1), pool_credits=None, enabled=None
+    )
+    await valkey_async.delete(keys.org_config(w.org))
+    outcomes = await _burn(w, "mia", 12)  # would be blocked from the 8th request if enforced
+    assert all(o.blocked is False and o.reservation is None for o in outcomes)
+    assert await _consumption_keys(valkey_async) == []
+    w.clock.value = date(2026, 3, 2)  # anchor reached: enforcement (and key writes) begin
+    await _positive_control(w, valkey_async)
 
 
 class _Features:
@@ -159,7 +215,7 @@ def _ctx(w, name):
 async def test_stage_blocks_with_429_and_a_downstream_block_refunds_the_reservation(
     team_world, valkey_async
 ):
-    """Review-focus 4 with real counters: admit."""
+    """Review-focus 4 with real counters: admit, then a later block refunds; exhaustion is 429."""
     w = build_world(team_world, valkey_async, credits=4)
     stage = QuotaStage("quota", w.engine, _Features())
     ctx = await ProxyPipeline([stage, _Blocker("sec", None)], None).run(_ctx(w, "mia"))
@@ -172,7 +228,7 @@ async def test_stage_blocks_with_429_and_a_downstream_block_refunds_the_reservat
 
 
 async def test_finalize_hook_settles_the_reservation_exactly_once(team_world, valkey_async):
-    """reconcile_quota adjusts to the actual credits and clears the hooks; a second call is."""
+    """reconcile_quota settles to actual and clears the hooks; a second call is a no-op."""
     w = build_world(team_world, valkey_async, credits=4)
     ctx = await ProxyPipeline([QuotaStage("quota", w.engine, _Features())], None).run(
         _ctx(w, "mia")
@@ -206,33 +262,6 @@ async def test_flag_off_is_a_strict_noop_with_zero_valkey_writes(team_world, val
         assert ctx.blocked is False and ctx.status_code != 429 and ctx.quota_reservation is None
     assert await valkey_async.dbsize() == 0
     assert await _all_keys(valkey_async) == []
-
-
-async def test_teamless_user_is_a_noop_with_zero_valkey_writes(team_world, valkey_async):
-    """A user with no team is never metered -- no quota key of any kind is written."""
-    w = build_world(team_world, valkey_async, credits=4)
-    qp.set_org_pool(w.db, w.org, cycle_anchor_date=None, pool_credits=None, enabled=False)
-    await valkey_async.delete(keys.org_config(w.org))
-    loner = SimpleNamespace(user_id=w.u["mia"], organization_id=w.org, team_id=None)
-    for _ in range(5):
-        out = await w.engine.reserve(loner, "gpt-4o", MSG)
-        assert (out.blocked, out.reservation) == (False, None)
-    assert [
-        k for k in await _all_keys(valkey_async) if k.startswith("wa:quota:") and "config" not in k
-    ] == []
-
-
-async def test_future_anchor_enforces_nothing_and_writes_no_counters(team_world, valkey_async):
-    """Before the cycle anchor nothing is enforced and no consumption counter moves."""
-    w = build_world(team_world, valkey_async, credits=4)
-    qp.set_org_pool(
-        w.db, w.org, cycle_anchor_date=date(2026, 3, 1), pool_credits=None, enabled=None
-    )
-    await valkey_async.delete(keys.org_config(w.org))
-    outcomes = await _burn(w, "mia", 12)  # would be blocked from the 8th request if enforced
-    assert all(o.blocked is False for o in outcomes)
-    assert await _n(valkey_async, keys.user_counter(w.u["mia"], 0)) == 0
-    assert await _n(valkey_async, keys.buffer_counter(w.team, 0)) == 0
 
 
 async def test_concurrent_race_on_the_last_credits_never_over_grants(team_world, valkey_async):
