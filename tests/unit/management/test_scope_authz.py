@@ -112,6 +112,7 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.OLLAMA_MODEL_ADMIN.value,
     Permission.PROVIDER_ADMIN.value,
     Permission.QUOTA_ORG_UPDATE.value,
+    Permission.QUOTA_ADMIN.value,
     Permission.ROUTING_ASSIGNMENT_ADMIN.value,
     Permission.ROUTING_DRY_RUN_ADMIN.value,
     Permission.ROUTING_POLICY_DELETE.value,
@@ -123,7 +124,7 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.TEAM_ORG_ADMIN.value,
 }
 
-_EXPECTED_ROUTE_COUNT = 120  # audited require_role call sites, both migration waves,
+_EXPECTED_ROUTE_COUNT = 122  # audited require_role call sites, both migration waves,
 #   +4 net-new (not a require_role migration; +1 teams: POST /teams -> TEAM_ORG_ADMIN):
 #   94 from the original OIDC migration, +16 from branches cut before it landed
 #   (6 fleet, 9 hook_rules, 1 hook_metrics), +3 from the model-access-policy
@@ -131,6 +132,7 @@ _EXPECTED_ROUTE_COUNT = 120  # audited require_role call sites, both migration w
 #   MODEL_ACCESS_POLICY_DELETE; GET/GET-by-id are require_auth only).
 #   +3 pooled-quota org pool/team pool routes (GET/PUT org-pool, PUT team pool -> QUOTA_ORG_UPDATE).
 #   +3 pooled-quota overrides (GET/POST/DELETE -> QUOTA_ORG_UPDATE).
+#   +2 pooled-quota conversion rates (GET/PUT -> QUOTA_ADMIN, admin-only).
 
 
 def _concrete_path(rule_str: str) -> str:

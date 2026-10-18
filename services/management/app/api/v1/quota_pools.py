@@ -11,6 +11,7 @@ drops the proxy's cached config blob (after the DB write) and emits a log, count
 
 import asyncio
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -22,6 +23,7 @@ from quart_schema import security_scheme, tag, validate_request, validate_respon
 from shared.auth.rbac import Permission
 from shared.quota.cycle import cycle_bounds, cycle_index, cycle_started, utc_today
 from shared.quota.flags import pooled_quota_enabled
+from shared.utils.conversion_rate_store import upsert_conversion_rate
 
 from ...extensions import db
 from ...services import quota_pools as qp
@@ -360,3 +362,129 @@ async def delete_override_cap(override_id: int):
     await invalidate_quota_config(org_id=org_id)
     _record_write("override_delete", "deleted", org_id=org_id, override_id=override_id)
     return {"message": "Override deleted"}
+
+
+_MAX_RATE = 1e9
+
+
+@dataclass(slots=True)
+class SetRateRequest:
+    """Request body for PUT /pooled-quota/conversion-rates (upsert by provider + model)."""
+
+    provider: str | None = None
+    model: str | None = None
+    input_rate: float | None = None
+    output_rate: float | None = None
+    base_cost_per_waddleai_token: float = 0.001
+    enabled: bool = True
+
+
+@dataclass(slots=True)
+class RateItem:
+    """A conversion rate as returned by the API (rates are divisors of LLM tokens)."""
+
+    id: int
+    provider: str
+    model: str
+    input_rate: float
+    output_rate: float
+    base_cost_per_waddleai_token: float
+    enabled: bool
+
+
+@dataclass(slots=True)
+class RateListResponse:
+    """Response body for GET /pooled-quota/conversion-rates."""
+
+    rates: list[RateItem]
+    total: int
+    pagination: PaginationMeta
+
+
+@dataclass(slots=True)
+class RateResponse:
+    """Response body for PUT /pooled-quota/conversion-rates."""
+
+    id: int
+    message: str
+
+
+def _clean_name(value: str | None, name: str, limit: int) -> str:
+    """Trim a required name and enforce 1..limit characters."""
+    cleaned = value.strip() if isinstance(value, str) else ""
+    if not cleaned or len(cleaned) > limit:
+        raise QuotaError(f"{name} must be 1-{limit} characters", 400)
+    return cleaned
+
+
+def _divisor(value: float | None, name: str) -> float:
+    """A conversion divisor must be finite and in (0, 1e9]."""
+    if (
+        value is None
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0 < value <= _MAX_RATE
+    ):
+        raise QuotaError(f"{name} must be a number greater than 0 and at most {_MAX_RATE:g}", 400)
+    return float(value)
+
+
+@api_v1_bp.route("/pooled-quota/conversion-rates", methods=["GET"])
+@tag(["PooledQuota"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@require_scope(Permission.QUOTA_ADMIN)
+@validate_response(RateListResponse, 200)
+async def list_conversion_rates():
+    """List the global credit conversion rates (bounded window, admin only)."""
+    if (off := await _quota_off()) is not None:
+        return off
+    page = PageRequest.from_request()
+    database = _db()
+
+    def _load() -> dict[str, Any]:
+        t = database.token_conversion_rates
+        rows = list(database(t.id > 0).select(orderby=t.id, limitby=page.limitby))
+        total = int(database(t.id > 0).count())
+        items = [
+            {"id": int(r.id), "provider": r.provider, "model": r.model,
+             "input_rate": float(r.input_rate), "output_rate": float(r.output_rate),
+             "base_cost_per_waddleai_token": float(r.base_cost_per_waddleai_token or 0.0),
+             "enabled": r.enabled is not False}
+            for r in rows
+        ]  # fmt: skip
+        return {"rates": items, "total": total, **page.meta(total)}
+
+    return await asyncio.to_thread(_load)
+
+
+@api_v1_bp.route("/pooled-quota/conversion-rates", methods=["PUT"])
+@tag(["PooledQuota"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@require_scope(Permission.QUOTA_ADMIN)
+@validate_response(RateResponse, 200)
+@validate_request(SetRateRequest)
+async def put_conversion_rate(data: SetRateRequest):
+    """Create or update the credit conversion rate for one provider:model (admin only)."""
+    if (off := await _quota_off()) is not None:
+        return off
+    try:
+        provider = _clean_name(data.provider, "provider", 100)
+        model = _clean_name(data.model, "model", 255)
+        input_rate = _divisor(data.input_rate, "input_rate")
+        output_rate = _divisor(data.output_rate, "output_rate")
+        cost = data.base_cost_per_waddleai_token
+        if not math.isfinite(cost) or cost < 0:
+            raise QuotaError("base_cost_per_waddleai_token must be a finite number >= 0", 400)
+    except QuotaError as exc:
+        _record_write("rate_set", f"rejected_{exc.status}")
+        return _error(exc)
+    rate_id = await asyncio.to_thread(
+        lambda: upsert_conversion_rate(
+            _db(), provider=provider, model=model, input_rate=input_rate, output_rate=output_rate,
+            base_cost_per_waddleai_token=cost, enabled=data.enabled,
+        )
+    )  # fmt: skip
+    _record_write("rate_set", "updated", rate_id=rate_id)
+    return {"id": rate_id, "message": "Conversion rate saved"}
