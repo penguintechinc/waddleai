@@ -24,6 +24,43 @@ BLOCK_MESSAGES: dict[str, str] = {
 _DEFAULT_MESSAGE = "Token quota exceeded"
 
 
+def _message_text(messages: Any) -> str:
+    """Join the string content of ``messages`` for a local token count."""
+    parts = [m.get("content") for m in messages or [] if isinstance(m, dict)]
+    return "\n".join(p for p in parts if isinstance(p, str))
+
+
+async def settle_aborted(engine: Any, ctx: PipelineContext, reservation: Any) -> None:
+    """Resolve a reservation when the request ends without a normal ``_finalize``.
+
+    Upstream tokens already consumed (partial stream, or a block after dispatch) are CHARGED via
+    reconcile -- a full release would refund spend the provider really incurred. Only a request
+    that consumed nothing (blocked before dispatch, zero-output error, cache hit) is released.
+    """
+    usage = ctx.usage or {}
+    provider = ctx.provider or ""
+    text = ctx.response_text or ""
+    consumed = (
+        bool(provider)
+        and provider != "cache"
+        and not ctx.cache_hit
+        and bool(text or usage.get("input_tokens") or usage.get("output_tokens"))
+    )
+    if not consumed:
+        await engine.release(reservation)
+        return
+    model = ctx.model or reservation.model_requested or ""
+    tm = engine.token_manager
+    in_tokens = usage.get("input_tokens") or tm.count_tokens(
+        _message_text(ctx.messages), provider, model
+    )
+    out_tokens = usage.get("output_tokens") or tm.count_tokens(text, provider, model)
+    credits = tm.calculate_waddleai_tokens(in_tokens, out_tokens, provider, model)
+    await engine.reconcile(
+        reservation, actual_credits=credits, provider=provider, model=model, cache_hit=False
+    )
+
+
 class QuotaStage(Stage):
     """Reserve credits via the QuotaEngine; block with 429 when the quota is exhausted."""
 
@@ -61,8 +98,11 @@ class QuotaStage(Stage):
             ctx.quota_reservation = reservation
 
             async def _release() -> None:
-                """Refund this request's reservation (a later stage blocked or raised)."""
-                await engine.release(reservation)
+                """Settle this request's reservation (a later stage blocked or raised).
+
+                Charges any upstream tokens already consumed; refunds only zero-usage requests.
+                """
+                await settle_aborted(engine, ctx, reservation)
 
             ctx.quota_release = _release
         return ctx

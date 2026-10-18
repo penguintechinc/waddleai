@@ -121,3 +121,83 @@ async def test_stage_level_exception_fails_open_never_500():
     """A raising engine must not crash the request or block it."""
     ctx = await QuotaStage("quota", BoomEngine(), Features())(_ctx())
     assert (ctx.blocked, ctx.quota_reservation, ctx.quota_release) == (False, None, None)
+
+
+class _TM:
+    """Deterministic token manager: 1 token per char, credits = in + 2*out."""
+
+    def count_tokens(self, text, provider="", model=""):
+        return len(text)
+
+    def calculate_waddleai_tokens(self, i, o, provider, model):
+        return i + 2 * o
+
+
+class _SettleEngine:
+    """Records reconcile/release calls."""
+
+    token_manager = _TM()
+
+    def __init__(self):
+        self.reconciled, self.released = [], []
+
+    async def reconcile(self, reservation, **kw):
+        self.reconciled.append((reservation, kw))
+
+    async def release(self, reservation):
+        self.released.append(reservation)
+
+
+async def test_partial_stream_error_charges_the_partial_actual_not_a_refund():
+    """A stream that dies after N partial tokens reconciles the partial credits (no full refund)."""
+    from proxy.apps.proxy_server.pipeline.stages import ProxyPipeline
+
+    engine = _SettleEngine()
+    ctx = PipelineContext(user=User(), body={}, messages=[{"role": "user", "content": "abcd"}])
+    ctx.provider, ctx.model, ctx.response_text = "openai", "gpt-4o", "xyz"
+    ctx.quota_reservation = RES
+
+    async def _hook():
+        from proxy.apps.proxy_server.pipeline.quota_stage import settle_aborted
+
+        await settle_aborted(engine, ctx, RES)
+
+    ctx.quota_release = _hook
+    await ProxyPipeline._release_quota(ctx)
+    await ProxyPipeline._release_quota(ctx)
+    ((res, kw),) = engine.reconciled
+    assert res is RES and engine.released == []
+    assert kw["actual_credits"] == 4 + 2 * 3 and kw["cache_hit"] is False
+    assert ctx.quota_reservation is None and ctx.quota_release is None
+
+
+async def test_zero_usage_abort_releases_in_full():
+    """Blocked before dispatch (no provider, no output) is a full refund."""
+    from proxy.apps.proxy_server.pipeline.quota_stage import settle_aborted
+
+    engine = _SettleEngine()
+    ctx = PipelineContext(user=User(), body={})
+    await settle_aborted(engine, ctx, RES)
+    assert engine.released == [RES] and engine.reconciled == []
+
+
+async def test_cache_hit_abort_is_a_full_refund():
+    """provider=='cache' consumed no upstream tokens: release."""
+    from proxy.apps.proxy_server.pipeline.quota_stage import settle_aborted
+
+    engine = _SettleEngine()
+    ctx = PipelineContext(user=User(), body={}, cache_hit=True)
+    ctx.provider, ctx.response_text = "cache", "cached text"
+    await settle_aborted(engine, ctx, RES)
+    assert engine.released == [RES] and engine.reconciled == []
+
+
+async def test_provider_usage_counts_are_preferred_over_local_estimates():
+    """Provider-reported usage wins when present on a post-dispatch block."""
+    from proxy.apps.proxy_server.pipeline.quota_stage import settle_aborted
+
+    engine = _SettleEngine()
+    ctx = PipelineContext(user=User(), body={})
+    ctx.provider, ctx.model, ctx.usage = "openai", "m", {"input_tokens": 10, "output_tokens": 5}
+    await settle_aborted(engine, ctx, RES)
+    assert engine.reconciled[0][1]["actual_credits"] == 20
