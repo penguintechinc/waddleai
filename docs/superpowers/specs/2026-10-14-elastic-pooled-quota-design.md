@@ -42,7 +42,7 @@ Today **no request path enforces any WaddleAI-token quota.** `TokenManager.check
 | D4 | **Borrow = team shared buffer ONLY, no preemption.** On reservation exhaustion the proxy auto-leases from the team buffer (first-come, atomic) → else **429**. Reservations are private guarantees, never lent. |
 | D5 | **Overrides** = optional hard caps keyed by user and/or model/provider (further-restrict only). **Authoritative at reconcile** (provider known); best-effort at reserve (provider unknown pre-dispatch — §7). |
 | D6 | **Period = anchored fixed 30-day cycle**, admin-set start date per org; **cycle-index** Valkey counters (NOT calendar month); resets at the boundary. |
-| D7 | Enforcement = **reserve-before** (new quota pipeline stage) + **reconcile-after in the async `_finalize` hook** using `token_usage.waddleai_tokens` from `process_usage`. **Single reconcile site.** Blocked/errored requests (never reach `_finalize`) release their reservation via TTL. |
+| D7 | Enforcement = **reserve-before** (new quota pipeline stage) + **reconcile-after in the async `_finalize` hook** using `token_usage.waddleai_tokens` from `process_usage`. **Single reconcile site.** Blocked/errored requests (never reach `_finalize`) release reserved credits **explicitly** (release-on-block/raise in the proxy pipeline); a **background expiry sweeper** is the backstop for any reservation neither reconciled nor released — a record TTL alone does NOT un-increment the Valkey counters. |
 | D8 | Reuse the `token_limiter` Lua/Valkey patterns, but new **credit + cycle-index** keys and a **new lease-from-shared-buffer** Lua (reservation → buffer fallback, atomic, no preemption). **Fix the two limiter bugs** (§6). |
 | D9 | **Cache hits are free (0 credits)** — a cache hit incurs ~no provider cost. (Flagged for review.) |
 | D10 | **Fail-open on a Valkey/limiter outage** (consistent with `token_limiter` today): a dead Valkey never 500s/blocks a request; over-spend during an outage is bounded by the cache/true-up, never an availability outage. (Flagged for review — this trades strict enforcement for availability.) |
@@ -96,7 +96,10 @@ token_conversion_rates  + UNIQUE(provider, model)   # §4
 - **Bug A** — check ALL limits *before* any INCRBY (today the TPM/token INCRBY at `token_limiter.py:61`/`:72` runs before the later checks, leaking counters on a denied request).
 - **Bug B** — reconcile against the reservation's stored cycle/minute, not the reconcile-time clock (`token_limiter.py:117-133`).
 
-Blocked/errored requests never reach `_finalize`; their reserved credits expire via the reservation TTL (and are released explicitly where the pipeline can).
+Blocked/errored requests never reach `_finalize`:
+- Reserved credits are released **explicitly** (release-on-block/raise in the proxy pipeline).
+- A **background expiry sweeper** is the backstop for any reservation neither reconciled nor explicitly released.
+- NOT via record TTL alone — a TTL does not un-increment the Valkey counters `reserve` bumped, so credits would leak until cycle reset.
 
 ## 7. Reserve-time provider-unknown (design constraint)
 
