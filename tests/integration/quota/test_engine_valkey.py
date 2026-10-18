@@ -5,6 +5,7 @@ from datetime import date
 
 import redis.asyncio as aredis
 
+from shared.quota import keys
 from shared.quota.engine import QuotaEngine
 from shared.quota.lease import QuotaLimiter
 from shared.quota.types import OrgQuotaConfig, TeamQuotaConfig, UserReservation
@@ -47,6 +48,28 @@ class TM:
         return frozenset()
 
 
+class Tele:
+    """Records fault kinds; everything else is accepted and ignored."""
+
+    def __init__(self):
+        self.faults = []
+
+    def fault(self, kind):
+        self.faults.append(kind)
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+    def span(self, name):
+        from contextlib import nullcontext
+
+        class S:
+            def set_attribute(self, *a):
+                pass
+
+        return nullcontext(S())
+
+
 class Ledger:
     """Records adds."""
 
@@ -61,10 +84,10 @@ ORG = OrgQuotaConfig(2, True, ANCHOR, 1000)
 TEAM = TeamQuotaConfig(4, 2, 100, 20, {7: UserReservation(7, 30, None)})
 
 
-def _engine(client, store=None, ledger=None, flag=True):
+def _engine(client, store=None, ledger=None, flag=True, tele=None):
     """Engine over the real limiter."""
     return QuotaEngine(
-        QuotaLimiter(client), store or Store(ORG, TEAM), ledger or Ledger(), TM(),
+        QuotaLimiter(client), store or Store(ORG, TEAM), ledger or Ledger(), TM(), tele,
         today=lambda: TODAY, flag=lambda _o: flag,
     )  # fmt: skip
 
@@ -92,12 +115,15 @@ async def test_reserve_then_cache_hit_reconcile_refunds_fully(valkey_async):
     eng.ledger = ledger
     out = await eng.reserve(User(), "m", MSG)
     assert out.reservation is not None and out.reservation.credits_reserved == 10
+    counter = keys.user_counter(7, out.reservation.cycle)
+    assert int(await valkey_async.get(counter)) == 10
     res = await eng.reconcile(
         out.reservation, actual_credits=99, provider="cache", model="m", cache_hit=True
     )
     assert res is not None and res.applied and ledger.rows == []
-    counters = [await valkey_async.get(k) async for k in valkey_async.scan_iter(match="*user*")]
-    assert all(int(c) == 0 for c in counters if c is not None)
+    found = [k async for k in valkey_async.scan_iter(match=counter)]
+    assert found == [counter]
+    assert int(await valkey_async.get(counter)) == 0
 
 
 async def test_reserve_reconcile_writes_ledger_for_actual_split(valkey_async):
@@ -114,8 +140,10 @@ async def test_reserve_reconcile_writes_ledger_for_actual_split(valkey_async):
 async def test_valkey_outage_fails_open_without_500(valkey_async):
     """Req 3: a dead Valkey allows the request, no reservation, no exception."""
     dead = aredis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2)
-    out = await _engine(dead).reserve(User(), "m", MSG)
+    tele = Tele()
+    out = await _engine(dead, tele=tele).reserve(User(), "m", MSG)
     assert (out.blocked, out.reservation) == (False, None)
+    assert tele.faults == ["limiter_degraded"]  # the limiter swallows the outage; engine faults it
     await dead.aclose()
 
 

@@ -126,9 +126,10 @@ class Ledger:
     """Records ledger writes; can be told to fail."""
 
     def __init__(self, fail=False):
-        self.rows, self.fail = [], fail
+        self.rows, self.fail, self.attempts = [], fail, 0
 
     def add(self, org_id, cycle, entries):
+        self.attempts += 1
         if self.fail:
             raise RuntimeError("db down")
         self.rows.append((org_id, cycle, list(entries)))
@@ -150,23 +151,30 @@ def _engine(limiter=None, store=None, ledger=None, tm=None, tele=None):
 MSG = [{"role": "user", "content": "hello world " * 10}]
 
 
-@pytest.mark.parametrize(
-    ("user", "store"),
-    [
-        (User(team_id=None), Store()),  # teamless
-        (User(), Store(org=None)),  # no org pool
-        (User(), Store(org=OrgQuotaConfig(2, False, ANCHOR, 1, ()))),  # disabled
-        (User(), Store(org=OrgQuotaConfig(2, True, None, 1, ()))),  # no anchor
-        (User(), Store(team=None)),  # team has no pool
-        (User(), Store(team=TeamQuotaConfig(4, 99, 1, 1, {}))),  # team of another org
-        (User(), Store(org=OrgQuotaConfig(2, True, date(2026, 6, 1), 1, ()))),  # cycle not started
-    ],
-)
-async def test_unconfigured_paths_are_a_strict_noop(user, store):
-    """Review-focus 2: never blocks, never reserves, never touches the limiter."""
-    limiter = Limiter()
-    out = await _engine(limiter=limiter, store=store).reserve(user, "gpt-4o", MSG)
-    assert (out.blocked, out.reservation) == (False, None) and limiter.reserved == []
+GATES = {
+    "teamless": (User(team_id=None), Store(), True),
+    "flag_off": (User(), Store(error=RuntimeError("config must not be read")), False),
+    "org_none": (User(), Store(org=None), True),
+    "org_disabled": (User(), Store(org=OrgQuotaConfig(2, False, ANCHOR, 1, ())), True),
+    "no_anchor": (User(), Store(org=OrgQuotaConfig(2, True, None, 1, ())), True),
+    "future_anchor": (User(), Store(org=OrgQuotaConfig(2, True, date(2026, 2, 4), 1, ())), True),
+    "team_none": (User(), Store(team=None), True),
+    "team_other_org": (User(), Store(team=TeamQuotaConfig(4, 99, 1, 1, {})), True),
+}
+
+
+@pytest.mark.parametrize("gate", list(GATES))
+async def test_each_unconfigured_gate_is_a_strict_noop(gate):
+    """Req 1: per gate -- limiter never called, NO fault (not a fail-open), not blocked."""
+    user, store, flag_on = GATES[gate]
+    limiter, tele = Limiter(), Tele()
+    eng = QuotaEngine(
+        limiter, store, Ledger(), TM(), tele, today=lambda: TODAY, flag=lambda _o: flag_on
+    )
+    out = await eng.reserve(user, "gpt-4o", MSG)
+    assert (out.blocked, out.reservation) == (False, None)
+    assert len(limiter.reserved) == 0
+    assert not [c for c in tele.calls if c[0] == "fault"]
 
 
 async def test_allowed_reserve_builds_the_reservation_and_filters_overrides():
@@ -287,36 +295,6 @@ async def test_release_refunds_and_is_noop_without_a_reservation():
 # ---- carry-forward pins (critical requirements 1, 3, 4, 5, 6, 7, 8) ----
 
 
-class ZeroWriteLimiter(Limiter):
-    """Fails the test if the engine touches Valkey-bound calls on a no-op path."""
-
-    async def reserve(self, **kw):
-        raise AssertionError("limiter touched on a no-op path")
-
-
-async def test_flag_off_is_a_strict_noop_and_never_loads_config():
-    """Req 1: flag OFF -> no config read, no limiter call, never blocks."""
-    store = Store(error=RuntimeError("config must not be read"))
-    eng = QuotaEngine(
-        ZeroWriteLimiter(),
-        store,
-        Ledger(),
-        TM(),
-        Tele(),
-        today=lambda: TODAY,
-        flag=lambda _o: False,
-    )
-    out = await eng.reserve(User(), "gpt-4o", MSG)
-    assert (out.blocked, out.reservation) == (False, None)
-
-
-async def test_future_anchor_is_a_noop_with_no_limiter_call():
-    """Req 1: today < anchor -> not enforced yet; limiter never called."""
-    store = Store(org=OrgQuotaConfig(2, True, date(2026, 2, 4), 1, ()))
-    out = await _engine(limiter=ZeroWriteLimiter(), store=store).reserve(User(), "m", MSG)
-    assert (out.blocked, out.reservation) == (False, None)
-
-
 async def test_anchor_day_itself_is_enforced():
     """Boundary: today == anchor starts cycle 0."""
     limiter = Limiter()
@@ -426,6 +404,7 @@ async def test_ledger_failure_is_logged_faulted_and_never_retried():
         limiter=Limiter(reconcile=ReconcileResult(True, 2, 1)), ledger=ledger, tele=tele
     ).reconcile(RES, actual_credits=3, provider="p", model="m")
     assert res.applied is True and ("fault", ("ledger_write",)) in tele.calls
+    assert ledger.attempts == 1
 
 
 async def test_reconcile_and_release_failures_fault_and_do_not_raise():
@@ -473,3 +452,18 @@ async def test_unknown_limiter_reason_is_a_bounded_telemetry_label():
     assert out.blocked and ("rejection", ("unknown",)) in tele.calls
     labels = [a for name, args in tele.calls if name != "reserve_seconds" for a in args]
     assert all(isinstance(a, str) for a in labels) and "user-7-weird" not in labels
+
+
+async def test_no_id_value_in_any_telemetry_call_on_allow_and_reconcile_paths():
+    """Req 8: user/team/org ids (7/4/2) never appear as a label across allow + reconcile."""
+    tele = Tele()
+    eng = _engine(tele=tele)
+    out = await eng.reserve(User(), "gpt-4o", MSG)
+    await eng.reconcile(out.reservation, actual_credits=7, provider="openai", model="gpt-4o")
+    names = {c[0] for c in tele.calls}
+    assert {"decision", "reserved", "reconciled", "lease"} <= names
+    label_calls = {"decision", "rejection", "fault"}
+    labels = [a for n, args in tele.calls if n in label_calls for a in args]
+    labels += [args[0] for n, args in tele.calls if n in {"overage", "reconciled"}]
+    assert labels and all(isinstance(a, (str, bool)) for a in labels)
+    assert not {str(a) for a in labels} & {"7", "4", "2"}
