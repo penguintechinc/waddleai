@@ -92,13 +92,13 @@ class TokenManager:
 
     def _load_conversion_rates(self):
         """Load token conversion rates from database, fallback to defaults if empty."""
-        self.conversion_rates = {}
+        new_rates: dict[str, ConversionRate] = {}
 
         rates = self.db(self.db.token_conversion_rates.enabled == True).select()  # noqa: E712
         if rates:
             for rate in rates:
                 key = f"{rate.provider}:{rate.model}"
-                self.conversion_rates[key] = ConversionRate(
+                new_rates[key] = ConversionRate(
                     provider=rate.provider,
                     model=rate.model,
                     input_rate=rate.input_rate,
@@ -107,7 +107,9 @@ class TokenManager:
                 )
         else:
             # Fallback to defaults when DB table is empty
-            self.conversion_rates = dict(self.DEFAULT_CONVERSION_RATES)
+            new_rates = dict(self.DEFAULT_CONVERSION_RATES)
+        # Single atomic swap: the live dict is never observed empty or half-filled.
+        self.conversion_rates = new_rates
         self._rates_loaded_at = time.monotonic()
 
     def rates_stale(self, now: float | None = None) -> bool:
@@ -119,12 +121,10 @@ class TokenManager:
         """Reload rates from the DB when stale; keep the old rates on failure (never raises)."""
         if not self.rates_stale(now):
             return False
-        previous = self.conversion_rates
         try:
             self._load_conversion_rates()
         except Exception as exc:  # noqa: BLE001 -- a DB blip must not break billing
             logger.warning("conversion-rate refresh failed; keeping previous rates: %s", exc)
-            self.conversion_rates = previous
             self._rates_loaded_at = time.monotonic()  # back off one interval
             return False
         return True

@@ -36,21 +36,58 @@ def test_admin_rate_edit_is_picked_up_after_the_interval(real_schema_db, monkeyp
     assert tm.calculate_waddleai_tokens(1000, 1000, "openai", "gpt-4o") == 20
 
 
-def test_refresh_failure_keeps_previous_rates(real_schema_db, monkeypatch):
-    """A DB error during refresh must not wipe the rates or raise."""
+class _SpyDB:
+    """DAL stand-in: records the live rate dict seen mid-load, then raises or delegates."""
+
+    def __init__(self, real, tm, fail):
+        """Wrap ``real`` for ``tm``; raise from the query when ``fail`` is set."""
+        self.real, self.tm, self.fail = real, tm, fail
+        self.seen = None
+        self.token_conversion_rates = real.token_conversion_rates
+
+    def __call__(self, query):
+        """Snapshot the live rates (the mid-DB-round-trip window), then fail or delegate."""
+        self.seen = dict(self.tm.conversion_rates)
+        if self.fail:
+            raise RuntimeError("db down")
+        return self.real(query)
+
+
+def test_refresh_failure_keeps_previous_rates(real_schema_db, monkeypatch, caplog):
+    """A failed load never touches the live dict, backs off one interval and warns."""
     upsert_conversion_rate(
         real_schema_db, provider="openai", model="gpt-4o", input_rate=10.0, output_rate=10.0
     )
     tm = _tm(real_schema_db, monkeypatch)
     before = dict(tm.conversion_rates)
-
-    def boom():
-        tm.conversion_rates = {}
-        raise RuntimeError("db down")
-
-    monkeypatch.setattr(tm, "_load_conversion_rates", boom)
-    assert tm.refresh_rates_if_stale(now=tm._rates_loaded_at + 999) is False
+    loaded_at = tm._rates_loaded_at
+    spy = _SpyDB(real_schema_db, tm, fail=True)
+    monkeypatch.setattr(tm, "db", spy)
+    with caplog.at_level("WARNING", logger="shared.utils.token_manager"):
+        assert tm.refresh_rates_if_stale(now=loaded_at + 999) is False
+    assert spy.seen == before and spy.seen
     assert tm.conversion_rates == before
+    assert tm._rates_loaded_at > loaded_at
+    assert "conversion-rate refresh failed" in caplog.text
+
+
+def test_successful_refresh_swaps_atomically(real_schema_db, monkeypatch):
+    """Mid-load readers see the old full dict; after load the new dict replaces it wholesale."""
+    upsert_conversion_rate(
+        real_schema_db, provider="openai", model="gpt-4o", input_rate=10.0, output_rate=10.0
+    )
+    tm = _tm(real_schema_db, monkeypatch)
+    before = dict(tm.conversion_rates)
+    upsert_conversion_rate(
+        real_schema_db, provider="openai", model="gpt-4o", input_rate=100.0, output_rate=100.0
+    )
+    spy = _SpyDB(real_schema_db, tm, fail=False)
+    monkeypatch.setattr(tm, "db", spy)
+    old_obj = tm.conversion_rates
+    assert tm.refresh_rates_if_stale(now=tm._rates_loaded_at + 61) is True
+    assert spy.seen == before and spy.seen
+    assert tm.conversion_rates is not old_obj
+    assert tm.conversion_rates["openai:gpt-4o"].input_rate == 100.0
 
 
 def test_bad_refresh_env_falls_back_to_default(real_schema_db, monkeypatch):
