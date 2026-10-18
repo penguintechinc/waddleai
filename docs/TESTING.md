@@ -498,6 +498,14 @@ mask real regressions.
 
 <!-- END: added by chore/mypy-runs-to-completion -->
 
+## Real-Valkey tests (pooled quota)
+
+The quota Lua scripts are proven against a real Valkey started with Docker (no fakeredis):
+`make test-valkey` (sets `REQUIRE_VALKEY_TESTS=1`, so a missing Docker is a FAILURE, not a skip).
+`make test-integration` runs the same tests and skips them locally when Docker is unavailable.
+CI runs them with `REQUIRE_VALKEY_TESTS=1`; the Valkey image is pinned by sha256 digest and a
+`WADDLEAI_TEST_VALKEY_IMAGE` override without a digest is rejected.
+
 ---
 
 **Last Updated**: 2026-08-21

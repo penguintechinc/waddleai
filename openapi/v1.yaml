@@ -2052,6 +2052,39 @@ components:
       - percentage
       title: OrgUsageWindow
       type: object
+    OverrideItem:
+      description: An override as returned by the API -- ids, dimensions and the cap
+        only.
+      properties:
+        cap_credits:
+          title: Cap Credits
+          type: integer
+        id:
+          title: Id
+          type: integer
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: User Id
+      required:
+      - id
+      - user_id
+      - model
+      - provider
+      - cap_credits
+      title: OverrideItem
+      type: object
     PageMeta:
       description: Pagination metadata block emitted by ``PageRequest.meta``.
       properties:
@@ -2409,6 +2442,62 @@ components:
       - cost_usd
       - avg_latency_ms
       title: ProviderUsage
+      type: object
+    RateItem:
+      description: A conversion rate as returned by the API (rates are divisors of
+        LLM tokens).
+      properties:
+        base_cost_per_waddleai_token:
+          title: Base Cost Per Waddleai Token
+          type: number
+        enabled:
+          title: Enabled
+          type: boolean
+        id:
+          title: Id
+          type: integer
+        input_rate:
+          title: Input Rate
+          type: number
+        model:
+          title: Model
+          type: string
+        output_rate:
+          title: Output Rate
+          type: number
+        provider:
+          title: Provider
+          type: string
+      required:
+      - id
+      - provider
+      - model
+      - input_rate
+      - output_rate
+      - base_cost_per_waddleai_token
+      - enabled
+      title: RateItem
+      type: object
+    ReservationItem:
+      description: 'A member''s reservation: the user id (never a name or email) and
+        credits.'
+      properties:
+        daily_subcap:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Daily Subcap
+        guaranteed_credits:
+          title: Guaranteed Credits
+          type: integer
+        user_id:
+          title: User Id
+          type: integer
+      required:
+      - user_id
+      - guaranteed_credits
+      - daily_subcap
+      title: ReservationItem
       type: object
     RoutingDryRunResult:
       description: Explicit response schema for a dry-run decision -- never a raw
@@ -2958,6 +3047,24 @@ components:
       required:
       - timestamp
       title: TraceTimestampMeta
+      type: object
+    UsageEntry:
+      description: Credits consumed by one scope in one cycle (ids and credits only).
+      properties:
+        credits_used:
+          title: Credits Used
+          type: integer
+        scope_id:
+          title: Scope Id
+          type: integer
+        scope_type:
+          title: Scope Type
+          type: string
+      required:
+      - scope_type
+      - scope_id
+      - credits_used
+      title: UsageEntry
       type: object
     UserListItem:
       description: A single user in the list response -- the exact identity fields
@@ -8099,6 +8206,492 @@ paths:
                 type: object
           description: Response body for GET /api/v1/organizations/<org_id>/usage.
       summary: Get organization usage statistics.
+  /api/v1/pooled-quota/conversion-rates:
+    get:
+      description: ''
+      operationId: get_list_conversion_rates
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /pooled-quota/conversion-rates.
+                properties:
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+                  rates:
+                    items:
+                      $ref: '#/components/schemas/RateItem'
+                    title: Rates
+                    type: array
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - rates
+                - total
+                - pagination
+                title: RateListResponse
+                type: object
+          description: Response body for GET /pooled-quota/conversion-rates.
+      security:
+      - bearerAuth: []
+      summary: List the global credit conversion rates (bounded window, admin only).
+      tags:
+      - PooledQuota
+    put:
+      description: ''
+      operationId: put_put_conversion_rate
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /pooled-quota/conversion-rates (upsert
+                by provider + model).
+              properties:
+                base_cost_per_waddleai_token:
+                  default: 0.001
+                  title: Base Cost Per Waddleai Token
+                  type: number
+                enabled:
+                  default: true
+                  title: Enabled
+                  type: boolean
+                input_rate:
+                  anyOf:
+                  - type: number
+                  - type: 'null'
+                  default: null
+                  title: Input Rate
+                model:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Model
+                output_rate:
+                  anyOf:
+                  - type: number
+                  - type: 'null'
+                  default: null
+                  title: Output Rate
+                provider:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Provider
+              title: SetRateRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for PUT /pooled-quota/conversion-rates.
+                properties:
+                  id:
+                    title: Id
+                    type: integer
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - id
+                - message
+                title: RateResponse
+                type: object
+          description: Response body for PUT /pooled-quota/conversion-rates.
+      security:
+      - bearerAuth: []
+      summary: Create or update the credit conversion rate for one provider:model
+        (admin only).
+      tags:
+      - PooledQuota
+  /api/v1/pooled-quota/org-pool:
+    get:
+      description: ''
+      operationId: get_get_org_pool
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: The org pool as returned by the API -- exactly these
+                  fields, never the raw row.
+                properties:
+                  allocated_to_teams:
+                    title: Allocated To Teams
+                    type: integer
+                  current_cycle:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Current Cycle
+                  cycle_anchor_date:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Cycle Anchor Date
+                  cycle_end:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Cycle End
+                  cycle_start:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Cycle Start
+                  enabled:
+                    title: Enabled
+                    type: boolean
+                  org_id:
+                    title: Org Id
+                    type: integer
+                  pool_credits:
+                    title: Pool Credits
+                    type: integer
+                required:
+                - org_id
+                - enabled
+                - cycle_anchor_date
+                - pool_credits
+                - allocated_to_teams
+                - current_cycle
+                - cycle_start
+                - cycle_end
+                title: OrgPoolResponse
+                type: object
+          description: The org pool as returned by the API -- exactly these fields,
+            never the raw row.
+      security:
+      - bearerAuth: []
+      summary: Return the caller's org pool, anchor, and current cycle (disabled zeros
+        when unset).
+      tags:
+      - PooledQuota
+    put:
+      description: ''
+      operationId: put_put_org_pool
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /pooled-quota/org-pool; ``None`` leaves
+                a field unchanged.
+              properties:
+                cycle_anchor_date:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Cycle Anchor Date
+                enabled:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+                  title: Enabled
+                pool_credits:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Pool Credits
+              title: SetOrgPoolRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Set the org pool size, cycle anchor and enabled switch (any subset).
+      tags:
+      - PooledQuota
+  /api/v1/pooled-quota/overrides:
+    get:
+      description: ''
+      operationId: get_list_override_caps
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /pooled-quota/overrides.
+                properties:
+                  overrides:
+                    items:
+                      $ref: '#/components/schemas/OverrideItem'
+                    title: Overrides
+                    type: array
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - overrides
+                - total
+                - pagination
+                title: OverrideListResponse
+                type: object
+          description: Response body for GET /pooled-quota/overrides.
+      security:
+      - bearerAuth: []
+      summary: List the caller's org override caps (bounded window).
+      tags:
+      - PooledQuota
+    post:
+      description: ''
+      operationId: post_create_override_cap
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /pooled-quota/overrides (tenant comes
+                from the token).
+              properties:
+                cap_credits:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Cap Credits
+                model:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Model
+                provider:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                  title: Provider
+                user_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: User Id
+              title: CreateOverrideRequest
+              type: object
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /pooled-quota/overrides.
+                properties:
+                  id:
+                    title: Id
+                    type: integer
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - id
+                - message
+                title: CreateOverrideResponse
+                type: object
+          description: Response body for POST /pooled-quota/overrides.
+      security:
+      - bearerAuth: []
+      summary: Create a hard cap on a user and/or model and/or provider (further-restrict
+        only).
+      tags:
+      - PooledQuota
+  /api/v1/pooled-quota/overrides/{override_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_override_cap
+      parameters:
+      - in: path
+        name: override_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Delete an override of the caller's own org (another tenant's id is
+        a 404).
+      tags:
+      - PooledQuota
+  /api/v1/pooled-quota/rebuild:
+    post:
+      description: ''
+      operationId: post_rebuild_counters
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for POST /pooled-quota/rebuild; ``cycle``
+                defaults to the current one.
+              properties:
+                cycle:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Cycle
+              title: RebuildRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /pooled-quota/rebuild.
+                properties:
+                  counters_restored:
+                    title: Counters Restored
+                    type: integer
+                  cycle:
+                    title: Cycle
+                    type: integer
+                required:
+                - cycle
+                - counters_restored
+                title: RebuildResponse
+                type: object
+          description: Response body for POST /pooled-quota/rebuild.
+      security:
+      - bearerAuth: []
+      summary: Restore missing Valkey counters from the ledger; never overwrites live
+        ones.
+      tags:
+      - PooledQuota
+  /api/v1/pooled-quota/teams/{team_id}/pool:
+    put:
+      description: '
+
+        Org-layer scope AND ``authorize_team(team:quota_admin)`` on the path team,
+        so tenancy (404)
+
+        and live team authorization hold even for a caller whose scope claim is stale.'
+      operationId: put_put_team_pool
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /pooled-quota/teams/<id>/pool.
+              properties:
+                pool_credits:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Pool Credits
+              title: SetTeamPoolRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Allocate ``pool_credits`` of the org pool to a team in the caller's
+        own tenant.
+      tags:
+      - PooledQuota
+  /api/v1/pooled-quota/usage:
+    get:
+      description: ''
+      operationId: get_get_usage
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /pooled-quota/usage.
+                properties:
+                  cycle:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Cycle
+                  entries:
+                    items:
+                      $ref: '#/components/schemas/UsageEntry'
+                    title: Entries
+                    type: array
+                  org_id:
+                    title: Org Id
+                    type: integer
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - org_id
+                - cycle
+                - entries
+                - total
+                - pagination
+                title: UsageResponse
+                type: object
+          description: Response body for GET /pooled-quota/usage.
+      security:
+      - bearerAuth: []
+      summary: Per-scope credit usage for a cycle (default current), from the durable
+        ledger.
+      tags:
+      - PooledQuota
   /api/v1/providers:
     get:
       description: ''
@@ -11563,6 +12156,220 @@ paths:
         need an owner).
       tags:
       - Teams
+  /api/v1/teams/{team_id}/pooled-quota:
+    get:
+      description: ''
+      operationId: get_get_team_quota
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: A team's quota as returned by the API -- exactly these
+                  fields, never the raw rows.
+                properties:
+                  buffer_used_credits:
+                    title: Buffer Used Credits
+                    type: integer
+                  configured:
+                    title: Configured
+                    type: boolean
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+                  pool_credits:
+                    title: Pool Credits
+                    type: integer
+                  reservation_used_credits:
+                    title: Reservation Used Credits
+                    type: integer
+                  reservations:
+                    items:
+                      $ref: '#/components/schemas/ReservationItem'
+                    title: Reservations
+                    type: array
+                  reserved_credits:
+                    title: Reserved Credits
+                    type: integer
+                  shared_buffer_credits:
+                    title: Shared Buffer Credits
+                    type: integer
+                  team_id:
+                    title: Team Id
+                    type: integer
+                  total:
+                    title: Total
+                    type: integer
+                  unallocated_credits:
+                    title: Unallocated Credits
+                    type: integer
+                  usage_cycle:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    title: Usage Cycle
+                required:
+                - team_id
+                - configured
+                - pool_credits
+                - shared_buffer_credits
+                - reserved_credits
+                - unallocated_credits
+                - usage_cycle
+                - reservation_used_credits
+                - buffer_used_credits
+                - reservations
+                - total
+                - pagination
+                title: TeamQuotaResponse
+                type: object
+          description: A team's quota as returned by the API -- exactly these fields,
+            never the raw rows.
+      security:
+      - bearerAuth: []
+      summary: Show a team's pool, buffer, reserved/unallocated credits and per-user
+        reservations.
+      tags:
+      - PooledQuota
+  /api/v1/teams/{team_id}/pooled-quota/buffer:
+    put:
+      description: ''
+      operationId: put_put_team_buffer
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /teams/<id>/pooled-quota/buffer.
+              properties:
+                shared_buffer_credits:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Shared Buffer Credits
+              title: SetBufferRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Set the team's lendable shared buffer (team Admin+ or org admin).
+      tags:
+      - PooledQuota
+  /api/v1/teams/{team_id}/pooled-quota/reservations/{user_id}:
+    delete:
+      description: ''
+      operationId: delete_delete_team_reservation
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Delete a member's reservation (team Admin+); 404 when none exists.
+      tags:
+      - PooledQuota
+    put:
+      description: ''
+      operationId: put_put_team_reservation
+      parameters:
+      - in: path
+        name: team_id
+        required: true
+        schema:
+          type: number
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: number
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: Request body for PUT /teams/<id>/pooled-quota/reservations/<user_id>.
+              properties:
+                daily_subcap:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Daily Subcap
+                guaranteed_credits:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Guaranteed Credits
+              title: SetReservationRequest
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: 'Generic ``{"message": str}`` envelope.'
+                properties:
+                  message:
+                    title: Message
+                    type: string
+                required:
+                - message
+                title: MessageResponse
+                type: object
+          description: 'Generic ``{"message": str}`` envelope.'
+      security:
+      - bearerAuth: []
+      summary: Upsert a member's guaranteed credits and optional daily sub-cap (team
+        Admin+).
+      tags:
+      - PooledQuota
   /api/v1/teams/{team_id}/transfer-ownership:
     post:
       description: ''

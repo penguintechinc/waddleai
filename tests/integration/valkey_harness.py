@@ -26,6 +26,11 @@ VALKEY_IMAGE = os.environ.get(
     "WADDLEAI_TEST_VALKEY_IMAGE",
     "valkey/valkey@sha256:c5d4f082b76d433a38274ebb38a43cff19829a062928bdcc45611135ef54e608",
 )
+if "@sha256:" not in VALKEY_IMAGE:
+    raise RuntimeError(
+        "WADDLEAI_TEST_VALKEY_IMAGE must be pinned by sha256 digest (image@sha256:<digest>); "
+        f"mutable tag rejected: {VALKEY_IMAGE!r}"
+    )
 REQUIRE_ENV = "REQUIRE_VALKEY_TESTS"
 
 

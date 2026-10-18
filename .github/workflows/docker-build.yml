@@ -269,6 +269,13 @@ jobs:
       env:
         PYTHONPATH: ${{ github.workspace }}
 
+    - name: Run real-Valkey quota tests
+      run: |
+        python -m pytest tests/integration/quota -v --no-cov
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+        REQUIRE_VALKEY_TESTS: "1"
+
     - name: Run security check (bandit)
       run: |
         # Two passes on purpose: the first records every medium+ finding to the

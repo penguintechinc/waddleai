@@ -1,5 +1,7 @@
 """UNIQUE(provider, model) + the ensure/upsert helpers (spec §4, issue #297)."""
 
+from typing import Any
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 
@@ -91,7 +93,8 @@ class _Col:
         return self
 
 
-_RacyDb.token_conversion_rates.provider = _RacyDb.token_conversion_rates.model = _Col()
+_racy_table: Any = _RacyDb.token_conversion_rates
+_racy_table.provider = _racy_table.model = _Col()
 
 
 def test_ensure_returns_false_when_a_concurrent_seeder_wins():

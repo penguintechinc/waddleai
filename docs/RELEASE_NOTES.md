@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added — Elastic pooled token quota (design: `docs/superpowers/specs/2026-10-14-elastic-pooled-quota-design.md`)
+
+Tenants get a credit pool split across teams and users: per-user guaranteed reservations, an
+auto-leased team shared buffer, optional hard override caps and an anchored 30-day cycle, enforced
+in the proxy with reserve-before / reconcile-after (HTTP 429 when exhausted). Migration
+`026_pooled_quota` adds five tables and `UNIQUE(provider, model)` on `token_conversion_rates`
+(closes #297; duplicates collapse to the oldest row and one canonical seed replaces three).
+Behind `waddleai.pooled_quota` (default off). Fixed in passing: `TokenLimiter` leaked counters on a
+denied request and reconciled against the wrong clock window; `usage_tracker` never matched
+`enabled` conversion rates; conversion-rate edits now reach the proxy within a minute without a
+restart. See `administration/pooled-quota.md`.
+
 ### Added — Teams subsystem (design: `docs/superpowers/specs/2026-10-13-teams-subsystem-design.md`)
 
 Teams are a first-class scope tier between organization and user. Migration `024_teams` adds
