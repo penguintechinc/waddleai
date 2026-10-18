@@ -39,7 +39,8 @@ class TokenLimiter:
     """Atomic token/budget gate using Valkey Lua scripts."""
 
     # Lua script for TPM + budget check and reservation
-    # Returns [allowed (0/1), reason_or_null, reservation_id]
+    # Two-phase: all checks read-only first, then all mutations.
+    # Returns {allowed (0/1), reason or "", reservation_id or ""}
     LUA_RESERVE = """
     local vkey_id = ARGV[1]
     local estimated_tokens = tonumber(ARGV[2])
@@ -51,40 +52,44 @@ class TokenLimiter:
     local now_minute = ARGV[8]
     local now_month = ARGV[9]
 
-    -- Check TPM limit
-    if tpm_limit ~= nil and tpm_limit > 0 then
-        local tpm_key = "waddleai:tpm:" .. vkey_id .. ":" .. now_minute
-        local current_tpm = tonumber(redis.call("GET", tpm_key)) or 0
-        if current_tpm + estimated_tokens > tpm_limit then
-            return {0, "tpm_exceeded", cjson.null}
+    local tpm_key = "waddleai:tpm:" .. vkey_id .. ":" .. now_minute
+    local tok_key = "waddleai:budget:tok:" .. vkey_id .. ":" .. now_month
+    local usd_key = "waddleai:budget:usd:" .. vkey_id .. ":" .. now_month
+
+    -- Phase 1: read-only checks. Nothing is mutated until EVERY limit has passed (Bug A).
+    if tpm_limit > 0 then
+        local current = tonumber(redis.call("GET", tpm_key)) or 0
+        if current + estimated_tokens > tpm_limit then
+            return {0, "tpm_exceeded", ""}
         end
+    end
+    if monthly_token_limit > 0 then
+        local current = tonumber(redis.call("GET", tok_key)) or 0
+        if current + estimated_tokens > monthly_token_limit then
+            return {0, "monthly_tokens_exceeded", ""}
+        end
+    end
+    if monthly_usd_limit > 0 then
+        local current = tonumber(redis.call("GET", usd_key)) or 0
+        if current + estimated_usd > monthly_usd_limit then
+            return {0, "monthly_usd_exceeded", ""}
+        end
+    end
+
+    -- Phase 2: every check passed; apply all mutations.
+    if tpm_limit > 0 then
         redis.call("INCRBY", tpm_key, estimated_tokens)
         redis.call("EXPIRE", tpm_key, 60)
     end
-
-    -- Check monthly token budget
-    if monthly_token_limit ~= nil and monthly_token_limit > 0 then
-        local tok_key = "waddleai:budget:tok:" .. vkey_id .. ":" .. now_month
-        local current_tok = tonumber(redis.call("GET", tok_key)) or 0
-        if current_tok + estimated_tokens > monthly_token_limit then
-            return {0, "monthly_tokens_exceeded", cjson.null}
-        end
+    if monthly_token_limit > 0 then
         redis.call("INCRBY", tok_key, estimated_tokens)
         redis.call("EXPIRE", tok_key, 2592000)  -- 30 days
     end
-
-    -- Check monthly USD budget
-    if monthly_usd_limit ~= nil and monthly_usd_limit > 0 then
-        local usd_key = "waddleai:budget:usd:" .. vkey_id .. ":" .. now_month
-        local current_usd = tonumber(redis.call("GET", usd_key)) or 0
-        if current_usd + estimated_usd > monthly_usd_limit then
-            return {0, "monthly_usd_exceeded", cjson.null}
-        end
+    if monthly_usd_limit > 0 then
         redis.call("INCRBYFLOAT", usd_key, estimated_usd)
         redis.call("EXPIRE", usd_key, 2592000)  -- 30 days
     end
 
-    -- All checks passed; store reservation for reconcile
     local resv_key = "waddleai:resv:" .. reservation_id
     redis.call("SET", resv_key, cjson.encode({
         vkey_id = vkey_id,
@@ -93,7 +98,7 @@ class TokenLimiter:
         created_at = redis.call("TIME")[1]
     }), "EX", 3600)  -- 1 hour TTL
 
-    return {1, cjson.null, reservation_id}
+    return {1, "", reservation_id}
     """
 
     # Lua script for reconciliation (adjust reserved estimate with actual usage)
