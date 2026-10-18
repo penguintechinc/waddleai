@@ -28,6 +28,7 @@ from ...services import quota_pools as qp
 from ...services.quota_invalidation import invalidate_quota_config
 from ...services.quota_pools import QuotaError
 from . import api_v1_bp
+from ._pagination import PageRequest
 from ._team_authz import authorize_team
 from .auth import require_auth, require_scope
 
@@ -238,3 +239,124 @@ async def put_team_pool(team_id: int, data: SetTeamPoolRequest):
     await invalidate_quota_config(team_id=team_id)
     _record_write("team pool", "updated", org_id=org_id, team_id=team_id)
     return {"message": "Team pool updated"}
+
+
+@dataclass(slots=True)
+class CreateOverrideRequest:
+    """Request body for POST /pooled-quota/overrides (tenant comes from the token)."""
+
+    user_id: int | None = None
+    model: str | None = None
+    provider: str | None = None
+    cap_credits: int | None = None
+
+
+@dataclass(slots=True)
+class OverrideItem:
+    """An override as returned by the API -- ids, dimensions and the cap only."""
+
+    id: int
+    user_id: int | None
+    model: str | None
+    provider: str | None
+    cap_credits: int
+
+
+@dataclass(slots=True)
+class OverrideListResponse:
+    """Response body for GET /pooled-quota/overrides."""
+
+    overrides: list[OverrideItem]
+    total: int
+    pagination: PaginationMeta
+
+
+@dataclass(slots=True)
+class CreateOverrideResponse:
+    """Response body for POST /pooled-quota/overrides."""
+
+    id: int
+    message: str
+
+
+def _override_item(row: Any) -> dict[str, Any]:
+    """Project a ``quota_override`` row onto :class:`OverrideItem`."""
+    return {
+        "id": int(row.id),
+        "user_id": None if row.user_id is None else int(row.user_id),
+        "model": row.model or None,
+        "provider": row.provider or None,
+        "cap_credits": int(row.cap_credits),
+    }
+
+
+@api_v1_bp.route("/pooled-quota/overrides", methods=["GET"])
+@tag(["PooledQuota"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@require_scope(Permission.QUOTA_ORG_UPDATE)
+@validate_response(OverrideListResponse, 200)
+async def list_override_caps():
+    """List the caller's org override caps (bounded window)."""
+    if (off := await _quota_off()) is not None:
+        return off
+    org_id = g.user.get("organization_id")
+    page = PageRequest.from_request()
+    rows = await asyncio.to_thread(qp.list_overrides, _db(), org_id)
+    start, stop = page.limitby
+    return {
+        "overrides": [_override_item(r) for r in rows[start:stop]],
+        "total": len(rows),
+        **page.meta(len(rows)),
+    }
+
+
+@api_v1_bp.route("/pooled-quota/overrides", methods=["POST"])
+@tag(["PooledQuota"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@require_scope(Permission.QUOTA_ORG_UPDATE)
+@validate_response(CreateOverrideResponse, 201)
+@validate_request(CreateOverrideRequest)
+async def create_override_cap(data: CreateOverrideRequest):
+    """Create a hard cap on a user and/or model and/or provider (further-restrict only)."""
+    if (off := await _quota_off()) is not None:
+        return off
+    org_id = g.user.get("organization_id")
+    cap = data.cap_credits
+    if cap is None:
+        _record_write("override_create", "rejected_400", org_id=org_id)
+        return jsonify({"error": "cap_credits is required"}), 400
+    try:
+        override_id = await asyncio.to_thread(
+            lambda: qp.create_override(
+                _db(), org_id, user_id=data.user_id, model=data.model,
+                provider=data.provider, cap_credits=cap,
+            )
+        )  # fmt: skip
+    except QuotaError as exc:
+        _record_write("override_create", f"rejected_{exc.status}", org_id=org_id)
+        return _error(exc)
+    await invalidate_quota_config(org_id=org_id)
+    _record_write("override_create", "created", org_id=org_id, override_id=override_id)
+    return {"id": override_id, "message": "Override created"}, 201
+
+
+@api_v1_bp.route("/pooled-quota/overrides/<int:override_id>", methods=["DELETE"])
+@tag(["PooledQuota"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@require_scope(Permission.QUOTA_ORG_UPDATE)
+@validate_response(MessageResponse, 200)
+async def delete_override_cap(override_id: int):
+    """Delete an override of the caller's own org (another tenant's id is a 404)."""
+    if (off := await _quota_off()) is not None:
+        return off
+    org_id = g.user.get("organization_id")
+    deleted = await asyncio.to_thread(qp.delete_override, _db(), org_id, override_id)
+    if not deleted:
+        _record_write("override_delete", "rejected_404", org_id=org_id)
+        return jsonify({"error": "Override not found"}), 404
+    await invalidate_quota_config(org_id=org_id)
+    _record_write("override_delete", "deleted", org_id=org_id, override_id=override_id)
+    return {"message": "Override deleted"}
