@@ -11,7 +11,9 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -129,6 +131,103 @@ class TeamMember(Base):
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     team_role = Column(String(20), nullable=False)  # owner | admin | member | viewer
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class QuotaOrgPool(Base):
+    """Per-tenant credit pool + anchored 30-day cycle start (pooled-quota spec §5, D3/D6).
+
+    A row exists per org (migration 026 backfills it ``enabled = false``); enforcement is a
+    no-op until an admin sets the anchor, pool, and enables it.
+    """
+
+    __tablename__ = "quota_org_pool"
+    __table_args__ = (UniqueConstraint("org_id", name="uq_quota_org_pool_org"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    cycle_anchor_date = Column(Date, nullable=True)
+    pool_credits = Column(BigInteger, nullable=False, default=0)
+    enabled = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class QuotaTeamPool(Base):
+    """A team's sub-pool and lendable shared buffer, in WaddleAI-token credits (spec §5, D3/D4)."""
+
+    __tablename__ = "quota_team_pool"
+    __table_args__ = (
+        UniqueConstraint("team_id", name="uq_quota_team_pool_team"),
+        Index("ix_quota_team_pool_org", "organization_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    pool_credits = Column(BigInteger, nullable=False, default=0)
+    shared_buffer_credits = Column(BigInteger, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class QuotaUserReservation(Base):
+    """A user's private guaranteed credits (never lent) and optional daily sub-cap (spec §5, D4)."""
+
+    __tablename__ = "quota_user_reservation"
+    __table_args__ = (
+        UniqueConstraint("user_id", "organization_id", name="uq_quota_user_res_user_org"),
+        Index("ix_quota_user_res_team", "team_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    guaranteed_credits = Column(BigInteger, nullable=False, default=0)
+    daily_subcap = Column(BigInteger, nullable=True)
+
+
+class QuotaOverride(Base):
+    """A hard cap keyed by user and/or model and/or provider; further-restricts only (spec D5)."""
+
+    __tablename__ = "quota_override"
+    __table_args__ = (
+        CheckConstraint(
+            "user_id IS NOT NULL OR model IS NOT NULL OR provider IS NOT NULL",
+            name="ck_quota_override_has_dimension",
+        ),
+        Index("ix_quota_override_org", "organization_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    model = Column(String(255), nullable=True)
+    provider = Column(String(100), nullable=True)
+    cap_credits = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class QuotaUsageLedger(Base):
+    """Durable per-scope, per-cycle credit rollup: reporting + Valkey counter rebuild (spec §5).
+
+    ``scope_type`` is ``user`` (reservation consumption), ``team_buffer`` or ``override``.
+    """
+
+    __tablename__ = "quota_usage_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_type", "scope_id", "organization_id", "cycle_index",
+            name="uq_quota_ledger_scope_cycle",
+        ),
+        Index("ix_quota_ledger_org_cycle", "organization_id", "cycle_index"),
+    )  # fmt: skip
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope_type = Column(String(20), nullable=False)
+    scope_id = Column(Integer, nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    cycle_index = Column(Integer, nullable=False)
+    credits_used = Column(BigInteger, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 class APIKey(Base):
