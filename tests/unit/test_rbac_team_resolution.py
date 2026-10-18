@@ -110,7 +110,7 @@ def test_build_user_context_unions_org_and_team_scopes_without_mutating_bundles(
     )  # fmt: skip
     assert ctx.permissions == before | {
         P.TEAM_READ, P.TEAM_USE, P.TEAM_KEY_CREATE, P.TEAM_KEY_ADMIN, P.TEAM_MEMBER_MANAGE,
-        P.TEAM_ADMIN, P.TEAM_DELETE, P.TEAM_TRANSFER_OWNER,
+        P.TEAM_ADMIN, P.TEAM_DELETE, P.TEAM_TRANSFER_OWNER, P.TEAM_QUOTA_READ, P.TEAM_QUOTA_ADMIN,
     }  # fmt: skip
     assert (ctx.team_id, ctx.team_role) == (7, "owner")
     assert ROLE_PERMISSIONS[Role.USER] == before

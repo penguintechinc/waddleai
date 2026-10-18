@@ -155,3 +155,7 @@ class Permission(Enum):
     TEAM_ADMIN = "team:admin"
     TEAM_DELETE = "team:delete"
     TEAM_TRANSFER_OWNER = "team:transfer_owner"
+    # Pooled-quota team layer (elastic quota spec D11): read the team's quota (viewer+) and
+    # manage its shared buffer + per-user reservations (admin+). Team-LAYER scopes.
+    TEAM_QUOTA_READ = "team:quota_read"
+    TEAM_QUOTA_ADMIN = "team:quota_admin"
