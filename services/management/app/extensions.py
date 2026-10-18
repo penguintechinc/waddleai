@@ -321,37 +321,11 @@ def init_default_data(db: DB, config: dict | None = None) -> str | None:
         result_password = admin_password
 
     # Default token conversion rates
-    default_rates = [
-        ("openai", "gpt-4o", 10, 20, 0.0025),
-        ("openai", "gpt-4o-mini", 30, 40, 0.0001),
-        ("openai", "gpt-4-turbo", 10, 20, 0.001),
-        ("openai", "gpt-4", 10, 20, 0.003),
-        ("openai", "gpt-3.5-turbo", 20, 30, 0.0005),
-        ("anthropic", "claude-3-5-sonnet-latest", 12, 18, 0.003),
-        ("anthropic", "claude-3-opus-20240229", 8, 15, 0.015),
-        ("anthropic", "claude-3-sonnet-20240229", 12, 18, 0.003),
-        ("anthropic", "claude-3-haiku-20240307", 25, 35, 0.00025),
-        ("ollama", "llama3.2", 50, 50, 0.0),
-        ("ollama", "llama3.1", 50, 50, 0.0),
-        ("ollama", "mistral", 45, 45, 0.0),
-        ("gemini", "gemini-1.5-pro", 12, 18, 0.00125),
-        ("gemini", "gemini-1.5-flash", 30, 40, 0.000075),
-        ("cohere", "command-r-plus", 15, 20, 0.003),
-        ("cohere", "command-r", 25, 30, 0.0005),
-    ]
+    from shared.utils.conversion_rate_store import ensure_conversion_rate
+    from shared.utils.default_conversion_rates import DEFAULT_RATE_ROWS
 
-    for provider, model, input_rate, output_rate, cost in default_rates:
-        if not db(
-            (db.token_conversion_rates.provider == provider)
-            & (db.token_conversion_rates.model == model)
-        ).select():
-            db.token_conversion_rates.insert(
-                provider=provider,
-                model=model,
-                input_rate=input_rate,
-                output_rate=output_rate,
-                base_cost_per_waddleai_token=cost,
-            )
+    for rate_row in DEFAULT_RATE_ROWS:
+        ensure_conversion_rate(db, rate_row)
 
     db.commit()
     logger.info("Default data initialized")

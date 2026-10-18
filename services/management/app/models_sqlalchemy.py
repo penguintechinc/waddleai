@@ -449,6 +449,9 @@ class TokenConversionRate(Base):
     """Per-provider-model cost rates used to convert LLM tokens into WaddleAI token accounting."""
 
     __tablename__ = "token_conversion_rates"
+    __table_args__ = (
+        UniqueConstraint("provider", "model", name="uq_token_conversion_rates_provider_model"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider = Column(String(100), nullable=False)
