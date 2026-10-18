@@ -142,3 +142,104 @@ def test_removing_a_member_or_deleting_a_team_cleans_quota_rows(team_world):
     assert list(w.db(w.db.quota_user_reservation.user_id == w.u["mia"]).select()) == []
     team_svc.delete_team(w.db, team)
     assert list(w.db(w.db.quota_team_pool.team_id == w.t["a1"]).select()) == []
+
+
+def _pool_team(w, org_pool=1000, team_pool=100):
+    """Org a ready with ``org_pool`` and team a1 allocated ``team_pool``."""
+    _org_ready(w, org_pool)
+    team = _team(w)
+    qp.set_team_pool(w.db, w.org["a"], team, team_pool)
+    return team
+
+
+def test_org_pool_shrink_boundary(team_world):
+    """Shrink to exactly allocated is allowed; one below is 409."""
+    w = team_world
+    _org_ready(w)
+    qp.set_team_pool(w.db, w.org["a"], _team(w), 600)
+    with pytest.raises(QuotaError) as exc:
+        qp.set_org_pool(w.db, w.org["a"], cycle_anchor_date=None, pool_credits=599, enabled=None)
+    assert exc.value.status == 409
+    qp.set_org_pool(w.db, w.org["a"], cycle_anchor_date=None, pool_credits=600, enabled=None)
+    assert int(qp.get_org_pool_row(w.db, w.org["a"]).pool_credits) == 600
+
+
+def test_team_pool_vs_org_boundary_over_by_one(team_world):
+    """Team pools summing to org pool + 1 are 409; exactly the org pool is allowed."""
+    w = team_world
+    _org_ready(w, 1000)
+    qp.set_team_pool(w.db, w.org["a"], _team(w, "a1"), 700)
+    with pytest.raises(QuotaError) as exc:
+        qp.set_team_pool(w.db, w.org["a"], _team(w, "a2"), 301)
+    assert exc.value.status == 409
+    qp.set_team_pool(w.db, w.org["a"], _team(w, "a2"), 300)
+
+
+def test_team_pool_shrink_boundary(team_world):
+    """Shrink to exactly reserved+buffer allowed; one below is 409."""
+    w = team_world
+    team = _pool_team(w)
+    qp.set_team_buffer(w.db, team, 30)
+    qp.set_user_reservation(w.db, team, w.u["mia"], 50, None)
+    with pytest.raises(QuotaError) as exc:
+        qp.set_team_pool(w.db, w.org["a"], team, 79)
+    assert exc.value.status == 409
+    qp.set_team_pool(w.db, w.org["a"], team, 80)
+
+
+def test_buffer_boundary(team_world):
+    """Buffer filling the pool exactly is allowed; pool + 1 is 409."""
+    w = team_world
+    team = _pool_team(w)
+    qp.set_user_reservation(w.db, team, w.u["mia"], 40, None)
+    with pytest.raises(QuotaError) as exc:
+        qp.set_team_buffer(w.db, team, 61)
+    assert exc.value.status == 409
+    qp.set_team_buffer(w.db, team, 60)
+
+
+def test_reservation_boundary(team_world):
+    """Reservation filling the pool exactly is allowed; pool + 1 is 409."""
+    w = team_world
+    team = _pool_team(w)
+    qp.set_team_buffer(w.db, team, 40)
+    with pytest.raises(QuotaError) as exc:
+        qp.set_user_reservation(w.db, team, w.u["mia"], 61, None)
+    assert exc.value.status == 409
+    qp.set_user_reservation(w.db, team, w.u["mia"], 60, None)
+
+
+def test_set_team_pool_rejects_org_team_mismatch(team_world):
+    """A team of org b passed with org a's id is 404 and writes nothing."""
+    w = team_world
+    _org_ready(w)
+    with pytest.raises(QuotaError) as exc:
+        qp.set_team_pool(w.db, w.org["a"], _team(w, "b1"), 10)
+    assert exc.value.status == 404
+    assert list(w.db(w.db.quota_team_pool.team_id == w.t["b1"]).select()) == []
+
+
+def test_org_pool_first_insert_integrity_error_is_409(team_world, monkeypatch):
+    """A lost first-insert race maps to 409."""
+    from sqlalchemy.exc import IntegrityError
+
+    w = team_world
+
+    def boom(self, **_kw):
+        raise IntegrityError("insert", {}, Exception("dup"))
+
+    monkeypatch.setattr(type(w.db.quota_org_pool), "insert", boom)
+    with pytest.raises(QuotaError) as exc:
+        qp.set_org_pool(w.db, w.org["a"], cycle_anchor_date=None, pool_credits=1, enabled=None)
+    assert exc.value.status == 409
+
+
+def test_other_orgs_team_pools_do_not_count_toward_sum(team_world):
+    """Org b's team pool is excluded from org a's sum(team) <= org pool check."""
+    w = team_world
+    _org_ready(w, 1000)
+    w.db.quota_team_pool.insert(
+        team_id=w.t["b1"], organization_id=w.org["b"], pool_credits=900, shared_buffer_credits=0
+    )
+    assert qp.allocated_to_teams(w.db, w.org["a"]) == 0
+    qp.set_team_pool(w.db, w.org["a"], _team(w, "a1"), 1000)

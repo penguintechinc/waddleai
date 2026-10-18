@@ -2,9 +2,11 @@
 
 Pure database logic with no HTTP: the routes authorize first, then call these. Allocation
 invariants: ``sum(user guaranteed) + team buffer <= team pool_credits`` and
-``sum(team pool_credits) <= org pool_credits`` -- so reservations are truly guaranteed and the
-org cap is real without an org-level runtime counter. penguin-dal runs each statement in its own
-transaction (no ``rollback()``), so a caught ``IntegrityError`` needs no cleanup.
+``sum(team pool_credits) <= org pool_credits``. They are enforced best-effort at config time,
+last-writer-wins: penguin-dal has no multi-statement transaction, so two concurrent admin writes
+can jointly over-allocate; the next write touching that pool re-validates and answers 409 until
+it is shrunk, and the runtime lease remains the real spend guard. A caught ``IntegrityError``
+needs no cleanup (each statement is its own transaction, no ``rollback()``).
 """
 
 from datetime import date
@@ -72,7 +74,10 @@ def set_org_pool(
     """Update the org pool; ``None`` leaves a field unchanged. Enabling needs an anchor date."""
     row = get_org_pool_row(database, org_id)
     if row is None:
-        database.quota_org_pool.insert(org_id=org_id, pool_credits=0, enabled=False)
+        try:
+            database.quota_org_pool.insert(org_id=org_id, pool_credits=0, enabled=False)
+        except IntegrityError as exc:
+            raise QuotaError("Organization pool was created concurrently; retry", 409) from exc
         row = get_org_pool_row(database, org_id)
     fields: dict[str, Any] = {}
     if pool_credits is not None:
@@ -93,6 +98,8 @@ def set_org_pool(
 
 def set_team_pool(database: DB, org_id: int, team: Any, pool_credits: int) -> None:
     """Allocate ``pool_credits`` of the org pool to ``team`` (org-layer operation)."""
+    if team.organization_id != org_id:
+        raise QuotaError("Team not found", 404)
     org_row = get_org_pool_row(database, org_id)
     if org_row is None:
         raise QuotaError("Configure the organization pool first", 409)
