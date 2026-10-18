@@ -1,6 +1,9 @@
 """Regressions for the two TokenLimiter bugs (spec §6), against a real Valkey."""
 
+import json
 from datetime import datetime
+
+from prometheus_client import REGISTRY
 
 from shared.utils.token_limiter import KeyLimits, TokenLimiter
 
@@ -83,3 +86,74 @@ async def test_reconcile_does_not_resurrect_an_expired_tpm_window(valkey_async):
     await valkey_async.delete("waddleai:tpm:12:202601051000")  # simulate the 60s TTL elapsing
     await limiter.reconcile(decision.reservation_id, 10, 0.0)
     assert await _keys(valkey_async, "waddleai:tpm:12:*") == []
+
+
+async def test_reconcile_old_format_reservation_falls_back_to_current_window(valkey_async):
+    """A pre-upgrade reservation (no stored window) reconciles on the fallback window."""
+    now = datetime.utcnow()
+    minute, month = now.strftime("%Y%m%d%H%M"), now.strftime("%Y%m")
+    await valkey_async.set(
+        "waddleai:resv:old-1",
+        json.dumps({"vkey_id": 21, "estimated_tokens": 100, "estimated_usd": 0}),
+    )
+    await valkey_async.set(f"waddleai:tpm:21:{minute}", 100, ex=60)
+    await valkey_async.set(f"waddleai:budget:tok:21:{month}", 100)
+    limiter = TokenLimiter(valkey_async, _FlagOn())
+    await limiter.reconcile("old-1", 30, 0.0)
+    assert int(await valkey_async.get(f"waddleai:tpm:21:{minute}")) == 30
+    assert int(await valkey_async.get(f"waddleai:budget:tok:21:{month}")) == 30
+    assert await valkey_async.get("waddleai:resv:old-1") is None
+
+
+async def test_reconcile_stored_window_wins_over_fallback(valkey_async):
+    """A new-format reservation still adjusts its stored window, not the fallback (Bug B intact)."""
+    limiter = TokenLimiter(valkey_async, _FlagOn())
+    limits = KeyLimits(tpm_limit=1000, monthly_token_limit=10_000, monthly_usd_limit=None)
+    decision = await limiter.reserve(22, 100, 0.0, limits, now=datetime(2026, 1, 31, 23, 59, 0))
+    await limiter.reconcile(decision.reservation_id, 60, 0.0)
+    assert int(await valkey_async.get("waddleai:budget:tok:22:202601")) == 60
+    assert await _keys(valkey_async, "waddleai:budget:tok:22:*") == [
+        "waddleai:budget:tok:22:202601"
+    ]
+
+
+def _fail_open_count(phase):
+    """Current value of the fail-open counter for ``phase`` (0 if never incremented)."""
+    return (
+        REGISTRY.get_sample_value("waddleai_token_limiter_fail_open_total", {"phase": phase}) or 0
+    )
+
+
+async def test_regression_noscript_reloads_and_still_enforces_limit(valkey_async):
+    """SCRIPT FLUSH after load must not make the limiter fail open: reload, retry, enforce."""
+    limiter = TokenLimiter(valkey_async, _FlagOn())
+    limits = KeyLimits(tpm_limit=100, monthly_token_limit=None, monthly_usd_limit=None)
+    first = await limiter.reserve(31, 80, 0.0, limits)
+    assert first.allowed is True
+    before = _fail_open_count("reserve")
+    await valkey_async.script_flush()
+    second = await limiter.reserve(31, 80, 0.0, limits)  # 160 > 100 -> must deny after reload
+    assert second.allowed is False
+    assert second.reason == "tpm_exceeded"
+    assert _fail_open_count("reserve") == before
+    await valkey_async.script_flush()
+    await limiter.reconcile(first.reservation_id, 10, 0.0)  # reconcile also recovers
+    assert await valkey_async.get("waddleai:resv:" + first.reservation_id) is None
+
+
+async def test_persistent_failure_fails_open_observably(valkey_async, caplog):
+    """A genuine persistent failure still fails open, but logs at ERROR and meters it."""
+    limiter = TokenLimiter(valkey_async, _FlagOn())
+    limits = KeyLimits(tpm_limit=100, monthly_token_limit=None, monthly_usd_limit=None)
+
+    async def _boom(*args, **kwargs):
+        raise ConnectionError("valkey down")
+
+    limiter.valkey = type("Dead", (), {"evalsha": _boom, "script_load": _boom})()
+    before = _fail_open_count("reserve")
+    with caplog.at_level("ERROR"):
+        decision = await limiter.reserve(32, 80, 0.0, limits)
+    assert decision.allowed is True
+    assert decision.reservation_id is None
+    assert _fail_open_count("reserve") == before + 1
+    assert any("failing open" in r.getMessage() and r.levelname == "ERROR" for r in caplog.records)

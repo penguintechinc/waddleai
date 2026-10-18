@@ -14,7 +14,18 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from prometheus_client import Counter
+from redis.exceptions import NoScriptError
+
 logger = logging.getLogger(__name__)
+
+# Fail-open events: the limiter let a request through because Valkey/the script failed.
+# Alertable on its own; bounded label set (phase only, never an error string).
+_limiter_fail_open_total = Counter(
+    "waddleai_token_limiter_fail_open_total",
+    "TokenLimiter fail-open events (request allowed because the limiter itself failed)",
+    ["phase"],  # reserve | reserve_response | reconcile
+)
 
 
 @dataclass(slots=True)
@@ -116,13 +127,17 @@ class TokenLimiter:
     end
 
     local resv = cjson.decode(resv_data)
+    -- Reservations written before now_minute/now_month were stored fall back to the
+    -- reconcile-time window (ARGV[4]/[5]); the stored window always wins when present.
+    local now_minute = resv.now_minute or ARGV[4]
+    local now_month = resv.now_month or ARGV[5]
     local token_delta = actual_tokens - resv.estimated_tokens
     local usd_delta = actual_usd - resv.estimated_usd
 
     -- Adjust the window the reservation was MADE in (Bug B), never the reconcile-time clock.
-    local tpm_key = "waddleai:tpm:" .. resv.vkey_id .. ":" .. resv.now_minute
-    local tok_key = "waddleai:budget:tok:" .. resv.vkey_id .. ":" .. resv.now_month
-    local usd_key = "waddleai:budget:usd:" .. resv.vkey_id .. ":" .. resv.now_month
+    local tpm_key = "waddleai:tpm:" .. resv.vkey_id .. ":" .. now_minute
+    local tok_key = "waddleai:budget:tok:" .. resv.vkey_id .. ":" .. now_month
+    local usd_key = "waddleai:budget:usd:" .. resv.vkey_id .. ":" .. now_month
 
     -- The TPM key has a 60s TTL: only adjust it while it still exists (INCRBY would recreate
     -- it without a TTL). The budget keys are only ever created by a reserve with that limit.
@@ -166,6 +181,23 @@ class TokenLimiter:
                 self._reconcile_sha = await self.valkey.script_load(self.LUA_RECONCILE)
             except Exception as e:
                 logger.warning("Failed to load reconcile script: %s", e)
+
+    async def _evalsha_with_reload(self, name: str, *args: str):
+        """Run a cached script, reloading it once if Valkey lost it (NOSCRIPT).
+
+        A Valkey restart or SCRIPT FLUSH drops loaded scripts; without a reload the
+        limiter would fail open for every request until the process restarted.
+        """
+        attr = f"_{name}_sha"
+        script = self.LUA_RESERVE if name == "reserve" else self.LUA_RECONCILE
+        if getattr(self, attr) is None:
+            await self._load_scripts()
+        try:
+            return await self.valkey.evalsha(getattr(self, attr), 0, *args)
+        except NoScriptError:
+            logger.warning("%s script missing in Valkey (NOSCRIPT); reloading and retrying", name)
+            setattr(self, attr, await self.valkey.script_load(script))
+            return await self.valkey.evalsha(getattr(self, attr), 0, *args)
 
     async def reserve(
         self,
@@ -216,9 +248,8 @@ class TokenLimiter:
 
         try:
             # Execute Lua script atomically
-            result = await self.valkey.evalsha(
-                self._reserve_sha,
-                0,  # numkeys=0 (all keys passed via ARGV)
+            result = await self._evalsha_with_reload(
+                "reserve",
                 str(vkey_id),
                 str(estimated_tokens),
                 str(estimated_usd),
@@ -231,7 +262,8 @@ class TokenLimiter:
             )
 
             if result is None or len(result) < 2:
-                logger.error("Invalid Lua script response: %s", result)
+                logger.error("Invalid Lua script response: %s; failing open", result)
+                _limiter_fail_open_total.labels(phase="reserve_response").inc()
                 return GateDecision(allowed=True, reason=None, reservation_id=None)
 
             allowed = bool(result[0])
@@ -241,7 +273,8 @@ class TokenLimiter:
             return GateDecision(allowed=allowed, reason=reason, reservation_id=resv_id)
 
         except Exception as e:
-            logger.error("Error in reserve: %s", e)
+            logger.error("Error in reserve: %s; failing open", e, exc_info=True)
+            _limiter_fail_open_total.labels(phase="reserve").inc()
             # Fail open: allow the request if there's an error
             return GateDecision(allowed=True, reason=None, reservation_id=None)
 
@@ -256,23 +289,20 @@ class TokenLimiter:
             actual_usd: Actual cost in micro-USD
 
         """
-        # Load scripts on first use
-        await self._load_scripts()
-
-        if self._reconcile_sha is None:
-            logger.warning("Reconcile script not loaded, skipping reconciliation")
-            return
-
+        # Current window is only a fallback for reservations stored without one.
+        moment = datetime.utcnow()
         try:
-            await self.valkey.evalsha(
-                self._reconcile_sha,
-                0,  # numkeys=0
+            await self._evalsha_with_reload(
+                "reconcile",
                 reservation_id,
                 str(actual_tokens),
                 str(actual_usd),
+                moment.strftime("%Y%m%d%H%M"),
+                moment.strftime("%Y%m"),
             )
         except Exception as e:
-            logger.warning("Error reconciling reservation %s: %s", reservation_id, e)
+            logger.error("Error reconciling reservation %s: %s", reservation_id, e, exc_info=True)
+            _limiter_fail_open_total.labels(phase="reconcile").inc()
 
 
 def create_token_limiter(valkey, features) -> TokenLimiter:
