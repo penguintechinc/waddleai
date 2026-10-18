@@ -12,6 +12,8 @@ from typing import Any
 
 import tiktoken
 
+from shared.utils.default_conversion_rates import DEFAULT_RATE_ROWS
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,26 +51,12 @@ class ConversionRate:
 class TokenManager:
     """Manages token counting, conversion, and quota enforcement."""
 
-    # Default conversion rates for common models (seed data for token_conversion_rates table)
+    # Fallback when token_conversion_rates is empty -- derived from the ONE canonical seed.
     DEFAULT_CONVERSION_RATES = {
-        "openai:gpt-4": ConversionRate("openai", "gpt-4", 10.0, 20.0, 0.003),
-        "openai:gpt-4-turbo": ConversionRate("openai", "gpt-4-turbo", 10.0, 20.0, 0.001),
-        "openai:gpt-4o": ConversionRate("openai", "gpt-4o", 10.0, 20.0, 0.0005),
-        "openai:gpt-4o-mini": ConversionRate("openai", "gpt-4o-mini", 10.0, 10.0, 0.00015),
-        "openai:gpt-3.5-turbo": ConversionRate("openai", "gpt-3.5-turbo", 10.0, 10.0, 0.0002),
-        "anthropic:claude-3-opus": ConversionRate("anthropic", "claude-3-opus", 10.0, 20.0, 0.0075),
-        "anthropic:claude-3-sonnet": ConversionRate(
-            "anthropic", "claude-3-sonnet", 10.0, 20.0, 0.0015
-        ),
-        "anthropic:claude-3-haiku": ConversionRate(
-            "anthropic", "claude-3-haiku", 10.0, 10.0, 0.00025
-        ),
-        "anthropic:claude-3.5-sonnet": ConversionRate(
-            "anthropic", "claude-3.5-sonnet", 10.0, 20.0, 0.003
-        ),
-        "ollama:llama2": ConversionRate("ollama", "llama2", 10.0, 10.0, 0.0),
-        "ollama:mistral": ConversionRate("ollama", "mistral", 10.0, 10.0, 0.0),
-        "ollama:codellama": ConversionRate("ollama", "codellama", 10.0, 10.0, 0.0),
+        f"{r.provider}:{r.model}": ConversionRate(
+            r.provider, r.model, r.input_rate, r.output_rate, r.base_cost_per_waddleai_token
+        )
+        for r in DEFAULT_RATE_ROWS
     }
 
     def __init__(self, db):
