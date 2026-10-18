@@ -198,8 +198,15 @@ class QuotaConfigStore:
                     )
         try:
             value = await asyncio.to_thread(loader)
-        except Exception as exc:
-            raise QuotaConfigError(f"quota config load failed for {key}: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 -- config DB down fails open as "unconfigured"
+            logger.error(
+                "quota config load failed for %s (%s: %s); failing open as unconfigured",
+                key,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            return None
         if self.valkey is not None:
             try:
                 await self.valkey.set(

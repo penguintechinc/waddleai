@@ -2,8 +2,6 @@
 
 from datetime import date, datetime
 
-import pytest
-
 from shared.quota import config as qc
 from shared.quota import keys
 from shared.quota.types import OrgQuotaConfig, OverrideRule, TeamQuotaConfig, UserReservation
@@ -134,15 +132,32 @@ async def test_store_survives_valkey_outage_and_bad_json(real_schema_db):
     assert (await qc.QuotaConfigStore(vk, real_schema_db).get_org(org)).pool_credits == 1000
 
 
-async def test_store_db_failure_raises_quota_config_error(monkeypatch):
-    """A DB failure is a QuotaConfigError (the engine turns it into fail-open)."""
+async def test_store_db_failure_fails_open_with_error_log(monkeypatch, caplog):
+    """A DB-load failure logs ERROR and returns None (unconfigured); it never raises or caches."""
 
     def boom(db, org_id):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(qc, "load_org_config", boom)
-    with pytest.raises(qc.QuotaConfigError):
-        await qc.QuotaConfigStore(FakeValkey(), object()).get_org(1)
+    vk = FakeValkey()
+    with caplog.at_level("ERROR", logger=qc.logger.name):
+        assert await qc.QuotaConfigStore(vk, object()).get_org(1) is None
+    assert any(r.levelname == "ERROR" and "failing open" in r.getMessage() for r in caplog.records)
+    assert vk.sets == []
+
+
+async def test_store_honors_negative_entry_without_db_call(monkeypatch):
+    """A seeded "null" cache entry returns None with zero DB loads."""
+    calls = []
+    monkeypatch.setattr(qc, "load_org_config", lambda db, o: calls.append(o))
+    monkeypatch.setattr(qc, "load_team_config", lambda db, t: calls.append(t))
+    vk = FakeValkey()
+    vk.data[keys.org_config(5)] = "null"
+    vk.data[keys.team_config(6)] = "null"
+    store = qc.QuotaConfigStore(vk, object())
+    assert await store.get_org(5) is None
+    assert await store.get_team(6) is None
+    assert calls == []
 
 
 def test_as_date_normalizes_db_values():
