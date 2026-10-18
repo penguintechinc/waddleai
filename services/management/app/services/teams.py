@@ -135,6 +135,8 @@ def delete_team(database: DB, team: Any) -> list[int]:
     stale = member_user_ids(database, team.id)
     database(database.api_keys.team_id == team.id).update(team_id=None)
     database(database.team_members.team_id == team.id).delete()
+    database(database.quota_user_reservation.team_id == team.id).delete()
+    database(database.quota_team_pool.team_id == team.id).delete()
     database(database.teams.id == team.id).delete()
     database.commit()
     return stale
@@ -290,6 +292,10 @@ def remove_member(database: DB, team: Any, user_id: int, *, can_manage_owner: bo
     database(
         (database.api_keys.user_id == user_id) & (database.api_keys.team_id == team.id)
     ).update(team_id=None)
+    database(
+        (database.quota_user_reservation.team_id == team.id)
+        & (database.quota_user_reservation.user_id == user_id)
+    ).delete()
     database(database.team_members.id == member.id).delete()
     database.commit()
     return [user_id]
