@@ -5,6 +5,8 @@ Manages both WaddleAI tokens (normalized) and raw LLM tokens with conversion rat
 
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -12,7 +14,21 @@ from typing import Any
 
 import tiktoken
 
+from shared.utils.default_conversion_rates import DEFAULT_RATE_ROWS
+
 logger = logging.getLogger(__name__)
+
+_DEFAULT_RATE_REFRESH_SECONDS = 60.0
+
+
+def _rate_refresh_seconds() -> float:
+    """Refresh interval from WADDLEAI_RATE_REFRESH_SECONDS; bad/non-positive values -> default."""
+    raw = os.environ.get("WADDLEAI_RATE_REFRESH_SECONDS")
+    try:
+        value = float(raw) if raw else _DEFAULT_RATE_REFRESH_SECONDS
+    except ValueError:
+        return _DEFAULT_RATE_REFRESH_SECONDS
+    return value if value > 0 else _DEFAULT_RATE_REFRESH_SECONDS
 
 
 class TokenType(Enum):
@@ -49,31 +65,18 @@ class ConversionRate:
 class TokenManager:
     """Manages token counting, conversion, and quota enforcement."""
 
-    # Default conversion rates for common models (seed data for token_conversion_rates table)
+    # Fallback when token_conversion_rates is empty -- derived from the ONE canonical seed.
     DEFAULT_CONVERSION_RATES = {
-        "openai:gpt-4": ConversionRate("openai", "gpt-4", 10.0, 20.0, 0.003),
-        "openai:gpt-4-turbo": ConversionRate("openai", "gpt-4-turbo", 10.0, 20.0, 0.001),
-        "openai:gpt-4o": ConversionRate("openai", "gpt-4o", 10.0, 20.0, 0.0005),
-        "openai:gpt-4o-mini": ConversionRate("openai", "gpt-4o-mini", 10.0, 10.0, 0.00015),
-        "openai:gpt-3.5-turbo": ConversionRate("openai", "gpt-3.5-turbo", 10.0, 10.0, 0.0002),
-        "anthropic:claude-3-opus": ConversionRate("anthropic", "claude-3-opus", 10.0, 20.0, 0.0075),
-        "anthropic:claude-3-sonnet": ConversionRate(
-            "anthropic", "claude-3-sonnet", 10.0, 20.0, 0.0015
-        ),
-        "anthropic:claude-3-haiku": ConversionRate(
-            "anthropic", "claude-3-haiku", 10.0, 10.0, 0.00025
-        ),
-        "anthropic:claude-3.5-sonnet": ConversionRate(
-            "anthropic", "claude-3.5-sonnet", 10.0, 20.0, 0.003
-        ),
-        "ollama:llama2": ConversionRate("ollama", "llama2", 10.0, 10.0, 0.0),
-        "ollama:mistral": ConversionRate("ollama", "mistral", 10.0, 10.0, 0.0),
-        "ollama:codellama": ConversionRate("ollama", "codellama", 10.0, 10.0, 0.0),
+        f"{r.provider}:{r.model}": ConversionRate(
+            r.provider, r.model, r.input_rate, r.output_rate, r.base_cost_per_waddleai_token
+        )
+        for r in DEFAULT_RATE_ROWS
     }
 
     def __init__(self, db):
         """Bind the DAL handle, load conversion rates, and build per-provider token encoders."""
         self.db = db
+        self._rate_refresh_s = _rate_refresh_seconds()
         self._load_conversion_rates()
 
         # Initialize token encoders for different providers
@@ -89,13 +92,13 @@ class TokenManager:
 
     def _load_conversion_rates(self):
         """Load token conversion rates from database, fallback to defaults if empty."""
-        self.conversion_rates = {}
+        new_rates: dict[str, ConversionRate] = {}
 
         rates = self.db(self.db.token_conversion_rates.enabled == True).select()  # noqa: E712
         if rates:
             for rate in rates:
                 key = f"{rate.provider}:{rate.model}"
-                self.conversion_rates[key] = ConversionRate(
+                new_rates[key] = ConversionRate(
                     provider=rate.provider,
                     model=rate.model,
                     input_rate=rate.input_rate,
@@ -104,7 +107,49 @@ class TokenManager:
                 )
         else:
             # Fallback to defaults when DB table is empty
-            self.conversion_rates = dict(self.DEFAULT_CONVERSION_RATES)
+            new_rates = dict(self.DEFAULT_CONVERSION_RATES)
+        # Single atomic swap: the live dict is never observed empty or half-filled.
+        self.conversion_rates = new_rates
+        self._rates_loaded_at = time.monotonic()
+
+    def rates_stale(self, now: float | None = None) -> bool:
+        """True when the loaded conversion rates are older than the refresh interval."""
+        current = time.monotonic() if now is None else now
+        return current - self._rates_loaded_at >= self._rate_refresh_s
+
+    def refresh_rates_if_stale(self, now: float | None = None) -> bool:
+        """Reload rates from the DB when stale; keep the old rates on failure (never raises)."""
+        if not self.rates_stale(now):
+            return False
+        try:
+            self._load_conversion_rates()
+        except Exception as exc:  # noqa: BLE001 -- a DB blip must not break billing
+            logger.warning("conversion-rate refresh failed; keeping previous rates: %s", exc)
+            self._rates_loaded_at = time.monotonic()  # back off one interval
+            return False
+        return True
+
+    @staticmethod
+    def _credits_for(rate: "ConversionRate", input_tokens: int, output_tokens: int) -> int:
+        """WaddleAI tokens for one rate: ``max(1, in/input_rate) + max(1, out/output_rate)``."""
+        waddleai_input = max(1, int(input_tokens / rate.input_rate)) if input_tokens > 0 else 0
+        waddleai_output = max(1, int(output_tokens / rate.output_rate)) if output_tokens > 0 else 0
+        return waddleai_input + waddleai_output
+
+    def providers_for_model(self, model: str) -> frozenset[str]:
+        """Providers with a loaded rate for ``model`` (empty when the model is unknown)."""
+        return frozenset(r.provider for r in self.conversion_rates.values() if r.model == model)
+
+    def estimate_credits(self, model: str, input_tokens: int, output_tokens: int) -> int:
+        """Conservative credit estimate when the provider is unknown (reserve time, spec §7).
+
+        Takes the maximum over every provider's rate for ``model``; an unknown model uses the
+        default formula. Always at least 1 so a reservation can never be free.
+        """
+        candidates = [r for r in self.conversion_rates.values() if r.model == model]
+        if not candidates:
+            return max(1, (input_tokens + output_tokens * 2) // 10)
+        return max(1, max(self._credits_for(r, input_tokens, output_tokens) for r in candidates))
 
     def count_tokens(
         self, text: str, provider: str = "openai", model: str = "gpt-3.5-turbo"
@@ -136,11 +181,7 @@ class TokenManager:
 
         rate = self.conversion_rates[rate_key]
 
-        # Convert using rates (LLM tokens per WaddleAI token)
-        waddleai_input = max(1, int(input_tokens / rate.input_rate)) if input_tokens > 0 else 0
-        waddleai_output = max(1, int(output_tokens / rate.output_rate)) if output_tokens > 0 else 0
-
-        return waddleai_input + waddleai_output
+        return self._credits_for(rate, input_tokens, output_tokens)
 
     def calculate_cost(
         self, waddleai_tokens: int, provider: str, model: str
@@ -178,6 +219,7 @@ class TokenManager:
         this falls back to local tiktoken estimation only when a caller omits
         them.
         """
+        self.refresh_rates_if_stale()
         # Count LLM tokens: prefer the provider-reported counts when given,
         # else fall back to local estimation.
         input_tokens = (

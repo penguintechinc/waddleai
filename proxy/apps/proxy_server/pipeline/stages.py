@@ -65,6 +65,7 @@ from typing import Any
 
 from shared.cache.response_cache import RESPONSE_CACHE_FLAG, ResponseCache
 from shared.observability.tracing import get_tracer
+from shared.quota.credits import estimate_io_tokens
 from shared.routing.aliases import explicit_tool_type
 from shared.routing.capability import ModelOffer
 from shared.routing.engine import RoutingEngine, RoutingInput
@@ -123,6 +124,29 @@ async def _resolve_flag(
     )
 
 
+async def settle_shielded(coro: Awaitable[Any]) -> Any:
+    """Run a money-path settlement to COMPLETION even if the awaiting task is cancelled.
+
+    The settlement runs as its own task behind ``asyncio.shield``; every cancellation that lands
+    while it runs (including repeated ones) is deferred and re-raised only once it has finished,
+    so a client disconnect can never abandon a charge or refund half-done.
+    """
+    task = asyncio.ensure_future(coro)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        if not task.cancelled():
+            task.exception()  # mark retrieved; the cancellation takes precedence
+        raise cancelled
+    return task.result()
+
+
 @dataclass(slots=True)
 class PipelineContext:
     """Request context threaded through pipeline stages."""
@@ -146,6 +170,12 @@ class PipelineContext:
     finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
     reservation_id: str | None = None
+    # --- Pooled quota (elastic quota spec §6, D7) ---
+    # Set by QuotaStage on admit; _finalize reconciles then clears both. `quota_release` is an
+    # async closure ProxyPipeline awaits when a later stage blocks/raises so the reserved
+    # credits are refunded immediately (a TTL on the record alone would not refund counters).
+    quota_reservation: Any | None = None
+    quota_release: Callable[[], Awaitable[None]] | None = None
     # --- CacheStage (spec §6) ---
     # Which client-facing wire format this request/response uses -- part of
     # the cache key (see shared.cache.response_cache module docstring) so an
@@ -289,6 +319,10 @@ class ProxyPipeline:
         request, just with the dispatch step itself driven out-of-band.
         """
         found = False
+        if ctx.blocked:
+            # Streaming blocks/errors set ctx.blocked outside _run_stage; refund before the
+            # short-circuit loop so the reservation is not left to the sweeper.
+            await self._release_quota(ctx)
         with self.tracer.start_as_current_span("pipeline_tail"):
             for stage in self.stages:
                 if not found:
@@ -321,6 +355,7 @@ class ProxyPipeline:
 
         # Short-circuit if previous stage blocked
         if ctx.blocked:
+            await self._release_quota(ctx)
             ctx.stage_log.append(f"short-circuit:{stage.name}")
             return ctx
 
@@ -335,10 +370,26 @@ class ProxyPipeline:
                 logger.error(f"Stage {stage.name} failed: {e}", exc_info=True)
                 span.set_attribute("error", True)
                 span.set_attribute("error.message", str(e))
+                await self._release_quota(ctx)
                 # Don't block the pipeline on stage errors; let them propagate
                 raise
 
+        if ctx.blocked:
+            await self._release_quota(ctx)
         return ctx
+
+    @staticmethod
+    async def _release_quota(ctx: PipelineContext) -> None:
+        """Refund a held quota reservation once; a failing refund is logged, never raised."""
+        release = ctx.quota_release
+        if release is None:
+            return
+        ctx.quota_release = None
+        ctx.quota_reservation = None
+        try:
+            await settle_shielded(release())
+        except Exception as exc:  # noqa: BLE001 -- never fail the response over a failed settlement
+            logger.error("quota release failed: %s: %s", type(exc).__name__, exc)
 
     @staticmethod
     def _set_genai_attributes(span: Any, ctx: PipelineContext) -> None:
@@ -436,10 +487,7 @@ class TokenBudgetStage(Stage):
             return ctx
 
         vkey_id = ctx.user.vkey_id
-        # Estimate input tokens (simplified: ~4 chars per token)
-        estimated_input = sum(len(m.get("content", "")) // 4 for m in ctx.messages) or 1
-        # Conservative estimate: 2x input for output
-        estimated_output = estimated_input * 2
+        estimated_input, estimated_output = estimate_io_tokens(ctx.messages)
         total_estimated = estimated_input + estimated_output
 
         # Get limits for this key (mock scenario; in production fetch from DB/config)

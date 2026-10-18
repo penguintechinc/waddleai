@@ -20,12 +20,13 @@ class TeamRole(Enum):
     VIEWER = "viewer"
 
 
-_TEAM_VIEWER = {Permission.TEAM_READ}
+_TEAM_VIEWER = {Permission.TEAM_READ, Permission.TEAM_QUOTA_READ}
 _TEAM_MEMBER = _TEAM_VIEWER | {Permission.TEAM_USE, Permission.TEAM_KEY_CREATE}
 _TEAM_ADMIN = _TEAM_MEMBER | {
     Permission.TEAM_ADMIN,
     Permission.TEAM_MEMBER_MANAGE,
     Permission.TEAM_KEY_ADMIN,
+    Permission.TEAM_QUOTA_ADMIN,
 }
 _TEAM_OWNER = _TEAM_ADMIN | {Permission.TEAM_DELETE, Permission.TEAM_TRANSFER_OWNER}
 

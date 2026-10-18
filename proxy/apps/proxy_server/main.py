@@ -95,6 +95,9 @@ from .pipeline.memory_stages import (
     ScratchpadStage,
     SummarizationStage,
 )
+from .pipeline.quota_stage import QuotaStage
+from .quota_hooks import build_quota_engine, reconcile_quota, release_held_quota
+from .quota_sweeper import run_quota_sweeper, stop_quota_sweeper, sweeper_interval_s
 
 # Configure structured logging
 structlog.configure(
@@ -593,6 +596,10 @@ class ProxyServer:
         self.metrics = proxy_metrics
         self.grpc_server = None
         self.pipeline = None  # Built once in startup
+        self.quota_engine = None  # QuotaEngine (pooled quota), built in _build_pipeline()
+        self.quota_limiter = None  # its QuotaLimiter (also driven by the expiry sweeper)
+        self._quota_sweeper_task: asyncio.Task | None = None
+        self._quota_sweeper_stop: asyncio.Event | None = None
         self.features = None  # Feature flag helper for pipeline
         self.response_cache = None  # ResponseCache facade (shared.cache), built in startup
         self.memory_valkey = None  # §6A proxy memory layers' shared Valkey client
@@ -905,7 +912,6 @@ class ProxyServer:
         # dispatch → security_out → meter
         self.pipeline = self._build_pipeline()
         logger.info("ProxyPipeline built with %d stages", len(self.pipeline.stages))
-
         # §6A.1 scratchpad MCP tools (scratchpad_put/get/list) -- registered
         # whenever the store was constructed (_build_pipeline always builds
         # one; it's simply unreachable when the flag is off, per
@@ -951,6 +957,17 @@ class ProxyServer:
                 grpc_auth_token=grpc_auth_token,
             )
             logger.info("gRPC server started", port=grpc_port)
+
+        # Started last so a failed startup above cannot orphan the sweeper task.
+        if self.quota_limiter is not None:
+            self._quota_sweeper_stop = asyncio.Event()
+            self._quota_sweeper_task = asyncio.create_task(
+                run_quota_sweeper(
+                    self.quota_limiter,
+                    interval_s=sweeper_interval_s(),
+                    stop=self._quota_sweeper_stop,
+                )
+            )
 
         logger.info("Proxy server initialized successfully")
 
@@ -1146,6 +1163,8 @@ class ProxyServer:
                     estimated_tokens: int,
                     estimated_usd: float,
                     limits: KeyLimits,
+                    *,
+                    now: datetime | None = None,
                 ) -> GateDecision:
                     """Always allow; test-mode/no-Valkey path enforces no budget."""
                     return GateDecision(allowed=True, reason=None, reservation_id=f"mock-{vkey_id}")
@@ -1316,8 +1335,21 @@ class ProxyServer:
             ]
         )
 
+        # Elastic pooled quota: engine is None without Valkey / on build failure (stage no-op).
+        self.quota_engine, self.quota_limiter = build_quota_engine(
+            valkey, db=self.db, token_manager=self.token_manager
+        )
+
         stages.extend(
             [
+                # Reserve pooled-quota credits before dispatch (provider unknown here; reconcile
+                # in _finalize is authoritative).
+                QuotaStage(
+                    name="quota",
+                    engine=self.quota_engine,
+                    features=self.features,
+                    flag=None,
+                ),
                 DispatchStage(
                     name="dispatch",
                     router=self.request_router,
@@ -1380,6 +1412,7 @@ class ProxyServer:
 
     async def shutdown(self):
         """Cleanup server components."""
+        await stop_quota_sweeper(self._quota_sweeper_task, self._quota_sweeper_stop)
         if self.grpc_server:
             # O5-a: was hardcoded `grace=5`, racing a pod's
             # terminationGracePeriodSeconds on any environment that sets it
@@ -2099,18 +2132,32 @@ async def chat_completions():
             provider = final_ctx.provider or "unknown"
             finish_reason = final_ctx.finish_reason or "stop"
 
-            token_usage = proxy_server.token_manager.process_usage(
-                input_text="\n".join(
-                    [msg.get("content", "") for msg in messages if msg.get("content")]
-                ),
-                output_text=response_text,
+            try:
+                token_usage = proxy_server.token_manager.process_usage(
+                    input_text="\n".join(
+                        [msg.get("content", "") for msg in messages if msg.get("content")]
+                    ),
+                    output_text=response_text,
+                    provider=provider,
+                    model=resolved_model,
+                    api_key_id=user_context.api_key_id or 0,
+                    user_id=user_context.user_id,
+                    organization_id=user_context.organization_id,
+                    actual_input_tokens=usage.get("input_tokens", 0),
+                    actual_output_tokens=usage.get("output_tokens", 0),
+                )
+            except BaseException:
+                # Usage processing failed or the client disconnected before reconcile:
+                # refund the held reservation instead of leaking it, then propagate.
+                await release_held_quota(final_ctx, proxy_server.quota_engine)
+                raise
+
+            await reconcile_quota(
+                proxy_server.quota_engine,
+                final_ctx,
+                waddleai_tokens=token_usage.waddleai_tokens,
                 provider=provider,
                 model=resolved_model,
-                api_key_id=user_context.api_key_id or 0,
-                user_id=user_context.user_id,
-                organization_id=user_context.organization_id,
-                actual_input_tokens=usage.get("input_tokens", 0),
-                actual_output_tokens=usage.get("output_tokens", 0),
             )
 
             proxy_server.metrics.record_llm_request(
@@ -2506,16 +2553,30 @@ async def claude_messages():
             provider = final_ctx.provider or "unknown"
             finish_reason = final_ctx.finish_reason or "end_turn"
 
-            token_usage = proxy_server.token_manager.process_usage(
-                input_text=_extract_text_from_claude_messages(messages),
-                output_text=response_text,
+            try:
+                token_usage = proxy_server.token_manager.process_usage(
+                    input_text=_extract_text_from_claude_messages(messages),
+                    output_text=response_text,
+                    provider=provider,
+                    model=resolved_model,
+                    api_key_id=user_context.api_key_id or 0,
+                    user_id=user_context.user_id,
+                    organization_id=user_context.organization_id,
+                    actual_input_tokens=usage_info.get("input_tokens", 0),
+                    actual_output_tokens=usage_info.get("output_tokens", 0),
+                )
+            except BaseException:
+                # Usage processing failed or the client disconnected before reconcile:
+                # refund the held reservation instead of leaking it, then propagate.
+                await release_held_quota(final_ctx, proxy_server.quota_engine)
+                raise
+
+            await reconcile_quota(
+                proxy_server.quota_engine,
+                final_ctx,
+                waddleai_tokens=token_usage.waddleai_tokens,
                 provider=provider,
                 model=resolved_model,
-                api_key_id=user_context.api_key_id or 0,
-                user_id=user_context.user_id,
-                organization_id=user_context.organization_id,
-                actual_input_tokens=usage_info.get("input_tokens", 0),
-                actual_output_tokens=usage_info.get("output_tokens", 0),
             )
 
             proxy_server.metrics.record_llm_request(

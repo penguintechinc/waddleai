@@ -27,20 +27,20 @@ def test_team_roles_are_owner_admin_member_viewer() -> None:
 
 def test_viewer_is_read_only() -> None:
     """Viewer: view team usage/config, no spend, no mutation."""
-    assert TEAM_ROLE_PERMISSIONS[TeamRole.VIEWER] == {P.TEAM_READ}
+    assert TEAM_ROLE_PERMISSIONS[TeamRole.VIEWER] == {P.TEAM_READ, P.TEAM_QUOTA_READ}
 
 
 def test_member_can_use_the_team_and_make_own_keys() -> None:
     """Member: viewer + consume the team + create own team-bound keys."""
     assert TEAM_ROLE_PERMISSIONS[TeamRole.MEMBER] == {
-        P.TEAM_READ, P.TEAM_USE, P.TEAM_KEY_CREATE,
+        P.TEAM_READ, P.TEAM_QUOTA_READ, P.TEAM_USE, P.TEAM_KEY_CREATE,
     }  # fmt: skip
 
 
 def test_admin_adds_membership_settings_and_key_issuance() -> None:
     """Admin: member + manage members, settings, and keys for others."""
     assert TEAM_ROLE_PERMISSIONS[TeamRole.ADMIN] == TEAM_ROLE_PERMISSIONS[TeamRole.MEMBER] | {
-        P.TEAM_ADMIN, P.TEAM_MEMBER_MANAGE, P.TEAM_KEY_ADMIN,
+        P.TEAM_ADMIN, P.TEAM_MEMBER_MANAGE, P.TEAM_KEY_ADMIN, P.TEAM_QUOTA_ADMIN,
     }  # fmt: skip
 
 

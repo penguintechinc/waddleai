@@ -166,7 +166,7 @@ class UsageTrackingService:
             db(
                 (db.token_conversion_rates.provider == provider)
                 & (db.token_conversion_rates.model == model)
-                & (db.token_conversion_rates.enabled is True)
+                & (db.token_conversion_rates.enabled == True)  # noqa: E712 -- DAL expression, not identity
             )
             .select()
             .first()

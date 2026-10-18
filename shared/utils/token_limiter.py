@@ -14,7 +14,18 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from prometheus_client import Counter
+from redis.exceptions import NoScriptError
+
 logger = logging.getLogger(__name__)
+
+# Fail-open events: the limiter let a request through because Valkey/the script failed.
+# Alertable on its own; bounded label set (phase only, never an error string).
+_limiter_fail_open_total = Counter(
+    "waddleai_token_limiter_fail_open_total",
+    "TokenLimiter fail-open events (request allowed because the limiter itself failed)",
+    ["phase"],  # reserve | reserve_response | reconcile
+)
 
 
 @dataclass(slots=True)
@@ -39,7 +50,8 @@ class TokenLimiter:
     """Atomic token/budget gate using Valkey Lua scripts."""
 
     # Lua script for TPM + budget check and reservation
-    # Returns [allowed (0/1), reason_or_null, reservation_id]
+    # Two-phase: all checks read-only first, then all mutations.
+    # Returns {allowed (0/1), reason or "", reservation_id or ""}
     LUA_RESERVE = """
     local vkey_id = ARGV[1]
     local estimated_tokens = tonumber(ARGV[2])
@@ -51,49 +63,55 @@ class TokenLimiter:
     local now_minute = ARGV[8]
     local now_month = ARGV[9]
 
-    -- Check TPM limit
-    if tpm_limit ~= nil and tpm_limit > 0 then
-        local tpm_key = "waddleai:tpm:" .. vkey_id .. ":" .. now_minute
-        local current_tpm = tonumber(redis.call("GET", tpm_key)) or 0
-        if current_tpm + estimated_tokens > tpm_limit then
-            return {0, "tpm_exceeded", cjson.null}
+    local tpm_key = "waddleai:tpm:" .. vkey_id .. ":" .. now_minute
+    local tok_key = "waddleai:budget:tok:" .. vkey_id .. ":" .. now_month
+    local usd_key = "waddleai:budget:usd:" .. vkey_id .. ":" .. now_month
+
+    -- Phase 1: read-only checks. Nothing is mutated until EVERY limit has passed (Bug A).
+    if tpm_limit > 0 then
+        local current = tonumber(redis.call("GET", tpm_key)) or 0
+        if current + estimated_tokens > tpm_limit then
+            return {0, "tpm_exceeded", ""}
         end
+    end
+    if monthly_token_limit > 0 then
+        local current = tonumber(redis.call("GET", tok_key)) or 0
+        if current + estimated_tokens > monthly_token_limit then
+            return {0, "monthly_tokens_exceeded", ""}
+        end
+    end
+    if monthly_usd_limit > 0 then
+        local current = tonumber(redis.call("GET", usd_key)) or 0
+        if current + estimated_usd > monthly_usd_limit then
+            return {0, "monthly_usd_exceeded", ""}
+        end
+    end
+
+    -- Phase 2: every check passed; apply all mutations.
+    if tpm_limit > 0 then
         redis.call("INCRBY", tpm_key, estimated_tokens)
         redis.call("EXPIRE", tpm_key, 60)
     end
-
-    -- Check monthly token budget
-    if monthly_token_limit ~= nil and monthly_token_limit > 0 then
-        local tok_key = "waddleai:budget:tok:" .. vkey_id .. ":" .. now_month
-        local current_tok = tonumber(redis.call("GET", tok_key)) or 0
-        if current_tok + estimated_tokens > monthly_token_limit then
-            return {0, "monthly_tokens_exceeded", cjson.null}
-        end
+    if monthly_token_limit > 0 then
         redis.call("INCRBY", tok_key, estimated_tokens)
         redis.call("EXPIRE", tok_key, 2592000)  -- 30 days
     end
-
-    -- Check monthly USD budget
-    if monthly_usd_limit ~= nil and monthly_usd_limit > 0 then
-        local usd_key = "waddleai:budget:usd:" .. vkey_id .. ":" .. now_month
-        local current_usd = tonumber(redis.call("GET", usd_key)) or 0
-        if current_usd + estimated_usd > monthly_usd_limit then
-            return {0, "monthly_usd_exceeded", cjson.null}
-        end
+    if monthly_usd_limit > 0 then
         redis.call("INCRBYFLOAT", usd_key, estimated_usd)
         redis.call("EXPIRE", usd_key, 2592000)  -- 30 days
     end
 
-    -- All checks passed; store reservation for reconcile
     local resv_key = "waddleai:resv:" .. reservation_id
     redis.call("SET", resv_key, cjson.encode({
         vkey_id = vkey_id,
         estimated_tokens = estimated_tokens,
         estimated_usd = estimated_usd,
+        now_minute = now_minute,
+        now_month = now_month,
         created_at = redis.call("TIME")[1]
     }), "EX", 3600)  -- 1 hour TTL
 
-    return {1, cjson.null, reservation_id}
+    return {1, "", reservation_id}
     """
 
     # Lua script for reconciliation (adjust reserved estimate with actual usage)
@@ -109,33 +127,32 @@ class TokenLimiter:
     end
 
     local resv = cjson.decode(resv_data)
+    -- Reservations written before now_minute/now_month were stored fall back to the
+    -- reconcile-time window (ARGV[4]/[5]); the stored window always wins when present.
+    local now_minute = resv.now_minute or ARGV[4]
+    local now_month = resv.now_month or ARGV[5]
     local token_delta = actual_tokens - resv.estimated_tokens
     local usd_delta = actual_usd - resv.estimated_usd
 
-    -- Adjust TPM window if tokens differ
-    if token_delta ~= 0 then
-        local now_minute = ARGV[4]
-        local tpm_key = "waddleai:tpm:" .. resv.vkey_id .. ":" .. now_minute
+    -- Adjust the window the reservation was MADE in (Bug B), never the reconcile-time clock.
+    local tpm_key = "waddleai:tpm:" .. resv.vkey_id .. ":" .. now_minute
+    local tok_key = "waddleai:budget:tok:" .. resv.vkey_id .. ":" .. now_month
+    local usd_key = "waddleai:budget:usd:" .. resv.vkey_id .. ":" .. now_month
+
+    -- The TPM key has a 60s TTL: only adjust it while it still exists (INCRBY would recreate
+    -- it without a TTL). The budget keys are only ever created by a reserve with that limit.
+    if token_delta ~= 0 and redis.call("EXISTS", tpm_key) == 1 then
         redis.call("INCRBY", tpm_key, token_delta)
     end
-
-    -- Adjust token budget if tokens differ
-    if token_delta ~= 0 then
-        local now_month = ARGV[5]
-        local tok_key = "waddleai:budget:tok:" .. resv.vkey_id .. ":" .. now_month
+    if token_delta ~= 0 and redis.call("EXISTS", tok_key) == 1 then
         redis.call("INCRBY", tok_key, token_delta)
     end
-
-    -- Adjust USD budget if cost differs
-    if usd_delta ~= 0 then
-        local now_month = ARGV[5]
-        local usd_key = "waddleai:budget:usd:" .. resv.vkey_id .. ":" .. now_month
+    if usd_delta ~= 0 and redis.call("EXISTS", usd_key) == 1 then
         redis.call("INCRBYFLOAT", usd_key, usd_delta)
     end
 
-    -- Clean up reservation
     redis.call("DEL", resv_key)
-    return {1, cjson.null}
+    return {1, ""}
     """
 
     def __init__(self, valkey, features) -> None:
@@ -165,12 +182,31 @@ class TokenLimiter:
             except Exception as e:
                 logger.warning("Failed to load reconcile script: %s", e)
 
+    async def _evalsha_with_reload(self, name: str, *args: str):
+        """Run a cached script, reloading it once if Valkey lost it (NOSCRIPT).
+
+        A Valkey restart or SCRIPT FLUSH drops loaded scripts; without a reload the
+        limiter would fail open for every request until the process restarted.
+        """
+        attr = f"_{name}_sha"
+        script = self.LUA_RESERVE if name == "reserve" else self.LUA_RECONCILE
+        if getattr(self, attr) is None:
+            await self._load_scripts()
+        try:
+            return await self.valkey.evalsha(getattr(self, attr), 0, *args)
+        except NoScriptError:
+            logger.warning("%s script missing in Valkey (NOSCRIPT); reloading and retrying", name)
+            setattr(self, attr, await self.valkey.script_load(script))
+            return await self.valkey.evalsha(getattr(self, attr), 0, *args)
+
     async def reserve(
         self,
         vkey_id: int,
         estimated_tokens: int,
         estimated_usd: float,
         limits: KeyLimits,
+        *,
+        now: datetime | None = None,
     ) -> GateDecision:
         """Reserve tokens/budget for a request.
 
@@ -179,6 +215,7 @@ class TokenLimiter:
             estimated_tokens: Estimated token usage
             estimated_usd: Estimated cost in micro-USD
             limits: KeyLimits with tpm/monthly limits
+            now: Clock override (UTC); defaults to the current time. Test seam.
 
         Returns:
             GateDecision with allowed/reason/reservation_id
@@ -205,15 +242,14 @@ class TokenLimiter:
         reservation_id = str(uuid.uuid4())
 
         # Get current time components
-        now = datetime.utcnow()
-        now_minute = now.strftime("%Y%m%d%H%M")
-        now_month = now.strftime("%Y%m")
+        moment = now or datetime.utcnow()
+        now_minute = moment.strftime("%Y%m%d%H%M")
+        now_month = moment.strftime("%Y%m")
 
         try:
             # Execute Lua script atomically
-            result = await self.valkey.evalsha(
-                self._reserve_sha,
-                0,  # numkeys=0 (all keys passed via ARGV)
+            result = await self._evalsha_with_reload(
+                "reserve",
                 str(vkey_id),
                 str(estimated_tokens),
                 str(estimated_usd),
@@ -226,7 +262,8 @@ class TokenLimiter:
             )
 
             if result is None or len(result) < 2:
-                logger.error("Invalid Lua script response: %s", result)
+                logger.error("Invalid Lua script response: %s; failing open", result)
+                _limiter_fail_open_total.labels(phase="reserve_response").inc()
                 return GateDecision(allowed=True, reason=None, reservation_id=None)
 
             allowed = bool(result[0])
@@ -236,12 +273,15 @@ class TokenLimiter:
             return GateDecision(allowed=allowed, reason=reason, reservation_id=resv_id)
 
         except Exception as e:
-            logger.error("Error in reserve: %s", e)
+            logger.error("Error in reserve: %s; failing open", e, exc_info=True)
+            _limiter_fail_open_total.labels(phase="reserve").inc()
             # Fail open: allow the request if there's an error
             return GateDecision(allowed=True, reason=None, reservation_id=None)
 
     async def reconcile(self, reservation_id: str, actual_tokens: int, actual_usd: float) -> None:
         """Reconcile actual usage against reserved estimate.
+
+        Adjusts the window stored in the reservation, not the reconcile-time clock.
 
         Args:
             reservation_id: UUID from reserve() response
@@ -249,30 +289,20 @@ class TokenLimiter:
             actual_usd: Actual cost in micro-USD
 
         """
-        # Load scripts on first use
-        await self._load_scripts()
-
-        if self._reconcile_sha is None:
-            logger.warning("Reconcile script not loaded, skipping reconciliation")
-            return
-
-        # Get current time components
-        now = datetime.utcnow()
-        now_minute = now.strftime("%Y%m%d%H%M")
-        now_month = now.strftime("%Y%m")
-
+        # Current window is only a fallback for reservations stored without one.
+        moment = datetime.utcnow()
         try:
-            await self.valkey.evalsha(
-                self._reconcile_sha,
-                0,  # numkeys=0
+            await self._evalsha_with_reload(
+                "reconcile",
                 reservation_id,
                 str(actual_tokens),
                 str(actual_usd),
-                now_minute,
-                now_month,
+                moment.strftime("%Y%m%d%H%M"),
+                moment.strftime("%Y%m"),
             )
         except Exception as e:
-            logger.warning("Error reconciling reservation %s: %s", reservation_id, e)
+            logger.error("Error reconciling reservation %s: %s", reservation_id, e, exc_info=True)
+            _limiter_fail_open_total.labels(phase="reconcile").inc()
 
 
 def create_token_limiter(valkey, features) -> TokenLimiter:

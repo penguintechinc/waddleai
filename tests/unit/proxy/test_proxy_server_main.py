@@ -148,7 +148,7 @@ class TestStartupWiring:
         assert server.mcp_server is not None
 
     async def test_pipeline_stage_order(self, running_app):
-        """_build_pipeline() assembles the documented 12-stage order."""
+        """_build_pipeline() assembles the documented 13-stage order."""
         names = [stage.name for stage in proxy_main.proxy_server.pipeline.stages]
         assert names == [
             "auth",
@@ -160,6 +160,7 @@ class TestStartupWiring:
             "dedup",
             "cache",
             "routing",
+            "quota",
             "dispatch",
             "security_out",
             "meter",
@@ -2274,3 +2275,112 @@ class TestValkeyClientPoolBounds:
             valkey.connection_pool.max_connections
             == proxy_main._valkey_client_kwargs()["max_connections"]
         )
+
+
+class _FakeQuotaEngine:
+    """Records reserve/reconcile/release; returns a programmed reserve outcome."""
+
+    def __init__(self, outcome):
+        self.outcome, self.reserved, self.reconciled, self.released = outcome, [], [], []
+        self.token_manager = proxy_main.proxy_server.token_manager
+
+    async def reserve(self, user, model, messages):
+        self.reserved.append(model)
+        return self.outcome
+
+    async def reconcile(self, reservation, **kw):
+        self.reconciled.append((reservation, kw))
+
+    async def release(self, reservation):
+        self.released.append(reservation)
+
+
+class TestPooledQuotaWiring:
+    """QuotaStage + the _finalize reconcile hook, end to end through the real Quart app."""
+
+    @staticmethod
+    def _arm(monkeypatch, outcome, flag="1"):
+        """Install a fake engine on the stage and server, set the flag, reset the flag cache."""
+        fake = _FakeQuotaEngine(outcome)
+        stage = next(s for s in proxy_main.proxy_server.pipeline.stages if s.name == "quota")
+        monkeypatch.setattr(stage, "engine", fake)
+        monkeypatch.setattr(proxy_main.proxy_server, "quota_engine", fake)
+        monkeypatch.setenv("WADDLEAI_FLAG_POOLED_QUOTA", flag)
+        proxy_main.proxy_server.features._cache.clear()
+        return fake
+
+    async def _post(self, running_app):
+        """POST a minimal authenticated chat completion."""
+        payload = {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hello"}]}
+        return await running_app.test_client().post(
+            "/v1/chat/completions", headers=_bearer_headers(), json=payload
+        )
+
+    async def test_denied_request_is_429_and_never_reconciled(self, running_app, monkeypatch):
+        """A quota deny answers 429 with the stable message; nothing is reconciled."""
+        from shared.quota.types import QuotaOutcome
+
+        fake = self._arm(monkeypatch, QuotaOutcome(blocked=True, reason="quota_exhausted"))
+        resp = await self._post(running_app)
+        body = await resp.get_json()
+        assert resp.status_code == 429
+        assert body["error"]["message"] == "Token quota exhausted for the current billing cycle"
+        assert fake.reconciled == []
+
+    async def test_admitted_request_is_reconciled_once_with_actual_credits(
+        self, running_app, monkeypatch
+    ):
+        """_finalize reconciles the reservation with the credits process_usage computed."""
+        from shared.quota.types import QuotaOutcome, QuotaReservation
+
+        res = QuotaReservation("rid", 1, 1, 1, 0, 5, 5, 0, "gpt-3.5-turbo")
+        fake = self._arm(monkeypatch, QuotaOutcome(blocked=False, reservation=res))
+        resp = await self._post(running_app)
+        body = await resp.get_json()
+        assert resp.status_code == 200
+        ((reservation, kw),) = fake.reconciled
+        assert reservation is res and fake.released == []
+        assert kw["actual_credits"] == body["usage"]["waddleai_tokens"]
+        assert kw["provider"] not in ("", "unknown") and kw["cache_hit"] is False
+
+    async def test_reconcile_failure_does_not_fail_the_response(self, running_app, monkeypatch):
+        """An engine that raises on reconcile still yields the user's 200."""
+        from shared.quota.types import QuotaOutcome, QuotaReservation
+
+        res = QuotaReservation("rid", 1, 1, 1, 0, 5, 5, 0, "gpt-3.5-turbo")
+        fake = self._arm(monkeypatch, QuotaOutcome(blocked=False, reservation=res))
+
+        async def _boom(reservation, **kw):
+            raise RuntimeError("valkey down")
+
+        monkeypatch.setattr(fake, "reconcile", _boom)
+        resp = await self._post(running_app)
+        assert resp.status_code == 200
+
+    async def test_finalize_error_after_dispatch_charges_actual_not_refund(
+        self, running_app, monkeypatch
+    ):
+        """Usage processing failing AFTER tokens were consumed reconciles actual, never releases."""
+        from shared.quota.types import QuotaOutcome, QuotaReservation
+
+        res = QuotaReservation("rid", 1, 1, 1, 0, 5, 5, 0, "gpt-3.5-turbo")
+        fake = self._arm(monkeypatch, QuotaOutcome(blocked=False, reservation=res))
+
+        def _boom(*a, **k):
+            raise RuntimeError("usage db down")
+
+        monkeypatch.setattr(proxy_main.proxy_server.token_manager, "process_usage", _boom)
+        await self._post(running_app)
+        ((reservation, kw),) = fake.reconciled
+        assert reservation is res and fake.released == []
+        assert kw["actual_credits"] > 0 and kw["cache_hit"] is False
+
+    async def test_flag_off_never_reserves(self, running_app, monkeypatch):
+        """With waddleai.pooled_quota OFF the engine is never consulted and the request succeeds."""
+        from shared.quota.types import QuotaOutcome
+
+        fake = self._arm(
+            monkeypatch, QuotaOutcome(blocked=True, reason="quota_exhausted"), flag="0"
+        )
+        resp = await self._post(running_app)
+        assert resp.status_code == 200 and fake.reserved == []

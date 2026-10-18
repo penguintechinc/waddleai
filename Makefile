@@ -1,4 +1,4 @@
-.PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-e2e test-functional test-security \
+.PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-valkey test-e2e test-functional test-security \
         test-contract smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
 
@@ -123,6 +123,10 @@ test-unit:
 test-integration:
 	@echo "Running integration tests..."
 	$(PY) -m pytest tests/integration -v --no-cov
+
+test-valkey:
+	@echo "Running real-Valkey quota tests (REQUIRE_VALKEY_TESTS=1: skip == fail)..."
+	REQUIRE_VALKEY_TESTS=1 $(PY) -m pytest tests/integration/quota -v --no-cov
 
 # tests/e2e/ currently has no pytest tests (only the pre-existing Playwright
 # JS suite + scaffolding; the real pytest suite is on feature/e2e-suite, not

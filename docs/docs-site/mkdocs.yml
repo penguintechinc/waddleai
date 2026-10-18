@@ -49,6 +49,7 @@ nav:
   - Administration:
     - User Management: administration/user-management.md
     - Teams: administration/teams.md
+    - Pooled Quota: administration/pooled-quota.md
     - AI Security Recommendations: administration/ai-security-recommendations.md
   - Operations:
     - Monitoring: operations/MONITORING.md

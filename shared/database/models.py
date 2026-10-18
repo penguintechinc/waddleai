@@ -181,6 +181,57 @@ def define_tables(db):
         Field("created_at", "datetime", default=datetime.utcnow),
     )
 
+    # Elastic pooled quota (spec §5). The proxy reads the four config tables and writes the
+    # ledger; SQLAlchemy stays the schema authority (composite UNIQUE/CHECK live only there
+    # and in Alembic 026_pooled_quota).
+    _define_table_if_absent(
+        db,
+        "quota_org_pool",
+        Field("org_id", "reference organizations", notnull=True),
+        Field("cycle_anchor_date", "date"),
+        Field("pool_credits", "bigint", default=0),
+        Field("enabled", "boolean", default=False),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+    _define_table_if_absent(
+        db,
+        "quota_team_pool",
+        Field("team_id", "reference teams", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("pool_credits", "bigint", default=0),
+        Field("shared_buffer_credits", "bigint", default=0),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+    _define_table_if_absent(
+        db,
+        "quota_user_reservation",
+        Field("team_id", "reference teams", notnull=True),
+        Field("user_id", "reference users", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("guaranteed_credits", "bigint", default=0),
+        Field("daily_subcap", "bigint"),
+    )
+    _define_table_if_absent(
+        db,
+        "quota_override",
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("user_id", "reference users"),
+        Field("model", "string"),
+        Field("provider", "string"),
+        Field("cap_credits", "bigint", notnull=True),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+    _define_table_if_absent(
+        db,
+        "quota_usage_ledger",
+        Field("scope_type", "string", notnull=True),
+        Field("scope_id", "integer", notnull=True),
+        Field("organization_id", "reference organizations", notnull=True),
+        Field("cycle_index", "integer", notnull=True),
+        Field("credits_used", "bigint", default=0),
+        Field("updated_at", "datetime", default=datetime.utcnow),
+    )
+
     # API Keys with Usage Limits
     _define_table_if_absent(
         db,

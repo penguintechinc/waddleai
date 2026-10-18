@@ -161,39 +161,49 @@ async def stream_openai_chat_completion(
     sent_role = False
     first_chunk_seen = False
     start = time.time()
-    async with contextlib.aclosing(dispatch_stage.stream_dispatch(ctx)) as upstream:
-        async for stream_chunk in upstream:
-            if not first_chunk_seen:
-                first_chunk_seen = True
-                metrics.observe_stream_ttfb(
-                    provider=ctx.provider or "unknown",
-                    endpoint=endpoint,
-                    seconds=time.time() - start,
-                )
-            if not stream_chunk.delta:
-                continue
-            delta: dict[str, Any] = {"content": stream_chunk.delta}
-            if not sent_role:
-                delta["role"] = "assistant"
-                sent_role = True
-            metrics.record_stream_chunk(provider=ctx.provider or "unknown", endpoint=endpoint)
-            yield _frame(delta)
+    try:
+        async with contextlib.aclosing(dispatch_stage.stream_dispatch(ctx)) as upstream:
+            async for stream_chunk in upstream:
+                if not first_chunk_seen:
+                    first_chunk_seen = True
+                    metrics.observe_stream_ttfb(
+                        provider=ctx.provider or "unknown",
+                        endpoint=endpoint,
+                        seconds=time.time() - start,
+                    )
+                if not stream_chunk.delta:
+                    continue
+                delta: dict[str, Any] = {"content": stream_chunk.delta}
+                if not sent_role:
+                    delta["role"] = "assistant"
+                    sent_role = True
+                metrics.record_stream_chunk(provider=ctx.provider or "unknown", endpoint=endpoint)
+                yield _frame(delta)
 
+    except BaseException:
+        # Error / client disconnect before _finalize reconciles: refund (idempotent).
+        await ProxyPipeline._release_quota(ctx)
+        raise
     ctx = await pipeline.run_after(ctx, "dispatch")
 
-    if ctx.blocked:
-        metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
-        logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
-        yield _sse_error_openai(ctx.block_reason or "stream_error", ctx.status_code)
-        return
+    try:
+        if ctx.blocked:
+            metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
+            logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
+            yield _sse_error_openai(ctx.block_reason or "stream_error", ctx.status_code)
+            return
 
-    if not sent_role:
-        yield _frame({"role": "assistant"})
-    yield _frame({}, finish_reason=ctx.finish_reason or "stop", usage=ctx.usage)
-    yield b"data: [DONE]\n\n"
+        if not sent_role:
+            yield _frame({"role": "assistant"})
+        yield _frame({}, finish_reason=ctx.finish_reason or "stop", usage=ctx.usage)
+        yield b"data: [DONE]\n\n"
 
-    if finalize is not None:
-        await finalize(ctx)
+        if finalize is not None:
+            await finalize(ctx)
+    finally:
+        # Client disconnect at a final-frame yield skips finalize: settle here so fully
+        # consumed tokens are never left reserved (idempotent; reconcile already cleared it).
+        await ProxyPipeline._release_quota(ctx)
 
 
 async def stream_anthropic_messages(
@@ -247,68 +257,78 @@ async def stream_anthropic_messages(
     opened_block = False
     first_chunk_seen = False
     start = time.time()
-    async with contextlib.aclosing(dispatch_stage.stream_dispatch(ctx)) as upstream:
-        async for stream_chunk in upstream:
-            if not first_chunk_seen:
-                first_chunk_seen = True
-                metrics.observe_stream_ttfb(
-                    provider=ctx.provider or "unknown",
-                    endpoint=endpoint,
-                    seconds=time.time() - start,
-                )
-            if not stream_chunk.delta:
-                continue
-            if not opened_block:
+    try:
+        async with contextlib.aclosing(dispatch_stage.stream_dispatch(ctx)) as upstream:
+            async for stream_chunk in upstream:
+                if not first_chunk_seen:
+                    first_chunk_seen = True
+                    metrics.observe_stream_ttfb(
+                        provider=ctx.provider or "unknown",
+                        endpoint=endpoint,
+                        seconds=time.time() - start,
+                    )
+                if not stream_chunk.delta:
+                    continue
+                if not opened_block:
+                    yield _sse_event_anthropic(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    )
+                    opened_block = True
+                metrics.record_stream_chunk(provider=ctx.provider or "unknown", endpoint=endpoint)
                 yield _sse_event_anthropic(
-                    "content_block_start",
+                    "content_block_delta",
                     {
-                        "type": "content_block_start",
+                        "type": "content_block_delta",
                         "index": 0,
-                        "content_block": {"type": "text", "text": ""},
+                        "delta": {"type": "text_delta", "text": stream_chunk.delta},
                     },
                 )
-                opened_block = True
-            metrics.record_stream_chunk(provider=ctx.provider or "unknown", endpoint=endpoint)
-            yield _sse_event_anthropic(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": stream_chunk.delta},
-                },
-            )
 
+    except BaseException:
+        # Error / client disconnect before _finalize reconciles: refund (idempotent).
+        await ProxyPipeline._release_quota(ctx)
+        raise
     ctx = await pipeline.run_after(ctx, "dispatch")
 
-    if ctx.blocked:
-        metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
-        logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
-        if opened_block:
-            yield _sse_event_anthropic(
-                "content_block_stop", {"type": "content_block_stop", "index": 0}
-            )
-        yield _sse_error_anthropic(ctx.block_reason or "stream_error", ctx.status_code)
-        return
+    try:
+        if ctx.blocked:
+            metrics.record_stream_error(provider=ctx.provider or "unknown", endpoint=endpoint)
+            logger.error("Streaming dispatch failed for %s: %s", endpoint, ctx.block_reason)
+            if opened_block:
+                yield _sse_event_anthropic(
+                    "content_block_stop", {"type": "content_block_stop", "index": 0}
+                )
+            yield _sse_error_anthropic(ctx.block_reason or "stream_error", ctx.status_code)
+            return
 
-    if not opened_block:
+        if not opened_block:
+            yield _sse_event_anthropic(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+        yield _sse_event_anthropic("content_block_stop", {"type": "content_block_stop", "index": 0})
         yield _sse_event_anthropic(
-            "content_block_start",
+            "message_delta",
             {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
+                "type": "message_delta",
+                "delta": {"stop_reason": ctx.finish_reason or "end_turn", "stop_sequence": None},
+                "usage": ctx.usage or {},
             },
         )
-    yield _sse_event_anthropic("content_block_stop", {"type": "content_block_stop", "index": 0})
-    yield _sse_event_anthropic(
-        "message_delta",
-        {
-            "type": "message_delta",
-            "delta": {"stop_reason": ctx.finish_reason or "end_turn", "stop_sequence": None},
-            "usage": ctx.usage or {},
-        },
-    )
-    yield _sse_event_anthropic("message_stop", {"type": "message_stop"})
+        yield _sse_event_anthropic("message_stop", {"type": "message_stop"})
 
-    if finalize is not None:
-        await finalize(ctx)
+        if finalize is not None:
+            await finalize(ctx)
+    finally:
+        # Client disconnect at a final-frame yield skips finalize: settle here so fully
+        # consumed tokens are never left reserved (idempotent; reconcile already cleared it).
+        await ProxyPipeline._release_quota(ctx)

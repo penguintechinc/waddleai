@@ -120,6 +120,8 @@ ROLE_PERMISSIONS = {
         Permission.TEAM_ADMIN,
         Permission.TEAM_DELETE,
         Permission.TEAM_TRANSFER_OWNER,
+        Permission.TEAM_QUOTA_READ,
+        Permission.TEAM_QUOTA_ADMIN,
     },
     Role.RESOURCE_MANAGER: {
         Permission.SYSTEM_HEALTH,

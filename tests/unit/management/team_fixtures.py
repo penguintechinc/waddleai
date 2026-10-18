@@ -11,7 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 #: Route modules whose module-level ``db`` the real-database fixture below repoints.
-_REAL_DB_ROUTE_MODULES = ("auth", "users", "organizations", "keys", "proxy_keys", "teams")
+_REAL_DB_ROUTE_MODULES = (
+    "auth",
+    "users",
+    "organizations",
+    "keys",
+    "proxy_keys",
+    "teams",
+    "quota_pools",
+)
 
 
 @pytest.fixture
