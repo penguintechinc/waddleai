@@ -97,6 +97,7 @@ from .pipeline.memory_stages import (
 )
 from .pipeline.quota_stage import QuotaStage
 from .quota_hooks import build_quota_engine, reconcile_quota, release_held_quota
+from .quota_sweeper import run_quota_sweeper, stop_quota_sweeper, sweeper_interval_s
 
 # Configure structured logging
 structlog.configure(
@@ -597,6 +598,8 @@ class ProxyServer:
         self.pipeline = None  # Built once in startup
         self.quota_engine = None  # QuotaEngine (pooled quota), built in _build_pipeline()
         self.quota_limiter = None  # its QuotaLimiter (also driven by the expiry sweeper)
+        self._quota_sweeper_task: asyncio.Task | None = None
+        self._quota_sweeper_stop: asyncio.Event | None = None
         self.features = None  # Feature flag helper for pipeline
         self.response_cache = None  # ResponseCache facade (shared.cache), built in startup
         self.memory_valkey = None  # §6A proxy memory layers' shared Valkey client
@@ -909,6 +912,15 @@ class ProxyServer:
         # dispatch → security_out → meter
         self.pipeline = self._build_pipeline()
         logger.info("ProxyPipeline built with %d stages", len(self.pipeline.stages))
+        if self.quota_limiter is not None:
+            self._quota_sweeper_stop = asyncio.Event()
+            self._quota_sweeper_task = asyncio.create_task(
+                run_quota_sweeper(
+                    self.quota_limiter,
+                    interval_s=sweeper_interval_s(),
+                    stop=self._quota_sweeper_stop,
+                )
+            )
 
         # §6A.1 scratchpad MCP tools (scratchpad_put/get/list) -- registered
         # whenever the store was constructed (_build_pipeline always builds
@@ -1399,6 +1411,7 @@ class ProxyServer:
 
     async def shutdown(self):
         """Cleanup server components."""
+        await stop_quota_sweeper(self._quota_sweeper_task, self._quota_sweeper_stop)
         if self.grpc_server:
             # O5-a: was hardcoded `grace=5`, racing a pod's
             # terminationGracePeriodSeconds on any environment that sets it
