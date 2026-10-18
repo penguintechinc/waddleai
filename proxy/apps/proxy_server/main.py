@@ -95,6 +95,7 @@ from .pipeline.memory_stages import (
     ScratchpadStage,
     SummarizationStage,
 )
+from .pipeline.quota_stage import QuotaStage
 
 # Configure structured logging
 structlog.configure(
@@ -1318,6 +1319,14 @@ class ProxyServer:
 
         stages.extend(
             [
+                # Reserve pooled-quota credits before dispatch (provider unknown here; reconcile
+                # in _finalize is authoritative). engine=None is a no-op until the engine is wired.
+                QuotaStage(
+                    name="quota",
+                    engine=getattr(self, "quota_engine", None),
+                    features=self.features,
+                    flag=None,
+                ),
                 DispatchStage(
                     name="dispatch",
                     router=self.request_router,

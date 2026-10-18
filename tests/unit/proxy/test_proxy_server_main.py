@@ -148,7 +148,7 @@ class TestStartupWiring:
         assert server.mcp_server is not None
 
     async def test_pipeline_stage_order(self, running_app):
-        """_build_pipeline() assembles the documented 12-stage order."""
+        """_build_pipeline() assembles the documented 13-stage order."""
         names = [stage.name for stage in proxy_main.proxy_server.pipeline.stages]
         assert names == [
             "auth",
@@ -160,6 +160,7 @@ class TestStartupWiring:
             "dedup",
             "cache",
             "routing",
+            "quota",
             "dispatch",
             "security_out",
             "meter",

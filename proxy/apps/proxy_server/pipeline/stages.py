@@ -147,6 +147,12 @@ class PipelineContext:
     finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
     reservation_id: str | None = None
+    # --- Pooled quota (elastic quota spec §6, D7) ---
+    # Set by QuotaStage on admit; _finalize reconciles then clears both. `quota_release` is an
+    # async closure ProxyPipeline awaits when a later stage blocks/raises so the reserved
+    # credits are refunded immediately (a TTL on the record alone would not refund counters).
+    quota_reservation: Any | None = None
+    quota_release: Callable[[], Awaitable[None]] | None = None
     # --- CacheStage (spec §6) ---
     # Which client-facing wire format this request/response uses -- part of
     # the cache key (see shared.cache.response_cache module docstring) so an
@@ -336,10 +342,26 @@ class ProxyPipeline:
                 logger.error(f"Stage {stage.name} failed: {e}", exc_info=True)
                 span.set_attribute("error", True)
                 span.set_attribute("error.message", str(e))
+                await self._release_quota(ctx)
                 # Don't block the pipeline on stage errors; let them propagate
                 raise
 
+        if ctx.blocked:
+            await self._release_quota(ctx)
         return ctx
+
+    @staticmethod
+    async def _release_quota(ctx: PipelineContext) -> None:
+        """Refund a held quota reservation once; a failing refund is logged, never raised."""
+        release = ctx.quota_release
+        if release is None:
+            return
+        ctx.quota_release = None
+        ctx.quota_reservation = None
+        try:
+            await release()
+        except Exception as exc:  # noqa: BLE001 -- the sweeper is the backstop for a failed refund
+            logger.error("quota release failed: %s: %s", type(exc).__name__, exc)
 
     @staticmethod
     def _set_genai_attributes(span: Any, ctx: PipelineContext) -> None:
