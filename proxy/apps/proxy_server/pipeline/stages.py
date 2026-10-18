@@ -296,6 +296,10 @@ class ProxyPipeline:
         request, just with the dispatch step itself driven out-of-band.
         """
         found = False
+        if ctx.blocked:
+            # Streaming blocks/errors set ctx.blocked outside _run_stage; refund before the
+            # short-circuit loop so the reservation is not left to the sweeper.
+            await self._release_quota(ctx)
         with self.tracer.start_as_current_span("pipeline_tail"):
             for stage in self.stages:
                 if not found:
@@ -328,6 +332,7 @@ class ProxyPipeline:
 
         # Short-circuit if previous stage blocked
         if ctx.blocked:
+            await self._release_quota(ctx)
             ctx.stage_log.append(f"short-circuit:{stage.name}")
             return ctx
 

@@ -1147,6 +1147,8 @@ class ProxyServer:
                     estimated_tokens: int,
                     estimated_usd: float,
                     limits: KeyLimits,
+                    *,
+                    now: datetime | None = None,
                 ) -> GateDecision:
                     """Always allow; test-mode/no-Valkey path enforces no budget."""
                     return GateDecision(allowed=True, reason=None, reservation_id=f"mock-{vkey_id}")
