@@ -95,6 +95,8 @@ class TokenLimiter:
         vkey_id = vkey_id,
         estimated_tokens = estimated_tokens,
         estimated_usd = estimated_usd,
+        now_minute = now_minute,
+        now_month = now_month,
         created_at = redis.call("TIME")[1]
     }), "EX", 3600)  -- 1 hour TTL
 
@@ -117,30 +119,25 @@ class TokenLimiter:
     local token_delta = actual_tokens - resv.estimated_tokens
     local usd_delta = actual_usd - resv.estimated_usd
 
-    -- Adjust TPM window if tokens differ
-    if token_delta ~= 0 then
-        local now_minute = ARGV[4]
-        local tpm_key = "waddleai:tpm:" .. resv.vkey_id .. ":" .. now_minute
+    -- Adjust the window the reservation was MADE in (Bug B), never the reconcile-time clock.
+    local tpm_key = "waddleai:tpm:" .. resv.vkey_id .. ":" .. resv.now_minute
+    local tok_key = "waddleai:budget:tok:" .. resv.vkey_id .. ":" .. resv.now_month
+    local usd_key = "waddleai:budget:usd:" .. resv.vkey_id .. ":" .. resv.now_month
+
+    -- The TPM key has a 60s TTL: only adjust it while it still exists (INCRBY would recreate
+    -- it without a TTL). The budget keys are only ever created by a reserve with that limit.
+    if token_delta ~= 0 and redis.call("EXISTS", tpm_key) == 1 then
         redis.call("INCRBY", tpm_key, token_delta)
     end
-
-    -- Adjust token budget if tokens differ
-    if token_delta ~= 0 then
-        local now_month = ARGV[5]
-        local tok_key = "waddleai:budget:tok:" .. resv.vkey_id .. ":" .. now_month
+    if token_delta ~= 0 and redis.call("EXISTS", tok_key) == 1 then
         redis.call("INCRBY", tok_key, token_delta)
     end
-
-    -- Adjust USD budget if cost differs
-    if usd_delta ~= 0 then
-        local now_month = ARGV[5]
-        local usd_key = "waddleai:budget:usd:" .. resv.vkey_id .. ":" .. now_month
+    if usd_delta ~= 0 and redis.call("EXISTS", usd_key) == 1 then
         redis.call("INCRBYFLOAT", usd_key, usd_delta)
     end
 
-    -- Clean up reservation
     redis.call("DEL", resv_key)
-    return {1, cjson.null}
+    return {1, ""}
     """
 
     def __init__(self, valkey, features) -> None:
@@ -176,6 +173,8 @@ class TokenLimiter:
         estimated_tokens: int,
         estimated_usd: float,
         limits: KeyLimits,
+        *,
+        now: datetime | None = None,
     ) -> GateDecision:
         """Reserve tokens/budget for a request.
 
@@ -184,6 +183,7 @@ class TokenLimiter:
             estimated_tokens: Estimated token usage
             estimated_usd: Estimated cost in micro-USD
             limits: KeyLimits with tpm/monthly limits
+            now: Clock override (UTC); defaults to the current time. Test seam.
 
         Returns:
             GateDecision with allowed/reason/reservation_id
@@ -210,9 +210,9 @@ class TokenLimiter:
         reservation_id = str(uuid.uuid4())
 
         # Get current time components
-        now = datetime.utcnow()
-        now_minute = now.strftime("%Y%m%d%H%M")
-        now_month = now.strftime("%Y%m")
+        moment = now or datetime.utcnow()
+        now_minute = moment.strftime("%Y%m%d%H%M")
+        now_month = moment.strftime("%Y%m")
 
         try:
             # Execute Lua script atomically
@@ -248,6 +248,8 @@ class TokenLimiter:
     async def reconcile(self, reservation_id: str, actual_tokens: int, actual_usd: float) -> None:
         """Reconcile actual usage against reserved estimate.
 
+        Adjusts the window stored in the reservation, not the reconcile-time clock.
+
         Args:
             reservation_id: UUID from reserve() response
             actual_tokens: Actual tokens used
@@ -261,11 +263,6 @@ class TokenLimiter:
             logger.warning("Reconcile script not loaded, skipping reconciliation")
             return
 
-        # Get current time components
-        now = datetime.utcnow()
-        now_minute = now.strftime("%Y%m%d%H%M")
-        now_month = now.strftime("%Y%m")
-
         try:
             await self.valkey.evalsha(
                 self._reconcile_sha,
@@ -273,8 +270,6 @@ class TokenLimiter:
                 reservation_id,
                 str(actual_tokens),
                 str(actual_usd),
-                now_minute,
-                now_month,
             )
         except Exception as e:
             logger.warning("Error reconciling reservation %s: %s", reservation_id, e)

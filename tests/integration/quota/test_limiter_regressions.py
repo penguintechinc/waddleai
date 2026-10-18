@@ -1,5 +1,7 @@
 """Regressions for the two TokenLimiter bugs (spec §6), against a real Valkey."""
 
+from datetime import datetime
+
 from shared.utils.token_limiter import KeyLimits, TokenLimiter
 
 
@@ -54,3 +56,30 @@ async def test_allowed_request_still_increments_all_counters(valkey_async):
     (tok_key,) = await _keys(valkey_async, "waddleai:budget:tok:9:*")
     assert int(await valkey_async.get(tpm_key)) == 40
     assert int(await valkey_async.get(tok_key)) == 40
+
+
+async def test_regression_bug_b_reconcile_uses_reservation_window_not_reconcile_clock(valkey_async):
+    """Reserved on 2026-01-31 23:59; reconciled 'now' (a later month): January counters adjust."""
+    limiter = TokenLimiter(valkey_async, _FlagOn())
+    limits = KeyLimits(tpm_limit=1000, monthly_token_limit=10_000, monthly_usd_limit=None)
+    decision = await limiter.reserve(11, 100, 0.0, limits, now=datetime(2026, 1, 31, 23, 59, 30))
+    assert decision.allowed is True
+    await limiter.reconcile(decision.reservation_id, 40, 0.0)
+    assert int(await valkey_async.get("waddleai:budget:tok:11:202601")) == 40
+    assert int(await valkey_async.get("waddleai:tpm:11:202601312359")) == 40
+    # No stray counter (e.g. a negative delta) was created in the reconcile-time window.
+    assert await _keys(valkey_async, "waddleai:*:11:*") == [
+        "waddleai:budget:tok:11:202601",
+        "waddleai:tpm:11:202601312359",
+    ]
+    assert await _keys(valkey_async, "waddleai:resv:*") == []
+
+
+async def test_reconcile_does_not_resurrect_an_expired_tpm_window(valkey_async):
+    """An already-expired 60s TPM key must not be recreated by reconcile (it would never expire)."""
+    limiter = TokenLimiter(valkey_async, _FlagOn())
+    limits = KeyLimits(tpm_limit=1000, monthly_token_limit=None, monthly_usd_limit=None)
+    decision = await limiter.reserve(12, 100, 0.0, limits, now=datetime(2026, 1, 5, 10, 0, 0))
+    await valkey_async.delete("waddleai:tpm:12:202601051000")  # simulate the 60s TTL elapsing
+    await limiter.reconcile(decision.reservation_id, 10, 0.0)
+    assert await _keys(valkey_async, "waddleai:tpm:12:*") == []
