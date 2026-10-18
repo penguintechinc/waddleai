@@ -332,6 +332,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.keys",
     "services.management.app.api.v1.usage",
     "services.management.app.api.v1.quotas",
+    "services.management.app.api.v1.quota_pools",
     "services.management.app.api.v1.cache_configs",
     "services.management.app.api.v1.routing_assignments",
     "services.management.app.api.v1.cilium",

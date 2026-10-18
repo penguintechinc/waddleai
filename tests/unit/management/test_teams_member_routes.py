@@ -29,11 +29,15 @@ def _path(rule: str, w, team: str = "a1", user: str = "mia") -> str:
 
 
 def test_blueprint_exposes_exactly_the_expected_team_routes(flask_app) -> None:
-    """Inventory guard: no team route ships without being listed (and so tested) here."""
+    """Inventory guard: no team route ships without being listed (and so tested) here.
+
+    The ``/pooled-quota`` sub-routes belong to the quota subsystem and are inventoried
+    by its own tests, so they are excluded from this team-membership inventory.
+    """
     found = {
         (m, rule.rule)
         for rule in flask_app.url_map.iter_rules()
-        if rule.rule.startswith("/api/v1/teams")
+        if rule.rule.startswith("/api/v1/teams") and "/pooled-quota" not in rule.rule
         for m in (rule.methods or set()) - {"HEAD", "OPTIONS"}
     }
     assert found == EXPECTED_ROUTES

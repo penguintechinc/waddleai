@@ -12,6 +12,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+class _EmptyRows:
+    """Empty PyDAL Rows stand-in: falsy, iterable, and exposing first() -> None."""
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __iter__(self):
+        return iter(())
+
+    def first(self) -> None:
+        return None
+
+
 class TestAdminBootstrapSecurityA:
     """Regression: A — default admin credentials sourced from env, not hardcoded."""
 
@@ -66,7 +79,7 @@ class TestAdminBootstrapSecurityA:
             # capture the users.insert kwargs to inspect the seeded password hash.
             inserted_users = []
             mock_db = MagicMock()
-            mock_db.return_value.select.return_value = []
+            mock_db.return_value.select.return_value = _EmptyRows()
             mock_db.commit = MagicMock()
             mock_db.organizations.insert = MagicMock(return_value=1)
             mock_db.users.insert = MagicMock(
@@ -348,7 +361,7 @@ class TestMasterKeyPlaintextRegressionCodeQL2507:
 
         mock_db = MagicMock()
         mock_db.commit = MagicMock()
-        mock_db.return_value.select.return_value = []
+        mock_db.return_value.select.return_value = _EmptyRows()
         mock_db.organizations.insert = MagicMock(return_value=1)
         mock_db.users.insert = MagicMock(return_value=1)
         mock_db.virtual_keys.insert = MagicMock(return_value=1)
@@ -375,7 +388,7 @@ class TestMasterKeyPlaintextRegressionCodeQL2507:
 
             mock_db = MagicMock()
             mock_db.commit = MagicMock()
-            mock_db.return_value.select.return_value = []
+            mock_db.return_value.select.return_value = _EmptyRows()
             mock_db.organizations.insert = MagicMock(return_value=1)
             mock_db.users.insert = MagicMock(
                 side_effect=lambda **kw: inserted_users.append(kw) or 1
@@ -419,7 +432,7 @@ class TestMasterKeyPlaintextRegressionCodeQL2507:
             inserted_virtual_keys = []
             mock_db = MagicMock()
             mock_db.commit = MagicMock()
-            mock_db.return_value.select.return_value = []
+            mock_db.return_value.select.return_value = _EmptyRows()
             mock_db.organizations.insert = MagicMock(return_value=1)
             mock_db.users.insert = MagicMock(return_value=1)
             mock_db.virtual_keys.insert = MagicMock(
