@@ -160,25 +160,25 @@ class QuotaEngine:
         )  # fmt: skip
         if decision.reservation_id is not None:
             granted.append(decision.reservation_id)
-        if decision.degraded or (decision.allowed and decision.reservation_id is None):
-            self._fault("limiter_degraded")
-            self.telemetry.decision("degraded", "limiter_error")
-            return QuotaOutcome(blocked=False)
-        if not decision.allowed:
+        if not decision.allowed and not decision.degraded:
             reason = decision.reason if decision.reason in _KNOWN_REASONS else "unknown"
             self.telemetry.rejection(reason)
             self.telemetry.decision("denied", reason)
             logger.info("quota denied (%s) cycle=%s credits=%d", reason, cycle, credits)
             return QuotaOutcome(blocked=True, reason=decision.reason)
+        rid = decision.reservation_id
+        if decision.degraded or rid is None:
+            self._fault("limiter_degraded")
+            self.telemetry.decision("degraded", "limiter_error")
+            return QuotaOutcome(blocked=False)
         self.telemetry.decision("allowed")
         self.telemetry.reserved(credits)
         if decision.from_buffer:
             self.telemetry.lease(decision.from_buffer)
-        assert decision.reservation_id is not None  # noqa: S101 -- narrowed above for mypy
         return QuotaOutcome(
             blocked=False,
             reservation=QuotaReservation(
-                reservation_id=decision.reservation_id,
+                reservation_id=rid,
                 org_id=org_id,
                 team_id=team_id,
                 user_id=user_id,
