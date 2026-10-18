@@ -97,6 +97,11 @@ if not data then
 end
 local r = cjson.decode(data)
 
+-- Consume the record FIRST: a mid-script error then loses a refund (user-adverse, recoverable)
+-- instead of leaving the record to be refunded again (a double-refund = quota bypass).
+redis.call("DEL", KEYS[1])
+redis.call("ZREM", KEYS[2], rid)
+
 -- Decrement only a counter that still exists (never resurrect an expired one), floor at 0.
 local function dec(key, amount)
     if amount > 0 and redis.call("EXISTS", key) == 1 then
@@ -141,6 +146,7 @@ end
 if r.daily_on == 1 and delta ~= 0 then
     if delta > 0 then
         redis.call("INCRBY", r.day_key, delta)
+        redis.call("EXPIRE", r.day_key, 172800)
     else
         dec(r.day_key, -delta)
     end
@@ -159,8 +165,6 @@ if actual > 0 then
     end
 end
 
-redis.call("DEL", KEYS[1])
-redis.call("ZREM", KEYS[2], rid)
 return {1, from_resv, from_buf, overage, table.concat(over_ids, ",")}
 """
 
@@ -250,7 +254,12 @@ class QuotaLimiter:
 
         Cap value 0 (or None) means unlimited. Missing record (settled/swept) -> not applied.
         """
-        pairs = [str(v or 0) for oid, cap in override_caps for v in (oid, cap)]
+        pairs: list[str] = []
+        for oid, cap in override_caps:
+            if oid is None:  # never coerce an id: it would charge the wrong counter
+                logger.warning("quota reconcile rejected a None override id")
+                return ReconcileResult(applied=False)
+            pairs += [str(oid), str(cap or 0)]
         args = [
             reservation_id, max(0, int(actual_credits)), self.COUNTER_TTL_S, keys.OVERRIDE_PREFIX,
             len(override_caps), *pairs,

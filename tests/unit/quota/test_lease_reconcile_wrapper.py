@@ -92,3 +92,13 @@ async def test_sweep_counts_refunds_and_survives_errors():
     fake = FakeValkey([[1, 0, 0, 0, ""], [0, 0, 0, 0, ""]], due=[b"a", "b"])
     assert await QuotaLimiter(fake).sweep_expired(now=1.0) == 1
     assert await QuotaLimiter(FakeValkey(due=ConnectionError("down"))).sweep_expired(now=1.0) == 0
+
+
+async def test_reconcile_none_cap_packs_zero_and_none_id_is_rejected():
+    """Only the cap is coerced (None -> "0"); a None id never reaches Valkey."""
+    fake = FakeValkey([[1, 0, 0, 0, ""]])
+    await QuotaLimiter(fake).reconcile("rid", 3, [(5, None)])
+    assert fake.calls[0][7:] == ("5", "0")
+    fake2 = FakeValkey()
+    assert (await QuotaLimiter(fake2).reconcile("rid", 3, [(None, 5)])).applied is False
+    assert fake2.calls == []

@@ -2,6 +2,7 @@
 
 from shared.quota import keys
 from shared.quota.lease import QuotaLimiter
+from shared.quota.types import OverrideRule
 
 BASE = {"team_id": 4, "cycle": 7, "day": "20260203", "daily_subcap": None, "overrides": ()}
 
@@ -163,3 +164,45 @@ async def test_refund_floors_at_zero(valkey_async):
     await valkey_async.set(keys.user_counter(1, 7), 1)  # drifted below the reserved 4
     await limiter.release(d.reservation_id)
     assert await _n(valkey_async, keys.user_counter(1, 7)) == 0
+
+
+async def test_record_is_consumed_before_refund_so_a_failed_refund_cannot_repeat(valkey_async):
+    """WRONGTYPE counter aborts the script mid-refund: record is already gone, retry is a no-op."""
+    limiter = QuotaLimiter(valkey_async)
+    d = await limiter.reserve(**_req(credits=4))
+    await valkey_async.delete(keys.user_counter(1, 7))
+    await valkey_async.sadd(keys.user_counter(1, 7), "x")  # wrong type -> Lua errors on refund
+    assert (await limiter.release(d.reservation_id)).applied is False  # error swallowed
+    assert await valkey_async.get(keys.reservation(d.reservation_id)) is None
+    assert await valkey_async.zscore(keys.RESERVATION_INDEX, d.reservation_id) is None
+    assert (await limiter.release(d.reservation_id)).applied is False  # no second refund
+
+
+async def test_none_cap_is_unlimited_in_reserve_and_reconcile(valkey_async):
+    """cap_credits=None reserves without crashing; a (id, None) pair is never reported over-cap."""
+    limiter = QuotaLimiter(valkey_async)
+    rule = OverrideRule(id=5, cap_credits=None)
+    d = await limiter.reserve(**_req(credits=4, overrides=[rule]))
+    assert d.allowed and not d.degraded
+    r = await limiter.reconcile(d.reservation_id, 50, [(5, None)])
+    assert r.applied and r.over_cap_override_ids == []
+    assert await _n(valkey_async, keys.override_counter(5, 7)) == 50
+
+
+async def test_none_override_id_is_rejected_not_charged_to_zero(valkey_async):
+    """A None override id is not coerced to 0: not applied, no override:0 counter."""
+    limiter = QuotaLimiter(valkey_async)
+    d = await limiter.reserve(**_req(credits=4))
+    r = await limiter.reconcile(d.reservation_id, 4, [(None, 10)])
+    assert r.applied is False
+    assert await valkey_async.get(keys.override_counter(0, 7)) is None
+    assert await valkey_async.get(keys.reservation(d.reservation_id)) is not None
+
+
+async def test_daily_counter_charge_sets_a_ttl(valkey_async):
+    """Extra credits recreate the day key via INCRBY; it must carry a TTL."""
+    limiter = QuotaLimiter(valkey_async)
+    d = await limiter.reserve(**_req(credits=2, daily_subcap=100))
+    await valkey_async.delete(keys.daily_counter(1, "20260203"))
+    await limiter.reconcile(d.reservation_id, 6)
+    assert await valkey_async.ttl(keys.daily_counter(1, "20260203")) > 0
