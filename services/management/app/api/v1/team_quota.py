@@ -14,6 +14,7 @@ from quart import jsonify
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
 from shared.auth.rbac import Permission
+from shared.quota.ledger import SCOPE_BUFFER, SCOPE_USER, QuotaLedger
 
 from ...services import quota_pools as qp
 from ...services.quota_invalidation import invalidate_quota_config
@@ -30,6 +31,7 @@ from .quota_pools import (
     _error,
     _quota_off,
     _record_write,
+    current_cycle_for,
 )
 
 
@@ -67,6 +69,9 @@ class TeamQuotaResponse:
     shared_buffer_credits: int
     reserved_credits: int
     unallocated_credits: int
+    usage_cycle: int | None
+    reservation_used_credits: int
+    buffer_used_credits: int
     reservations: list[ReservationItem]
     total: int
     pagination: PaginationMeta
@@ -102,11 +107,25 @@ async def get_team_quota(team_id: int):
         reserved = sum(i["guaranteed_credits"] for i in items)
         pool_credits = int(pool.pool_credits or 0) if pool else 0
         buffer = int(pool.shared_buffer_credits or 0) if pool else 0
+        org_id = access.team.organization_id
+        cycle = current_cycle_for(database, org_id)
+        used_resv = used_buf = 0
+        if cycle is not None:
+            member_ids = {
+                int(m.user_id) for m in database(database.team_members.team_id == team_id).select()
+            }
+            for entry in QuotaLedger(database).usage(org_id, cycle):
+                if entry.scope_type == SCOPE_USER and entry.scope_id in member_ids:
+                    used_resv += entry.credits
+                elif entry.scope_type == SCOPE_BUFFER and entry.scope_id == team_id:
+                    used_buf += entry.credits
         start, stop = page.limitby
         return {
             "team_id": team_id, "configured": pool is not None, "pool_credits": pool_credits,
             "shared_buffer_credits": buffer, "reserved_credits": reserved,
             "unallocated_credits": max(0, pool_credits - reserved - buffer),
+            "usage_cycle": cycle, "reservation_used_credits": used_resv,
+            "buffer_used_credits": used_buf,
             "reservations": items[start:stop], "total": len(items), **page.meta(len(items)),
         }  # fmt: skip
 

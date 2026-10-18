@@ -17,14 +17,16 @@ from datetime import date
 from typing import Any
 
 from penguin_dal.db import DB
-from quart import g, jsonify
+from quart import g, jsonify, request
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
 from shared.auth.rbac import Permission
 from shared.quota.cycle import cycle_bounds, cycle_index, cycle_started, utc_today
 from shared.quota.flags import pooled_quota_enabled
+from shared.quota.ledger import QuotaLedger
 from shared.utils.conversion_rate_store import upsert_conversion_rate
 
+from ... import extensions as _ext
 from ...extensions import db
 from ...services import quota_pools as qp
 from ...services.quota_invalidation import invalidate_quota_config
@@ -488,3 +490,102 @@ async def put_conversion_rate(data: SetRateRequest):
     )  # fmt: skip
     _record_write("rate_set", "updated", rate_id=rate_id)
     return {"id": rate_id, "message": "Conversion rate saved"}
+
+
+@dataclass(slots=True)
+class UsageEntry:
+    """Credits consumed by one scope in one cycle (ids and credits only)."""
+
+    scope_type: str
+    scope_id: int
+    credits_used: int
+
+
+@dataclass(slots=True)
+class UsageResponse:
+    """Response body for GET /pooled-quota/usage."""
+
+    org_id: int
+    cycle: int | None
+    entries: list[UsageEntry]
+    total: int
+    pagination: PaginationMeta
+
+
+@dataclass(slots=True)
+class RebuildRequest:
+    """Request body for POST /pooled-quota/rebuild; ``cycle`` defaults to the current one."""
+
+    cycle: int | None = None
+
+
+@dataclass(slots=True)
+class RebuildResponse:
+    """Response body for POST /pooled-quota/rebuild."""
+
+    cycle: int
+    counters_restored: int
+
+
+def current_cycle_for(database: DB, org_id: int) -> int | None:
+    """The org's current cycle index, or ``None`` when it has no started anchor."""
+    return _org_pool_view(org_id, qp.get_org_pool_row(database, org_id), 0)["current_cycle"]
+
+
+@api_v1_bp.route("/pooled-quota/usage", methods=["GET"])
+@tag(["PooledQuota"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@require_scope(Permission.QUOTA_ORG_UPDATE)
+@validate_response(UsageResponse, 200)
+async def get_usage():
+    """Per-scope credit usage for a cycle (default current), from the durable ledger."""
+    if (off := await _quota_off()) is not None:
+        return off
+    org_id = g.user.get("organization_id")
+    database = _db()
+    requested = request.args.get("cycle", type=int)
+    page = PageRequest.from_request()
+
+    def _load() -> dict[str, Any]:
+        cycle = requested if requested is not None else current_cycle_for(database, org_id)
+        rows = QuotaLedger(database).usage(org_id, cycle) if cycle is not None else []
+        start, stop = page.limitby
+        entries = [
+            {"scope_type": e.scope_type, "scope_id": e.scope_id, "credits_used": e.credits}
+            for e in rows[start:stop]
+        ]
+        return {"org_id": org_id, "cycle": cycle, "entries": entries, "total": len(rows),
+                **page.meta(len(rows))}  # fmt: skip
+
+    return await asyncio.to_thread(_load)
+
+
+@api_v1_bp.route("/pooled-quota/rebuild", methods=["POST"])
+@tag(["PooledQuota"])
+@security_scheme(_BEARER_AUTH)
+@require_auth
+@require_scope(Permission.QUOTA_ORG_UPDATE)
+@validate_response(RebuildResponse, 200)
+@validate_request(RebuildRequest)
+async def rebuild_counters(data: RebuildRequest):
+    """Restore missing Valkey counters from the ledger; never overwrites live ones."""
+    if (off := await _quota_off()) is not None:
+        return off
+    client = getattr(_ext, "redis_client", None)
+    if client is None:
+        return jsonify({"error": "Cache is unavailable"}), 503
+    org_id = g.user.get("organization_id")
+    database = _db()
+    cycle = (
+        data.cycle
+        if data.cycle is not None
+        else await asyncio.to_thread(current_cycle_for, database, org_id)
+    )
+    if cycle is None:
+        return jsonify({"error": "No active cycle; configure the org pool anchor first"}), 409
+    restored = await asyncio.to_thread(
+        QuotaLedger(database).rebuild_counters, client, org_id, cycle
+    )
+    _record_write("counter_rebuild", "restored", org_id=org_id, cycle=cycle, restored=restored)
+    return {"cycle": cycle, "counters_restored": restored}

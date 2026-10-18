@@ -49,6 +49,7 @@ async def test_get_shape_for_viewer_and_unconfigured_team(real_db_client, team_h
     body = await (await real_db_client.get(_url(w), headers=team_headers("vic"))).get_json()
     assert set(body) == {
         "team_id", "configured", "pool_credits", "shared_buffer_credits", "reserved_credits",
+        "usage_cycle", "reservation_used_credits", "buffer_used_credits",
         "unallocated_credits", "reservations", "total", "pagination",
     }  # fmt: skip
     assert (
