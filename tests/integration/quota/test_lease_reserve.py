@@ -21,6 +21,15 @@ async def _n(client, key):
     return int(await client.get(key) or 0)
 
 
+async def _snapshot(client):
+    """Every wa:quota:* string key with its VALUE, plus the reservation-index size."""
+    state = {}
+    async for key in client.scan_iter(match="wa:quota:*"):
+        if await client.type(key) == "string":
+            state[key] = await client.get(key)
+    return state, await client.zcard(keys.RESERVATION_INDEX)
+
+
 async def test_reservation_is_consumed_before_the_buffer(valkey_async):
     """Within the guarantee: from_reservation only, buffer untouched."""
     d = await QuotaLimiter(valkey_async).reserve(**_req())
@@ -37,15 +46,28 @@ async def test_spill_into_buffer_then_exhaustion_leaves_no_residue(valkey_async)
     assert (d.allowed, d.from_reservation, d.from_buffer) == (True, 6, 2)
     assert await _n(valkey_async, keys.user_counter(1, 7)) == 10
     assert await _n(valkey_async, keys.buffer_counter(4, 7)) == 2
-    before = sorted([k async for k in valkey_async.scan_iter(match="wa:quota:*")])
+    before = await _snapshot(valkey_async)
     denied = await limiter.reserve(**_req(credits=4))  # needs 4 from buffer, 2+4 > 5
     assert (denied.allowed, denied.reason, denied.reservation_id) == (
         False,
         "quota_exhausted",
         None,
     )
-    assert sorted([k async for k in valkey_async.scan_iter(match="wa:quota:*")]) == before
+    assert await _snapshot(valkey_async) == before
     assert await _n(valkey_async, keys.buffer_counter(4, 7)) == 2
+
+
+async def test_partial_debit_deny_leaves_reservation_counter_untouched(valkey_async):
+    """Headroom 6 but the 2-credit spill exceeds the 1 free buffer credit: deny, nothing debited."""
+    await valkey_async.set(keys.user_counter(1, 7), 4)
+    await valkey_async.set(keys.buffer_counter(4, 7), 4)
+    before = await _snapshot(valkey_async)
+    d = await QuotaLimiter(valkey_async).reserve(**_req(credits=8, guaranteed=10, buffer_cap=5))
+    assert (d.allowed, d.reason, d.reservation_id) == (False, "quota_exhausted", None)
+    assert await _n(valkey_async, keys.user_counter(1, 7)) == 4
+    assert await _n(valkey_async, keys.buffer_counter(4, 7)) == 4
+    assert await valkey_async.zcard(keys.RESERVATION_INDEX) == 0
+    assert await _snapshot(valkey_async) == before
 
 
 async def test_exact_buffer_boundary_is_allowed_one_more_is_not(valkey_async):
@@ -70,10 +92,15 @@ async def test_daily_subcap_denies_without_mutation(valkey_async):
     """A per-day sub-cap of 5: 3 ok, another 3 denied, counters show only the first 3."""
     limiter = QuotaLimiter(valkey_async)
     assert (await limiter.reserve(**_req(credits=3, daily_subcap=5))).allowed
+    await valkey_async.set(keys.buffer_counter(4, 7), 2)
+    before = await _snapshot(valkey_async)
     denied = await limiter.reserve(**_req(credits=3, daily_subcap=5))
     assert (denied.allowed, denied.reason) == (False, "daily_subcap_exceeded")
     assert await _n(valkey_async, keys.daily_counter(1, "20260203")) == 3
     assert await _n(valkey_async, keys.user_counter(1, 7)) == 3
+    assert await _n(valkey_async, keys.buffer_counter(4, 7)) == 2
+    assert await valkey_async.zcard(keys.RESERVATION_INDEX) == 1
+    assert await _snapshot(valkey_async) == before
 
 
 async def test_override_is_checked_but_not_debited_at_reserve(valkey_async):
@@ -81,9 +108,14 @@ async def test_override_is_checked_but_not_debited_at_reserve(valkey_async):
     limiter = QuotaLimiter(valkey_async)
     rule = OverrideRule(id=9, cap_credits=5, user_id=1)
     await valkey_async.set(keys.override_counter(9, 7), 4)
+    await valkey_async.set(keys.buffer_counter(4, 7), 2)
+    before = await _snapshot(valkey_async)
     denied = await limiter.reserve(**_req(credits=3, overrides=(rule,)))
     assert (denied.allowed, denied.reason) == (False, "override_exceeded")
     assert await valkey_async.get(keys.user_counter(1, 7)) is None
+    assert await _n(valkey_async, keys.buffer_counter(4, 7)) == 2
+    assert await valkey_async.zcard(keys.RESERVATION_INDEX) == 0
+    assert await _snapshot(valkey_async) == before
     ok = await limiter.reserve(**_req(credits=1, overrides=(rule,)))
     assert ok.allowed and await _n(valkey_async, keys.override_counter(9, 7)) == 4
 
