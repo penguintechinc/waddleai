@@ -18,6 +18,9 @@ ALEMBIC_DIR = os.path.abspath(
 )  # fmt: skip
 
 _DDL = (
+    "CREATE TABLE organizations (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(255) NOT NULL)",
+    "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(255))",
+    "CREATE TABLE teams (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER)",
     "CREATE TABLE token_conversion_rates (id INTEGER PRIMARY KEY AUTOINCREMENT, "
     "provider VARCHAR(100) NOT NULL, model VARCHAR(255) NOT NULL, input_rate FLOAT NOT NULL, "
     "output_rate FLOAT NOT NULL, base_cost_per_waddleai_token FLOAT, effective_date DATETIME, "
