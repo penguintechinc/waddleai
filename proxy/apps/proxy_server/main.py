@@ -912,16 +912,6 @@ class ProxyServer:
         # dispatch → security_out → meter
         self.pipeline = self._build_pipeline()
         logger.info("ProxyPipeline built with %d stages", len(self.pipeline.stages))
-        if self.quota_limiter is not None:
-            self._quota_sweeper_stop = asyncio.Event()
-            self._quota_sweeper_task = asyncio.create_task(
-                run_quota_sweeper(
-                    self.quota_limiter,
-                    interval_s=sweeper_interval_s(),
-                    stop=self._quota_sweeper_stop,
-                )
-            )
-
         # §6A.1 scratchpad MCP tools (scratchpad_put/get/list) -- registered
         # whenever the store was constructed (_build_pipeline always builds
         # one; it's simply unreachable when the flag is off, per
@@ -967,6 +957,17 @@ class ProxyServer:
                 grpc_auth_token=grpc_auth_token,
             )
             logger.info("gRPC server started", port=grpc_port)
+
+        # Started last so a failed startup above cannot orphan the sweeper task.
+        if self.quota_limiter is not None:
+            self._quota_sweeper_stop = asyncio.Event()
+            self._quota_sweeper_task = asyncio.create_task(
+                run_quota_sweeper(
+                    self.quota_limiter,
+                    interval_s=sweeper_interval_s(),
+                    stop=self._quota_sweeper_stop,
+                )
+            )
 
         logger.info("Proxy server initialized successfully")
 

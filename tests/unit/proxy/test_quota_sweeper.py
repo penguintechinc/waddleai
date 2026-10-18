@@ -69,7 +69,20 @@ async def test_stop_helper_cancels_and_tolerates_none():
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"), [(None, 60.0), ("5", 5.0), ("abc", 60.0), ("0.2", 60.0), ("-3", 60.0)]
+    ("raw", "expected"),
+    [
+        (None, 60.0),
+        ("5", 5.0),
+        ("120", 120.0),
+        ("599", 599.0),
+        ("abc", 60.0),
+        ("0.2", 60.0),
+        ("-3", 60.0),
+        ("600", 60.0),
+        ("900", 60.0),
+        ("inf", 60.0),
+        ("nan", 60.0),
+    ],
 )
 def test_interval_parsing(monkeypatch, raw, expected):
     """Garbage or sub-second intervals fall back to 60s (never a hot loop)."""
@@ -84,3 +97,36 @@ def test_default_interval_is_well_under_the_record_ttl_leak_window(monkeypatch):
     """Default cadence must be far below the 600s grace between sweep score and record TTL."""
     monkeypatch.delenv("PROXY_QUOTA_SWEEP_INTERVAL_SECONDS", raising=False)
     assert sweeper_interval_s() <= 120 < 600
+
+
+async def test_failing_pass_logs_traceback(caplog):
+    """The fail-safe ERROR log carries the traceback."""
+    limiter, stop = Limiter([RuntimeError("boom")]), asyncio.Event()
+    with caplog.at_level("ERROR"):
+        task = asyncio.create_task(run_quota_sweeper(limiter, interval_s=0.01, stop=stop))
+        await _wait_calls(limiter, 1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=1)
+    assert any(r.exc_info for r in caplog.records)
+
+
+async def test_stop_does_not_swallow_caller_cancellation():
+    """Cancelling the coroutine running stop_quota_sweeper still raises CancelledError."""
+
+    async def stubborn(stop):
+        """Ignore the first cancel so stop_quota_sweeper stays suspended awaiting it."""
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.2)
+            raise
+
+    stop = asyncio.Event()
+    sweeper = asyncio.create_task(stubborn(stop))
+    await asyncio.sleep(0.01)
+    caller = asyncio.create_task(stop_quota_sweeper(sweeper, stop))
+    await asyncio.sleep(0.05)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    await asyncio.wait({sweeper})

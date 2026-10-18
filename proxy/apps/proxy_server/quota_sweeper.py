@@ -9,22 +9,31 @@ refund Lua is atomic and idempotent (a second release finds no record), so that 
 import asyncio
 import contextlib
 import logging
+import math
 import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_INTERVAL_S = 60.0
+# Sweep score is reserve+3600s but the record lives 4200s: a cadence at/above this 600s grace
+# lets a record TTL-expire before it is swept and the refund is lost.
+_MAX_INTERVAL_S = 600.0
 
 
 def sweeper_interval_s() -> float:
-    """Seconds between sweeps (``PROXY_QUOTA_SWEEP_INTERVAL_SECONDS``); bad or < 1 -> 60."""
+    """Seconds between sweeps (``PROXY_QUOTA_SWEEP_INTERVAL_SECONDS``).
+
+    Unparseable, non-finite, < 1 or >= 600 (the refund leak window) falls back to 60.
+    """
     raw = os.getenv("PROXY_QUOTA_SWEEP_INTERVAL_SECONDS")
     try:
         value = float(raw) if raw else _DEFAULT_INTERVAL_S
     except ValueError:
         return _DEFAULT_INTERVAL_S
-    return value if value >= 1 else _DEFAULT_INTERVAL_S
+    if not math.isfinite(value) or value < 1 or value >= _MAX_INTERVAL_S:
+        return _DEFAULT_INTERVAL_S
+    return value
 
 
 async def run_quota_sweeper(limiter: Any, *, interval_s: float, stop: asyncio.Event) -> None:
@@ -35,7 +44,9 @@ async def run_quota_sweeper(limiter: Any, *, interval_s: float, stop: asyncio.Ev
             if released:
                 logger.warning("quota sweeper refunded %d expired reservation(s)", released)
         except Exception as exc:  # noqa: BLE001 -- one bad pass must not end the loop
-            logger.error("quota sweeper pass failed: %s: %s", type(exc).__name__, exc)
+            logger.error(
+                "quota sweeper pass failed: %s: %s", type(exc).__name__, exc, exc_info=True
+            )
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=interval_s)
 
@@ -47,5 +58,8 @@ async def stop_quota_sweeper(task: asyncio.Task | None, stop: asyncio.Event | No
     if task is None:
         return
     task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    # asyncio.wait never re-raises the task's own CancelledError, so only a cancellation aimed
+    # at this (caller) coroutine propagates and a shutdown cancel is never masked.
+    await asyncio.wait({task})
+    if not task.cancelled():
+        task.exception()  # mark retrieved; the loop already logs its own failures
