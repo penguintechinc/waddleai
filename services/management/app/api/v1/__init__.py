@@ -36,4 +36,5 @@ from . import (  # noqa: I001 -- append-only order, see comment above
     proxy_keys,
     teams,
     quota_pools,
+    team_quota,
 )
