@@ -68,7 +68,7 @@ protobuf>=6.31.1,<7.0.0
 
 # HTTP client for provider connectivity tests
 httpx>=0.26.0
-aiohttp>=3.14.3
+aiohttp>=3.14.4
 
 # AI Provider SDKs
 openai>=1.0.0
@@ -106,7 +106,7 @@ markdownify>=0.13.1
 # _extract_text): PDF -> text extraction (BSD-3). The AGPL-licensed fitz
 # binding is banned -- never substitute it here.
 # First fixed release for the pypdf 6.16.1 advisories.
-pypdf>=6.17.0
+pypdf>=6.21.1
 
 # YAML for config generation
 pyyaml>=6.0.1
