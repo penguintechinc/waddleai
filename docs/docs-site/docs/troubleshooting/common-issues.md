@@ -599,5 +599,5 @@ Include:
 
 - [Configuration Reference](../getting-started/configuration.md)
 - [API Documentation](../api/openai-compatible.md)
-- [Deployment Guide](../deployment/docker-compose.md)
+- [Deployment Guide](../deployment/kubernetes.md)
 - [GitHub Issues](https://github.com/yourusername/WaddleAI/issues)

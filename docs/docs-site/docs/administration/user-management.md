@@ -373,6 +373,6 @@ curl -X POST http://localhost:8001/api/users/bulk-deactivate \
 ## See Also
 
 - [Organization Setup](organization-setup.md)
-- [Quota Management](quota-management.md)
+- [Quota Management](pooled-quota.md)
 - [Security Policies](security-policies.md)
 - [API Authentication](../api/authentication.md)

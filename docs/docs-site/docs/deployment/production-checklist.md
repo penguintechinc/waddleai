@@ -458,7 +458,6 @@ Complete checklist for deploying WaddleAI to production safely and securely.
 
 ## See Also
 
-- [Docker Compose Deployment](docker-compose.md)
 - [Kubernetes Deployment](kubernetes.md)
 - [Security Policies](../administration/security-policies.md)
 - [Monitoring Guide](../operations/MONITORING.md)
