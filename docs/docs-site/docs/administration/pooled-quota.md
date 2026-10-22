@@ -56,7 +56,7 @@ the next request is refused).
 | Route | Needs |
 |---|---|
 | `GET/PUT /api/v1/pooled-quota/org-pool` | `quota:org_update` |
-| `PUT /api/v1/pooled-quota/teams/<id>/pool` | `quota:org_update` |
+| `PUT /api/v1/pooled-quota/teams/<id>/pool` | `quota:org_update` and `team:quota_admin` on that team |
 | `GET/POST /api/v1/pooled-quota/overrides`, `DELETE .../overrides/<id>` | `quota:org_update` |
 | `GET/PUT /api/v1/pooled-quota/conversion-rates` | `quota:admin` |
 | `GET /api/v1/pooled-quota/usage?cycle=`, `POST /api/v1/pooled-quota/rebuild` | `quota:org_update` |

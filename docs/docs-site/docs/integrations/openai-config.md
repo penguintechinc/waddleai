@@ -818,7 +818,7 @@ if hasattr(response.choices[0], 'finish_reason'):
 - [Anthropic Configuration](anthropic-config.md)
 - [Ollama Setup](ollama-setup.md)
 - [Management API](../api/management-api.md)
-- [Cost Optimization](../administration/quota-management.md)
+- [Cost Optimization](../administration/pooled-quota.md)
 
 ## Support
 

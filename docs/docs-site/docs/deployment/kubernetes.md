@@ -2,7 +2,7 @@
 
 WaddleAI ships one Helm chart (`k8s/helm/waddleai`) and deploys the same way in every
 environment. Docker Compose is not a supported deployment path in any environment,
-including local development — see [Docker Compose](docker-compose.md) for why.
+including local development (Docker Compose is deprecated).
 
 !!! warning "Only alpha and beta have working values files today"
     The chart currently ships `values.yaml` (defaults) plus `values-alpha.yaml` and

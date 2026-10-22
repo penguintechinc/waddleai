@@ -1,5 +1,5 @@
 site_name: WaddleAI Documentation
-site_url: https://docs.waddleai.com
+site_url: https://docs.penguintech.io/waddleai
 site_description: AI proxy and management system with OpenAI-compatible APIs
 
 theme:
@@ -55,7 +55,6 @@ nav:
     - Monitoring: operations/MONITORING.md
     - Service Level Objectives: operations/SLOS.md
   - Deployment:
-    - Docker Compose: deployment/docker-compose.md
     - Kubernetes: deployment/kubernetes.md
     - Production Checklist: deployment/production-checklist.md
   - Integrations:
@@ -113,11 +112,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/your-org/waddleai
-    - icon: fontawesome/brands/twitter
-      link: https://twitter.com/waddleai
-    - icon: fontawesome/brands/discord
-      link: https://discord.gg/waddleai
+      link: https://github.com/penguintechinc/waddleai
   version:
     provider: mike
 
