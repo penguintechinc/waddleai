@@ -1042,7 +1042,7 @@ class DispatchStage(Stage):
                 # belongs on this call -- adding one would break at runtime
                 # (async generators aren't awaitable).
                 async for chunk in connector.stream_chat_completion(  # type: ignore[attr-defined]
-                    ctx.messages, model=target_model
+                    ctx.messages, model=target_model, **self._dispatch_kwargs(ctx)
                 ):
                     ctx.response_text += chunk.delta
                     if chunk.done and chunk.usage:
@@ -1053,7 +1053,7 @@ class DispatchStage(Stage):
             else:
                 # Non-streaming: single call
                 response_text, usage_info = await connector.chat_completion(
-                    ctx.messages, model=target_model
+                    ctx.messages, model=target_model, **self._dispatch_kwargs(ctx)
                 )
                 ctx.response_text = response_text
                 ctx.usage = usage_info
@@ -1128,7 +1128,7 @@ class DispatchStage(Stage):
         start = time.time()
         try:
             async for chunk in connector.stream_chat_completion(  # type: ignore[attr-defined]
-                ctx.messages, model=target_model
+                ctx.messages, model=target_model, **self._dispatch_kwargs(ctx)
             ):
                 ctx.response_text += chunk.delta
                 if chunk.done and chunk.usage:
@@ -1149,6 +1149,18 @@ class DispatchStage(Stage):
             get_proxy_metrics().record_llm_latency(
                 provider=provider, model=target_model, status="error", duration=time.time() - start
             )
+
+    @staticmethod
+    def _dispatch_kwargs(ctx: PipelineContext) -> dict[str, Any]:
+        """Forward the caller's ``max_tokens`` to the connector when supplied.
+
+        Omitted/invalid values are left out so each connector keeps its own
+        default (previously every request silently got the 1000 default).
+        """
+        max_tokens = ctx.body.get("max_tokens") if isinstance(ctx.body, dict) else None
+        if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
+            return {"max_tokens": max_tokens}
+        return {}
 
     async def _prepare_dispatch(self, ctx: PipelineContext) -> tuple[str, str, LLMConnector] | None:
         """Select a provider/model/connector and apply security_v2 upstream filtering.

@@ -1651,6 +1651,9 @@ class TestStreamingConnectors:
                     else:
                         raise StopAsyncIteration
 
+                async def get_final_message(self):
+                    return Mock(usage=Mock(input_tokens=5, output_tokens=2), stop_reason="end_turn")
+
             mock_client.messages.stream = Mock(return_value=MockStreamContext())
 
             config = {"api_key": "ant-key", "model_list": ["claude-3-haiku-20240307"]}
@@ -1663,6 +1666,8 @@ class TestStreamingConnectors:
             assert len(chunks) >= 2
             assert isinstance(chunks[0], StreamChunk)
             assert chunks[-1].done is True
+            assert chunks[-1].usage["input_tokens"] == 5
+            assert chunks[-1].usage["output_tokens"] == 2
 
     @pytest.mark.asyncio
     async def test_ollama_stream_chat_completion(self):
@@ -2407,6 +2412,9 @@ class TestAnthropicConnectorErrorMapping:
                     return next(self._events)
                 except StopIteration:
                     raise StopAsyncIteration from None
+
+            async def get_final_message(self):
+                return Mock(usage=Mock(input_tokens=3, output_tokens=1), stop_reason="end_turn")
 
         with patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic") as mock_anthropic:
             client = AsyncMock()
@@ -3831,6 +3839,9 @@ class TestAnthropicConnectorRemainingBranches:
                     return next(self._events)
                 except StopIteration:
                     raise StopAsyncIteration from None
+
+            async def get_final_message(self):
+                return Mock(usage=Mock(input_tokens=3, output_tokens=1), stop_reason="end_turn")
 
         with patch("shared.utils.llm_connectors.anthropic.AsyncAnthropic") as mock_anthropic:
             client = AsyncMock()
