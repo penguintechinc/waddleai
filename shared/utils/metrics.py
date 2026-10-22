@@ -289,6 +289,14 @@ class WaddleAIMetrics:
             ["provider", "endpoint"],
         )
 
+        # Billing-truth degradation: a provider response lacked real usage and
+        # the tiktoken estimate was charged instead. Any non-zero rate is a defect.
+        self.usage_estimated_total = Counter(
+            "waddleai_proxy_usage_estimated_total",
+            "Responses metered from a token ESTIMATE because the provider omitted usage",
+            ["provider"],
+        )
+
         # Agent-hooks metrics (§18) -- hooks sit on the developer's
         # interactive tool-call path, so the evaluation-latency histogram is
         # the number that matters (p50/p95/p99), and fail-open vs
@@ -530,6 +538,10 @@ class WaddleAIMetrics:
     def record_stream_error(self, provider: str, endpoint: str) -> None:
         """Record a streaming dispatch failure, pre-stream or mid-stream (ops O7-b)."""
         self.stream_errors_total.labels(provider=provider, endpoint=endpoint).inc()
+
+    def record_usage_estimated(self, provider: str) -> None:
+        """Record a response metered from an estimate because real usage was absent."""
+        self.usage_estimated_total.labels(provider=provider).inc()
 
     def record_hook_invocation(self, ecosystem: str, event: str, decision: str) -> None:
         """Record one agent-hook evaluation outcome (§18)."""

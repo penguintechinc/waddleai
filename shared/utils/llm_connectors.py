@@ -341,10 +341,33 @@ class OpenAIConnector(LLMConnector):
         }
         self.default_encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
+    # OpenAI reasoning families reject `max_tokens` (HTTP 400) and require
+    # `max_completion_tokens` instead. NOTE: for o-series/gpt-5 that limit also
+    # covers hidden reasoning tokens, so a very small caller `max_tokens` can
+    # return empty content with finish_reason="length".
+    _REASONING_MODEL_PREFIXES: tuple[str, ...] = ("o1", "o3", "o4", "gpt-5")
+
+    @classmethod
+    def _adapt_token_limit(cls, model: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Return kwargs with ``max_tokens`` renamed for reasoning models.
+
+        Non-reasoning models (e.g. gpt-4o) are returned unchanged; an explicit
+        caller-supplied ``max_completion_tokens`` is never overwritten.
+        """
+        if "max_tokens" not in kwargs or not model.lower().startswith(
+            cls._REASONING_MODEL_PREFIXES
+        ):
+            return kwargs
+        adapted = dict(kwargs)
+        value = adapted.pop("max_tokens")
+        adapted.setdefault("max_completion_tokens", value)
+        return adapted
+
     async def chat_completion(
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
         """Generate OpenAI chat completion."""
+        kwargs = self._adapt_token_limit(model, kwargs)
         try:
             response = await self.client.chat.completions.create(
                 model=model,
@@ -423,6 +446,7 @@ class OpenAIConnector(LLMConnector):
         final usage-bearing chunk. Without it streamed requests would meter zero
         tokens, bypassing quota and billing.
         """
+        kwargs = self._adapt_token_limit(model, kwargs)
         try:
             stream_options = kwargs.pop("stream_options", {"include_usage": True})
             raw_stream = await self.client.chat.completions.create(
@@ -764,15 +788,15 @@ class AnthropicConnector(LLMConnector):
                     message="Anthropic response's first content block was not text",
                 )
 
-            # Estimate token usage (fallback for when the API doesn't report
-            # real usage -- see below). Content may be a block array (e.g.
-            # shared.cache.upstream's cache_control injection converts a
-            # string message to [{"type": "text", ...}]), not just a string.
-            input_text = system_message + " ".join(
-                _extract_anthropic_text(msg["content"]) for msg in user_messages
+            # Real usage from the provider (billing/quota truth). The tiktoken
+            # estimate is only a loud fallback when the API genuinely omits it.
+            response_usage = getattr(response, "usage", None)
+            input_tokens, output_tokens = self._resolve_token_counts(
+                response_usage,
+                model=model,
+                estimate_input=lambda: self._estimate_input_tokens(system_message, user_messages),
+                estimate_output=lambda: len(self.token_estimator.encode(content)),
             )
-            input_tokens = len(self.token_estimator.encode(input_text))
-            output_tokens = len(self.token_estimator.encode(content))
 
             usage_info = {
                 "input_tokens": input_tokens,
@@ -786,7 +810,6 @@ class AnthropicConnector(LLMConnector):
             # Real prompt-cache usage fields (spec §6.3), when the API reports
             # them -- surfaced additively; existing keys above are unchanged
             # so this is safe for callers that don't know about caching yet.
-            response_usage = getattr(response, "usage", None)
             cache_creation = (
                 getattr(response_usage, "cache_creation_input_tokens", 0) if response_usage else 0
             )
@@ -837,6 +860,54 @@ class AnthropicConnector(LLMConnector):
                 model=model,
                 message=f"Anthropic completion failed: {str(e)[:100]}",
             ) from e
+
+    def _estimate_input_tokens(self, system_message: str, user_messages: list[Any]) -> int:
+        """Estimate prompt tokens via tiktoken (fallback only; content may be a block array)."""
+        input_text = system_message + " ".join(
+            _extract_anthropic_text(msg["content"]) for msg in user_messages
+        )
+        return len(self.token_estimator.encode(input_text))
+
+    def _resolve_token_counts(
+        self,
+        usage: Any,
+        model: str,
+        estimate_input: Callable[[], int],
+        estimate_output: Callable[[], int],
+    ) -> tuple[int, int]:
+        """Return the provider's real (input, output) token counts.
+
+        Falls back to the tiktoken estimate ONLY when ``usage`` is absent or
+        lacks integer counts, and then fails loud (warning log + a
+        ``waddleai_proxy_usage_estimated_total`` increment) -- a silent
+        estimate would bill/meter guesses invisibly.
+        """
+        real_in = getattr(usage, "input_tokens", None) if usage is not None else None
+        real_out = getattr(usage, "output_tokens", None) if usage is not None else None
+        if (
+            isinstance(real_in, int)
+            and not isinstance(real_in, bool)
+            and isinstance(real_out, int)
+            and not isinstance(real_out, bool)
+        ):
+            return real_in, real_out
+        logger.warning(
+            "Anthropic response for %s lacked usage token counts; billing falls back to "
+            "tiktoken ESTIMATE",
+            model,
+        )
+        self._record_usage_estimated_metric()
+        return estimate_input(), estimate_output()
+
+    @staticmethod
+    def _record_usage_estimated_metric() -> None:
+        """Increment the usage-estimated fault counter; telemetry never fails a request."""
+        try:
+            from shared.utils.metrics import get_proxy_metrics
+
+            get_proxy_metrics().record_usage_estimated("anthropic")
+        except Exception:  # noqa: BLE001 -- telemetry must never fail the request
+            logger.debug("usage_estimated metric emission failed", exc_info=True)
 
     async def count_tokens(self, text: str, model: str) -> int:
         """Estimate tokens for Anthropic models."""
@@ -892,6 +963,7 @@ class AnthropicConnector(LLMConnector):
             # AttributeError on EVERY Anthropic streaming call -- swallowed by
             # the `except Exception` below and re-raised as ProviderServerError,
             # so it read as an upstream outage rather than a client-side defect.
+            streamed_parts: list[str] = []
             async with self.client.messages.stream(
                 model=model,
                 max_tokens=kwargs.get("max_tokens", 1000),
@@ -905,9 +977,32 @@ class AnthropicConnector(LLMConnector):
                     # Check for content_block_delta events with text deltas
                     if hasattr(event, "type") and event.type == "content_block_delta":
                         if hasattr(event, "delta") and hasattr(event.delta, "text"):
+                            streamed_parts.append(event.delta.text)
                             yield StreamChunk(delta=event.delta.text, done=False)
-            # Anthropic streaming does not include final usage; send done=True signal
-            yield StreamChunk(delta="", usage=None, done=True)
+                # The final message carries the provider's real usage and stop
+                # reason; fetched inside the context so the stream is complete.
+                final_message = await stream.get_final_message()
+            # Same resolver as the non-streaming path: rejects bool/non-int,
+            # and on absence falls back to a tiktoken estimate of the prompt +
+            # streamed text with a loud log + counter (never meters zero).
+            input_tokens, output_tokens = self._resolve_token_counts(
+                getattr(final_message, "usage", None),
+                model=model,
+                estimate_input=lambda: self._estimate_input_tokens(system_message, user_messages),
+                estimate_output=lambda: len(self.token_estimator.encode("".join(streamed_parts))),
+            )
+            yield StreamChunk(
+                delta="",
+                usage={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "model": model,
+                    "finish_reason": getattr(final_message, "stop_reason", None) or "stop",
+                    "provider": "anthropic",
+                },
+                done=True,
+            )
 
         except anthropic.APITimeoutError as e:
             raise ProviderTimeoutError(
