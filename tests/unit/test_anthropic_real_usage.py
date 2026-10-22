@@ -181,7 +181,11 @@ async def test_dispatch_forwards_max_tokens_on_streaming_path():
 
 
 @pytest.mark.asyncio
-async def test_stream_without_usage_falls_back_loudly_and_increments_counter(caplog):
+@pytest.mark.parametrize(
+    "usage",
+    [None, SimpleNamespace(input_tokens=True, output_tokens=True)],
+)
+async def test_stream_without_usage_falls_back_loudly_and_increments_counter(usage, caplog):
     """Streaming with no final usage logs AND increments the usage-estimated counter."""
     connector, client = _connector()
 
@@ -199,7 +203,7 @@ async def test_stream_without_usage_falls_back_loudly_and_increments_counter(cap
             yield Mock(type="content_block_delta", delta=Mock(text="Hi"))
 
         async def get_final_message(self):
-            return SimpleNamespace(usage=None, stop_reason="end_turn")
+            return SimpleNamespace(usage=usage, stop_reason="end_turn")
 
     client.messages.stream = Mock(return_value=_Stream())
     before = _estimated_count()
@@ -208,9 +212,11 @@ async def test_stream_without_usage_falls_back_loudly_and_increments_counter(cap
         chunks = [c async for c in connector.stream_chat_completion(MESSAGES, MODEL)]
 
     assert chunks[-1].done is True
-    assert chunks[-1].usage is None
+    assert chunks[-1].usage is not None
+    assert chunks[-1].usage["input_tokens"] > 0
+    assert chunks[-1].usage["output_tokens"] > 0
     assert _estimated_count() == before + 1
-    assert any("without usage" in r.getMessage() for r in caplog.records)
+    assert any("ESTIMATE" in r.getMessage() for r in caplog.records)
 
 
 def _openai_connector() -> tuple[OpenAIConnector, AsyncMock]:

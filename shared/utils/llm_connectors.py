@@ -342,7 +342,9 @@ class OpenAIConnector(LLMConnector):
         self.default_encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
     # OpenAI reasoning families reject `max_tokens` (HTTP 400) and require
-    # `max_completion_tokens` instead.
+    # `max_completion_tokens` instead. NOTE: for o-series/gpt-5 that limit also
+    # covers hidden reasoning tokens, so a very small caller `max_tokens` can
+    # return empty content with finish_reason="length".
     _REASONING_MODEL_PREFIXES: tuple[str, ...] = ("o1", "o3", "o4", "gpt-5")
 
     @classmethod
@@ -961,6 +963,7 @@ class AnthropicConnector(LLMConnector):
             # AttributeError on EVERY Anthropic streaming call -- swallowed by
             # the `except Exception` below and re-raised as ProviderServerError,
             # so it read as an upstream outage rather than a client-side defect.
+            streamed_parts: list[str] = []
             async with self.client.messages.stream(
                 model=model,
                 max_tokens=kwargs.get("max_tokens", 1000),
@@ -974,31 +977,32 @@ class AnthropicConnector(LLMConnector):
                     # Check for content_block_delta events with text deltas
                     if hasattr(event, "type") and event.type == "content_block_delta":
                         if hasattr(event, "delta") and hasattr(event.delta, "text"):
+                            streamed_parts.append(event.delta.text)
                             yield StreamChunk(delta=event.delta.text, done=False)
                 # The final message carries the provider's real usage and stop
                 # reason; fetched inside the context so the stream is complete.
                 final_message = await stream.get_final_message()
-            final_usage = getattr(final_message, "usage", None)
-            real_in = getattr(final_usage, "input_tokens", None)
-            real_out = getattr(final_usage, "output_tokens", None)
-            if isinstance(real_in, int) and isinstance(real_out, int):
-                yield StreamChunk(
-                    delta="",
-                    usage={
-                        "input_tokens": real_in,
-                        "output_tokens": real_out,
-                        "total_tokens": real_in + real_out,
-                        "model": model,
-                        "finish_reason": getattr(final_message, "stop_reason", None) or "stop",
-                        "provider": "anthropic",
-                    },
-                    done=True,
-                )
-            else:
-                # No usage: downstream meters zero for this stream -- fail loud.
-                logger.warning("Anthropic stream for %s ended without usage counts", model)
-                self._record_usage_estimated_metric()
-                yield StreamChunk(delta="", usage=None, done=True)
+            # Same resolver as the non-streaming path: rejects bool/non-int,
+            # and on absence falls back to a tiktoken estimate of the prompt +
+            # streamed text with a loud log + counter (never meters zero).
+            input_tokens, output_tokens = self._resolve_token_counts(
+                getattr(final_message, "usage", None),
+                model=model,
+                estimate_input=lambda: self._estimate_input_tokens(system_message, user_messages),
+                estimate_output=lambda: len(self.token_estimator.encode("".join(streamed_parts))),
+            )
+            yield StreamChunk(
+                delta="",
+                usage={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "model": model,
+                    "finish_reason": getattr(final_message, "stop_reason", None) or "stop",
+                    "provider": "anthropic",
+                },
+                done=True,
+            )
 
         except anthropic.APITimeoutError as e:
             raise ProviderTimeoutError(
