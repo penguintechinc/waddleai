@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from proxy.apps.proxy_server.pipeline.stages import DispatchStage, PipelineContext
-from shared.utils.llm_connectors import AnthropicConnector
+from shared.utils.llm_connectors import AnthropicConnector, OpenAIConnector
 from shared.utils.metrics import get_proxy_metrics
 
 MODEL = "claude-3-haiku-20240307"
@@ -178,3 +178,78 @@ async def test_dispatch_forwards_max_tokens_on_streaming_path():
     await _dispatch(connector)(_ctx({"max_tokens": 77}, stream=True))
 
     assert seen == {"max_tokens": 77}
+
+
+@pytest.mark.asyncio
+async def test_stream_without_usage_falls_back_loudly_and_increments_counter(caplog):
+    """Streaming with no final usage logs AND increments the usage-estimated counter."""
+    connector, client = _connector()
+
+    class _Stream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield Mock(type="content_block_delta", delta=Mock(text="Hi"))
+
+        async def get_final_message(self):
+            return SimpleNamespace(usage=None, stop_reason="end_turn")
+
+    client.messages.stream = Mock(return_value=_Stream())
+    before = _estimated_count()
+
+    with caplog.at_level("WARNING"):
+        chunks = [c async for c in connector.stream_chat_completion(MESSAGES, MODEL)]
+
+    assert chunks[-1].done is True
+    assert chunks[-1].usage is None
+    assert _estimated_count() == before + 1
+    assert any("without usage" in r.getMessage() for r in caplog.records)
+
+
+def _openai_connector() -> tuple[OpenAIConnector, AsyncMock]:
+    """OpenAIConnector with a mocked SDK client returning a minimal valid response."""
+    with patch("shared.utils.llm_connectors.openai.AsyncOpenAI") as mock_cls:
+        client = AsyncMock()
+        mock_cls.return_value = client
+        connector = OpenAIConnector("o", {"api_key": "k", "model_list": []})
+    usage = SimpleNamespace(
+        prompt_tokens=1, completion_tokens=2, total_tokens=3, prompt_tokens_details=None
+    )
+    choice = SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")
+    client.chat.completions.create = AsyncMock(
+        return_value=SimpleNamespace(choices=[choice], usage=usage, model="m")
+    )
+    return connector, client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["o1", "o1-mini", "o3-mini", "o4-mini", "gpt-5"])
+async def test_openai_reasoning_models_get_max_completion_tokens(model):
+    """Reasoning models receive max_completion_tokens, never max_tokens (would 400)."""
+    connector, client = _openai_connector()
+
+    await connector.chat_completion(MESSAGES, model, max_tokens=512)
+
+    kwargs = client.chat.completions.create.await_args.kwargs
+    assert kwargs["max_completion_tokens"] == 512
+    assert "max_tokens" not in kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-4o", "gpt-4", "gpt-3.5-turbo"])
+async def test_openai_regular_models_keep_max_tokens(model):
+    """Non-reasoning models keep max_tokens untouched."""
+    connector, client = _openai_connector()
+
+    await connector.chat_completion(MESSAGES, model, max_tokens=512)
+
+    kwargs = client.chat.completions.create.await_args.kwargs
+    assert kwargs["max_tokens"] == 512
+    assert "max_completion_tokens" not in kwargs

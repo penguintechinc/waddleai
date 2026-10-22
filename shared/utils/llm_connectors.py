@@ -341,10 +341,31 @@ class OpenAIConnector(LLMConnector):
         }
         self.default_encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
+    # OpenAI reasoning families reject `max_tokens` (HTTP 400) and require
+    # `max_completion_tokens` instead.
+    _REASONING_MODEL_PREFIXES: tuple[str, ...] = ("o1", "o3", "o4", "gpt-5")
+
+    @classmethod
+    def _adapt_token_limit(cls, model: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Return kwargs with ``max_tokens`` renamed for reasoning models.
+
+        Non-reasoning models (e.g. gpt-4o) are returned unchanged; an explicit
+        caller-supplied ``max_completion_tokens`` is never overwritten.
+        """
+        if "max_tokens" not in kwargs or not model.lower().startswith(
+            cls._REASONING_MODEL_PREFIXES
+        ):
+            return kwargs
+        adapted = dict(kwargs)
+        value = adapted.pop("max_tokens")
+        adapted.setdefault("max_completion_tokens", value)
+        return adapted
+
     async def chat_completion(
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
         """Generate OpenAI chat completion."""
+        kwargs = self._adapt_token_limit(model, kwargs)
         try:
             response = await self.client.chat.completions.create(
                 model=model,
@@ -423,6 +444,7 @@ class OpenAIConnector(LLMConnector):
         final usage-bearing chunk. Without it streamed requests would meter zero
         tokens, bypassing quota and billing.
         """
+        kwargs = self._adapt_token_limit(model, kwargs)
         try:
             stream_options = kwargs.pop("stream_options", {"include_usage": True})
             raw_stream = await self.client.chat.completions.create(
@@ -872,13 +894,18 @@ class AnthropicConnector(LLMConnector):
             "tiktoken ESTIMATE",
             model,
         )
+        self._record_usage_estimated_metric()
+        return estimate_input(), estimate_output()
+
+    @staticmethod
+    def _record_usage_estimated_metric() -> None:
+        """Increment the usage-estimated fault counter; telemetry never fails a request."""
         try:
             from shared.utils.metrics import get_proxy_metrics
 
             get_proxy_metrics().record_usage_estimated("anthropic")
         except Exception:  # noqa: BLE001 -- telemetry must never fail the request
             logger.debug("usage_estimated metric emission failed", exc_info=True)
-        return estimate_input(), estimate_output()
 
     async def count_tokens(self, text: str, model: str) -> int:
         """Estimate tokens for Anthropic models."""
@@ -970,6 +997,7 @@ class AnthropicConnector(LLMConnector):
             else:
                 # No usage: downstream meters zero for this stream -- fail loud.
                 logger.warning("Anthropic stream for %s ended without usage counts", model)
+                self._record_usage_estimated_metric()
                 yield StreamChunk(delta="", usage=None, done=True)
 
         except anthropic.APITimeoutError as e:
