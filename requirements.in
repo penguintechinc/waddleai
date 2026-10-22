@@ -1,7 +1,7 @@
 # Core Framework
 py4web>=1.20241201.1
 # Async and HTTP
-aiohttp>=3.14.3
+aiohttp>=3.14.4
 # OpenAI and LLM Clients
 openai>=1.6.0
 anthropic>=0.87.0
