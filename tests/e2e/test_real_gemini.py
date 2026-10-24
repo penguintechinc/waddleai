@@ -61,6 +61,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 REQUIRE = os.environ.get("REQUIRE_GEMINI_TESTS") == "1"
 MODEL = os.environ.get("GEMINI_TEST_MODEL", "gemini-3.8-flash")
 MAX_UPSTREAM_REQUESTS = 6
+# The runtime rate lookup is ``f"{ctx.provider}:{model}"`` where ``ctx.provider`` is the connector
+# key == the connection-LINK NAME (not the provider type), so the rate row must use this same name.
+LINK_NAME = "gemini-real-e2e"
 
 pytestmark = pytest.mark.skipif(
     not GEMINI_API_KEY and not REQUIRE,
@@ -181,12 +184,12 @@ def _seed(db_url: str, api_key: str) -> Seed:
         users[uname], keys[uname] = uid, key
     # 1 credit == 1 LLM token, so the quota charge is directly input+output tokens.
     db.token_conversion_rates.insert(
-        provider="gemini", model=MODEL, input_rate=1.0, output_rate=1.0,
+        provider=LINK_NAME, model=MODEL, input_rate=1.0, output_rate=1.0,
         base_cost_per_waddleai_token=0.001, enabled=True,
     )  # fmt: skip
     # Sanctioned write path: encrypts api_key at rest. The key never appears in a log or argv.
     insert_connection_link(
-        db, name="gemini-real-e2e", provider="gemini", endpoint_url="https://generativelanguage.googleapis.com",
+        db, name=LINK_NAME, provider="gemini", endpoint_url="https://generativelanguage.googleapis.com",
         api_key=api_key, model_list=[MODEL], rate_limits=None, enabled=True,
     )  # fmt: skip
     # Pooled quota: org pool 1M; ok team 200k (50k guaranteed to the user + 50k buffer, sized for
@@ -387,9 +390,10 @@ def test_reported_usage_matches_gemini_ground_truth(
     """
     prompt = "Reply with one word"
     body, _tokens, _delta = _charged_request(proxy, seed, valkey_client, prompt)
-    real = genai.Client(api_key=_gemini_key).models.count_tokens(
-        model=f"models/{MODEL}", contents=prompt
-    )
+    # Hold the client for the whole call: a temporary ``genai.Client(...)`` is garbage-collected
+    # (its ``__del__`` closes the httpx client) mid-request -> "client has been closed".
+    with genai.Client(api_key=_gemini_key) as oracle:
+        real = oracle.models.count_tokens(model=f"models/{MODEL}", contents=prompt)
     reported = int(body["usage"]["prompt_tokens"])
     assert reported == real.total_tokens, (
         f"proxy reported prompt_tokens={reported}, Gemini counted {real.total_tokens} "
