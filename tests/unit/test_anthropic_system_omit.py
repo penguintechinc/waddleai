@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from shared.utils.llm_connectors import AnthropicConnector, ProviderClientError, ProviderServerError
@@ -86,9 +86,9 @@ async def test_stream_system_kwarg(msgs: list[dict[str, str]], expect: str | Non
 async def test_4xx_logs_detail_but_client_message_generic(caplog: pytest.LogCaptureFixture) -> None:
     """Upstream 4xx detail is logged server-side, never put in the raised message."""
     conn, client = _connector()
-    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     err = anthropic.BadRequestError(
-        "secret upstream reason", response=httpx.Response(400, request=req), body={"e": "reason-x"}
+        "secret upstream reason", response=httpx2.Response(400, request=req), body={"e": "reason-x"}
     )
     client.messages.create = AsyncMock(side_effect=err)
     with caplog.at_level("WARNING"), pytest.raises(ProviderClientError) as ei:
