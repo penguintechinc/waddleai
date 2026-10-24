@@ -762,18 +762,18 @@ class AnthropicConnector(LLMConnector):
                 else:
                     user_messages.append(msg)
 
-            # Anthropic API call. The SDK's stub only accepts a sentinel
-            # `Omit`/absent value for "no system prompt", not a literal
-            # `None` -- cast to preserve the exact runtime value (`None`)
-            # this connector has always sent in that case.
-            response = await self.client.messages.create(
-                model=model,
-                max_tokens=kwargs.get("max_tokens", 1000),
-                system=cast(
-                    "str | Iterable[TextBlockParam]", system_message if system_message else None
-                ),
-                messages=cast(list[MessageParam], user_messages),
-            )
+            # Anthropic API call. `system` must be OMITTED when there is no
+            # system prompt: a literal None serializes to `"system": null`
+            # and Anthropic rejects it with HTTP 400 "system: Input should be
+            # a valid array" (the SDK only strips its own Omit sentinels).
+            create_kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": kwargs.get("max_tokens", 1000),
+                "messages": cast(list[MessageParam], user_messages),
+            }
+            if system_message:
+                create_kwargs["system"] = cast("str | Iterable[TextBlockParam]", system_message)
+            response = await self.client.messages.create(**create_kwargs)
 
             # getattr rather than isinstance(..., TextBlock): duck-types the
             # same way the rest of this module treats SDK response objects
@@ -847,6 +847,12 @@ class AnthropicConnector(LLMConnector):
                     status_code=status_code,
                 ) from e
             else:  # 4xx
+                # Server-side only: upstream reason must not reach the client.
+                logger.warning(
+                    "Anthropic completion 4xx: status=%s detail=%s",
+                    getattr(e, "status_code", None),
+                    getattr(e, "body", None) or getattr(e, "message", None),
+                )
                 raise ProviderClientError(
                     provider="anthropic",
                     model=model,
@@ -964,14 +970,15 @@ class AnthropicConnector(LLMConnector):
             # the `except Exception` below and re-raised as ProviderServerError,
             # so it read as an upstream outage rather than a client-side defect.
             streamed_parts: list[str] = []
-            async with self.client.messages.stream(
-                model=model,
-                max_tokens=kwargs.get("max_tokens", 1000),
-                system=cast(
-                    "str | Iterable[TextBlockParam]", system_message if system_message else None
-                ),
-                messages=cast(list[MessageParam], user_messages),
-            ) as stream:
+            # Omit `system` when empty (system=None -> JSON null -> HTTP 400).
+            stream_kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": kwargs.get("max_tokens", 1000),
+                "messages": cast(list[MessageParam], user_messages),
+            }
+            if system_message:
+                stream_kwargs["system"] = cast("str | Iterable[TextBlockParam]", system_message)
+            async with self.client.messages.stream(**stream_kwargs) as stream:
                 # Iterate through events asynchronously
                 async for event in stream:
                     # Check for content_block_delta events with text deltas
@@ -1027,6 +1034,12 @@ class AnthropicConnector(LLMConnector):
                     status_code=status_code,
                 ) from e
             else:  # 4xx
+                # Server-side only: upstream reason must not reach the client.
+                logger.warning(
+                    "Anthropic stream 4xx: status=%s detail=%s",
+                    getattr(e, "status_code", None),
+                    getattr(e, "body", None) or getattr(e, "message", None),
+                )
                 raise ProviderClientError(
                     provider="anthropic",
                     model=model,
