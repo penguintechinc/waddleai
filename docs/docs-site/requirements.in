@@ -6,4 +6,4 @@ mkdocs-mermaid2-plugin>=1.2.3
 # uv resolves it transitively today but Dependabot's independent resolver
 # does not, silently dropping the == pin and breaking
 # `pip install --require-hashes`. Declared explicitly so it is always kept.
-setuptools==84.0.0
+setuptools==84.1.0

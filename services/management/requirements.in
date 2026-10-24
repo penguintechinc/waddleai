@@ -92,7 +92,7 @@ docker>=7.0.0
 # registered repos server-side. GitPython over subprocess+shlex to avoid
 # shell-injection surface on user-supplied branch/URL values.
 # GHSA fix line: floor raised past the vulnerable 3.1.59.
-GitPython>=3.1.60
+GitPython>=3.2.1
 # CodeRAG chunker (shared/knowledge/code_chunker.py, lazy import in
 # _chunk_with_tree_sitter): function/class/module-boundary chunking grammars
 # for the tree-sitter parser (MIT). Was only present because it happens to be

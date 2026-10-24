@@ -60,7 +60,7 @@ psutil>=5.9.8
 # the proxy dispatch path). Previously undeclared: it arrived transitively
 # via chromadb, so dropping that dependency without this direct pin would
 # have silently broken proxy/apps/proxy_server/pipeline/stages.py's tracing.
-opentelemetry-api>=1.44.0
+opentelemetry-api>=1.45.1
 opentelemetry-sdk>=1.44.0
 opentelemetry-exporter-otlp-proto-grpc>=1.44.0
 # Database and Storage
@@ -92,7 +92,7 @@ penguin-sal>=0.2.0
 # Development and Testing
 pytest>=9.0.3
 pytest-asyncio>=0.23.2
-black>=23.12.0
+black>=26.10.1
 flake8>=7.0.0
 mypy>=1.8.0
 # MCP Protocol Support
@@ -110,4 +110,4 @@ orjson>=3.9.10
 # has no metadata reason to keep it and silently drops the pin, which then
 # fails `pip install --require-hashes` ("all requirements must have their
 # versions pinned with =="). Declared explicitly so any resolver keeps it.
-setuptools==84.0.0
+setuptools==84.1.0
