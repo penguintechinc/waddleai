@@ -786,7 +786,18 @@ class AnthropicConnector(LLMConnector):
                 t for block in response.content if (t := getattr(block, "text", None)) is not None
             ]
             content = "".join(text_parts)
-            if not content:
+            budget_exhausted = False
+            if not content and getattr(response, "stop_reason", None) == "max_tokens":
+                # regression: gh — thinking model exhausts max_tokens before
+                # text; return truncated completion w/ failure_reason, no retry.
+                # Deterministic: retrying would only re-spend the same tokens.
+                budget_exhausted = True
+                logger.warning(
+                    "Anthropic response text-empty: max_tokens exhausted before any "
+                    "text block; block types=%s",
+                    [getattr(b, "type", type(b).__name__) for b in response.content],
+                )
+            elif not content:
                 # Only thinking/tool_use or empty: genuinely unusable. Block
                 # types are logged server-side, never put in the client body.
                 logger.warning(
@@ -817,6 +828,8 @@ class AnthropicConnector(LLMConnector):
                 "finish_reason": response.stop_reason,
                 "provider": "anthropic",
             }
+            if budget_exhausted:
+                usage_info["failure_reason"] = "output_budget_exhausted"
 
             # Real prompt-cache usage fields (spec §6.3), when the API reports
             # them -- surfaced additively; existing keys above are unchanged
@@ -1009,18 +1022,21 @@ class AnthropicConnector(LLMConnector):
                 estimate_input=lambda: self._estimate_input_tokens(system_message, user_messages),
                 estimate_output=lambda: len(self.token_estimator.encode("".join(streamed_parts))),
             )
-            yield StreamChunk(
-                delta="",
-                usage={
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "model": model,
-                    "finish_reason": getattr(final_message, "stop_reason", None) or "stop",
-                    "provider": "anthropic",
-                },
-                done=True,
-            )
+            final_stop_reason = getattr(final_message, "stop_reason", None)
+            final_usage: dict[str, Any] = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "model": model,
+                "finish_reason": final_stop_reason or "stop",
+                "provider": "anthropic",
+            }
+            if not streamed_parts and final_stop_reason == "max_tokens":
+                # regression: gh — thinking model exhausts max_tokens before
+                # text; finish gracefully w/ failure_reason, real usage kept.
+                final_usage["failure_reason"] = "output_budget_exhausted"
+                logger.warning("Anthropic stream text-empty: max_tokens exhausted before any text")
+            yield StreamChunk(delta="", usage=final_usage, done=True)
 
         except anthropic.APITimeoutError as e:
             raise ProviderTimeoutError(

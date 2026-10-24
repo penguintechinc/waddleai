@@ -2236,6 +2236,11 @@ async def chat_completions():
             )
             if waddleai_usage is not None:
                 response_dict["usage"]["waddleai"] = waddleai_usage
+            # regression: gh -- thinking model exhausts max_tokens before text:
+            # explicit reason for the empty completion (real usage still metered).
+            if usage.get("failure_reason"):
+                response_dict["failure_reason"] = usage["failure_reason"]
+                response_dict["choices"][0]["finish_reason"] = "length"
 
             # Write-back only after SecurityOutStage has already passed (spec §3.6
             # poisoning defense) -- guaranteed by _finalize only ever being
@@ -2643,6 +2648,10 @@ async def claude_messages():
             )
             if waddleai_usage is not None:
                 response_dict["usage"]["waddleai"] = waddleai_usage
+            # regression: gh -- text-empty max_tokens exhaustion: explicit reason
+            # (stop_reason stays Anthropic-native "max_tokens"; usage still metered).
+            if usage_info.get("failure_reason"):
+                response_dict["failure_reason"] = usage_info["failure_reason"]
 
             # Write-back only after SecurityOutStage has already passed (spec §3.6
             # poisoning defense) -- see _maybe_write_back_cache docstring.

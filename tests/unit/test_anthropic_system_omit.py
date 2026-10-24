@@ -129,3 +129,53 @@ async def test_no_text_block_raises() -> None:
     client.messages.create = AsyncMock(return_value=r)
     with pytest.raises(ProviderServerError, match="no text content block"):
         await conn.chat_completion(USER, MODEL)
+
+
+def _thinking_only(stop_reason: str) -> MagicMock:
+    """Thinking-only response with real (non-zero) usage and the given stop_reason."""
+    r = _resp()
+    r.content = [_Block(type="thinking", thinking="hmm")]
+    r.stop_reason = stop_reason
+    r.usage = MagicMock(input_tokens=11, output_tokens=2048)
+    return r
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_empty_text_returns_failure_reason() -> None:
+    """Budget exhausted by thinking: graceful empty completion, usage still real."""
+    conn, client = _connector()
+    # regression: gh — thinking model exhausts max_tokens before text; return
+    # truncated completion w/ failure_reason, no retry
+    client.messages.create = AsyncMock(return_value=_thinking_only("max_tokens"))
+    content, usage = await conn.chat_completion(USER, MODEL)
+    assert content == ""
+    assert usage["failure_reason"] == "output_budget_exhausted"
+    assert usage["finish_reason"] == "max_tokens"
+    assert (usage["input_tokens"], usage["output_tokens"]) == (11, 2048)
+    assert usage["total_tokens"] == 2059
+
+
+@pytest.mark.asyncio
+async def test_empty_text_other_stop_reason_still_raises() -> None:
+    """Fail-loud preserved: empty text for a non-max_tokens reason is anomalous."""
+    conn, client = _connector()
+    client.messages.create = AsyncMock(return_value=_thinking_only("end_turn"))
+    with pytest.raises(ProviderServerError, match="no text content block"):
+        await conn.chat_completion(USER, MODEL)
+
+
+@pytest.mark.asyncio
+async def test_stream_max_tokens_empty_text_failure_reason() -> None:
+    """Streaming: no text + max_tokens -> terminal chunk carries failure_reason."""
+    conn, client = _connector()
+
+    class _S(_FakeStream):
+        async def get_final_message(self) -> MagicMock:
+            return _thinking_only("max_tokens")
+
+    client.messages.stream = MagicMock(return_value=_S())
+    chunks = [c async for c in conn.stream_chat_completion(USER, MODEL)]
+    assert chunks[-1].done is True
+    assert chunks[-1].usage is not None
+    assert chunks[-1].usage["failure_reason"] == "output_budget_exhausted"
+    assert chunks[-1].usage["output_tokens"] == 2048

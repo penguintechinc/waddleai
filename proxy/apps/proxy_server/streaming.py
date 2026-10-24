@@ -195,7 +195,18 @@ async def stream_openai_chat_completion(
 
         if not sent_role:
             yield _frame({"role": "assistant"})
-        yield _frame({}, finish_reason=ctx.finish_reason or "stop", usage=ctx.usage)
+        failure_reason = (ctx.usage or {}).get("failure_reason")
+        final_frame = _frame(
+            {},
+            finish_reason="length" if failure_reason else (ctx.finish_reason or "stop"),
+            usage=ctx.usage,
+        )
+        if failure_reason:
+            # regression: gh -- budget-exhausted empty completion: explicit reason.
+            parsed = orjson.loads(final_frame[len(b"data: ") :])
+            parsed["failure_reason"] = failure_reason
+            final_frame = b"data: " + orjson.dumps(parsed) + b"\n\n"
+        yield final_frame
         yield b"data: [DONE]\n\n"
 
         if finalize is not None:
@@ -322,6 +333,11 @@ async def stream_anthropic_messages(
                 "type": "message_delta",
                 "delta": {"stop_reason": ctx.finish_reason or "end_turn", "stop_sequence": None},
                 "usage": ctx.usage or {},
+                **(
+                    {"failure_reason": ctx.usage["failure_reason"]}
+                    if ctx.usage and ctx.usage.get("failure_reason")
+                    else {}
+                ),
             },
         )
         yield _sse_event_anthropic("message_stop", {"type": "message_stop"})
