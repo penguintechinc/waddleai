@@ -57,6 +57,19 @@ SSE_HEADERS: dict[str, str] = {
 FinalizeHook = Callable[[PipelineContext], Awaitable[None]]
 
 
+def openai_finish_reason(failure_reason: str | None, native: str | None) -> str:
+    """Map a connector failure_reason to an OpenAI-shape finish_reason.
+
+    Budget exhaustion -> "length", refusal -> "content_filter"; anything else keeps the
+    native finish_reason (default "stop") rather than forcing "length".
+    """
+    if failure_reason == "output_budget_exhausted":
+        return "length"
+    if failure_reason == "refusal":
+        return "content_filter"
+    return native or "stop"
+
+
 def _dispatch_stage(pipeline: ProxyPipeline) -> DispatchStage:
     """Find the pipeline's wired ``DispatchStage`` instance (for ``.stream_dispatch()``)."""
     for stage in pipeline.stages:
@@ -198,7 +211,7 @@ async def stream_openai_chat_completion(
         failure_reason = (ctx.usage or {}).get("failure_reason")
         final_frame = _frame(
             {},
-            finish_reason="length" if failure_reason else (ctx.finish_reason or "stop"),
+            finish_reason=openai_finish_reason(failure_reason, ctx.finish_reason),
             usage=ctx.usage,
         )
         if failure_reason:
@@ -332,7 +345,8 @@ async def stream_anthropic_messages(
             {
                 "type": "message_delta",
                 "delta": {"stop_reason": ctx.finish_reason or "end_turn", "stop_sequence": None},
-                "usage": ctx.usage or {},
+                # failure_reason is not a valid usage field: top-level only.
+                "usage": {k: v for k, v in (ctx.usage or {}).items() if k != "failure_reason"},
                 **(
                     {"failure_reason": ctx.usage["failure_reason"]}
                     if ctx.usage and ctx.usage.get("failure_reason")

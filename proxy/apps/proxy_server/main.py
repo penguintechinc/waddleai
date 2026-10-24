@@ -2240,7 +2240,9 @@ async def chat_completions():
             # explicit reason for the empty completion (real usage still metered).
             if usage.get("failure_reason"):
                 response_dict["failure_reason"] = usage["failure_reason"]
-                response_dict["choices"][0]["finish_reason"] = "length"
+                response_dict["choices"][0]["finish_reason"] = streaming.openai_finish_reason(
+                    usage["failure_reason"], response_dict["choices"][0].get("finish_reason")
+                )
 
             # Write-back only after SecurityOutStage has already passed (spec §3.6
             # poisoning defense) -- guaranteed by _finalize only ever being

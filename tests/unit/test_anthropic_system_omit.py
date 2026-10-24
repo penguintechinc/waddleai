@@ -126,6 +126,7 @@ async def test_no_text_block_raises() -> None:
     # regression: Anthropic 502 'first content block was not text'
     # (thinking/tool_use block can precede text)
     r.content = [_Block(type="thinking", thinking="hmm"), _Block(type="tool_use")]
+    r.stop_reason = None  # no stop_reason = genuinely malformed -> fail loud
     client.messages.create = AsyncMock(return_value=r)
     with pytest.raises(ProviderServerError, match="no text content block"):
         await conn.chat_completion(USER, MODEL)
@@ -156,12 +157,70 @@ async def test_max_tokens_empty_text_returns_failure_reason() -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_text_other_stop_reason_still_raises() -> None:
-    """Fail-loud preserved: empty text for a non-max_tokens reason is anomalous."""
+async def test_refusal_empty_text_meters_real_usage_no_raise() -> None:
+    """Refusal (HTTP 200, no text) returns gracefully with real usage + failure_reason."""
     conn, client = _connector()
-    client.messages.create = AsyncMock(return_value=_thinking_only("end_turn"))
+    # regression: refusal/empty-but-valid responses must meter real usage + return
+    # failure_reason, never raise/retry/discard-usage
+    client.messages.create = AsyncMock(return_value=_thinking_only("refusal"))
+    content, usage = await conn.chat_completion(USER, MODEL)
+    assert content == ""
+    assert usage["failure_reason"] == "refusal"
+    assert (usage["input_tokens"], usage["output_tokens"]) == (11, 2048)
+    assert usage["total_tokens"] == 2059
+
+
+@pytest.mark.asyncio
+async def test_pause_turn_empty_text_generic_failure_reason() -> None:
+    """Any other valid stop_reason maps to empty_response_<reason>, no raise."""
+    conn, client = _connector()
+    # regression: refusal/empty-but-valid responses must meter real usage + return
+    # failure_reason, never raise/retry/discard-usage
+    client.messages.create = AsyncMock(return_value=_thinking_only("pause_turn"))
+    content, usage = await conn.chat_completion(USER, MODEL)
+    assert content == ""
+    assert usage["failure_reason"] == "empty_response_pause_turn"
+    assert usage["output_tokens"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_empty_text_no_stop_reason_still_raises() -> None:
+    """Fail-loud preserved only for a true anomaly: empty text AND no stop_reason."""
+    conn, client = _connector()
+    r = _thinking_only("end_turn")
+    r.stop_reason = None
+    client.messages.create = AsyncMock(return_value=r)
     with pytest.raises(ProviderServerError, match="no text content block"):
         await conn.chat_completion(USER, MODEL)
+
+
+@pytest.mark.asyncio
+async def test_stream_refusal_empty_failure_reason() -> None:
+    """Streaming: empty stream + refusal -> done chunk carries failure_reason, no raise."""
+    conn, client = _connector()
+
+    class _S(_FakeStream):
+        async def get_final_message(self) -> MagicMock:
+            return _thinking_only("refusal")
+
+    client.messages.stream = MagicMock(return_value=_S())
+    # regression: refusal/empty-but-valid responses must meter real usage + return
+    # failure_reason, never raise/retry/discard-usage
+    chunks = [c async for c in conn.stream_chat_completion(USER, MODEL)]
+    assert chunks[-1].done is True
+    assert chunks[-1].usage is not None
+    assert chunks[-1].usage["failure_reason"] == "refusal"
+    assert chunks[-1].usage["output_tokens"] == 2048
+
+
+def test_openai_finish_reason_mapping() -> None:
+    """failure_reason maps to OpenAI finish_reason without forcing 'length'."""
+    from proxy.apps.proxy_server.streaming import openai_finish_reason
+
+    assert openai_finish_reason("output_budget_exhausted", "max_tokens") == "length"
+    assert openai_finish_reason("refusal", "refusal") == "content_filter"
+    assert openai_finish_reason("empty_response_pause_turn", "pause_turn") == "pause_turn"
+    assert openai_finish_reason(None, None) == "stop"
 
 
 @pytest.mark.asyncio

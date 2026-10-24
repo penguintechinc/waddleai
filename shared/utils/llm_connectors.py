@@ -736,6 +736,15 @@ def _extract_anthropic_text(content: Any) -> str:
     return ""
 
 
+def _empty_failure_reason(stop_reason: str) -> str:
+    """Map an Anthropic stop_reason on an empty-text response to a failure_reason code."""
+    if stop_reason == "max_tokens":
+        return "output_budget_exhausted"
+    if stop_reason == "refusal":
+        return "refusal"
+    return f"empty_response_{stop_reason}"
+
+
 class AnthropicConnector(LLMConnector):
     """Anthropic Claude API connector."""
 
@@ -786,28 +795,30 @@ class AnthropicConnector(LLMConnector):
                 t for block in response.content if (t := getattr(block, "text", None)) is not None
             ]
             content = "".join(text_parts)
-            budget_exhausted = False
-            if not content and getattr(response, "stop_reason", None) == "max_tokens":
-                # regression: gh — thinking model exhausts max_tokens before
-                # text; return truncated completion w/ failure_reason, no retry.
-                # Deterministic: retrying would only re-spend the same tokens.
-                budget_exhausted = True
+            empty_failure_reason: str | None = None
+            stop_reason = getattr(response, "stop_reason", None)
+            if not content:
+                # regression: refusal/empty-but-valid responses must meter real usage +
+                # return failure_reason, never raise/retry/discard-usage. The rule is
+                # "did we get a valid stop_reason?", not "is there text?": the outcome
+                # is deterministic and already billed upstream, so retrying only
+                # re-spends tokens. Only a response with NO stop_reason is anomalous.
+                block_types = [getattr(b, "type", type(b).__name__) for b in response.content]
+                if not stop_reason:
+                    logger.warning(
+                        "Anthropic response had no text and no stop_reason; block types=%s",
+                        block_types,
+                    )
+                    raise ProviderServerError(
+                        provider="anthropic",
+                        model=model,
+                        message="Anthropic response contained no text content block",
+                    )
+                empty_failure_reason = _empty_failure_reason(stop_reason)
                 logger.warning(
-                    "Anthropic response text-empty: max_tokens exhausted before any "
-                    "text block; block types=%s",
-                    [getattr(b, "type", type(b).__name__) for b in response.content],
-                )
-            elif not content:
-                # Only thinking/tool_use or empty: genuinely unusable. Block
-                # types are logged server-side, never put in the client body.
-                logger.warning(
-                    "Anthropic response had no text content block; block types=%s",
-                    [getattr(b, "type", type(b).__name__) for b in response.content],
-                )
-                raise ProviderServerError(
-                    provider="anthropic",
-                    model=model,
-                    message="Anthropic response contained no text content block",
+                    "Anthropic response text-empty: stop_reason=%s; block types=%s",
+                    stop_reason,
+                    block_types,
                 )
 
             # Real usage from the provider (billing/quota truth). The tiktoken
@@ -828,8 +839,8 @@ class AnthropicConnector(LLMConnector):
                 "finish_reason": response.stop_reason,
                 "provider": "anthropic",
             }
-            if budget_exhausted:
-                usage_info["failure_reason"] = "output_budget_exhausted"
+            if empty_failure_reason:
+                usage_info["failure_reason"] = empty_failure_reason
 
             # Real prompt-cache usage fields (spec §6.3), when the API reports
             # them -- surfaced additively; existing keys above are unchanged
@@ -875,7 +886,7 @@ class AnthropicConnector(LLMConnector):
                 logger.warning(
                     "Anthropic completion 4xx: status=%s detail=%s",
                     getattr(e, "status_code", None),
-                    getattr(e, "body", None) or getattr(e, "message", None),
+                    str(getattr(e, "body", None) or getattr(e, "message", None))[:500],
                 )
                 raise ProviderClientError(
                     provider="anthropic",
@@ -1031,11 +1042,11 @@ class AnthropicConnector(LLMConnector):
                 "finish_reason": final_stop_reason or "stop",
                 "provider": "anthropic",
             }
-            if not streamed_parts and final_stop_reason == "max_tokens":
-                # regression: gh — thinking model exhausts max_tokens before
-                # text; finish gracefully w/ failure_reason, real usage kept.
-                final_usage["failure_reason"] = "output_budget_exhausted"
-                logger.warning("Anthropic stream text-empty: max_tokens exhausted before any text")
+            if not streamed_parts and final_stop_reason:
+                # regression: refusal/empty-but-valid responses must meter real usage +
+                # return failure_reason, never raise/retry/discard-usage
+                final_usage["failure_reason"] = _empty_failure_reason(final_stop_reason)
+                logger.warning("Anthropic stream text-empty: stop_reason=%s", final_stop_reason)
             yield StreamChunk(delta="", usage=final_usage, done=True)
 
         except anthropic.APITimeoutError as e:
@@ -1065,7 +1076,7 @@ class AnthropicConnector(LLMConnector):
                 logger.warning(
                     "Anthropic stream 4xx: status=%s detail=%s",
                     getattr(e, "status_code", None),
-                    getattr(e, "body", None) or getattr(e, "message", None),
+                    str(getattr(e, "body", None) or getattr(e, "message", None))[:500],
                 )
                 raise ProviderClientError(
                     provider="anthropic",
