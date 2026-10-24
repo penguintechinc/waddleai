@@ -535,7 +535,8 @@ class TestGeminiConnector:
             assert response == "Response"
             # Verify that system message was passed separately
             call_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
-            assert call_kwargs["system_prompt"] == "You are helpful"
+            assert "system_prompt" not in call_kwargs
+            assert call_kwargs["config"].system_instruction == "You are helpful"
 
     @pytest.mark.asyncio
     async def test_chat_completion_error(self):
@@ -3908,7 +3909,8 @@ class TestGeminiConnectorRemainingBranches:
             ]
 
         call_kwargs = client.aio.models.generate_content_stream.call_args.kwargs
-        assert call_kwargs["system_prompt"] == "be nice"
+        assert "system_prompt" not in call_kwargs
+        assert mock_config.call_args.kwargs["system_instruction"] == "be nice"
         assert mock_config.call_args.kwargs["cached_content"] == "cachedContents/xyz"
         assert chunks[-1].done is True
 
