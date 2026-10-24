@@ -17,8 +17,10 @@ charges equal prompt + completion tokens exactly, which makes "charged the actua
 directly assertable. Every counter assertion is a before/after DELTA, so test order is irrelevant.
 
 COST GUARDRAILS: at most ``MAX_UPSTREAM_REQUESTS`` (6) calls can reach Gemini across the whole
-module (hard-asserted); prompts are one-word replies with ``max_tokens=16``; the key's team quota
-is tiny (400 credits guaranteed + 100 buffer). Free-tier keys work.
+module (hard-asserted); prompts are one-word replies with ``max_tokens=2048`` (a thinking
+model spends output budget on reasoning first); the key's team quota
+is small (50k credits reserved + 50k buffer; a thinking request is hundreds to low thousands).
+Free-tier keys work.
 
 REGRESSION GUARD: ``GeminiConnector`` used to raise TypeError on every call (``system_prompt``
 kwarg) and, once fixed, meter tiktoken ESTIMATES. The ground-truth test
@@ -27,7 +29,7 @@ metering ever regresses to estimates.
 
 Run live (key via env, never CLI args)::
 
-    GEMINI_API_KEY=... REQUIRE_GEMINI_TESTS=1 [GEMINI_TEST_MODEL=gemini-1.5-flash] \
+    GEMINI_API_KEY=... REQUIRE_GEMINI_TESTS=1 [GEMINI_TEST_MODEL=gemini-3.8-flash] \
     [CREDENTIAL_ENCRYPTION_KEY=...] python3 -m pytest tests/e2e/test_real_gemini.py -v -s
 """
 
@@ -57,7 +59,7 @@ from tests.integration import valkey_harness
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 REQUIRE = os.environ.get("REQUIRE_GEMINI_TESTS") == "1"
-MODEL = os.environ.get("GEMINI_TEST_MODEL", "gemini-1.5-flash")
+MODEL = os.environ.get("GEMINI_TEST_MODEL", "gemini-3.8-flash")
 MAX_UPSTREAM_REQUESTS = 6
 
 pytestmark = pytest.mark.skipif(
@@ -187,16 +189,17 @@ def _seed(db_url: str, api_key: str) -> Seed:
         db, name="gemini-real-e2e", provider="gemini", endpoint_url="https://generativelanguage.googleapis.com",
         api_key=api_key, model_list=[MODEL], rate_limits=None, enabled=True,
     )  # fmt: skip
-    # Pooled quota: org pool 10000; ok team 1000 (400 guaranteed to the user + 100 buffer);
+    # Pooled quota: org pool 1M; ok team 200k (50k guaranteed to the user + 50k buffer, sized for
+    # thinking-model requests, which include reasoning tokens);
     # broke team 1 credit with a 0 guarantee and no buffer, so any request (>=2 credits) is denied.
     anchor = utc_today() - timedelta(days=1)  # -> cycle 0
-    qp.set_org_pool(db, org, cycle_anchor_date=anchor, pool_credits=10_000, enabled=True)
-    for tname, pool in (("e2e-gemini-team", 1000), ("e2e-broke-team", 1)):
+    qp.set_org_pool(db, org, cycle_anchor_date=anchor, pool_credits=1_000_000, enabled=True)
+    for tname, pool in (("e2e-gemini-team", 200_000), ("e2e-broke-team", 1)):
         team = db(db.teams.id == teams[tname]).select().first()
         qp.set_team_pool(db, org, team, pool)
     ok_team = db(db.teams.id == teams["e2e-gemini-team"]).select().first()
-    qp.set_team_buffer(db, ok_team, 100)
-    qp.set_user_reservation(db, ok_team, users["e2e-gemini-user"], 400, None)
+    qp.set_team_buffer(db, ok_team, 50_000)
+    qp.set_user_reservation(db, ok_team, users["e2e-gemini-user"], 50_000, None)
     broke_team = db(db.teams.id == teams["e2e-broke-team"]).select().first()
     qp.set_user_reservation(db, broke_team, users["e2e-broke-user"], 0, None)
     db.commit()
@@ -258,7 +261,11 @@ def _post(proxy: ProxyHandle, key: str, prompt: str) -> httpx.Response:
     return httpx.post(
         f"{proxy.base_url}/v1/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
-        json={"model": MODEL, "max_tokens": 16, "messages": [{"role": "user", "content": prompt}]},
+        json={
+            "model": MODEL,
+            "max_tokens": 2048,
+            "messages": [{"role": "user", "content": prompt}],
+        },
         timeout=90,
     )
 
