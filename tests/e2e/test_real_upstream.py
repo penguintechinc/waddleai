@@ -166,17 +166,38 @@ class RealOrgSeed:
 
 
 def _wait_for_postgres(container_name: str, deadline_s: float) -> None:
-    """Poll ``pg_isready`` inside ``container_name`` until ready, or ``pytest.fail``."""
+    """Wait until a real ``SELECT 1`` succeeds twice in a row, or ``pytest.fail``.
+
+    ``pg_isready`` alone is not enough: it gates first, but readiness is only
+    confirmed once a real psql query succeeds on two consecutive attempts.
+    """
     deadline = time.time() + deadline_s
     last_output = ""
+    consecutive_ok = 0
     while time.time() < deadline:
-        check_argv = ["docker", "exec", container_name, "pg_isready", "-U", "waddleai"]
         # Fixed argv, no shell, this process's own container name -- same
         # pattern as tests/e2e/conftest.py's docker_redis fixture.
-        result = subprocess.run(check_argv, capture_output=True, text=True, timeout=5)  # noqa: S603, S607
-        if result.returncode == 0:
-            return
-        last_output = result.stdout + result.stderr
+        ready_argv = ["docker", "exec", container_name, "pg_isready", "-U", "waddleai"]
+        ready = subprocess.run(ready_argv, capture_output=True, text=True, timeout=5)  # noqa: S603, S607
+        if ready.returncode != 0:
+            consecutive_ok = 0
+            last_output = ready.stdout + ready.stderr
+            time.sleep(1)
+            continue
+        # The postgres image boots a local-socket server for init, shuts it down,
+        # then restarts on TCP; pg_isready can pass on the first, so require real queries.
+        query_argv = [
+            "docker", "exec", container_name,
+            "psql", "-U", "waddleai", "-d", "waddleai", "-tAc", "SELECT 1",
+        ]  # fmt: skip
+        result = subprocess.run(query_argv, capture_output=True, text=True, timeout=5)  # noqa: S603, S607
+        if result.returncode == 0 and result.stdout.strip() == "1":
+            consecutive_ok += 1
+            if consecutive_ok >= 2:
+                return
+        else:
+            consecutive_ok = 0
+            last_output = result.stdout + result.stderr
         time.sleep(1)
     pytest.fail(f"Postgres container {container_name!r} never became ready: {last_output}")
 
