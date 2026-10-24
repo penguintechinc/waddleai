@@ -268,6 +268,8 @@ def _seed_real_org(db_url: str, ollama_url: str) -> RealOrgSeed:
     """Seed one organization/user/api_key plus an enabled ``ollama`` ``connection_links`` row."""
     from passlib.hash import bcrypt  # noqa: PLC0415
 
+    from shared.auth.rbac import mint_wa_credential  # noqa: PLC0415
+
     db = _open_db(db_url)
     now = datetime.utcnow()
     org_id = db.organizations.insert(
@@ -289,9 +291,11 @@ def _seed_real_org(db_url: str, ollama_url: str) -> RealOrgSeed:
         enabled=True,
         created_at=now,
     )
-    api_key_value = "wa-real-upstream-e2e-secretvalue1"
+    # Sanctioned mint path: ``wa-{key_id}-{secret}`` with a dash-free key_id, so the proxy's O(1)
+    # lookup (parse_wa_key_id) resolves the stored row. A hand-written key 401s.
+    key_id, api_key_value = mint_wa_credential()
     db.api_keys.insert(
-        key_id="e2e-real-upstream-key",
+        key_id=key_id,
         key_hash=bcrypt.hash(api_key_value),
         user_id=user_id,
         organization_id=org_id,
