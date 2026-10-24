@@ -780,12 +780,23 @@ class AnthropicConnector(LLMConnector):
             # (e.g. _extract_anthropic_text below), so this still accepts
             # test doubles that aren't real anthropic.types.TextBlock
             # instances while satisfying the type checker.
-            content = getattr(response.content[0], "text", None)
-            if content is None:
+            # The API returns an ordered list of typed blocks; a thinking or
+            # tool_use block can precede the text, so scan all of them.
+            text_parts = [
+                t for block in response.content if (t := getattr(block, "text", None)) is not None
+            ]
+            content = "".join(text_parts)
+            if not content:
+                # Only thinking/tool_use or empty: genuinely unusable. Block
+                # types are logged server-side, never put in the client body.
+                logger.warning(
+                    "Anthropic response had no text content block; block types=%s",
+                    [getattr(b, "type", type(b).__name__) for b in response.content],
+                )
                 raise ProviderServerError(
                     provider="anthropic",
                     model=model,
-                    message="Anthropic response's first content block was not text",
+                    message="Anthropic response contained no text content block",
                 )
 
             # Real usage from the provider (billing/quota truth). The tiktoken

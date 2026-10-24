@@ -7,7 +7,7 @@ import anthropic
 import httpx
 import pytest
 
-from shared.utils.llm_connectors import AnthropicConnector, ProviderClientError
+from shared.utils.llm_connectors import AnthropicConnector, ProviderClientError, ProviderServerError
 
 MODEL = "claude-3-haiku-20240307"
 USER = [{"role": "user", "content": "Hello"}]
@@ -96,3 +96,36 @@ async def test_4xx_logs_detail_but_client_message_generic(caplog: pytest.LogCapt
     assert "reason-x" in caplog.text
     assert "reason-x" not in str(ei.value)
     assert "secret upstream reason" not in str(ei.value)
+
+
+class _Block:
+    """Minimal SDK content-block double exposing only the given attributes."""
+
+    def __init__(self, **attrs: Any) -> None:
+        self.__dict__.update(attrs)
+
+
+@pytest.mark.asyncio
+async def test_leading_non_text_block_is_skipped() -> None:
+    """Text is extracted even when a thinking block precedes it."""
+    conn, client = _connector()
+    r = _resp()
+    # regression: Anthropic 502 'first content block was not text'
+    # (thinking/tool_use block can precede text)
+    r.content = [_Block(type="thinking", thinking="hmm"), _Block(type="text", text="hello")]
+    client.messages.create = AsyncMock(return_value=r)
+    out = await conn.chat_completion(USER, MODEL)
+    assert out[0] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_no_text_block_raises() -> None:
+    """A response with only non-text blocks is a ProviderServerError."""
+    conn, client = _connector()
+    r = _resp()
+    # regression: Anthropic 502 'first content block was not text'
+    # (thinking/tool_use block can precede text)
+    r.content = [_Block(type="thinking", thinking="hmm"), _Block(type="tool_use")]
+    client.messages.create = AsyncMock(return_value=r)
+    with pytest.raises(ProviderServerError, match="no text content block"):
+        await conn.chat_completion(USER, MODEL)
