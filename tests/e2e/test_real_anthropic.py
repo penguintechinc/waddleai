@@ -262,11 +262,19 @@ def _counter(valkey: Any, key: str) -> int:
 
 
 def _post(proxy: ProxyHandle, key: str, prompt: str) -> httpx.Response:
-    """POST one small ``/v1/messages`` request as ``key`` (``max_tokens`` kept tiny)."""
+    """POST one small ``/v1/messages`` request as ``key`` (short prompt, ample token budget)."""
+    # claude-haiku-5-5 has extended thinking on by default; thinking tokens count against
+    # max_tokens, so a tiny budget yields a thinking-only response with no text. 2048 leaves
+    # room to think AND answer.
+    max_tokens = 2048
     return httpx.post(
         f"{proxy.base_url}/v1/messages",
         headers={"Authorization": f"Bearer {key}", "anthropic-version": "2023-06-01"},
-        json={"model": MODEL, "max_tokens": 16, "messages": [{"role": "user", "content": prompt}]},
+        json={
+            "model": MODEL,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        },
         timeout=90,
     )
 
