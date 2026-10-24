@@ -1195,6 +1195,11 @@ class GeminiConnector(LLMConnector):
                     message=f"Gemini completion failed: {str(e)[:100]}",
                 ) from e
 
+    @staticmethod
+    def _int_or_zero(value: Any) -> int:
+        """Return ``value`` if it is a non-bool int, else 0 (absent/None optional counters)."""
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
     def _resolve_token_counts(
         self,
         usage_metadata: Any,
@@ -1202,7 +1207,10 @@ class GeminiConnector(LLMConnector):
         estimate_input: Callable[[], int],
         estimate_output: Callable[[], int],
     ) -> tuple[int, int]:
-        """Return Gemini's real (prompt, candidates) token counts.
+        """Return Gemini's real billed (input, output) token counts.
+
+        input = prompt + tool-use prompt; output = candidates + thoughts, raised so that
+        input + output is never below the reported ``total_token_count``.
 
         Falls back to the tiktoken estimate ONLY when ``usage_metadata`` is
         absent or lacks integer counts, and then fails loud (warning log plus a
@@ -1216,7 +1224,21 @@ class GeminiConnector(LLMConnector):
             and isinstance(real_out, int)
             and not isinstance(real_out, bool)
         ):
-            return real_in, real_out
+            extra_in = self._int_or_zero(
+                getattr(usage_metadata, "tool_use_prompt_token_count", None)
+            )
+            extra_out = self._int_or_zero(getattr(usage_metadata, "thoughts_token_count", None))
+            billed_in = real_in + extra_in
+            billed_out = real_out + extra_out  # thinking tokens are billed as output
+            total = getattr(usage_metadata, "total_token_count", None)
+            if (
+                isinstance(total, int)
+                and not isinstance(total, bool)
+                and total > (billed_in + billed_out)
+            ):
+                # Never bill less than Google's reported total: put the gap on output.
+                billed_out += total - (billed_in + billed_out)
+            return billed_in, billed_out
         logger.warning(
             "Gemini response for %s lacked usage_metadata token counts; billing falls back "
             "to tiktoken ESTIMATE",
