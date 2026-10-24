@@ -62,6 +62,8 @@ from tests.integration import valkey_harness
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 REQUIRE = os.environ.get("REQUIRE_ANTHROPIC_TESTS") == "1"
 MODEL = os.environ.get("ANTHROPIC_TEST_MODEL", "claude-haiku-5-5")
+LINK_NAME = "anthropic-real-e2e"
+LINK_NAME = "anthropic-real-e2e"
 MAX_UPSTREAM_REQUESTS = 6
 
 pytestmark = pytest.mark.skipif(
@@ -182,13 +184,15 @@ def _seed(db_url: str, api_key: str) -> Seed:
         )  # fmt: skip
         users[uname], keys[uname] = uid, key
     # 1 credit == 1 LLM token, so the quota charge is directly input+output tokens.
+    # regression: gh-337 — runtime keys conversion rate by connection-link name
+    # (ctx.provider), not provider type
     db.token_conversion_rates.insert(
-        provider="anthropic", model=MODEL, input_rate=1.0, output_rate=1.0,
+        provider=LINK_NAME, model=MODEL, input_rate=1.0, output_rate=1.0,
         base_cost_per_waddleai_token=0.001, enabled=True,
     )  # fmt: skip
     # Sanctioned write path: encrypts api_key at rest. The key never appears in a log or argv.
     insert_connection_link(
-        db, name="anthropic-real-e2e", provider="anthropic", endpoint_url="https://api.anthropic.com",
+        db, name=LINK_NAME, provider="anthropic", endpoint_url="https://api.anthropic.com",
         api_key=api_key, model_list=[MODEL], rate_limits=None, enabled=True,
     )  # fmt: skip
     # Pooled quota: org pool 10000; ok team 1000 (400 guaranteed to the user + 100 buffer);
