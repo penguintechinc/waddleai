@@ -175,3 +175,77 @@ async def test_stream_loud_fallback_when_usage_absent(caplog):
     assert chunks[-1].usage["output_tokens"] > 0
     assert _estimated_count() == before + 1
     assert any("ESTIMATE" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_thoughts_tokens_billed_as_output():
+    """Thinking models: output billed == candidates + thoughts (9 + 20), added once."""
+    connector, models = _connector()
+    usage = _usage(100, 9)
+    usage.thoughts_token_count = 20
+    usage.total_token_count = 129  # consistent total: reconcile must not double-add
+    models.generate_content = AsyncMock(return_value=_response(usage))
+
+    _, info = await connector.chat_completion(MESSAGES, MODEL)
+
+    assert info["input_tokens"] == 100
+    assert info["output_tokens"] == 29
+    assert info["total_tokens"] == 129
+
+
+@pytest.mark.asyncio
+async def test_tool_use_prompt_tokens_added_to_input():
+    """tool_use_prompt_token_count is billed as input."""
+    connector, models = _connector()
+    usage = _usage(100, 7)
+    usage.tool_use_prompt_token_count = 15
+    models.generate_content = AsyncMock(return_value=_response(usage))
+
+    _, info = await connector.chat_completion(MESSAGES, MODEL)
+
+    assert info["input_tokens"] == 115
+    assert info["output_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_total_token_count_reconcile_never_bills_less_than_total():
+    """total_token_count above prompt+candidates -> the gap is billed (on output)."""
+    connector, models = _connector()
+    usage = _usage(100, 7)
+    usage.total_token_count = 150
+    models.generate_content = AsyncMock(return_value=_response(usage))
+
+    _, info = await connector.chat_completion(MESSAGES, MODEL)
+
+    assert info["input_tokens"] == 100
+    assert info["output_tokens"] == 50
+    assert info["total_tokens"] == 150
+
+
+@pytest.mark.asyncio
+async def test_non_thinking_usage_bills_candidates_only_and_ignores_bad_extras():
+    """No thoughts field (or non-int/bool extras) -> candidates only; total below sum ignored."""
+    connector, models = _connector()
+    usage = _usage(100, 7)
+    usage.thoughts_token_count = None
+    usage.tool_use_prompt_token_count = True
+    usage.total_token_count = 50
+    models.generate_content = AsyncMock(return_value=_response(usage))
+
+    _, info = await connector.chat_completion(MESSAGES, MODEL)
+
+    assert (info["input_tokens"], info["output_tokens"]) == (100, 7)
+
+
+@pytest.mark.asyncio
+async def test_stream_thoughts_tokens_billed_as_output():
+    """Streaming final usage includes thoughts in output."""
+    connector, models = _connector()
+    usage = _usage(10, 9)
+    usage.thoughts_token_count = 20
+    models.generate_content_stream = _stream([_chunk("Hi", usage)])
+
+    chunks = [c async for c in connector.stream_chat_completion(MESSAGES, MODEL)]
+
+    assert chunks[-1].usage is not None
+    assert chunks[-1].usage["output_tokens"] == 29
