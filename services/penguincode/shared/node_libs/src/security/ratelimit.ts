@@ -103,7 +103,7 @@ export class RateLimiter {
   /**
    * Default handler for rate limit exceeded
    */
-  private defaultLimitHandler(req: Request, res: Response): void {
+  private defaultLimitHandler(_req: Request, res: Response): void {
     res.status(429).json({
       error: 'Too Many Requests',
       message: 'Rate limit exceeded. Please try again later.',

@@ -177,7 +177,7 @@ export function hostname(options: HostnameOptions = {}): Validator<string, strin
   const errorMessage = options.errorMessage ?? 'Invalid hostname';
 
   // RFC 1123 hostname pattern
-  const hostnameRegex = /^(?![-])[a-zA-Z0-9-]{1,63}(?<![])(?:\.(?![]))[a-zA-Z0-9-]{1,63}(?<![]))*$/;
+  const hostnameRegex = /^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$/;
 
   return (value: string): ValidationResult<string> => {
     if (typeof value !== 'string') {
@@ -202,19 +202,10 @@ export function hostname(options: HostnameOptions = {}): Validator<string, strin
       }
     }
 
-    // Validate hostname format
-    // Simpler validation: each label 1-63 chars, alphanumeric and hyphens, no leading/trailing hyphens
-    const labels = hostStr.split('.');
-    for (const label of labels) {
-      if (label.length === 0 || label.length > 63) {
-        return failure(errorMessage);
-      }
-      if (label.startsWith('-') || label.endsWith('-')) {
-        return failure(errorMessage);
-      }
-      if (!/^[a-z0-9-]+$/.test(label)) {
-        return failure(errorMessage);
-      }
+    // Validate hostname format: labels 1-63 chars of [A-Za-z0-9-], no leading/trailing
+    // hyphen, dot-separated, no empty labels or trailing dot, total <= 253.
+    if (!hostnameRegex.test(hostStr)) {
+      return failure(errorMessage);
     }
 
     // Check TLD requirement
