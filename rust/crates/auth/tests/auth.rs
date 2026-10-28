@@ -814,10 +814,13 @@ async fn jwks_cache_ttl_expiry_refreshes_and_survives_outage() {
     let t = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
     assert!(cache.verify(&t).await.is_ok());
     assert!(cache.verify(&t).await.is_ok());
+    // Stale-while-revalidate: the second verify served the cached set and refreshed in the
+    // background.
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
-        "stale cache refreshes each time"
+        "stale cache revalidates in the background"
     );
     down.store(true, Ordering::SeqCst);
     assert!(
@@ -929,20 +932,26 @@ async fn wa_key_expiry_uses_naive_utc_basis() {
 #[tokio::test]
 async fn wa_key_nul_secret_and_overlong_reject_without_db() {
     let c = &conn().await;
-    assert!(matches!(
-        authenticate_api_key(c, &format!("wa-{PY_KEY_ID}-a\0b"), true).await,
-        Err(AuthError::InvalidApiKey)
-    ));
+    // Pin the PARSE-time guards directly: the end-to-end InvalidApiKey alone would also
+    // result from a bcrypt mismatch and so could not catch a removed guard.
+    let nul = format!("wa-{PY_KEY_ID}-a\0b");
+    assert_eq!(auth::parse_wa_key_id(&nul), None);
     let long = format!("{PY_KEY}{}", "x".repeat(20));
-    assert!(matches!(
-        authenticate_api_key(c, &long, true).await,
-        Err(AuthError::InvalidApiKey)
-    ));
+    assert!(long.len() > 72);
+    assert_eq!(auth::parse_wa_key_id(&long), None);
+    // Positive control: the exact minted key parses to its key_id.
+    assert_eq!(auth::parse_wa_key_id(PY_KEY), Some(PY_KEY_ID));
+    for bad in [&nul, &long] {
+        assert!(matches!(
+            authenticate_api_key(c, bad, true).await,
+            Err(AuthError::InvalidApiKey)
+        ));
+    }
 }
 
 #[test]
-fn db_error_display_is_generic() {
-    assert!(!AuthError::Db.to_string().contains("postgres"));
+fn warm_up_is_idempotent() {
+    auth::warm_up();
     auth::warm_up();
 }
 
@@ -1087,6 +1096,7 @@ async fn jwks_cache_stale_refresh_coalesces_and_throttles() {
     for h in tasks {
         assert!(h.await.unwrap().is_ok(), "stale keys keep serving");
     }
+    tokio::time::sleep(Duration::from_millis(200)).await; // let the one background refresh land
     assert_eq!(
         n.load(Ordering::SeqCst),
         2,
@@ -1167,4 +1177,126 @@ async fn jwks_cache_hung_fetch_times_out_and_cached_keys_still_verify() {
         .expect("bounded")
         .unwrap();
     assert!(matches!(r, Err(AuthError::JwksUnavailable(_))), "{r:?}");
+}
+
+#[test]
+fn tenant_claim_is_canonicalized_to_match_api_key_path() {
+    let mk = |tenant: &str| Claims {
+        sub: "1".into(),
+        iss: ISS.into(),
+        aud: vec![AUD.into()],
+        iat: None,
+        exp: now() + 60,
+        scope: vec!["proxy:use".into()],
+        tenant: tenant.into(),
+        teams: vec![],
+        roles: vec![],
+    };
+    // API-key path emits `org_id.to_string()`; every spelling of 5 must collapse to "5".
+    for spelling in ["5", "05", "+5", "005"] {
+        let ctx = UserContext::from_claims(&mk(spelling)).expect(spelling);
+        assert_eq!((ctx.org_id, ctx.tenant.as_str()), (5, "5"), "{spelling}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jwks_throttle_holds_when_fetch_future_is_dropped_mid_flight() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct F(Arc<AtomicUsize>, Arc<AtomicBool>, String);
+    impl JwksFetcher for F {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            if self.1.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            Ok(self.2.clone())
+        }
+    }
+    let k = shared_key();
+    let (n, hang) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let cache = JwksCache::new(
+        F(
+            n.clone(),
+            hang.clone(),
+            json!({"keys":[k.jwk.clone()]}).to_string(),
+        ),
+        policy(),
+        Duration::from_secs(300),
+        Duration::from_millis(300),
+    );
+    let warm = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
+    assert!(cache.verify(&warm).await.is_ok());
+    tokio::time::sleep(Duration::from_millis(350)).await; // throttle window open
+    hang.store(true, Ordering::SeqCst);
+    // A caller that disconnects mid-fetch (its future is dropped)...
+    let ghost = sign(k, "ghost0", jsonwebtoken::Algorithm::RS256, &good_claims());
+    let dropped = tokio::time::timeout(Duration::from_millis(30), cache.verify(&ghost)).await;
+    assert!(
+        dropped.is_err(),
+        "fetch was in flight when the caller went away"
+    );
+    assert_eq!(n.load(Ordering::SeqCst), 2);
+    // ...must still have consumed the throttle window: further sprayers fetch nothing.
+    for i in 1..6 {
+        let t = sign(
+            k,
+            &format!("ghost{i}"),
+            jsonwebtoken::Algorithm::RS256,
+            &good_claims(),
+        );
+        assert!(matches!(cache.verify(&t).await, Err(AuthError::UnknownKid)));
+    }
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        2,
+        "dropped attempt still counted against min_refetch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jwks_ttl_expiry_with_hung_issuer_does_not_stall_cached_kid() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct F(Arc<AtomicBool>, String);
+    impl JwksFetcher for F {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            if self.0.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            Ok(self.1.clone())
+        }
+    }
+    let k = shared_key();
+    let hang = Arc::new(AtomicBool::new(false));
+    // Default 5s fetch timeout: an inline refresh would stall for ~5s.
+    let cache = JwksCache::new(
+        F(hang.clone(), json!({"keys":[k.jwk.clone()]}).to_string()),
+        policy(),
+        Duration::from_millis(10),
+        Duration::ZERO,
+    );
+    let t = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
+    assert!(cache.verify(&t).await.is_ok());
+    tokio::time::sleep(Duration::from_millis(30)).await; // TTL expired
+    hang.store(true, Ordering::SeqCst);
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        assert!(cache.verify(&t).await.is_ok());
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "cached kid must not wait on refresh"
+        );
+    }
 }

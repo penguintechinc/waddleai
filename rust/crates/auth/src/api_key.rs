@@ -5,7 +5,8 @@
 //! `api_keys.key_hash` is the bcrypt hash of the *entire* credential string. Lookup is a
 //! single indexed read by `key_id`; no scan ever happens.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use db::entities::{api_keys, team_members, teams, users};
 use db::Connection;
@@ -23,10 +24,14 @@ const MAX_KEY_LEN: usize = 72;
 /// Cap on concurrent bcrypt verifications (each is ~250ms of CPU at cost 12). This bounds the
 /// blocking-pool CPU an attacker can burn with format-valid junk keys; the P2 Valkey auth
 /// cache is still required to fully close this DoS amplifier (cached hits skip bcrypt).
-static BCRYPT_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
+static BCRYPT_PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
     let n = std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get);
-    Semaphore::new(n.clamp(2, 16))
+    Arc::new(Semaphore::new(n.clamp(2, 16)))
 });
+
+/// Longest a request waits for a bcrypt slot before failing closed with
+/// [`AuthError::Overloaded`] (the caller maps it to 503) -- the queue is never unbounded.
+const BCRYPT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// bcrypt hash verified against when no real row exists, so an unknown `key_id` costs the
 /// same CPU time as a wrong secret (no key_id-existence timing oracle). Never matches.
@@ -70,24 +75,43 @@ pub fn parse_wa_key_id(api_key: &str) -> Option<&str> {
     Some(key_id)
 }
 
-/// Run the (CPU-heavy) bcrypt check off the async executor. Any bcrypt error (corrupt hash)
-/// is a rejection, logged without the credential.
-async fn bcrypt_matches(credential: &str, hash: &str) -> bool {
-    // Bounded: at most N verifications in flight (see BCRYPT_PERMITS). The semaphore is
-    // never closed, so acquire only fails on a closed semaphore -> treat as rejection.
-    let Ok(_permit) = BCRYPT_PERMITS.acquire().await else {
-        return false;
+/// Run the (CPU-heavy) bcrypt check off the async executor, bounded by [`BCRYPT_PERMITS`].
+/// A corrupt stored hash is a rejection, logged without the credential.
+async fn bcrypt_matches(credential: &str, hash: &str) -> Result<bool, AuthError> {
+    bcrypt_matches_with(&BCRYPT_PERMITS, BCRYPT_ACQUIRE_TIMEOUT, credential, hash).await
+}
+
+/// [`bcrypt_matches`] against an explicit semaphore/wait bound (injectable for tests).
+///
+/// The OWNED permit is moved into the `spawn_blocking` closure: blocking work cannot be
+/// cancelled, so the permit must live exactly as long as the real CPU burn -- a dropped
+/// request must not free a slot while its bcrypt is still running. Waiting for a slot is
+/// bounded by `wait`; on timeout (or a closed semaphore) we fail closed with `Overloaded`.
+async fn bcrypt_matches_with(
+    sem: &Arc<Semaphore>,
+    wait: Duration,
+    credential: &str,
+    hash: &str,
+) -> Result<bool, AuthError> {
+    let permit = match tokio::time::timeout(wait, Arc::clone(sem).acquire_owned()).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(_)) | Err(_) => return Err(AuthError::Overloaded),
     };
     let (c, h) = (credential.to_owned(), hash.to_owned());
-    match tokio::task::spawn_blocking(move || bcrypt::verify(c, &h)).await {
-        Ok(Ok(ok)) => ok,
+    let joined = tokio::task::spawn_blocking(move || {
+        let _permit = permit; // released when the bcrypt work (not the caller) finishes
+        bcrypt::verify(c, &h)
+    })
+    .await;
+    match joined {
+        Ok(Ok(ok)) => Ok(ok),
         Ok(Err(e)) => {
             tracing::error!(error = %e, "stored key_hash is not a valid bcrypt hash");
-            false
+            Ok(false)
         }
         Err(e) => {
             tracing::error!(error = %e, "bcrypt verification task failed");
-            false
+            Ok(false)
         }
     }
 }
@@ -176,10 +200,10 @@ pub async fn authenticate_api_key(
         .map_err(db_err)?;
 
     let Some(key) = row else {
-        let _ = bcrypt_matches(api_key, &DUMMY_HASH).await;
+        bcrypt_matches(api_key, &DUMMY_HASH).await?;
         return Err(AuthError::InvalidApiKey);
     };
-    if !bcrypt_matches(api_key, &key.key_hash).await {
+    if !bcrypt_matches(api_key, &key.key_hash).await? {
         return Err(AuthError::InvalidApiKey);
     }
     if key.expires_at.is_some_and(|e| e <= chrono_now()) {
@@ -231,6 +255,7 @@ fn chrono_now() -> sea_orm::prelude::DateTime {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn parse_matches_python_contract() {
@@ -258,5 +283,53 @@ mod tests {
         assert_eq!(managed_orgs(Some(&json!("4, 5,,x"))), vec![4, 5]);
         assert!(managed_orgs(Some(&json!({"a": 1}))).is_empty());
         assert!(managed_orgs(None).is_empty());
+    }
+
+    #[test]
+    fn db_error_display_hides_driver_detail() {
+        let raw = sea_orm::DbErr::Custom("password=hunter2 host=10.0.0.5".into());
+        // Positive control: the raw driver error WOULD leak the detail...
+        assert!(raw.to_string().contains("hunter2"));
+        // ...the surfaced error must not.
+        let surfaced = db_err(raw).to_string();
+        assert!(
+            !surfaced.contains("hunter2") && !surfaced.contains("10.0.0.5"),
+            "{surfaced}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bcrypt_wait_is_bounded_and_fails_closed_when_overloaded() {
+        let sem = Arc::new(Semaphore::new(1));
+        let _held = sem.clone().acquire_owned().await.expect("permit");
+        let started = std::time::Instant::now();
+        let r = bcrypt_matches_with(&sem, Duration::from_millis(50), "k", "h").await;
+        assert_eq!(r, Err(AuthError::Overloaded));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn bcrypt_permit_lives_as_long_as_the_cpu_work() {
+        let sem = Arc::new(Semaphore::new(1));
+        let hash = bcrypt::hash_with_result("pw", 12)
+            .expect("hash")
+            .to_string();
+        // Caller goes away while the (uncancellable) blocking bcrypt is running...
+        let dropped = tokio::time::timeout(
+            Duration::from_millis(30),
+            bcrypt_matches_with(&sem, Duration::from_secs(1), "pw", &hash),
+        )
+        .await;
+        assert!(dropped.is_err(), "bcrypt was still running");
+        // ...the permit must still be held (the CPU is still burning)...
+        assert_eq!(sem.available_permits(), 0);
+        // ...and be released once the real work finishes.
+        for _ in 0..100 {
+            if sem.available_permits() == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("permit never released after bcrypt finished");
     }
 }

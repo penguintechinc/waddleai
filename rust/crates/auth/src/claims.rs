@@ -104,7 +104,8 @@ impl UserContext {
         Ok(Self {
             org_id,
             user_id,
-            tenant: c.tenant.clone(),
+            // Canonical form (`05`/`+5` -> `5`) so JWT and API-key paths emit the same token.
+            tenant: org_id.to_string(),
             scopes: c.scope.iter().cloned().collect(),
             teams: c.teams.iter().filter_map(|t| t.parse().ok()).collect(),
             auth_mode: AuthMode::Jwt,

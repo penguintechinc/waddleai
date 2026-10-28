@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -174,12 +175,9 @@ struct State {
 /// Default bound on one JWKS fetch; a hung issuer must not hold `refresh_lock` indefinitely.
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// TTL-cached JWKS. Every refresh (TTL expiry, cold start, or unknown-`kid` rotation) is
-/// throttled to one attempt per `min_refetch`, single-flighted behind `refresh_lock` with the
-/// need re-checked once the lock is held (so concurrent callers coalesce), and bounded by a
-/// fetch timeout. A failed or garbage refresh never replaces the cached set, and cached-key
-/// verification never takes `refresh_lock`, so a hung issuer cannot stall it.
-pub struct JwksCache<F: JwksFetcher> {
+/// Shared cache internals, behind an `Arc` so a stale-while-revalidate refresh can run
+/// detached from the request that triggered it.
+struct Inner<F: JwksFetcher> {
     fetcher: F,
     policy: JwtPolicy,
     ttl: Duration,
@@ -187,6 +185,32 @@ pub struct JwksCache<F: JwksFetcher> {
     fetch_timeout: Duration,
     state: RwLock<State>,
     refresh_lock: Mutex<()>,
+    /// A background revalidation is already running (avoids a task per stale request).
+    bg_inflight: AtomicBool,
+}
+
+/// Clears `bg_inflight` when the background task ends, even on panic/cancel.
+struct BgGuard<'a>(&'a AtomicBool);
+
+impl Drop for BgGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// TTL-cached JWKS with stale-while-revalidate.
+///
+/// * A token whose `kid` is already cached verifies immediately against the cached set; if the
+///   set is past its TTL a refresh is kicked off in the background, so a slow or hung issuer
+///   never stalls such a request. Only a token with NO usable cached key (cold start, or an
+///   unknown `kid` after rotation) waits for a fetch.
+/// * Every refresh is throttled to one attempt per `min_refetch`; the attempt is recorded
+///   BEFORE the fetch is awaited (inside the single-flight lock), so callers that disconnect
+///   mid-fetch still consume the window and cannot be used to hammer the issuer.
+/// * The need is re-checked once the lock is held, so concurrent callers coalesce; each fetch
+///   is bounded by a timeout; a failed or garbage refresh never replaces the cached set.
+pub struct JwksCache<F: JwksFetcher + 'static> {
+    inner: Arc<Inner<F>>,
 }
 
 /// Why a refresh is being considered; decides the under-lock "still needed?" re-check.
@@ -197,31 +221,7 @@ enum Need<'a> {
     Kid(&'a str),
 }
 
-impl<F: JwksFetcher> JwksCache<F> {
-    /// New empty cache: set refreshed every `ttl`; refresh attempts spaced by `min_refetch`.
-    pub fn new(fetcher: F, policy: JwtPolicy, ttl: Duration, min_refetch: Duration) -> Self {
-        Self {
-            fetcher,
-            policy,
-            ttl,
-            min_refetch,
-            fetch_timeout: DEFAULT_FETCH_TIMEOUT,
-            state: RwLock::new(State {
-                jwks: None,
-                fetched_at: None,
-                last_attempt: None,
-            }),
-            refresh_lock: Mutex::new(()),
-        }
-    }
-
-    /// Override the per-fetch timeout (default 5s).
-    #[must_use]
-    pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
-        self.fetch_timeout = timeout;
-        self
-    }
-
+impl<F: JwksFetcher> Inner<F> {
     /// Whether `need` still holds and the throttle window is open, judged on current state.
     fn needed(&self, st: &State, need: &Need<'_>) -> bool {
         let throttled = st
@@ -244,18 +244,23 @@ impl<F: JwksFetcher> JwksCache<F> {
             return Ok(());
         }
         let _single_flight = self.refresh_lock.lock().await;
-        if !self.needed(&*self.state.read().await, &need) {
-            return Ok(()); // coalesced: someone refreshed while we waited for the lock
+        {
+            let mut st = self.state.write().await;
+            if !self.needed(&st, &need) {
+                return Ok(()); // coalesced: someone refreshed while we waited for the lock
+            }
+            // Record the attempt BEFORE awaiting the fetch: a caller dropped mid-fetch (early
+            // disconnect) must still consume the throttle window.
+            st.last_attempt = Some(Instant::now());
         }
         let fetched = match tokio::time::timeout(self.fetch_timeout, self.fetcher.fetch()).await {
             Ok(r) => r,
             Err(_) => Err(AuthError::JwksUnavailable("JWKS fetch timed out".into())),
         };
         let res = fetched.and_then(|body| Jwks::from_json(&body, self.policy.clone()));
-        let mut st = self.state.write().await;
-        st.last_attempt = Some(Instant::now());
         match res {
             Ok(j) => {
+                let mut st = self.state.write().await;
                 st.jwks = Some(Arc::new(j));
                 st.fetched_at = Some(Instant::now());
                 Ok(())
@@ -270,22 +275,90 @@ impl<F: JwksFetcher> JwksCache<F> {
     async fn current(&self) -> Option<Arc<Jwks>> {
         self.state.read().await.jwks.clone()
     }
+}
+
+impl<F: JwksFetcher + 'static> JwksCache<F> {
+    /// New empty cache: set refreshed every `ttl`; refresh attempts spaced by `min_refetch`.
+    pub fn new(fetcher: F, policy: JwtPolicy, ttl: Duration, min_refetch: Duration) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                fetcher,
+                policy,
+                ttl,
+                min_refetch,
+                fetch_timeout: DEFAULT_FETCH_TIMEOUT,
+                state: RwLock::new(State {
+                    jwks: None,
+                    fetched_at: None,
+                    last_attempt: None,
+                }),
+                refresh_lock: Mutex::new(()),
+                bg_inflight: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Override the per-fetch timeout (default 5s). Only effective before the cache is used.
+    #[must_use]
+    pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
+        // Sole owner at construction time, so `get_mut` always succeeds here.
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.fetch_timeout = timeout;
+        }
+        self
+    }
+
+    /// Kick off a detached TTL revalidation unless one is already running.
+    fn revalidate_in_background(&self) {
+        if self
+            .inner
+            .bg_inflight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            let _guard = BgGuard(&inner.bg_inflight);
+            // Errors are already logged; the stale set keeps serving.
+            let _ = inner.refresh_if(Need::Stale).await;
+        });
+    }
 
     /// Verify `token`, refreshing the cached JWKS on TTL expiry or key rotation.
     ///
     /// The token is structurally validated first, so garbage can never trigger a fetch.
     pub async fn verify(&self, token: &str) -> Result<Claims, AuthError> {
         let kid = peek_kid(token)?;
-        // TTL/cold refresh. A stale-but-present set keeps serving through an outage or a
-        // closed throttle window; with nothing cached the error propagates (fail closed).
-        if let Err(e) = self.refresh_if(Need::Stale).await {
-            if self.current().await.is_none() {
-                return Err(e);
+        match self.inner.current().await {
+            // Usable cached key: verify now; revalidate a stale set off the request path.
+            Some(jwks) if jwks.has_kid(&kid) => {
+                let stale = {
+                    let st = self.inner.state.read().await;
+                    st.fetched_at.is_none_or(|t| t.elapsed() >= self.inner.ttl)
+                };
+                if stale {
+                    self.revalidate_in_background();
+                }
+                verify_jwt(token, &jwks)
+            }
+            // Unknown kid on a warm cache: rotation => (throttled, coalesced) inline refetch.
+            Some(_) => {
+                self.inner.refresh_if(Need::Kid(&kid)).await?;
+                self.verify_current(token).await
+            }
+            // Cold: nothing cached to serve; fetch inline (fail closed on error).
+            None => {
+                self.inner.refresh_if(Need::Stale).await?;
+                self.verify_current(token).await
             }
         }
-        // Rotation: unknown kid => (throttled, coalesced) refetch; a failure propagates.
-        self.refresh_if(Need::Kid(&kid)).await?;
+    }
+
+    async fn verify_current(&self, token: &str) -> Result<Claims, AuthError> {
         let jwks = self
+            .inner
             .current()
             .await
             .ok_or_else(|| AuthError::JwksUnavailable("no JWKS loaded".into()))?;
