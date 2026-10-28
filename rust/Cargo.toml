@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/waddleai-proxy", "crates/config", "crates/db"]
+members = ["crates/waddleai-proxy", "crates/config", "crates/db", "crates/cache"]
 
 [workspace.package]
 version = "0.1.0"

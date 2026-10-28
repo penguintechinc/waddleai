@@ -1,0 +1,18 @@
+[package]
+name = "cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaddleAI Valkey client, Python-byte-compatible cache keys, invalidation subscriber"
+
+[dependencies]
+config = { path = "../config", version = "=0.1.0" }
+futures-util = { version = "=0.3.34", default-features = false }
+redis = { version = "=1.7.0", default-features = false, features = ["tokio-comp", "aio"] }
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", features = ["time", "sync", "rt"] }
+tracing = "=0.1.44"
+
+[dev-dependencies]
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
