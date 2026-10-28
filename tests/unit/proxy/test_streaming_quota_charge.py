@@ -27,7 +27,7 @@ class _TM:
     def count_tokens(self, text, provider="", model=""):
         return len(text)
 
-    def calculate_waddleai_tokens(self, i, o, provider, model):
+    def calculate_waddleai_tokens(self, i, o, provider, model, provider_type=None):
         return i + 2 * o
 
 

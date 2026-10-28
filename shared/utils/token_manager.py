@@ -168,31 +168,61 @@ class TokenManager:
             # Fallback: rough estimation (4 chars = 1 token)
             return len(text) // 4
 
-    def calculate_waddleai_tokens(
-        self, input_tokens: int, output_tokens: int, provider: str, model: str
-    ) -> int:
-        """Convert LLM tokens to WaddleAI tokens using conversion rates."""
-        rate_key = f"{provider}:{model}"
+    def _resolve_rate(
+        self, provider: str, model: str, provider_type: str | None
+    ) -> tuple[ConversionRate | None, str]:
+        """Hybrid rate lookup (gh-337): link-name key, then provider-type key.
 
-        if rate_key not in self.conversion_rates:
-            logger.warning(f"No conversion rate found for {provider}:{model}, using default")
+        ``provider`` is the connection-link name (per-connection override); ``provider_type`` is
+        the connector type (``openai``/``anthropic``/...) the shipped defaults are keyed by.
+        Returns ``(rate, tier)`` with tier ``"link"``, ``"type"`` or ``"none"``.
+        """
+        rate = self.conversion_rates.get(f"{provider}:{model}")
+        if rate is not None:
+            return rate, "link"
+        if provider_type and provider_type != provider:
+            rate = self.conversion_rates.get(f"{provider_type}:{model}")
+            if rate is not None:
+                return rate, "type"
+        return None, "none"
+
+    def calculate_waddleai_tokens(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        provider: str,
+        model: str,
+        provider_type: str | None = None,
+    ) -> int:
+        """Convert LLM tokens to WaddleAI tokens using conversion rates.
+
+        Lookup order: ``{provider}:{model}`` (link name), ``{provider_type}:{model}`` (type
+        defaults), then the loud heuristic fallback. ``provider_type`` is optional.
+        """
+        rate, tier = self._resolve_rate(provider, model, provider_type)
+        if rate is None:
+            logger.warning(
+                f"No conversion rate found for {provider}:{model}"
+                f"{f' or {provider_type}:{model}' if provider_type else ''}, using default"
+            )
             # Default conversion rate: output tokens weighted 2x, divided by 10
             return max(1, (input_tokens + output_tokens * 2) // 10)
 
-        rate = self.conversion_rates[rate_key]
-
+        logger.debug(f"Conversion rate for {provider}:{model} matched on {tier} tier")
         return self._credits_for(rate, input_tokens, output_tokens)
 
     def calculate_cost(
-        self, waddleai_tokens: int, provider: str, model: str
+        self,
+        waddleai_tokens: int,
+        provider: str,
+        model: str,
+        provider_type: str | None = None,
     ) -> tuple[float, float]:
-        """Calculate cost in WaddleAI tokens and USD."""
-        rate_key = f"{provider}:{model}"
-
+        """Calculate cost in WaddleAI tokens and USD (same link->type rate lookup)."""
         cost_waddleai = float(waddleai_tokens)  # 1:1 for WaddleAI tokens
 
-        if rate_key in self.conversion_rates:
-            rate = self.conversion_rates[rate_key]
+        rate, _tier = self._resolve_rate(provider, model, provider_type)
+        if rate is not None:
             cost_usd = float(waddleai_tokens * rate.base_cost_per_waddleai_token)
         else:
             cost_usd = float(waddleai_tokens * 0.001)  # Default $0.001 per WaddleAI token
@@ -210,6 +240,7 @@ class TokenManager:
         organization_id: int,
         actual_input_tokens: int | None = None,
         actual_output_tokens: int | None = None,
+        provider_type: str | None = None,
     ) -> TokenUsage:
         """Process token usage for a request.
 
@@ -235,11 +266,13 @@ class TokenManager:
 
         # Convert to WaddleAI tokens
         waddleai_tokens = self.calculate_waddleai_tokens(
-            input_tokens, output_tokens, provider, model
+            input_tokens, output_tokens, provider, model, provider_type
         )
 
         # Calculate costs
-        cost_waddleai, cost_usd = self.calculate_cost(waddleai_tokens, provider, model)
+        cost_waddleai, cost_usd = self.calculate_cost(
+            waddleai_tokens, provider, model, provider_type
+        )
 
         # Create breakdown
         model_key = f"{provider}_{model.replace('-', '_')}"

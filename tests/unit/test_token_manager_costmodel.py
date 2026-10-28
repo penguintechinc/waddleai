@@ -340,3 +340,77 @@ class TestEdgeCases:
         # Should handle fractional division correctly
         assert waddleai_tokens > 0
         assert isinstance(waddleai_tokens, int)
+
+
+class TestHybridRateKeying:
+    """regression: gh-337 -- link-name -> provider-type -> heuristic conversion-rate lookup."""
+
+    MODEL = "claude-x"  # not in the shipped defaults, so only the seeded rows can match
+
+    @pytest.fixture
+    def tm(self) -> TokenManager:
+        """TokenManager whose rate table holds only the rows a test seeds."""
+        db = MagicMock()
+        db.return_value.select = MagicMock(return_value=[])
+        manager = TokenManager(db)
+        manager.conversion_rates = {}
+        return manager
+
+    def _seed(self, tm: TokenManager, provider: str, rate: float) -> None:
+        tm.conversion_rates[f"{provider}:{self.MODEL}"] = ConversionRate(
+            provider, self.MODEL, rate, rate, 0.002
+        )
+
+    def test_link_name_row_wins_over_type_row(self, tm: TokenManager) -> None:
+        """Tier 1: a per-connection rate overrides the type default (exact credits)."""
+        self._seed(tm, "my-link", 100.0)
+        self._seed(tm, "anthropic", 10.0)
+        assert tm.calculate_waddleai_tokens(1000, 1000, "my-link", self.MODEL, "anthropic") == 20
+
+    def test_type_row_used_when_no_link_row(self, tm: TokenManager, caplog) -> None:
+        """Tier 2 (the gh-337 fix): type-keyed rate applies, NOT the heuristic."""
+        self._seed(tm, "anthropic", 10.0)
+        credits = tm.calculate_waddleai_tokens(1000, 1000, "my-link", self.MODEL, "anthropic")
+        assert credits == 200  # 100 + 100 via the rate
+        assert credits != max(1, (1000 + 1000 * 2) // 10)  # heuristic would give 300
+        assert "using default" not in caplog.text
+
+    def test_neither_row_falls_to_loud_heuristic(self, tm: TokenManager, caplog) -> None:
+        """Tier 3: heuristic formula unchanged and the WARNING fires."""
+        with caplog.at_level("WARNING"):
+            credits = tm.calculate_waddleai_tokens(1000, 1000, "my-link", self.MODEL, "anthropic")
+        assert credits == 300
+        assert "No conversion rate found" in caplog.text
+
+    def test_type_none_keeps_legacy_behaviour(self, tm: TokenManager) -> None:
+        """Backward compat: no type -> link-name row still works, type row is ignored."""
+        self._seed(tm, "my-link", 10.0)
+        assert tm.calculate_waddleai_tokens(1000, 1000, "my-link", self.MODEL) == 200
+        assert tm.calculate_waddleai_tokens(1000, 1000, "other", self.MODEL) == 300
+
+    def test_cost_uses_same_hybrid_lookup(self, tm: TokenManager) -> None:
+        """USD cost follows the type row too, not the $0.001 default."""
+        self._seed(tm, "anthropic", 10.0)
+        _, usd = tm.calculate_cost(200, "my-link", self.MODEL, "anthropic")
+        assert usd == pytest.approx(200 * 0.002)
+
+    def test_process_usage_threads_provider_type(
+        self, tm: TokenManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """process_usage passes the type through to the credit calculation."""
+        monkeypatch.setattr(tm, "_update_usage_records", lambda *a, **k: None)
+        monkeypatch.setattr(tm, "_update_usage_cache", lambda *a, **k: None)
+        self._seed(tm, "anthropic", 10.0)
+        usage = tm.process_usage(
+            "x",
+            "y",
+            "my-link",
+            self.MODEL,
+            1,
+            1,
+            1,
+            actual_input_tokens=1000,
+            actual_output_tokens=1000,
+            provider_type="anthropic",
+        )
+        assert usage.waddleai_tokens == 200

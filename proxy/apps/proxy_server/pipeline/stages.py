@@ -166,6 +166,9 @@ class PipelineContext:
     # Set by the dispatch stage; feeds the gen_ai.* span attributes (§15.3) and
     # lets routing report the actually-served model rather than the requested one.
     provider: str | None = None
+    # Connector type (openai/anthropic/...) of the chosen link; ``provider`` is the link NAME.
+    # Lets billing fall back to type-keyed conversion rates (gh-337).
+    provider_type: str | None = None
     requested_model: str | None = None
     finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
@@ -1230,6 +1233,7 @@ class DispatchStage(Stage):
             return None
 
         ctx.provider = provider
+        ctx.provider_type = getattr(connector, "provider_type", None)
         ctx.requested_model = ctx.model
         ctx.model = target_model
 
