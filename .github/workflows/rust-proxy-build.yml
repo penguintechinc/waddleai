@@ -1,0 +1,79 @@
+name: waddleai-proxy (Rust) Build and Test
+
+on:
+  push:
+    branches: [ main, 'release/**', 'v*' ]
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust-proxy-build.yml'
+  pull_request:
+    # release/** matters as much as main -- feature branches merge into the
+    # release branch first. Mirrors rust-build.yml.
+    branches: [ main, 'release/**' ]
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust-proxy-build.yml'
+
+defaults:
+  run:
+    working-directory: rust
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: fmt, clippy, test, audit, deny, coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml (rust/) pins channel + components.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-waddleai-proxy-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-waddleai-proxy-
+          lookup-only: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo deny check
+        run: cargo deny check
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      # House rule: 90%+ line coverage; build fails below threshold.
+      - name: Coverage gate (90% lines)
+        run: cargo llvm-cov --workspace --locked --fail-under-lines 90

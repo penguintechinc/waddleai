@@ -1,0 +1,14 @@
+[package]
+name = "waddleai-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaddleAI Rust data-plane proxy"
+
+[[bin]]
+name = "waddleai-proxy"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "=4.6.6", features = ["derive"] }
