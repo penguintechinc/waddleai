@@ -736,6 +736,15 @@ def _extract_anthropic_text(content: Any) -> str:
     return ""
 
 
+def _empty_failure_reason(stop_reason: str) -> str:
+    """Map an Anthropic stop_reason on an empty-text response to a failure_reason code."""
+    if stop_reason == "max_tokens":
+        return "output_budget_exhausted"
+    if stop_reason == "refusal":
+        return "refusal"
+    return f"empty_response_{stop_reason}"
+
+
 class AnthropicConnector(LLMConnector):
     """Anthropic Claude API connector."""
 
@@ -762,30 +771,54 @@ class AnthropicConnector(LLMConnector):
                 else:
                     user_messages.append(msg)
 
-            # Anthropic API call. The SDK's stub only accepts a sentinel
-            # `Omit`/absent value for "no system prompt", not a literal
-            # `None` -- cast to preserve the exact runtime value (`None`)
-            # this connector has always sent in that case.
-            response = await self.client.messages.create(
-                model=model,
-                max_tokens=kwargs.get("max_tokens", 1000),
-                system=cast(
-                    "str | Iterable[TextBlockParam]", system_message if system_message else None
-                ),
-                messages=cast(list[MessageParam], user_messages),
-            )
+            # Anthropic API call. `system` must be OMITTED when there is no
+            # system prompt: a literal None serializes to `"system": null`
+            # and Anthropic rejects it with HTTP 400 "system: Input should be
+            # a valid array" (the SDK only strips its own Omit sentinels).
+            create_kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": kwargs.get("max_tokens", 1000),
+                "messages": cast(list[MessageParam], user_messages),
+            }
+            if system_message:
+                create_kwargs["system"] = cast("str | Iterable[TextBlockParam]", system_message)
+            response = await self.client.messages.create(**create_kwargs)
 
             # getattr rather than isinstance(..., TextBlock): duck-types the
             # same way the rest of this module treats SDK response objects
             # (e.g. _extract_anthropic_text below), so this still accepts
             # test doubles that aren't real anthropic.types.TextBlock
             # instances while satisfying the type checker.
-            content = getattr(response.content[0], "text", None)
-            if content is None:
-                raise ProviderServerError(
-                    provider="anthropic",
-                    model=model,
-                    message="Anthropic response's first content block was not text",
+            # The API returns an ordered list of typed blocks; a thinking or
+            # tool_use block can precede the text, so scan all of them.
+            text_parts = [
+                t for block in response.content if (t := getattr(block, "text", None)) is not None
+            ]
+            content = "".join(text_parts)
+            empty_failure_reason: str | None = None
+            stop_reason = getattr(response, "stop_reason", None)
+            if not content:
+                # regression: refusal/empty-but-valid responses must meter real usage +
+                # return failure_reason, never raise/retry/discard-usage. The rule is
+                # "did we get a valid stop_reason?", not "is there text?": the outcome
+                # is deterministic and already billed upstream, so retrying only
+                # re-spends tokens. Only a response with NO stop_reason is anomalous.
+                block_types = [getattr(b, "type", type(b).__name__) for b in response.content]
+                if not stop_reason:
+                    logger.warning(
+                        "Anthropic response had no text and no stop_reason; block types=%s",
+                        block_types,
+                    )
+                    raise ProviderServerError(
+                        provider="anthropic",
+                        model=model,
+                        message="Anthropic response contained no text content block",
+                    )
+                empty_failure_reason = _empty_failure_reason(stop_reason)
+                logger.warning(
+                    "Anthropic response text-empty: stop_reason=%s; block types=%s",
+                    stop_reason,
+                    block_types,
                 )
 
             # Real usage from the provider (billing/quota truth). The tiktoken
@@ -806,6 +839,8 @@ class AnthropicConnector(LLMConnector):
                 "finish_reason": response.stop_reason,
                 "provider": "anthropic",
             }
+            if empty_failure_reason:
+                usage_info["failure_reason"] = empty_failure_reason
 
             # Real prompt-cache usage fields (spec §6.3), when the API reports
             # them -- surfaced additively; existing keys above are unchanged
@@ -847,6 +882,12 @@ class AnthropicConnector(LLMConnector):
                     status_code=status_code,
                 ) from e
             else:  # 4xx
+                # Server-side only: upstream reason must not reach the client.
+                logger.warning(
+                    "Anthropic completion 4xx: status=%s detail=%s",
+                    getattr(e, "status_code", None),
+                    str(getattr(e, "body", None) or getattr(e, "message", None))[:500],
+                )
                 raise ProviderClientError(
                     provider="anthropic",
                     model=model,
@@ -964,14 +1005,15 @@ class AnthropicConnector(LLMConnector):
             # the `except Exception` below and re-raised as ProviderServerError,
             # so it read as an upstream outage rather than a client-side defect.
             streamed_parts: list[str] = []
-            async with self.client.messages.stream(
-                model=model,
-                max_tokens=kwargs.get("max_tokens", 1000),
-                system=cast(
-                    "str | Iterable[TextBlockParam]", system_message if system_message else None
-                ),
-                messages=cast(list[MessageParam], user_messages),
-            ) as stream:
+            # Omit `system` when empty (system=None -> JSON null -> HTTP 400).
+            stream_kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": kwargs.get("max_tokens", 1000),
+                "messages": cast(list[MessageParam], user_messages),
+            }
+            if system_message:
+                stream_kwargs["system"] = cast("str | Iterable[TextBlockParam]", system_message)
+            async with self.client.messages.stream(**stream_kwargs) as stream:
                 # Iterate through events asynchronously
                 async for event in stream:
                     # Check for content_block_delta events with text deltas
@@ -991,18 +1033,21 @@ class AnthropicConnector(LLMConnector):
                 estimate_input=lambda: self._estimate_input_tokens(system_message, user_messages),
                 estimate_output=lambda: len(self.token_estimator.encode("".join(streamed_parts))),
             )
-            yield StreamChunk(
-                delta="",
-                usage={
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "model": model,
-                    "finish_reason": getattr(final_message, "stop_reason", None) or "stop",
-                    "provider": "anthropic",
-                },
-                done=True,
-            )
+            final_stop_reason = getattr(final_message, "stop_reason", None)
+            final_usage: dict[str, Any] = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "model": model,
+                "finish_reason": final_stop_reason or "stop",
+                "provider": "anthropic",
+            }
+            if not streamed_parts and final_stop_reason:
+                # regression: refusal/empty-but-valid responses must meter real usage +
+                # return failure_reason, never raise/retry/discard-usage
+                final_usage["failure_reason"] = _empty_failure_reason(final_stop_reason)
+                logger.warning("Anthropic stream text-empty: stop_reason=%s", final_stop_reason)
+            yield StreamChunk(delta="", usage=final_usage, done=True)
 
         except anthropic.APITimeoutError as e:
             raise ProviderTimeoutError(
@@ -1027,6 +1072,12 @@ class AnthropicConnector(LLMConnector):
                     status_code=status_code,
                 ) from e
             else:  # 4xx
+                # Server-side only: upstream reason must not reach the client.
+                logger.warning(
+                    "Anthropic stream 4xx: status=%s detail=%s",
+                    getattr(e, "status_code", None),
+                    str(getattr(e, "body", None) or getattr(e, "message", None))[:500],
+                )
                 raise ProviderClientError(
                     provider="anthropic",
                     model=model,

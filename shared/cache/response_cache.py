@@ -88,6 +88,28 @@ def _model_class(ctx: Any) -> str:
     return f"{ctx.model or ''}::{response_format}"
 
 
+def is_cacheable_response(response_json: dict, usage: dict) -> bool:
+    """Return False for a failed or empty completion that must never enter the cache.
+
+    A completion carrying ``usage["failure_reason"]`` (e.g. output budget
+    exhausted) or with no text and no tool call would, if stored, be served
+    to every future identical prompt -- cache poisoning. Unrecognized body
+    shapes are treated as cacheable (only a positively-empty body is refused).
+    """
+    if usage.get("failure_reason") or response_json.get("failure_reason"):
+        return False
+    choices = response_json.get("choices")
+    if isinstance(choices, list) and choices:
+        message = (choices[0] or {}).get("message") or {}
+        return bool(message.get("content") or message.get("tool_calls"))
+    blocks = response_json.get("content")
+    if isinstance(blocks, list):
+        return any(
+            isinstance(b, dict) and (b.get("type") != "text" or b.get("text")) for b in blocks
+        )
+    return True
+
+
 def _combine_write_backs(
     first: Callable[[dict, dict], Awaitable[None]] | None,
     second: Callable[[dict, dict], Awaitable[None]],
@@ -310,7 +332,13 @@ class ResponseCache:
 
         async def _write_back(response_json: dict, usage: dict) -> None:
             cached_value = CachedResponse(response=response_json, usage=usage, stored_at=0.0)
+            # regression: cache-poisoning -- never cache a failed/empty completion; still release
+            # single-flight lease (followers get None and fall through to dispatch themselves).
+            cacheable = is_cacheable_response(response_json, usage)
             try:
+                if not cacheable:
+                    logger.info("exact write-back skipped: failed/empty completion not cached")
+                    return
                 await self.exact.put(
                     org_id=org_id,
                     key=key,
@@ -321,7 +349,9 @@ class ResponseCache:
                 )
             finally:
                 if in_process_future is not None:
-                    self.exact.singleflight.resolve(cache_key, in_process_future, cached_value)
+                    self.exact.singleflight.resolve(
+                        cache_key, in_process_future, cached_value if cacheable else None
+                    )
                 if lease_token is not None:
                     await StampedeLease(self.exact.valkey).release(cache_key, lease_token)
 
@@ -349,7 +379,12 @@ class ResponseCache:
 
         async def _write_back(response_json: dict, usage: dict) -> None:
             cached_value = CachedResponse(response=response_json, usage=usage, stored_at=0.0)
+            # regression: cache-poisoning -- see _exact_write_back.
+            cacheable = is_cacheable_response(response_json, usage)
             try:
+                if not cacheable:
+                    logger.info("semantic write-back skipped: failed/empty completion not cached")
+                    return
                 await semantic.put(
                     org_id=org_id,
                     model_class=model_class,
@@ -360,7 +395,9 @@ class ResponseCache:
                 )
             finally:
                 if in_process_future is not None:
-                    semantic.singleflight.resolve(cache_key, in_process_future, cached_value)
+                    semantic.singleflight.resolve(
+                        cache_key, in_process_future, cached_value if cacheable else None
+                    )
                 if lease_token is not None:
                     await StampedeLease(semantic.valkey).release(cache_key, lease_token)
 

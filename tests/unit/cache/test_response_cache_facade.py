@@ -257,6 +257,65 @@ class TestStampedeProtectionIntegration:
         assert final.cached is not None
         assert final.cached.response == response_json
 
+    async def test_failed_completion_is_not_cached_but_lease_and_followers_released(
+        self, fake_valkey, fake_cache_config_db
+    ):
+        """A failure_reason/empty completion is never stored; lease + in-process future still freed.
+
+        # regression: cache-poisoning -- never cache a failed/empty completion; still release
+        # single-flight lease
+        """
+        from shared.cache.keys import ExactKeyParts, derive_exact_key
+        from shared.cache.response_cache import _exact_lease_key
+
+        fake_cache_config_db.seed(scope_type="global", exact_enabled=True)
+        response_cache = ResponseCache(
+            exact=ExactCache(fake_valkey),
+            semantic=None,
+            upstream=None,
+            affinity=None,
+            resolver=CacheConfigResolver(db=fake_cache_config_db, valkey=fake_valkey),
+            features=MagicMock(),
+        )
+        ctx = _Ctx(
+            user=_make_user(),
+            body={"messages": [{"role": "user", "content": "poison?"}], "temperature": 0},
+        )
+        result = await response_cache.lookup(ctx)
+        assert result.write_back is not None
+        key = derive_exact_key(
+            ExactKeyParts(org_id=1, model_class="gpt-4o::openai", messages=ctx.messages)
+        )
+        lease_key = _exact_lease_key(1, key)
+        assert await fake_valkey.exists(f"{lease_key}:lock") == 1
+        # A concurrent in-process follower is waiting on the leader's future.
+        future = response_cache.exact.singleflight._pending[lease_key][0]
+
+        empty = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+        await result.write_back(empty, {"failure_reason": "output_budget_exhausted"})
+
+        assert await response_cache.exact.get(1, key) is None  # NOT stored
+        assert await fake_valkey.exists(f"{lease_key}:lock") == 0  # lease released
+        assert future.done() and future.result() is None  # followers woken, no body
+        assert lease_key not in response_cache.exact.singleflight._pending
+        assert (await response_cache.lookup(ctx)).status == "miss"
+
+    def test_is_cacheable_response_shapes(self):
+        """Failure reason, empty openai/anthropic bodies are uncacheable; real ones are."""
+        from shared.cache.response_cache import is_cacheable_response
+
+        ok_oa = {"choices": [{"message": {"content": "hi"}}]}
+        assert is_cacheable_response(ok_oa, {})
+        assert not is_cacheable_response(ok_oa, {"failure_reason": "x"})
+        assert not is_cacheable_response({"choices": [{"message": {"content": ""}}]}, {})
+        assert is_cacheable_response(
+            {"choices": [{"message": {"content": None, "tool_calls": [{"id": "1"}]}}]}, {}
+        )
+        assert is_cacheable_response({"content": [{"type": "text", "text": "hi"}]}, {})
+        assert not is_cacheable_response({"content": [{"type": "text", "text": ""}]}, {})
+        assert is_cacheable_response({"content": [{"type": "tool_use", "id": "1"}]}, {})
+        assert is_cacheable_response({"unknown": 1}, {})
+
     async def test_second_caller_while_lease_held_receives_a_distinct_fallthrough_path(
         self, fake_valkey, fake_cache_config_db
     ):
