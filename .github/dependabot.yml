@@ -8,6 +8,15 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "08:00"
+    groups:
+      all-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     open-pull-requests-limit: 10
     assignees:
       - "waddleai-bot"
@@ -29,6 +38,15 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "08:00"
+    groups:
+      all-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
@@ -54,6 +72,15 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "08:00"
+    groups:
+      all-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     open-pull-requests-limit: 5
     commit-message:
       prefix: "docker"
@@ -80,6 +107,15 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "08:00"
+    groups:
+      all-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     open-pull-requests-limit: 5
     commit-message:
       prefix: "docker"
