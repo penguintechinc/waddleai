@@ -204,6 +204,8 @@ class _PassThroughSecurityInStage(Stage):
 class _ControllableConnector:
     """Deterministic stub LLMConnector: echoes back a fixed reply per call count."""
 
+    provider_type: str | None = "stub"  # mirrors LLMConnector.provider_type
+
     def __init__(self):
         """Initialize the call counter and last-seen-messages capture."""
         self.call_count = 0

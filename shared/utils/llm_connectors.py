@@ -287,6 +287,8 @@ class LLMConnector(ABC):
         self.endpoint_url = config.get("endpoint_url")
         self.api_key = config.get("api_key")
         self.model_list = config.get("model_list", [])
+        # Connector type (openai/anthropic/...); ``name`` is the link name. Set by the loader.
+        self.provider_type: str | None = config.get("provider_type")
 
     @abstractmethod
     async def chat_completion(
@@ -2338,6 +2340,7 @@ class LLMConnectionManager:
                     logger.warning(f"Unknown provider: {link.provider}")
                     continue
 
+                connector.provider_type = link.provider
                 self.connectors[link.name] = connector
                 logger.info(f"Loaded connector: {link.name} ({link.provider})")
 

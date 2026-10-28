@@ -166,6 +166,9 @@ class PipelineContext:
     # Set by the dispatch stage; feeds the gen_ai.* span attributes (§15.3) and
     # lets routing report the actually-served model rather than the requested one.
     provider: str | None = None
+    # Connector type (openai/anthropic/...) of the chosen link; ``provider`` is the link NAME.
+    # Lets billing fall back to type-keyed conversion rates (gh-337).
+    provider_type: str | None = None
     requested_model: str | None = None
     finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
@@ -1230,6 +1233,17 @@ class DispatchStage(Stage):
             return None
 
         ctx.provider = provider
+        # Every billed request passes through here (cache hits never reach dispatch and are
+        # never charged by QuotaStage; settle_aborted only charges when ctx.provider is set,
+        # which happens on this line). ``provider_type`` is declared on LLMConnector, so read
+        # it directly -- no silent getattr default.
+        ctx.provider_type = connector.provider_type
+        if ctx.provider_type is None:
+            logger.warning(
+                "DispatchStage: connector %s has no provider_type; billing falls back to the "
+                "heuristic conversion rate (no type-keyed default applies)",
+                provider,
+            )
         ctx.requested_model = ctx.model
         ctx.model = target_model
 
