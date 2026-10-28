@@ -57,7 +57,7 @@ async def settle_aborted(engine: Any, ctx: PipelineContext, reservation: Any) ->
         )
         out_tokens = usage.get("output_tokens") or tm.count_tokens(text, provider, model)
         credits = tm.calculate_waddleai_tokens(
-            in_tokens, out_tokens, provider, model, getattr(ctx, "provider_type", None)
+            in_tokens, out_tokens, provider, model, ctx.provider_type
         )
     except Exception as exc:  # noqa: BLE001 -- never fall back to a refund of consumed tokens
         logger.error("quota abort credit calc failed, charging the reservation: %s", exc)

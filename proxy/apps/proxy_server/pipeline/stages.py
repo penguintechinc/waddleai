@@ -1233,7 +1233,17 @@ class DispatchStage(Stage):
             return None
 
         ctx.provider = provider
-        ctx.provider_type = getattr(connector, "provider_type", None)
+        # Every billed request passes through here (cache hits never reach dispatch and are
+        # never charged by QuotaStage; settle_aborted only charges when ctx.provider is set,
+        # which happens on this line). ``provider_type`` is declared on LLMConnector, so read
+        # it directly -- no silent getattr default.
+        ctx.provider_type = connector.provider_type
+        if ctx.provider_type is None:
+            logger.warning(
+                "DispatchStage: connector %s has no provider_type; billing falls back to the "
+                "heuristic conversion rate (no type-keyed default applies)",
+                provider,
+            )
         ctx.requested_model = ctx.model
         ctx.model = target_model
 

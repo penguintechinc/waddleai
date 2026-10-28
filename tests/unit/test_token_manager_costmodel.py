@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from shared.utils.default_conversion_rates import DEFAULT_RATE_ROWS, RateRow
 from shared.utils.token_manager import ConversionRate, TokenManager
 
 
@@ -414,3 +415,83 @@ class TestHybridRateKeying:
             provider_type="anthropic",
         )
         assert usage.waddleai_tokens == 200
+
+
+class TestSeededRatesHybridKeying:
+    """regression: gh-337 -- the REAL shipped ``DEFAULT_RATE_ROWS`` resolve on the type tier."""
+
+    LINK = "prod-link"  # a connection-link NAME that never appears as a seeded provider
+
+    @pytest.fixture
+    def tm(self) -> TokenManager:
+        """TokenManager loaded with exactly the shipped default rows (no mocked divisors)."""
+        db = MagicMock()
+        db.return_value.select = MagicMock(return_value=[])
+        manager = TokenManager(db)
+        manager.conversion_rates = {
+            f"{r.provider}:{r.model}": ConversionRate(
+                r.provider, r.model, r.input_rate, r.output_rate, r.base_cost_per_waddleai_token
+            )
+            for r in DEFAULT_RATE_ROWS
+        }
+        return manager
+
+    @pytest.mark.parametrize("row", DEFAULT_RATE_ROWS, ids=lambda r: f"{r.provider}:{r.model}")
+    def test_type_tier_resolves_every_seeded_model(
+        self, tm: TokenManager, row: RateRow, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Link name has no row, type does: credits equal the seeded rate, never the heuristic."""
+        rate, tier = tm._resolve_rate(self.LINK, row.model, row.provider)
+        assert tier == "type"
+        assert rate is not None
+        assert (rate.input_rate, rate.output_rate) == (row.input_rate, row.output_rate)
+        with caplog.at_level("WARNING"):
+            credits = tm.calculate_waddleai_tokens(5000, 3000, self.LINK, row.model, row.provider)
+        assert "using default" not in caplog.text
+        assert credits == TokenManager._credits_for(rate, 5000, 3000)
+
+    def test_without_type_same_traffic_falls_to_heuristic(
+        self, tm: TokenManager, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Positive control: same call bills the type rate WITH a type, the heuristic without."""
+        with caplog.at_level("WARNING"):
+            no_type = tm.calculate_waddleai_tokens(5000, 3000, self.LINK, "gpt-4")
+        assert "No conversion rate found" in caplog.text
+        with_type = tm.calculate_waddleai_tokens(5000, 3000, self.LINK, "gpt-4", "openai")
+        assert no_type == (5000 + 3000 * 2) // 10 == 1100
+        assert with_type == 5000 // 10 + 3000 // 20 == 650
+
+    @pytest.mark.parametrize("row", DEFAULT_RATE_ROWS, ids=lambda r: f"{r.provider}:{r.model}")
+    @pytest.mark.parametrize("tokens", [(1, 1), (10, 5), (1000, 0), (0, 1000), (5000, 3000)])
+    def test_reconcile_never_exceeds_reserve_for_rate_matched_traffic(
+        self, tm: TokenManager, row: RateRow, tokens: tuple[int, int]
+    ) -> None:
+        """Reserve (max over all rows for the model) bounds reconcile (hybrid rate)."""
+        in_t, out_t = tokens
+        reserve = tm.estimate_credits(row.model, in_t, out_t)
+        reconcile = tm.calculate_waddleai_tokens(in_t, out_t, self.LINK, row.model, row.provider)
+        assert reconcile <= reserve
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="pre-existing: gh-??? reserve<reconcile on the heuristic-fallback path "
+        "(heuristic (in+2*out)//10 exceeds the seeded-rate reserve); owner pricing decision",
+    )
+    def test_heuristic_path_can_exceed_reserve(self, tm: TokenManager) -> None:
+        """Tracks the known invariant break on UNMATCHED traffic (no type); out of scope here."""
+        reserve = tm.estimate_credits("llama3.2", 5000, 3000)
+        reconcile = tm.calculate_waddleai_tokens(5000, 3000, self.LINK, "llama3.2")
+        assert reconcile <= reserve
+
+    def test_process_usage_threads_type_with_real_rates(
+        self, tm: TokenManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """main.py passes ``provider_type=final_ctx.provider_type``; omitting it changes credits."""
+        monkeypatch.setattr(tm, "_update_usage_records", lambda *a, **k: None)
+        monkeypatch.setattr(tm, "_update_usage_cache", lambda *a, **k: None)
+        typed = tm.process_usage(
+            "x", "y", self.LINK, "gpt-4", 1, 1, 1, 5000, 3000, provider_type="openai"
+        )
+        untyped = tm.process_usage("x", "y", self.LINK, "gpt-4", 1, 1, 1, 5000, 3000)
+        assert typed.waddleai_tokens == 650
+        assert untyped.waddleai_tokens == 1100
