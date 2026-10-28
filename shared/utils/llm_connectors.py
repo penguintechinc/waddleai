@@ -1160,6 +1160,9 @@ class GeminiConnector(LLMConnector):
                 "max_output_tokens": kwargs.get("max_tokens", 1024),
                 "temperature": kwargs.get("temperature", 0.7),
             }
+            if system_message:
+                # System prompt belongs in GenerateContentConfig, not a kwarg.
+                config_kwargs["system_instruction"] = system_message
             cached_content = kwargs.get("cached_content")
             if cached_content:
                 config_kwargs["cached_content"] = cached_content
@@ -1170,15 +1173,9 @@ class GeminiConnector(LLMConnector):
             generation_config = genai.types.GenerateContentConfig(**config_kwargs)
 
             # Call Gemini API
-            # NOTE (found while fixing mypy types, not fixed here per hard
-            # rule against behaviour changes): generate_content() has no
-            # `system_prompt` parameter (only model/contents/config) -- this
-            # call raises TypeError on every invocation, caught below and
-            # re-raised as ProviderServerError. See PR/session report.
             response = await self.client.aio.models.generate_content(
                 model=f"models/{model}",
                 contents=gemini_messages,
-                system_prompt=system_message if system_message else None,
                 config=generation_config,
             )
 
@@ -1190,10 +1187,14 @@ class GeminiConnector(LLMConnector):
                     message="Gemini response contained no text",
                 )
 
-            # Estimate token usage
+            usage_metadata = getattr(response, "usage_metadata", None)
             input_text = system_message + " ".join([msg["content"] for msg in messages])
-            input_tokens = len(self.token_estimator.encode(input_text))
-            output_tokens = len(self.token_estimator.encode(content))
+            input_tokens, output_tokens = self._resolve_token_counts(
+                usage_metadata,
+                model,
+                lambda: len(self.token_estimator.encode(input_text)),
+                lambda: len(self.token_estimator.encode(content)),
+            )
 
             usage_info: dict[str, Any] = {
                 "input_tokens": input_tokens,
@@ -1207,7 +1208,6 @@ class GeminiConnector(LLMConnector):
             }
 
             # Gemini CachedContent usage (spec §6.3), when reported.
-            usage_metadata = getattr(response, "usage_metadata", None)
             cached_count = (
                 getattr(usage_metadata, "cached_content_token_count", 0) if usage_metadata else 0
             )
@@ -1245,6 +1245,63 @@ class GeminiConnector(LLMConnector):
                     model=model,
                     message=f"Gemini completion failed: {str(e)[:100]}",
                 ) from e
+
+    @staticmethod
+    def _int_or_zero(value: Any) -> int:
+        """Return ``value`` if it is a non-bool int, else 0 (absent/None optional counters)."""
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    def _resolve_token_counts(
+        self,
+        usage_metadata: Any,
+        model: str,
+        estimate_input: Callable[[], int],
+        estimate_output: Callable[[], int],
+    ) -> tuple[int, int]:
+        """Return Gemini's real billed (input, output) token counts.
+
+        input = prompt + tool-use prompt; output = candidates + thoughts, raised so that
+        input + output is never below the reported ``total_token_count``.
+
+        Falls back to the tiktoken estimate ONLY when ``usage_metadata`` is
+        absent or lacks integer counts, and then fails loud (warning log plus a
+        ``waddleai_proxy_usage_estimated_total`` increment).
+        """
+        real_in = getattr(usage_metadata, "prompt_token_count", None)
+        real_out = getattr(usage_metadata, "candidates_token_count", None)
+        if (
+            isinstance(real_in, int)
+            and not isinstance(real_in, bool)
+            and isinstance(real_out, int)
+            and not isinstance(real_out, bool)
+        ):
+            extra_in = self._int_or_zero(
+                getattr(usage_metadata, "tool_use_prompt_token_count", None)
+            )
+            extra_out = self._int_or_zero(getattr(usage_metadata, "thoughts_token_count", None))
+            billed_in = real_in + extra_in
+            billed_out = real_out + extra_out  # thinking tokens are billed as output
+            total = getattr(usage_metadata, "total_token_count", None)
+            if (
+                isinstance(total, int)
+                and not isinstance(total, bool)
+                and total > (billed_in + billed_out)
+            ):
+                # Never bill less than Google's reported total: put the gap on output.
+                billed_out += total - (billed_in + billed_out)
+            return billed_in, billed_out
+        logger.warning(
+            "Gemini response for %s lacked usage_metadata token counts; billing falls back "
+            "to tiktoken ESTIMATE",
+            model,
+        )
+        try:
+            from shared.utils.metrics import get_proxy_metrics
+
+            get_proxy_metrics().record_usage_estimated("gemini")
+        except Exception:  # noqa: BLE001 -- telemetry must never fail the request
+            logger.debug("usage_estimated metric emission failed", exc_info=True)
+        return estimate_input(), estimate_output()
 
     async def count_tokens(self, text: str, model: str) -> int:
         """Count tokens for Gemini models using the native API."""
@@ -1350,6 +1407,9 @@ class GeminiConnector(LLMConnector):
                 "max_output_tokens": kwargs.get("max_tokens", 1024),
                 "temperature": kwargs.get("temperature", 0.7),
             }
+            if system_message:
+                # System prompt belongs in GenerateContentConfig, not a kwarg.
+                config_kwargs["system_instruction"] = system_message
             cached_content = kwargs.get("cached_content")
             if cached_content:
                 config_kwargs["cached_content"] = cached_content
@@ -1360,20 +1420,50 @@ class GeminiConnector(LLMConnector):
             generation_config = genai.types.GenerateContentConfig(**config_kwargs)
 
             # Stream Gemini content
-            # NOTE (found while fixing mypy types, not fixed here per hard
-            # rule against behaviour changes): generate_content_stream() has
-            # no `system_prompt` parameter -- see the identical note in
-            # chat_completion() above. Flagged as a genuine runtime bug.
+            last_usage: Any = None
+            streamed_text: list[str] = []
+            finish_reason = "unknown"
             async for chunk in await self.client.aio.models.generate_content_stream(
                 model=f"models/{model}",
                 contents=gemini_messages,
-                system_prompt=system_message if system_message else None,
                 config=generation_config,
             ):
+                chunk_usage = getattr(chunk, "usage_metadata", None)
+                if chunk_usage is not None:
+                    last_usage = chunk_usage  # cumulative; the last chunk is final
+                candidates = getattr(chunk, "candidates", None)
+                if isinstance(candidates, list | tuple) and candidates:
+                    fr = getattr(getattr(candidates[0], "finish_reason", None), "name", None)
+                    if fr:
+                        finish_reason = fr
                 if chunk.text:
+                    streamed_text.append(chunk.text)
                     yield StreamChunk(delta=chunk.text, done=False)
-            # Gemini streaming does not include final usage; send done=True signal
-            yield StreamChunk(delta="", usage=None, done=True)
+
+            input_text = system_message + " ".join(m["content"] for m in messages)
+            full_text = "".join(streamed_text)
+            input_tokens, output_tokens = self._resolve_token_counts(
+                last_usage,
+                model,
+                lambda: len(self.token_estimator.encode(input_text)),
+                lambda: len(self.token_estimator.encode(full_text)),
+            )
+            cached_count = getattr(last_usage, "cached_content_token_count", 0)
+            yield StreamChunk(
+                delta="",
+                usage={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "model": model,
+                    "finish_reason": finish_reason,
+                    "provider": "gemini",
+                    "cached_content_token_count": cached_count
+                    if isinstance(cached_count, int)
+                    else 0,
+                },
+                done=True,
+            )
 
         except Exception as e:
             logger.error(f"Gemini stream failed: {e}")
