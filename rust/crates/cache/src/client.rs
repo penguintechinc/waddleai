@@ -15,6 +15,9 @@ pub enum CacheError {
     /// The driver reported an error.
     #[error("valkey error: {0}")]
     Redis(#[from] redis::RedisError),
+    /// `notify-keyspace-events` lacks `E`/`g` and could not be set; invalidations would never fire.
+    #[error("valkey keyspace notifications (notify-keyspace-events Eg) are not enabled")]
+    NotificationsDisabled,
     /// An operation exceeded its time bound.
     #[error("valkey operation timed out")]
     Timeout,

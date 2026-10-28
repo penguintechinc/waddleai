@@ -16,3 +16,4 @@ tracing = "=0.1.44"
 
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+redis = { version = "=1.7.0", default-features = false, features = ["tokio-comp", "aio"] }

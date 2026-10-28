@@ -96,3 +96,49 @@ pub mod quota {
         format!("wa:quota:cfg:team:{team_id}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Expected strings copied verbatim from the Python proxy; runs without Valkey.
+    #[test]
+    fn key_formats_match_python() {
+        // shared/cache/exact.py
+        assert_eq!(exact_entry(7, "abc"), "waddleai:cache:exact:7:abc");
+        assert_eq!(exact_idx(7), "waddleai:cache:idx:7");
+        assert_eq!(exact_bytes(7), "waddleai:cache:bytes:7");
+        // shared/cache/response_cache.py + singleflight.py
+        assert_eq!(exact_lease(7, "abc"), "waddleai:cache:sf:exact:7:abc");
+        assert_eq!(
+            semantic_lease(7, "gpt-4o", "h1"),
+            "waddleai:cache:sf:semantic:7:gpt-4o:h1"
+        );
+        assert_eq!(
+            lock("waddleai:cache:sf:exact:7:abc"),
+            "waddleai:cache:sf:exact:7:abc:lock"
+        );
+        // shared/cache/config.py
+        assert_eq!(scope_cache("org", Some("5")), "waddleai:cache:cfg:org:5");
+        assert_eq!(scope_cache("global", None), "waddleai:cache:cfg:global:-");
+        // shared/cache/affinity.py, upstream.py
+        assert_eq!(affinity(7, "sess"), "waddleai:affinity:7:sess");
+        assert_eq!(gemini_mapping(3, "sha"), "waddleai:cache:gemini:3:sha");
+        assert_eq!(prefix_counter(3, "sha"), "waddleai:cache:prefix:3:sha");
+        // shared/auth/rbac.py
+        assert_eq!(auth_apikey("kid"), "waddleai:auth:apikey:kid");
+        // shared/quota/keys.py
+        assert_eq!(quota::user_counter(1, 2), "wa:quota:user:1:2");
+        assert_eq!(quota::buffer_counter(1, 2), "wa:quota:team_buffer:1:2");
+        assert_eq!(quota::override_counter(1, 2), "wa:quota:override:1:2");
+        assert_eq!(
+            quota::daily_counter(1, "20261028"),
+            "wa:quota:userday:1:20261028"
+        );
+        assert_eq!(quota::reservation("r1"), "wa:quota:resv:r1");
+        assert_eq!(quota::org_config(9), "wa:quota:cfg:org:9");
+        assert_eq!(quota::team_config(9), "wa:quota:cfg:team:9");
+        assert_eq!(quota::RESERVATION_INDEX, "wa:quota:resv_idx");
+        assert_eq!(quota::PREFIX, "wa:quota");
+    }
+}
