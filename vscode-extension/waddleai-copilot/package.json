@@ -154,5 +154,8 @@
   "galleryBanner": {
     "color": "#1E90FF",
     "theme": "dark"
+  },
+  "overrides": {
+    "@azure/msal-node": "7.1.1"
   }
 }

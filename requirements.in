@@ -110,4 +110,4 @@ orjson>=3.9.10
 # has no metadata reason to keep it and silently drops the pin, which then
 # fails `pip install --require-hashes` ("all requirements must have their
 # versions pinned with =="). Declared explicitly so any resolver keeps it.
-setuptools==84.0.0
+setuptools==84.2.1
