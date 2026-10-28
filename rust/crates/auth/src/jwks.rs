@@ -7,12 +7,13 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet, PublicKeyUse};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 
 use crate::claims::Claims;
 use crate::error::AuthError;
@@ -175,18 +176,24 @@ struct State {
 /// Default bound on one JWKS fetch; a hung issuer must not hold `refresh_lock` indefinitely.
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Shared cache internals, behind an `Arc` so a stale-while-revalidate refresh can run
-/// detached from the request that triggered it.
+/// Default hard max-staleness is this multiple of the TTL.
+const DEFAULT_MAX_STALE_TTLS: u32 = 4;
+
+/// Shared cache internals, behind an `Arc` so every refresh runs in a detached task that owns
+/// it -- no caller's lifetime can cancel an attempt it charged against `min_refetch`.
 struct Inner<F: JwksFetcher> {
     fetcher: F,
     policy: JwtPolicy,
     ttl: Duration,
     min_refetch: Duration,
     fetch_timeout: Duration,
+    max_stale: Duration,
     state: RwLock<State>,
     refresh_lock: Mutex<()>,
     /// A background revalidation is already running (avoids a task per stale request).
     bg_inflight: AtomicBool,
+    /// Handle of the latest background revalidation (awaited by [`JwksCache::settle_background`]).
+    bg_handle: StdMutex<Option<JoinHandle<()>>>,
 }
 
 /// Clears `bg_inflight` when the background task ends, even on panic/cancel.
@@ -198,32 +205,35 @@ impl Drop for BgGuard<'_> {
     }
 }
 
-/// TTL-cached JWKS with stale-while-revalidate.
+/// TTL-cached JWKS with stale-while-revalidate and a hard max-staleness cap.
 ///
-/// * A token whose `kid` is already cached verifies immediately against the cached set; if the
-///   set is past its TTL a refresh is kicked off in the background, so a slow or hung issuer
-///   never stalls such a request. Only a token with NO usable cached key (cold start, or an
-///   unknown `kid` after rotation) waits for a fetch.
-/// * Every refresh is throttled to one attempt per `min_refetch`; the attempt is recorded
-///   BEFORE the fetch is awaited (inside the single-flight lock), so callers that disconnect
-///   mid-fetch still consume the window and cannot be used to hammer the issuer.
-/// * The need is re-checked once the lock is held, so concurrent callers coalesce; each fetch
-///   is bounded by a timeout; a failed or garbage refresh never replaces the cached set.
+/// * A token whose `kid` is cached verifies immediately; if the set is past its TTL a refresh
+///   runs in the background, so a slow or hung issuer never stalls it. Only a token with NO
+///   usable cached key (cold start, unknown `kid`, or a set past `max_stale`) waits for a fetch.
+/// * A set older than `max_stale` (default 4x TTL) is no longer served: a rotated-out or
+///   revoked key cannot keep verifying forever while the issuer is down (fail closed).
+/// * Every fetch runs in a detached task owning the cache internals; callers only await its
+///   handle. The attempt is charged to `min_refetch` and the key set installed INSIDE that
+///   task, so a caller dropping mid-fetch (early disconnect) can neither cancel a charged
+///   attempt (cold-start lockout) nor dodge the throttle.
+/// * Refreshes are throttled to one attempt per `min_refetch`, the need is re-checked under the
+///   single-flight lock (concurrent callers coalesce), each fetch is bounded by a timeout, and
+///   a failed or garbage refresh never replaces the cached set.
 pub struct JwksCache<F: JwksFetcher + 'static> {
     inner: Arc<Inner<F>>,
 }
 
 /// Why a refresh is being considered; decides the under-lock "still needed?" re-check.
-enum Need<'a> {
+enum Need {
     /// Cold or past TTL.
     Stale,
     /// A token named a `kid` the cached set lacks.
-    Kid(&'a str),
+    Kid(String),
 }
 
-impl<F: JwksFetcher> Inner<F> {
+impl<F: JwksFetcher + 'static> Inner<F> {
     /// Whether `need` still holds and the throttle window is open, judged on current state.
-    fn needed(&self, st: &State, need: &Need<'_>) -> bool {
+    fn needed(&self, st: &State, need: &Need) -> bool {
         let throttled = st
             .last_attempt
             .is_some_and(|t| t.elapsed() < self.min_refetch);
@@ -238,19 +248,18 @@ impl<F: JwksFetcher> Inner<F> {
 
     /// Refresh if `need` still holds once we own the single-flight lock. Returns `Ok(())`
     /// without fetching when another caller already refreshed or the throttle is closed.
-    /// On fetch failure/timeout/garbage the previous set (if any) is kept.
-    async fn refresh_if(&self, need: Need<'_>) -> Result<(), AuthError> {
-        if !self.needed(&*self.state.read().await, &need) {
+    /// On fetch failure/timeout/garbage the previous set (if any) is kept. Always run inside
+    /// a detached task (see [`Inner::refresh_detached`]).
+    async fn refresh_if(&self, need: &Need) -> Result<(), AuthError> {
+        if !self.needed(&*self.state.read().await, need) {
             return Ok(());
         }
         let _single_flight = self.refresh_lock.lock().await;
         {
             let mut st = self.state.write().await;
-            if !self.needed(&st, &need) {
+            if !self.needed(&st, need) {
                 return Ok(()); // coalesced: someone refreshed while we waited for the lock
             }
-            // Record the attempt BEFORE awaiting the fetch: a caller dropped mid-fetch (early
-            // disconnect) must still consume the throttle window.
             st.last_attempt = Some(Instant::now());
         }
         let fetched = match tokio::time::timeout(self.fetch_timeout, self.fetcher.fetch()).await {
@@ -272,8 +281,30 @@ impl<F: JwksFetcher> Inner<F> {
         }
     }
 
+    /// Run [`Inner::refresh_if`] in a detached task and await it. Dropping the caller drops
+    /// only the `JoinHandle`; the task (which owns an `Arc` of the cache) runs to completion.
+    async fn refresh_detached(self: &Arc<Self>, need: Need) -> Result<(), AuthError> {
+        if !self.needed(&*self.state.read().await, &need) {
+            return Ok(());
+        }
+        let inner = Arc::clone(self);
+        let handle = tokio::spawn(async move { inner.refresh_if(&need).await });
+        handle.await.unwrap_or_else(|e| {
+            tracing::error!(error = %e, "JWKS refresh task failed");
+            Err(AuthError::JwksUnavailable(
+                "JWKS refresh task failed".into(),
+            ))
+        })
+    }
+
+    /// The cached set, unless it is older than the hard `max_stale` cap.
     async fn current(&self) -> Option<Arc<Jwks>> {
-        self.state.read().await.jwks.clone()
+        let st = self.state.read().await;
+        let age = st.fetched_at?.elapsed();
+        if age >= self.max_stale.max(self.ttl) {
+            return None;
+        }
+        st.jwks.clone()
     }
 }
 
@@ -287,6 +318,7 @@ impl<F: JwksFetcher + 'static> JwksCache<F> {
                 ttl,
                 min_refetch,
                 fetch_timeout: DEFAULT_FETCH_TIMEOUT,
+                max_stale: ttl.saturating_mul(DEFAULT_MAX_STALE_TTLS),
                 state: RwLock::new(State {
                     jwks: None,
                     fetched_at: None,
@@ -294,17 +326,32 @@ impl<F: JwksFetcher + 'static> JwksCache<F> {
                 }),
                 refresh_lock: Mutex::new(()),
                 bg_inflight: AtomicBool::new(false),
+                bg_handle: StdMutex::new(None),
             }),
+        }
+    }
+
+    /// Mutate construction-time settings; only possible while this is the sole owner.
+    fn configure(&mut self, f: impl FnOnce(&mut Inner<F>)) {
+        let inner = Arc::get_mut(&mut self.inner);
+        debug_assert!(inner.is_some(), "JwksCache configured after being shared");
+        if let Some(inner) = inner {
+            f(inner);
         }
     }
 
     /// Override the per-fetch timeout (default 5s). Only effective before the cache is used.
     #[must_use]
     pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
-        // Sole owner at construction time, so `get_mut` always succeeds here.
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.fetch_timeout = timeout;
-        }
+        self.configure(|i| i.fetch_timeout = timeout);
+        self
+    }
+
+    /// Override the hard max-staleness (default 4x TTL; never below the TTL). A cached set
+    /// older than this is not served. Only effective before the cache is used.
+    #[must_use]
+    pub fn with_max_stale(mut self, max_stale: Duration) -> Self {
+        self.configure(|i| i.max_stale = max_stale);
         self
     }
 
@@ -319,11 +366,24 @@ impl<F: JwksFetcher + 'static> JwksCache<F> {
             return;
         }
         let inner = Arc::clone(&self.inner);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let _guard = BgGuard(&inner.bg_inflight);
-            // Errors are already logged; the stale set keeps serving.
-            let _ = inner.refresh_if(Need::Stale).await;
+            // Errors are already logged; the stale set keeps serving until max_stale.
+            let _ = inner.refresh_if(&Need::Stale).await;
         });
+        if let Ok(mut slot) = self.inner.bg_handle.lock() {
+            *slot = Some(handle);
+        }
+    }
+
+    /// Await the latest background revalidation, if any. Lets callers and tests observe a
+    /// stale-while-revalidate refresh deterministically instead of sleeping.
+    #[doc(hidden)]
+    pub async fn settle_background(&self) {
+        let handle = self.inner.bg_handle.lock().ok().and_then(|mut s| s.take());
+        if let Some(h) = handle {
+            let _ = h.await;
+        }
     }
 
     /// Verify `token`, refreshing the cached JWKS on TTL expiry or key rotation.
@@ -334,34 +394,39 @@ impl<F: JwksFetcher + 'static> JwksCache<F> {
         match self.inner.current().await {
             // Usable cached key: verify now; revalidate a stale set off the request path.
             Some(jwks) if jwks.has_kid(&kid) => {
-                let stale = {
+                // Check the need (TTL + throttle) BEFORE the CAS/spawn so a throttled stale
+                // set does not spawn a task-that-exits on every request.
+                let revalidate = {
                     let st = self.inner.state.read().await;
-                    st.fetched_at.is_none_or(|t| t.elapsed() >= self.inner.ttl)
+                    self.inner.needed(&st, &Need::Stale)
                 };
-                if stale {
+                if revalidate {
                     self.revalidate_in_background();
                 }
                 verify_jwt(token, &jwks)
             }
-            // Unknown kid on a warm cache: rotation => (throttled, coalesced) inline refetch.
+            // Unknown kid on a warm cache: rotation => (throttled, coalesced) refetch.
             Some(_) => {
-                self.inner.refresh_if(Need::Kid(&kid)).await?;
+                self.inner.refresh_detached(Need::Kid(kid)).await?;
                 self.verify_current(token).await
             }
-            // Cold: nothing cached to serve; fetch inline (fail closed on error).
+            // Cold (or past max_stale): nothing servable; fetch (fail closed on error).
             None => {
-                self.inner.refresh_if(Need::Stale).await?;
+                self.inner.refresh_detached(Need::Stale).await?;
                 self.verify_current(token).await
             }
         }
     }
 
+    /// Verify against the current servable set. If there is none, wait out any in-flight
+    /// fetch (another caller's detached refresh) once before failing closed.
     async fn verify_current(&self, token: &str) -> Result<Claims, AuthError> {
-        let jwks = self
-            .inner
-            .current()
-            .await
-            .ok_or_else(|| AuthError::JwksUnavailable("no JWKS loaded".into()))?;
+        let mut jwks = self.inner.current().await;
+        if jwks.is_none() {
+            let _wait = self.inner.refresh_lock.lock().await;
+            jwks = self.inner.current().await;
+        }
+        let jwks = jwks.ok_or_else(|| AuthError::JwksUnavailable("no JWKS loaded".into()))?;
         verify_jwt(token, &jwks)
     }
 }

@@ -810,13 +810,15 @@ async fn jwks_cache_ttl_expiry_refreshes_and_survives_outage() {
         policy(),
         Duration::ZERO, // always stale: every verify attempts a refresh
         Duration::ZERO, // ...and the throttle is open
-    );
+    )
+    // Default max-stale is 4x TTL == 0 here; give the stale set a real serving window.
+    .with_max_stale(Duration::from_secs(60));
     let t = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
     assert!(cache.verify(&t).await.is_ok());
     assert!(cache.verify(&t).await.is_ok());
     // Stale-while-revalidate: the second verify served the cached set and refreshed in the
-    // background.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // background; await that task deterministically.
+    cache.settle_background().await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
@@ -1096,7 +1098,7 @@ async fn jwks_cache_stale_refresh_coalesces_and_throttles() {
     for h in tasks {
         assert!(h.await.unwrap().is_ok(), "stale keys keep serving");
     }
-    tokio::time::sleep(Duration::from_millis(200)).await; // let the one background refresh land
+    cache.settle_background().await; // the one background refresh
     assert_eq!(
         n.load(Ordering::SeqCst),
         2,
@@ -1299,4 +1301,96 @@ async fn jwks_ttl_expiry_with_hung_issuer_does_not_stall_cached_kid() {
             "cached kid must not wait on refresh"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jwks_cold_fetch_survives_caller_drop_and_does_not_lock_out() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct F(Arc<AtomicUsize>, Arc<AtomicUsize>, String);
+    impl JwksFetcher for F {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            self.1.fetch_add(1, Ordering::SeqCst); // reached only if the fetch ran to completion
+            Ok(self.2.clone())
+        }
+    }
+    let k = shared_key();
+    let (started, finished) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    // Long throttle: a cancelled-but-charged attempt would lock everyone out for 60s.
+    let cache = JwksCache::new(
+        F(
+            started.clone(),
+            finished.clone(),
+            json!({"keys":[k.jwk.clone()]}).to_string(),
+        ),
+        policy(),
+        Duration::from_secs(300),
+        Duration::from_secs(60),
+    );
+    let t = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
+    // Caller disconnects mid cold-start fetch.
+    let dropped = tokio::time::timeout(Duration::from_millis(30), cache.verify(&t)).await;
+    assert!(dropped.is_err(), "caller was dropped mid-fetch");
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    // A later caller (arriving mid-flight) waits for the detached fetch and authenticates.
+    assert!(
+        cache.verify(&t).await.is_ok(),
+        "no lockout window after a dropped cold fetch"
+    );
+    assert_eq!(
+        finished.load(Ordering::SeqCst),
+        1,
+        "the detached fetch completed"
+    );
+    assert_eq!(started.load(Ordering::SeqCst), 1, "and was not repeated");
+}
+
+#[tokio::test]
+async fn jwks_max_stale_stops_serving_old_keys_when_refresh_keeps_failing() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct F(Arc<AtomicBool>, String);
+    impl JwksFetcher for F {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            if self.0.load(Ordering::SeqCst) {
+                Err(AuthError::JwksUnavailable("down".into()))
+            } else {
+                Ok(self.1.clone())
+            }
+        }
+    }
+    let k = shared_key();
+    let down = Arc::new(AtomicBool::new(false));
+    let cache = JwksCache::new(
+        F(down.clone(), json!({"keys":[k.jwk.clone()]}).to_string()),
+        policy(),
+        Duration::from_millis(10),
+        Duration::ZERO,
+    )
+    .with_max_stale(Duration::from_millis(150));
+    let t = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
+    assert!(cache.verify(&t).await.is_ok());
+    down.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(30)).await; // past TTL, within max-stale
+    assert!(
+        cache.verify(&t).await.is_ok(),
+        "stale-while-revalidate within max-stale"
+    );
+    cache.settle_background().await;
+    tokio::time::sleep(Duration::from_millis(200)).await; // past max-stale
+    let r = cache.verify(&t).await;
+    assert!(matches!(r, Err(AuthError::JwksUnavailable(_))), "{r:?}");
+    // Recovery: once the issuer is back a refresh succeeds and the kid verifies again.
+    down.store(false, Ordering::SeqCst);
+    assert!(cache.verify(&t).await.is_ok());
 }
