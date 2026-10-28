@@ -47,14 +47,6 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "ci"
-      include: "scope"
-    labels:
-      - "dependencies"
-      - "github-actions"
-    groups:
       # init/analyze/upload-sarif are versioned and released together and
       # must match exactly -- a split bump (e.g. #170 bumping analyze to
       # 4.37.9 while #167 bumped init separately) fails CI with "Loaded a
@@ -63,10 +55,19 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action/*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
 
   # Enable version updates for Docker
   - package-ecosystem: "docker"
-    directory: "/proxy"
+    directories:
+      - "/proxy"
+      - "/services/management"
     target-branch: "release/v0.2.X"
     schedule:
       interval: "weekly"
@@ -89,41 +90,10 @@ updates:
       - "dependencies"
       - "docker"
     ignore:
-      # Hold the base image on the 3.13 line. The house standard is Python
+      # Hold the base images (/proxy, /services/management) on the 3.13 line. The house standard is Python
       # 3.13.x and CI runs 3.13, so a 3.14 image would put the container ahead
       # of both and diverge from what the test job actually exercises.
       # Patch and minor updates within 3.13 still come through normally.
       # Remove this once the standard moves to 3.14.
-      - dependency-name: "python"
-        versions: [">=3.14"]
-
-  # Path is services/management, not management — the service moved during the
-  # Phase-1 consolidation. The old entry pointed at a directory that no longer
-  # exists, so Dockerfile updates for this service were silently never scanned.
-  - package-ecosystem: "docker"
-    directory: "/services/management"
-    target-branch: "release/v0.2.X"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "08:00"
-    groups:
-      all-dependencies:
-        applies-to: version-updates
-        patterns:
-          - "*"
-      security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "docker"
-      include: "scope"
-    labels:
-      - "dependencies"
-      - "docker"
-    ignore:
-      # Same 3.13 hold as the proxy image above.
       - dependency-name: "python"
         versions: [">=3.14"]
