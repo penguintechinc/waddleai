@@ -20,4 +20,5 @@ tracing = "=0.1.44"
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
 base64 = "=0.22.1"
+chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
 aws-lc-rs = "=1.19.0"

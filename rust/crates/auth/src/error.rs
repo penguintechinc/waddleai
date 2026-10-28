@@ -22,7 +22,7 @@ pub enum AuthError {
     /// The JWKS could not be fetched/parsed and no cached key could serve the token.
     #[error("JWKS unavailable: {0}")]
     JwksUnavailable(String),
-    /// A database error while resolving the key or user.
-    #[error("database error: {0}")]
-    Db(String),
+    /// A database error while resolving the key or user. The detail is logged, never surfaced.
+    #[error("authentication backend unavailable")]
+    Db,
 }

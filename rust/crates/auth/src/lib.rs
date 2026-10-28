@@ -17,7 +17,7 @@ pub mod rbac;
 #[rustfmt::skip]
 mod scopes_generated;
 
-pub use api_key::{authenticate_api_key, parse_wa_key_id};
+pub use api_key::{authenticate_api_key, parse_wa_key_id, warm_up};
 pub use claims::{AuthMode, Claims, UserContext};
 pub use error::AuthError;
 pub use jwks::{verify_jwt, Jwks, JwksCache, JwksFetcher, JwtPolicy};

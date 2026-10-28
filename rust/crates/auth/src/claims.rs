@@ -92,14 +92,15 @@ impl UserContext {
     /// numeric user id, `tenant` the numeric org id; non-numeric values fail closed (Python's
     /// fall-through to id 0 is deliberately not reproduced). Non-numeric `teams` entries drop.
     pub fn from_claims(c: &Claims) -> Result<Self, AuthError> {
-        let user_id: i32 = c
-            .sub
-            .parse()
-            .map_err(|_| AuthError::InvalidToken("sub is not a numeric user id".into()))?;
-        let org_id: i32 = c
-            .tenant
-            .parse()
-            .map_err(|_| AuthError::InvalidToken("tenant is not a numeric org id".into()))?;
+        // Ids are DB serials: strictly positive. 0 / negatives are rejected so the Python
+        // "fall through to org 0" behaviour can never be reached.
+        let positive = |v: &str, what: &str| -> Result<i32, AuthError> {
+            v.parse::<i32>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                AuthError::InvalidToken(format!("{what} is not a positive numeric id"))
+            })
+        };
+        let user_id = positive(&c.sub, "sub")?;
+        let org_id = positive(&c.tenant, "tenant")?;
         Ok(Self {
             org_id,
             user_id,

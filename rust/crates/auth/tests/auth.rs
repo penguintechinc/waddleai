@@ -170,7 +170,7 @@ async fn seed_py_key(c: &Connection) -> &'static Seeded {
 async fn wa_key_valid_returns_context() {
     let c = &conn().await;
     let s = seed_py_key(c).await;
-    let ctx = authenticate_api_key(c, PY_KEY)
+    let ctx = authenticate_api_key(c, PY_KEY, true)
         .await
         .expect("authenticates");
     assert_eq!(ctx.user_id, s.user_id);
@@ -194,7 +194,7 @@ async fn wa_key_wrong_secret_rejects() {
     seed_py_key(c).await;
     let bad = format!("wa-{PY_KEY_ID}-not-the-secret");
     assert!(matches!(
-        authenticate_api_key(c, &bad).await,
+        authenticate_api_key(c, &bad, true).await,
         Err(AuthError::InvalidApiKey)
     ));
 }
@@ -216,7 +216,7 @@ async fn wa_key_malformed_rejects() {
         "wa-\u{0}-x",
         "wa-ä-ö",
     ] {
-        let r = authenticate_api_key(c, bad).await;
+        let r = authenticate_api_key(c, bad, true).await;
         assert!(
             matches!(r, Err(AuthError::InvalidApiKey)),
             "{bad:?} -> {r:?}"
@@ -227,7 +227,7 @@ async fn wa_key_malformed_rejects() {
 #[tokio::test]
 async fn wa_key_unknown_id_rejects() {
     let c = &conn().await;
-    let r = authenticate_api_key(c, "wa-0000000000000000-whatever-secret").await;
+    let r = authenticate_api_key(c, "wa-0000000000000000-whatever-secret", true).await;
     assert!(matches!(r, Err(AuthError::InvalidApiKey)));
 }
 
@@ -238,7 +238,7 @@ async fn wa_key_disabled_expired_and_disabled_user_reject() {
     let (k1, h1) = mint("aa00000000000001", "s1");
     seed_key(c, &s, "aa00000000000001", &h1, false, None, None).await;
     assert!(matches!(
-        authenticate_api_key(c, &k1).await,
+        authenticate_api_key(c, &k1, true).await,
         Err(AuthError::InvalidApiKey)
     ));
 
@@ -254,7 +254,7 @@ async fn wa_key_disabled_expired_and_disabled_user_reject() {
     )
     .await;
     assert!(matches!(
-        authenticate_api_key(c, &k2).await,
+        authenticate_api_key(c, &k2, true).await,
         Err(AuthError::InvalidApiKey)
     ));
 
@@ -270,7 +270,7 @@ async fn wa_key_disabled_expired_and_disabled_user_reject() {
     )
     .await;
     assert!(
-        authenticate_api_key(c, &k3).await.is_ok(),
+        authenticate_api_key(c, &k3, true).await.is_ok(),
         "future expiry is valid"
     );
 
@@ -278,7 +278,7 @@ async fn wa_key_disabled_expired_and_disabled_user_reject() {
     let (k4, h4) = mint("aa00000000000004", "s4");
     seed_key(c, &d, "aa00000000000004", &h4, true, None, None).await;
     assert!(matches!(
-        authenticate_api_key(c, &k4).await,
+        authenticate_api_key(c, &k4, true).await,
         Err(AuthError::UserDisabled)
     ));
 }
@@ -290,7 +290,7 @@ async fn wa_key_unknown_role_fails_closed() {
     let (k, h) = mint("aa00000000000005", "s5");
     seed_key(c, &s, "aa00000000000005", &h, true, None, None).await;
     assert!(matches!(
-        authenticate_api_key(c, &k).await,
+        authenticate_api_key(c, &k, true).await,
         Err(AuthError::UnknownRole)
     ));
 }
@@ -321,7 +321,7 @@ async fn wa_key_team_scopes_from_live_membership() {
         vec![team_id.into(), s.user_id.into(), s.org_id.into()]).await;
     let (k, h) = mint("aa00000000000006", "s6");
     seed_key(c, &s, "aa00000000000006", &h, true, None, Some(team_id)).await;
-    let ctx = authenticate_api_key(c, &k).await.expect("ok");
+    let ctx = authenticate_api_key(c, &k, true).await.expect("ok");
     assert_eq!(ctx.team_id, Some(team_id));
     assert_eq!(ctx.team_role.as_deref(), Some("admin"));
     assert!(ctx.scopes.contains("team:admin"));
@@ -334,7 +334,7 @@ async fn wa_key_team_scopes_from_live_membership() {
         vec![team_id.into()],
     )
     .await;
-    let ctx = authenticate_api_key(c, &k).await.expect("ok");
+    let ctx = authenticate_api_key(c, &k, true).await.expect("ok");
     assert_eq!(ctx.team_id, None);
     assert!(!ctx.scopes.contains("team:admin"));
     exec(
@@ -809,7 +809,7 @@ async fn jwks_cache_ttl_expiry_refreshes_and_survives_outage() {
         },
         policy(),
         Duration::ZERO, // always stale: every verify attempts a refresh
-        Duration::from_secs(60),
+        Duration::ZERO, // ...and the throttle is open
     );
     let t = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
     assert!(cache.verify(&t).await.is_ok());
@@ -840,4 +840,331 @@ async fn jwks_cache_ttl_expiry_refreshes_and_survives_outage() {
         cold.verify(&t).await,
         Err(AuthError::JwksUnavailable(_))
     ));
+}
+
+#[tokio::test]
+async fn wa_key_teams_disabled_gives_no_team_scopes() {
+    let c = &conn().await;
+    let s = seed_user(c, "team-off", "user", true).await;
+    exec(
+        c,
+        "DELETE FROM teams WHERE organization_id = $1 AND name = 'off-team'",
+        vec![s.org_id.into()],
+    )
+    .await;
+    exec(
+        c,
+        "INSERT INTO teams (organization_id, name, enabled) VALUES ($1, 'off-team', true)",
+        vec![s.org_id.into()],
+    )
+    .await;
+    let team_id = scalar_i32(
+        c,
+        "SELECT id FROM teams WHERE organization_id = $1 AND name = 'off-team'",
+        vec![s.org_id.into()],
+    )
+    .await;
+    exec(c, "INSERT INTO team_members (team_id, user_id, organization_id, team_role) VALUES ($1, $2, $3, 'owner')",
+        vec![team_id.into(), s.user_id.into(), s.org_id.into()]).await;
+    let (k, h) = mint("aa00000000000007", "s7");
+    seed_key(c, &s, "aa00000000000007", &h, true, None, Some(team_id)).await;
+    let on = authenticate_api_key(c, &k, true).await.expect("ok");
+    assert!(on.scopes.contains("team:delete"));
+    let off = authenticate_api_key(c, &k, false).await.expect("ok");
+    assert_eq!((off.team_id, off.team_role.clone()), (None, None));
+    assert!(!off
+        .scopes
+        .iter()
+        .any(|s| s.starts_with("team:") && s != "team:org_admin"));
+    exec(
+        c,
+        "DELETE FROM team_members WHERE team_id = $1",
+        vec![team_id.into()],
+    )
+    .await;
+    exec(
+        c,
+        "DELETE FROM api_keys WHERE team_id = $1",
+        vec![team_id.into()],
+    )
+    .await;
+    exec(c, "DELETE FROM teams WHERE id = $1", vec![team_id.into()]).await;
+}
+
+#[tokio::test]
+async fn wa_key_expiry_uses_naive_utc_basis() {
+    use chrono::{Duration as D, Utc};
+    let c = &conn().await;
+    let s = seed_user(c, "expiry", "user", true).await;
+    let fmt = |d: D| (Utc::now() + d).format("%Y-%m-%d %H:%M:%S").to_string();
+    let (k1, h1) = mint("aa00000000000008", "s8");
+    seed_key(
+        c,
+        &s,
+        "aa00000000000008",
+        &h1,
+        true,
+        Some(&fmt(D::minutes(-5))),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        authenticate_api_key(c, &k1, true).await,
+        Err(AuthError::InvalidApiKey)
+    ));
+    let (k2, h2) = mint("aa00000000000009", "s9");
+    seed_key(
+        c,
+        &s,
+        "aa00000000000009",
+        &h2,
+        true,
+        Some(&fmt(D::minutes(5))),
+        None,
+    )
+    .await;
+    assert!(authenticate_api_key(c, &k2, true).await.is_ok());
+}
+
+#[tokio::test]
+async fn wa_key_nul_secret_and_overlong_reject_without_db() {
+    let c = &conn().await;
+    assert!(matches!(
+        authenticate_api_key(c, &format!("wa-{PY_KEY_ID}-a\0b"), true).await,
+        Err(AuthError::InvalidApiKey)
+    ));
+    let long = format!("{PY_KEY}{}", "x".repeat(20));
+    assert!(matches!(
+        authenticate_api_key(c, &long, true).await,
+        Err(AuthError::InvalidApiKey)
+    ));
+}
+
+#[test]
+fn db_error_display_is_generic() {
+    assert!(!AuthError::Db.to_string().contains("postgres"));
+    auth::warm_up();
+}
+
+#[test]
+fn jwt_future_nbf_rejects() {
+    let k = shared_key();
+    let mut cl = good_claims();
+    cl["nbf"] = json!(now() + 3600);
+    let r = verify_jwt(
+        &sign(k, "k1", jsonwebtoken::Algorithm::RS256, &cl),
+        &jwks_for(k),
+    );
+    assert!(matches!(r, Err(AuthError::InvalidToken(_))), "{r:?}");
+    let mut ok = good_claims();
+    ok["nbf"] = json!(now() - 10);
+    assert!(verify_jwt(
+        &sign(k, "k1", jsonwebtoken::Algorithm::RS256, &ok),
+        &jwks_for(k)
+    )
+    .is_ok());
+}
+
+#[test]
+fn user_context_rejects_zero_and_negative_ids() {
+    let mk = |sub: &str, tenant: &str| Claims {
+        sub: sub.into(),
+        iss: ISS.into(),
+        aud: vec![AUD.into()],
+        iat: None,
+        exp: now() + 60,
+        scope: vec!["proxy:use".into()],
+        tenant: tenant.into(),
+        teams: vec![],
+        roles: vec![],
+    };
+    for (sub, tenant) in [("0", "5"), ("-1", "5"), ("1", "0"), ("1", "-3")] {
+        assert!(
+            matches!(
+                UserContext::from_claims(&mk(sub, tenant)),
+                Err(AuthError::InvalidToken(_))
+            ),
+            "{sub}/{tenant}"
+        );
+    }
+    assert!(UserContext::from_claims(&mk("1", "1")).is_ok());
+}
+
+#[test]
+fn jwks_skips_encryption_keys() {
+    let k = shared_key();
+    let mut enc = k.jwk.clone();
+    enc["use"] = json!("enc");
+    assert!(Jwks::from_json(&json!({"keys":[enc]}).to_string(), policy()).is_err());
+    let mut nouse = k.jwk.clone();
+    nouse.as_object_mut().unwrap().remove("use");
+    assert!(Jwks::from_json(&json!({"keys":[nouse]}).to_string(), policy()).is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jwks_cache_concurrent_unknown_kid_spray_fetches_once() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct Slow(Arc<AtomicUsize>, String);
+    impl JwksFetcher for Slow {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            Ok(self.1.clone())
+        }
+    }
+    let k = shared_key();
+    let n = Arc::new(AtomicUsize::new(0));
+    let cache = Arc::new(JwksCache::new(
+        Slow(n.clone(), json!({"keys":[k.jwk.clone()]}).to_string()),
+        policy(),
+        Duration::from_secs(300),
+        Duration::from_millis(150),
+    ));
+    let warm = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
+    assert!(cache.verify(&warm).await.is_ok());
+    tokio::time::sleep(Duration::from_millis(200)).await; // throttle window open
+    let mut tasks = vec![];
+    for i in 0..20 {
+        let (cache, t) = (
+            cache.clone(),
+            sign(
+                k,
+                &format!("ghost{i}"),
+                jsonwebtoken::Algorithm::RS256,
+                &good_claims(),
+            ),
+        );
+        tasks.push(tokio::spawn(async move { cache.verify(&t).await }));
+    }
+    for t in tasks {
+        assert!(matches!(t.await.unwrap(), Err(AuthError::UnknownKid)));
+    }
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        2,
+        "warm fetch + exactly one refetch for the whole spray"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jwks_cache_stale_refresh_coalesces_and_throttles() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct Slow(Arc<AtomicUsize>, String);
+    impl JwksFetcher for Slow {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            Ok(self.1.clone())
+        }
+    }
+    let k = shared_key();
+    let n = Arc::new(AtomicUsize::new(0));
+    // ttl tiny => stale almost at once; throttle 300ms => at most one refresh per window.
+    let cache = Arc::new(JwksCache::new(
+        Slow(n.clone(), json!({"keys":[k.jwk.clone()]}).to_string()),
+        policy(),
+        Duration::from_millis(10),
+        Duration::from_millis(300),
+    ));
+    let t = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
+    assert!(cache.verify(&t).await.is_ok());
+    tokio::time::sleep(Duration::from_millis(350)).await; // stale AND throttle open
+    let mut tasks = vec![];
+    for _ in 0..20 {
+        let (cache, t) = (cache.clone(), t.clone());
+        tasks.push(tokio::spawn(async move { cache.verify(&t).await }));
+    }
+    for h in tasks {
+        assert!(h.await.unwrap().is_ok(), "stale keys keep serving");
+    }
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        2,
+        "20 concurrent stale callers coalesce into one refresh"
+    );
+}
+
+#[tokio::test]
+async fn jwks_cache_garbage_token_never_triggers_fetch() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct C(Arc<AtomicUsize>);
+    impl JwksFetcher for C {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(AuthError::JwksUnavailable("x".into()))
+        }
+    }
+    let n = Arc::new(AtomicUsize::new(0));
+    let cache = JwksCache::new(C(n.clone()), policy(), Duration::ZERO, Duration::ZERO);
+    for bad in ["", "garbage", "a.b.c"] {
+        assert!(matches!(
+            cache.verify(bad).await,
+            Err(AuthError::InvalidToken(_))
+        ));
+    }
+    assert_eq!(n.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn jwks_cache_hung_fetch_times_out_and_cached_keys_still_verify() {
+    use auth::{JwksCache, JwksFetcher};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    struct Hang(Arc<AtomicBool>, String);
+    impl JwksFetcher for Hang {
+        async fn fetch(&self) -> Result<String, AuthError> {
+            if self.0.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            Ok(self.1.clone())
+        }
+    }
+    let k = shared_key();
+    let hang = Arc::new(AtomicBool::new(false));
+    let cache = Arc::new(
+        JwksCache::new(
+            Hang(hang.clone(), json!({"keys":[k.jwk.clone()]}).to_string()),
+            policy(),
+            Duration::from_secs(300),
+            Duration::ZERO,
+        )
+        .with_fetch_timeout(Duration::from_millis(80)),
+    );
+    let good = sign(k, "k1", jsonwebtoken::Algorithm::RS256, &good_claims());
+    assert!(cache.verify(&good).await.is_ok());
+    hang.store(true, Ordering::SeqCst);
+    let ghost = sign(k, "ghost", jsonwebtoken::Algorithm::RS256, &good_claims());
+    let c2 = cache.clone();
+    let spray = tokio::spawn(async move { c2.verify(&ghost).await });
+    // While the hung refetch holds refresh_lock, a cached-key token still verifies promptly.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let started = std::time::Instant::now();
+    assert!(cache.verify(&good).await.is_ok());
+    assert!(
+        started.elapsed() < Duration::from_millis(50),
+        "cached verify must not wait on the hung fetch"
+    );
+    let r = tokio::time::timeout(Duration::from_secs(2), spray)
+        .await
+        .expect("bounded")
+        .unwrap();
+    assert!(matches!(r, Err(AuthError::JwksUnavailable(_))), "{r:?}");
 }

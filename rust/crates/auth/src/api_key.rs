@@ -10,22 +10,41 @@ use std::sync::LazyLock;
 use db::entities::{api_keys, team_members, teams, users};
 use db::Connection;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use tokio::sync::Semaphore;
 
 use crate::claims::{AuthMode, UserContext};
 use crate::error::AuthError;
 use crate::rbac::{self, Role, TeamRole};
 
-/// Longest credential we will even look at (minted keys are ~64 bytes).
-const MAX_KEY_LEN: usize = 512;
+/// Longest credential accepted. bcrypt only hashes the first 72 bytes, so anything longer
+/// would alias to its 72-byte prefix; a minted key is `wa-`(3) + 16 hex + `-` + 43 = 63 bytes.
+const MAX_KEY_LEN: usize = 72;
+
+/// Cap on concurrent bcrypt verifications (each is ~250ms of CPU at cost 12). This bounds the
+/// blocking-pool CPU an attacker can burn with format-valid junk keys; the P2 Valkey auth
+/// cache is still required to fully close this DoS amplifier (cached hits skip bcrypt).
+static BCRYPT_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
+    let n = std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get);
+    Semaphore::new(n.clamp(2, 16))
+});
 
 /// bcrypt hash verified against when no real row exists, so an unknown `key_id` costs the
 /// same CPU time as a wrong secret (no key_id-existence timing oracle). Never matches.
 static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
     // cost 12 == passlib's default, i.e. the cost of real rows.
+    // INFALLIBLE: bcrypt only errors on a NUL byte in the password or an invalid cost; this
+    // password is a NUL-free constant and 12 is a valid cost. A failure here must be loud --
+    // an empty dummy would silently re-open the timing oracle.
     bcrypt::hash_with_result("dummy-credential-never-valid", 12)
-        .map(|h| h.to_string())
-        .unwrap_or_default()
+        .expect("bcrypt cost-12 hash of a constant NUL-free password cannot fail")
+        .to_string()
 });
+
+/// Compute the dummy hash eagerly. Call once at startup (before serving) so the first
+/// unknown-key request does not pay the ~250ms hashing cost (itself a timing signal).
+pub fn warm_up() {
+    LazyLock::force(&DUMMY_HASH);
+}
 
 /// Extract the non-secret `key_id` from a `wa-{key_id}-{secret}` credential.
 ///
@@ -41,6 +60,9 @@ pub fn parse_wa_key_id(api_key: &str) -> Option<&str> {
     if prefix != "wa"
         || key_id.is_empty()
         || secret.is_empty()
+        // A NUL can never be in a minted secret and makes bcrypt error; reject it here so an
+        // attacker cannot trigger error-level "invalid hash" logs against a real key_id.
+        || secret.contains('\0')
         || !key_id.bytes().all(|b| b.is_ascii_alphanumeric())
     {
         return None;
@@ -51,6 +73,11 @@ pub fn parse_wa_key_id(api_key: &str) -> Option<&str> {
 /// Run the (CPU-heavy) bcrypt check off the async executor. Any bcrypt error (corrupt hash)
 /// is a rejection, logged without the credential.
 async fn bcrypt_matches(credential: &str, hash: &str) -> bool {
+    // Bounded: at most N verifications in flight (see BCRYPT_PERMITS). The semaphore is
+    // never closed, so acquire only fails on a closed semaphore -> treat as rejection.
+    let Ok(_permit) = BCRYPT_PERMITS.acquire().await else {
+        return false;
+    };
     let (c, h) = (credential.to_owned(), hash.to_owned());
     match tokio::task::spawn_blocking(move || bcrypt::verify(c, &h)).await {
         Ok(Ok(ok)) => ok,
@@ -65,8 +92,10 @@ async fn bcrypt_matches(credential: &str, hash: &str) -> bool {
     }
 }
 
+/// Log the driver error (internals stay in logs) and surface only the generic `Db` variant.
 fn db_err(e: sea_orm::DbErr) -> AuthError {
-    AuthError::Db(e.to_string())
+    tracing::error!(error = %e, "auth database error");
+    AuthError::Db
 }
 
 /// Managed org ids from `users.managed_orgs` (JSON array of ints/strings, or a comma string).
@@ -94,7 +123,12 @@ async fn resolve_team(
     user_id: i32,
     org_id: i32,
     key_team: Option<i32>,
+    teams_enabled: bool,
 ) -> Result<Option<(i32, String)>, AuthError> {
+    // `waddleai.disable-teams` kill switch: ON => the key acts teamless (no team scopes).
+    if !teams_enabled {
+        return Ok(None);
+    }
     let Some(team_id) = key_team else {
         return Ok(None);
     };
@@ -110,6 +144,8 @@ async fn resolve_team(
         .one(db)
         .await
         .map_err(db_err)?;
+    // Intentional asymmetry with users (which fail closed on NULL `enabled`): Python treats a
+    // team as disabled only when `enabled is False` (`team_rbac._live_team_membership`).
     match team {
         Some(t) if t.enabled != Some(false) => Ok(Some((m.team_id, m.team_role))),
         _ => Ok(None),
@@ -122,9 +158,13 @@ async fn resolve_team(
 /// off the executor) against the stored hash -- or a dummy hash when no enabled row exists,
 /// so unknown/disabled ids are timing-indistinguishable from a wrong secret. Unlike the
 /// Python path, `api_keys.expires_at` is enforced. Fails closed on an unknown role.
+///
+/// `teams_enabled` is the resolved `waddleai.disable-teams` kill switch (inverted): pass `true`
+/// unless the flag is ON (an unseen flag means teams ON); `false` grants no team scopes.
 pub async fn authenticate_api_key(
     db: &Connection,
     api_key: &str,
+    teams_enabled: bool,
 ) -> Result<UserContext, AuthError> {
     let key_id = parse_wa_key_id(api_key).ok_or(AuthError::InvalidApiKey)?;
 
@@ -156,7 +196,14 @@ pub async fn authenticate_api_key(
     };
     let role = Role::parse(&user.role).ok_or(AuthError::UnknownRole)?;
 
-    let team = resolve_team(db, user.id, user.organization_id, key.team_id).await?;
+    let team = resolve_team(
+        db,
+        user.id,
+        user.organization_id,
+        key.team_id,
+        teams_enabled,
+    )
+    .await?;
     let team_role = team.as_ref().and_then(|(_, r)| TeamRole::parse(r));
 
     Ok(UserContext {
@@ -173,7 +220,9 @@ pub async fn authenticate_api_key(
     })
 }
 
-/// Current UTC time as the naive timestamp type SeaORM maps `timestamp` columns to.
+/// Current UTC time as a naive timestamp. `api_keys.expires_at` is `timestamp WITHOUT time
+/// zone` holding naive UTC (Python writes `datetime.utcnow()`), which SeaORM maps to
+/// `NaiveDateTime` -- so naive-UTC is the correct comparison basis (no tz offset skew).
 fn chrono_now() -> sea_orm::prelude::DateTime {
     sea_orm::prelude::DateTimeUtc::from(std::time::SystemTime::now()).naive_utc()
 }
