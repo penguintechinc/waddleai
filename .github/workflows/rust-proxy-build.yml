@@ -5,6 +5,8 @@ on:
     branches: [ main, 'release/**', 'v*' ]
     paths:
       - 'rust/**'
+      - 'services/management/alembic/**'
+      - 'services/management/app/models_sqlalchemy.py'
       - '.github/workflows/rust-proxy-build.yml'
   pull_request:
     # release/** matters as much as main -- feature branches merge into the
@@ -12,6 +14,8 @@ on:
     branches: [ main, 'release/**' ]
     paths:
       - 'rust/**'
+      - 'services/management/alembic/**'
+      - 'services/management/app/models_sqlalchemy.py'
       - '.github/workflows/rust-proxy-build.yml'
 
 defaults:
@@ -28,11 +32,51 @@ jobs:
   test:
     name: fmt, clippy, test, audit, deny, coverage
     runs-on: ubuntu-latest
+    # A real pgvector Postgres: the `db` crate's connection tests and the
+    # entity drift gate (entities vs. the Alembic-migrated schema) need one, and
+    # the whole workspace runs here so no test is ever skipped for lack of a DB.
+    # Image digest MUST stay in sync with scripts/deploy-alpha.sh PGVECTOR_SRC.
+    services:
+      pgvector:
+        image: pgvector/pgvector:pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
+        env:
+          POSTGRES_USER: waddleai
+          POSTGRES_PASSWORD: waddleai-ci  # nosec B105 -- ephemeral CI service-container password, never real
+          POSTGRES_DB: waddleai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U waddleai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://waddleai:waddleai-ci@localhost:5432/waddleai
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      # Alembic stays the schema authority; the Rust entities are generated from
+      # the migrated DB and must not drift from it.
+      - name: Apply Alembic migrations to the test database
+        working-directory: services/management
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes -r requirements.txt
+          DATABASE_URL="$TEST_DATABASE_URL" alembic upgrade head
+
+      - name: Install sea-orm-cli (entity drift gate)
+        run: >-
+          cargo install sea-orm-cli --locked --version 2.0.4
+          --no-default-features
+          --features cli,codegen,runtime-tokio-rustls,async-std,sqlx-postgres
 
       # rust-toolchain.toml (rust/) pins channel + components.
       - name: Install pinned Rust toolchain
@@ -75,4 +119,6 @@ jobs:
 
       # House rule: 90%+ line coverage; build fails below threshold.
       - name: Coverage gate (90% lines)
-        run: cargo llvm-cov --workspace --locked --fail-under-lines 90
+        run: >-
+          cargo llvm-cov --workspace --locked --fail-under-lines 90
+          --ignore-filename-regex 'crates/db/src/entities/'
