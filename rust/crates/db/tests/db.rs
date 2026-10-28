@@ -2,14 +2,17 @@
 //! Postgres with the Alembic schema applied) and FAILS loudly when it is unset.
 use db::{connect, connect_with, DbError, DbOptions};
 use sea_orm::{ConnectionTrait, Statement};
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// Env is process-global; tests touching DB_* / DATABASE_URL serialize on this.
-static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+static ENV: Mutex<()> = Mutex::new(());
 
+// Test-only env serialization: the guard must span connect()'s env reads.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn connect_pools_and_pings() {
-    let _g = ENV.lock().await;
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let url = std::env::var("TEST_DATABASE_URL").expect(
         "TEST_DATABASE_URL must point at a migrated Postgres (see rust/scripts/gen-entities.sh)",
     );
@@ -49,7 +52,7 @@ async fn connect_retries_then_errors() {
 
 #[test]
 fn options_from_env_parse_and_reject() {
-    let _g = ENV.blocking_lock();
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     // single test owns these vars (no other test reads them)
     std::env::set_var("DB_POOL_SIZE", "7");
     std::env::set_var("DB_MAX_RETRIES", "2");
