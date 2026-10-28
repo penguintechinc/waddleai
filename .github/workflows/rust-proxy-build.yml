@@ -7,6 +7,7 @@ on:
       - 'rust/**'
       - 'services/management/alembic/**'
       - 'services/management/app/models_sqlalchemy.py'
+      - 'shared/auth/**'
       - '.github/workflows/rust-proxy-build.yml'
   pull_request:
     # release/** matters as much as main -- feature branches merge into the
@@ -16,6 +17,7 @@ on:
       - 'rust/**'
       - 'services/management/alembic/**'
       - 'services/management/app/models_sqlalchemy.py'
+      - 'shared/auth/**'
       - '.github/workflows/rust-proxy-build.yml'
 
 defaults:
@@ -90,6 +92,12 @@ jobs:
           python -m pip install --require-hashes -r requirements.txt
           DATABASE_URL="$TEST_DATABASE_URL" alembic upgrade head
 
+      # Python stays the authority for role -> scope bundles; the Rust mirror is generated
+      # and must not drift. Needs the management requirements installed above.
+      - name: RBAC scope bundles in sync (Rust mirror vs shared/auth)
+        working-directory: .
+        run: python rust/scripts/gen-rbac-scopes.py --check
+
       - name: Install sea-orm-cli (entity drift gate)
         run: >-
           cargo install sea-orm-cli --locked --version 2.0.4
@@ -129,6 +137,17 @@ jobs:
           n="$(echo "$out" | awk '/^test result:/ {s+=$4} END {print s+0}')"
           echo "cache tests passed: $n"
           test "$n" -ge 1
+
+      # The auth gate must not be a silent no-op: the DB-backed wa- key tests run here
+      # (TEST_DATABASE_URL, Alembic-migrated pgvector) and >=15 tests must execute.
+      - name: auth crate tests ran (count)
+        run: |
+          set -euo pipefail
+          out="$(cargo test -p auth --locked 2>&1)"
+          echo "$out"
+          n="$(echo "$out" | awk '/^test result:/ {s+=$4} END {print s+0}')"
+          echo "auth tests passed: $n"
+          test "$n" -ge 15
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
