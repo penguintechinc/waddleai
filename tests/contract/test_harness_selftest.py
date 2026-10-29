@@ -225,6 +225,14 @@ def test_diff_output_never_echoes_secrets() -> None:
         parity.diff(_json({"d": 1}), leaky, divergence="expired_api_key", credential="wa-api-key")
     )
     out += "\n".join(parity.diff(_json({"tokens": [_SK]}), _json({"tokens": [_JWT]})))
+    # secrets planted as dict keys (missing-key + nested path) and as a header name
+    out += "\n".join(parity.diff(_json({"a": 1}), _json({"a": 1, _SK: 1, "n": {_JWT: {"x": 1}}})))
+    out += "\n".join(parity.diff(_json({"n": {_SK: 1}}), _json({"n": {_SK: 2}})))
+    hdr = _denied(headers={"content-type": "application/json", _SK: "1"})
+    out += "\n".join(
+        parity.diff(_json({"d": 1}), hdr, divergence="expired_api_key", credential="wa-api-key")
+    )
+    assert "missing in python" in out and "unexpected header" in out
     assert "$.body.error" in out and "$rust.body.error" in out and "tokens[0]" in out
     for secret in (_SK, _JWT, "ABCDEFGH12345678", "sigsigsig"):
         assert secret not in out, secret

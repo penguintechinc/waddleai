@@ -306,11 +306,11 @@ def _walk(a: Any, b: Any, path: str, out: list[str]) -> None:
     elif isinstance(a, dict):
         for k in sorted(set(a) | set(b)):
             if k not in a:
-                out.append(f"{path}.{k}: missing in python")
+                out.append(f"{path}.{redact_text(str(k))}: missing in python")
             elif k not in b:
-                out.append(f"{path}.{k}: missing in rust")
+                out.append(f"{path}.{redact_text(str(k))}: missing in rust")
             else:
-                _walk(a[k], b[k], f"{path}.{k}", out)
+                _walk(a[k], b[k], f"{path}.{redact_text(str(k))}", out)
     elif isinstance(a, list):
         if len(a) != len(b):
             out.append(f"{path}: length {len(a)} != {len(b)}")
@@ -328,7 +328,7 @@ def _check_denied_envelope(rust: Response, status: int, out: list[str]) -> None:
     _walk(RUST_DENIED_BODY, n["body"], "$rust.body", out)
     for h, v in n["headers"].items():
         if h not in _DENIED_ALLOWED_HEADERS:
-            out.append(f"$rust.headers.{h}: unexpected header on denied response")
+            out.append(f"$rust.headers.{redact_text(str(h))}: unexpected header on denied response")
         elif h == "content-type" and not v.lower().startswith("application/json"):
             out.append(f"$rust.headers.content-type: {redact_text(v)!r} is not application/json")
     if "content-type" not in n["headers"]:
