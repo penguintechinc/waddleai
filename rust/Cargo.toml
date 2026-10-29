@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/waddleai-proxy", "crates/config", "crates/db", "crates/cache", "crates/auth", "crates/flags", "crates/telemetry"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/penguintechinc/waddleai"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

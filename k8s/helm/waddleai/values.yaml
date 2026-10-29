@@ -485,6 +485,9 @@ valkey:
     - valkey-server
     - --appendonly
     - "yes"
+    # Required by the Rust proxy's cache-invalidation subscriber (DEL events).
+    - --notify-keyspace-events
+    - Eg
 
   livenessProbe:
     enabled: true

@@ -1,0 +1,20 @@
+[package]
+name = "waddleai-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaddleAI Rust data-plane proxy"
+
+[[bin]]
+name = "waddleai-proxy"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "=4.6.6", features = ["derive"] }
+cache = { path = "../cache", version = "=0.1.0" }
+config = { path = "../config", version = "=0.1.0" }
+db = { path = "../db", version = "=0.1.0" }
+telemetry = { path = "../telemetry", version = "=0.1.0" }
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "net"] }
+tracing = "=0.1.44"

@@ -1,5 +1,5 @@
 .PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-valkey test-e2e test-functional test-security \
-        test-contract smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
+        test-contract test-contract-selftest smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
 
 # Every python invocation goes through the repo venv when it exists, and only
@@ -158,6 +158,9 @@ test-gpu: ## Run the real-model (GPU) test tier. Needs Ollama + gemma4:e4b + shi
 	@echo "Running GPU-tier tests against $(OLLAMA_HOST)..."
 	@WADDLEAI_GPU_TESTS=1 OLLAMA_HOST=$(OLLAMA_HOST) \
 	  $(PY) -m pytest tests -m gpu -v --no-cov
+
+test-contract-selftest: ## Hermetic parity-harness self-test (no live servers).
+	$(PY) -m pytest tests/contract/test_harness_selftest.py -v --no-cov
 
 test-contract:
 	@echo "Running contract snapshot tests..."

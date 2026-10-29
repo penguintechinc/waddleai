@@ -1,0 +1,175 @@
+name: waddleai-proxy (Rust) Build and Test
+
+on:
+  push:
+    branches: [ main, 'release/**', 'v*' ]
+    paths:
+      - 'rust/**'
+      - 'services/management/alembic/**'
+      - 'services/management/app/models_sqlalchemy.py'
+      - 'shared/auth/**'
+      - 'shared/licensing/**'
+      - 'shared/utils/feature_flags.py'
+      - '.github/workflows/rust-proxy-build.yml'
+  pull_request:
+    # release/** matters as much as main -- feature branches merge into the
+    # release branch first. Mirrors rust-build.yml.
+    branches: [ main, 'release/**' ]
+    paths:
+      - 'rust/**'
+      - 'services/management/alembic/**'
+      - 'services/management/app/models_sqlalchemy.py'
+      - 'shared/auth/**'
+      - 'shared/licensing/**'
+      - 'shared/utils/feature_flags.py'
+      - '.github/workflows/rust-proxy-build.yml'
+
+defaults:
+  run:
+    working-directory: rust
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: fmt, clippy, test, audit, deny, coverage
+    runs-on: ubuntu-latest
+    # A real pgvector Postgres: the `db` crate's connection tests and the
+    # entity drift gate (entities vs. the Alembic-migrated schema) need one, and
+    # the whole workspace runs here so no test is ever skipped for lack of a DB.
+    # Image digest MUST stay in sync with scripts/deploy-alpha.sh PGVECTOR_SRC.
+    services:
+      pgvector:
+        image: pgvector/pgvector:pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
+        env:
+          POSTGRES_USER: waddleai
+          POSTGRES_PASSWORD: waddleai-ci  # nosec B105 -- ephemeral CI service-container password, never real
+          POSTGRES_DB: waddleai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U waddleai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://waddleai:waddleai-ci@localhost:5432/waddleai
+      TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Valkey for the `cache` crate. A step (not `services:`) because the
+      # server needs --notify-keyspace-events Eg, which service containers
+      # cannot pass. Digest MUST match tests/integration/valkey_harness.py.
+      - name: Start Valkey (keyspace notifications Eg)
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-valkey -p 6379:6379 \
+            valkey/valkey@sha256:c5d4f082b76d433a38274ebb38a43cff19829a062928bdcc45611135ef54e608 \
+            valkey-server --notify-keyspace-events Eg
+          for _ in $(seq 1 30); do
+            if docker exec ci-valkey valkey-cli ping | grep -q PONG; then exit 0; fi
+            sleep 1
+          done
+          echo "Valkey never became ready" >&2
+          exit 1
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      # Alembic stays the schema authority; the Rust entities are generated from
+      # the migrated DB and must not drift from it.
+      - name: Apply Alembic migrations to the test database
+        working-directory: services/management
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes -r requirements.txt
+          DATABASE_URL="$TEST_DATABASE_URL" alembic upgrade head
+
+      # Python stays the authority for role -> scope bundles; the Rust mirror is generated
+      # and must not drift. Needs the management requirements installed above.
+      - name: RBAC scope bundles in sync (Rust mirror vs shared/auth)
+        working-directory: .
+        run: python rust/scripts/gen-rbac-scopes.py --check
+
+      - name: Install sea-orm-cli (entity drift gate)
+        run: >-
+          cargo install sea-orm-cli --locked --version 2.0.4
+          --no-default-features
+          --features cli,codegen,runtime-tokio-rustls,async-std,sqlx-postgres
+
+      # rust-toolchain.toml (rust/) pins channel + components.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-waddleai-proxy-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-waddleai-proxy-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      # The cache gate must not be a silent no-op: require >=1 test executed.
+      - name: cache crate tests ran (count)
+        run: |
+          set -euo pipefail
+          out="$(cargo test -p cache --locked 2>&1)"
+          echo "$out"
+          n="$(echo "$out" | awk '/^test result:/ {s+=$4} END {print s+0}')"
+          echo "cache tests passed: $n"
+          test "$n" -ge 1
+
+      # The auth gate must not be a silent no-op: the DB-backed wa- key tests run here
+      # (TEST_DATABASE_URL, Alembic-migrated pgvector) and >=15 tests must execute.
+      - name: auth crate tests ran (count)
+        run: |
+          set -euo pipefail
+          out="$(cargo test -p auth --locked 2>&1)"
+          echo "$out"
+          n="$(echo "$out" | awk '/^test result:/ {s+=$4} END {print s+0}')"
+          echo "auth tests passed: $n"
+          test "$n" -ge 15
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
+
+      - name: cargo deny check
+        run: cargo deny check
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked --version 0.9.1
+
+      # House rule: 90%+ line coverage; build fails below threshold.
+      - name: Coverage gate (90% lines)
+        # Same script as local runs (rust/scripts/coverage.sh): excludes only the
+        # generated SeaORM entities, which entity_drift verifies against Alembic.
+        run: scripts/coverage.sh

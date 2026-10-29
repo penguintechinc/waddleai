@@ -1,0 +1,17 @@
+[package]
+name = "db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaddleAI SeaORM connection and generated (read-only) entities"
+
+[dependencies]
+config = { path = "../config", version = "=0.1.0" }
+sea-orm = { version = "=2.0.4", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid", "with-chrono", "with-json", "with-rust_decimal"] }
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", features = ["time"] }
+tracing = "=0.1.44"
+
+[dev-dependencies]
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
