@@ -30,6 +30,7 @@ DISABLE_AUDITOR_FAIL_MODE_POLICY_FLAG = "waddleai.disable-auditor-fail-mode-poli
 _AUDITOR_FAIL_MODE_FLAG_CACHE_TTL = 30.0
 _AUDITOR_DEGRADED_WARN_INTERVAL_SECONDS = 60.0
 MAX_TRACKED_ORGS = 2048  # bound request-influenced org ids (DoS hygiene)
+MAX_TRACKED_FLAG_IDS = 2048  # bound request-influenced flag distinct ids
 DEFAULT_DISTINCT_ID = "server"
 
 # Reuse content_filter's own Counter object: registering a second one under the
@@ -38,6 +39,14 @@ DEFAULT_DISTINCT_ID = "server"
 _fail_total = _content_filter_fail_total
 
 _PHASE_LABEL = {_pb.FILTER_PHASE_OUTPUT: "output"}  # everything else is "input"
+
+
+def _reason_label(reason: int) -> str:
+    """Name a DegradedReason, mapping unknown values to a safe constant (never raises)."""
+    try:
+        return str(_pb.DegradedReason.Name(reason))
+    except ValueError:
+        return "DEGRADED_REASON_UNKNOWN"
 
 
 @dataclass(slots=True, frozen=True)
@@ -61,6 +70,7 @@ class FailModePolicy:
         self._config = config
         self._flag_cache: dict[str, tuple[float, bool]] = {}
         self._last_warn: dict[tuple[str, int], float] = {}
+        self._last_invalid_mode_warn: float | None = None
 
     def _resolve_mode(self, requested: int) -> int:
         """Pick requested mode, else the configured one, else OPEN (invalid -> OPEN + WARN)."""
@@ -71,15 +81,24 @@ class FailModePolicy:
         if value == "closed":
             return int(_pb.FAIL_MODE_CLOSED)
         if value != "open":
-            log.warning("failmode_invalid_mode_defaulting_open")
+            now = time.monotonic()
+            last = self._last_invalid_mode_warn
+            if last is None or now - last >= _AUDITOR_DEGRADED_WARN_INTERVAL_SECONDS:
+                self._last_invalid_mode_warn = now
+                log.warning("failmode_invalid_mode_defaulting_open")
         return int(_pb.FAIL_MODE_OPEN)
 
-    async def _policy_disabled(self, org: str, flag_distinct_id: str) -> bool:
-        """Return True when the kill-switch is ON; cached 30 s per org, errors mean OFF."""
+    async def _policy_disabled(self, flag_distinct_id: str) -> bool:
+        """Return True when the kill-switch is ON; cached 30 s per flag id, errors mean OFF.
+
+        The cache key is exactly the PostHog input, so one id's verdict can never
+        silence the policy for another caller (no cross-id fail-open).
+        """
         if self._features is None:
             return False
+        key = flag_distinct_id or DEFAULT_DISTINCT_ID
         now = time.monotonic()
-        cached = self._flag_cache.get(org)
+        cached = self._flag_cache.get(key)
         if cached is not None and now - cached[0] < _AUDITOR_FAIL_MODE_FLAG_CACHE_TTL:
             return cached[1]
         try:
@@ -87,16 +106,16 @@ class FailModePolicy:
                 await asyncio.to_thread(
                     self._features.is_feature_enabled,
                     DISABLE_AUDITOR_FAIL_MODE_POLICY_FLAG,
-                    distinct_id=flag_distinct_id or DEFAULT_DISTINCT_ID,
+                    distinct_id=key,
                 )
             )
         except Exception as exc:
             log.warning("failmode_killswitch_check_failed", error_type=type(exc).__name__)
             disabled = False  # fail toward visibility: keep the policy ON
-        self._flag_cache.pop(org, None)
-        while len(self._flag_cache) >= MAX_TRACKED_ORGS:
+        self._flag_cache.pop(key, None)
+        while len(self._flag_cache) >= MAX_TRACKED_FLAG_IDS:
             del self._flag_cache[next(iter(self._flag_cache))]
-        self._flag_cache[org] = (now, disabled)
+        self._flag_cache[key] = (now, disabled)
         return disabled
 
     def _warn(self, org: str, phase: int, mode_label: str, reason: int) -> None:
@@ -114,7 +133,7 @@ class FailModePolicy:
             "classification_degraded",
             phase=_PHASE_LABEL.get(phase, "input"),
             mode=mode_label,
-            reason=_pb.DegradedReason.Name(reason),
+            reason=_reason_label(reason),
         )
 
     async def apply(
@@ -128,7 +147,7 @@ class FailModePolicy:
     ) -> PolicyOutcome:
         """Resolve the mode and record/flag a degraded call (or stay silent if killed)."""
         mode = self._resolve_mode(requested_mode)
-        if await self._policy_disabled(org_public_id, flag_distinct_id):
+        if await self._policy_disabled(flag_distinct_id):
             return PolicyOutcome(degraded=False, block_recommended=False, effective_mode=mode)
         closed = mode == _pb.FAIL_MODE_CLOSED
         label = "fail_closed" if closed else "fail_open"

@@ -61,7 +61,7 @@ class ClassificationConfig:
     redis_url: str = secret_field()
     max_text_bytes: int = 1_048_576
     max_queue_depth: int = 64
-    security_auditor_fail_mode: str = "closed"
+    security_auditor_fail_mode: str = "open"
     jwt_issuer: str = ""
     jwt_audience: str = ""
     jwks_url: str = ""
@@ -80,7 +80,7 @@ class ClassificationConfig:
         deliberately no default key.
         """
         src: Mapping[str, str] = os.environ if env is None else env
-        fail_mode = src.get("SECURITY_AUDITOR_FAIL_MODE", "closed").strip().lower()
+        fail_mode = src.get("SECURITY_AUDITOR_FAIL_MODE", "open").strip().lower()
         if fail_mode not in _FAIL_MODES:
             raise ConfigError("SECURITY_AUDITOR_FAIL_MODE must be 'open' or 'closed'")
         cfg = cls(

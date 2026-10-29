@@ -51,14 +51,20 @@ def _count(phase: str, mode: str) -> float:
 
 
 async def _apply(
-    p: FailModePolicy, *, org: str = "org-a", phase: int = INPUT, mode: int = OPEN
+    p: FailModePolicy,
+    *,
+    org: str = "org-a",
+    phase: int = INPUT,
+    mode: int = OPEN,
+    did: str = CANARY_ID,
+    reason: int = REASON,
 ) -> Any:
     return await p.apply(
         phase=phase,
         org_public_id=org,
-        flag_distinct_id=CANARY_ID,
+        flag_distinct_id=did,
         requested_mode=mode,
-        reason=REASON,
+        reason=reason,
     )
 
 
@@ -161,7 +167,9 @@ async def test_killswitch_cached_30s(monkeypatch: pytest.MonkeyPatch) -> None:
     await _apply(p)
     assert feats.calls == 1
     await _apply(p, org="other")
-    assert feats.calls == 2  # cached per org
+    assert feats.calls == 1  # keyed by flag id, not org
+    await _apply(p, did="another-id")
+    assert feats.calls == 2
     now[0] += 31.0
     await _apply(p)
     assert feats.calls == 3
@@ -185,6 +193,59 @@ async def test_caches_are_bounded() -> None:
     """Caches are bounded."""
     p = FailModePolicy(FakeFeatures())
     for i in range(fm.MAX_TRACKED_ORGS + 50):
-        await _apply(p, org=f"o{i}")
-    assert len(p._flag_cache) <= fm.MAX_TRACKED_ORGS
+        await _apply(p, org=f"o{i}", did=f"d{i}")
+    assert len(p._flag_cache) <= fm.MAX_TRACKED_FLAG_IDS
     assert len(p._last_warn) <= fm.MAX_TRACKED_ORGS
+
+
+class PerIdFeatures(FakeFeatures):
+    """Flag double that is ON only for one specific distinct id."""
+
+    def is_feature_enabled(self, flag: str, distinct_id: str = "") -> bool:
+        """Answer ON only for the 'killed' id."""
+        self.calls += 1
+        return distinct_id == "killed-id"
+
+
+async def test_two_distinct_ids_same_org_do_not_cross_contaminate() -> None:
+    """A flag-ON id must not silence the policy for another id in the same org."""
+    p = FailModePolicy(PerIdFeatures())
+    killed = await _apply(p, org="same-org", did="killed-id", mode=CLOSED)
+    live = await _apply(p, org="same-org", did="live-id", mode=CLOSED)
+    assert (killed.degraded, killed.block_recommended) == (False, False)
+    assert (live.degraded, live.block_recommended) == (True, True)
+    again = await _apply(p, org="same-org", did="live-id", mode=CLOSED)
+    assert again.block_recommended
+
+
+async def test_default_config_no_requested_mode_resolves_open() -> None:
+    """A real default config (from_env({})) must resolve OPEN, not CLOSED."""
+    cfg = ClassificationConfig.from_env({})
+    assert cfg.security_auditor_fail_mode == "open"
+    out = await _apply(FailModePolicy(FakeFeatures(), config=cfg), mode=UNSET)
+    assert out.effective_mode == OPEN and not out.block_recommended
+
+
+async def test_unknown_reason_does_not_crash() -> None:
+    """An out-of-range DegradedReason maps to a safe label instead of raising."""
+    with structlog.testing.capture_logs() as logs:
+        out = await _apply(FailModePolicy(FakeFeatures()), reason=999)
+    assert out.degraded
+    assert logs[0]["reason"] == "DEGRADED_REASON_UNKNOWN"
+
+
+async def test_invalid_mode_warn_is_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The invalid-mode WARN fires once per 60 s window, not per call."""
+    now = [9000.0]
+    monkeypatch.setattr(fm.time, "monotonic", lambda: now[0])
+    cfg = ClassificationConfig.from_env({})
+    object.__setattr__(cfg, "security_auditor_fail_mode", "bogus")
+    p = FailModePolicy(FakeFeatures(), config=cfg)
+    with structlog.testing.capture_logs() as logs:
+        for _ in range(3):
+            await _apply(p, mode=UNSET)
+        n1 = len([r for r in logs if "invalid" in r["event"]])
+        now[0] += 61.0
+        await _apply(p, mode=UNSET)
+        n2 = len([r for r in logs if "invalid" in r["event"]])
+    assert (n1, n2) == (1, 2)
