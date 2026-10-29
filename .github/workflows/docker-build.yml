@@ -520,6 +520,38 @@ jobs:
     - name: Lint OpenAPI spec
       run: spectral lint openapi/v1.yaml --fail-severity=error
 
+  # Stub-drift gate for the FROZEN classification v1 gRPC contract (P3 Rust proxy
+  # depends on it). Regenerates stubs + golden descriptor with the pinned
+  # grpcio-tools and fails if anything differs from what is committed. No
+  # `|| true`: both the generate step and the diff are real gates.
+  classification-proto-drift:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      with:
+        python-version: '3.13'
+
+    - name: Install pinned grpcio-tools
+      run: pip install 'grpcio-tools==1.81.1'
+
+    - name: Regenerate classification stubs and fail on drift
+      run: |
+        scripts/gen-classification-proto.sh
+        git diff --exit-code -- proto/waddleai/classification services/classification/app/grpc_gen || {
+          echo "::error::classification proto stubs/golden are stale -- run scripts/gen-classification-proto.sh and commit.";
+          exit 1;
+        }
+        test -z "$(git status --porcelain -- proto/waddleai/classification services/classification/app/grpc_gen)" || {
+          echo "::error::untracked generated files -- commit them.";
+          exit 1;
+        }
+
   # tests/contract/ was never run in CI -- only tests/unit/ was (see the `test`
   # job above). It golden-snapshots the proxy's and management's real HTTP
   # surface by launching both services as real hypercorn subprocesses against an
@@ -775,7 +807,7 @@ jobs:
       run: make test-coverage
 
   build-platform:
-    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e, test-penguincode]
+    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-contract, test-integration, test-e2e, test-penguincode]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -904,7 +936,7 @@ jobs:
   # Mirror of build-platform for linux/arm64 only; pushes the same per-arch
   # `-arm64` tags merge-manifests folds into the multi-arch index when enabled.
   build-platform-arm64:
-    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, test-contract, test-integration, test-e2e, test-penguincode]
+    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-contract, test-integration, test-e2e, test-penguincode]
     if: ${{ vars.ENABLE_ARM64_BUILDS == 'true' }}
     runs-on: ubuntu-latest
     permissions:

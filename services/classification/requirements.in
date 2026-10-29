@@ -3,7 +3,7 @@
 quart>=0.20
 hypercorn>=0.17
 grpcio>=1.66
-grpcio-tools>=1.66
+grpcio-tools==1.81.1
 protobuf>=5.27
 presidio-analyzer>=2.2
 spacy>=3.8

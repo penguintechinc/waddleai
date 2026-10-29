@@ -1,0 +1,126 @@
+// WaddleAI classification service v1 contract (FROZEN -- consumed by the P3 Rust proxy).
+//
+// Rules: field numbers are never reused or renumbered; status/type/action/phase
+// fields are int enums; every request carries api_version (field 1); responses
+// are spans-only (offsets/types/scores/actions) and NEVER carry entity text.
+// Standard grpc.health.v1.Health is served alongside this service.
+syntax = "proto3";
+
+package waddleai.classification.v1;
+
+service ClassificationService {
+  // Analyze detects PII entities in text and returns spans only.
+  rpc Analyze(AnalyzeRequest) returns (AnalyzeResponse);
+  // GetEntityConfig exposes the entity table so clients can contract-test drift.
+  rpc GetEntityConfig(GetEntityConfigRequest) returns (GetEntityConfigResponse);
+}
+
+enum FilterPhase {
+  FILTER_PHASE_UNSPECIFIED = 0;
+  FILTER_PHASE_INPUT = 1;
+  FILTER_PHASE_OUTPUT = 2;
+}
+
+enum FailMode {
+  FAIL_MODE_UNSPECIFIED = 0;
+  FAIL_MODE_OPEN = 1;
+  FAIL_MODE_CLOSED = 2;
+}
+
+enum EntityAction {
+  ENTITY_ACTION_UNSPECIFIED = 0;
+  ENTITY_ACTION_LOG = 1;
+  ENTITY_ACTION_REDACT = 2;
+  ENTITY_ACTION_BLOCK = 3;
+}
+
+enum NerStatus {
+  NER_STATUS_UNSPECIFIED = 0;
+  NER_STATUS_OK = 1;
+  NER_STATUS_GATE_DISABLED = 2;
+  NER_STATUS_BACKEND_UNAVAILABLE = 3;
+  NER_STATUS_DEGRADED = 4;
+}
+
+enum DegradedReason {
+  DEGRADED_REASON_UNSPECIFIED = 0;
+  DEGRADED_REASON_BACKEND_UNAVAILABLE = 1;
+  DEGRADED_REASON_WORKER_FAILURE = 2;
+  DEGRADED_REASON_ANALYSIS_ERROR = 3;
+  DEGRADED_REASON_OVERLOADED = 4;
+  DEGRADED_REASON_TIMEOUT = 5;
+}
+
+// EntityType mirrors shared.security.ner_filter.ENTITY_CONFIG keys; OTHER plus
+// entity_label covers any Presidio label outside that table.
+enum EntityType {
+  ENTITY_TYPE_UNSPECIFIED = 0;
+  ENTITY_TYPE_PERSON = 1;
+  ENTITY_TYPE_US_SSN = 2;
+  ENTITY_TYPE_US_PASSPORT = 3;
+  ENTITY_TYPE_US_DRIVER_LICENSE = 4;
+  ENTITY_TYPE_MEDICAL_LICENSE = 5;
+  ENTITY_TYPE_EMAIL_ADDRESS = 6;
+  ENTITY_TYPE_PHONE_NUMBER = 7;
+  ENTITY_TYPE_CREDIT_CARD = 8;
+  ENTITY_TYPE_IBAN_CODE = 9;
+  ENTITY_TYPE_CRYPTO = 10;
+  ENTITY_TYPE_LOCATION = 11;
+  ENTITY_TYPE_IP_ADDRESS = 12;
+  ENTITY_TYPE_URL = 13;
+  ENTITY_TYPE_NRP = 14;
+  ENTITY_TYPE_DATE_TIME = 15;
+  ENTITY_TYPE_ORG = 16;
+  ENTITY_TYPE_OTHER = 99;
+}
+
+message AnalyzeRequest {
+  string api_version = 1;
+  string text = 2;
+  string language = 3;  // "en" only
+  FilterPhase phase = 4;
+  string org_public_id = 5;  // UUID, logs/rate-limit only
+  string flag_distinct_id = 6;  // proxy supplies str(org_id) or "server" for PostHog parity
+  repeated string disabled_entity_labels = 7;
+  FailMode fail_mode = 8;
+}
+
+message EntitySpan {
+  EntityType entity_type = 1;
+  string entity_label = 2;
+  uint32 start_cp = 3;
+  uint32 end_cp = 4;
+  uint32 start_byte = 5;
+  uint32 end_byte = 6;
+  float raw_score = 7;
+  float confidence = 8;  // composite = min(raw * weight, 1)
+  EntityAction action = 9;
+}
+
+message AnalyzeResponse {
+  repeated EntitySpan spans = 1;
+  NerStatus ner_status = 2;
+  string backend = 3;  // "presidio" | "transformers" | "none"
+  bool degraded = 4;
+  DegradedReason degraded_reason = 5;
+  bool block_recommended = 6;
+  bool cache_hit = 7;
+  uint32 analyzed_chars = 8;
+  bool truncated = 9;
+  string model_fingerprint = 10;
+}
+
+message GetEntityConfigRequest {
+  string api_version = 1;
+}
+
+message EntityConfigItem {
+  EntityType entity_type = 1;
+  string entity_label = 2;
+  EntityAction default_action = 3;
+  float confidence_weight = 4;
+}
+
+message GetEntityConfigResponse {
+  repeated EntityConfigItem items = 1;
+}
