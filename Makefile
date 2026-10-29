@@ -131,7 +131,7 @@ test-integration:
 
 test-valkey:
 	@echo "Running real-Valkey quota tests (REQUIRE_VALKEY_TESTS=1: skip == fail)..."
-	REQUIRE_VALKEY_TESTS=1 $(PY) -m pytest tests/integration/quota -v --no-cov
+	REQUIRE_VALKEY_TESTS=1 $(PY) -m pytest tests/integration/quota tests/integration/test_classification_cache_valkey.py -v --no-cov
 
 # tests/e2e/ currently has no pytest tests (only the pre-existing Playwright
 # JS suite + scaffolding; the real pytest suite is on feature/e2e-suite, not
