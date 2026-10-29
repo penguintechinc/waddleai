@@ -16,18 +16,21 @@ service ClassificationService {
 }
 
 enum FilterPhase {
+  reserved 100 to 199;  // retired/future values: never reuse
   FILTER_PHASE_UNSPECIFIED = 0;
   FILTER_PHASE_INPUT = 1;
   FILTER_PHASE_OUTPUT = 2;
 }
 
 enum FailMode {
+  reserved 100 to 199;  // retired/future values: never reuse
   FAIL_MODE_UNSPECIFIED = 0;
   FAIL_MODE_OPEN = 1;
   FAIL_MODE_CLOSED = 2;
 }
 
 enum EntityAction {
+  reserved 100 to 199;  // retired/future values: never reuse
   ENTITY_ACTION_UNSPECIFIED = 0;
   ENTITY_ACTION_LOG = 1;
   ENTITY_ACTION_REDACT = 2;
@@ -35,6 +38,7 @@ enum EntityAction {
 }
 
 enum NerStatus {
+  reserved 100 to 199;  // retired/future values: never reuse
   NER_STATUS_UNSPECIFIED = 0;
   NER_STATUS_OK = 1;
   NER_STATUS_GATE_DISABLED = 2;
@@ -43,6 +47,7 @@ enum NerStatus {
 }
 
 enum DegradedReason {
+  reserved 100 to 199;  // retired/future values: never reuse
   DEGRADED_REASON_UNSPECIFIED = 0;
   DEGRADED_REASON_BACKEND_UNAVAILABLE = 1;
   DEGRADED_REASON_WORKER_FAILURE = 2;
@@ -54,6 +59,7 @@ enum DegradedReason {
 // EntityType mirrors shared.security.ner_filter.ENTITY_CONFIG keys; OTHER plus
 // entity_label covers any Presidio label outside that table.
 enum EntityType {
+  reserved 100 to 199;  // retired/future values: never reuse
   ENTITY_TYPE_UNSPECIFIED = 0;
   ENTITY_TYPE_PERSON = 1;
   ENTITY_TYPE_US_SSN = 2;
@@ -75,6 +81,7 @@ enum EntityType {
 }
 
 message AnalyzeRequest {
+  reserved 100 to 199;  // retired/future fields: never reuse
   string api_version = 1;
   string text = 2;
   string language = 3;  // "en" only
@@ -86,6 +93,7 @@ message AnalyzeRequest {
 }
 
 message EntitySpan {
+  reserved 100 to 199;  // retired/future fields: never reuse
   EntityType entity_type = 1;
   string entity_label = 2;
   uint32 start_cp = 3;
@@ -98,6 +106,7 @@ message EntitySpan {
 }
 
 message AnalyzeResponse {
+  reserved 100 to 199;  // retired/future fields: never reuse
   repeated EntitySpan spans = 1;
   NerStatus ner_status = 2;
   string backend = 3;  // "presidio" | "transformers" | "none"
@@ -111,10 +120,12 @@ message AnalyzeResponse {
 }
 
 message GetEntityConfigRequest {
+  reserved 100 to 199;  // retired/future fields: never reuse
   string api_version = 1;
 }
 
 message EntityConfigItem {
+  reserved 100 to 199;  // retired/future fields: never reuse
   EntityType entity_type = 1;
   string entity_label = 2;
   EntityAction default_action = 3;
@@ -122,5 +133,6 @@ message EntityConfigItem {
 }
 
 message GetEntityConfigResponse {
+  reserved 100 to 199;  // retired/future fields: never reuse
   repeated EntityConfigItem items = 1;
 }
