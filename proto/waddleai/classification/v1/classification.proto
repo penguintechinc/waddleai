@@ -86,7 +86,7 @@ message AnalyzeRequest {
   string text = 2;
   string language = 3;  // "en" only
   FilterPhase phase = 4;
-  string org_public_id = 5;  // UUID, logs/rate-limit only
+  string org_public_id = 5;  // UUID; logs, rate-limit and per-tenant NER cache partition (HMAC input)
   string flag_distinct_id = 6;  // proxy supplies str(org_id) or "server" for PostHog parity
   repeated string disabled_entity_labels = 7;
   FailMode fail_mode = 8;

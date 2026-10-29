@@ -23,17 +23,17 @@ async def test_real_valkey_roundtrip_ttl_and_no_plaintext(server: ValkeyServer) 
     text = "Jane Q. Smithers 555-867-5309"
     client = aredis.from_url(server.url)
     try:
-        cache = NerCache(client, "int-secret", 90)
-        key = cache.key("fp", text)
+        cache = NerCache(client, "i" * 40, 90)
+        key = cache.key("fp", "org-1", text)
         assert await cache.get(key) is None
         await cache.put(key, [RawEntity("PERSON", 0, 16, 0.9)])
         assert await cache.get(key) == [RawEntity("PERSON", 0, 16, 0.9)]
         assert 0 < await client.ttl(key) <= 90
         stored = await client.get(key)
         assert stored is not None and b"Jane" not in stored and b"Jane" not in key.encode()
-        await cache.put(cache.key("fp", "clean"), [])
-        assert await cache.get(cache.key("fp", "clean")) == []
+        await cache.put(cache.key("fp", "org-1", "clean"), [])
+        assert await cache.get(cache.key("fp", "org-1", "clean")) == []
         assert cache.cache_error == 0
-        await client.delete(key, cache.key("fp", "clean"))
+        await client.delete(key, cache.key("fp", "org-1", "clean"))
     finally:
         await client.aclose()
