@@ -20,6 +20,7 @@ mod tier;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 pub use client::{env_override_name, FlagClient, DISABLE_TEAMS_FLAG};
@@ -56,6 +57,19 @@ pub trait LicenseSource: Send + Sync {
 }
 
 static GLOBAL: OnceLock<FlagClient> = OnceLock::new();
+static WARNED_UNINSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// The installed client; warns once if a decision-gating helper runs before `install`.
+fn global() -> Option<&'static FlagClient> {
+    let c = GLOBAL.get();
+    if c.is_none() && !WARNED_UNINSTALLED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            target: "flags",
+            "flags used before install(): serving fail-safe defaults (flags OFF, teams ON, tier free)"
+        );
+    }
+    c
+}
 
 /// A process-wide client was already installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -69,7 +83,7 @@ pub fn install(client: FlagClient) -> Result<(), AlreadyInstalled> {
 
 /// Global [`FlagClient::enabled`]; OFF if no client is installed.
 pub async fn enabled(flag: &str, distinct_id: &str) -> bool {
-    match GLOBAL.get() {
+    match global() {
         Some(c) => c.enabled(flag, distinct_id).await,
         None => false,
     }
@@ -77,7 +91,7 @@ pub async fn enabled(flag: &str, distinct_id: &str) -> bool {
 
 /// Global [`FlagClient::has_feature`]; denied if no client is installed.
 pub async fn has_feature(feature: &str, scope: &Scope) -> bool {
-    match GLOBAL.get() {
+    match global() {
         Some(c) => c.has_feature(feature, scope).await,
         None => false,
     }
@@ -85,7 +99,7 @@ pub async fn has_feature(feature: &str, scope: &Scope) -> bool {
 
 /// Global [`FlagClient::get_tier`]; `free` if no client is installed.
 pub async fn get_tier(scope: &Scope) -> Tier {
-    match GLOBAL.get() {
+    match global() {
         Some(c) => c.get_tier(scope).await,
         None => Tier::Free,
     }
@@ -93,7 +107,7 @@ pub async fn get_tier(scope: &Scope) -> Tier {
 
 /// Global [`FlagClient::teams_enabled`]; teams ON if no client is installed.
 pub async fn teams_enabled(scope: &Scope) -> bool {
-    match GLOBAL.get() {
+    match global() {
         Some(c) => c.teams_enabled(scope).await,
         None => true,
     }

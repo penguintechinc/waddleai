@@ -85,6 +85,7 @@ impl LicenseSource for FakeLicense {
 fn settings(flag_ttl_ms: u64) -> FlagSettings {
     FlagSettings {
         flag_ttl: Duration::from_millis(flag_ttl_ms),
+        failure_ttl: Duration::from_millis(0),
         flag_timeout: Duration::from_millis(50),
         license_ttl: Duration::from_millis(0),
         license_timeout: Duration::from_millis(50),
@@ -352,4 +353,59 @@ async fn global_helpers_fail_safe_then_use_installed_client() {
         flags::install(client(&f, &l, 0)).is_err(),
         "second install rejected"
     );
+}
+
+#[tokio::test]
+async fn unseen_flag_is_negative_cached() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    let c = client(&f, &l, 60_000);
+    assert!(c.teams_enabled(&scope()).await);
+    assert!(c.teams_enabled(&scope()).await);
+    assert!(!c.enabled("waddleai.unseen", "u").await);
+    assert!(!c.enabled("waddleai.unseen", "u").await);
+    // one call for disable-teams, one for waddleai.unseen
+    assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn failures_are_negative_cached() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.down.store(true, Ordering::SeqCst);
+    l.down.store(true, Ordering::SeqCst);
+    let mut s = settings(0);
+    s.failure_ttl = Duration::from_secs(60);
+    let c = FlagClient::new(s, Some(f.clone()), Some(l.clone()));
+    for _ in 0..5 {
+        assert!(!c.enabled("waddleai.feat", "u").await);
+        assert!(c.teams_enabled(&scope()).await);
+        assert!(!c.has_feature("x", &scope()).await);
+        assert_eq!(c.get_tier(&scope()).await, Tier::Free);
+    }
+    // flags: 1 per distinct flag (feat, disable-teams); license: 1 feature + 1 tier
+    assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(l.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn failure_cache_still_serves_last_known() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.set("waddleai.feat", true);
+    let mut s = settings(0);
+    s.failure_ttl = Duration::from_secs(60);
+    let c = FlagClient::new(s, Some(f.clone()), Some(l));
+    assert!(c.enabled("waddleai.feat", "u").await);
+    f.down.store(true, Ordering::SeqCst);
+    for _ in 0..3 {
+        assert!(c.enabled("waddleai.feat", "u").await);
+    }
+    assert_eq!(f.calls.load(Ordering::SeqCst), 2);
 }

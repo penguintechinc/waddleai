@@ -15,6 +15,9 @@ pub struct FlagSettings {
     pub license_timeout: Duration,
     /// `LICENSE_MAX_STALE_SECONDS` (default 7 days): oldest entitlement served in an outage.
     pub max_stale: Duration,
+    /// `FEATURE_FLAG_FAILURE_TTL_SECONDS` (default 5s): after a failed lookup, serve
+    /// last-known/default without another live call for this long.
+    pub failure_ttl: Duration,
     /// `FEATURE_FLAG_CACHE_MAX_ENTRIES` (default 2048), applied to each cache.
     pub cache_max_entries: usize,
     /// `PRODUCT_NAME` (default `waddleai`): product sent to the license server.
@@ -26,6 +29,7 @@ impl Default for FlagSettings {
         Self {
             flag_ttl: Duration::from_secs(30),
             flag_timeout: Duration::from_secs(3),
+            failure_ttl: Duration::from_secs(5),
             license_ttl: Duration::from_secs(300),
             license_timeout: Duration::from_secs(3),
             max_stale: Duration::from_secs(7 * 24 * 60 * 60),
@@ -50,6 +54,7 @@ impl FlagSettings {
         Self {
             flag_ttl: secs("FEATURE_FLAG_TTL_SECONDS", d.flag_ttl),
             flag_timeout: secs("FEATURE_FLAG_TIMEOUT_SECONDS", d.flag_timeout),
+            failure_ttl: secs("FEATURE_FLAG_FAILURE_TTL_SECONDS", d.failure_ttl),
             max_stale: secs("LICENSE_MAX_STALE_SECONDS", d.max_stale),
             cache_max_entries: std::env::var("FEATURE_FLAG_CACHE_MAX_ENTRIES")
                 .ok()
