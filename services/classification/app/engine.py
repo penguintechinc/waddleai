@@ -8,24 +8,25 @@ mapping; matched text is never carried, logged, or placed in an exception.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.metadata
 import multiprocessing
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from multiprocessing.context import BaseContext
 from typing import Any
 
-import structlog
-
+from services.classification.app.obs import get_logger
 from shared.security.ner_filter import NERBackendUnavailable, ner_analyze_strict
 
-log = structlog.get_logger()
+log = get_logger(__name__)
 
 _WARMUP_TEXT = "warm up"
 _START_TIMEOUT_S = 300.0
+_RETRY_COOLDOWN_S = 5.0
 
 
 class EngineError(Exception):
@@ -133,6 +134,7 @@ class NerEngine:
         probe: Callable[[float], WorkerInfo] = _worker_probe,
         mp_context: BaseContext | None = None,
         start_timeout_s: float = _START_TIMEOUT_S,
+        retry_cooldown_s: float = _RETRY_COOLDOWN_S,
     ) -> None:
         """Configure the engine; no process is spawned until ``start()``."""
         if workers < 1 or max_queue_depth < 1:
@@ -145,6 +147,10 @@ class NerEngine:
         self._probe = probe
         self._ctx = mp_context or multiprocessing.get_context("spawn")
         self._start_timeout = start_timeout_s
+        self._retry_cooldown = retry_cooldown_s
+        self._recovery_pending = False
+        self._last_attempt = float("-inf")
+        self._tasks: set[asyncio.Task[Any]] = set()
         self._executor: ProcessPoolExecutor | None = None
         self._info = WorkerInfo("none", "", "", "")
         self._ready = False
@@ -176,8 +182,21 @@ class NerEngine:
         async with self._rebuild_lock:
             await self._spawn()
 
-    async def _spawn(self) -> None:
-        """Create a fresh pool and warm every worker behind a rendezvous barrier."""
+    @staticmethod
+    def _discard(executor: ProcessPoolExecutor) -> None:
+        """Shut a pool down and terminate its workers (they may be parked on the barrier)."""
+        procs = list((getattr(executor, "_processes", None) or {}).values())
+        executor.shutdown(wait=False, cancel_futures=True)
+        for proc in procs:
+            with contextlib.suppress(Exception):
+                proc.terminate()
+
+    async def _spawn(self) -> bool:
+        """Create a fresh pool and warm every worker behind a rendezvous barrier.
+
+        Returns readiness. On failure OR cancellation the half-built pool and its
+        workers are torn down before returning/propagating, so none is orphaned.
+        """
         self._ready = False
         barrier = self._ctx.Barrier(self._workers)
         executor = ProcessPoolExecutor(
@@ -193,24 +212,42 @@ class NerEngine:
                 for _ in range(self._workers)
             ]
             infos = await asyncio.wait_for(asyncio.gather(*futs), timeout=self._start_timeout + 5)
-        except Exception as exc:
+        except BaseException as exc:
+            self._discard(executor)
+            if not isinstance(exc, Exception):
+                raise
             log.error("ner_engine_start_failed", error_type=type(exc).__name__)
-            executor.shutdown(wait=False, cancel_futures=True)
-            self._executor = None
+            old, self._executor = self._executor, None
+            if old is not None:
+                self._discard(old)
             self._info = WorkerInfo("none", "", "", "")
-            return
+            return False
         old, self._executor = self._executor, executor
         if old is not None:
-            old.shutdown(wait=False, cancel_futures=True)
+            self._discard(old)
         self._info = infos[0]
         self._ready = all(i.backend != "none" for i in infos) and len(set(infos)) == 1
         log.info("ner_engine_started", backend=self._info.backend, ready=self._ready)
+        return self._ready
+
+    def _shielded(self, coro: Coroutine[Any, Any, None]) -> Awaitable[None]:
+        """Run ``coro`` as a tracked task a caller's cancellation cannot abandon."""
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return asyncio.shield(task)
 
     async def analyze(self, text: str, language: str, deadline_s: float) -> list[RawEntity]:
         """Analyse ``text`` off-loop; load-shed when full, honour ``deadline_s``."""
         if self._rebuild_lock.locked():
             async with self._rebuild_lock:
                 pass
+        if (
+            not self._ready
+            and self._recovery_pending
+            and asyncio.get_running_loop().time() - self._last_attempt >= self._retry_cooldown
+        ):
+            await self._shielded(self._rebuild(None))
         executor = self._executor
         if not self._ready or executor is None:
             raise EngineUnavailable("NER engine is not ready")
@@ -220,6 +257,11 @@ class NerEngine:
             self._inflight += 1
         try:
             cf: Future[list[dict[str, Any]]] = executor.submit(self._worker, text, language)
+        except BrokenProcessPool:
+            # A worker died while idle (e.g. OOM-kill): same recovery as an in-flight break.
+            self._release()
+            await self._shielded(self._rebuild(executor))
+            raise EngineWorkerFailure("NER worker process died") from None
         except BaseException:
             self._release()
             raise
@@ -231,7 +273,7 @@ class NerEngine:
         except TimeoutError:
             raise EngineTimeout("NER analysis exceeded its deadline") from None
         except BrokenProcessPool:
-            await self._recover(executor)
+            await self._shielded(self._rebuild(executor))
             raise EngineWorkerFailure("NER worker process died") from None
         except NERBackendUnavailable:
             raise EngineUnavailable("NER backend unavailable in worker") from None
@@ -240,32 +282,44 @@ class NerEngine:
         except Exception as exc:
             log.warning("ner_engine_analysis_error", error_type=type(exc).__name__)
             raise EngineAnalysisError(f"NER analysis failed ({type(exc).__name__})") from None
-        return [
-            RawEntity(
-                entity_type=str(e["entity_type"]),
-                start=int(e["start"]),
-                end=int(e["end"]),
-                score=float(e["score"]),
-            )
-            for e in raw
-        ]
+        try:
+            return [
+                RawEntity(
+                    entity_type=str(e["entity_type"]),
+                    start=int(e["start"]),
+                    end=int(e["end"]),
+                    score=float(e["score"]),
+                )
+                for e in raw
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            log.warning("ner_engine_bad_payload", error_type=type(exc).__name__)
+            raise EngineAnalysisError("NER worker returned a malformed payload") from None
 
     def _release(self) -> None:
         """Free one concurrency slot (thread-safe; called from pool callback threads)."""
         with self._lock:
             self._inflight -= 1
 
-    async def _recover(self, broken: ProcessPoolExecutor) -> None:
-        """Rebuild the pool once per breakage; concurrent victims share one rebuild."""
+    async def _rebuild(self, broken: ProcessPoolExecutor | None) -> None:
+        """Rebuild the pool once per breakage (victims share it); None = retry a failed rebuild."""
         async with self._rebuild_lock:
-            if self._executor is not broken:
+            if broken is not None and self._executor is not broken:
                 return
-            log.error("ner_engine_pool_broken_rebuilding")
-            await self._spawn()
+            if broken is None and not self._recovery_pending:
+                return
+            log.error("ner_engine_pool_rebuilding")
+            self._recovery_pending = True  # stays set if the rebuild fails or is cancelled
+            self._last_attempt = asyncio.get_running_loop().time()
+            self._recovery_pending = not await self._spawn()
 
     async def aclose(self) -> None:
         """Shut the pool down and mark the engine not-ready."""
         self._ready = False
+        pending = list(self._tasks)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         executor, self._executor = self._executor, None
         if executor is not None:
             await asyncio.get_running_loop().run_in_executor(

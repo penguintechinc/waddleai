@@ -52,6 +52,8 @@ def fake_worker(text: str, language: str) -> list[dict[str, Any]]:
         raise ValueError("secret-pii-in-message")
     elif text == "die":
         os._exit(1)
+    elif text == "bad":
+        return [{"entity_type": "PERSON"}]
     return [{"entity_type": "PERSON", "text": "Alice Secret", "start": 0, "end": 5, "score": 0.9}]
 
 
@@ -65,3 +67,11 @@ def unavailable_worker(text: str, language: str) -> list[dict[str, Any]]:
 def init_raise(model: str, barrier: Any) -> None:
     """Initializer that fails, breaking the pool at start."""
     raise RuntimeError("init exploded")
+
+
+def init_flaky(model: str, barrier: Any) -> None:
+    """Initializer that fails while FK_FAIL=1 is in the environment at spawn time."""
+    global _barrier
+    if os.environ.get("FK_FAIL") == "1":
+        raise RuntimeError("init exploded")
+    _barrier = barrier

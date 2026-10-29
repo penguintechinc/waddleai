@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
+import signal
 import socket
 from collections.abc import AsyncIterator
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
 import engine_fakes as fk
 import pytest
 
+from services.classification.app import engine as engine_mod
 from services.classification.app.engine import (
     EngineAnalysisError,
     EngineOverloaded,
@@ -24,6 +28,7 @@ from services.classification.app.engine import (
     _worker_init,
     _worker_probe,
 )
+from shared.security import ner_filter
 
 
 def _engine(**kw: Any) -> NerEngine:
@@ -74,6 +79,10 @@ async def test_start_with_missing_model_stays_not_ready_no_download(
 
     monkeypatch.setattr(socket.socket, "connect", _no_net)
     # Real initializer, in-process, so the socket guard covers the model path too.
+    # Module state it writes is reset by monkeypatch so no other test sees it.
+    monkeypatch.setattr(engine_mod, "_barrier", None)
+    monkeypatch.setattr(engine_mod, "_info", engine_mod.WorkerInfo("none", "", "", ""))
+    monkeypatch.setattr(ner_filter, "_strict_worker_filter", None)
     barrier = _FakeBarrier()
     _worker_init("definitely_not_an_installed_model", barrier)
     info = _worker_probe(1.0)
@@ -170,14 +179,134 @@ async def test_broken_process_pool_is_rebuilt_and_next_call_succeeds(
     assert out == [RawEntity("PERSON", 0, 5, 0.9)]
 
 
-async def test_concurrent_victims_share_one_rebuild(engine: NerEngine) -> None:
+class _Recorder:
+    """Records every ProcessPoolExecutor the engine builds."""
+
+    def __init__(self, real: type[Any]) -> None:
+        self.real = real
+        self.made: list[Any] = []
+
+    def __call__(self, *a: Any, **k: Any) -> Any:
+        ex = self.real(*a, **k)
+        self.made.append(ex)
+        return ex
+
+
+@pytest.fixture
+def pools(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
+    rec = _Recorder(ProcessPoolExecutor)
+    monkeypatch.setattr(engine_mod, "ProcessPoolExecutor", rec)
+    return rec
+
+
+async def _until(pred: Any, limit: float = 20.0) -> None:
+    end = asyncio.get_running_loop().time() + limit
+    while not pred():
+        assert asyncio.get_running_loop().time() < end, "condition not reached"
+        await asyncio.sleep(0.05)
+
+
+async def test_concurrent_victims_share_one_rebuild(pools: _Recorder) -> None:
+    eng = _engine()
+    await eng.start()
     results = await asyncio.gather(
-        engine.analyze("die", "en", 30.0),
-        engine.analyze("sleep", "en", 30.0),
+        eng.analyze("die", "en", 30.0),
+        eng.analyze("sleep", "en", 30.0),
         return_exceptions=True,
     )
-    assert any(isinstance(r, EngineWorkerFailure) for r in results)
-    assert (await engine.analyze("hello", "en", 30.0))[0].entity_type == "PERSON"
+    assert all(isinstance(r, EngineWorkerFailure) for r in results)
+    assert len(pools.made) == 2  # initial pool + exactly ONE rebuild for both victims
+    assert (await eng.analyze("hello", "en", 30.0))[0].entity_type == "PERSON"
+    await eng.aclose()
+
+
+async def test_idle_worker_death_is_recovered(pools: _Recorder) -> None:
+    eng = _engine()
+    await eng.start()
+    first = eng._executor
+    assert first is not None
+    pid = next(iter(first._processes))
+    os.kill(pid, signal.SIGKILL)  # dies while IDLE
+    await _until(lambda: bool(getattr(first, "_broken", False)))
+    with pytest.raises(EngineWorkerFailure):
+        await eng.analyze("hello", "en", 30.0)  # submit() raises BrokenProcessPool
+    assert eng._executor is not first and len(pools.made) == 2
+    assert eng.ready is True
+    assert (await eng.analyze("hello", "en", 30.0))[0].entity_type == "PERSON"
+    await eng.aclose()
+
+
+async def test_cancel_during_rebuild_leaves_no_orphan_pool(pools: _Recorder) -> None:
+    eng = _engine(initializer=fk.init_slow)
+    await eng.start()
+    victim = asyncio.create_task(eng.analyze("die", "en", 30.0))
+    await _until(lambda: eng._rebuild_lock.locked())
+    victim.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await victim
+    # Shielded: the rebuild finishes on its own and installs a working pool.
+    await _until(lambda: eng.ready and eng._executor is pools.made[-1])
+    assert (await eng.analyze("hello", "en", 30.0))[0].entity_type == "PERSON"
+    await eng.aclose()
+    assert all(ex._shutdown_thread for ex in pools.made)
+
+
+async def test_cancelled_spawn_tears_down_new_pool(pools: _Recorder) -> None:
+    eng = _engine(initializer=fk.init_slow)
+    task = asyncio.create_task(eng._spawn())
+    await _until(lambda: len(pools.made) == 1 and bool(pools.made[0]._processes))
+    procs = list(pools.made[0]._processes.values())  # captured: cleared on shutdown
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert pools.made[0]._shutdown_thread
+    await _until(lambda: not any(p.is_alive() for p in procs))
+    assert eng.ready is False
+
+
+async def test_failed_rebuild_is_retried_on_a_later_call(
+    monkeypatch: pytest.MonkeyPatch, pools: _Recorder
+) -> None:
+    eng = _engine(initializer=fk.init_flaky, retry_cooldown_s=60.0)
+    await eng.start()
+    assert eng.ready
+    monkeypatch.setenv("FK_FAIL", "1")
+    with pytest.raises(EngineWorkerFailure):
+        await eng.analyze("die", "en", 30.0)  # rebuild fails: initializer explodes
+    assert eng.ready is False
+    made = len(pools.made)
+    with pytest.raises(EngineUnavailable):
+        await eng.analyze("hello", "en", 1.0)  # inside cooldown: no new attempt
+    assert len(pools.made) == made
+    monkeypatch.delenv("FK_FAIL")
+    eng._last_attempt = float("-inf")  # cooldown elapsed
+    assert (await eng.analyze("hello", "en", 30.0))[0].entity_type == "PERSON"
+    assert eng.ready
+    await eng.aclose()
+
+
+async def test_malformed_worker_payload_maps_to_analysis_error(engine: NerEngine) -> None:
+    with pytest.raises(EngineAnalysisError):
+        await engine.analyze("bad", "en", 10.0)
+
+
+async def test_slot_freed_after_timeout_and_cancel() -> None:
+    eng = _engine(workers=1, max_queue_depth=1)
+    await eng.start()
+    with pytest.raises(EngineTimeout):
+        await eng.analyze("sleep", "en", 0.2)
+    assert eng._inflight == 1  # the abandoned job still occupies the pool...
+    with pytest.raises(EngineOverloaded):
+        await eng.analyze("hello", "en", 1.0)
+    await _until(lambda: eng._inflight == 0)  # ...and frees its slot when it finishes
+    task = asyncio.create_task(eng.analyze("sleep", "en", 30.0))
+    await _until(lambda: eng._inflight == 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _until(lambda: eng._inflight == 0)
+    assert (await eng.analyze("hello", "en", 30.0))[0].entity_type == "PERSON"
+    await eng.aclose()
 
 
 async def test_real_strict_worker_is_picklable_and_degrades_without_model(
