@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::error::SourceError;
-use crate::{BoxFut, FlagSource};
+use crate::{BoxFut, FlagLookup, FlagSource};
 
 /// Evaluates flags against a PostHog host. The project key is a secret: it is
 /// redacted from `Debug` and never appears in errors or logs.
@@ -38,12 +38,14 @@ impl HttpFlagSource {
     }
 }
 
-/// Maps one `featureFlags` entry: bool as-is, multivariate string => enabled.
-fn flag_value(flags: &Value, flag: &str) -> Option<bool> {
-    match flags.get(flag)? {
-        Value::Bool(b) => Some(*b),
-        Value::String(_) => Some(true),
-        _ => None,
+/// Maps one `featureFlags` entry: bool as-is, multivariate string => enabled,
+/// missing key => `Absent` (global), present-but-null/odd => `Null` (per-id).
+fn flag_value(flags: &Value, flag: &str) -> FlagLookup {
+    match flags.get(flag) {
+        None => FlagLookup::Absent,
+        Some(Value::Bool(b)) => FlagLookup::Value(*b),
+        Some(Value::String(_)) => FlagLookup::Value(true),
+        Some(_) => FlagLookup::Null,
     }
 }
 
@@ -52,7 +54,7 @@ impl FlagSource for HttpFlagSource {
         &'a self,
         flag: &'a str,
         distinct_id: &'a str,
-    ) -> BoxFut<'a, Result<Option<bool>, SourceError>> {
+    ) -> BoxFut<'a, Result<FlagLookup, SourceError>> {
         Box::pin(async move {
             let resp = self
                 .http

@@ -34,14 +34,29 @@ pub use tier::{Tier, TierParseError};
 /// Boxed `Send` future returned by the source traits (keeps them object-safe).
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// What a flag server said about one `(flag, distinct_id)` evaluation.
+///
+/// The absent/null split matters for caching: an [`Absent`](Self::Absent) key is
+/// undefined for everyone (safe to cache flag-wide), while [`Null`](Self::Null)
+/// is specific to this distinct_id and must never be shared across ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagLookup {
+    /// The flag evaluated to a value for this id.
+    Value(bool),
+    /// The flag key is not defined on the server (global).
+    Absent,
+    /// The flag exists but evaluated to null for this id (per-id).
+    Null,
+}
+
 /// Remote source of PostHog flag values.
 pub trait FlagSource: Send + Sync {
-    /// `Ok(None)` means the server answered but does not know the flag.
+    /// Transport/server failures are `Err`; see [`FlagLookup`] for the rest.
     fn fetch<'a>(
         &'a self,
         flag: &'a str,
         distinct_id: &'a str,
-    ) -> BoxFut<'a, Result<Option<bool>, SourceError>>;
+    ) -> BoxFut<'a, Result<FlagLookup, SourceError>>;
 }
 
 /// Remote source of license entitlements and tier.

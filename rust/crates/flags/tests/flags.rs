@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flags::{
-    BoxFut, FlagClient, FlagSettings, FlagSource, LicenseSource, Scope, SourceError, Tier,
+    BoxFut, FlagClient, FlagLookup, FlagSettings, FlagSource, LicenseSource, Scope, SourceError,
+    Tier,
 };
 
 #[derive(Default)]
@@ -17,6 +18,7 @@ struct FakeFlags {
     delay_ms: AtomicUsize,
     calls: AtomicUsize,
     values: Mutex<HashMap<String, bool>>,
+    null_ids: Mutex<std::collections::HashSet<String>>,
 }
 
 impl FakeFlags {
@@ -29,8 +31,8 @@ impl FlagSource for FakeFlags {
     fn fetch<'a>(
         &'a self,
         flag: &'a str,
-        _id: &'a str,
-    ) -> BoxFut<'a, Result<Option<bool>, SourceError>> {
+        id: &'a str,
+    ) -> BoxFut<'a, Result<FlagLookup, SourceError>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let d = self.delay_ms.load(Ordering::SeqCst) as u64;
@@ -43,7 +45,15 @@ impl FlagSource for FakeFlags {
             if self.down.load(Ordering::SeqCst) {
                 return Err(SourceError::Unreachable("down".into()));
             }
-            Ok(self.values.lock().unwrap().get(flag).copied())
+            if self.null_ids.lock().unwrap().contains(id) {
+                return Ok(FlagLookup::Null);
+            }
+            Ok(self
+                .values
+                .lock()
+                .unwrap()
+                .get(flag)
+                .map_or(FlagLookup::Absent, |v| FlagLookup::Value(*v)))
         })
     }
 }
@@ -546,4 +556,167 @@ async fn warn_throttle_map_is_bounded_without_reset() {
     for i in 0..1300 {
         assert!(!c.enabled(&format!("waddleai.f{i}"), "u").await);
     }
+}
+
+#[tokio::test]
+async fn per_id_null_does_not_poison_other_ids() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.set("waddleai.feat", true);
+    f.null_ids.lock().unwrap().insert("B".into());
+    let c = client(&f, &l, 60_000);
+    assert!(c.enabled("waddleai.feat", "A").await);
+    assert!(
+        !c.enabled("waddleai.feat", "B").await,
+        "B is null => default"
+    );
+    assert!(
+        c.enabled("waddleai.feat", "A").await,
+        "A's real value not masked by B's null"
+    );
+    assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+    assert!(
+        c.enabled("waddleai.feat", "C").await,
+        "cold id C must fetch, not inherit B's null"
+    );
+    assert_eq!(f.calls.load(Ordering::SeqCst), 3);
+    // B's own null is cached per-id.
+    assert!(!c.enabled("waddleai.feat", "B").await);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 3);
+}
+
+/// Captures WARN+ events as "level kind=.. name=.. reason=.." lines.
+#[derive(Clone, Default)]
+struct Cap(Arc<Mutex<Vec<String>>>);
+
+struct Fields(String);
+impl tracing::field::Visit for Fields {
+    fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+        self.0.push_str(&format!(" {}={}", f.name(), v));
+    }
+    fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+        self.0.push_str(&format!(" {}={:?}", f.name(), v));
+    }
+}
+
+impl tracing::Subscriber for Cap {
+    fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+        *m.level() <= tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, e: &tracing::Event<'_>) {
+        let mut v = Fields(String::new());
+        e.record(&mut v);
+        self.0.lock().unwrap().push(v.0);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+fn count(cap: &Cap, needle: &str) -> usize {
+    cap.0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.contains(needle))
+        .count()
+}
+
+#[tokio::test]
+async fn negative_cache_hit_emits_no_warn() {
+    let cap = Cap::default();
+    let _g = tracing::subscriber::set_default(cap.clone());
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    let c = client(&f, &l, 60_000);
+    assert!(!c.enabled("waddleai.unseen", "u").await);
+    assert_eq!(
+        count(&cap, "name=waddleai.unseen"),
+        1,
+        "transition warns once"
+    );
+    for i in 0..10 {
+        assert!(!c.enabled("waddleai.unseen", &format!("id{i}")).await);
+    }
+    assert_eq!(count(&cap, "name=waddleai.unseen"), 1, "hits are silent");
+    // Failure-cache hits are silent too.
+    f.down.store(true, Ordering::SeqCst);
+    let mut s = settings(0);
+    s.failure_ttl = Duration::from_secs(60);
+    let c2 = FlagClient::new(s, Some(f.clone()), None);
+    assert!(!c2.enabled("waddleai.dead", "u").await);
+    let before = count(&cap, "name=waddleai.dead");
+    for _ in 0..10 {
+        assert!(!c2.enabled("waddleai.dead", "u").await);
+    }
+    assert_eq!(count(&cap, "name=waddleai.dead"), before);
+}
+
+#[tokio::test]
+async fn stale_license_warn_is_named_and_throttled() {
+    let cap = Cap::default();
+    let _g = tracing::subscriber::set_default(cap.clone());
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    l.entitled
+        .lock()
+        .unwrap()
+        .insert("pii_ner_detection".into(), true);
+    let mut s = settings(0);
+    s.max_stale = Duration::from_millis(0);
+    s.failure_ttl = Duration::from_secs(60);
+    let c = FlagClient::new(s, Some(f), Some(l.clone()));
+    assert!(c.has_feature("pii_ner_detection", &scope()).await);
+    l.down.store(true, Ordering::SeqCst);
+    for _ in 0..6 {
+        assert!(!c.has_feature("pii_ner_detection", &scope()).await);
+    }
+    assert_eq!(
+        count(&cap, "kind=license-stale-max name=pii_ner_detection"),
+        1,
+        "named, once despite 6 denials"
+    );
+}
+
+#[tokio::test]
+async fn warn_throttle_evicts_oldest_only() {
+    let cap = Cap::default();
+    let _g = tracing::subscriber::set_default(cap.clone());
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.down.store(true, Ordering::SeqCst);
+    let c = client(&f, &l, 0); // failure_ttl 0 => every call fetches + tries to warn
+    for i in 0..1024 {
+        c.enabled(&format!("waddleai.f{i}"), "u").await;
+    }
+    // Cap reached: this insert evicts only the oldest (f0).
+    c.enabled("waddleai.f1024", "u").await;
+    let (before1, before0) = (
+        count(&cap, "name=waddleai.f1 "),
+        count(&cap, "name=waddleai.f0 "),
+    );
+    c.enabled("waddleai.f1", "u").await; // older-but-not-oldest: still throttled
+    assert_eq!(
+        count(&cap, "name=waddleai.f1 "),
+        before1,
+        "f1 survived eviction"
+    );
+    c.enabled("waddleai.f0", "u").await; // evicted: warns again
+    assert_eq!(
+        count(&cap, "name=waddleai.f0 "),
+        before0 + 1,
+        "f0 was the evicted one"
+    );
 }

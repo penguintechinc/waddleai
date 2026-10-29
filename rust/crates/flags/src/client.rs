@@ -12,7 +12,7 @@ use crate::cache::LastKnown;
 use crate::error::SourceError;
 use crate::license::HttpLicenseSource;
 use crate::posthog::HttpFlagSource;
-use crate::{FlagSettings, FlagSource, LicenseSource, Scope, Tier};
+use crate::{FlagLookup, FlagSettings, FlagSource, LicenseSource, Scope, Tier};
 
 /// `(flag, distinct_id)` cache key.
 type FlagKey = (String, String);
@@ -38,6 +38,8 @@ pub struct FlagClient {
     /// Unseen/failed verdicts are keyed on the flag NAME only: an undefined flag
     /// or a dead server is the same for every distinct_id.
     flag_unseen: LastKnown<String, ()>,
+    /// Per-id null verdict: the flag exists but evaluated null for THIS id only.
+    flag_null: LastKnown<FlagKey, ()>,
     flag_failed: LastKnown<String, ()>,
     /// Single-flight: one in-progress live fetch per `(flag, distinct_id)`.
     inflight: Mutex<HashMap<FlagKey, Gate>>,
@@ -82,6 +84,7 @@ impl FlagClient {
             features: LastKnown::new(max),
             tiers: LastKnown::new(max),
             flag_unseen: LastKnown::new(max),
+            flag_null: LastKnown::new(max),
             inflight: Mutex::new(HashMap::new()),
             flag_failed: LastKnown::new(max),
             feature_failed: LastKnown::new(max),
@@ -193,13 +196,20 @@ impl FlagClient {
             return v;
         }
         match bounded(self.settings.flag_timeout, src.fetch(flag, id)).await {
-            Ok(Some(v)) => {
+            Ok(FlagLookup::Value(v)) => {
+                self.flag_null.remove(&key);
                 self.flags.put(key, v);
                 self.flag_unseen.remove(flag);
                 self.flag_failed.remove(flag);
                 v
             }
-            Ok(None) => {
+            Ok(FlagLookup::Null) => {
+                // Per-id only: never promoted flag-wide (cross-tenant poisoning).
+                self.flag_null.put(key, ());
+                self.warn_fallback("flag-null", flag, "flag null for this id; using default");
+                default
+            }
+            Ok(FlagLookup::Absent) => {
                 self.flag_unseen.put(flag.to_owned(), ());
                 self.warn_fallback("flag-unseen", flag, "flag unknown to server; using default");
                 default
@@ -214,18 +224,21 @@ impl FlagClient {
     }
 
     /// Cache-only resolution (silent: a hit is the success path, not a fallback).
-    /// Order: unseen verdict (no allocation) -> positive value -> recent failure.
+    /// Order: per-id positive -> per-id null -> flag-wide unseen -> flag-wide failure.
     fn cached_flag(&self, flag: &str, id: &str, default: bool) -> Option<bool> {
+        let key = (flag.to_owned(), id.to_owned());
+        if let Some(v) = self.flags.fresh(&key, self.settings.flag_ttl) {
+            return Some(v);
+        }
+        if self.flag_null.fresh(&key, self.settings.flag_ttl).is_some() {
+            return Some(default);
+        }
         if self
             .flag_unseen
             .fresh(flag, self.settings.flag_ttl)
             .is_some()
         {
             return Some(default);
-        }
-        let key = (flag.to_owned(), id.to_owned());
-        if let Some(v) = self.flags.fresh(&key, self.settings.flag_ttl) {
-            return Some(v);
         }
         if self
             .flag_failed

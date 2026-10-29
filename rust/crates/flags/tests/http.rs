@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use config::{FlagCfg, LicenseCfg};
 use flags::{
-    FlagClient, FlagSettings, FlagSource, HttpFlagSource, HttpLicenseSource, LicenseSource, Scope,
-    SourceError, Tier,
+    FlagClient, FlagLookup, FlagSettings, FlagSource, HttpFlagSource, HttpLicenseSource,
+    LicenseSource, Scope, SourceError, Tier,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -90,15 +90,16 @@ fn lic_src(url: &str) -> HttpLicenseSource {
 async fn posthog_parses_bool_variant_and_unknown() {
     let (url, seen) = serve(
         200,
-        r#"{"featureFlags":{"a":true,"b":false,"c":"variant-x","d":1}}"#,
+        r#"{"featureFlags":{"a":true,"b":false,"c":"variant-x","d":1,"n":null}}"#,
     )
     .await;
     let s = flag_src(&format!("{url}/"));
-    assert_eq!(s.fetch("a", "u1").await, Ok(Some(true)));
-    assert_eq!(s.fetch("b", "u1").await, Ok(Some(false)));
-    assert_eq!(s.fetch("c", "u1").await, Ok(Some(true)));
-    assert_eq!(s.fetch("d", "u1").await, Ok(None));
-    assert_eq!(s.fetch("zzz", "u1").await, Ok(None));
+    assert_eq!(s.fetch("a", "u1").await, Ok(FlagLookup::Value(true)));
+    assert_eq!(s.fetch("b", "u1").await, Ok(FlagLookup::Value(false)));
+    assert_eq!(s.fetch("c", "u1").await, Ok(FlagLookup::Value(true)));
+    assert_eq!(s.fetch("d", "u1").await, Ok(FlagLookup::Null));
+    assert_eq!(s.fetch("n", "u1").await, Ok(FlagLookup::Null));
+    assert_eq!(s.fetch("zzz", "u1").await, Ok(FlagLookup::Absent));
     let req = seen.lock().unwrap()[0].clone();
     assert!(req.starts_with("POST /flags/?v=2 "), "{req}");
     assert!(req.contains(r#""distinct_id":"u1""#));
