@@ -14,6 +14,7 @@ use flags::{
 struct FakeFlags {
     down: AtomicBool,
     hang: AtomicBool,
+    delay_ms: AtomicUsize,
     calls: AtomicUsize,
     values: Mutex<HashMap<String, bool>>,
 }
@@ -32,6 +33,10 @@ impl FlagSource for FakeFlags {
     ) -> BoxFut<'a, Result<Option<bool>, SourceError>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            let d = self.delay_ms.load(Ordering::SeqCst) as u64;
+            if d > 0 {
+                tokio::time::sleep(Duration::from_millis(d)).await;
+            }
             if self.hang.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
@@ -408,4 +413,137 @@ async fn failure_cache_still_serves_last_known() {
         assert!(c.enabled("waddleai.feat", "u").await);
     }
     assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn unseen_verdict_is_flag_keyed_across_many_scopes() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    let c = client(&f, &l, 60_000); // default cache_max_entries = 2048
+    for i in 0..3000 {
+        assert!(c.teams_enabled(&Scope::new(format!("tenant-{i}"))).await);
+    }
+    assert_eq!(
+        f.calls.load(Ordering::SeqCst),
+        1,
+        ">2048 scopes, one server call"
+    );
+}
+
+#[tokio::test]
+async fn failure_verdict_is_flag_keyed_across_many_scopes() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.down.store(true, Ordering::SeqCst);
+    let mut s = settings(0);
+    s.failure_ttl = Duration::from_secs(60);
+    let c = FlagClient::new(s, Some(f.clone()), Some(l));
+    for i in 0..3000 {
+        assert!(c.teams_enabled(&Scope::new(format!("tenant-{i}"))).await);
+    }
+    assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_cold_burst_is_single_flight() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.set("waddleai.feat", true);
+    f.delay_ms.store(20, Ordering::SeqCst);
+    let c = Arc::new(client(&f, &l, 60_000));
+    let mut hs = Vec::new();
+    for _ in 0..25 {
+        let c = c.clone();
+        hs.push(tokio::spawn(async move {
+            c.enabled("waddleai.feat", "u1").await
+        }));
+    }
+    for h in hs {
+        assert!(h.await.unwrap());
+    }
+    assert_eq!(f.calls.load(Ordering::SeqCst), 1, "exactly one live call");
+}
+
+#[tokio::test]
+async fn single_flight_cancellation_releases_gate() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.set("waddleai.feat", true);
+    f.hang.store(true, Ordering::SeqCst);
+    let c = Arc::new(client(&f, &l, 60_000));
+    let c2 = c.clone();
+    let h = tokio::spawn(async move { c2.enabled("waddleai.feat", "u1").await });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    h.abort();
+    let _ = h.await;
+    f.hang.store(false, Ordering::SeqCst);
+    assert!(
+        c.enabled("waddleai.feat", "u1").await,
+        "gate not wedged by a cancelled leader"
+    );
+}
+
+#[tokio::test]
+async fn failure_entry_expires_and_real_value_resumes() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.set("waddleai.feat", true);
+    f.down.store(true, Ordering::SeqCst);
+    let mut s = settings(0);
+    s.failure_ttl = Duration::from_millis(60);
+    let c = FlagClient::new(s, Some(f.clone()), Some(l));
+    assert!(!c.enabled("waddleai.feat", "u").await);
+    assert!(!c.enabled("waddleai.feat", "u").await);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+    f.down.store(false, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        c.enabled("waddleai.feat", "u").await,
+        "recovered after failure_ttl"
+    );
+}
+
+#[tokio::test]
+async fn unseen_flag_later_defined_supersedes_negative_entry() {
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    let c = client(&f, &l, 60);
+    assert!(!c.enabled("waddleai.feat", "u").await);
+    f.set("waddleai.feat", true);
+    assert!(
+        !c.enabled("waddleai.feat", "u").await,
+        "still negative within TTL"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(c.enabled("waddleai.feat", "u").await, "defined after TTL");
+    assert!(
+        c.enabled("waddleai.feat", "other").await,
+        "positive removed unseen verdict"
+    );
+}
+
+#[tokio::test]
+async fn warn_throttle_map_is_bounded_without_reset() {
+    // Many distinct failing flags must not grow or panic the throttle map.
+    let (f, l) = (
+        Arc::new(FakeFlags::default()),
+        Arc::new(FakeLicense::default()),
+    );
+    f.down.store(true, Ordering::SeqCst);
+    let c = client(&f, &l, 0);
+    for i in 0..1300 {
+        assert!(!c.enabled(&format!("waddleai.f{i}"), "u").await);
+    }
 }

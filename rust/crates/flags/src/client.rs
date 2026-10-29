@@ -14,12 +14,18 @@ use crate::license::HttpLicenseSource;
 use crate::posthog::HttpFlagSource;
 use crate::{FlagSettings, FlagSource, LicenseSource, Scope, Tier};
 
+/// `(flag, distinct_id)` cache key.
+type FlagKey = (String, String);
+/// Single-flight gate; held across the live fetch.
+type Gate = Arc<tokio::sync::Mutex<()>>;
+
 /// Opt-out kill-switch for the teams mechanism: unseen/OFF => teams ON.
 pub const DISABLE_TEAMS_FLAG: &str = "waddleai.disable-teams";
 
 /// Minimum spacing of outage warnings per key (avoids log spam under load).
 const WARN_INTERVAL: Duration = Duration::from_secs(60);
 const WARN_KEYS_MAX: usize = 1024;
+const INFLIGHT_MAX: usize = 4096;
 
 /// Flag + license client with in-memory last-known caches. Cheap to share via `Arc`.
 pub struct FlagClient {
@@ -29,8 +35,12 @@ pub struct FlagClient {
     flags: LastKnown<(String, String), bool>,
     features: LastKnown<(Scope, String), bool>,
     tiers: LastKnown<Scope, Tier>,
-    flag_unseen: LastKnown<(String, String), ()>,
-    flag_failed: LastKnown<(String, String), ()>,
+    /// Unseen/failed verdicts are keyed on the flag NAME only: an undefined flag
+    /// or a dead server is the same for every distinct_id.
+    flag_unseen: LastKnown<String, ()>,
+    flag_failed: LastKnown<String, ()>,
+    /// Single-flight: one in-progress live fetch per `(flag, distinct_id)`.
+    inflight: Mutex<HashMap<FlagKey, Gate>>,
     feature_failed: LastKnown<(Scope, String), ()>,
     tier_failed: LastKnown<Scope, ()>,
     warned: Mutex<HashMap<String, Instant>>,
@@ -72,6 +82,7 @@ impl FlagClient {
             features: LastKnown::new(max),
             tiers: LastKnown::new(max),
             flag_unseen: LastKnown::new(max),
+            inflight: Mutex::new(HashMap::new()),
             flag_failed: LastKnown::new(max),
             feature_failed: LastKnown::new(max),
             tier_failed: LastKnown::new(max),
@@ -126,8 +137,11 @@ impl FlagClient {
         let now = Instant::now();
         let key = format!("{kind}:{name}");
         let mut g = self.warned.lock().unwrap_or_else(|p| p.into_inner());
-        if g.len() >= WARN_KEYS_MAX {
-            g.clear();
+        if g.len() >= WARN_KEYS_MAX && !g.contains_key(&key) {
+            // Evict the oldest throttle entry only; never reset them all.
+            if let Some(oldest) = g.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
+                g.remove(&oldest);
+            }
         }
         if g.get(&key)
             .is_some_and(|t| now.duration_since(*t) < WARN_INTERVAL)
@@ -158,31 +172,8 @@ impl FlagClient {
         } else {
             distinct_id
         };
-        let key = (flag.to_owned(), id.to_owned());
-        if let Some(v) = self.flags.fresh(&key, self.settings.flag_ttl) {
+        if let Some(v) = self.cached_flag(flag, id, default) {
             return v;
-        }
-        // Negative caches: an "unseen" verdict and a recent failure are both
-        // served without a live call, keeping the hot path off the network.
-        if self
-            .flag_unseen
-            .fresh(&key, self.settings.flag_ttl)
-            .is_some()
-        {
-            self.warn_fallback("flag-unseen", flag, "flag unknown to server; using default");
-            return default;
-        }
-        if self
-            .flag_failed
-            .fresh(&key, self.settings.failure_ttl)
-            .is_some()
-        {
-            self.warn_fallback(
-                "flag-outage",
-                flag,
-                "recent lookup failure; serving last-known or default",
-            );
-            return self.flags.any(&key).map_or(default, |(v, _)| v);
         }
         let Some(src) = &self.flag_src else {
             self.warn_fallback(
@@ -192,23 +183,67 @@ impl FlagClient {
             );
             return default;
         };
+        // Single-flight: concurrent misses for the same (flag, id) share one
+        // live call. The guard releases on every exit (success, error, timeout,
+        // cancellation, panic); followers re-check the caches once they hold it.
+        let key = (flag.to_owned(), id.to_owned());
+        let gate = self.gate(&key);
+        let _held = gate.lock().await;
+        if let Some(v) = self.cached_flag(flag, id, default) {
+            return v;
+        }
         match bounded(self.settings.flag_timeout, src.fetch(flag, id)).await {
             Ok(Some(v)) => {
                 self.flags.put(key, v);
+                self.flag_unseen.remove(flag);
+                self.flag_failed.remove(flag);
                 v
             }
             Ok(None) => {
-                self.flag_unseen.put(key, ());
+                self.flag_unseen.put(flag.to_owned(), ());
                 self.warn_fallback("flag-unseen", flag, "flag unknown to server; using default");
                 default
             }
             Err(e) => {
-                self.flag_failed.put(key.clone(), ());
+                self.flag_failed.put(flag.to_owned(), ());
                 let reason = format!("lookup failed ({e}); using last-known or default");
                 self.warn_fallback("flag-outage", flag, &reason);
                 self.flags.any(&key).map_or(default, |(v, _)| v)
             }
         }
+    }
+
+    /// Cache-only resolution (silent: a hit is the success path, not a fallback).
+    /// Order: unseen verdict (no allocation) -> positive value -> recent failure.
+    fn cached_flag(&self, flag: &str, id: &str, default: bool) -> Option<bool> {
+        if self
+            .flag_unseen
+            .fresh(flag, self.settings.flag_ttl)
+            .is_some()
+        {
+            return Some(default);
+        }
+        let key = (flag.to_owned(), id.to_owned());
+        if let Some(v) = self.flags.fresh(&key, self.settings.flag_ttl) {
+            return Some(v);
+        }
+        if self
+            .flag_failed
+            .fresh(flag, self.settings.failure_ttl)
+            .is_some()
+        {
+            return Some(self.flags.any(&key).map_or(default, |(v, _)| v));
+        }
+        None
+    }
+
+    /// The single-flight gate for `key`, pruning idle gates once over budget.
+    fn gate(&self, key: &FlagKey) -> Gate {
+        let mut g = self.inflight.lock().unwrap_or_else(|p| p.into_inner());
+        if g.len() >= INFLIGHT_MAX && !g.contains_key(key) {
+            g.retain(|_, v| Arc::strong_count(v) > 1);
+        }
+        Arc::clone(g.entry(key.clone()).or_default())
     }
 
     /// Whether `feature` is entitled for `scope`. Stale-while-error up to
@@ -223,12 +258,7 @@ impl FlagClient {
             .fresh(&key, self.settings.failure_ttl)
             .is_some()
         {
-            self.warn_fallback(
-                "license-outage",
-                feature,
-                "recent lookup failure; serving stale or denying",
-            );
-            return self.stale_or(self.features.any(&key), false);
+            return self.stale_or(feature, self.features.any(&key), false);
         }
         let Some(src) = &self.license_src else {
             self.warn_fallback(
@@ -247,7 +277,7 @@ impl FlagClient {
                 self.feature_failed.put(key.clone(), ());
                 let reason = format!("lookup failed ({e}); serving stale or denying");
                 self.warn_fallback("license-outage", feature, &reason);
-                self.stale_or(self.features.any(&key), false)
+                self.stale_or(feature, self.features.any(&key), false)
             }
         }
     }
@@ -262,12 +292,7 @@ impl FlagClient {
             .fresh(scope, self.settings.failure_ttl)
             .is_some()
         {
-            self.warn_fallback(
-                "tier-outage",
-                &scope.tenant_id,
-                "recent lookup failure; serving stale or free",
-            );
-            return self.stale_or(self.tiers.any(scope), Tier::Free);
+            return self.stale_or(&scope.tenant_id, self.tiers.any(scope), Tier::Free);
         }
         let Some(src) = &self.license_src else {
             self.warn_fallback(
@@ -286,7 +311,7 @@ impl FlagClient {
                 self.tier_failed.put(scope.clone(), ());
                 let reason = format!("lookup failed ({e}); serving stale or free");
                 self.warn_fallback("tier-outage", &scope.tenant_id, &reason);
-                self.stale_or(self.tiers.any(scope), Tier::Free)
+                self.stale_or(&scope.tenant_id, self.tiers.any(scope), Tier::Free)
             }
         }
     }
@@ -305,11 +330,15 @@ impl FlagClient {
     }
 
     /// A cached value served during an outage only while younger than `max_stale`.
-    fn stale_or<V>(&self, cached: Option<(V, Duration)>, deny: V) -> V {
+    fn stale_or<V>(&self, name: &str, cached: Option<(V, Duration)>, deny: V) -> V {
         match cached {
             Some((v, age)) if age < self.settings.max_stale => v,
             Some(_) => {
-                tracing::warn!(target: "flags", "cached license value past max_stale; denying");
+                self.warn_fallback(
+                    "license-stale-max",
+                    name,
+                    "cached value past max_stale; denying",
+                );
                 deny
             }
             None => deny,

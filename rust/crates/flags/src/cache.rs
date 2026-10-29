@@ -1,5 +1,6 @@
 //! Bounded last-known-value cache with TTL freshness and age reporting.
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Mutex;
@@ -25,7 +26,11 @@ impl<K: Hash + Eq + Clone, V: Copy> LastKnown<K, V> {
     }
 
     /// Value resolved less than `ttl` ago.
-    pub(crate) fn fresh(&self, key: &K, ttl: Duration) -> Option<V> {
+    pub(crate) fn fresh<Q>(&self, key: &Q, ttl: Duration) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let g = self.lock();
         g.get(key)
             .filter(|(_, at)| at.elapsed() < ttl)
@@ -33,7 +38,11 @@ impl<K: Hash + Eq + Clone, V: Copy> LastKnown<K, V> {
     }
 
     /// Last-known value and its age, regardless of TTL.
-    pub(crate) fn any(&self, key: &K) -> Option<(V, Duration)> {
+    pub(crate) fn any<Q>(&self, key: &Q) -> Option<(V, Duration)>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.lock().get(key).map(|(v, at)| (*v, at.elapsed()))
     }
 
@@ -51,6 +60,15 @@ impl<K: Hash + Eq + Clone, V: Copy> LastKnown<K, V> {
                 None => break,
             };
         }
+    }
+
+    /// Drops an entry (a newer verdict supersedes it).
+    pub(crate) fn remove<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.lock().remove(key);
     }
 
     pub(crate) fn len(&self) -> usize {
