@@ -170,6 +170,6 @@ jobs:
 
       # House rule: 90%+ line coverage; build fails below threshold.
       - name: Coverage gate (90% lines)
-        run: >-
-          cargo llvm-cov --workspace --locked --fail-under-lines 90
-          --ignore-filename-regex 'crates/db/src/entities/'
+        # Same script as local runs (rust/scripts/coverage.sh): excludes only the
+        # generated SeaORM entities, which entity_drift verifies against Alembic.
+        run: scripts/coverage.sh
