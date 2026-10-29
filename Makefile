@@ -1,4 +1,4 @@
-.PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-valkey test-e2e test-functional test-security \
+.PHONY: dev setup install-hooks verify-hooks venv test test-classification test-unit test-integration test-valkey test-e2e test-functional test-security \
         test-contract test-contract-selftest smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
 
@@ -114,6 +114,11 @@ test:
 test-unit:
 	@echo "Running unit tests..."
 	@scripts/check_collected_floor.sh $(PY) tests/unit -v --cov-report=html:htmlcov
+
+test-classification: ## Unit tests + >=90% coverage for services/classification/app (fails on zero collected)
+	@$(PY) -m pytest tests/unit/classification -o addopts="" -p no:warnings -q \
+	  --cov=services/classification/app --cov-config=.coveragerc --cov-report=term-missing \
+	  --cov-fail-under=90
 
 # --no-cov: a tests/integration-only run only exercises a fraction of
 # shared/+services/management/app, so pytest.ini's default --cov addopts
