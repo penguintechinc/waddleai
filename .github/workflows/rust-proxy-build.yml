@@ -8,6 +8,8 @@ on:
       - 'services/management/alembic/**'
       - 'services/management/app/models_sqlalchemy.py'
       - 'shared/auth/**'
+      - 'shared/licensing/**'
+      - 'shared/utils/feature_flags.py'
       - '.github/workflows/rust-proxy-build.yml'
   pull_request:
     # release/** matters as much as main -- feature branches merge into the
@@ -18,6 +20,8 @@ on:
       - 'services/management/alembic/**'
       - 'services/management/app/models_sqlalchemy.py'
       - 'shared/auth/**'
+      - 'shared/licensing/**'
+      - 'shared/utils/feature_flags.py'
       - '.github/workflows/rust-proxy-build.yml'
 
 defaults:
