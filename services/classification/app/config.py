@@ -66,6 +66,7 @@ class ClassificationConfig:
     jwt_audience: str = ""
     jwks_url: str = ""
     jwt_secret: str = secret_field()
+    spiffe_allowed_ids: frozenset[str] = frozenset()
 
     @property
     def cache_enabled(self) -> bool:
@@ -98,6 +99,9 @@ class ClassificationConfig:
             jwt_audience=src.get("JWT_AUDIENCE", ""),
             jwks_url=src.get("JWKS_URL", ""),
             jwt_secret=src.get("JWT_SECRET", ""),
+            spiffe_allowed_ids=frozenset(
+                i.strip() for i in src.get("SPIFFE_ALLOWED_IDS", "").split(",") if i.strip()
+            ),
         )
         if not cfg.ner_spacy_model:
             raise ConfigError("NER_SPACY_MODEL must not be empty")
