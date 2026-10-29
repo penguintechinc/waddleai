@@ -285,6 +285,29 @@ async def test_failed_rebuild_is_retried_on_a_later_call(
     await eng.aclose()
 
 
+async def test_persistent_failure_respawns_at_most_once_per_cooldown(
+    monkeypatch: pytest.MonkeyPatch, pools: _Recorder
+) -> None:
+    eng = _engine(initializer=fk.init_flaky, retry_cooldown_s=60.0)
+    await eng.start()
+    monkeypatch.setenv("FK_FAIL", "1")
+    with pytest.raises(EngineWorkerFailure):
+        await eng.analyze("die", "en", 30.0)  # break + failed rebuild (attempt 1)
+    made = len(pools.made)
+    results = await asyncio.gather(
+        *(eng.analyze("hello", "en", 5.0) for _ in range(5)), return_exceptions=True
+    )
+    assert all(isinstance(r, EngineUnavailable) for r in results)
+    assert len(pools.made) == made  # 5 queued callers, zero respawns inside the window
+    eng._last_attempt -= 61.0  # window elapsed: exactly one attempt for N callers
+    results = await asyncio.gather(
+        *(eng.analyze("hello", "en", 5.0) for _ in range(5)), return_exceptions=True
+    )
+    assert all(isinstance(r, EngineUnavailable) for r in results)
+    assert len(pools.made) == made + 1
+    await eng.aclose()
+
+
 async def test_malformed_worker_payload_maps_to_analysis_error(engine: NerEngine) -> None:
     with pytest.raises(EngineAnalysisError):
         await engine.analyze("bad", "en", 10.0)

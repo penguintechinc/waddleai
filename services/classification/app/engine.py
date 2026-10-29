@@ -306,12 +306,18 @@ class NerEngine:
         async with self._rebuild_lock:
             if broken is not None and self._executor is not broken:
                 return
-            if broken is None and not self._recovery_pending:
-                return
+            loop = asyncio.get_running_loop()
+            if broken is None and (
+                not self._recovery_pending
+                or loop.time() - self._last_attempt < self._retry_cooldown
+            ):
+                return  # queued callers skip a respawn if one just ended (cooldown)
             log.error("ner_engine_pool_rebuilding")
             self._recovery_pending = True  # stays set if the rebuild fails or is cancelled
-            self._last_attempt = asyncio.get_running_loop().time()
-            self._recovery_pending = not await self._spawn()
+            try:
+                self._recovery_pending = not await self._spawn()
+            finally:
+                self._last_attempt = loop.time()  # stamped at attempt END
 
     async def aclose(self) -> None:
         """Shut the pool down and mark the engine not-ready."""
