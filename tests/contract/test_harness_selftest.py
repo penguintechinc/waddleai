@@ -211,6 +211,34 @@ def test_leaky_401_is_caught_under_divergence() -> None:
     )
 
 
+_SK = "sk-proj-ABCDEFGH12345678"
+_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sigsigsig"
+
+
+def test_diff_output_never_echoes_secrets() -> None:
+    """Planted sk- key / JWT in free text, list leaves and a leaky 401 stay out of diff output."""
+    a = _json({"error": "ok", "tokens": ["fine", "fine"]})
+    b = _json({"error": f"bad {_SK} and {_JWT}", "tokens": [_JWT, _SK]})
+    out = "\n".join(parity.diff(a, b))
+    leaky = _denied({"error": f"leak {_SK} {_JWT}"})
+    out += "\n".join(
+        parity.diff(_json({"d": 1}), leaky, divergence="expired_api_key", credential="wa-api-key")
+    )
+    out += "\n".join(parity.diff(_json({"tokens": [_SK]}), _json({"tokens": [_JWT]})))
+    assert "$.body.error" in out and "$rust.body.error" in out and "tokens[0]" in out
+    for secret in (_SK, _JWT, "ABCDEFGH12345678", "sigsigsig"):
+        assert secret not in out, secret
+
+
+def test_denied_envelope_requires_content_type() -> None:
+    """A denied Rust response with a missing or wrong content-type is a mismatch."""
+    py = _json({"data": "ok"})
+    kw = {"divergence": "expired_api_key", "credential": "wa-api-key"}
+    assert parity.diff(py, _denied(), **kw) == []
+    assert parity.diff(py, _json(DENIED, 401, {}), **kw)
+    assert parity.diff(py, _json(DENIED, 401, {"content-type": "text/html"}), **kw)
+
+
 def test_divergences_not_interchangeable() -> None:
     """Each divergence is bound to its credential kind; notes/unknowns are rejected."""
     py, rs = _json({"data": "ok"}), _denied()

@@ -288,11 +288,16 @@ def normalize(resp: Response, *, redact: bool = False) -> dict[str, Any]:
 
 
 def _show(path: str, v: Any) -> str:
-    """Render a value for a diff line; sensitive leaves show only a digest."""
-    leaf = re.split(r"[.\[]", path)[-1].lower()
+    """Render a value for a diff line; secrets never reach stdout/stderr.
+
+    Keyed sensitive leaves (list-index suffix stripped) show only a digest;
+    everything else is rendered then scrubbed with ``redact_text`` so
+    free-text secrets (sk- keys, JWTs, bearer tokens, emails) are masked too.
+    """
+    leaf = re.split(r"[.\[]", re.sub(r"(\[\d+\])+$", "", path))[-1].lower()
     if leaf in SECRET_KEYS or leaf in PII_KEYS or leaf in SECRET_HEADERS:
         return "sha256:" + hashlib.sha256(repr(v).encode()).hexdigest()[:10]
-    return repr(v)
+    return redact_text(repr(v))
 
 
 def _walk(a: Any, b: Any, path: str, out: list[str]) -> None:
@@ -325,7 +330,9 @@ def _check_denied_envelope(rust: Response, status: int, out: list[str]) -> None:
         if h not in _DENIED_ALLOWED_HEADERS:
             out.append(f"$rust.headers.{h}: unexpected header on denied response")
         elif h == "content-type" and not v.lower().startswith("application/json"):
-            out.append(f"$rust.headers.content-type: {v!r} is not application/json")
+            out.append(f"$rust.headers.content-type: {redact_text(v)!r} is not application/json")
+    if "content-type" not in n["headers"]:
+        out.append("$rust.headers.content-type: missing (expected application/json)")
 
 
 def diff(
