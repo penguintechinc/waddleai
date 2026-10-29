@@ -1,0 +1,28 @@
+[package]
+name = "telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaddleAI tracing + OTLP base, Python-parity Prometheus registry, and health/metrics Axum routes"
+
+[dependencies]
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+cache = { path = "../cache", version = "=0.1.0" }
+config = { path = "../config", version = "=0.1.0" }
+db = { path = "../db", version = "=0.1.0" }
+opentelemetry = { version = "=0.33.1", features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = ["http-proto", "trace", "metrics", "reqwest-blocking-client", "reqwest-rustls"] }
+opentelemetry_sdk = { version = "=0.33.1", features = ["trace", "metrics"] }
+prometheus = { version = "=0.14.0", default-features = false }
+sea-orm = { version = "=2.0.4", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", features = ["time", "sync", "rt"] }
+tracing = "=0.1.44"
+tracing-opentelemetry = { version = "=0.34.0", default-features = false }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry", "fmt", "env-filter", "std"] }
+
+[dev-dependencies]
+http-body-util = "=0.1.5"
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time", "net"] }
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }
