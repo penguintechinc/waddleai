@@ -33,14 +33,17 @@ class FakeFeatures:
 class FakeLicense:
     """Sync license client double recording calls."""
 
-    def __init__(self, on: bool = True) -> None:
+    def __init__(self, on: bool = True, exc: Exception | None = None) -> None:
         """Configure the double."""
         self.on = on
+        self.exc = exc
         self.calls: list[str] = []
 
     def check_feature(self, name: str) -> bool:
         """Record the call and return the configured entitlement."""
         self.calls.append(name)
+        if self.exc:
+            raise self.exc
         return self.on
 
 
@@ -123,3 +126,38 @@ async def test_runs_blocking_checks_off_event_loop() -> None:
     assert await g.enabled("1") is True
     task.cancel()
     assert ticks >= 3
+
+
+async def test_empty_distinct_id_normalized_to_server() -> None:
+    """Gate behavior: falsy distinct id is sent as "server" (ContentFilter parity)."""
+    feats = FakeFeatures(True)
+    g = NerTierGate(license_client=FakeLicense(True), features=feats)
+    assert await g.enabled("") is True
+    assert feats.calls == [("waddleai.pii_ner", "server")]
+    await g.enabled("server")  # same cache slot
+    assert len(feats.calls) == 1
+
+
+async def test_license_client_raises_fails_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gate behavior: license client exception -> last cached, else disabled, never raises."""
+    lic = FakeLicense(True)
+    g = NerTierGate(license_client=lic, features=FakeFeatures(True))
+    assert await g.enabled("a") is True
+    lic.exc = RuntimeError("license server down")
+    real = time.monotonic()
+    monkeypatch.setattr(gate_mod.time, "monotonic", lambda: real + 120.0)
+    assert await g.enabled("a") is True  # last known
+    assert await g.enabled("never") is False  # never seen
+
+
+async def test_cache_bounded_evicts_oldest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gate behavior: cache is capped and evicts the oldest entry."""
+    monkeypatch.setattr(gate_mod, "NER_TIER_CACHE_MAX_ENTRIES", 3)
+    lic = FakeLicense(True)
+    g = NerTierGate(license_client=lic, features=None)
+    for i in ("a", "b", "c", "d"):
+        await g.enabled(i)
+    assert len(g._cache) == 3 and "a" not in g._cache and "d" in g._cache  # noqa: SLF001
+    n = len(lic.calls)
+    await g.enabled("a")  # evicted -> re-checked
+    assert len(lic.calls) == n + 1

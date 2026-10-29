@@ -18,6 +18,8 @@ log = get_logger(__name__)
 NER_TIER_FLAG = "waddleai.pii_ner"
 NER_TIER_LICENSE_FEATURE = "pii_ner_detection"
 NER_TIER_CACHE_TTL = 60.0
+NER_TIER_CACHE_MAX_ENTRIES = 2048  # bound request-influenced ids (DoS hygiene)
+DEFAULT_DISTINCT_ID = "server"  # ContentFilter maps a falsy org id to this
 
 
 class NerTierGate:
@@ -41,6 +43,7 @@ class NerTierGate:
         Blocking checks run via ``asyncio.to_thread``; results are cached 60 s per id.
         Any checker error yields the last cached value, else disabled; never raises.
         """
+        flag_distinct_id = flag_distinct_id or DEFAULT_DISTINCT_ID
         now = time.monotonic()
         cached = self._cache.get(flag_distinct_id)
         if cached is not None and now - cached.checked_at < NER_TIER_CACHE_TTL:
@@ -56,6 +59,11 @@ class NerTierGate:
                 had_cache=cached is not None,
             )
             return fallback
+        # On error above, checked_at is deliberately left stale (retry next call):
+        # the source ContentFilter does the same, so this is R2 parity.
+        self._cache.pop(flag_distinct_id, None)
+        while len(self._cache) >= NER_TIER_CACHE_MAX_ENTRIES:
+            del self._cache[next(iter(self._cache))]  # evict oldest-inserted
         self._cache[flag_distinct_id] = LicenseGateCacheEntry(enabled=enabled, checked_at=now)
         return enabled
 
