@@ -26,10 +26,54 @@ def test_composite_confidence_is_min_raw_times_weight() -> None:
     assert res.spans[0].action == pb.ENTITY_ACTION_REDACT
 
 
-def test_composite_confidence_capped_at_one() -> None:
-    """Verify: composite confidence capped at one."""
-    res = _map("x" * 11, [RawEntity("US_SSN", 0, 11, 1.0)])
-    assert res.spans[0].confidence <= 1.0
+def test_composite_confidence_capped_at_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify: the min(..., 1.0) clamp fires when a weight exceeds 1.0."""
+    monkeypatch.setitem(mapping.ENTITY_CONFIG, "PERSON", ("redact", 1.5))
+    res = _map("Alice Smith", [RawEntity("PERSON", 0, 11, 0.9)])  # 0.9 * 1.5 = 1.35
+    assert res.spans[0].confidence == 1.0
+
+
+_ENUM_TABLE = [
+    ("PERSON", 1), ("US_SSN", 2), ("US_PASSPORT", 3), ("US_DRIVER_LICENSE", 4),
+    ("MEDICAL_LICENSE", 5), ("EMAIL_ADDRESS", 6), ("PHONE_NUMBER", 7), ("CREDIT_CARD", 8),
+    ("IBAN_CODE", 9), ("CRYPTO", 10), ("LOCATION", 11), ("IP_ADDRESS", 12), ("URL", 13),
+    ("NRP", 14), ("DATE_TIME", 15), ("ORG", 16), ("NOT_A_REAL_LABEL", 99),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("label", "value"), _ENUM_TABLE)
+def test_entity_type_for_pinned_to_frozen_proto_ints(label: str, value: int) -> None:
+    """Verify: every label maps to its frozen proto int; unknown maps to OTHER=99."""
+    assert mapping.entity_type_for(label) == (value, label)
+
+
+def test_enum_table_covers_every_entity_config_label() -> None:
+    """Verify: the pinned table covers every ENTITY_CONFIG label (drift guard)."""
+    assert {lbl for lbl, v in _ENUM_TABLE if v != 99} == set(mapping.ENTITY_CONFIG)
+
+
+def test_zero_length_and_out_of_range_spans_dropped() -> None:
+    """Verify: empty, inverted and fully-truncated spans are dropped."""
+    raw = [
+        RawEntity("PERSON", 5, 5, 0.9),
+        RawEntity("PERSON", 8, 3, 0.9),
+        RawEntity("PERSON", 2100, 2200, 0.9),
+    ]
+    assert _map("a" * 2500, raw).spans == []
+
+
+def test_below_floor_composite_dropped_but_raw_above_floor() -> None:
+    """Verify: floor applies to composite, not raw (raw 0.35 * 0.85 = 0.2975)."""
+    assert _map("D1234567", [RawEntity("US_DRIVER_LICENSE", 0, 8, 0.35)]).spans == []
+
+
+def test_sort_tiebreaker_is_deterministic() -> None:
+    """Verify: identical offsets order by entity_type then label, any input order."""
+    a, b = RawEntity("PERSON", 0, 5, 0.9), RawEntity("EMAIL_ADDRESS", 0, 5, 0.9)
+    r1 = _map("abcde", [a, b]).spans
+    r2 = _map("abcde", [b, a]).spans
+    assert [s.entity_label for s in r1] == [s.entity_label for s in r2]
+    assert [s.entity_type for s in r1] == [1, 6]
 
 
 def test_floor_pinned_to_content_filter() -> None:

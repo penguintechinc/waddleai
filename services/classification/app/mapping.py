@@ -87,5 +87,5 @@ def map_spans(text: str, raw: list[RawEntity], disabled_labels: frozenset[str]) 
                 action=_ACTION_BY_NAME.get(action, pb.ENTITY_ACTION_LOG),
             )
         )
-    spans.sort(key=lambda s: (s.start_cp, s.end_cp))
+    spans.sort(key=lambda s: (s.start_cp, s.end_cp, s.entity_type, s.entity_label))
     return MappedResult(spans=spans, analyzed_chars=n, truncated=len(text) > MAX_ANALYZED_CHARS)
