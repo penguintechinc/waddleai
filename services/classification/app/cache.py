@@ -64,7 +64,7 @@ class NerCache:
         """Build a cache from config; the REDIS_URL user should be ACL-limited to ``clsf:*``."""
         client = None
         if cfg.cache_enabled:
-            client = aredis.from_url(
+            client = aredis.Redis.from_url(
                 cfg.redis_url,
                 socket_timeout=OP_TIMEOUT_SECONDS,
                 socket_connect_timeout=OP_TIMEOUT_SECONDS,

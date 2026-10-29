@@ -160,14 +160,14 @@ async def test_non_en_language_invalid_argument(env: Env) -> None:
     """Non-English is INVALID_ARGUMENT, never degraded, even under CLOSED."""
     err = await code_of(env, req(language="de", fail_mode=pb.FAIL_MODE_CLOSED))
     assert err.code() == grpc.StatusCode.INVALID_ARGUMENT
-    assert env.policy.calls == [] and env.engine.calls == 0
+    assert env.policy.calls == [] and env.engine.calls == 0 and env.gate.seen == []
 
 
 async def test_oversize_text_invalid_argument(env: Env) -> None:
     """Oversize (by UTF-8 bytes) is INVALID_ARGUMENT, never degraded, even under CLOSED."""
     err = await code_of(env, req(text="é" * (MAX_BYTES // 2 + 1), fail_mode=pb.FAIL_MODE_CLOSED))
     assert err.code() == grpc.StatusCode.INVALID_ARGUMENT
-    assert env.policy.calls == [] and env.engine.calls == 0
+    assert env.policy.calls == [] and env.engine.calls == 0 and env.gate.seen == []
     ok = await env.stub.Analyze(req(text="é" * (MAX_BYTES // 2)))  # exactly at the limit
     assert ok.ner_status == pb.NER_STATUS_OK
 
@@ -324,4 +324,26 @@ async def test_no_client_deadline_uses_default_budget(env: Env) -> None:
 async def test_client_deadline_is_passed_to_engine(env: Env) -> None:
     """A client deadline bounds the engine deadline."""
     await env.stub.Analyze(req(), timeout=5.0)
-    assert 0 < env.engine.deadlines[0] <= 5.0
+    assert 0 < env.engine.deadlines[0] <= 5.5  # grpc remaining may skew slightly above timeout
+
+
+async def test_cache_hit_with_spent_deadline_still_served() -> None:
+    """Cache lookup precedes the deadline check: a cached result is served at deadline 0."""
+    engine, cache, gate, policy = FakeEngine(), FakeCache(), FakeGate(), FakePolicy()
+    svc = ClassificationServicer(engine, cache, gate, policy, max_text_bytes=MAX_BYTES)
+
+    class Ctx:
+        def __init__(self, remaining: float) -> None:
+            self.remaining = remaining
+
+        def time_remaining(self) -> float:
+            return self.remaining
+
+    await svc.Analyze(req(), Ctx(5.0))  # populate the cache
+    assert engine.calls == 1
+    r = await svc.Analyze(req(), Ctx(0.0))
+    assert r.cache_hit and not r.degraded and r.ner_status == pb.NER_STATUS_OK
+    assert len(r.spans) == 2 and engine.calls == 1 and policy.calls == []
+    miss = await svc.Analyze(req(text="other text"), Ctx(0.0))  # populated org, miss -> timeout
+    assert miss.degraded and miss.degraded_reason == pb.DEGRADED_REASON_TIMEOUT
+    assert engine.calls == 1

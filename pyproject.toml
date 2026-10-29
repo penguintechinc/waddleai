@@ -80,3 +80,9 @@ exclude = [
     "^\\.worktrees/",
     "node_modules",
 ]
+
+# Generated protoc gRPC stubs: the exclude above is bypassed when a hand-written
+# module imports them, so silence errors in the generated modules themselves.
+[[tool.mypy.overrides]]
+module = ["services.classification.app.grpc_gen.*"]
+ignore_errors = true
