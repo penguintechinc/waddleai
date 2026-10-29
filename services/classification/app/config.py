@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
+from typing import Any
 
 _FAIL_MODES = frozenset({"open", "closed"})
 _REDACTED = "***REDACTED***"
@@ -32,6 +33,21 @@ def _int(env: Mapping[str, str], name: str, default: int, *, minimum: int = 0) -
     return value
 
 
+def secret_field(default: str = "") -> Any:
+    """Declare a secret dataclass field; repr masking keys off its metadata."""
+    return field(default=default, repr=False, metadata={"secret": True})
+
+
+def redacted_repr(obj: Any) -> str:
+    """Render a dataclass, masking exactly the fields whose metadata marks them secret."""
+    parts = []
+    for f in fields(obj):
+        value = getattr(obj, f.name)
+        shown = (_REDACTED if value else "") if f.metadata.get("secret") else value
+        parts.append(f"{f.name}={shown!r}")
+    return f"{type(obj).__name__}({', '.join(parts)})"
+
+
 @dataclass(slots=True)
 class ClassificationConfig:
     """Validated classification-service settings; secrets are redacted from repr."""
@@ -41,15 +57,15 @@ class ClassificationConfig:
     ner_pool_workers: int = 2
     ner_spacy_model: str = "en_core_web_lg"
     ner_cache_ttl_seconds: int = 0
-    ner_cache_hmac_key: str = field(default="", repr=False)
-    redis_url: str = field(default="", repr=False)
+    ner_cache_hmac_key: str = secret_field()
+    redis_url: str = secret_field()
     max_text_bytes: int = 1_048_576
     max_queue_depth: int = 64
     security_auditor_fail_mode: str = "closed"
     jwt_issuer: str = ""
     jwt_audience: str = ""
     jwks_url: str = ""
-    jwt_secret: str = field(default="", repr=False)
+    jwt_secret: str = secret_field()
 
     @property
     def cache_enabled(self) -> bool:
@@ -73,7 +89,7 @@ class ClassificationConfig:
             ner_pool_workers=_int(src, "NER_POOL_WORKERS", 2, minimum=1),
             ner_spacy_model=src.get("NER_SPACY_MODEL", "en_core_web_lg").strip(),
             ner_cache_ttl_seconds=_int(src, "NER_CACHE_TTL_SECONDS", 0),
-            ner_cache_hmac_key=src.get("NER_CACHE_HMAC_KEY", ""),
+            ner_cache_hmac_key=src.get("NER_CACHE_HMAC_KEY", "").strip(),
             redis_url=src.get("REDIS_URL", ""),
             max_text_bytes=_int(src, "MAX_TEXT_BYTES", 1_048_576, minimum=1),
             max_queue_depth=_int(src, "MAX_QUEUE_DEPTH", 64, minimum=1),
@@ -91,10 +107,4 @@ class ClassificationConfig:
 
     def __repr__(self) -> str:
         """Render the config with every secret-bearing field masked."""
-        secret = {"ner_cache_hmac_key", "redis_url", "jwt_secret"}
-        parts = []
-        for name in (f.name for f in fields(self)):
-            value = getattr(self, name)
-            shown = (_REDACTED if value else "") if name in secret else value
-            parts.append(f"{name}={shown!r}")
-        return f"ClassificationConfig({', '.join(parts)})"
+        return redacted_repr(self)

@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, fields
+
 import pytest
 from quart import Quart
 
 from services.classification.app import create_app
-from services.classification.app.config import ClassificationConfig, ConfigError
+from services.classification.app.config import (
+    ClassificationConfig,
+    ConfigError,
+    redacted_repr,
+    secret_field,
+)
 
 
 def test_create_app_returns_quart() -> None:
@@ -70,3 +77,37 @@ def test_config_repr_redacts_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     for text in (repr(cfg), str(cfg)):
         assert "s3cret" not in text
         assert "REDACTED" in text
+
+
+def test_whitespace_hmac_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A whitespace-only HMAC key is no key: cache-enabled config must raise."""
+    monkeypatch.setenv("NER_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setenv("NER_CACHE_HMAC_KEY", "   ")
+    with pytest.raises(ConfigError, match="NER_CACHE_HMAC_KEY"):
+        ClassificationConfig.from_env()
+
+
+def test_redaction_is_metadata_driven() -> None:
+    """Masking follows field metadata, so a newly added secret field auto-masks."""
+
+    @dataclass(slots=True)
+    class Future:
+        """Stand-in config with a not-yet-known secret field."""
+
+        plain: str = "visible"
+        new_secret: str = secret_field("topsecret")
+
+    text = redacted_repr(Future())
+    assert "topsecret" not in text
+    assert "visible" in text
+    assert "REDACTED" in text
+
+
+def test_every_secret_field_is_masked_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each real secret-metadata field is masked, and the secret set is non-empty."""
+    secrets = [f.name for f in fields(ClassificationConfig) if f.metadata.get("secret")]
+    assert {"ner_cache_hmac_key", "redis_url", "jwt_secret"} <= set(secrets)
+    cfg = ClassificationConfig()
+    for name in secrets:
+        setattr(cfg, name, "zz-leak")
+    assert "zz-leak" not in repr(cfg)
