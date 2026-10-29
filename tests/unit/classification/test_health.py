@@ -36,7 +36,7 @@ KEY32 = "k" * 32
 
 def _app(engine: Any, cfg: ClassificationConfig | None = None, **kw: Any) -> Any:
     """App with a fake engine and the static verifier on an ephemeral gRPC port."""
-    cfg = cfg or ClassificationConfig(grpc_port=0)
+    cfg = cfg or ClassificationConfig(grpc_port=0, allow_insecure_grpc=True)
     return app_pkg.create_app(
         cfg, engine=engine, servicer=_servicer(engine, cfg), verifier=af.make_verifier(), **kw
     )
@@ -204,7 +204,9 @@ async def test_lifecycle_serves_and_drains() -> None:
 
 async def test_lifecycle_requires_jwt_config_when_no_verifier() -> None:
     """Serving without JWT issuer/audience/JWKS fails loudly at startup."""
-    app = app_pkg.create_app(ClassificationConfig(grpc_port=0), engine=af.FakeEngine())
+    app = app_pkg.create_app(
+        ClassificationConfig(grpc_port=0, allow_insecure_grpc=True), engine=af.FakeEngine()
+    )
     with pytest.raises(ConfigError):
         await startup(app)
 

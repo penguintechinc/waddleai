@@ -72,7 +72,6 @@ def test_config_repr_redacts_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NER_CACHE_TTL_SECONDS", "300")
     monkeypatch.setenv("NER_CACHE_HMAC_KEY", "hmac-s3cret")
     monkeypatch.setenv("REDIS_URL", "redis://:pw-s3cret@host/0")
-    monkeypatch.setenv("JWT_SECRET", "jwt-s3cret")
     cfg = ClassificationConfig.from_env()
     for text in (repr(cfg), str(cfg)):
         assert "s3cret" not in text
@@ -106,7 +105,7 @@ def test_redaction_is_metadata_driven() -> None:
 def test_every_secret_field_is_masked_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each real secret-metadata field is masked, and the secret set is non-empty."""
     secrets = [f.name for f in fields(ClassificationConfig) if f.metadata.get("secret")]
-    assert {"ner_cache_hmac_key", "redis_url", "jwt_secret"} <= set(secrets)
+    assert {"ner_cache_hmac_key", "redis_url"} <= set(secrets)
     cfg = ClassificationConfig()
     for name in secrets:
         setattr(cfg, name, "zz-leak")

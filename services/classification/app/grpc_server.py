@@ -74,6 +74,23 @@ async def build_grpc_server(
     return server
 
 
+def load_server_credentials(cfg: ClassificationConfig) -> grpc.ServerCredentials | None:
+    """Build TLS credentials from the configured files; mTLS when a client CA is set."""
+    if not cfg.tls_enabled:
+        return None
+    with open(cfg.tls_key_file, "rb") as f:
+        key = f.read()
+    with open(cfg.tls_cert_file, "rb") as f:
+        cert = f.read()
+    ca: bytes | None = None
+    if cfg.tls_client_ca_file:
+        with open(cfg.tls_client_ca_file, "rb") as f:
+            ca = f.read()
+    return grpc.ssl_server_credentials(
+        [(key, cert)], root_certificates=ca, require_client_auth=ca is not None
+    )
+
+
 def bound_port(server: grpc.aio.Server) -> int:
     """Return the port ``build_grpc_server`` actually bound (useful when grpc_port=0)."""
     return _PORTS[server]

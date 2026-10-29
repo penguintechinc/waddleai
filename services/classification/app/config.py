@@ -65,13 +65,43 @@ class ClassificationConfig:
     jwt_issuer: str = ""
     jwt_audience: str = ""
     jwks_url: str = ""
-    jwt_secret: str = secret_field()
     spiffe_allowed_ids: frozenset[str] = frozenset()
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
+    tls_client_ca_file: str = ""
+    allow_insecure_grpc: bool = False
 
     @property
     def cache_enabled(self) -> bool:
         """Report whether the NER result cache is on (a positive TTL enables it)."""
         return self.ner_cache_ttl_seconds > 0
+
+    @property
+    def tls_enabled(self) -> bool:
+        """Report whether a server certificate and key are configured."""
+        return bool(self.tls_cert_file and self.tls_key_file)
+
+    def validate_transport(self) -> None:
+        """Fail closed unless gRPC has TLS (or an explicit dev opt-in) and SPIFFE has mTLS.
+
+        Raises ConfigError for a half-configured cert/key pair, a SPIFFE allow-list without
+        server TLS + client CA, or no TLS without ALLOW_INSECURE_GRPC=1.
+        """
+        if bool(self.tls_cert_file) != bool(self.tls_key_file):
+            raise ConfigError("GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set together")
+        bad = [i for i in self.spiffe_allowed_ids if not i.startswith("spiffe://")]
+        if bad:
+            raise ConfigError("SPIFFE_ALLOWED_IDS entries must be spiffe:// URIs")
+        if self.spiffe_allowed_ids and not (self.tls_enabled and self.tls_client_ca_file):
+            raise ConfigError(
+                "SPIFFE_ALLOWED_IDS requires GRPC_TLS_CERT_FILE, GRPC_TLS_KEY_FILE and "
+                "GRPC_TLS_CLIENT_CA_FILE (mTLS); refusing to run a dead SPIFFE allow-list"
+            )
+        if not self.tls_enabled and not self.allow_insecure_grpc:
+            raise ConfigError(
+                "gRPC TLS is required: set GRPC_TLS_CERT_FILE/GRPC_TLS_KEY_FILE "
+                "(dev only: ALLOW_INSECURE_GRPC=1)"
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ClassificationConfig:
@@ -98,10 +128,13 @@ class ClassificationConfig:
             jwt_issuer=src.get("JWT_ISSUER", ""),
             jwt_audience=src.get("JWT_AUDIENCE", ""),
             jwks_url=src.get("JWKS_URL", ""),
-            jwt_secret=src.get("JWT_SECRET", ""),
             spiffe_allowed_ids=frozenset(
                 i.strip() for i in src.get("SPIFFE_ALLOWED_IDS", "").split(",") if i.strip()
             ),
+            tls_cert_file=src.get("GRPC_TLS_CERT_FILE", "").strip(),
+            tls_key_file=src.get("GRPC_TLS_KEY_FILE", "").strip(),
+            tls_client_ca_file=src.get("GRPC_TLS_CLIENT_CA_FILE", "").strip(),
+            allow_insecure_grpc=src.get("ALLOW_INSECURE_GRPC", "").strip() == "1",
         )
         if not cfg.ner_spacy_model:
             raise ConfigError("NER_SPACY_MODEL must not be empty")

@@ -24,7 +24,7 @@ from services.classification.app.config import ClassificationConfig, ConfigError
 from services.classification.app.engine import NerEngine
 from services.classification.app.failmode import FailModePolicy
 from services.classification.app.gate import NerTierGate
-from services.classification.app.grpc_server import build_grpc_server
+from services.classification.app.grpc_server import build_grpc_server, load_server_credentials
 from services.classification.app.health import HealthMirror, evaluate_readiness
 from services.classification.app.obs import get_logger
 from services.classification.app.servicer import ClassificationServicer
@@ -97,6 +97,13 @@ async def startup(app: Quart) -> None:
     """Bind the gRPC server, start mirroring readiness, and warm the engine in the background."""
     rt: Runtime = app.extensions["classification_runtime"]
     cfg: ClassificationConfig = app.config["CLASSIFICATION"]
+    cfg.validate_transport()
+    credentials = load_server_credentials(cfg)
+    if credentials is None:
+        log.warning(
+            "classification_grpc_INSECURE_cleartext",
+            detail="ALLOW_INSECURE_GRPC=1: bearer tokens and request text are NOT encrypted",
+        )
     engine = rt.engine or NerEngine(
         workers=cfg.ner_pool_workers,
         max_queue_depth=cfg.max_queue_depth,
@@ -113,7 +120,12 @@ async def startup(app: Quart) -> None:
     rt.health = health_aio.HealthServicer()
     rt.mirror = HealthMirror(rt.health, lambda: evaluate_readiness(engine, cfg).ready)
     rt.server = await build_grpc_server(
-        cfg, servicer, verifier, health=rt.health, spiffe_allowed_ids=cfg.spiffe_allowed_ids
+        cfg,
+        servicer,
+        verifier,
+        health=rt.health,
+        spiffe_allowed_ids=cfg.spiffe_allowed_ids,
+        credentials=credentials,
     )
     await rt.mirror.sync_once()  # NOT_SERVING before the first RPC can arrive
     await rt.server.start()

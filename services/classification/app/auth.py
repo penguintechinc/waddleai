@@ -32,7 +32,8 @@ from shared.auth.jwks_verifier import (
 
 REQUIRED_SCOPE = "classification:analyze"
 HEALTH_METHOD_PREFIX = "/grpc.health.v1.Health/"
-MAX_STALE_KEY_SECONDS = 86_400.0  # last-known JWKS keys outlive an outage at most a day
+MAX_STALE_KEY_SECONDS = 3_600.0  # last-known JWKS keys outlive an outage at most 1h (token TTL cap)
+OUTAGE_WARN_INTERVAL_SECONDS = 60.0
 MAX_KNOWN_KEYS = 16
 
 log = get_logger(__name__)
@@ -69,6 +70,7 @@ class LastKnownKeyResolver:
         self._clock = clock
         self._known: OrderedDict[str, tuple[Any, float]] = OrderedDict()
         self._lock = threading.Lock()
+        self._last_warn = float("-inf")
 
     def get_signing_key_from_jwt(self, token: str) -> Any:
         """Resolve via the JWKS; on connection failure serve a fresh-enough cached key."""
@@ -109,7 +111,10 @@ class LastKnownKeyResolver:
             entry = self._known.get(kid) if kid is not None else None
         if entry is None or self._clock() - entry[1] > self._max_stale:
             return None
-        log.warning("jwks_unreachable_serving_last_known_key")
+        now = self._clock()
+        if now - self._last_warn >= OUTAGE_WARN_INTERVAL_SECONDS:  # throttle: one per interval
+            self._last_warn = now
+            log.warning("jwks_unreachable_serving_last_known_key")
         return entry[0]
 
 
@@ -212,4 +217,8 @@ class JwtAuthInterceptor(grpc.aio.ServerInterceptor):  # type: ignore[misc]  # g
         if b"ssl" not in auth_ctx.get("transport_security_type", []):
             return False
         sans = auth_ctx.get("x509_subject_alternative_name", [])
-        return any(s.decode("utf-8", errors="replace") in self._spiffe for s in sans)
+        for raw in sans:
+            san = raw.decode("utf-8", errors="replace")
+            if san.startswith("spiffe://") and san in self._spiffe:  # SPIFFE URI SANs only
+                return True
+        return False
