@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures_core::stream::BoxStream;
 use serde_json::Value;
 
-use crate::context::{PipelineContext, PseudonymMap};
+use crate::context::{PipelineContext, PseudonymMap, Usage};
 
 /// Kinds of PII entity the NER tier can report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -86,6 +86,8 @@ pub struct StreamChunk {
     pub delta: String,
     /// Finish reason, on the final chunk.
     pub finish_reason: Option<String>,
+    /// Upstream-reported usage, on the final chunk when the provider sends it.
+    pub usage: Option<Usage>,
 }
 
 /// Dispatch-level failure.
@@ -97,6 +99,30 @@ pub enum DispatchError {
     /// A connector failed.
     #[error("connector: {0}")]
     Connector(String),
+    /// An upstream failure already mapped to the client-facing HTTP status and block reason
+    /// (the Python `_record_dispatch_error` mapping). Carries no upstream body.
+    #[error("upstream error (status {status}): {reason}")]
+    Upstream {
+        /// HTTP status to return to the caller.
+        status: u16,
+        /// Stable `block_reason` code.
+        reason: String,
+        /// Whether failing over to the next fallback-chain entry is allowed.
+        retryable: bool,
+    },
+}
+
+impl DispatchError {
+    /// True when the next fallback-chain entry may be tried (5xx, 429, timeout, unreachable).
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Upstream {
+                retryable: true,
+                ..
+            }
+        )
+    }
 }
 
 /// Upstream dispatcher (local in P2; P3 adds commercial providers).
@@ -142,9 +168,20 @@ pub struct ConnectorResponse {
 /// Connector failure.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConnectorError {
-    /// Upstream returned an error or was unreachable.
+    /// Upstream was unreachable or sent a malformed reply (retryable; message is generic).
     #[error("upstream: {0}")]
     Upstream(String),
+    /// Upstream answered with a non-success HTTP status; the body is never carried.
+    #[error("upstream status {status}")]
+    Status {
+        /// HTTP status code.
+        status: u16,
+        /// Parsed `Retry-After`-style backoff hint, when the upstream sent one (429).
+        retry_after: Option<std::time::Duration>,
+    },
+    /// The request or the gap between stream frames exceeded its timeout.
+    #[error("upstream timeout")]
+    Timeout,
     /// The connector does not support the request.
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
