@@ -188,8 +188,8 @@ fn idx(t: ThreatType) -> usize {
         ThreatType::DataExtraction => 2,
         ThreatType::SystemPromptLeak => 3,
         ThreatType::CredentialHarvesting => 4,
-        // Never indexed: `action_for` short-circuits and no pattern carries this type.
-        ThreatType::UnsupportedContent => 0,
+        // Distinct slot (never aliases a pattern type); `action_for` short-circuits it.
+        ThreatType::UnsupportedContent => 5,
     }
 }
 
@@ -341,8 +341,8 @@ impl PromptScanner {
                 suggested_action: Action::Block,
             }];
         }
-        let mut per: [Vec<String>; 5] = Default::default();
-        let mut counts = [0usize; 5];
+        let mut per: [Vec<String>; 6] = Default::default();
+        let mut counts = [0usize; 6];
         let folded = fold_python_case(prompt);
         let hay = folded.as_deref().unwrap_or(prompt);
         for ((t, _), re) in THREAT_PATTERNS.iter().zip(regexes) {
@@ -430,8 +430,23 @@ fn collect_content<'a>(v: Option<&'a Value>, out: &mut Vec<&'a str>) -> bool {
     }
 }
 
-/// Inline-payload keys on a `file` part that we cannot extract text from.
-const FILE_INLINE_KEYS: &[&str] = &["data", "file_data", "bytes", "base64", "source"];
+/// Allowlist: a `file` part is a pure reference only if its keys are within these.
+const FILE_PART_KEYS: &[&str] = &["type", "file_id", "file"];
+/// Allowlist for the nested `file` object of a `file` part.
+const FILE_NESTED_KEYS: &[&str] = &["file_id", "filename"];
+
+/// True if a `file` part carries nothing beyond string references (no inline payload).
+fn is_pure_file_reference(o: &serde_json::Map<String, Value>) -> bool {
+    let top_ok = o.iter().all(|(k, v)| match k.as_str() {
+        "type" | "file_id" => v.is_string(),
+        "file" => v.as_object().is_some_and(|n| {
+            n.iter()
+                .all(|(nk, nv)| FILE_NESTED_KEYS.contains(&nk.as_str()) && nv.is_string())
+        }),
+        _ => false,
+    });
+    top_ok && o.keys().all(|k| FILE_PART_KEYS.contains(&k.as_str()))
+}
 
 /// Collect text from one content part (string or typed object).
 ///
@@ -455,7 +470,7 @@ fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
                     ok &= collect_value(v, out);
                 }
             }
-            if ty == "file" && FILE_INLINE_KEYS.iter().any(|k| o.contains_key(*k)) {
+            if ty == "file" && !is_pure_file_reference(o) {
                 ok = false;
             }
             (found || non_text) && ok
