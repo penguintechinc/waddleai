@@ -845,17 +845,36 @@ async fn clamp_with_no_local_model_fails_closed_and_blocks() {
 }
 
 #[tokio::test]
-async fn registry_down_with_pii_blocks_without_pii_passes_through() {
+async fn registry_outage_fails_closed_for_every_request() {
     let dead = MockSource::new(world());
     *dead.fail.lock().unwrap() = true;
     let stage = RoutingStage::new(Arc::new(RegistryCache::new(dead)));
+    // PII: blocked.
     let mut c = ctx(Some("gpt-4"));
     c.pii_detected = true;
     stage.call(&mut c).await.unwrap();
     assert!(c.blocked && c.status_code == 503);
-    let mut c = ctx(Some("gpt-4"));
-    stage.call(&mut c).await.unwrap();
-    assert!(!c.blocked);
+    // No PII, external/unknown model: not executable, so dispatch refuses it.
+    for m in [Some("gpt-4"), Some("mystery-model"), None] {
+        let mut c = ctx(m);
+        stage.call(&mut c).await.unwrap();
+        let meta = c
+            .extensions
+            .get::<RoutingMeta>()
+            .expect("meta set on outage");
+        assert!(
+            !meta.executable,
+            "{m:?} must not be executable during an outage"
+        );
+    }
+    // No PII, provably local prefix: stays executable (availability).
+    for m in ["ollama:llama3", "llamacpp:tiny"] {
+        let mut c = ctx(Some(m));
+        stage.call(&mut c).await.unwrap();
+        assert!(!c.blocked);
+        let meta = c.extensions.get::<RoutingMeta>().unwrap();
+        assert!(meta.executable && meta.commercial_models.is_empty());
+    }
 }
 
 #[test]

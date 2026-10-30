@@ -6,6 +6,7 @@ use opentelemetry::global;
 use opentelemetry::metrics::Counter;
 use pipeline::{PipelineContext, Stage, StageError};
 
+use crate::alias::split_provider_prefix;
 use crate::decide::{decide, RoutingRequest};
 use crate::registry::RegistryCache;
 
@@ -76,9 +77,9 @@ impl Stage for RoutingStage {
         Some(SMART_ROUTING_FLAG)
     }
 
-    /// Routes the request. A registry outage leaves `ctx.model` unchanged (Python parity) unless
-    /// PII is present, whose default policy is `local_only`: then the request is blocked. A
-    /// residency-clamp decision failure always blocks (fail closed).
+    /// Routes the request. A registry outage fails closed: PII requests are blocked and any
+    /// other request is marked non-executable unless its model is provably local. A
+    /// residency-clamp decision failure always blocks.
     async fn call(&self, ctx: &mut PipelineContext) -> Result<(), StageError> {
         let org_id = ctx.user.as_ref().map_or(0, |u| i64::from(u.org_id));
         let snapshot = match self.registry.get(org_id).await {
@@ -88,7 +89,33 @@ impl Stage for RoutingStage {
                     tracing::error!(error = %e, "routing: registry unavailable with PII; blocking");
                     block_residency(ctx);
                 } else {
-                    tracing::error!(error = %e, "routing: registry unavailable, model unchanged");
+                    // Cold cache + source down: the org's residency policy is unknown, so fail
+                    // closed. Only a provably local model (explicit `ollama:`/`llamacpp:` prefix)
+                    // stays executable; everything else is marked non-executable for dispatch.
+                    let model = ctx.model.clone();
+                    let local_pin = model
+                        .as_deref()
+                        .map(split_provider_prefix)
+                        .and_then(|(p, _)| p)
+                        .filter(|p| matches!(*p, "ollama" | "llamacpp"))
+                        .map(str::to_owned);
+                    tracing::error!(
+                        error = %e,
+                        executable = local_pin.is_some(),
+                        "routing: registry unavailable; failing closed on residency"
+                    );
+                    let executable = local_pin.is_some();
+                    ctx.extensions.insert(RoutingMeta {
+                        executable,
+                        commercial_models: if executable {
+                            Vec::new()
+                        } else {
+                            model.into_iter().collect()
+                        },
+                        executable_fallbacks: Vec::new(),
+                        provider_hint: local_pin,
+                        unclassified_default: false,
+                    });
                 }
                 return Ok(());
             }
