@@ -122,3 +122,15 @@ pub fn dispatcher(
 pub fn simple(ollama: &str) -> LocalDispatcher {
     dispatcher(ollama, None, Arc::new(IdentityDepseudonymizer))
 }
+
+/// Accepts one connection and never sends response headers; returns the base URL.
+pub async fn silent_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut b = [0u8; 4096];
+        while matches!(sock.read(&mut b).await, Ok(n) if n > 0) {}
+    });
+    url
+}

@@ -95,7 +95,12 @@ pub(crate) async fn post_json(
     if let Some(b) = &cfg.bearer {
         rb = rb.bearer_auth(b.expose_secret());
     }
-    let resp = rb.send().await.map_err(|e| transport_error(&e))?;
+    // Bound the wait for response headers on both paths: a runtime that accepts the connection
+    // but never answers (e.g. loading a large model) must not hang the request.
+    let resp = tokio::time::timeout(cfg.idle_timeout, rb.send())
+        .await
+        .map_err(|_| ConnectorError::Timeout)?
+        .map_err(|e| transport_error(&e))?;
     let status = resp.status();
     if status != StatusCode::OK {
         return Err(ConnectorError::Status {

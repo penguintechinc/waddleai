@@ -152,21 +152,59 @@ impl LocalDispatcher {
         }
     }
 
-    /// Records upstream latency by provider and outcome.
-    fn observe(&self, provider: &str, ok: bool, start: Instant) {
-        self.latency.record(
-            start.elapsed().as_secs_f64(),
-            &[
-                KeyValue::new("provider", provider.to_owned()),
-                KeyValue::new("status", if ok { "success" } else { "error" }),
-            ],
-        );
+    /// Starts a latency measurement for one upstream attempt; it records on drop as
+    /// `aborted` unless [`LatencyGuard::finish`] ran (client disconnect, task cancellation).
+    fn timer(&self, provider: &str) -> LatencyGuard {
+        LatencyGuard {
+            hist: self.latency.clone(),
+            provider: provider.to_owned(),
+            start: Instant::now(),
+            recorded: false,
+        }
+    }
+}
+
+/// RAII latency recorder: exactly one histogram sample per attempt, even when the future or
+/// stream is dropped mid-flight.
+struct LatencyGuard {
+    hist: Histogram<f64>,
+    provider: String,
+    start: Instant,
+    recorded: bool,
+}
+
+impl LatencyGuard {
+    /// Records the sample with the given outcome label.
+    fn record(&mut self, status: &'static str) {
+        if !self.recorded {
+            self.recorded = true;
+            self.hist.record(
+                self.start.elapsed().as_secs_f64(),
+                &[
+                    KeyValue::new("provider", self.provider.clone()),
+                    KeyValue::new("status", status),
+                ],
+            );
+        }
+    }
+
+    /// Records a normal completion (`success` or `error`).
+    fn finish(mut self, ok: bool) {
+        self.record(if ok { "success" } else { "error" });
+    }
+}
+
+impl Drop for LatencyGuard {
+    /// Records `aborted` if the attempt never finished.
+    fn drop(&mut self) {
+        self.record("aborted");
     }
 }
 
 /// Maps a connector failure to the client-facing status/reason and retryability, mirroring
 /// `_record_dispatch_error`: 4xx pass through unretried; 429, 5xx, timeouts and transport
-/// faults are retryable (502/504 to the caller). Never carries the upstream body.
+/// faults are retryable (502/504 to the caller). Non-error statuses (1xx/3xx) from a 200-only
+/// endpoint are treated as 502 upstream faults. Never carries the upstream body.
 pub(crate) fn map_connector_error(e: &ConnectorError) -> DispatchError {
     match e {
         ConnectorError::Status { status, .. } if *status == 429 => DispatchError::Upstream {
@@ -196,7 +234,8 @@ pub(crate) fn map_connector_error(e: &ConnectorError) -> DispatchError {
             reason: "provider_error".to_owned(),
             retryable: true,
         },
-        ConnectorError::Unsupported(_) => DispatchError::Upstream {
+        // Unsupported and any future variant: not retryable, fail loud as 501.
+        _ => DispatchError::Upstream {
             status: 501,
             reason: "provider_unsupported".to_owned(),
             retryable: false,
@@ -257,10 +296,10 @@ impl Dispatcher for LocalDispatcher {
                 continue;
             };
             let req = Self::request_for(ctx, cand);
-            let start = Instant::now();
+            let timer = self.timer(&cand.provider);
             match conn.chat(&req).await {
                 Ok(resp) => {
-                    self.observe(&cand.provider, true, start);
+                    timer.finish(true);
                     ctx.response_text = self.depseudo.restore_text(&ctx.pseudonym_map, &resp.text);
                     ctx.usage = usage_from(resp.input_tokens, resp.output_tokens);
                     ctx.finish_reason =
@@ -268,7 +307,7 @@ impl Dispatcher for LocalDispatcher {
                     return Ok(());
                 }
                 Err(e) => {
-                    self.observe(&cand.provider, false, start);
+                    timer.finish(false);
                     let mapped = map_connector_error(&e);
                     tracing::warn!(provider = %cand.provider, error = %mapped, "dispatch: upstream error");
                     if !mapped.is_retryable() {
@@ -312,7 +351,7 @@ impl Dispatcher for LocalDispatcher {
                     continue;
                 };
                 let req = Self::request_for(ctx, cand);
-                let start = Instant::now();
+                let mut timer = Some(self.timer(&cand.provider));
                 let mut upstream = conn.chat_stream(&req);
                 let mut yielded = false;
                 let mut usage = None;
@@ -325,7 +364,7 @@ impl Dispatcher for LocalDispatcher {
                                 ctx.response_text.push_str(&chunk.delta);
                                 let out = transform.push(&chunk.delta);
                                 if !out.is_empty() {
-                                    yield Ok(StreamChunk { delta: out, ..StreamChunk::default() });
+                                    yield Ok(StreamChunk::delta(out));
                                 }
                             }
                             if chunk.usage.is_some() {
@@ -336,7 +375,9 @@ impl Dispatcher for LocalDispatcher {
                             }
                         }
                         Err(e) => {
-                            self.observe(&cand.provider, false, start);
+                            if let Some(t) = timer.take() {
+                                t.finish(false);
+                            }
                             let mapped = map_connector_error(&e);
                             tracing::warn!(provider = %cand.provider, error = %mapped, "dispatch: upstream stream error");
                             if !yielded && mapped.is_retryable() && i + 1 < cands.len() {
@@ -350,10 +391,12 @@ impl Dispatcher for LocalDispatcher {
                         }
                     }
                 }
-                self.observe(&cand.provider, true, start);
+                if let Some(t) = timer.take() {
+                    t.finish(true);
+                }
                 let tail = transform.finish();
                 if !tail.is_empty() {
-                    yield Ok(StreamChunk { delta: tail, ..StreamChunk::default() });
+                    yield Ok(StreamChunk::delta(tail));
                 }
                 let raw = std::mem::take(&mut ctx.response_text);
                 ctx.response_text = self.depseudo.restore_text(&ctx.pseudonym_map, &raw);
@@ -361,7 +404,7 @@ impl Dispatcher for LocalDispatcher {
                 ctx.finish_reason = Some(finish.clone());
                 let usage = usage.filter(|u: &Usage| u.input_tokens > 0 || u.output_tokens > 0);
                 ctx.usage = usage.clone();
-                yield Ok(StreamChunk { delta: String::new(), finish_reason: Some(finish), usage });
+                yield Ok(StreamChunk::finished(Some(finish), usage));
                 return;
             }
             record_dispatch_error(ctx, &last);

@@ -33,7 +33,8 @@ pub fn record_dispatch_error(ctx: &mut PipelineContext, e: &DispatchError) {
             ctx.status_code = 500;
             ctx.block_reason = Some("no_connector".to_owned());
         }
-        DispatchError::Connector(_) => {
+        // Connector and any future variant: generic dispatch fault.
+        _ => {
             ctx.status_code = 500;
             ctx.block_reason = Some("dispatch_error".to_owned());
         }

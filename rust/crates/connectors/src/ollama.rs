@@ -147,17 +147,14 @@ impl Connector for OllamaConnector {
                 }
                 if let Some(c) = v.pointer("/message/content").and_then(Value::as_str) {
                     if !c.is_empty() {
-                        yield Ok(StreamChunk { delta: c.to_owned(), ..StreamChunk::default() });
+                        yield Ok(StreamChunk::delta(c.to_owned()));
                     }
                 }
                 if v.get("done").and_then(Value::as_bool) == Some(true) {
-                    yield Ok(StreamChunk {
-                        delta: String::new(),
-                        finish_reason: Some(
-                            v.get("done_reason").and_then(Value::as_str).unwrap_or("stop").to_owned(),
-                        ),
-                        usage: Some(usage_of(&v)),
-                    });
+                    yield Ok(StreamChunk::finished(
+                        Some(v.get("done_reason").and_then(Value::as_str).unwrap_or("stop").to_owned(),),
+                        Some(usage_of(&v)),
+                    ));
                     return;
                 }
             }

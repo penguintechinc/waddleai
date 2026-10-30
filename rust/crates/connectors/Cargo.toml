@@ -27,4 +27,5 @@ tracing = "=0.1.44"
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry", "std"] }
+opentelemetry_sdk = { version = "=0.33.1", features = ["metrics", "testing"] }
 wiremock = "=0.6.5"

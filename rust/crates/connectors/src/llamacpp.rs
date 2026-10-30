@@ -163,7 +163,7 @@ impl Connector for LlamaCppConnector {
                 };
                 if let Some(c) = choice.pointer("/delta/content").and_then(Value::as_str) {
                     if !c.is_empty() {
-                        yield Ok(StreamChunk { delta: c.to_owned(), ..StreamChunk::default() });
+                        yield Ok(StreamChunk::delta(c.to_owned()));
                     }
                 }
                 if let Some(f) = choice.get("finish_reason").and_then(Value::as_str) {
@@ -174,11 +174,7 @@ impl Connector for LlamaCppConnector {
                 yield Err(ConnectorError::Upstream("llama-server stream ended early".to_owned()));
                 return;
             }
-            yield Ok(StreamChunk {
-                delta: String::new(),
-                finish_reason: Some(finish.unwrap_or_else(|| "stop".to_owned())),
-                usage,
-            });
+            yield Ok(StreamChunk::finished(Some(finish.unwrap_or_else(|| "stop".to_owned())), usage));
         })
     }
 }

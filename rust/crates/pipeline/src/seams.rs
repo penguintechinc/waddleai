@@ -81,6 +81,7 @@ impl NerClient for NoNer {
 
 /// One normalized streaming chunk.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct StreamChunk {
     /// Text delta.
     pub delta: String,
@@ -90,8 +91,28 @@ pub struct StreamChunk {
     pub usage: Option<Usage>,
 }
 
+impl StreamChunk {
+    /// A text-delta chunk.
+    pub fn delta(delta: impl Into<String>) -> Self {
+        Self {
+            delta: delta.into(),
+            ..Self::default()
+        }
+    }
+
+    /// The final chunk: no text, the finish reason and (when reported) usage.
+    pub fn finished(finish_reason: Option<String>, usage: Option<Usage>) -> Self {
+        Self {
+            delta: String::new(),
+            finish_reason,
+            usage,
+        }
+    }
+}
+
 /// Dispatch-level failure.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DispatchError {
     /// No connector for the provider.
     #[error("no connector: {0}")]
@@ -167,6 +188,7 @@ pub struct ConnectorResponse {
 
 /// Connector failure.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConnectorError {
     /// Upstream was unreachable or sent a malformed reply (retryable; message is generic).
     #[error("upstream: {0}")]
