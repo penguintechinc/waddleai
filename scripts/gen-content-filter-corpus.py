@@ -13,7 +13,9 @@ import asyncio
 import json
 import logging
 import shutil
-import subprocess
+
+# Runs rustfmt with a fixed argv; no untrusted input (dev-only generator).
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
@@ -228,7 +230,8 @@ def builtins_rs(corpus):
     out.append("];")
     src = "\n".join(out) + "\n"
     # Match `cargo fmt` so the committed file is stable and --check is meaningful.
-    return subprocess.run(  # noqa: S603 -- fixed argv, generated source on stdin
+    # Fixed argv (rustfmt), generated source on stdin; no untrusted input.
+    return subprocess.run(  # noqa: S603  # nosec B603
         [shutil.which("rustfmt") or "rustfmt", "--edition", "2021", "--emit", "stdout"],
         input=src,
         capture_output=True,
