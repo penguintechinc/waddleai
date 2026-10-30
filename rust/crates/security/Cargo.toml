@@ -4,13 +4,25 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "WaddleAI prompt-security scanner (PromptSecurityScanner THREAT_PATTERNS parity)"
+description = "WaddleAI prompt-security scanner and PII content filter (tiers 1-2 + NER seam)"
 
 [dependencies]
-thiserror = "=2.0.21"
+cache = { path = "../cache", version = "=0.1.0" }
+db = { path = "../db", version = "=0.1.0" }
+flags = { path = "../flags", version = "=0.1.0" }
+pipeline = { path = "../pipeline", version = "=0.1.0" }
+async-trait = "=0.1.92"
+fancy-regex = "=0.19.2"
 regex = "=1.13.1"
+sea-orm = { version = "=2.0.4", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid", "with-chrono", "with-json", "with-rust_decimal"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+sha2 = "=0.11.1"
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", features = ["time", "sync", "rt"] }
 tracing = "=0.1.44"
 
 [dev-dependencies]
-serde = { version = "=1.0.229", features = ["derive"] }
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+config = { path = "../config", version = "=0.1.0" }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry", "std"] }

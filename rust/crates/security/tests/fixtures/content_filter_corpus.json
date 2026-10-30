@@ -1,0 +1,2947 @@
+{
+ "builtins": [
+  {
+   "name": "credit_card",
+   "pattern": "\\b(?:\\d{4}[-\\s]?){3}\\d{4}\\b",
+   "confidence": 0.95
+  },
+  {
+   "name": "credit_card_amex",
+   "pattern": "\\b3[47]\\d{2}[\\s\\-]?\\d{6}[\\s\\-]?\\d{5}\\b",
+   "confidence": 0.95
+  },
+  {
+   "name": "routing_number",
+   "pattern": "\\b[0-3]\\d{8}\\b",
+   "confidence": 0.65
+  },
+  {
+   "name": "iban",
+   "pattern": "\\b[A-Z]{2}[0-9]{2}(?:\\s?[A-Z0-9]{4}){2,7}\\b",
+   "confidence": 0.7
+  },
+  {
+   "name": "ssn",
+   "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+   "confidence": 0.95
+  },
+  {
+   "name": "ssn_unformatted",
+   "pattern": "\\b(?!000|666|9\\d{2})\\d{3}(?!00)\\d{2}(?!0000)\\d{4}\\b",
+   "confidence": 0.6
+  },
+  {
+   "name": "passport_us",
+   "pattern": "\\b[A-Z][0-9]{8}\\b",
+   "confidence": 0.7
+  },
+  {
+   "name": "passport_generic",
+   "pattern": "\\b(?:passport|travel\\s+doc(?:ument)?)\\s*[#:\\s]*([A-Z0-9]{6,9})\\b",
+   "confidence": 0.8
+  },
+  {
+   "name": "drivers_license_us",
+   "pattern": "\\b(?:d(?:river)?(?:\\'?s)?\\s*lic(?:ense)?|d\\.?l\\.?)\\s*[#:\\s]*([A-Z0-9]{6,12})\\b",
+   "confidence": 0.75
+  },
+  {
+   "name": "medicare_id_us",
+   "pattern": "\\b[1-9][A-Z][A-Z0-9]\\d[A-Z][A-Z0-9]\\d[A-Z]{2}\\d{2}\\b",
+   "confidence": 0.75
+  },
+  {
+   "name": "national_id_uk",
+   "pattern": "\\b[A-CEGHJ-PR-TW-Z]{2}\\d{6}[A-D]\\b",
+   "confidence": 0.9
+  },
+  {
+   "name": "email",
+   "pattern": "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b",
+   "confidence": 0.85
+  },
+  {
+   "name": "phone_us",
+   "pattern": "\\b(?:\\+?1[-.\\s]?)?\\(?(?:[\\d]{3})\\)?[-.\\s]?(?:[\\d]{3})[-.\\s]?(?:[\\d]{4})\\b",
+   "confidence": 0.8
+  },
+  {
+   "name": "phone_international",
+   "pattern": "\\+(?:[0-9][\\s\\-]?){6,14}[0-9]",
+   "confidence": 0.8
+  },
+  {
+   "name": "date_of_birth",
+   "pattern": "\\b(?:dob|date\\s+of\\s+birth|birth\\s*(?:date|day))\\s*[:\\-]?\\s*(?:\\d{1,2}[/\\-.]\\d{1,2}[/\\-.]\\d{2,4}|\\d{4}[/\\-.]\\d{1,2}[/\\-.]\\d{1,2})\\b",
+   "confidence": 0.85
+  },
+  {
+   "name": "ip_address_private",
+   "pattern": "\\b(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2[0-9]|3[01])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3})\\b",
+   "confidence": 0.9
+  },
+  {
+   "name": "ip_address_public",
+   "pattern": "\\b(?!(?:10|127)\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b)(?!172\\.(?:1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}\\b)(?!192\\.168\\.\\d{1,3}\\.\\d{1,3}\\b)(?:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.){3}(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\b",
+   "confidence": 0.75
+  },
+  {
+   "name": "api_key_openai",
+   "pattern": "\\bsk-[a-zA-Z0-9]{20,}\\b",
+   "confidence": 0.98
+  },
+  {
+   "name": "api_key_anthropic",
+   "pattern": "\\bsk-ant-[a-zA-Z0-9\\-]{20,}\\b",
+   "confidence": 0.98
+  },
+  {
+   "name": "api_key_github",
+   "pattern": "\\b(?:ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{59})\\b",
+   "confidence": 0.98
+  },
+  {
+   "name": "api_key_aws",
+   "pattern": "\\bAKIA[0-9A-Z]{16}\\b",
+   "confidence": 0.95
+  },
+  {
+   "name": "api_key_generic",
+   "pattern": "(?:api[_-]?key|apikey|token)\\s*[:=]\\s*['\\\"]?[A-Za-z0-9\\-_]{20,}['\\\"]?",
+   "confidence": 0.75
+  },
+  {
+   "name": "password_in_text",
+   "pattern": "(?:password|passwd|pwd)\\s*[:=]\\s*['\\\"]?[^\\s'\\\",]{6,}['\\\"]?",
+   "confidence": 0.7
+  }
+ ],
+ "cases": [
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "card 4111 1111 1111 1111 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "card [REDACTED:CREDIT_CARD] ok",
+    "violations": [
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "card 4111 1111 1111 1111 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "card [REDACTED:CREDIT_CARD] ok",
+    "violations": [
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "4111-1111-1111-1111 and 5500000000000004",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:CREDIT_CARD] and [REDACTED:CREDIT_CARD]",
+    "violations": [
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "4111-1111-1111-1111 and 5500000000000004",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:CREDIT_CARD] and [REDACTED:CREDIT_CARD]",
+    "violations": [
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "amex 3782 822463 10005 end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "amex [REDACTED:CREDIT_CARD_AMEX] end",
+    "violations": [
+     {
+      "rule_name": "credit_card_amex",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "amex 3782 822463 10005 end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "amex [REDACTED:CREDIT_CARD_AMEX] end",
+    "violations": [
+     {
+      "rule_name": "credit_card_amex",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "3714-496353-98431",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:CREDIT_CARD_AMEX]",
+    "violations": [
+     {
+      "rule_name": "credit_card_amex",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "3714-496353-98431",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:CREDIT_CARD_AMEX]",
+    "violations": [
+     {
+      "rule_name": "credit_card_amex",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "routing 021000021 please",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "routing [REDACTED:ROUTING_NUMBER] please",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "routing 021000021 please",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "routing [REDACTED:ROUTING_NUMBER] please",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "012345678 and 399999999",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:ROUTING_NUMBER] and [REDACTED:ROUTING_NUMBER]",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "012345678 and 399999999",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:ROUTING_NUMBER] and [REDACTED:ROUTING_NUMBER]",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "iban GB82 WEST 1234 5698 7654 32 done",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "iban [REDACTED:IBAN] 32 done",
+    "violations": [
+     {
+      "rule_name": "iban",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "iban GB82 WEST 1234 5698 7654 32 done",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "iban [REDACTED:IBAN] 32 done",
+    "violations": [
+     {
+      "rule_name": "iban",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "DE89370400440532013000",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "DE89370400440532013000",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "DE89370400440532013000",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "DE89370400440532013000",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "ssn 123-45-6789 here",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "ssn [REDACTED:SSN] here",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "ssn 123-45-6789 here",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "ssn [REDACTED:SSN] here",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "123-45-6789 and 987-65-4321 twice 123-45-6789",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:SSN] and [REDACTED:SSN] twice [REDACTED:SSN]",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "123-45-6789 and 987-65-4321 twice 123-45-6789",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:SSN] and [REDACTED:SSN] twice [REDACTED:SSN]",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "ssn 123456789 raw",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "ssn [REDACTED:ROUTING_NUMBER] raw",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "ssn 123456789 raw",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "ssn [REDACTED:ROUTING_NUMBER] raw",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "078051120 and 000123456 and 666123456",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:ROUTING_NUMBER] and [REDACTED:ROUTING_NUMBER] and 666123456",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "078051120 and 000123456 and 666123456",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:ROUTING_NUMBER] and [REDACTED:ROUTING_NUMBER] and 666123456",
+    "violations": [
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "routing_number",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.65
+     },
+     {
+      "rule_name": "ssn_unformatted",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.6
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "passport A12345678 x",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "passport [REDACTED:PASSPORT_US] x",
+    "violations": [
+     {
+      "rule_name": "passport_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     },
+     {
+      "rule_name": "passport_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "passport A12345678 x",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "passport [REDACTED:PASSPORT_US] x",
+    "violations": [
+     {
+      "rule_name": "passport_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     },
+     {
+      "rule_name": "passport_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "a12345678 lower",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSPORT_US] lower",
+    "violations": [
+     {
+      "rule_name": "passport_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "a12345678 lower",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSPORT_US] lower",
+    "violations": [
+     {
+      "rule_name": "passport_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "Passport: X1234567 valid",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSPORT_GENERIC] valid",
+    "violations": [
+     {
+      "rule_name": "passport_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "Passport: X1234567 valid",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSPORT_GENERIC] valid",
+    "violations": [
+     {
+      "rule_name": "passport_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "travel document #AB123456",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSPORT_GENERIC]",
+    "violations": [
+     {
+      "rule_name": "passport_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "travel document #AB123456",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSPORT_GENERIC]",
+    "violations": [
+     {
+      "rule_name": "passport_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "driver's license: D1234567890 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DRIVERS_LICENSE_US] ok",
+    "violations": [
+     {
+      "rule_name": "drivers_license_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "driver's license: D1234567890 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DRIVERS_LICENSE_US] ok",
+    "violations": [
+     {
+      "rule_name": "drivers_license_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "DL # AB1234567 and dl: XY99887766",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DRIVERS_LICENSE_US] and [REDACTED:DRIVERS_LICENSE_US]",
+    "violations": [
+     {
+      "rule_name": "drivers_license_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     },
+     {
+      "rule_name": "drivers_license_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "DL # AB1234567 and dl: XY99887766",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DRIVERS_LICENSE_US] and [REDACTED:DRIVERS_LICENSE_US]",
+    "violations": [
+     {
+      "rule_name": "drivers_license_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     },
+     {
+      "rule_name": "drivers_license_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "mbi 1EG4TE5MK73 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "mbi [REDACTED:MEDICARE_ID_US] ok",
+    "violations": [
+     {
+      "rule_name": "medicare_id_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "mbi 1EG4TE5MK73 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "mbi [REDACTED:MEDICARE_ID_US] ok",
+    "violations": [
+     {
+      "rule_name": "medicare_id_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "2AB3CD4EF56",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:MEDICARE_ID_US]",
+    "violations": [
+     {
+      "rule_name": "medicare_id_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "2AB3CD4EF56",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:MEDICARE_ID_US]",
+    "violations": [
+     {
+      "rule_name": "medicare_id_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "ni QQ123456C ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "ni QQ123456C ok",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "ni QQ123456C ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "ni QQ123456C ok",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "AB123456D",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:NATIONAL_ID_UK]",
+    "violations": [
+     {
+      "rule_name": "national_id_uk",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "AB123456D",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:NATIONAL_ID_UK]",
+    "violations": [
+     {
+      "rule_name": "national_id_uk",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "mail john.doe+x@example.co.uk now",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "mail [REDACTED:EMAIL] now",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "mail john.doe+x@example.co.uk now",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "mail [REDACTED:EMAIL] now",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "A@B.COM and c@d.org",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:EMAIL] and [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     },
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "A@B.COM and c@d.org",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:EMAIL] and [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     },
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "call (555) 123-4567 now",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "call ([REDACTED:PHONE_US] now",
+    "violations": [
+     {
+      "rule_name": "phone_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "call (555) 123-4567 now",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "call ([REDACTED:PHONE_US] now",
+    "violations": [
+     {
+      "rule_name": "phone_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "+1 555-123-4567 or 555.123.4567",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "+[REDACTED:PHONE_US] or [REDACTED:PHONE_US]",
+    "violations": [
+     {
+      "rule_name": "phone_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     },
+     {
+      "rule_name": "phone_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     },
+     {
+      "rule_name": "phone_international",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "+1 555-123-4567 or 555.123.4567",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "+[REDACTED:PHONE_US] or [REDACTED:PHONE_US]",
+    "violations": [
+     {
+      "rule_name": "phone_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     },
+     {
+      "rule_name": "phone_us",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     },
+     {
+      "rule_name": "phone_international",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "intl +44 20 7946 0958 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "intl [REDACTED:PHONE_INTERNATIONAL] ok",
+    "violations": [
+     {
+      "rule_name": "phone_international",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "intl +44 20 7946 0958 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "intl [REDACTED:PHONE_INTERNATIONAL] ok",
+    "violations": [
+     {
+      "rule_name": "phone_international",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "+49-30-1234567",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PHONE_INTERNATIONAL]",
+    "violations": [
+     {
+      "rule_name": "phone_international",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "+49-30-1234567",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PHONE_INTERNATIONAL]",
+    "violations": [
+     {
+      "rule_name": "phone_international",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.8
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "DOB: 01/02/1990 noted",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DATE_OF_BIRTH] noted",
+    "violations": [
+     {
+      "rule_name": "date_of_birth",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "DOB: 01/02/1990 noted",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DATE_OF_BIRTH] noted",
+    "violations": [
+     {
+      "rule_name": "date_of_birth",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "date of birth 1990-02-01",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DATE_OF_BIRTH]",
+    "violations": [
+     {
+      "rule_name": "date_of_birth",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "date of birth 1990-02-01",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:DATE_OF_BIRTH]",
+    "violations": [
+     {
+      "rule_name": "date_of_birth",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "host 10.0.0.5 up",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "host [REDACTED:IP_ADDRESS_PRIVATE] up",
+    "violations": [
+     {
+      "rule_name": "ip_address_private",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "host 10.0.0.5 up",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "host [REDACTED:IP_ADDRESS_PRIVATE] up",
+    "violations": [
+     {
+      "rule_name": "ip_address_private",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "192.168.1.1 and 172.16.5.4",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:IP_ADDRESS_PRIVATE] and [REDACTED:IP_ADDRESS_PRIVATE]",
+    "violations": [
+     {
+      "rule_name": "ip_address_private",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     },
+     {
+      "rule_name": "ip_address_private",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "192.168.1.1 and 172.16.5.4",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:IP_ADDRESS_PRIVATE] and [REDACTED:IP_ADDRESS_PRIVATE]",
+    "violations": [
+     {
+      "rule_name": "ip_address_private",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     },
+     {
+      "rule_name": "ip_address_private",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "server 8.8.8.8 up",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "server [REDACTED:IP_ADDRESS_PUBLIC] up",
+    "violations": [
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "server 8.8.8.8 up",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "server [REDACTED:IP_ADDRESS_PUBLIC] up",
+    "violations": [
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "1.2.3.4 and 203.0.113.9",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:IP_ADDRESS_PUBLIC] and [REDACTED:IP_ADDRESS_PUBLIC]",
+    "violations": [
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     },
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "1.2.3.4 and 203.0.113.9",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:IP_ADDRESS_PUBLIC] and [REDACTED:IP_ADDRESS_PUBLIC]",
+    "violations": [
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     },
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "key sk-abcdefghijklmnopqrstuvwxyz0123 end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "key [REDACTED:API_KEY_OPENAI] end",
+    "violations": [
+     {
+      "rule_name": "api_key_openai",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "key sk-abcdefghijklmnopqrstuvwxyz0123 end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "key [REDACTED:API_KEY_OPENAI] end",
+    "violations": [
+     {
+      "rule_name": "api_key_openai",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "key sk-ant-api03-abcdefghijklmnopqrstuvwxyz end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "key [REDACTED:API_KEY_ANTHROPIC] end",
+    "violations": [
+     {
+      "rule_name": "api_key_anthropic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "key sk-ant-api03-abcdefghijklmnopqrstuvwxyz end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "key [REDACTED:API_KEY_ANTHROPIC] end",
+    "violations": [
+     {
+      "rule_name": "api_key_anthropic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:API_KEY_GITHUB]",
+    "violations": [
+     {
+      "rule_name": "api_key_github",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:API_KEY_GITHUB]",
+    "violations": [
+     {
+      "rule_name": "api_key_github",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "tok github_pat_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "tok [REDACTED:API_KEY_GITHUB]",
+    "violations": [
+     {
+      "rule_name": "api_key_github",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "tok github_pat_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "tok [REDACTED:API_KEY_GITHUB]",
+    "violations": [
+     {
+      "rule_name": "api_key_github",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "aws AKIAIOSFODNN7EXAMPLE end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "aws [REDACTED:API_KEY_AWS] end",
+    "violations": [
+     {
+      "rule_name": "api_key_aws",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "aws AKIAIOSFODNN7EXAMPLE end",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "aws [REDACTED:API_KEY_AWS] end",
+    "violations": [
+     {
+      "rule_name": "api_key_aws",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "api_key = 'xxxxxxxxxxxxxxxxxxxxxxxx'",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:API_KEY_GENERIC]",
+    "violations": [
+     {
+      "rule_name": "api_key_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "api_key = 'xxxxxxxxxxxxxxxxxxxxxxxx'",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:API_KEY_GENERIC]",
+    "violations": [
+     {
+      "rule_name": "api_key_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "token: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:API_KEY_GENERIC]",
+    "violations": [
+     {
+      "rule_name": "api_key_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "token: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:API_KEY_GENERIC]",
+    "violations": [
+     {
+      "rule_name": "api_key_generic",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "password: hunter22 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSWORD_IN_TEXT] ok",
+    "violations": [
+     {
+      "rule_name": "password_in_text",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "password: hunter22 ok",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSWORD_IN_TEXT] ok",
+    "violations": [
+     {
+      "rule_name": "password_in_text",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "pwd=secretpass, next passwd = 'abcdef1'",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSWORD_IN_TEXT], next [REDACTED:PASSWORD_IN_TEXT]",
+    "violations": [
+     {
+      "rule_name": "password_in_text",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     },
+     {
+      "rule_name": "password_in_text",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "pwd=secretpass, next passwd = 'abcdef1'",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PASSWORD_IN_TEXT], next [REDACTED:PASSWORD_IN_TEXT]",
+    "violations": [
+     {
+      "rule_name": "password_in_text",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     },
+     {
+      "rule_name": "password_in_text",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.7
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "nothing sensitive in this sentence at all",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "nothing sensitive in this sentence at all",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "nothing sensitive in this sentence at all",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "nothing sensitive in this sentence at all",
+    "violations": []
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "UPPER EMAIL USER@EXAMPLE.COM and lower user@example.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "UPPER EMAIL [REDACTED:EMAIL] and lower [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     },
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "UPPER EMAIL USER@EXAMPLE.COM and lower user@example.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "UPPER EMAIL [REDACTED:EMAIL] and lower [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     },
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "unicode café résumé 日本語 a@b.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "unicode café résumé 日本語 [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "unicode café résumé 日本語 a@b.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "unicode café résumé 日本語 [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "multi\nline\nssn 123-45-6789\nmail x@y.io",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "multi\nline\nssn [REDACTED:SSN]\nmail [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "multi\nline\nssn 123-45-6789\nmail x@y.io",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "multi\nline\nssn [REDACTED:SSN]\nmail [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "overlap 4111111111111111 digits",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "overlap [REDACTED:CREDIT_CARD] digits",
+    "violations": [
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "overlap 4111111111111111 digits",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "overlap [REDACTED:CREDIT_CARD] digits",
+    "violations": [
+     {
+      "rule_name": "credit_card",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "version 1.2.3.4.5 and 12345 short",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "version [REDACTED:IP_ADDRESS_PUBLIC].5 and 12345 short",
+    "violations": [
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "version 1.2.3.4.5 and 12345 short",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "version [REDACTED:IP_ADDRESS_PUBLIC].5 and 12345 short",
+    "violations": [
+     {
+      "rule_name": "ip_address_public",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.75
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "the [REDACTED:EMAIL] marker plus a@b.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "the [REDACTED:EMAIL] marker plus [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "the [REDACTED:EMAIL] marker plus a@b.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "the [REDACTED:EMAIL] marker plus [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "input",
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx a@b.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "builtin",
+   "phase": "output",
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx a@b.com",
+   "rules": [],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:string_redact",
+   "phase": "input",
+   "text": "about project falcon launch",
+   "rules": [
+    [
+     "proj-x",
+     "custom_string",
+     "both",
+     "Project Falcon",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "about [REDACTED:PROJ-X] launch",
+    "violations": [
+     {
+      "rule_name": "proj-x",
+      "rule_type": "custom_string",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:string_redact",
+   "phase": "output",
+   "text": "about project falcon launch",
+   "rules": [
+    [
+     "proj-x",
+     "custom_string",
+     "both",
+     "Project Falcon",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "about [REDACTED:PROJ-X] launch",
+    "violations": [
+     {
+      "rule_name": "proj-x",
+      "rule_type": "custom_string",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:string_redact",
+   "phase": "input",
+   "text": "PROJECT FALCON and Project Falcon",
+   "rules": [
+    [
+     "proj-x",
+     "custom_string",
+     "both",
+     "Project Falcon",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PROJ-X] and [REDACTED:PROJ-X]",
+    "violations": [
+     {
+      "rule_name": "proj-x",
+      "rule_type": "custom_string",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:string_redact",
+   "phase": "output",
+   "text": "PROJECT FALCON and Project Falcon",
+   "rules": [
+    [
+     "proj-x",
+     "custom_string",
+     "both",
+     "Project Falcon",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:PROJ-X] and [REDACTED:PROJ-X]",
+    "violations": [
+     {
+      "rule_name": "proj-x",
+      "rule_type": "custom_string",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:string_block",
+   "phase": "input",
+   "text": "this is TOP SECRET stuff a@b.com",
+   "rules": [
+    [
+     "no-secret",
+     "custom_string",
+     "input",
+     "top secret",
+     "block"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "block",
+    "allowed": false,
+    "filtered_text": "this is TOP SECRET stuff a@b.com",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     },
+     {
+      "rule_name": "no-secret",
+      "rule_type": "custom_string",
+      "action": "block",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:string_block",
+   "phase": "output",
+   "text": "this is TOP SECRET stuff a@b.com",
+   "rules": [
+    [
+     "no-secret",
+     "custom_string",
+     "input",
+     "top secret",
+     "block"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "this is TOP SECRET stuff [REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:regex_redact",
+   "phase": "input",
+   "text": "emp-1234 and EMP-9999 here",
+   "rules": [
+    [
+     "emp-id",
+     "custom_regex",
+     "both",
+     "EMP-\\d{4}",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:EMP-ID] and [REDACTED:EMP-ID] here",
+    "violations": [
+     {
+      "rule_name": "emp-id",
+      "rule_type": "custom_regex",
+      "action": "redact",
+      "confidence": 0.9
+     },
+     {
+      "rule_name": "emp-id",
+      "rule_type": "custom_regex",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:regex_redact",
+   "phase": "output",
+   "text": "emp-1234 and EMP-9999 here",
+   "rules": [
+    [
+     "emp-id",
+     "custom_regex",
+     "both",
+     "EMP-\\d{4}",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:EMP-ID] and [REDACTED:EMP-ID] here",
+    "violations": [
+     {
+      "rule_name": "emp-id",
+      "rule_type": "custom_regex",
+      "action": "redact",
+      "confidence": 0.9
+     },
+     {
+      "rule_name": "emp-id",
+      "rule_type": "custom_regex",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:regex_block_overrides_builtin",
+   "phase": "input",
+   "text": "ssn 123-45-6789",
+   "rules": [
+    [
+     "deny-ssn",
+     "custom_regex",
+     "both",
+     "\\d{3}-\\d{2}-\\d{4}",
+     "block"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "block",
+    "allowed": false,
+    "filtered_text": "ssn 123-45-6789",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "deny-ssn",
+      "rule_type": "custom_regex",
+      "action": "block",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:regex_block_overrides_builtin",
+   "phase": "output",
+   "text": "ssn 123-45-6789",
+   "rules": [
+    [
+     "deny-ssn",
+     "custom_regex",
+     "both",
+     "\\d{3}-\\d{2}-\\d{4}",
+     "block"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "block",
+    "allowed": false,
+    "filtered_text": "ssn 123-45-6789",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     },
+     {
+      "rule_name": "deny-ssn",
+      "rule_type": "custom_regex",
+      "action": "block",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:regex_log_only",
+   "phase": "input",
+   "text": "a watchword appears",
+   "rules": [
+    [
+     "watch",
+     "custom_string",
+     "both",
+     "watchword",
+     "log"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "log",
+    "allowed": true,
+    "filtered_text": "a watchword appears",
+    "violations": [
+     {
+      "rule_name": "watch",
+      "rule_type": "custom_string",
+      "action": "log",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:regex_log_only",
+   "phase": "output",
+   "text": "a watchword appears",
+   "rules": [
+    [
+     "watch",
+     "custom_string",
+     "both",
+     "watchword",
+     "log"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "log",
+    "allowed": true,
+    "filtered_text": "a watchword appears",
+    "violations": [
+     {
+      "rule_name": "watch",
+      "rule_type": "custom_string",
+      "action": "log",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:target_output_only",
+   "phase": "input",
+   "text": "please leakme",
+   "rules": [
+    [
+     "out-only",
+     "custom_string",
+     "output",
+     "leakme",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "please leakme",
+    "violations": []
+   }
+  },
+  {
+   "kind": "custom:target_output_only",
+   "phase": "output",
+   "text": "please leakme",
+   "rules": [
+    [
+     "out-only",
+     "custom_string",
+     "output",
+     "leakme",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "please [REDACTED:OUT-ONLY]",
+    "violations": [
+     {
+      "rule_name": "out-only",
+      "rule_type": "custom_string",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:invalid_regex_skipped",
+   "phase": "input",
+   "text": "anything (unclosed here",
+   "rules": [
+    [
+     "bad",
+     "custom_regex",
+     "both",
+     "(unclosed",
+     "block"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "anything (unclosed here",
+    "violations": []
+   }
+  },
+  {
+   "kind": "custom:invalid_regex_skipped",
+   "phase": "output",
+   "text": "anything (unclosed here",
+   "rules": [
+    [
+     "bad",
+     "custom_regex",
+     "both",
+     "(unclosed",
+     "block"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "anything (unclosed here",
+    "violations": []
+   }
+  },
+  {
+   "kind": "custom:lookahead_regex",
+   "phase": "input",
+   "text": "foobar foobaz",
+   "rules": [
+    [
+     "la",
+     "custom_regex",
+     "both",
+     "foo(?=bar)",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:LA]bar [REDACTED:LA]baz",
+    "violations": [
+     {
+      "rule_name": "la",
+      "rule_type": "custom_regex",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "custom:lookahead_regex",
+   "phase": "output",
+   "text": "foobar foobaz",
+   "rules": [
+    [
+     "la",
+     "custom_regex",
+     "both",
+     "foo(?=bar)",
+     "redact"
+    ]
+   ],
+   "disabled": [],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:LA]bar [REDACTED:LA]baz",
+    "violations": [
+     {
+      "rule_name": "la",
+      "rule_type": "custom_regex",
+      "action": "redact",
+      "confidence": 0.9
+     }
+    ]
+   }
+  },
+  {
+   "kind": "toggle:disable_email",
+   "phase": "input",
+   "text": "a@b.com ssn 123-45-6789",
+   "rules": [],
+   "disabled": [
+    "email"
+   ],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "a@b.com ssn [REDACTED:SSN]",
+    "violations": [
+     {
+      "rule_name": "ssn",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.95
+     }
+    ]
+   }
+  },
+  {
+   "kind": "toggle:disable_many",
+   "phase": "input",
+   "text": "a@b.com 123-45-6789 555-123-4567",
+   "rules": [],
+   "disabled": [
+    "email",
+    "ssn",
+    "phone_us"
+   ],
+   "expected": {
+    "action": "allow",
+    "allowed": true,
+    "filtered_text": "a@b.com 123-45-6789 555-123-4567",
+    "violations": []
+   }
+  },
+  {
+   "kind": "toggle:disable_unknown",
+   "phase": "input",
+   "text": "a@b.com",
+   "rules": [],
+   "disabled": [
+    "nope"
+   ],
+   "expected": {
+    "action": "redact",
+    "allowed": true,
+    "filtered_text": "[REDACTED:EMAIL]",
+    "violations": [
+     {
+      "rule_name": "email",
+      "rule_type": "builtin_pii",
+      "action": "redact",
+      "confidence": 0.85
+     }
+    ]
+   }
+  }
+ ]
+}

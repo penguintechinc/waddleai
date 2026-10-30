@@ -60,6 +60,18 @@ pub fn auth_apikey(key_id: &str) -> String {
     format!("waddleai:auth:apikey:{key_id}")
 }
 
+/// Prefix of every ContentFilter org-rules cache key. Rust-side only: the Python
+/// filter caches rules in-process and has no Valkey key, so there is no Python twin.
+pub const CONTENT_FILTER_RULES_PREFIX: &str = "waddleai:cf:rules:";
+
+/// ContentFilter tier-2 rules + per-org toggles for one org; `None` is the global scope.
+pub fn content_filter_rules(org_id: Option<i64>) -> String {
+    match org_id {
+        Some(id) => format!("{CONTENT_FILTER_RULES_PREFIX}{id}"),
+        None => format!("{CONTENT_FILTER_RULES_PREFIX}global"),
+    }
+}
+
 /// `shared/quota/keys.py` — pooled-quota counters and config caches.
 pub mod quota {
     /// `PREFIX`.
@@ -127,6 +139,9 @@ mod tests {
         assert_eq!(prefix_counter(3, "sha"), "waddleai:cache:prefix:3:sha");
         // shared/auth/rbac.py
         assert_eq!(auth_apikey("kid"), "waddleai:auth:apikey:kid");
+        // Rust-side only (no Python twin): content-filter rules cache
+        assert_eq!(content_filter_rules(Some(7)), "waddleai:cf:rules:7");
+        assert_eq!(content_filter_rules(None), "waddleai:cf:rules:global");
         // shared/quota/keys.py
         assert_eq!(quota::user_counter(1, 2), "wa:quota:user:1:2");
         assert_eq!(quota::buffer_counter(1, 2), "wa:quota:team_buffer:1:2");
