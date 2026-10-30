@@ -114,6 +114,7 @@ Values are layered: `values.yaml` (defaults) → `values-alpha.yaml`/`values-bet
 | `webui.image.repository` / `.tag` / `.digest` | `waddleai/webui` / `latest` / unset | Same digest-or-tag pattern, `waddleai.webui.image` helper |
 | `management.env.LICENSE_SERVER_URL` / `NER_SPACY_MODEL` / `WADDLEAI_NER_ALLOW_DOWNLOAD` | `https://license.penguintech.io` / `en_core_web_lg` / `false` | Plain (non-secret) env vars, also set on `proxy.env` with the same defaults |
 | `WADDLEAI_PUBLIC_HOST` (management + proxy) | Derived, not a `values.yaml` key | Auto-populated from `httproute.host`/`ingress.hosts[0].host` (`waddleai.publicHost` helper, `templates/_helpers.tpl`); omitted entirely if neither is enabled. Feeds `penguin_licensing`'s domain-based licence bypass (`shared/licensing/domain_bypass.py`) — never set this by hand |
+| `classification.enabled` / `.jwt.issuer` / `.jwt.jwksUrl` | `false` / unset / unset | Classification (PII/NER) Deployment. Enabling it without a JWT trust anchor FAILS the render (no vendor default) - prod must supply issuer + jwksUrl. See [Classification Service](classification-service.md) |
 | `migrations.enabled` | `true` | Master switch for the Alembic migration Job (see [Database migrations](#database-migrations)) |
 | `ollama.image.repository` / `.tag` | `ghcr.io/penguintechinc/waddleai/ollama` / `hardened` | `ollama.enabled` defaults `false`; DaemonSet (`mode: daemonset`) targets `gpu=true`-labeled nodes |
 | `postgres.persistence.size` | `10Gi` (`5Gi` alpha, `20Gi` beta) | In-chart Postgres; there is no external-DB toggle today |

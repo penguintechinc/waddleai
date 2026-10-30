@@ -158,6 +158,14 @@ Simple chat → Ollama (local, fast)
 
 **Technology**: py4web, Tailwind CSS, Alpine.js, Chart.js
 
+### 6. Classification Service (gRPC)
+
+**Purpose**: PII/NER entity detection, split out of the proxy so the spaCy model scales on its own.
+
+- Own Deployment + HPA; gRPC only (`waddleai.classification.v1`: `Analyze`, `GetEntityConfig`), ops-only REST (health/metrics), so OpenAPI is N/A
+- Returns spans only (never entity text); fail-mode `OPEN`/`CLOSED` on degradation
+- Consumed by the P3 Rust proxy; details, env vars and the prod JWT trust-anchor requirement: [Classification Service](deployment/classification-service.md)
+
 ## Data Flow
 
 ### Request Flow

@@ -1,5 +1,5 @@
 .PHONY: docker-build-classification test-classification-image test-classification-real dev setup install-hooks verify-hooks venv test test-classification test-unit test-integration test-valkey test-e2e test-functional test-security \
-        test-contract test-contract-selftest smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
+        test-contract test-contract-selftest smoke-test smoke-test-production smoke-test-classification loadtest-classification lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
 
 # Every python invocation goes through the repo venv when it exists, and only
@@ -221,6 +221,12 @@ smoke-test:
 smoke-test-production: ## Live prod checks (network + real deployment required) -- not part of pre-commit
 	@echo "Running production smoke tests..."
 	@bash tests/smoke/test-production.sh
+
+smoke-test-classification: ## Live classification smoke (set CLASSIFICATION_SMOKE_ENDPOINT; skips without a deploy)
+	@$(PY) -m pytest tests/smoke/test_classification_smoke.py -v -s --no-cov -p no:cacheprovider
+
+loadtest-classification: ## Measure warm cache-miss p99 against a live classification service (prints the number)
+	@$(PY) scripts/classification-loadtest.py
 
 seed-mock-data:
 	@echo "No mock data seeding defined"
