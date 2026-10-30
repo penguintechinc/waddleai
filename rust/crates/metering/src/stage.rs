@@ -13,20 +13,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use pipeline::{AbortSnapshot, CacheStatus, PipelineContext, Stage, StageError, VkeyBudget};
-use quota::{QuotaBackend, Reservation};
+use quota::{CreditError, CreditModel, QuotaBackend, Reservation};
 use telemetry::Metrics;
 use tokens::BudgetGate;
 
 use crate::buffer::MeteringBuffer;
-use crate::event::{EventUsage, MeteringEvent};
+use crate::event::{EventUsage, KeyUsageEvent, MeteringEvent};
 
 /// Records usage and reconciles reservations once the response is final.
 pub struct MeterStage {
     buffer: Arc<MeteringBuffer>,
     limiter: Arc<dyn BudgetGate>,
     quota: Option<Arc<dyn QuotaBackend>>,
+    credits: Option<Arc<dyn CreditModel>>,
+    known_models: Option<KnownModels>,
     metrics: Option<Arc<Metrics>>,
 }
+
+/// Predicate for registry-known models; only those may become a metric label.
+pub type KnownModels = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Python `ctx.cache_status` string.
 fn cache_status_str(s: CacheStatus) -> &'static str {
@@ -44,6 +49,8 @@ impl MeterStage {
             buffer,
             limiter,
             quota: None,
+            credits: None,
+            known_models: None,
             metrics: None,
         }
     }
@@ -54,40 +61,115 @@ impl MeterStage {
         self
     }
 
+    /// Registry/allowlist check for the `model` metric label. Without it every model label is
+    /// `other` (fail-safe: the label can never be client-controlled, unbounded cardinality).
+    pub fn with_known_models(mut self, known: KnownModels) -> Self {
+        self.known_models = Some(known);
+        self
+    }
+
+    /// Bounded metric label: the routing-resolved model only when registry-known, else `other`.
+    /// Never `requested_model` (client-controlled). Python labels with the resolved model but
+    /// falls back to the client's value, an unbounded-cardinality bug on the Python side.
+    fn model_label(&self, ctx: &PipelineContext) -> String {
+        match (ctx.model.as_deref(), &self.known_models) {
+            (Some(m), Some(known)) if !m.is_empty() && known(m) => m.to_owned(),
+            _ => "other".to_owned(),
+        }
+    }
+
+    /// Supplies the credit model for the API-key usage row (falls back to the quota backend's).
+    pub fn with_credits(mut self, credits: Arc<dyn CreditModel>) -> Self {
+        self.credits = Some(credits);
+        self
+    }
+
+    /// The credit model in effect: explicit, else the quota backend's.
+    fn credit_model(&self) -> Option<&dyn CreditModel> {
+        match (&self.credits, &self.quota) {
+            (Some(c), _) => Some(c.as_ref()),
+            (None, Some(q)) => Some(q.credits()),
+            _ => None,
+        }
+    }
+
+    /// Queues the API-key-keyed `token_usage` row (Python `process_usage` ->
+    /// `_update_usage_records`), the writer the management usage reports read (user_id/org,
+    /// waddleai_tokens). Skipped, loudly, when there is no user or the credit calc failed.
+    ///
+    /// DEFERRED: Python's `_update_usage_cache` (`usage_cache` daily/monthly rollups) is NOT
+    /// ported. Nothing outside `token_manager.py` reads `usage_cache` (reports query
+    /// `token_usage`; pooled quota enforcement uses Valkey), so it is a write-only rollup.
+    fn record_key_usage(
+        &self,
+        ctx: &PipelineContext,
+        provider: &str,
+        model: &str,
+        tokens: (u64, u64),
+        credits: &Option<Result<u64, CreditError>>,
+    ) {
+        let Some(user) = ctx.user.as_ref() else {
+            return;
+        };
+        let waddleai_tokens = match credits {
+            Some(Ok(c)) => *c,
+            Some(Err(e)) => {
+                tracing::error!(error = %e, "meter: credit calc failed; api-key usage row skipped");
+                return;
+            }
+            None => {
+                tracing::debug!("meter: no credit model; api-key usage row skipped");
+                return;
+            }
+        };
+        let (input, output) = tokens;
+        self.buffer.record_key_usage(KeyUsageEvent {
+            api_key_id: user.api_key_id.map(i64::from),
+            user_id: i64::from(user.user_id),
+            organization_id: i64::from(user.org_id),
+            timestamp: chrono::Utc::now().naive_utc(),
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            input_tokens: input,
+            output_tokens: output,
+            waddleai_tokens,
+        });
+    }
+
     /// Enables the Python-parity `record_llm_request` metrics on the shared registry.
     pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
         self.metrics = Some(metrics);
         self
     }
 
-    /// Queues the usage event when usage, provider and model are all known.
-    fn record(&self, ctx: &PipelineContext, vkey_id: i64) {
+    /// Queues the usage event when usage, provider and model are all known. With
+    /// `estimated` (provider work consumed but no usage reported) the event carries no usage,
+    /// so the buffer meters the placeholder estimate and sets the `estimated` flag.
+    fn record(&self, ctx: &PipelineContext, vkey_id: i64, estimated: bool) {
         let provider = ctx.provider.as_deref().filter(|s| !s.is_empty());
         let model = ctx.model.as_deref().filter(|s| !s.is_empty());
-        let (Some(usage), Some(provider), Some(model)) = (ctx.usage.as_ref(), provider, model)
-        else {
+        let (Some(provider), Some(model)) = (provider, model) else {
             return;
+        };
+        let usage = match (ctx.usage.as_ref(), estimated) {
+            (Some(u), _) => Some(EventUsage {
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
+            }),
+            (None, true) => None,
+            (None, false) => return,
         };
         self.buffer.record(MeteringEvent {
             virtual_key_id: vkey_id,
             model: model.to_owned(),
             provider: provider.to_owned(),
-            usage: Some(EventUsage {
-                input_tokens: usage.input_tokens,
-                output_tokens: usage.output_tokens,
-            }),
+            usage,
             timestamp: chrono::Utc::now().naive_utc(),
-            estimated: false,
+            estimated,
             cache_status: Some(cache_status_str(ctx.cache_status).to_owned()),
             tokens_saved: ctx.tokens_saved,
         });
-        tracing::debug!(
-            vkey_id,
-            model,
-            tokens_in = usage.input_tokens,
-            tokens_out = usage.output_tokens,
-            "meter: recorded usage"
-        );
+        tracing::debug!(vkey_id, model, estimated, "meter: recorded usage");
     }
 
     /// The token-budget reconcile to run: needs a reservation id AND usage (Python parity).
@@ -100,14 +182,10 @@ impl MeterStage {
     }
 
     /// `_finalize`'s `record_llm_request`: Prometheus counters with Python names/labels.
-    fn record_metrics(
-        &self,
-        ctx: &PipelineContext,
-        provider: &str,
-        model: &str,
-        credits: Option<u64>,
-    ) {
+    fn record_metrics(&self, ctx: &PipelineContext, provider: &str, credits: Option<u64>) {
         let Some(m) = &self.metrics else { return };
+        let model = self.model_label(ctx);
+        let model = model.as_str();
         let (input, output) = ctx
             .usage
             .as_ref()
@@ -147,34 +225,27 @@ impl MeterStage {
         ctx: &mut PipelineContext,
         provider: &str,
         model: &str,
-    ) -> Option<u64> {
+        credits: Option<Result<u64, CreditError>>,
+        missing_usage: bool,
+    ) {
         let guard = ctx.quota_release.take();
         ctx.quota_reservation = None;
         let reservation = ctx.extensions.remove::<Reservation>();
-        let (usage_in, usage_out) = ctx
-            .usage
-            .as_ref()
-            .map_or((0, 0), |u| (u.input_tokens, u.output_tokens));
-        let credits = self.quota.as_ref().map(|b| {
-            b.credits()
-                .calculate_waddleai_tokens(usage_in, usage_out, provider, model)
-        });
-        let credits_ok = credits.as_ref().and_then(|c| c.as_ref().ok().copied());
-
         let (Some(backend), Some(res)) = (self.quota.clone(), reservation) else {
             if let Some(guard) = guard {
                 tracing::error!("meter: quota guard held without a full reservation/backend; settling it as aborted");
-                let snap = AbortSnapshot::from_ctx(ctx);
-                if let Err(e) = tokio::spawn(guard.settle_aborted(snap)).await {
-                    tracing::error!(error = %e, "quota guard settle task failed");
-                }
+                Self::settle_guard(guard, AbortSnapshot::from_ctx(ctx)).await;
             }
-            return credits_ok;
+            return;
         };
-        // The guard is consumed by this reconcile (the normal path); it is deliberately NOT
-        // settled, or the reservation would be reconciled twice.
-        drop(guard);
         let actual = match credits {
+            // Fail closed: provider work happened but no usage was reported, so charge the
+            // reserved estimate instead of refunding (free inference otherwise).
+            _ if missing_usage => {
+                tracing::error!("meter: usage missing after dispatch; charging the reservation");
+                backend.fault("missing_usage");
+                res.credits_reserved
+            }
             Some(Ok(c)) => i64::try_from(c).unwrap_or(i64::MAX),
             _ => {
                 tracing::error!("meter: quota credit calculation failed; charging the reservation");
@@ -182,6 +253,7 @@ impl MeterStage {
                 res.credits_reserved
             }
         };
+        let snap = AbortSnapshot::from_ctx(ctx);
         let (provider, model, cache_hit) = (provider.to_owned(), model.to_owned(), ctx.cache_hit);
         // Own task: a client disconnect cannot abandon the reconcile mid-flight.
         let handle = tokio::spawn(async move {
@@ -189,10 +261,29 @@ impl MeterStage {
                 .reconcile(&res, actual, &provider, &model, cache_hit)
                 .await;
         });
-        if let Err(e) = handle.await {
-            tracing::error!(error = %e, "quota reconcile task failed");
+        match handle.await {
+            // Reconciled: the guard is deliberately dropped unsettled (settling it too would
+            // reconcile twice).
+            Ok(()) => drop(guard),
+            // The reconcile task panicked/was cancelled: the guard is still owned here, so
+            // settle it (charges consumed spend, refunds zero-usage). The Lua reconcile is
+            // idempotent per reservation id, and T7's TTL sweeper is the ultimate backstop.
+            Err(e) => {
+                tracing::error!(error = %e, "quota reconcile task failed; settling the guard");
+                if let Some(guard) = guard {
+                    Self::settle_guard(guard, snap).await;
+                }
+            }
         }
-        credits_ok
+    }
+
+    /// Settles a guard as aborted in its own task (panic/cancel safe); failures are logged.
+    async fn settle_guard(guard: Box<dyn pipeline::QuotaGuard>, snap: AbortSnapshot) {
+        match tokio::spawn(guard.settle_aborted(snap)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(error = %e, "quota guard settle failed"),
+            Err(e) => tracing::error!(error = %e, "quota guard settle task failed"),
+        }
     }
 }
 
@@ -210,9 +301,13 @@ impl Stage for MeterStage {
             .get::<VkeyBudget>()
             .map(|b| b.vkey_id)
             .filter(|v| *v != 0);
+        // Provider work happened but usage is absent: fail closed (see `settle_quota`).
+        // Python meters 0 here (free inference); that under-charge is a Python bug, this is an
+        // intentional safer-than-Python divergence.
+        let missing_usage = ctx.usage.is_none() && AbortSnapshot::from_ctx(ctx).consumed();
         match vkey {
             Some(v) => {
-                self.record(ctx, v);
+                self.record(ctx, v, missing_usage);
                 if let Some((id, total)) = Self::budget_reconcile(ctx) {
                     self.limiter.reconcile(&id, total, 0.0).await;
                     tracing::debug!(total, "meter: reconciled token-budget reservation");
@@ -226,8 +321,22 @@ impl Stage for MeterStage {
             .clone()
             .or_else(|| ctx.requested_model.clone())
             .unwrap_or_default();
-        let credits = self.settle_quota(ctx, &provider, &model).await;
-        self.record_metrics(ctx, &provider, &model, credits);
+        let tokens = match ctx.usage.as_ref() {
+            Some(u) => (u.input_tokens, u.output_tokens),
+            None if missing_usage => {
+                tracing::warn!("meter: provider reported no usage; metering an estimate");
+                tokens::estimate_io_tokens(&ctx.messages)
+            }
+            None => (0, 0),
+        };
+        let credits = self
+            .credit_model()
+            .map(|c| c.calculate_waddleai_tokens(tokens.0, tokens.1, &provider, &model));
+        let credits_ok = credits.as_ref().and_then(|c| c.as_ref().ok().copied());
+        self.record_key_usage(ctx, &provider, &model, tokens, &credits);
+        self.settle_quota(ctx, &provider, &model, credits, missing_usage)
+            .await;
+        self.record_metrics(ctx, &provider, credits_ok);
         Ok(())
     }
 }

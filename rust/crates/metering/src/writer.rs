@@ -11,12 +11,12 @@ use chrono::{NaiveDateTime, Utc};
 use db::entities::token_usage::{ActiveModel, Column, Entity, Model};
 use sea_orm::{
     ActiveValue::{NotSet, Set},
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
-    TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, EntityTrait,
+    ExprTrait, QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
 };
 use serde_json::{Map, Value};
 
-use crate::event::Aggregate;
+use crate::event::{breakdown_key, Aggregate, KeyAggregate};
 
 /// Source tag the AIProxy writes on every row it owns.
 pub const SOURCE: &str = "aiproxy";
@@ -31,6 +31,9 @@ pub struct WriteError(pub String);
 pub trait UsageWriter: Send + Sync {
     /// Writes (or adds) the aggregate to the usage table.
     async fn write(&self, agg: &Aggregate) -> Result<(), WriteError>;
+
+    /// Writes (or adds) the API-key-keyed usage row (Python `_update_usage_records`).
+    async fn write_key(&self, agg: &KeyAggregate) -> Result<(), WriteError>;
 }
 
 /// SeaORM-backed [`UsageWriter`] over the shared `token_usage` table.
@@ -86,7 +89,7 @@ fn py_json(v: &Value) -> Result<String, WriteError> {
 
 /// `"{provider}_{model with '-' -> '_'}"`, the breakdown key.
 fn model_key(agg: &Aggregate) -> String {
-    format!("{}_{}", agg.provider, agg.model.replace('-', "_"))
+    breakdown_key(&agg.provider, &agg.model)
 }
 
 /// Reads an existing breakdown (a JSON string, or a native object) into a map; anything else
@@ -102,23 +105,37 @@ fn parse_breakdown(existing: Option<&Value>) -> Map<String, Value> {
     }
 }
 
+/// Adds each `(key, input, output)` to the breakdown and returns the JSON text.
+pub(crate) fn merged_entries(
+    existing: Option<&Value>,
+    entries: &[(String, u64, u64)],
+) -> Result<String, WriteError> {
+    let mut map = parse_breakdown(existing);
+    for (key, input, output) in entries {
+        let entry = map
+            .entry(key.clone())
+            .or_insert_with(|| serde_json::json!({"input": 0, "output": 0}));
+        for (field, add) in [("input", *input), ("output", *output)] {
+            let cur = entry.get(field).and_then(Value::as_u64).unwrap_or(0);
+            entry[field] = Value::from(cur.saturating_add(add));
+        }
+    }
+    py_json(&Value::Object(map))
+}
+
 /// Adds the aggregate's tokens to the `{provider}_{model}` entry and returns the JSON text.
 pub(crate) fn merged_breakdown(
     existing: Option<&Value>,
     agg: &Aggregate,
 ) -> Result<String, WriteError> {
-    let mut map = parse_breakdown(existing);
-    let entry = map
-        .entry(model_key(agg))
-        .or_insert_with(|| serde_json::json!({"input": 0, "output": 0}));
-    for (field, add) in [
-        ("input", agg.total_input_tokens),
-        ("output", agg.total_output_tokens),
-    ] {
-        let cur = entry.get(field).and_then(Value::as_u64).unwrap_or(0);
-        entry[field] = Value::from(cur.saturating_add(add));
-    }
-    py_json(&Value::Object(map))
+    merged_entries(
+        existing,
+        &[(
+            model_key(agg),
+            agg.total_input_tokens,
+            agg.total_output_tokens,
+        )],
+    )
 }
 
 /// Saturating `u64 -> i32` for the int4 token columns; a clamp is logged, never silent.
@@ -138,6 +155,21 @@ fn day_start(ts: NaiveDateTime) -> NaiveDateTime {
     ts.date().and_hms_opt(0, 0, 0).unwrap_or(ts)
 }
 
+/// Serializes concurrent writers of one logical row for the life of the transaction. There is
+/// no unique index on `token_usage(virtual_key_id, date)` (Rust never migrates), so the
+/// SELECT-then-INSERT would otherwise race on the first write of the day and duplicate the row.
+/// A Python-migration unique index would be a nice-to-have on top of this.
+async fn advisory_lock(txn: &DatabaseTransaction, key: &str) -> Result<(), WriteError> {
+    txn.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [key.into()],
+    ))
+    .await
+    .map(|_| ())
+    .map_err(db_err)
+}
+
 fn db_err(e: impl std::fmt::Display) -> WriteError {
     WriteError(e.to_string())
 }
@@ -149,6 +181,7 @@ impl UsageWriter for SeaOrmUsageWriter {
             .map_err(|_| WriteError("virtual_key_id exceeds int4".into()))?;
         let day = day_start(agg.minute_bucket);
         let txn = self.db.begin().await.map_err(db_err)?;
+        advisory_lock(&txn, &format!("token_usage:vkey:{vkey}:{}", day.date())).await?;
         let existing: Option<Model> = Entity::find()
             .filter(Column::VirtualKeyId.eq(vkey))
             .filter(Column::Date.eq(day))
@@ -233,6 +266,103 @@ impl UsageWriter for SeaOrmUsageWriter {
             requests = agg.request_count,
             "token_usage row written"
         );
+        Ok(())
+    }
+
+    async fn write_key(&self, agg: &KeyAggregate) -> Result<(), WriteError> {
+        let user =
+            i32::try_from(agg.user_id).map_err(|_| WriteError("user_id exceeds int4".into()))?;
+        let org = i32::try_from(agg.organization_id)
+            .map_err(|_| WriteError("organization_id exceeds int4".into()))?;
+        let key = match agg.api_key_id {
+            Some(k) => {
+                Some(i32::try_from(k).map_err(|_| WriteError("api_key_id exceeds int4".into()))?)
+            }
+            None => None,
+        };
+        let day = agg.day.and_hms_opt(0, 0, 0).unwrap_or_default();
+        let txn = self.db.begin().await.map_err(db_err)?;
+        let who = key.map_or_else(|| format!("user{user}"), |k| format!("key{k}"));
+        advisory_lock(&txn, &format!("token_usage:{who}:{}", agg.day)).await?;
+        // Keyed (api_key_id, date) like Python; JWT callers (no key) key on (user, date) with
+        // NULL key + NULL vkey so they never collide with the vkey rows.
+        let scope = match key {
+            Some(k) => Column::ApiKeyId.eq(k),
+            None => Column::ApiKeyId
+                .is_null()
+                .and(Column::VirtualKeyId.is_null())
+                .and(Column::UserId.eq(user)),
+        };
+        let existing: Option<Model> = Entity::find()
+            .filter(scope)
+            .filter(Column::Date.eq(day))
+            .order_by_asc(Column::Id)
+            .lock_exclusive()
+            .one(&txn)
+            .await
+            .map_err(db_err)?;
+        match existing {
+            Some(row) => {
+                let add = |cur: Option<i32>, add: u64, col: &'static str| {
+                    Set(Some(to_i32(
+                        u64::try_from(cur.unwrap_or(0))
+                            .unwrap_or(0)
+                            .saturating_add(add),
+                        col,
+                    )))
+                };
+                Entity::update_many()
+                    .set(ActiveModel {
+                        waddleai_tokens: add(
+                            row.waddleai_tokens,
+                            agg.waddleai_tokens,
+                            "waddleai_tokens",
+                        ),
+                        tokens_input_total: add(
+                            row.tokens_input_total,
+                            agg.input_tokens,
+                            "tokens_input_total",
+                        ),
+                        tokens_output_total: add(
+                            row.tokens_output_total,
+                            agg.output_tokens,
+                            "tokens_output_total",
+                        ),
+                        llm_tokens: Set(Some(Value::String(merged_entries(
+                            row.llm_tokens.as_ref(),
+                            &agg.breakdown,
+                        )?))),
+                        request_count: add(row.request_count, agg.request_count, "request_count"),
+                        last_updated: Set(Some(Utc::now().naive_utc())),
+                        ..Default::default()
+                    })
+                    .filter(Column::Id.eq(row.id))
+                    .exec(&txn)
+                    .await
+                    .map_err(db_err)?;
+            }
+            None => {
+                Entity::insert(ActiveModel {
+                    api_key_id: Set(key),
+                    user_id: Set(Some(user)),
+                    organization_id: Set(Some(org)),
+                    date: Set(Some(day)),
+                    waddleai_tokens: Set(Some(to_i32(agg.waddleai_tokens, "waddleai_tokens"))),
+                    tokens_input_total: Set(Some(to_i32(agg.input_tokens, "tokens_input_total"))),
+                    tokens_output_total: Set(Some(to_i32(
+                        agg.output_tokens,
+                        "tokens_output_total",
+                    ))),
+                    llm_tokens: Set(Some(Value::String(merged_entries(None, &agg.breakdown)?))),
+                    request_count: Set(Some(to_i32(agg.request_count, "request_count"))),
+                    ..Default::default()
+                })
+                .exec_without_returning(&txn)
+                .await
+                .map_err(db_err)?;
+            }
+        }
+        txn.commit().await.map_err(db_err)?;
         Ok(())
     }
 }

@@ -13,7 +13,9 @@ use telemetry::Metrics;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use crate::event::{aggregate_events, Aggregate, MeteringEvent};
+use crate::event::{
+    aggregate_events, aggregate_key_events, Aggregate, KeyAggregate, KeyUsageEvent, MeteringEvent,
+};
 use crate::writer::UsageWriter;
 
 /// Longest the shutdown waits for the background loop to wind down (Python: 5s).
@@ -45,6 +47,8 @@ impl Default for BufferConfig {
 struct State {
     events: Vec<MeteringEvent>,
     pending: Vec<Aggregate>,
+    key_events: Vec<KeyUsageEvent>,
+    key_pending: Vec<KeyAggregate>,
 }
 
 /// Batched, retrying usage writer front-end.
@@ -95,9 +99,22 @@ impl MeteringBuffer {
         }
     }
 
-    /// Aggregates awaiting a retry after a failed write.
+    /// Queues the API-key-keyed usage event (the second Python writer); same guarantees.
+    pub fn record_key_usage(&self, event: KeyUsageEvent) {
+        let len = {
+            let mut st = lock(&self.state);
+            st.key_events.push(event);
+            st.key_events.len()
+        };
+        if len >= self.cfg.size_threshold {
+            self.wake.notify_one();
+        }
+    }
+
+    /// Aggregates (vkey + API-key rows) awaiting a retry after a failed write.
     pub fn pending_len(&self) -> usize {
-        lock(&self.state).pending.len()
+        let st = lock(&self.state);
+        st.pending.len() + st.key_pending.len()
     }
 
     /// Starts the background flush loop (idempotent).
@@ -150,14 +167,20 @@ impl MeteringBuffer {
 
     /// Writes buffered events (and earlier failures); failures are re-queued, never raised.
     pub async fn flush(&self) {
-        let (events, retries) = {
+        let (events, retries, key_events, key_retries) = {
             let mut st = lock(&self.state);
             (
                 std::mem::take(&mut st.events),
                 std::mem::take(&mut st.pending),
+                std::mem::take(&mut st.key_events),
+                std::mem::take(&mut st.key_pending),
             )
         };
-        if events.is_empty() && retries.is_empty() {
+        if events.is_empty()
+            && retries.is_empty()
+            && key_events.is_empty()
+            && key_retries.is_empty()
+        {
             return;
         }
         let mut to_write = retries;
@@ -176,11 +199,24 @@ impl MeteringBuffer {
                 failed.push(agg);
             }
         }
-        if failed.is_empty() {
+        let mut key_to_write = key_retries;
+        key_to_write.extend(aggregate_key_events(key_events));
+        let mut key_failed = Vec::new();
+        for agg in key_to_write {
+            let started = Instant::now();
+            let result = self.writer.write_key(&agg).await;
+            self.db_metric(result.is_ok(), started.elapsed().as_secs_f64());
+            if let Err(err) = result {
+                tracing::error!(error = %err, "api-key usage write failed; re-queueing");
+                key_failed.push(agg);
+            }
+        }
+        if failed.is_empty() && key_failed.is_empty() {
             return;
         }
         let mut st = lock(&self.state);
         st.pending.extend(failed);
+        st.key_pending.extend(key_failed);
         let overflow = st.pending.len().saturating_sub(self.cfg.max_pending);
         if overflow > 0 {
             let dropped: Vec<Aggregate> = st.pending.drain(..overflow).collect();
@@ -192,6 +228,17 @@ impl MeteringBuffer {
                 output_tokens = output,
                 max_pending = self.cfg.max_pending,
                 "metering retry queue full; oldest aggregates dropped, tokens will be unbilled"
+            );
+        }
+        let key_overflow = st.key_pending.len().saturating_sub(self.cfg.max_pending);
+        if key_overflow > 0 {
+            let dropped: Vec<KeyAggregate> = st.key_pending.drain(..key_overflow).collect();
+            let credits: u64 = dropped.iter().map(|a| a.waddleai_tokens).sum();
+            tracing::error!(
+                dropped = key_overflow,
+                waddleai_tokens = credits,
+                max_pending = self.cfg.max_pending,
+                "api-key usage retry queue full; oldest aggregates dropped, usage will be unbilled"
             );
         }
     }

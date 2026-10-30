@@ -14,7 +14,10 @@ mod stage;
 mod writer;
 
 pub use buffer::{BufferConfig, MeteringBuffer};
-pub use event::{aggregate_events, Aggregate, EventUsage, MeteringEvent};
+pub use event::{
+    aggregate_events, aggregate_key_events, Aggregate, EventUsage, KeyAggregate, KeyUsageEvent,
+    MeteringEvent,
+};
 pub use ledger::SeaOrmLedger;
-pub use stage::MeterStage;
+pub use stage::{KnownModels, MeterStage};
 pub use writer::{SeaOrmUsageWriter, UsageWriter, WriteError, SOURCE};

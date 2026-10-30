@@ -9,8 +9,9 @@ use std::time::Duration;
 use auth::{AuthMode as UserAuthMode, UserContext};
 use chrono::NaiveDate;
 use metering::{
-    aggregate_events, Aggregate, BufferConfig, EventUsage, MeterStage, MeteringBuffer,
-    MeteringEvent, SeaOrmLedger, SeaOrmUsageWriter, UsageWriter, WriteError,
+    aggregate_events, aggregate_key_events, Aggregate, BufferConfig, EventUsage, KeyAggregate,
+    KeyUsageEvent, MeterStage, MeteringBuffer, MeteringEvent, SeaOrmLedger, SeaOrmUsageWriter,
+    UsageWriter, WriteError,
 };
 use pipeline::{AbortSnapshot, CacheStatus, PipelineContext, Stage, StageError, Usage, VkeyBudget};
 use quota::{
@@ -27,6 +28,7 @@ use tokens::{BudgetGate, GateDecision, KeyLimits};
 #[derive(Default)]
 struct RecWriter {
     rows: Mutex<Vec<Aggregate>>,
+    key_rows: Mutex<Vec<KeyAggregate>>,
     fail: Mutex<bool>,
     attempts: AtomicUsize,
 }
@@ -38,6 +40,9 @@ impl RecWriter {
     fn rows(&self) -> Vec<Aggregate> {
         self.rows.lock().unwrap().clone()
     }
+    fn key_rows(&self) -> Vec<KeyAggregate> {
+        self.key_rows.lock().unwrap().clone()
+    }
 }
 
 #[async_trait::async_trait]
@@ -48,6 +53,14 @@ impl UsageWriter for RecWriter {
             return Err(WriteError("db down".into()));
         }
         self.rows.lock().unwrap().push(agg.clone());
+        Ok(())
+    }
+    async fn write_key(&self, agg: &KeyAggregate) -> Result<(), WriteError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        if *self.fail.lock().unwrap() {
+            return Err(WriteError("db down".into()));
+        }
+        self.key_rows.lock().unwrap().push(agg.clone());
         Ok(())
     }
 }
@@ -107,6 +120,7 @@ struct Backend {
     reconciles: Mutex<Vec<ReconcileCall>>,
     faults: Mutex<Vec<String>>,
     credits_fail: bool,
+    panic_reconcile: bool,
 }
 
 #[async_trait::async_trait]
@@ -127,6 +141,7 @@ impl QuotaBackend for Backend {
         m: &str,
         c: bool,
     ) -> ReconcileResult {
+        assert!(!self.panic_reconcile, "reconcile exploded");
         self.reconciles.lock().unwrap().push((
             r.reservation_id.clone(),
             actual,
@@ -386,7 +401,8 @@ async fn quota_reconciles_even_without_vkey() {
 }
 
 #[tokio::test]
-async fn quota_without_usage_reconciles_zero_credits_like_python() {
+async fn no_usage_and_no_provider_work_refunds_zero_credits() {
+    // Nothing was dispatched (empty response, no usage): a genuine zero-spend refund.
     let backend = Arc::new(Backend::default());
     let (s, _) = stage(&Arc::new(RecWriter::default()), &Arc::new(Gate::default()));
     let s = s.with_quota(backend.clone());
@@ -395,6 +411,45 @@ async fn quota_without_usage_reconciles_zero_credits_like_python() {
     c.usage = None;
     s.call(&mut c).await.unwrap();
     assert_eq!(backend.reconciles.lock().unwrap()[0].1, 0);
+    assert!(backend.faults.lock().unwrap().is_empty());
+}
+
+/// INTENTIONAL divergence from Python (which meters 0 here = free inference): provider work
+/// happened (response present, not a cache hit) but no usage reported -> fail closed.
+#[tokio::test]
+async fn missing_usage_after_dispatch_charges_reservation_faults_and_meters_estimate() {
+    let backend = Arc::new(Backend::default());
+    let w = Arc::new(RecWriter::default());
+    let (s, b) = stage(&w, &Arc::new(Gate::default()));
+    let s = s.with_quota(backend.clone());
+    let calls = Arc::new(GuardCalls::default());
+    let mut c = quota_ctx(&calls);
+    c.usage = None;
+    c.response_text = "an answer".into();
+    c.messages = vec![json!({"content": "hello there"})];
+    s.call(&mut c).await.unwrap();
+    assert_eq!(
+        backend.reconciles.lock().unwrap()[0].1,
+        50,
+        "charges credits_reserved"
+    );
+    assert_eq!(*backend.faults.lock().unwrap(), vec!["missing_usage"]);
+    b.flush().await;
+    let rows = w.rows();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].has_estimated_usage, "estimated flag set");
+    // A cache hit with no usage is NOT provider work: still refunded.
+    let backend2 = Arc::new(Backend::default());
+    let (s2, _) = stage(&Arc::new(RecWriter::default()), &Arc::new(Gate::default()));
+    let s2 = s2.with_quota(backend2.clone());
+    let mut hit = quota_ctx(&calls);
+    hit.usage = None;
+    hit.response_text = "cached".into();
+    hit.cache_hit = true;
+    hit.provider = Some("cache".into());
+    s2.call(&mut hit).await.unwrap();
+    assert_eq!(backend2.reconciles.lock().unwrap()[0].1, 0);
+    assert!(backend2.faults.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -433,6 +488,192 @@ async fn quota_guard_without_backend_is_settled_not_leaked() {
     let mut c = quota_ctx(&calls);
     s.call(&mut c).await.unwrap();
     assert_eq!(calls.aborted.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn panicking_reconcile_still_settles_the_guard_no_leak() {
+    let backend = Arc::new(Backend {
+        panic_reconcile: true,
+        ..Default::default()
+    });
+    let (s, _) = stage(&Arc::new(RecWriter::default()), &Arc::new(Gate::default()));
+    let s = s.with_quota(backend.clone());
+    let calls = Arc::new(GuardCalls::default());
+    let mut c = quota_ctx(&calls);
+    s.call(&mut c).await.unwrap(); // the response path survives the panic
+    assert_eq!(
+        calls.aborted.load(Ordering::SeqCst),
+        1,
+        "guard settled after panic"
+    );
+    assert!(c.quota_release.is_none());
+}
+
+#[tokio::test]
+async fn request_produces_vkey_row_and_api_key_row_with_user_org_credits() {
+    let w = Arc::new(RecWriter::default());
+    let (s, b) = stage(&w, &Arc::new(Gate::default()));
+    let s = s.with_credits(Arc::new(Credits { fail: false }));
+    let mut c = ctx(Some(9));
+    c.user.as_mut().unwrap().api_key_id = Some(42);
+    s.call(&mut c).await.unwrap();
+    b.flush().await;
+    assert_eq!(w.rows().len(), 1, "vkey row");
+    let k = w.key_rows();
+    assert_eq!(k.len(), 1, "api-key row");
+    assert_eq!(
+        (k[0].api_key_id, k[0].user_id, k[0].organization_id),
+        (Some(42), 7, 5)
+    );
+    assert_eq!(
+        (
+            k[0].waddleai_tokens,
+            k[0].input_tokens,
+            k[0].output_tokens,
+            k[0].request_count
+        ),
+        (30, 11, 4, 1)
+    );
+    assert_eq!(k[0].breakdown, vec![("ollama_llama3.2".to_owned(), 11, 4)]);
+}
+
+#[tokio::test]
+async fn api_key_row_written_without_vkey_and_skipped_when_credit_calc_fails() {
+    let w = Arc::new(RecWriter::default());
+    let (s, b) = stage(&w, &Arc::new(Gate::default()));
+    let s = s.with_credits(Arc::new(Credits { fail: false }));
+    s.call(&mut ctx(None)).await.unwrap(); // no vkey: vkey row skipped, key row still written
+    b.flush().await;
+    assert!(w.rows().is_empty());
+    assert_eq!(w.key_rows().len(), 1);
+    let w2 = Arc::new(RecWriter::default());
+    let (s2, b2) = stage(&w2, &Arc::new(Gate::default()));
+    let s2 = s2.with_credits(Arc::new(Credits { fail: true }));
+    s2.call(&mut ctx(Some(9))).await.unwrap();
+    b2.flush().await;
+    assert!(w2.key_rows().is_empty());
+    // No credit model at all: skipped too.
+    let w3 = Arc::new(RecWriter::default());
+    let (s3, b3) = stage(&w3, &Arc::new(Gate::default()));
+    s3.call(&mut ctx(Some(9))).await.unwrap();
+    b3.flush().await;
+    assert!(w3.key_rows().is_empty());
+}
+
+#[test]
+fn key_events_fold_per_key_user_org_day_with_breakdown() {
+    let ev = |m: &str, i: u64, o: u64, h: u32| KeyUsageEvent {
+        api_key_id: Some(1),
+        user_id: 7,
+        organization_id: 5,
+        timestamp: at(h, 0, 0),
+        provider: "openai".into(),
+        model: m.into(),
+        input_tokens: i,
+        output_tokens: o,
+        waddleai_tokens: i + o,
+    };
+    let out = aggregate_key_events(vec![
+        ev("gpt-4", 1, 2, 1),
+        ev("gpt-4", 3, 4, 2),
+        ev("gpt-3.5", 5, 6, 3),
+    ]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        (
+            out[0].request_count,
+            out[0].input_tokens,
+            out[0].waddleai_tokens
+        ),
+        (3, 9, 21)
+    );
+    assert_eq!(
+        out[0].breakdown,
+        vec![
+            ("openai_gpt_4".to_owned(), 4, 6),
+            ("openai_gpt_3.5".to_owned(), 5, 6)
+        ]
+    );
+    let mut other = ev("gpt-4", 1, 1, 1);
+    other.api_key_id = None;
+    assert_eq!(
+        aggregate_key_events(vec![ev("gpt-4", 1, 1, 1), other]).len(),
+        2
+    );
+}
+
+fn key_agg(api_key: Option<i64>) -> KeyAggregate {
+    aggregate_key_events(vec![KeyUsageEvent {
+        api_key_id: api_key,
+        user_id: 7,
+        organization_id: 5,
+        timestamp: at(12, 0, 0),
+        provider: "openai".into(),
+        model: "gpt-4".into(),
+        input_tokens: 10,
+        output_tokens: 5,
+        waddleai_tokens: 30,
+    }])
+    .remove(0)
+}
+
+#[tokio::test]
+async fn writer_key_row_inserts_with_user_org_and_credits() {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<db::entities::token_usage::Model>::new()])
+        .append_exec_results([
+            MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }, // advisory lock
+            MockExecResult {
+                last_insert_id: 1,
+                rows_affected: 1,
+            },
+        ])
+        .into_connection();
+    SeaOrmUsageWriter::new(db.clone())
+        .write_key(&key_agg(Some(42)))
+        .await
+        .unwrap();
+    let log = sql_log(db);
+    assert!(log.contains("\"api_key_id\" = $1"), "{log}");
+    assert!(
+        log.contains("INSERT INTO \"public\".\"token_usage\""),
+        "{log}"
+    );
+    assert!(
+        log.contains("Int(Some(42))") && log.contains("Int(Some(30))"),
+        "{log}"
+    );
+}
+
+#[tokio::test]
+async fn writer_key_row_updates_existing_and_keys_jwt_callers_on_user() {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![usage_row(7, 100, 50, 4)]])
+        .append_exec_results([
+            MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }, // advisory lock
+            MockExecResult {
+                last_insert_id: 7,
+                rows_affected: 1,
+            },
+        ])
+        .into_connection();
+    SeaOrmUsageWriter::new(db.clone())
+        .write_key(&key_agg(None))
+        .await
+        .unwrap();
+    let log = sql_log(db);
+    assert!(
+        log.contains("\"api_key_id\" IS NULL") && log.contains("\"virtual_key_id\" IS NULL"),
+        "{log}"
+    );
+    assert!(log.contains("UPDATE \"public\".\"token_usage\""), "{log}");
+    assert!(log.contains("110") && log.contains("55"), "{log}");
 }
 
 // ---------- aggregation / estimate ----------
@@ -569,7 +810,10 @@ async fn metric_names_labels_match_python() {
     let m = Arc::new(Metrics::new("test").unwrap());
     let (s, _) = stage(&Arc::new(RecWriter::default()), &Arc::new(Gate::default()));
     let backend = Arc::new(Backend::default());
-    let s = s.with_metrics(m.clone()).with_quota(backend);
+    let s = s
+        .with_metrics(m.clone())
+        .with_quota(backend)
+        .with_known_models(Arc::new(|m: &str| m == "llama3.2"));
     s.call(&mut ctx(Some(9))).await.unwrap();
     // `_finalize`'s record_llm_request: names + label order from shared/utils/metrics.py.
     let req = m
@@ -600,6 +844,35 @@ async fn metric_names_labels_match_python() {
     assert!(text.contains(
         "waddleai_llm_requests_total{model=\"llama3.2\",provider=\"ollama\",status=\"success\"} 1"
     ));
+}
+
+#[tokio::test]
+async fn model_label_is_bounded_never_the_client_requested_model() {
+    let m = Arc::new(Metrics::new("test").unwrap());
+    let (s, _) = stage(&Arc::new(RecWriter::default()), &Arc::new(Gate::default()));
+    let s = s
+        .with_metrics(m.clone())
+        .with_known_models(Arc::new(|m: &str| m == "llama3.2"));
+    // Unknown resolved model + attacker-chosen requested model -> constant "other".
+    let mut c = ctx(Some(9));
+    c.model = Some("evil-model-123".into());
+    c.requested_model = Some("attacker-controlled".into());
+    s.call(&mut c).await.unwrap();
+    let text = m.render().unwrap();
+    assert!(text.contains("model=\"other\""), "{text}");
+    assert!(
+        !text.contains("evil-model-123") && !text.contains("attacker-controlled"),
+        "{text}"
+    );
+    // No model at all (and no known-models predicate): still "other", never requested_model.
+    let (s2, _) = stage(&Arc::new(RecWriter::default()), &Arc::new(Gate::default()));
+    let m2 = Arc::new(Metrics::new("test").unwrap());
+    let s2 = s2.with_metrics(m2.clone());
+    let mut c2 = ctx(Some(9));
+    c2.model = None;
+    c2.requested_model = Some("attacker-controlled".into());
+    s2.call(&mut c2).await.unwrap();
+    assert!(!m2.render().unwrap().contains("attacker-controlled"));
 }
 
 // ---------- SeaORM writer / ledger (mock DB: SQL shape, real DB parity is #[ignore]) ----------
@@ -646,10 +919,16 @@ fn one_agg() -> Aggregate {
 async fn writer_inserts_when_no_row_for_vkey_and_day() {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([Vec::<db::entities::token_usage::Model>::new()])
-        .append_exec_results([MockExecResult {
-            last_insert_id: 1,
-            rows_affected: 1,
-        }])
+        .append_exec_results([
+            MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }, // advisory lock
+            MockExecResult {
+                last_insert_id: 1,
+                rows_affected: 1,
+            },
+        ])
         .into_connection();
     let w = SeaOrmUsageWriter::new(db.clone());
     w.write(&one_agg()).await.unwrap();
@@ -659,6 +938,10 @@ async fn writer_inserts_when_no_row_for_vkey_and_day() {
         "{log}"
     );
     assert!(log.contains("aiproxy"), "{log}");
+    assert!(
+        log.contains("pg_advisory_xact_lock"),
+        "serialized first insert: {log}"
+    );
     assert!(log.contains("BEGIN") || log.contains("SELECT"), "{log}");
 }
 
@@ -666,10 +949,16 @@ async fn writer_inserts_when_no_row_for_vkey_and_day() {
 async fn writer_updates_existing_row_merging_breakdown_and_totals() {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([vec![usage_row(7, 100, 50, 4)]])
-        .append_exec_results([MockExecResult {
-            last_insert_id: 7,
-            rows_affected: 1,
-        }])
+        .append_exec_results([
+            MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }, // advisory lock
+            MockExecResult {
+                last_insert_id: 7,
+                rows_affected: 1,
+            },
+        ])
         .into_connection();
     let w = SeaOrmUsageWriter::new(db.clone());
     w.write(&one_agg()).await.unwrap();
@@ -985,4 +1274,159 @@ async fn live_ledger_upsert_adds_atomically_under_concurrency() {
     db.execute_unprepared("DELETE FROM quota_usage_ledger WHERE organization_id = 900004")
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs WADDLEAI_TEST_DATABASE_URL (migrated Postgres); CI provides"]
+async fn live_concurrent_first_writes_produce_one_row_with_summed_totals() {
+    use sea_orm::ConnectionTrait;
+    let db = live_db().await;
+    db.execute_unprepared(
+        "DELETE FROM token_usage WHERE virtual_key_id = 900005 OR api_key_id = 900006",
+    )
+    .await
+    .unwrap();
+    let w = Arc::new(SeaOrmUsageWriter::new(db.clone()));
+    let mut tasks = Vec::new();
+    for _ in 0..20 {
+        let w = w.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut a = one_agg();
+            a.virtual_key_id = 900_005;
+            w.write(&a).await.unwrap();
+            let mut k = key_agg(Some(900_006));
+            k.request_count = 1;
+            w.write_key(&k).await.unwrap();
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    for (filter, input, reqs) in [
+        ("virtual_key_id = 900005", 200, 20),
+        ("api_key_id = 900006", 200, 20),
+    ] {
+        let rows = db
+            .query_all_raw(sea_orm::Statement::from_string(
+                DatabaseBackend::Postgres,
+                format!("SELECT tokens_input_total, request_count FROM token_usage WHERE {filter}"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one row, not duplicates: {filter}");
+        assert_eq!(
+            rows[0].try_get::<i32>("", "tokens_input_total").unwrap(),
+            input
+        );
+        assert_eq!(rows[0].try_get::<i32>("", "request_count").unwrap(), reqs);
+    }
+    db.execute_unprepared(
+        "DELETE FROM token_usage WHERE virtual_key_id = 900005 OR api_key_id = 900006",
+    )
+    .await
+    .unwrap();
+}
+
+/// Column-for-column parity of the API-key-keyed row with Python `_update_usage_records`.
+#[tokio::test]
+#[ignore = "needs WADDLEAI_TEST_DATABASE_URL (migrated Postgres + usage_cache) + python (WADDLEAI_TEST_PYTHON); CI provides"]
+async fn api_key_row_equals_python_update_usage_records() {
+    use sea_orm::ConnectionTrait;
+    let url = std::env::var("WADDLEAI_TEST_DATABASE_URL")
+        .expect("WADDLEAI_TEST_DATABASE_URL must be set for --ignored db tests");
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let db = connect_url(&url).await;
+    let (rust_key, py_key) = (900_007_i64, 900_008_i64);
+    db.execute_unprepared(&format!(
+        "DELETE FROM token_usage WHERE api_key_id IN ({rust_key},{py_key})"
+    ))
+    .await
+    .unwrap();
+    // Python's `date.today()` is the local date.
+    let today = chrono::Local::now().date_naive();
+    let mut a = key_agg(Some(rust_key));
+    a.day = today;
+    SeaOrmUsageWriter::new(db.clone())
+        .write_key(&a)
+        .await
+        .unwrap();
+    let script = format!(
+        "import os;from penguin_dal import DAL;\
+         from shared.utils.token_manager import TokenManager,TokenUsage;\
+         db=DAL(os.environ['WADDLEAI_TEST_DATABASE_URL'].replace('postgres://','postgresql://'));\
+         tm=TokenManager.__new__(TokenManager);tm.db=db;\
+         tm._update_usage_records(TokenUsage(30,10,5,{{'openai_gpt_4':{{'input':10,'output':5}}}},0,0),\
+         {py_key},7,5,'openai','gpt-4')"
+    );
+    let py = std::env::var("WADDLEAI_TEST_PYTHON").unwrap_or_else(|_| "python3".into());
+    let out = std::process::Command::new(py)
+        .args(["-c", &script])
+        .env("PYTHONPATH", &repo)
+        .env("WADDLEAI_TEST_DATABASE_URL", &url)
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "python writer failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let q = |k: i64| {
+        sea_orm::Statement::from_string(
+            DatabaseBackend::Postgres,
+            format!(
+                "SELECT user_id, organization_id, date::date::text AS d, waddleai_tokens, \
+                 llm_tokens #>> '{{}}' AS llm, tokens_input_total, tokens_output_total, \
+                 request_count, cost_usd_total, source, estimated, cache_status, tokens_saved, \
+                 virtual_key_id, (last_updated IS NULL) AS no_lu FROM token_usage WHERE api_key_id = {k}"
+            ),
+        )
+    };
+    let (r, p) = (
+        db.query_all_raw(q(rust_key)).await.unwrap(),
+        db.query_all_raw(q(py_key)).await.unwrap(),
+    );
+    assert_eq!((r.len(), p.len()), (1, 1));
+    for c in ["d", "llm", "source", "cache_status"] {
+        assert_eq!(
+            r[0].try_get::<Option<String>>("", c).unwrap(),
+            p[0].try_get::<Option<String>>("", c).unwrap(),
+            "{c}"
+        );
+    }
+    for c in [
+        "user_id",
+        "organization_id",
+        "waddleai_tokens",
+        "tokens_input_total",
+        "tokens_output_total",
+        "request_count",
+        "cost_usd_total",
+        "tokens_saved",
+        "virtual_key_id",
+    ] {
+        assert_eq!(
+            r[0].try_get::<Option<i32>>("", c).unwrap(),
+            p[0].try_get::<Option<i32>>("", c).unwrap(),
+            "{c}"
+        );
+    }
+    assert_eq!(
+        r[0].try_get::<bool>("", "estimated").unwrap(),
+        p[0].try_get::<bool>("", "estimated").unwrap()
+    );
+    assert_eq!(
+        r[0].try_get::<bool>("", "no_lu").unwrap(),
+        p[0].try_get::<bool>("", "no_lu").unwrap()
+    );
+    db.execute_unprepared(&format!(
+        "DELETE FROM token_usage WHERE api_key_id IN ({rust_key},{py_key})"
+    ))
+    .await
+    .unwrap();
+}
+
+/// Connects without the env-var lookup (the caller already has the URL).
+async fn connect_url(url: &str) -> sea_orm::DatabaseConnection {
+    sea_orm::Database::connect(url).await.unwrap()
 }
