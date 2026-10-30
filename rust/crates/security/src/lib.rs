@@ -6,6 +6,7 @@ pub mod ner;
 pub mod patterns;
 pub mod prompt;
 pub mod rules;
+pub mod stages;
 
 pub use builtins::BUILTIN_PATTERNS;
 pub use content_filter::{
@@ -21,3 +22,4 @@ pub use rules::{
     spawn_invalidation_listener, DbRulesSource, FilterRule, KvCache, OrgConfig, RawOrgConfig,
     RulesError, RulesSource, RulesStore, SeedReport,
 };
+pub use stages::{SecurityInStage, SecurityOutStage, StartError};
