@@ -109,7 +109,7 @@ const MAX_SLOTS: usize = 256;
 /// too many slots, or a redaction that cannot be mapped back); `Some(violated)` otherwise.
 ///
 /// Slots come from the same walker as the prompt scanner, joined with `"\n"` (custom rules are
-/// multiline, so anchors apply per part). Empty/whitespace-only slots are not sent. Mapping
+/// multiline, so anchors apply per part). Exactly-empty slots are not sent (whitespace-only ones are: a rule may match them). Mapping
 /// back splits the redacted text on `"\n"`; if the line count changed (a span crossed a part
 /// boundary) the message is blocked rather than guessed at.
 async fn filter_message(
@@ -127,7 +127,7 @@ async fn filter_message(
         .filter(|p| {
             msg.pointer(p)
                 .and_then(Value::as_str)
-                .is_some_and(|t| !t.trim().is_empty())
+                .is_some_and(|t| !t.is_empty())
         })
         .collect();
     if active.is_empty() {

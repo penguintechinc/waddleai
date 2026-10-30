@@ -43,6 +43,14 @@ fn rig() -> Rig {
     let cfg = RawOrgConfig {
         rules: vec![
             FilterRule {
+                id: 5,
+                name: "ws".into(),
+                rule_type: "custom_regex".into(),
+                target: "both".into(),
+                pattern: r"^[ \t]{3,}$".into(),
+                action: "redact".into(),
+            },
+            FilterRule {
                 id: 3,
                 name: "anch".into(),
                 rule_type: "custom_regex".into(),
@@ -412,15 +420,26 @@ async fn redaction_crossing_part_boundary_blocks() {
 }
 
 #[tokio::test]
-async fn empty_and_whitespace_slots_skipped() {
+async fn only_exactly_empty_slots_skipped_whitespace_is_filtered() {
     let r = rig();
     let s = stage_in(&r, &[]).await;
-    let mut c = ctx(vec![parts(&["", "  \n ", "\t"])]);
     let (n, _g) = counted();
+    let mut c = ctx(vec![parts(&["", ""])]);
     s.call(&mut c).await.unwrap();
-    assert_eq!(n.load(Ordering::SeqCst), 0);
+    assert_eq!(n.load(Ordering::SeqCst), 0, "empty slots never filtered");
+    let mut c = ctx(vec![parts(&["a", "   ", "b"])]);
+    s.call(&mut c).await.unwrap();
+    assert_eq!(n.load(Ordering::SeqCst), 1, "whitespace slot is filtered");
+    assert!(c.pii_detected);
+    let p = c.messages[0]["content"].as_array().unwrap();
+    assert_eq!(p[0]["text"], "a");
+    assert_eq!(p[2]["text"], "b");
+    assert!(!p[1]["text"].as_str().unwrap().contains("   "));
+    // "\n" slot counts as 2 lines and still maps back
+    let mut c = ctx(vec![parts(&["x", "\n", "ZIPABCD"])]);
+    s.call(&mut c).await.unwrap();
     assert!(!c.blocked);
-    assert_eq!(c.messages[0]["content"][1]["text"], "  \n ");
+    assert_eq!(c.messages[0]["content"][1]["text"], "\n");
 }
 
 #[tokio::test]
