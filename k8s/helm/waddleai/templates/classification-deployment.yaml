@@ -82,7 +82,34 @@ spec:
             - name: NER_CACHE_TTL_SECONDS
               value: {{ $c.nerCacheTtlSeconds | quote }}
             - name: REDIS_URL
+              {{- if $c.redisUrlSecret.secretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.redisUrlSecret.secretName }}
+                  key: {{ $c.redisUrlSecret.key }}
+              {{- else }}
               value: {{ default (printf "redis://%s-valkey:6379/0" (include "waddleai.fullname" .)) $c.redisUrl | quote }}
+              {{- end }}
+            # NER gate inputs (flag + license): without these every Analyze is GATE_DISABLED.
+            - name: WADDLEAI_PUBLIC_HOST
+              value: {{ $jwt.jwksHost | quote }}
+            - name: POSTHOG_HOST
+              value: {{ $c.posthog.host | quote }}
+            {{- if $c.flagOverridePiiNer }}
+            # DEV ONLY: bypasses PostHog so NER is testable without a live flag server.
+            - name: WADDLEAI_FLAG_PII_NER
+              value: "true"
+            {{- end }}
+            {{- range $c.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .key }}
+                  {{- if .optional }}
+                  optional: true
+                  {{- end }}
+            {{- end }}
             - name: JWT_ISSUER
               value: {{ $jwt.issuer | quote }}
             - name: JWT_AUDIENCE
@@ -138,6 +165,12 @@ spec:
             periodSeconds: {{ $c.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ $c.readinessProbe.timeoutSeconds }}
             failureThreshold: {{ $c.readinessProbe.failureThreshold }}
+          {{- with $c.preStopSleepSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ . }}"]
+          {{- end }}
           resources:
             {{- toYaml $c.resources | nindent 12 }}
           volumeMounts:

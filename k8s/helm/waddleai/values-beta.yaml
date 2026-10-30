@@ -341,6 +341,10 @@ monitoring:
 # gRPC TLS from a cert-manager-issued Secret (see classification.tls). CI-built
 # tag below is a placeholder until the first Beta image is published.
 classification:
+  # REDIS_URL from a Secret (clsf: ACL user + rediss://); ops provisions the value.
+  redisUrlSecret:
+    secretName: waddleai-secrets
+    key: classification-redis-url
   otel:
     endpoint: "http://otel-collector.monitoring:4317"
     protocol: "grpc"

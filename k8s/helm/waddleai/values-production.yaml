@@ -13,6 +13,10 @@ global:
 # that the release pipeline MUST replace -- an all-zero digest never resolves, so
 # an unreplaced value fails loudly at image pull rather than running unpinned.
 classification:
+  # REDIS_URL from a Secret (clsf: ACL user + rediss://); ops provisions the value.
+  redisUrlSecret:
+    secretName: waddleai-secrets
+    key: classification-redis-url
   otel:
     endpoint: "http://otel-collector.monitoring:4317"
     protocol: "grpc"

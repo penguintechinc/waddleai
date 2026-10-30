@@ -44,6 +44,10 @@ Text is analyzed up to 2000 chars (`truncated=true` reports more); only `languag
 | `GRPC_TLS_CERT_FILE` / `GRPC_TLS_KEY_FILE` / `GRPC_TLS_CLIENT_CA_FILE` | none | Server TLS / mTLS material |
 | `SECURITY_AUDITOR_FAIL_MODE` | `open` | `open` or `closed` (per-request `fail_mode` overrides) |
 | `ALLOW_INSECURE_GRPC` | unset | **Dev/alpha only**: `1` permits plaintext gRPC |
+| `LICENSE_KEY` | none | **Secret** (`secretEnv`, `waddleai-secrets/license-key`); entitlement `pii_ner_detection` |
+| `WADDLEAI_PUBLIC_HOST` | resolved JWKS host | Domain-based license bypass input; set by the chart |
+| `POSTHOG_KEY` / `POSTHOG_HOST` | none / `https://license.penguintech.io` | PostHog flag source; key is a Secret (`waddleai-secrets/posthog-key`, optional); host also feeds Cilium egress |
+| `WADDLEAI_FLAG_PII_NER` | unset | **Alpha/dev only** (`classification.flagOverridePiiNer`): `true` bypasses PostHog |
 | `OTEL_*` | none | Standard OTel env vars; OTLP destination is never hard-coded |
 
 ## Fail-mode and degraded semantics
@@ -71,6 +75,21 @@ classification scope, or an allow-listed SPIFFE mTLS identity.
     `ingress.hosts`/`httproute.host`. `jwksUrl` must be `https:`; the same host feeds the
     Cilium egress allow-list. `values.yaml` ships `classification.enabled: false`; each
     environment overlay enables it and supplies the anchor.
+
+!!! warning "NER gate requirements"
+    NER runs only when the PostHog flag `waddleai.pii_ner` **and** the license entitlement
+    `pii_ner_detection` are both on. Without `LICENSE_KEY` + a PostHog source
+    (`POSTHOG_KEY`/`POSTHOG_HOST`) -- or the alpha-only `WADDLEAI_FLAG_PII_NER=true` override --
+    pods go Ready but every Analyze returns `GATE_DISABLED` with zero spans. Beta/gamma/prod
+    use the real PostHog + license; set `secrets.posthogKey` / `secrets.licenseKey` (or
+    manage `waddleai-secrets` externally).
+
+!!! note "Valkey credentials (beta+)"
+    Beta/gamma/production read `REDIS_URL` from the Secret key `classification-redis-url`
+    (`classification.redisUrlSecret`). The chart's default value there is a PLACEHOLDER
+    (plaintext internal valkey); ops provisions the `clsf:`-scoped ACL user and a `rediss://`
+    URL via `secrets.classificationRedisUrl` (or an external Secret). Alpha keeps a plaintext
+    dev default. The pod also sleeps 10s in `preStop` so endpoint removal propagates.
 
 ## Tests and verification
 

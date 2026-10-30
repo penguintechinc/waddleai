@@ -430,8 +430,38 @@ classification:
     endpoint: "http://otel-collector.monitoring:4317"
     protocol: "grpc"
 
-  # Valkey cache. Empty = the chart's own valkey Service.
+  # Valkey cache. Alpha/dev: empty redisUrl = the chart's own plaintext valkey
+  # Service. Real tiers (beta/gamma/prod): set redisUrlSecret so REDIS_URL comes
+  # from a Secret carrying the per-service `clsf:`-scoped ACL user + rediss:// TLS.
+  # The chart-managed waddleai-secrets key `classification-redis-url` is only a
+  # PLACEHOLDER (plaintext internal valkey) until ops provisions the ACL user and
+  # points secrets.classificationRedisUrl (or an external Secret) at it.
   redisUrl: ""
+  redisUrlSecret:
+    secretName: ""
+    key: classification-redis-url
+
+  # Gate inputs. NER only runs when the PostHog flag `waddleai.pii_ner` AND the
+  # license entitlement `pii_ner_detection` are both on; without these the service is
+  # Ready but every Analyze returns GATE_DISABLED. WADDLEAI_PUBLIC_HOST (license
+  # domain bypass) is the resolved JWT-anchor host.
+  posthog:
+    host: "https://license.penguintech.io"
+  # Secret env vars (secretKeyRef only -- never plaintext values).
+  secretEnv:
+    - name: LICENSE_KEY
+      secretName: waddleai-secrets
+      key: license-key
+    - name: POSTHOG_KEY
+      secretName: waddleai-secrets
+      key: posthog-key
+      optional: true
+  # Dev-only flag override: WADDLEAI_FLAG_PII_NER=true bypasses PostHog (alpha only).
+  # flagOverridePiiNer: true
+
+  # Sleep before SIGTERM so endpoint removal propagates and in-flight routed calls
+  # settle (fewer UNAVAILABLE during a rollout). Must stay < terminationGracePeriodSeconds.
+  preStopSleepSeconds: 10
 
   # HMAC key for the NER result cache (min 32 bytes) -- Secret ref only.
   # waddleai-secrets key is generated-once by templates/secret.yaml
@@ -473,11 +503,11 @@ classification:
       selector:
         app.kubernetes.io/name: prometheus
     egress:
-      # PostHog + license server (443). The JWKS host is NOT listed here: it is
-      # derived from the resolved JWKS_URL (waddleai.classification.jwt helper).
+      # License server (443). The JWKS host and the PostHog host are NOT listed here:
+      # they are derived from the resolved JWKS_URL (waddleai.classification.jwt
+      # helper) and classification.posthog.host so env and egress cannot diverge.
       fqdns:
         - license.penguintech.io
-        - app.posthog.com
       otlp:
         namespace: monitoring
         selector:
@@ -922,6 +952,12 @@ secrets:
   # Classification NER result-cache HMAC key (min 32 bytes). Empty = generated
   # once and kept stable across upgrades (waddleai.classificationHmacKey).
   classificationNerCacheHmacKey: ""
+  # PostHog project key (classification feature-flag source). Empty = PostHog
+  # unconfigured -> flags default OFF (NER gate stays closed).
+  posthogKey: ""
+  # Classification REDIS_URL (see classification.redisUrlSecret). Empty = PLACEHOLDER
+  # plaintext internal valkey; ops sets a rediss:// URL with the clsf: ACL user.
+  classificationRedisUrl: ""
 
 # Alembic database migration Job (templates/migration-job.yaml) — runs
 # `alembic upgrade head` from the management image as a post-install,
@@ -1370,6 +1406,9 @@ tetragon:
         mode: enforce
         allowedExecs:
           - /bin/sh
+          # preStop `sleep`
+          - /bin/sleep
+          - /usr/bin/sleep
           - /opt/venv/bin/python3
           - /opt/venv/bin/hypercorn
           - /usr/local/bin/python3

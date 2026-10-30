@@ -14,7 +14,7 @@ Same guard as the rest of the Cilium bootstrap set.
 {{- $t := .Values.cilium.topology }}
 {{- $jwt := include "waddleai.classification.jwt" . | fromJson }}
 {{- /* JWKS host is derived from the SAME resolved JWKS_URL the Deployment uses. */}}
-{{- $fqdns := concat (list $jwt.jwksHost) $c.cilium.egress.fqdns | uniq }}
+{{- $fqdns := concat (list $jwt.jwksHost (urlParse $c.posthog.host).hostname) $c.cilium.egress.fqdns | uniq }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

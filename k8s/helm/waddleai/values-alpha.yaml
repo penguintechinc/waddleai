@@ -217,6 +217,8 @@ classification:
   enabled: true
   jwt:
     host: "waddleai.localhost.local"
+  # DEV ONLY: flag override so NER is testable without a live PostHog.
+  flagOverridePiiNer: true
   replicaCount: 1
   image:
     tag: alpha-latest

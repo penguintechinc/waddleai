@@ -164,7 +164,10 @@ def test_template_source_never_sets_hypercorn_workers():
     tpl = (CHART_DIR / "templates" / "classification-deployment.yaml").read_text()
     code = re.sub(r"\{\{/\*.*?\*/\}\}", "", tpl, flags=re.S)
     code = "\n".join(ln for ln in code.splitlines() if not ln.lstrip().startswith("#"))
-    assert "--workers" not in code and "command:" not in code and "args:" not in code
+    assert "--workers" not in code and "args:" not in code
+    # The only `command:` allowed is the preStop exec (lifecycle), never the container's.
+    for m in re.finditer(r"command:", code):
+        assert "preStop:" in code[: m.start()].rsplit("containers:", 1)[-1][-200:]
 
 
 @pytest.mark.parametrize(
@@ -187,7 +190,7 @@ def test_tls_secret_mounted_and_paths_set_beta_plus(values_file):
     ref = env["NER_CACHE_HMAC_KEY"]["valueFrom"]["secretKeyRef"]
     assert ref["key"] == "classification-ner-cache-hmac-key"
     assert "value" not in env["NER_CACHE_HMAC_KEY"]
-    for name in ("JWT_ISSUER", "JWT_AUDIENCE", "JWKS_URL", "REDIS_URL", "NER_POOL_WORKERS"):
+    for name in ("JWT_ISSUER", "JWT_AUDIENCE", "JWKS_URL", "NER_POOL_WORKERS"):
         assert env[name]["value"], name
     assert env["JWKS_URL"]["value"].startswith("https://")
     assert env["NER_POOL_WORKERS"]["value"] == "2"
@@ -370,3 +373,62 @@ def test_trust_anchor_never_inherits_vendor_ingress_hosts_default():
     )  # fmt: skip
     assert r.returncode != 0 and "trust anchor is not configured" in r.stderr
     assert "penguintech.io" not in r.stdout
+
+
+@pytest.mark.parametrize("values_file", ENVS)
+def test_ner_gate_env_wired(values_file):
+    """The NER gate inputs (license, public host, PostHog source or override) are present."""
+    _, c = _container(_docs(values_file))
+    env = _env(c)
+    lic = env["LICENSE_KEY"]["valueFrom"]["secretKeyRef"]
+    assert lic["key"] == "license-key" and "value" not in env["LICENSE_KEY"]
+    assert env["WADDLEAI_PUBLIC_HOST"]["value"] == _jwks_host(_docs(values_file))
+    assert env["POSTHOG_HOST"]["value"].startswith("https://")
+    assert env["POSTHOG_KEY"]["valueFrom"]["secretKeyRef"]["key"] == "posthog-key"
+    assert "value" not in env["POSTHOG_KEY"]
+    if values_file == "values-alpha.yaml":
+        assert env["WADDLEAI_FLAG_PII_NER"]["value"] == "true"
+    else:
+        assert "WADDLEAI_FLAG_PII_NER" not in env, "flag override is alpha/dev only"
+
+
+@pytest.mark.parametrize("values_file", ENVS)
+def test_posthog_host_in_egress(values_file):
+    """The PostHog host is allowed by egress (derived from the same value as POSTHOG_HOST)."""
+    from urllib.parse import urlparse
+
+    docs = _docs(values_file)
+    env = _env(_container(docs)[1])
+    assert urlparse(env["POSTHOG_HOST"]["value"]).hostname in _egress_fqdns(docs)
+
+
+@pytest.mark.parametrize("values_file", ENVS)
+def test_prestop_sleep_and_tetragon_allows_it(values_file):
+    """PreStop sleeps (< termination grace) and the exec allowlist permits sleep."""
+    dep, c = _container(_docs(values_file))
+    cmd = c["lifecycle"]["preStop"]["exec"]["command"]
+    assert cmd[:2] == ["/bin/sh", "-c"] and cmd[2].startswith("sleep ")
+    assert int(cmd[2].split()[1]) < dep["spec"]["template"]["spec"]["terminationGracePeriodSeconds"]
+    pol = find(
+        _docs(values_file, set_values={"tetragon.forceRender": "true"}),
+        "TracingPolicyNamespaced",
+        "waddleai-exec-allowlist-classification",
+    )
+    allowed = pol["spec"]["kprobes"][0]["selectors"][0]["matchArgs"][0]["values"]
+    assert "/bin/sleep" in allowed and "/usr/bin/sleep" in allowed
+
+
+@pytest.mark.parametrize(
+    "values_file", ["values-beta.yaml", "values-gamma.yaml", "values-production.yaml"]
+)
+def test_redis_url_from_secret_beta_plus(values_file):
+    """Real tiers take REDIS_URL from a Secret (ACL user + TLS), never a plaintext value."""
+    env = _env(_container(_docs(values_file))[1])
+    assert "value" not in env["REDIS_URL"]
+    assert env["REDIS_URL"]["valueFrom"]["secretKeyRef"]["key"] == "classification-redis-url"
+
+
+def test_alpha_redis_url_plaintext_dev_default():
+    """Alpha keeps the plaintext in-cluster valkey default."""
+    env = _env(_container(_docs("values-alpha.yaml"))[1])
+    assert env["REDIS_URL"]["value"].startswith("redis://")
