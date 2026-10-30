@@ -283,9 +283,9 @@ impl PromptScanner {
 
     /// Scan every text-bearing field of each message; returns all threats in order.
     ///
-    /// Strings are scanned directly; content-part arrays are scanned part by part
-    /// (`text`, nested `content`, tool `input`/`arguments`); tool-call arguments on
-    /// the message are scanned too. Missing/null/unknown content shapes fail closed
+    /// Strings are scanned directly; content-part arrays contribute their text
+    /// (`text`, nested `content`, tool `input`/`arguments`) and tool-call objects on
+    /// the message contribute theirs; everything is joined and scanned as ONE unit. Missing/null/unknown content shapes fail closed
     /// with a Block threat, mirroring Python (which raises on non-string content).
     pub fn scan_messages(&self, messages: &[Value]) -> Vec<Threat> {
         let mut out = Vec::new();
@@ -296,8 +296,10 @@ impl PromptScanner {
             if !ok {
                 out.push(self.unsupported());
             }
-            for t in texts {
-                out.extend(self.scan_prompt(t));
+            // One unit per message: lengths and match counts sum across parts, so a
+            // phrase fragmented over parts cannot slip under any threshold.
+            if !texts.is_empty() {
+                out.extend(self.scan_prompt(&texts.join("\n")));
             }
         }
         out
@@ -428,7 +430,14 @@ fn collect_content<'a>(v: Option<&'a Value>, out: &mut Vec<&'a str>) -> bool {
     }
 }
 
+/// Inline-payload keys on a `file` part that we cannot extract text from.
+const FILE_INLINE_KEYS: &[&str] = &["data", "file_data", "bytes", "base64", "source"];
+
 /// Collect text from one content part (string or typed object).
+///
+/// Every part has its TEXT_KEYS scanned, even image/audio/file ones (regression:
+/// text smuggled into a "non-text" part). A `file` part with an inline payload is
+/// unscannable and fails closed; pure references (URL/file id) carry no text.
 fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
     match p {
         Value::String(s) => {
@@ -436,11 +445,8 @@ fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
             true
         }
         Value::Object(o) => {
-            if let Some(Value::String(t)) = o.get("type") {
-                if NON_TEXT_PART_TYPES.contains(&t.as_str()) {
-                    return true;
-                }
-            }
+            let ty = o.get("type").and_then(Value::as_str).unwrap_or("");
+            let non_text = NON_TEXT_PART_TYPES.contains(&ty);
             let mut found = false;
             let mut ok = true;
             for k in TEXT_KEYS {
@@ -449,7 +455,10 @@ fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
                     ok &= collect_value(v, out);
                 }
             }
-            found && ok
+            if ty == "file" && FILE_INLINE_KEYS.iter().any(|k| o.contains_key(*k)) {
+                ok = false;
+            }
+            (found || non_text) && ok
         }
         _ => false,
     }
@@ -468,23 +477,49 @@ fn collect_value<'a>(v: &'a Value, out: &mut Vec<&'a str>) -> bool {
     }
 }
 
-/// Collect tool/function-call arguments; false if content was absent and no call carries it.
+/// Whether a tool-call element has a recognized, scanned shape.
+fn is_call_shape(c: &Value) -> bool {
+    c.as_object().is_some_and(|o| {
+        ["function", "input", "arguments"]
+            .iter()
+            .any(|k| o.contains_key(*k))
+    })
+}
+
+/// Collect tool/function-call text (whole objects); false on unrecognized call
+/// shapes, or when content is absent and no recognized call carries it.
 fn collect_tool_calls<'a>(m: &'a Value, out: &mut Vec<&'a str>) -> bool {
     let mut has_call = false;
-    if let Some(Value::Array(calls)) = m.get("tool_calls") {
-        for c in calls {
-            has_call = true;
-            if let Some(f) = c.get("function") {
-                collect_value(f, out);
+    let mut ok = true;
+    match m.get("tool_calls") {
+        None => {}
+        Some(Value::Array(calls)) => {
+            for c in calls {
+                collect_value(c, out);
+                if is_call_shape(c) {
+                    has_call = true;
+                } else {
+                    ok = false;
+                }
             }
+        }
+        Some(other) => {
+            collect_value(other, out);
+            ok = false;
         }
     }
     if let Some(f) = m.get("function_call") {
-        has_call = true;
         collect_value(f, out);
+        if f.as_object()
+            .is_some_and(|o| o.contains_key("arguments") || o.contains_key("name"))
+        {
+            has_call = true;
+        } else {
+            ok = false;
+        }
     }
     let content_absent = matches!(m.get("content"), None | Some(Value::Null));
-    !content_absent || has_call
+    ok && (!content_absent || has_call)
 }
 
 fn severity_for(t: ThreatType, n: usize) -> Severity {
