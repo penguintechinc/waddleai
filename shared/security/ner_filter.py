@@ -79,8 +79,20 @@ _HF_LABEL_MAP: dict[str, str] = {
 # per request).
 _worker_filter: NERFilter | None = None
 
+# Separate per-worker cache for the strict path so the legacy path's lazily
+# built filter (and its fail-open contract) is never touched by strict callers.
+_strict_worker_filter: NERFilter | None = None
 
-def ner_analyze(text: str, language: str = "en") -> list[dict]:
+
+class NERBackendUnavailable(RuntimeError):  # noqa: N818 - name fixed by the T3 interface contract
+    """Raised by the strict analyze path when no NER backend is initialized.
+
+    Lets callers distinguish a degraded backend from a genuine "no PII found"
+    result, which the legacy fail-open `analyze()` cannot do.
+    """
+
+
+def ner_analyze(text: str, language: str = "en") -> list[dict[str, Any]]:
     """Module-level, picklable NER worker for `ProcessPoolExecutor` (§3.5).
 
     Tier-3 NER must never run on the event loop -- this function is the
@@ -96,6 +108,32 @@ def ner_analyze(text: str, language: str = "en") -> list[dict]:
         _worker_filter = NERFilter(spacy_model=spacy_model)
 
     entities = _worker_filter.analyze(text, language=language)
+    return [
+        {
+            "entity_type": e.entity_type,
+            "text": e.text,
+            "start": e.start,
+            "end": e.end,
+            "score": e.score,
+        }
+        for e in entities
+    ]
+
+
+def ner_analyze_strict(text: str, language: str = "en") -> list[dict[str, Any]]:
+    """Module-level, picklable STRICT NER worker for `ProcessPoolExecutor`.
+
+    Same dict contract as `ner_analyze`, but a missing backend raises
+    `NERBackendUnavailable` and analysis errors propagate instead of
+    collapsing to `[]`. Top-level with no closure state, so it pickles.
+    """
+    global _strict_worker_filter
+    if _strict_worker_filter is None:
+        _strict_worker_filter = NERFilter(
+            spacy_model=os.getenv("NER_SPACY_MODEL", "en_core_web_lg")
+        )
+
+    entities = _strict_worker_filter.analyze_or_raise(text, language=language)
     return [
         {
             "entity_type": e.entity_type,
@@ -268,17 +306,28 @@ class NERFilter:
             List of NEREntity objects, empty list if NER unavailable or on error
 
         """
-        if not self._available:
-            return []
-
         try:
-            if self._mode == "presidio":
-                return self._analyze_presidio(text[:2000], language)
-            elif self._mode == "transformers":
-                return self._analyze_transformers(text[:512])
+            return self.analyze_or_raise(text, language)
+        except NERBackendUnavailable:
+            return []
         except Exception as e:
             logger.warning(f"NER analysis error: {e}")
 
+        return []
+
+    def analyze_or_raise(self, text: str, language: str = "en") -> list[NEREntity]:
+        """Run NER strictly: raise instead of returning `[]` on any failure.
+
+        Shares the mode dispatch with `analyze()`. Raises `NERBackendUnavailable`
+        when no backend is initialized; analysis exceptions propagate unchanged.
+        """
+        if not self._available:
+            raise NERBackendUnavailable("no NER backend initialized")
+
+        if self._mode == "presidio":
+            return self._analyze_presidio(text[:2000], language)
+        elif self._mode == "transformers":
+            return self._analyze_transformers(text[:512])
         return []
 
     def _analyze_presidio(self, text: str, language: str) -> list[NEREntity]:

@@ -1,5 +1,5 @@
-.PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-valkey test-e2e test-functional test-security \
-        test-contract test-contract-selftest smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
+.PHONY: docker-build-classification test-classification-image test-classification-real dev setup install-hooks verify-hooks venv test test-classification test-unit test-integration test-valkey test-e2e test-functional test-security \
+        test-contract test-contract-selftest smoke-test smoke-test-production smoke-test-classification loadtest-classification lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
 
 # Every python invocation goes through the repo venv when it exists, and only
@@ -62,6 +62,33 @@ build:
 
 docker-build: build
 
+CLASSIFICATION_IMAGE ?= waddleai-classification:local
+
+docker-build-classification: ## Build the classification image (amd64; context = repo root)
+	docker build -f services/classification/Dockerfile -t $(CLASSIFICATION_IMAGE) .
+
+test-classification-image: docker-build-classification ## Container-structure tests + --network none boot (fails if any check cannot run)
+	@scripts/test_classification_image.sh $(CLASSIFICATION_IMAGE)
+
+# Real Presidio+spaCy suite INSIDE the built image. A skip is a FAIL here: the model is
+# baked, so a skipped ner_model test means the gate silently stopped testing the model.
+test-classification-real: ## ner_model suite in-image (NER_MODEL_REQUIRED=1); fails on collected<1, any failure, any skip
+	@docker build -q -f services/classification/Dockerfile --target test -t $(CLASSIFICATION_IMAGE)-test . >/dev/null
+	@out=$$(mktemp); \
+	docker run --rm -e NER_MODEL_REQUIRED=1 $(CLASSIFICATION_IMAGE)-test \
+	  python3 -m pytest tests/integration/classification -m ner_model -o addopts="" \
+	  -p no:cacheprovider -p no:warnings -rA >$$out 2>&1; rc=$$?; \
+	grep -v 'presidio-analyzer\|ner_filter' $$out | tail -25; \
+	summary=$$(grep -E '^=+ .*(passed|failed|skipped|error).* in [0-9.]+s' $$out | tail -1); \
+	n() { echo "$$summary" | grep -oE "[0-9]+ $$1" | grep -oE '[0-9]+' | head -1; }; \
+	passed=$$(n passed); failed=$$(n failed); errors=$$(n errors); skipped=$$(n skipped); \
+	failed=$$(( $${failed:-0} + $${errors:-0} )); \
+	collected=$$(( $${passed:-0} + $$failed + $${skipped:-0} )); \
+	rm -f $$out; \
+	echo "ner_model in-image: collected=$$collected passed=$${passed:-0} failed=$$failed skipped=$${skipped:-0} (pytest rc=$$rc)"; \
+	[ "$$rc" -eq 0 ] && [ "$$collected" -ge 1 ] && [ "$$failed" -eq 0 ] && [ "$${skipped:-0}" -eq 0 ] \
+	  || { echo "FAIL: need collected>=1, failed=0, skipped=0"; exit 1; }
+
 docker-push:
 	@echo "Push images to registry"
 
@@ -115,6 +142,11 @@ test-unit:
 	@echo "Running unit tests..."
 	@scripts/check_collected_floor.sh $(PY) tests/unit -v --cov-report=html:htmlcov
 
+test-classification: ## Unit tests + >=90% coverage for services/classification/app (fails on zero collected)
+	@$(PY) -m pytest tests/unit/classification -o addopts="" -p no:warnings -q \
+	  --cov=services/classification/app --cov-config=.coveragerc --cov-report=term-missing \
+	  --cov-fail-under=90
+
 # --no-cov: a tests/integration-only run only exercises a fraction of
 # shared/+services/management/app, so pytest.ini's default --cov addopts
 # (60% floor, meant for the full tests/unit run above) fail every time
@@ -126,7 +158,7 @@ test-integration:
 
 test-valkey:
 	@echo "Running real-Valkey quota tests (REQUIRE_VALKEY_TESTS=1: skip == fail)..."
-	REQUIRE_VALKEY_TESTS=1 $(PY) -m pytest tests/integration/quota -v --no-cov
+	REQUIRE_VALKEY_TESTS=1 $(PY) -m pytest tests/integration/quota tests/integration/test_classification_cache_valkey.py -v --no-cov
 
 # tests/e2e/ currently has no pytest tests (only the pre-existing Playwright
 # JS suite + scaffolding; the real pytest suite is on feature/e2e-suite, not
@@ -189,6 +221,12 @@ smoke-test:
 smoke-test-production: ## Live prod checks (network + real deployment required) -- not part of pre-commit
 	@echo "Running production smoke tests..."
 	@bash tests/smoke/test-production.sh
+
+smoke-test-classification: ## Live classification smoke (set CLASSIFICATION_SMOKE_ENDPOINT; skips without a deploy)
+	@$(PY) -m pytest tests/smoke/test_classification_smoke.py -v -s --no-cov -p no:cacheprovider
+
+loadtest-classification: ## Measure warm cache-miss p99 against a live classification service (prints the number)
+	@$(PY) scripts/classification-loadtest.py
 
 seed-mock-data:
 	@echo "No mock data seeding defined"

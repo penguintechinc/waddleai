@@ -1,0 +1,403 @@
+{
+ "texts": [
+  {
+   "name": "person",
+   "text": "My name is John Smith and I live here.",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 11,
+     "end": 21,
+     "score": 0.85,
+     "match": "John Smith"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "ssn",
+   "text": "SSN 123-45-6789 on file.",
+   "entities": [
+    {
+     "entity_type": "US_SSN",
+     "start": 4,
+     "end": 15,
+     "score": 0.85,
+     "match": "123-45-6789"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "email",
+   "text": "Mail me at jane.doe@example.com today.",
+   "entities": [
+    {
+     "entity_type": "EMAIL_ADDRESS",
+     "start": 11,
+     "end": 31,
+     "score": 1.0,
+     "match": "jane.doe@example.com"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "phone",
+   "text": "Call (555) 123-4567 now.",
+   "entities": [
+    {
+     "entity_type": "PHONE_NUMBER",
+     "start": 5,
+     "end": 19,
+     "score": 0.75,
+     "match": "(555) 123-4567"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "credit_card",
+   "text": "Card 4111 1111 1111 1111 expires soon.",
+   "entities": [
+    {
+     "entity_type": "CREDIT_CARD",
+     "start": 5,
+     "end": 24,
+     "score": 1.0,
+     "match": "4111 1111 1111 1111"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "location",
+   "text": "She flew to Paris last week.",
+   "entities": [
+    {
+     "entity_type": "LOCATION",
+     "start": 12,
+     "end": 17,
+     "score": 0.85,
+     "match": "Paris"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "org",
+   "text": "He works at Acme Corporation downtown.",
+   "entities": [
+    {
+     "entity_type": "ORG",
+     "start": 12,
+     "end": 28,
+     "score": 0.9,
+     "match": "Acme Corporation"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "nrp",
+   "text": "The Canadian delegation arrived.",
+   "entities": [
+    {
+     "entity_type": "NRP",
+     "start": 4,
+     "end": 12,
+     "score": 0.8,
+     "match": "Canadian"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "multi_entity",
+   "text": "Bob Lee (bob@x.io) lives in Berlin, SSN 987-65-4321.",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 0,
+     "end": 7,
+     "score": 0.9,
+     "match": "Bob Lee"
+    },
+    {
+     "entity_type": "EMAIL_ADDRESS",
+     "start": 9,
+     "end": 17,
+     "score": 0.95,
+     "match": "bob@x.io"
+    },
+    {
+     "entity_type": "LOCATION",
+     "start": 28,
+     "end": 34,
+     "score": 0.7,
+     "match": "Berlin"
+    },
+    {
+     "entity_type": "US_SSN",
+     "start": 40,
+     "end": 51,
+     "score": 0.9,
+     "match": "987-65-4321"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "unicode_emoji",
+   "text": "Héllo 😀 wörld — contact José García 🎉 at jose@exämple.com ok",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 24,
+     "end": 35,
+     "score": 0.88,
+     "match": "José García"
+    },
+    {
+     "entity_type": "EMAIL_ADDRESS",
+     "start": 41,
+     "end": 57,
+     "score": 0.9,
+     "match": "jose@exämple.com"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "cjk_and_combining",
+   "text": "日本語のテキスト 山田太郎 é Tokyo",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 9,
+     "end": 13,
+     "score": 0.8,
+     "match": "山田太郎"
+    },
+    {
+     "entity_type": "LOCATION",
+     "start": 17,
+     "end": 22,
+     "score": 0.8,
+     "match": "Tokyo"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "below_floor",
+   "text": "Token v1 here and Acme.",
+   "entities": [
+    {
+     "entity_type": "US_DRIVER_LICENSE",
+     "start": 6,
+     "end": 8,
+     "score": 0.3,
+     "match": "v1"
+    },
+    {
+     "entity_type": "ORG",
+     "start": 18,
+     "end": 22,
+     "score": 0.5,
+     "match": "Acme"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "floor_boundary",
+   "text": "Boundary Zed and Yan.",
+   "entities": [
+    {
+     "entity_type": "ORG",
+     "start": 9,
+     "end": 12,
+     "score": 0.6,
+     "match": "Zed"
+    },
+    {
+     "entity_type": "ORG",
+     "start": 17,
+     "end": 20,
+     "score": 0.59,
+     "match": "Yan"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "unknown_label",
+   "text": "Some FOO thing here.",
+   "entities": [
+    {
+     "entity_type": "FOO_BAR",
+     "start": 5,
+     "end": 8,
+     "score": 0.9,
+     "match": "FOO"
+    },
+    {
+     "entity_type": "FOO_BAR",
+     "start": 9,
+     "end": 14,
+     "score": 0.2,
+     "match": "thing"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "disabled_label",
+   "text": "Alice Wong at 10.0.0.1 visited.",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 0,
+     "end": 10,
+     "score": 0.9,
+     "match": "Alice Wong"
+    },
+    {
+     "entity_type": "IP_ADDRESS",
+     "start": 14,
+     "end": 22,
+     "score": 0.9,
+     "match": "10.0.0.1"
+    }
+   ],
+   "disabled": [
+    "IP_ADDRESS"
+   ]
+  },
+  {
+   "name": "confidence_cap_and_high",
+   "text": "IBAN GB82WEST12345698765432 ok.",
+   "entities": [
+    {
+     "entity_type": "IBAN_CODE",
+     "start": 5,
+     "end": 27,
+     "score": 1.0,
+     "match": "GB82WEST12345698765432"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "long_over_2000_truncated",
+   "text": "Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Filler sentence number one. Contact Alice Johnson at the end.",
+   "entities": [
+    {
+     "entity_type": "ORG",
+     "start": 0,
+     "end": 6,
+     "score": 0.9,
+     "match": "Filler"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "long_multibyte_entity_near_cut",
+   "text": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé John Smith tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail tail",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 1986,
+     "end": 1996,
+     "score": 0.9,
+     "match": "John Smith"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "empty",
+   "text": "",
+   "entities": [],
+   "disabled": []
+  },
+  {
+   "name": "no_pii",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "entities": [],
+   "disabled": []
+  },
+  {
+   "name": "duplicate_entity_double_emit_guard",
+   "text": "Reach Dana Fox or Dana Fox again.",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 6,
+     "end": 14,
+     "score": 0.9,
+     "match": "Dana Fox"
+    },
+    {
+     "entity_type": "PERSON",
+     "start": 6,
+     "end": 14,
+     "score": 0.9,
+     "match": "Dana Fox"
+    },
+    {
+     "entity_type": "PERSON",
+     "start": 18,
+     "end": 26,
+     "score": 0.9,
+     "match": "Dana Fox"
+    },
+    {
+     "entity_type": "PERSON",
+     "start": 6,
+     "end": 14,
+     "score": 0.9,
+     "match": "Dana Fox"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "entity_past_2000_window",
+   "text": "Alice Jones x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x Bob Brown tail",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 0,
+     "end": 11,
+     "score": 0.9,
+     "match": "Alice Jones"
+    },
+    {
+     "entity_type": "PERSON",
+     "start": 2012,
+     "end": 2021,
+     "score": 0.9,
+     "match": "Bob Brown"
+    }
+   ],
+   "disabled": []
+  },
+  {
+   "name": "entity_straddles_2000_boundary",
+   "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy Carol Danvers end",
+   "entities": [
+    {
+     "entity_type": "PERSON",
+     "start": 1996,
+     "end": 2009,
+     "score": 0.9,
+     "match": "Carol Danvers"
+    }
+   ],
+   "disabled": []
+  }
+ ]
+}

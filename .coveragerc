@@ -3,6 +3,7 @@ branch = True
 source =
     shared
     services/management/app
+    services/classification/app
 omit =
     */tests/*
     */test_*
@@ -15,6 +16,8 @@ omit =
     *_pb2.py
     *_pb2_grpc.py
     services/management/app/grpc/proto/*
+    # Generated gRPC stubs (committed in T2); drift-gated by the CI stub-drift check, not unit coverage.
+    services/classification/app/grpc_gen/*
     # 2026-08-21 coverage audit: 0 dedicated tests, 1229 lines -- deliberate
     # deferral, decide in Stage 1 whether to test or knowingly keep deferred.
     shared/utils/rag_integration.py

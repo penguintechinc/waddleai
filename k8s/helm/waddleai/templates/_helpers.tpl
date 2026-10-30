@@ -820,3 +820,71 @@ afterwards for readiness.
       cpu: "250m"
 {{- end }}
 {{- end }}
+
+{{/*
+Image name for the classification service (same digest/registry rules as proxy).
+*/}}
+{{- define "waddleai.classification.image" -}}
+{{- $i := .Values.classification.image -}}
+{{- if $i.digest }}
+{{- if .Values.global.imageRegistry }}
+{{- printf "%s/%s@%s" .Values.global.imageRegistry $i.repository $i.digest }}
+{{- else }}
+{{- printf "%s@%s" $i.repository $i.digest }}
+{{- end }}
+{{- else if .Values.global.imageRegistry }}
+{{- printf "%s/%s:%s" .Values.global.imageRegistry $i.repository $i.tag }}
+{{- else }}
+{{- printf "%s:%s" $i.repository $i.tag }}
+{{- end }}
+{{- end }}
+
+{{/*
+Name of the Secret holding the classification gRPC server cert/key.
+*/}}
+{{- define "waddleai.classification.tlsSecret" -}}
+{{- default (printf "%s-classification-tls" (include "waddleai.fullname" .)) .Values.classification.tls.secretName -}}
+{{- end }}
+
+{{/*
+Classification NER-cache HMAC key (min 32 bytes): explicit override wins, else
+reuse the live Secret's value (lookup) so upgrades never rotate it, else
+generate 64 random chars (first install / helm template).
+*/}}
+{{- define "waddleai.classificationHmacKey" -}}
+{{- if .Values.secrets.classificationNerCacheHmacKey -}}
+{{- .Values.secrets.classificationNerCacheHmacKey -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Values.namespace "waddleai-secrets" -}}
+{{- if and $existing (hasKey $existing.data "classification-ner-cache-hmac-key") -}}
+{{- index $existing.data "classification-ner-cache-hmac-key" | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 64 -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Classification JWT trust anchor, resolved ONCE (JSON: issuer, jwksUrl, jwksHost) and
+used for BOTH the JWT_ISSUER/JWKS_URL env and the Cilium JWKS egress FQDN, so the
+two can never diverge. Resolved ONLY from explicit classification.jwt.issuer/jwksUrl
+(or classification.jwt.host) -- NEVER from ingress.hosts/httproute.host, whose
+chart-wide defaults include a vendor domain. FAILS the render if unresolved -- there is
+deliberately NO vendor-domain default for a trust anchor. JWKS must be https.
+*/}}
+{{- define "waddleai.classification.jwt" -}}
+{{- $c := .Values.classification.jwt -}}
+{{- $host := $c.host -}}
+{{- $issuer := $c.issuer -}}
+{{- $jwks := $c.jwksUrl -}}
+{{- if and (not $issuer) $host -}}{{- $issuer = printf "https://%s" $host -}}{{- end -}}
+{{- if and (not $jwks) $host -}}{{- $jwks = printf "https://%s/.well-known/jwks.json" $host -}}{{- end -}}
+{{- if or (not $issuer) (not $jwks) -}}
+{{- fail "classification: JWT trust anchor is not configured -- set classification.jwt.issuer + classification.jwt.jwksUrl (or classification.jwt.host); there is no default and it is never derived from ingress/httproute hosts" -}}
+{{- end -}}
+{{- $u := urlParse $jwks -}}
+{{- if ne $u.scheme "https" -}}
+{{- fail (printf "classification: JWKS URL must be https, got %q" $jwks) -}}
+{{- end -}}
+{{- dict "issuer" $issuer "jwksUrl" $jwks "jwksHost" $u.hostname | toJson -}}
+{{- end }}

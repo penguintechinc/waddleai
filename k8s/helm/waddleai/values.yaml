@@ -309,6 +309,211 @@ proxy:
       #       app: waddleai-proxy
       allowedPodSelectors: []
 
+# Classification Service (PII-NER: Presidio + spaCy behind gRPC; services/classification)
+# Called by the proxy over gRPC (50051) via client-side LB across the pod set
+# (headless Service); /metrics + probes ride a normal ClusterIP on 8080.
+# SCALE WITH REPLICAS (replicaCount / HPA), NEVER hypercorn workers: the image
+# entrypoint runs `hypercorn ... --workers 0` and this chart deliberately never
+# overrides command/args -- `--workers 1` breaks the engine's ProcessPoolExecutor
+# and the pod never becomes ready. Per-pod NER parallelism = nerPoolWorkers.
+classification:
+  # OFF at the base: the JWT trust anchor has no safe default, so each env overlay
+  # enables the service AND supplies its issuer/JWKS (explicitly, or via the public
+  # host). Enabled with no trust anchor => the render FAILS (fail-closed).
+  enabled: false
+  replicaCount: 2
+  image:
+    repository: waddleai/classification
+    tag: latest
+    # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
+    pullPolicy: IfNotPresent
+
+  service:
+    httpPort: 8080
+    grpcPort: 50051
+
+  # Per-pod NER process-pool size; the RSS sizing below is for 2.
+  nerPoolWorkers: 2
+  # Redis/Valkey-backed result cache TTL (seconds). 0 disables the cache.
+  nerCacheTtlSeconds: 300
+
+  # MEASURED (T13a, en_core_web_lg, NER_POOL_WORKERS=2): ~1.8Gi steady RSS.
+  # Memory is NOT shrinkable per env (the model is the floor); CPU is tuned per env.
+  resources:
+    requests:
+      memory: "1.8Gi"
+      cpu: "500m"
+    limits:
+      memory: "2.2Gi"
+      cpu: "2000m"
+
+  # Image user is appuser (uid 10001, Dockerfile) -- not the chart-wide 1000.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL
+
+  # CPU-based HPA. A queue-depth custom metric (MAX_QUEUE_DEPTH saturation) is the
+  # better signal but needs a metrics adapter -- deferred.
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+  # Rendered only when the effective replica floor is > 1 (a singleton PDB with
+  # minAvailable: 1 would block every voluntary node drain).
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+  # Model load takes ~6-8s; startupProbe holds liveness off for up to
+  # failureThreshold*periodSeconds (30*5=150s) so k8s never kills a warming pod.
+  startupProbe:
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+  livenessProbe:
+    path: /livez
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    path: /readyz
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  terminationGracePeriodSeconds: 60
+
+  # Non-secret config. NEVER put secrets here -- see hmacKey / secrets below.
+  env:
+    LOG_LEVEL: INFO
+    NER_SPACY_MODEL: "en_core_web_lg"
+    WADDLEAI_NER_ALLOW_DOWNLOAD: "false"
+    LICENSE_SERVER_URL: "https://license.penguintech.io"
+
+  # Token verification (shared.auth.jwks_verifier). JWKS_URL MUST be https:
+  # management publishes /.well-known/jwks.json, so point at its public https host.
+  # Set issuer+jwksUrl explicitly, or `host` (derives https://<host> and
+  # https://<host>/.well-known/jwks.json). NEVER inherited from ingress.hosts /
+  # httproute.host (their defaults include a vendor domain); the render FAILS if
+  # unset. The same resolved JWKS host feeds the Cilium egress allow-list.
+  jwt:
+    host: ""
+    issuer: ""
+    audience: "waddleai-classification"
+    jwksUrl: ""
+
+  # Mutual-TLS caller allow-list (spiffe:// URIs). Non-empty turns on mTLS and
+  # REQUIRES a client CA (tls.clientCa). Empty = server-TLS + JWT only.
+  spiffeAllowedIds: []
+
+  # gRPC ONLY: the service ships just the OTLP gRPC exporters (no HTTP exporter in the
+  # hash-locked image), so the endpoint is the collector's gRPC port and the template
+  # fails the render for any other protocol.
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
+
+  # Valkey cache. Alpha/dev: empty redisUrl = the chart's own plaintext valkey
+  # Service. Real tiers (beta/gamma/prod): set redisUrlSecret so REDIS_URL comes
+  # from a Secret carrying the per-service `clsf:`-scoped ACL user + rediss:// TLS.
+  # The chart-managed waddleai-secrets key `classification-redis-url` is only a
+  # PLACEHOLDER (plaintext internal valkey) until ops provisions the ACL user and
+  # points secrets.classificationRedisUrl (or an external Secret) at it.
+  redisUrl: ""
+  redisUrlSecret:
+    secretName: ""
+    key: classification-redis-url
+
+  # Gate inputs. NER only runs when the PostHog flag `waddleai.pii_ner` AND the
+  # license entitlement `pii_ner_detection` are both on; without these the service is
+  # Ready but every Analyze returns GATE_DISABLED. WADDLEAI_PUBLIC_HOST (license
+  # domain bypass) is the resolved JWT-anchor host.
+  posthog:
+    host: "https://license.penguintech.io"
+  # Secret env vars (secretKeyRef only -- never plaintext values).
+  secretEnv:
+    - name: LICENSE_KEY
+      secretName: waddleai-secrets
+      key: license-key
+    - name: POSTHOG_KEY
+      secretName: waddleai-secrets
+      key: posthog-key
+      optional: true
+  # Dev-only flag override: WADDLEAI_FLAG_PII_NER=true bypasses PostHog (alpha only).
+  # flagOverridePiiNer: true
+
+  # Sleep before SIGTERM so endpoint removal propagates and in-flight routed calls
+  # settle (fewer UNAVAILABLE during a rollout). Must stay < terminationGracePeriodSeconds.
+  preStopSleepSeconds: 10
+
+  # HMAC key for the NER result cache (min 32 bytes) -- Secret ref only.
+  # waddleai-secrets key is generated-once by templates/secret.yaml
+  # (secrets.classificationNerCacheHmacKey to pin; or manage the Secret externally).
+  hmacKey:
+    secretName: waddleai-secrets
+    key: classification-ner-cache-hmac-key
+
+  # gRPC TLS. The pod FAIL-CLOSES (refuses to start) without cert+key unless
+  # allowInsecure (ALLOW_INSECURE_GRPC=1, dev ONLY -- alpha). Server cert/key come
+  # from a kubernetes.io/tls Secret mounted at /etc/waddleai/classification-tls.
+  tls:
+    enabled: true
+    allowInsecure: false
+    # Secret holding tls.crt/tls.key. Empty = <fullname>-classification-tls.
+    secretName: ""
+    # cert-manager issues that Secret (guarded by a live cert-manager.io/v1 check;
+    # without cert-manager, pre-create the Secret out-of-band).
+    certManager:
+      enabled: true
+      issuerRef:
+        name: waddleai-internal-ca
+        kind: ClusterIssuer
+      duration: "2160h"
+      renewBefore: "360h"
+    # Client CA bundle for mTLS (used only when spiffeAllowedIds is set).
+    # Ideal: a dedicated workload-cert CA secret (SPIFFE path); provisioning is a
+    # follow-up. Empty secretName = ca.crt from the server-cert Secret.
+    clientCa:
+      secretName: ""
+      key: ca.crt
+
+  # CiliumNetworkPolicy (default-deny comes from cilium.networkPolicy). Ingress is
+  # ONLY the proxy (50051) + Prometheus (8080); egress ONLY DNS, Valkey, and the
+  # allow-listed FQDNs / OTLP collector below.
+  cilium:
+    prometheus:
+      namespace: monitoring
+      selector:
+        app.kubernetes.io/name: prometheus
+    egress:
+      # License server (443). The JWKS host and the PostHog host are NOT listed here:
+      # they are derived from the resolved JWKS_URL (waddleai.classification.jwt
+      # helper) and classification.posthog.host so env and egress cannot diverge.
+      fqdns:
+        - license.penguintech.io
+      otlp:
+        namespace: monitoring
+        selector:
+          app.kubernetes.io/name: otel-collector
+        ports: [4317, 4318]
+
 # WebUI Service
 webui:
   enabled: true
@@ -744,6 +949,15 @@ secrets:
   # Set explicitly only to pin/restore a known value (e.g. disaster
   # recovery, or External Secrets Operator supplying it in beta/prod).
   credentialEncryptionKey: ""
+  # Classification NER result-cache HMAC key (min 32 bytes). Empty = generated
+  # once and kept stable across upgrades (waddleai.classificationHmacKey).
+  classificationNerCacheHmacKey: ""
+  # PostHog project key (classification feature-flag source). Empty = PostHog
+  # unconfigured -> flags default OFF (NER gate stays closed).
+  posthogKey: ""
+  # Classification REDIS_URL (see classification.redisUrlSecret). Empty = PLACEHOLDER
+  # plaintext internal valkey; ops sets a rediss:// URL with the clsf: ACL user.
+  classificationRedisUrl: ""
 
 # Alembic database migration Job (templates/migration-job.yaml) — runs
 # `alembic upgrade head` from the management image as a post-install,
@@ -1183,6 +1397,21 @@ tetragon:
         allowedExecs:
           - /opt/venv/bin/python3
           - /opt/venv/bin/hypercorn
+      # Classification — this repo's own image (services/classification/Dockerfile),
+      # venv at /opt/venv; entrypoint `sh -c exec hypercorn`; the spawn-context NER
+      # process pool re-execs sys.executable. Not yet verified on a live cluster:
+      # flip to observe first if a legitimate exec is killed.
+      classification:
+        enabled: true
+        mode: enforce
+        allowedExecs:
+          - /bin/sh
+          # preStop `sleep`
+          - /bin/sleep
+          - /usr/bin/sleep
+          - /opt/venv/bin/python3
+          - /opt/venv/bin/hypercorn
+          - /usr/local/bin/python3
       # Ollama — third-party vendor image (ollama/ollama). Binary path is
       # believed stable (/bin/ollama) but not verified against a live
       # cluster by this branch, and the model-pull initContainer execs

@@ -194,6 +194,8 @@ tetragon:
         mode: observe
       management:
         mode: observe
+      classification:
+        mode: observe
 
 admissionPolicies:
   failurePolicy: Ignore
@@ -206,3 +208,36 @@ admissionPolicies:
 # `warn` were already `restricted`; this raises `enforce` to match.
 podSecurityAdmission:
   enforce: restricted
+
+# Classification Service - Alpha
+# DEV ONLY: plaintext gRPC (ALLOW_INSECURE_GRPC=1). Local MicroK8s has no private
+# CA / cert-manager issuer, and the pod otherwise fail-closes. NEVER copy this to
+# beta/gamma/production -- those mount a cert-manager TLS Secret.
+classification:
+  enabled: true
+  jwt:
+    host: "waddleai.localhost.local"
+  # DEV ONLY: flag override so NER is testable without a live PostHog.
+  flagOverridePiiNer: true
+  replicaCount: 1
+  image:
+    tag: alpha-latest
+    pullPolicy: Always
+  tls:
+    enabled: false
+    allowInsecure: true
+  autoscaling:
+    enabled: false
+  # Memory is the measured floor (en_core_web_lg, pool=2); only CPU is trimmed.
+  resources:
+    requests:
+      memory: "1.8Gi"
+      cpu: "250m"
+    limits:
+      memory: "2.2Gi"
+      cpu: "1000m"
+  env:
+    LOG_LEVEL: DEBUG
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"

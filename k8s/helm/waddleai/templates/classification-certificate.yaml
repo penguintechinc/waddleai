@@ -1,0 +1,35 @@
+{{/*
+cert-manager Certificate for the classification gRPC server (tls.crt/tls.key/ca.crt
+in the Secret mounted by classification-deployment.yaml). Guarded by a live
+cert-manager.io/v1 check; on clusters without cert-manager, pre-create the Secret
+named by classification.tls.secretName out-of-band.
+*/}}
+{{- $c := .Values.classification -}}
+{{- if and $c.enabled $c.tls.enabled $c.tls.certManager.enabled (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
+{{- $fn := include "waddleai.fullname" . }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fn }}-classification
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+spec:
+  secretName: {{ include "waddleai.classification.tlsSecret" . }}
+  duration: {{ $c.tls.certManager.duration | quote }}
+  renewBefore: {{ $c.tls.certManager.renewBefore | quote }}
+  commonName: {{ $fn }}-classification
+  dnsNames:
+    - {{ $fn }}-classification
+    - {{ $fn }}-classification.{{ .Values.namespace }}
+    - {{ $fn }}-classification.{{ .Values.namespace }}.svc
+    - {{ $fn }}-classification.{{ .Values.namespace }}.svc.cluster.local
+    - "*.{{ $fn }}-classification.{{ .Values.namespace }}.svc.cluster.local"
+  usages:
+    - server auth
+  issuerRef:
+    name: {{ $c.tls.certManager.issuerRef.name }}
+    kind: {{ $c.tls.certManager.issuerRef.kind }}
+    group: cert-manager.io
+{{- end }}

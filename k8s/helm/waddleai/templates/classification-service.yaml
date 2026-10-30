@@ -1,0 +1,49 @@
+{{/*
+Two Services for the classification pods:
+  * headless (clusterIP: None) -- gRPC 50051 only; DNS returns every pod IP so the
+    proxy's client-side load balancer spreads calls across the pod set (a
+    ClusterIP would pin one long-lived HTTP/2 connection to a single pod).
+  * ClusterIP -- /metrics + probes on 8080 only; never carries gRPC.
+Neither is NodePort/LoadBalancer.
+*/}}
+{{- if .Values.classification.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waddleai.fullname" . }}-classification
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+spec:
+  clusterIP: None
+  # Pods that are not Ready must not be handed to the proxy.
+  publishNotReadyAddresses: false
+  ports:
+    - name: grpc
+      port: {{ .Values.classification.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "waddleai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waddleai.fullname" . }}-classification-metrics
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.classification.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "waddleai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+{{- end }}

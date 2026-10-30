@@ -1,0 +1,39 @@
+# Gamma Environment Values -- overlay on values.yaml (classification only for now;
+# the rest of the chart has no gamma overlay yet).
+environment: gamma
+
+global:
+  imageRegistry: ghcr.io/penguintechinc/waddleai
+  imagePullPolicy: Always
+  imagePullSecrets:
+    - name: ghcr-pull-secret
+
+# Classification Service - Gamma
+# gRPC TLS from a cert-manager-issued Secret (see classification.tls). CI-built
+# tag below is a placeholder until the first Gamma image is published.
+classification:
+  # REDIS_URL from a Secret (clsf: ACL user + rediss://); ops provisions the value.
+  redisUrlSecret:
+    secretName: waddleai-secrets
+    key: classification-redis-url
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
+  enabled: true
+  jwt:
+    issuer: "https://waddleai-gamma.penguintech.cloud"
+    jwksUrl: "https://waddleai-gamma.penguintech.cloud/.well-known/jwks.json"
+  replicaCount: 1
+  image:
+    repository: classification
+    tag: gamma-0000000000
+    pullPolicy: Always
+  autoscaling:
+    enabled: false
+  resources:
+    requests:
+      memory: "1.8Gi"
+      cpu: "250m"
+    limits:
+      memory: "2.2Gi"
+      cpu: "1000m"

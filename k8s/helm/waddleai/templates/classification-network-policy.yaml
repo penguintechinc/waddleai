@@ -1,0 +1,127 @@
+{{/*
+CiliumNetworkPolicy set for classification (NOT plain NetworkPolicy). The
+namespace default-deny comes from cilium-network-policy.yaml; these are the
+explicit allows:
+  ingress: ONLY the proxy pods -> 50051, and Prometheus -> 8080
+  egress : ONLY kube-dns, Valkey, allow-listed FQDNs (license/PostHog + the resolved JWKS host),
+           and the OTLP collector
+plus the mirror egress rule letting the proxy reach classification on 50051.
+Same guard as the rest of the Cilium bootstrap set.
+*/}}
+{{- if and .Values.classification.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") -}}
+{{- $ns := .Values.namespace }}
+{{- $c := .Values.classification }}
+{{- $t := .Values.cilium.topology }}
+{{- $jwt := include "waddleai.classification.jwt" . | fromJson }}
+{{- /* JWKS host is derived from the SAME resolved JWKS_URL the Deployment uses. */}}
+{{- $fqdns := concat (list $jwt.jwksHost (urlParse $c.posthog.host).hostname) $c.cilium.egress.fqdns | uniq }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-classification-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "waddleai.name" . }}
+      app.kubernetes.io/component: classification
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.aiproxy | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $c.service.grpcPort | quote }}
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            {{- range $k, $v := $c.cilium.prometheus.selector }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+            "k8s:io.kubernetes.pod.namespace": {{ $c.cilium.prometheus.namespace | quote }}
+      toPorts:
+        - ports:
+            - port: {{ $c.service.httpPort | quote }}
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-classification-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "waddleai.name" . }}
+      app.kubernetes.io/component: classification
+  egress:
+    # DNS (required for toFQDNs; the dns rule feeds Cilium's FQDN cache).
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            "k8s-app": kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.valkey | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.valkeyPort | quote }}
+              protocol: TCP
+    - toFQDNs:
+        {{- range $fqdns }}
+        - matchName: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            {{- range $k, $v := $c.cilium.egress.otlp.selector }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+            "k8s:io.kubernetes.pod.namespace": {{ $c.cilium.egress.otlp.namespace | quote }}
+      toPorts:
+        - ports:
+            {{- range $c.cilium.egress.otlp.ports }}
+            - port: {{ . | quote }}
+              protocol: TCP
+            {{- end }}
+---
+# Proxy-side half of the same flow: default-deny egress means the proxy needs an
+# explicit rule to reach classification gRPC.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-proxy-to-classification-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $t.selectors.aiproxy | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: {{ include "waddleai.name" . }}
+            app.kubernetes.io/component: classification
+      toPorts:
+        - ports:
+            - port: {{ $c.service.grpcPort | quote }}
+              protocol: TCP
+{{- end }}

@@ -336,3 +336,32 @@ monitoring:
   enabled: true
   extraLabels:
     release: kube-prometheus-stack
+
+# Classification Service - Beta
+# gRPC TLS from a cert-manager-issued Secret (see classification.tls). CI-built
+# tag below is a placeholder until the first Beta image is published.
+classification:
+  # REDIS_URL from a Secret (clsf: ACL user + rediss://); ops provisions the value.
+  redisUrlSecret:
+    secretName: waddleai-secrets
+    key: classification-redis-url
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
+  enabled: true
+  jwt:
+    host: "waddleai.penguintech.cloud"
+  replicaCount: 1
+  image:
+    repository: classification
+    tag: beta-0000000000
+    pullPolicy: Always
+  autoscaling:
+    enabled: false
+  resources:
+    requests:
+      memory: "1.8Gi"
+      cpu: "250m"
+    limits:
+      memory: "2.2Gi"
+      cpu: "1000m"

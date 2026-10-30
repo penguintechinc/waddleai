@@ -1,0 +1,25 @@
+{{/*
+PodDisruptionBudget (minAvailable: 1) for classification. Rendered only when the
+effective replica floor is > 1 -- a singleton with minAvailable: 1 would block
+every voluntary node drain (same guard as proxy-pdb.yaml).
+*/}}
+{{- $effectiveMin := .Values.classification.replicaCount -}}
+{{- if .Values.classification.autoscaling.enabled -}}
+{{- $effectiveMin = .Values.classification.autoscaling.minReplicas -}}
+{{- end -}}
+{{- if and .Values.classification.enabled .Values.classification.pdb.enabled (gt (int $effectiveMin) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "waddleai.fullname" . }}-classification
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+spec:
+  minAvailable: {{ .Values.classification.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: classification
+{{- end }}

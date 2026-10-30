@@ -1,0 +1,48 @@
+# Production Environment Values -- overlay on values.yaml (classification only for
+# now; the rest of the chart has no production overlay yet).
+environment: production
+
+global:
+  imageRegistry: ghcr.io/penguintechinc/waddleai
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets:
+    - name: ghcr-pull-secret
+
+# Classification Service - Production
+# Image pinned by SHA256 digest (house rule). The digest below is a PLACEHOLDER
+# that the release pipeline MUST replace -- an all-zero digest never resolves, so
+# an unreplaced value fails loudly at image pull rather than running unpinned.
+classification:
+  # REDIS_URL from a Secret (clsf: ACL user + rediss://); ops provisions the value.
+  redisUrlSecret:
+    secretName: waddleai-secrets
+    key: classification-redis-url
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
+  enabled: true
+  # Trust anchor intentionally NOT set: operator MUST supply classification.jwt.issuer
+  # + classification.jwt.jwksUrl (https) -- the render fails until they do.
+  replicaCount: 3
+  image:
+    repository: classification
+    tag: ""
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    pullPolicy: IfNotPresent
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests:
+      memory: "1.8Gi"
+      cpu: "1000m"
+    limits:
+      memory: "2.2Gi"
+      cpu: "2000m"
+  env:
+    LOG_LEVEL: WARNING

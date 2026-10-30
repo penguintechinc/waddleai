@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-import httpx
+import httpx2
 import pytest
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 
@@ -102,7 +102,7 @@ def _endpoint(namespace: str = "elder") -> GatewayEndpointConfig:
 def _oauth2_factory(server: MockOAuth2Server):
     def factory(**kwargs):
         return AsyncOAuth2Client(
-            transport=httpx.ASGITransport(app=server), base_url="http://oauth.test", **kwargs
+            transport=httpx2.ASGITransport(app=server), base_url="http://oauth.test", **kwargs
         )
 
     return factory

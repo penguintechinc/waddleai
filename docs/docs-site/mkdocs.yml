@@ -56,6 +56,7 @@ nav:
     - Service Level Objectives: operations/SLOS.md
   - Deployment:
     - Kubernetes: deployment/kubernetes.md
+    - Classification Service: deployment/classification-service.md
     - Production Checklist: deployment/production-checklist.md
   - Integrations:
     - Claude Code: integrations/claude-code.md
