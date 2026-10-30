@@ -1,0 +1,168 @@
+{
+ "openai": {
+  "body": {
+   "id": "chatcmpl-1",
+   "object": "chat.completion",
+   "created": 1700000000,
+   "model": "gpt-4o",
+   "choices": [
+    {
+     "index": 0,
+     "message": {
+      "role": "assistant",
+      "content": "Rust is a systems programming language focused on safety."
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 9,
+    "total_tokens": 14
+   }
+  },
+  "frames": [
+   "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+   "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Rust is a systems progra\"},\"finish_reason\":null}]}\n\n",
+   "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"mming language focused o\"},\"finish_reason\":null}]}\n\n",
+   "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"n safety.\"},\"finish_reason\":null}]}\n\n",
+   "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":9,\"total_tokens\":14}}\n\n",
+   "data: [DONE]\n\n"
+  ]
+ },
+ "anthropic": {
+  "body": {
+   "id": "msg_1",
+   "type": "message",
+   "role": "assistant",
+   "model": "claude-3",
+   "content": [
+    {
+     "type": "text",
+     "text": "Hello from a cached reply that is long enough to chunk."
+    },
+    {
+     "type": "tool_use",
+     "id": "tu_1",
+     "name": "lookup",
+     "input": {
+      "city": "Paris",
+      "units": "metric"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "usage": {
+    "input_tokens": 11,
+    "output_tokens": 22
+   }
+  },
+  "frames": [
+   "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":11,\"output_tokens\":0}}}\n\n",
+   "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+   "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello from a cached repl\"}}\n\n",
+   "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"y that is long enough to\"}}\n\n",
+   "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" chunk.\"}}\n\n",
+   "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+   "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n",
+   "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Paris\\\",\\\"units\\\":\"}}\n\n",
+   "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"metric\\\"}\"}}\n\n",
+   "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+   "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":11,\"output_tokens\":22}}\n\n",
+   "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]
+ },
+ "payload": "{\"response\":{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Rust is a systems programming language focused on safety.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":9,\"total_tokens\":14}},\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":9,\"total_tokens\":14},\"stored_at\":0.0}",
+ "cases": [
+  {
+   "parts": {
+    "org_id": 7,
+    "model_class": "gpt-4o::openai",
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is Rust?"
+     }
+    ],
+    "tools": null,
+    "temperature": 0.0,
+    "top_p": null,
+    "max_tokens": null
+   },
+   "sha256": "c42b77ea52b01dc14acf39e1ade5f9043eb3a394eb1ab9b359defed4eb32a485"
+  },
+  {
+   "parts": {
+    "org_id": 7,
+    "model_class": "gpt-4o::anthropic",
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is Rust?"
+     }
+    ],
+    "tools": null,
+    "temperature": 0.0,
+    "top_p": null,
+    "max_tokens": null
+   },
+   "sha256": "babbab9dd4867cc79c4db4f36c0d428c9d7105037cfcb7ab141c18338064c2b7"
+  },
+  {
+   "parts": {
+    "org_id": 42,
+    "model_class": "claude-3::anthropic",
+    "messages": [
+     {
+      "role": "system",
+      "content": "é日本\u0001\"/"
+     },
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "f",
+       "parameters": {
+        "z": 1,
+        "a": [
+         1.5,
+         1e-05,
+         1e+22,
+         100000.0,
+         2
+        ]
+       }
+      }
+     }
+    ],
+    "temperature": 0.0,
+    "top_p": 0.9,
+    "max_tokens": 256
+   },
+   "sha256": "ff341158153a29992d51182cd3697bb30d4535227919a5d95359cb3888fcb16b"
+  },
+  {
+   "parts": {
+    "org_id": 1,
+    "model_class": "m::openai",
+    "messages": [],
+    "tools": null,
+    "temperature": 0.0,
+    "top_p": 1,
+    "max_tokens": null
+   },
+   "sha256": "ea83d1cd60d9547dd31d0f83065429ab244b58ed44d9c9217addda26292c0a51"
+  }
+ ]
+}

@@ -1,0 +1,33 @@
+[package]
+name = "respcache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaddleAI response cache: exact (Valkey) + semantic (pgvector table) layers, singleflight, SSE replay, CacheStage"
+
+[dependencies]
+auth = { path = "../auth", version = "=0.1.0" }
+cache = { path = "../cache", version = "=0.1.0" }
+pipeline = { path = "../pipeline", version = "=0.1.0" }
+telemetry = { path = "../telemetry", version = "=0.1.0" }
+async-trait = "=0.1.92"
+bytes = "=1.12.1"
+futures-core = "=0.3.34"
+futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
+redis = { version = "=1.7.0", default-features = false, features = ["tokio-comp", "aio"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json"] }
+sea-orm = { version = "=2.0.4", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-json", "with-chrono"] }
+db = { path = "../db", version = "=0.1.0" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", features = ["time", "sync", "rt"] }
+tracing = "=0.1.44"
+uuid = { version = "=1.29.0", features = ["v4"] }
+
+[dev-dependencies]
+quota = { path = "../quota", version = "=0.1.0" }
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry", "std"] }

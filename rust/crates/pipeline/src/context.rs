@@ -131,13 +131,50 @@ pub enum CacheStatus {
     Miss,
 }
 
+/// Commits a dispatched response into the response cache. Implemented by the cache crate and
+/// invoked by the caller only after the whole pipeline (incl. output filtering) passed clean.
+#[async_trait::async_trait]
+pub trait WriteBackSink: Send + Sync {
+    /// Stores `response` (client-facing body) and its `usage`; never fails the request.
+    async fn commit(&self, response: &Value, usage: &Value);
+}
+
 /// A response pending write into the response cache after dispatch.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub struct WriteBack {
     /// Cache key.
     pub key: String,
     /// Time-to-live in seconds, when bounded.
     pub ttl_secs: Option<u64>,
+    /// Commit handle; `None` for a data-only write-back.
+    pub sink: Option<std::sync::Arc<dyn WriteBackSink>>,
+}
+
+impl WriteBack {
+    /// Commits through the sink (no-op without one). Callers gate this on a clean pipeline.
+    pub async fn commit(&self, response: &Value, usage: &Value) {
+        if let Some(sink) = &self.sink {
+            sink.commit(response, usage).await;
+        }
+    }
+}
+
+impl std::fmt::Debug for WriteBack {
+    /// Key and ttl only; the sink is opaque.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteBack")
+            .field("key", &self.key)
+            .field("ttl_secs", &self.ttl_secs)
+            .field("has_sink", &self.sink.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for WriteBack {
+    /// Equality over the data fields; sinks are identity-less trait objects.
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.ttl_secs == other.ttl_secs
+    }
 }
 
 /// Request-scoped placeholder-to-original map (P3 seam; empty in P2).

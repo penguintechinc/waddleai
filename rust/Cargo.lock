@@ -593,6 +593,8 @@ dependencies = [
  "config",
  "futures-util",
  "redis",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "tracing",
@@ -2486,6 +2488,33 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "respcache"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "auth",
+ "bytes",
+ "cache",
+ "db",
+ "futures-core",
+ "futures-util",
+ "pipeline",
+ "quota",
+ "redis",
+ "reqwest",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "telemetry",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

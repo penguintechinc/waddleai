@@ -15,7 +15,7 @@ pub mod stages;
 pub use budget::{KeyLimits, VkeyBudget};
 pub use context::{
     AbortSnapshot, AuthMode, CacheStatus, Extensions, PipelineContext, PseudonymMap, QuotaGuard,
-    QuotaReservation, ResponseFormat, Usage, WriteBack,
+    QuotaReservation, ResponseFormat, Usage, WriteBack, WriteBackSink,
 };
 pub use driver::ProxyPipeline;
 pub use flags::{FlagResolver, PosthogFlagResolver, StaticFlagResolver};
