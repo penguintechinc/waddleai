@@ -2794,7 +2794,7 @@
      "custom_regex",
      "both",
      "(unclosed",
-     "block"
+     "redact"
     ]
    ],
    "disabled": [],
@@ -2815,7 +2815,7 @@
      "custom_regex",
      "both",
      "(unclosed",
-     "block"
+     "redact"
     ]
    ],
    "disabled": [],

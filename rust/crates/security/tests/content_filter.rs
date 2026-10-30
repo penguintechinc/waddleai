@@ -148,6 +148,30 @@ fn plain(source: Arc<FakeSource>) -> ContentFilter {
 
 // ---------- tier 1 / parity ----------
 
+/// Removes `[REDACTED:...]` placeholders.
+fn strip_placeholders(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find("[REDACTED:") {
+        out.push_str(&rest[..i]);
+        match rest[i..].find(']') {
+            Some(j) => rest = &rest[i + j + 1..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// True when the literal text left in `rust_out` is a subsequence of what `py_out` leaves.
+fn is_superset_redaction(rust_out: &str, py_out: &str) -> bool {
+    let (r, p) = (strip_placeholders(rust_out), strip_placeholders(py_out));
+    let mut it = p.chars();
+    r.chars().all(|c| it.any(|x| x == c))
+}
+
 #[tokio::test]
 async fn builtin_patterns_parity_with_python_corpus() {
     let c = corpus();
@@ -161,7 +185,7 @@ async fn builtin_patterns_parity_with_python_corpus() {
         );
     }
 
-    let (mut rows, mut detect_rows) = (0usize, 0usize);
+    let (mut rows, mut detect_rows, mut diverged) = (0usize, 0usize, 0usize);
     let mut covered = std::collections::HashSet::new();
     for case in &c.cases {
         let cfg = RawOrgConfig {
@@ -184,10 +208,21 @@ async fn builtin_patterns_parity_with_python_corpus() {
         let ctx = format!("case kind={} phase={}", case.kind, case.phase);
         assert_eq!(got.action.as_str(), case.expected.action, "{ctx}: action");
         assert_eq!(got.allowed, case.expected.allowed, "{ctx}: allowed");
-        assert_eq!(
-            got.filtered_text, case.expected.filtered_text,
-            "{ctx}: redaction bytes"
-        );
+        if got.filtered_text != case.expected.filtered_text {
+            // Intentional SAFER-than-Python divergence (union-merged overlaps): Rust must redact a
+            // superset of what Python redacts, never less.
+            assert!(
+                is_superset_redaction(&got.filtered_text, &case.expected.filtered_text),
+                "{ctx}: Rust redacted LESS than Python: {:?} vs {:?}",
+                got.filtered_text,
+                case.expected.filtered_text
+            );
+            diverged += 1;
+            println!(
+                "safer-divergence row: kind={} phase={}",
+                case.kind, case.phase
+            );
+        }
         let got_v: Vec<(String, &str, &str, f64)> = got
             .violations
             .iter()
@@ -224,10 +259,14 @@ async fn builtin_patterns_parity_with_python_corpus() {
         }
     }
     println!(
-        "parity rows={rows} builtin_detect_rows={detect_rows} patterns_covered={}/23",
+        "parity rows={rows} builtin_detect_rows={detect_rows} safer_divergence_rows={diverged} patterns_covered={}/23",
         covered.len()
     );
     assert!(rows >= 100, "zero/low denominator is a FAIL (rows={rows})");
+    assert!(
+        diverged <= 4,
+        "overlap divergence must stay rare, got {diverged}"
+    );
     assert_eq!(
         covered.len(),
         23,
@@ -716,8 +755,8 @@ async fn zero_org_is_global_and_unknown_rule_types_are_ignored() {
         rules: vec![
             rule(1, "g", "custom_string", "both", "globalword", "block"),
             rule(2, "x", "mystery", "both", "anything", "block"),
-            rule(3, "bad", "custom_regex", "both", "(unclosed", "block"),
-            rule(4, "empty", "custom_string", "both", "", "block"),
+            rule(3, "bad", "custom_regex", "both", "(unclosed", "redact"),
+            rule(4, "empty", "custom_string", "both", "", "redact"),
             rule(5, "out", "custom_string", "output", "outonly", "block"),
         ],
         disabled_builtins: vec![],
@@ -934,4 +973,85 @@ async fn unicode_case_needle_redacts_the_correct_span() {
         .filter_input("ßß Straße STRASSE", None, Some(1), None)
         .await;
     assert_eq!(r.filtered_text, "ßß [REDACTED:ST] STRASSE");
+}
+
+#[tokio::test]
+async fn partial_overlap_never_leaks_either_span() {
+    let f = plain(FakeSource::with(Some(1), RawOrgConfig::default()));
+    // email claims `y@foo.com`, the wider password span overlaps it: union, nothing survives.
+    let r = f
+        .filter_input("password=zz$y@foo.com", None, Some(1), None)
+        .await;
+    assert!(!r.filtered_text.contains("zz$"), "{}", r.filtered_text);
+    assert!(
+        !r.filtered_text.contains("y@foo.com"),
+        "{}",
+        r.filtered_text
+    );
+    assert!(!r.filtered_text.contains("foo"), "{}", r.filtered_text);
+    assert_eq!(
+        r.filtered_text.matches("[REDACTED:").count(),
+        1,
+        "one label per merged span"
+    );
+
+    // 3-way chain overlap: r1 abcd, r2 cdefg, r3 fghij -> one merged span over abcdefghij.
+    let cfg = RawOrgConfig {
+        rules: vec![
+            rule(1, "r1", "custom_regex", "both", "abcd", "redact"),
+            rule(2, "r2", "custom_regex", "both", "cdefg", "redact"),
+            rule(3, "r3", "custom_regex", "both", "fghij", "redact"),
+        ],
+        disabled_builtins: vec![],
+    };
+    let f = plain(FakeSource::with(Some(1), cfg));
+    let r = f.filter_input("x abcdefghij y", None, Some(1), None).await;
+    assert_eq!(r.filtered_text, "x [REDACTED:R1] y");
+}
+
+#[tokio::test]
+async fn propagation_is_linear_on_long_match() {
+    let text = format!("{}@a.aa", "a".repeat(100_000));
+    let f = plain(FakeSource::with(Some(1), RawOrgConfig::default()));
+    let start = std::time::Instant::now();
+    let r = f.filter_input(&text, None, Some(1), None).await;
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(3),
+        "elapsed {:?}",
+        start.elapsed()
+    );
+    assert!(
+        !r.filtered_text.contains("aaaa"),
+        "matched span must still be redacted"
+    );
+    assert!(!r.degraded);
+}
+
+#[tokio::test]
+async fn uncompilable_block_rule_fails_closed_at_load() {
+    // Oversize pattern: exceeds the regex size limit, so it cannot compile.
+    let huge = format!("(?:{})", "a{1000}".repeat(2000));
+    for pat in ["(unclosed".to_string(), huge] {
+        let cfg = RawOrgConfig {
+            rules: vec![rule(1, "deny", "custom_regex", "both", &pat, "block")],
+            disabled_builtins: vec![],
+        };
+        let src = FakeSource::with(Some(1), cfg);
+        let modes = FailModes::new(FailMode::Open).with_org(2, FailMode::Closed);
+        let f = filter_with(src, None, modes);
+        // Blocked + degraded even under fail-open: a broken BLOCK rule is never silently dropped.
+        let r = f.filter_input("hello", None, Some(1), None).await;
+        assert!(r.degraded && !r.allowed, "pattern {:?}", &pat[..9]);
+    }
+    // Same for an empty BLOCK pattern, and Closed orgs obviously block.
+    let cfg = RawOrgConfig {
+        rules: vec![rule(1, "deny", "custom_string", "both", "", "block")],
+        disabled_builtins: vec![],
+    };
+    let src = FakeSource::with(Some(2), cfg);
+    let modes = FailModes::new(FailMode::Open).with_org(2, FailMode::Closed);
+    let r = filter_with(src, None, modes)
+        .filter_input("hello", None, Some(2), None)
+        .await;
+    assert!(r.degraded && !r.allowed);
 }

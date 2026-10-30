@@ -72,10 +72,12 @@ pub struct OrgConfig {
 }
 
 impl OrgConfig {
-    /// Compiles a raw config; invalid or empty patterns are skipped with a warning (rule id only).
+    /// Compiles a raw config; invalid or empty non-block patterns are skipped with a warning (rule
+    /// id only, Python parity). A BLOCK rule that cannot compile is kept as `Broken` and fails closed.
     pub fn compile(raw: RawOrgConfig) -> Self {
         let mut rules = Vec::with_capacity(raw.rules.len());
         for rule in raw.rules {
+            let is_block = rule.action == "block";
             let matcher = match rule.rule_type.as_str() {
                 "custom_string" if !rule.pattern.is_empty() => {
                     match regex::Regex::new(&format!("(?i){}", regex::escape(&rule.pattern))) {
@@ -89,6 +91,13 @@ impl OrgConfig {
                 "custom_regex" if !rule.pattern.is_empty() => {
                     match crate::content_filter::build_regex(&rule.pattern) {
                         Ok(re) => Matcher::Pattern(re),
+                        Err(_) if is_block => {
+                            tracing::error!(
+                                rule_id = rule.id,
+                                "uncompilable BLOCK regex; rule fails closed at use"
+                            );
+                            Matcher::Broken
+                        }
                         Err(_) => {
                             tracing::warn!(
                                 rule_id = rule.id,
@@ -97,6 +106,13 @@ impl OrgConfig {
                             continue;
                         }
                     }
+                }
+                "custom_string" | "custom_regex" if is_block => {
+                    tracing::error!(
+                        rule_id = rule.id,
+                        "empty BLOCK pattern; rule fails closed at use"
+                    );
+                    Matcher::Broken
                 }
                 "custom_string" | "custom_regex" => {
                     tracing::warn!(

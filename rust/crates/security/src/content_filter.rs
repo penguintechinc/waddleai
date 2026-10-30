@@ -530,71 +530,56 @@ fn decide(text: &str, hits: &[Hit]) -> Option<(FilterAction, String)> {
     Some((FilterAction::Log, text.to_owned()))
 }
 
-/// Case-insensitive (per-char simple fold) non-overlapping occurrences of `needle` in `text`,
-/// as byte spans of `text`. No regex, no offset math on a re-cased copy, cannot fail.
+/// Longest matched text (bytes) whose other occurrences are searched; longer matches are
+/// redacted by their own recorded span only.
+const PROPAGATE_MAX_NEEDLE: usize = 256;
+
+/// Case-insensitive non-overlapping occurrences of `needle` in `text` as byte spans, using a
+/// linear-time escaped-literal regex. Empty on any failure: every match's own span is redacted
+/// regardless, so this is a parity extra, never a safety dependency.
 fn occurrences(text: &str, needle: &str) -> Vec<(usize, usize)> {
-    let n: Vec<char> = needle.chars().collect();
-    let mut out = Vec::new();
-    if n.is_empty() {
-        return out;
+    if needle.is_empty() || needle.len() > PROPAGATE_MAX_NEEDLE {
+        return Vec::new();
     }
-    let fold_eq = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
-    let mut skip_to = 0usize;
-    for (i, _) in text.char_indices() {
-        if i < skip_to {
-            continue;
-        }
-        let mut it = text[i..].char_indices();
-        let mut end = i;
-        let mut ok = true;
-        for &nc in &n {
-            match it.next() {
-                Some((o, tc)) if fold_eq(tc, nc) => end = i + o + tc.len_utf8(),
-                _ => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if ok {
-            out.push((i, end));
-            skip_to = end;
-        }
+    match regex::Regex::new(&format!("(?i){}", regex::escape(needle))) {
+        Ok(re) => re.find_iter(text).map(|m| (m.start(), m.end())).collect(),
+        Err(_) => Vec::new(),
     }
-    out
 }
 
 /// Distinct matched texts for which other occurrences are searched (parity extra; bounded so
 /// a flood of matches cannot go quadratic -- every match's own span is always redacted).
 const PROPAGATE_CAP: usize = 64;
 
-/// `_apply_redactions` by span: every redact hit's recorded spans (plus, for a bounded number of
-/// distinct texts, other case-insensitive occurrences as Python's re-sub does) are claimed in hit
-/// order; a span overlapping an earlier claim is dropped (Python's sequential substitution
-/// likewise no longer finds a broken match). Claims are replaced right-to-left on the original
-/// text. `None` if a span is unusable.
+/// `_apply_redactions` by span, union-merged: every byte covered by ANY redact hit's recorded
+/// spans (plus, for a bounded number of short distinct texts, other case-insensitive occurrences
+/// as Python's re-sub does) is redacted. Overlapping spans merge into their union, labelled by
+/// the earliest hit. This is intentionally safer than Python, which leaves a fragment when a
+/// later wider match overlaps an earlier substitution. `None` if a span is unusable.
 fn apply_redactions(text: &str, redacts: &[&Hit]) -> Option<String> {
-    use std::collections::{BTreeMap, HashSet};
-    let mut claimed: BTreeMap<usize, (usize, usize)> = BTreeMap::new(); // start -> (end, label idx)
+    use std::collections::HashSet;
+    let mut all: Vec<(usize, usize, usize)> = Vec::new(); // (start, end, label hit index)
     let mut propagated: HashSet<String> = HashSet::new();
     for (idx, h) in redacts.iter().enumerate() {
         let (s, e) = h.span;
         let own = text.get(s..e).filter(|t| !t.is_empty())?;
-        let mut spans = vec![(s, e)];
-        spans.extend(h.extra.iter().copied());
+        all.push((s, e, idx));
+        all.extend(h.extra.iter().map(|&(s, e)| (s, e, idx)));
         if propagated.len() < PROPAGATE_CAP && propagated.insert(own.to_lowercase()) {
-            spans.extend(occurrences(text, own));
-        }
-        for (s, e) in spans {
-            // Claims are disjoint, so only the nearest claim starting before `e` can overlap.
-            let overlaps = claimed.range(..e).next_back().is_some_and(|(_, c)| c.0 > s);
-            if !overlaps {
-                claimed.insert(s, (e, idx));
-            }
+            all.extend(occurrences(text, own).into_iter().map(|(s, e)| (s, e, idx)));
         }
     }
-    let merged: Vec<(usize, usize, usize)> =
-        claimed.into_iter().map(|(s, (e, i))| (s, e, i)).collect();
+    all.sort_unstable();
+    let mut merged: Vec<(usize, usize, usize)> = Vec::new();
+    for (s, e, idx) in all {
+        match merged.last_mut() {
+            Some(l) if s < l.1 => {
+                l.1 = l.1.max(e);
+                l.2 = l.2.min(idx);
+            }
+            _ => merged.push((s, e, idx)),
+        }
+    }
     let mut out = text.to_owned();
     for (s, e, idx) in merged.into_iter().rev() {
         if !text.is_char_boundary(s) || !text.is_char_boundary(e) {

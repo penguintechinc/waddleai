@@ -12,6 +12,8 @@ Needs the repo venv (`make venv`); run from anywhere.
 import asyncio
 import json
 import logging
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -95,7 +97,7 @@ CUSTOM_CASES = [
     },
     {
         "name": "invalid_regex_skipped",
-        "rules": [("bad", "custom_regex", "both", "(unclosed", "block")],
+        "rules": [("bad", "custom_regex", "both", "(unclosed", "redact")],
         "texts": ["anything (unclosed here"],
     },
     {
@@ -224,7 +226,15 @@ def builtins_rs(corpus):
             sys.exit(f"pattern {b['name']} cannot be rendered as a Rust raw string")
         out.append(f'    ("{b["name"]}", r####"{b["pattern"]}"####, {b["confidence"]!r}),')
     out.append("];")
-    return "\n".join(out) + "\n"
+    src = "\n".join(out) + "\n"
+    # Match `cargo fmt` so the committed file is stable and --check is meaningful.
+    return subprocess.run(  # noqa: S603 -- fixed argv, generated source on stdin
+        [shutil.which("rustfmt") or "rustfmt", "--edition", "2021", "--emit", "stdout"],
+        input=src,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
 
 
 def main():
