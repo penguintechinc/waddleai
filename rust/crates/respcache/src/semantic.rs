@@ -112,7 +112,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 
 /// Normalized-prompt key for in-process embedding de-dup (whitespace/case only, hashed so the
 /// prompt text never becomes a map key or log field).
-fn embed_dedup_key(text: &str) -> String {
+pub(crate) fn embed_dedup_key(text: &str) -> String {
     let normalized = text
         .trim()
         .to_lowercase()

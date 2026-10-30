@@ -23,8 +23,8 @@ use serde_json::Value;
 use crate::affinity::AffinityStore;
 use crate::config::ConfigSource;
 use crate::exact::{
-    is_cacheable_response, is_exact_eligible, py_float, py_truthy, CachedResponse, ExactStore,
-    PutLimits,
+    has_unkeyed_shaping, is_cacheable_response, is_exact_eligible, py_float, py_truthy,
+    CachedResponse, ExactStore, PutLimits,
 };
 use crate::metrics::CacheMetrics;
 use crate::semantic::{is_semantic_eligible, CtxFlags, SemanticCache};
@@ -197,6 +197,11 @@ impl ResponseCache {
         };
         let vkey_id = req.vkey_id;
         let body = req.body;
+        if has_unkeyed_shaping(body) {
+            // Neither read nor write: the key cannot distinguish this request (see exact.rs).
+            tracing::debug!("response cache skipped: request carries fields the key omits");
+            return LookupResult::miss();
+        }
         let messages = req.messages;
         let model_class = format!("{}::{}", req.model, format_name(req.format));
         let cfg = match self.config.resolve(org_id, vkey_id).await {
@@ -335,8 +340,16 @@ impl ResponseCache {
                                 write_back: None,
                             };
                         }
-                        let lease_key =
-                            cache::keys::semantic_lease(org_id, &model_class, &context_hash);
+                        // Python keys this flight on (org, model_class, context_hash) only, which
+                        // excludes the query: two different concurrent questions would collapse and
+                        // a follower would be handed the leader's answer. Add the normalized-query
+                        // digest so only identical queries share a flight/lease.
+                        let lease_key = format!(
+                            "{}:{}",
+                            cache::keys::semantic_lease(org_id, &model_class, &context_hash),
+                            crate::semantic::embed_dedup_key(text)
+                                .trim_start_matches("semantic:embed:")
+                        );
                         let guard = guard_miss(
                             MissGuardInput {
                                 cache_key: &lease_key,

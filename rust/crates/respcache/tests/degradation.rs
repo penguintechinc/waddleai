@@ -455,3 +455,97 @@ fn store_error_wraps_driver_errors_without_content() {
     assert!(d.0.contains("pool closed"));
     assert_eq!(StoreError("x".into()).to_string(), "cache backend error: x");
 }
+
+#[tokio::test]
+async fn different_concurrent_semantic_queries_never_receive_each_others_response() {
+    // regression: security review -- Python's semantic flight key omits the query, so a follower
+    // for a DIFFERENT question would be handed the leader's answer (cross-user leak).
+    let emb = FakeEmbedder::with(&[
+        ("What is Rust?", vec![1.0, 0.0]),
+        ("What is Go?", vec![0.0, 1.0]),
+    ]);
+    let m = metrics();
+    let store = Arc::new(MemSemantic::default());
+    let sem = Arc::new(SemanticCache::new(store.clone(), emb, m.clone()));
+    let cfg = ResolvedCacheConfig {
+        exact_enabled: false,
+        semantic_enabled: true,
+        ..Default::default()
+    };
+    let c = ResponseCache::new(
+        Arc::new(MemExact::default()),
+        Arc::new(FixedConfig(cfg)),
+        flags(),
+        m.clone(),
+    )
+    .with_semantic(sem);
+    let a = c
+        .lookup(&ctx(7, "gpt-4o", ResponseFormat::Openai, "What is Rust?"))
+        .await;
+    assert_eq!(a.status, CacheStatus::Miss);
+    let b = tokio::time::timeout(
+        Duration::from_millis(500),
+        c.lookup(&ctx(7, "gpt-4o", ResponseFormat::Openai, "What is Go?")),
+    )
+    .await
+    .expect("a different query must not wait on the Rust leader");
+    assert_eq!(
+        b.status,
+        CacheStatus::Miss,
+        "must not be served the other query's answer"
+    );
+    assert!(b.write_back.is_some(), "B is its own leader");
+    a.write_back
+        .unwrap()
+        .commit(&openai_body("Rust answer"), &json!({}))
+        .await;
+    b.write_back
+        .unwrap()
+        .commit(&openai_body("Go answer"), &json!({}))
+        .await;
+    assert_eq!(lookups(&m, "semantic", "stampede_wait"), 0.0);
+    let rows = store.rows.lock().unwrap().len();
+    assert_eq!(rows, 2);
+}
+
+#[tokio::test]
+async fn requests_with_unkeyed_shaping_fields_neither_read_nor_write_the_cache() {
+    // regression: security review -- Python's key omits system/stop/seed/...; an otherwise
+    // identical request lacking the field must not exchange entries with one carrying it.
+    for (field, value) in [
+        ("system", json!("You are a pirate")),
+        ("stop", json!(["\n"])),
+        ("seed", json!(7)),
+        ("tool_choice", json!("none")),
+        ("n", json!(3)),
+    ] {
+        let r = rig();
+        let plain = ctx(7, "gpt-4o", ResponseFormat::Openai, "What is Rust?");
+        let seeded = r.cache.lookup(&plain).await;
+        seeded
+            .write_back
+            .unwrap()
+            .commit(&openai_body("plain answer"), &json!({}))
+            .await;
+        assert_eq!(r.exact.puts.load(Ordering::SeqCst), 1);
+        let gets = r.exact.gets.load(Ordering::SeqCst);
+
+        let mut shaped = ctx(7, "gpt-4o", ResponseFormat::Openai, "What is Rust?");
+        shaped.body[field] = value;
+        let res = r.cache.lookup(&shaped).await;
+        assert_eq!(
+            res.status,
+            CacheStatus::Miss,
+            "{field}: must not be served the plain entry"
+        );
+        assert!(res.write_back.is_none(), "{field}: must not be written");
+        assert_eq!(
+            r.exact.gets.load(Ordering::SeqCst),
+            gets,
+            "{field}: no read at all"
+        );
+        assert_eq!(r.exact.puts.load(Ordering::SeqCst), 1);
+        // and the plain request is unaffected
+        assert_eq!(r.cache.lookup(&plain).await.status, CacheStatus::Exact);
+    }
+}

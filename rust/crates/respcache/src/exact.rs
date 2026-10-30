@@ -234,6 +234,45 @@ fn message_has_tool_result(message: &Value) -> bool {
     false
 }
 
+/// Request fields that shape the model's output but are NOT part of the cache key (neither Python's
+/// `derive_exact_key` nor the semantic `(org, model_class, context_hash)` scope includes them).
+/// Two requests differing only in one of these would share an entry: cross-request poisoning.
+/// Python has the same hole (flag for a coordinated fix there); changing the key would break
+/// byte-compat with the live Python cache, so Rust instead never reads or writes the cache for a
+/// request carrying any of them.
+const UNKEYED_SHAPING_FIELDS: [&str; 17] = [
+    "system",
+    "stop",
+    "stop_sequences",
+    "tool_choice",
+    "seed",
+    "top_k",
+    "frequency_penalty",
+    "presence_penalty",
+    "logit_bias",
+    "response_format",
+    "functions",
+    "function_call",
+    "logprobs",
+    "top_logprobs",
+    "thinking",
+    "reasoning_effort",
+    "max_completion_tokens",
+];
+
+/// True when the body carries an output-shaping field the cache key omits (see
+/// [`UNKEYED_SHAPING_FIELDS`]); `n` other than 1 also counts. Such requests bypass the cache.
+pub fn has_unkeyed_shaping(body: &Value) -> bool {
+    if UNKEYED_SHAPING_FIELDS
+        .iter()
+        .any(|f| body.get(*f).is_some_and(|v| !v.is_null()))
+    {
+        return true;
+    }
+    body.get("n")
+        .is_some_and(|v| !v.is_null() && py_float(v) != Some(1.0))
+}
+
 /// Determinism-eligibility matrix for the exact cache (spec 6.1): `temperature` explicitly
 /// `0`/`0.0` and no message carrying an already-executed tool-call result. `temperature` is the
 /// raw request value; `messages` the post-filter conversation.
@@ -322,6 +361,28 @@ mod tests {
                 json!("stray"),
             ]
         ));
+    }
+
+    #[test]
+    fn unkeyed_shaping_fields_are_detected() {
+        assert!(!has_unkeyed_shaping(
+            &json!({"model": "m", "temperature": 0, "tools": [], "max_tokens": 5})
+        ));
+        assert!(!has_unkeyed_shaping(&json!({"system": null, "n": 1})));
+        for f in [
+            "system",
+            "stop",
+            "stop_sequences",
+            "tool_choice",
+            "seed",
+            "top_k",
+            "response_format",
+        ] {
+            assert!(has_unkeyed_shaping(&json!({ f: "x" })), "{f}");
+        }
+        assert!(has_unkeyed_shaping(&json!({"seed": 0})));
+        assert!(has_unkeyed_shaping(&json!({"n": 2})));
+        assert!(!has_unkeyed_shaping(&json!({"n": 1.0})));
     }
 
     #[test]

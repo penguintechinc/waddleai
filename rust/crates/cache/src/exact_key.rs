@@ -185,7 +185,8 @@ mod tests {
         String::from_utf8(o).unwrap()
     }
 
-    /// Expected strings are real `orjson.dumps` output (orjson 3.13.0).
+    /// Expected strings are real `orjson.dumps` output (validated against orjson 3.13.0 here; the
+    /// repo pins 3.12 -- float formatting is identical across both).
     #[test]
     fn float_format_matches_orjson() {
         let cases: &[(f64, &str)] = &[
