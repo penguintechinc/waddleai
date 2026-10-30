@@ -2085,6 +2085,7 @@ dependencies = [
  "bytes",
  "flags",
  "futures-core",
+ "http",
  "secrecy",
  "serde_json",
  "thiserror",

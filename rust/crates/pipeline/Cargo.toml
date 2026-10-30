@@ -11,6 +11,7 @@ auth = { path = "../auth", version = "=0.1.0" }
 flags = { path = "../flags", version = "=0.1.0" }
 async-trait = "=0.1.92"
 bytes = "=1.12.1"
+http = "=1.5.0"
 futures-core = "=0.3.34"
 secrecy = "=0.10.3"
 serde_json = "=1.0.154"

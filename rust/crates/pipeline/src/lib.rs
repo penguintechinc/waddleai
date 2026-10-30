@@ -10,6 +10,7 @@ mod driver;
 mod flags;
 mod seams;
 mod stage;
+pub mod stages;
 
 pub use budget::{KeyLimits, VkeyBudget};
 pub use context::{

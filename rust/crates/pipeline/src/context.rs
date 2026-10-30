@@ -279,6 +279,25 @@ pub struct PipelineContext {
     pub extensions: Extensions,
 }
 
+impl std::fmt::Debug for PipelineContext {
+    /// Redacting summary: never prints the passthrough credential, body, or prompt text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PipelineContext")
+            .field("auth_mode", &self.auth_mode)
+            .field("has_user", &self.user.is_some())
+            .field(
+                "passthrough_credential",
+                &self.passthrough_credential.as_ref().map(|_| "<redacted>"),
+            )
+            .field("blocked", &self.blocked)
+            .field("status_code", &self.status_code)
+            .field("block_reason", &self.block_reason)
+            .field("model", &self.model)
+            .field("stage_log", &self.stage_log)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PipelineContext {
     /// Fresh context for a request body with Python-matching defaults (status 200, not blocked).
     pub fn new(body: Value) -> Self {
