@@ -1,0 +1,28 @@
+[package]
+name = "quota"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaddleAI pooled-quota engine (Lua reused verbatim), QuotaGuard and QuotaStage"
+
+[dependencies]
+auth = { path = "../auth", version = "=0.1.0" }
+cache = { path = "../cache", version = "=0.1.0" }
+pipeline = { path = "../pipeline", version = "=0.1.0" }
+tokens = { path = "../tokens", version = "=0.1.0" }
+async-trait = "=0.1.92"
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
+opentelemetry = { version = "=0.33.1", features = ["metrics"] }
+redis = { version = "=1.7.0", default-features = false, features = ["tokio-comp", "aio", "script"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", features = ["time", "sync", "rt"] }
+tracing = "=0.1.44"
+uuid = { version = "=1.29.0", features = ["v4"] }
+
+[dev-dependencies]
+config = { path = "../config", version = "=0.1.0" }
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry", "std"] }

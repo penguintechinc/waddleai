@@ -126,6 +126,38 @@ impl ConversionRates {
     pub fn get(&self, provider: &str, model: &str) -> Option<&ConversionRate> {
         self.rates.get(&format!("{provider}:{model}"))
     }
+
+    /// Providers with a loaded rate for `model` (empty when the model is unknown); port of
+    /// `TokenManager.providers_for_model`. Keys are `"{provider}:{model}"`; a model id may
+    /// itself contain `:` (e.g. `llama3:8b`), so the split is on the FIRST colon only,
+    /// matching the (dash/colon-free) provider ids.
+    pub fn providers_for_model(&self, model: &str) -> std::collections::HashSet<String> {
+        self.rates_for_model(model)
+            .map(|(provider, _)| provider.to_owned())
+            .collect()
+    }
+
+    /// Conservative credit estimate when the provider is unknown (quota reserve time): the
+    /// maximum over every provider's rate for `model`, never below 1; an unknown model uses
+    /// the default formula. Port of `TokenManager.estimate_credits`.
+    pub fn estimate_credits(&self, model: &str, input_tokens: u64, output_tokens: u64) -> u64 {
+        self.rates_for_model(model)
+            .map(|(_, rate)| credits_for(rate, input_tokens, output_tokens))
+            .max()
+            .unwrap_or_else(|| (input_tokens + output_tokens * 2) / 10)
+            .max(1)
+    }
+
+    /// `(provider, rate)` pairs whose model equals `model`.
+    fn rates_for_model<'a>(
+        &'a self,
+        model: &'a str,
+    ) -> impl Iterator<Item = (&'a str, &'a ConversionRate)> {
+        self.rates.iter().filter_map(move |(key, rate)| {
+            let (provider, m) = key.split_once(':')?;
+            (m == model).then_some((provider, rate))
+        })
+    }
 }
 
 /// Credits for one rate: `max(1, in/input_rate) + max(1, out/output_rate)`, each side 0 when
@@ -156,5 +188,47 @@ pub fn calculate_waddleai_tokens(
             tracing::warn!(provider, model, "no conversion rate found, using default");
             ((input_tokens + output_tokens * 2) / 10).max(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod quota_estimate_tests {
+    use super::*;
+
+    fn row(provider: &str, model: &str, i: f64, o: f64) -> token_conversion_rates::Model {
+        token_conversion_rates::Model {
+            id: 0,
+            provider: provider.into(),
+            model: model.into(),
+            input_rate: i,
+            output_rate: o,
+            base_cost_per_waddleai_token: Some(0.0),
+            effective_date: None,
+            enabled: Some(true),
+        }
+    }
+
+    #[test]
+    fn estimate_takes_max_over_providers_and_floors_at_one() {
+        let rates = ConversionRates::from_rows(vec![
+            row("a", "m", 10.0, 10.0),
+            row("b", "m", 100.0, 100.0),
+        ]);
+        // a: 1000/10 + 1000/10 = 200; b: 10 + 10 = 20 -> max 200
+        assert_eq!(rates.estimate_credits("m", 1000, 1000), 200);
+        assert_eq!(rates.estimate_credits("m", 1, 1), 2); // each side floors at 1, then max
+        let providers = rates.providers_for_model("m");
+        assert_eq!(providers.len(), 2);
+        assert!(providers.contains("a") && providers.contains("b"));
+    }
+
+    #[test]
+    fn unknown_model_uses_default_formula_floored_at_one() {
+        let rates = ConversionRates::defaults();
+        assert!(rates.providers_for_model("nope").is_empty());
+        assert_eq!(rates.estimate_credits("nope", 100, 50), (100 + 50 * 2) / 10);
+        assert_eq!(rates.estimate_credits("nope", 0, 0), 1);
+        // regression: gh-347 -- seeded max (160) can sit below the heuristic bill (1100)
+        assert_eq!(rates.estimate_credits("llama3.2", 5000, 3000), 160);
     }
 }

@@ -128,6 +128,9 @@ token-parity-check: ## Fail if the Rust token corpus / exported Lua drift from t
 	$(PY) scripts/gen-token-parity-corpus.py --check
 	python3 rust/scripts/gen-token-lua.py --check
 
+quota-lua-check: ## Fail if the Rust quota Lua files drift from shared/quota/lease.py
+	python3 scripts/export-quota-lua.py --check
+
 test-valkey:
 	@echo "Running real-Valkey quota tests (REQUIRE_VALKEY_TESTS=1: skip == fail)..."
 	REQUIRE_VALKEY_TESTS=1 $(PY) -m pytest tests/integration/quota -v --no-cov

@@ -2260,6 +2260,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "quota"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "auth",
+ "cache",
+ "chrono",
+ "config",
+ "opentelemetry",
+ "pipeline",
+ "redis",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokens",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
