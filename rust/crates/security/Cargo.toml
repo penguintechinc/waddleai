@@ -11,6 +11,7 @@ cache = { path = "../cache", version = "=0.1.0" }
 db = { path = "../db", version = "=0.1.0" }
 flags = { path = "../flags", version = "=0.1.0" }
 pipeline = { path = "../pipeline", version = "=0.1.0" }
+aho-corasick = "=1.1.5"
 async-trait = "=0.1.92"
 fancy-regex = "=0.19.2"
 regex = "=1.13.1"

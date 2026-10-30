@@ -342,7 +342,15 @@ impl RulesStore {
                 self.refresh(s).await;
             }
         } else if let Ok(id) = tail.parse::<i64>() {
-            self.refresh(Some(id)).await;
+            // An uncached scope has nothing stale here; it lazy-loads fresh on first use.
+            let cached = self
+                .l1
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key(&Some(id));
+            if cached {
+                self.refresh(Some(id)).await;
+            }
         }
     }
 

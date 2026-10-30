@@ -458,6 +458,12 @@ async fn invalidation_signal_refreshes_rules() {
             disabled_builtins: vec![],
         },
     );
+    // Invalidating an uncached org causes no source load at all.
+    let loads = src.loads();
+    store
+        .on_invalidation(&cache::keys::content_filter_rules(Some(999)))
+        .await;
+    assert_eq!(src.loads(), loads);
     // Unrelated key: ignored, still the old rules.
     store.on_invalidation("waddleai:cache:cfg:org:3").await;
     assert!(!f.filter_input("oldword", None, Some(3), None).await.allowed);
@@ -510,6 +516,9 @@ async fn invalidation_signal_refreshes_rules_via_live_valkey() {
     let cfg = config::Config::from_env().expect("config");
     let c = cache::connect(&cfg).await.expect("connect");
     let org = 4_242_001i64;
+    c.del(&cache::keys::content_filter_rules(Some(org)))
+        .await
+        .expect("pre-clean");
     let src = FakeSource::with(
         Some(org),
         RawOrgConfig {
@@ -528,10 +537,10 @@ async fn invalidation_signal_refreshes_rules_via_live_valkey() {
     let _task = security::spawn_invalidation_listener(Arc::clone(&store), inv);
     assert_eq!(store.get(Some(org)).await.unwrap().rule_count(), 1);
     src.set(Some(org), RawOrgConfig::default());
+    let before = src.loads();
     c.del(&cache::keys::content_filter_rules(Some(org)))
         .await
         .expect("del");
-    let before = src.loads();
     let mut refreshed = false;
     for _ in 0..50 {
         if store.get(Some(org)).await.unwrap().rule_count() == 0 {
@@ -972,7 +981,8 @@ async fn unicode_case_needle_redacts_the_correct_span() {
     let r = f
         .filter_input("ßß Straße STRASSE", None, Some(1), None)
         .await;
-    assert_eq!(r.filtered_text, "ßß [REDACTED:ST] STRASSE");
+    // Propagation also searches the needle's Unicode upper-cased form (STRASSE): more redaction.
+    assert_eq!(r.filtered_text, "ßß [REDACTED:ST] [REDACTED:ST]");
 }
 
 #[tokio::test]
@@ -1054,4 +1064,53 @@ async fn uncompilable_block_rule_fails_closed_at_load() {
         .filter_input("hello", None, Some(2), None)
         .await;
     assert!(r.degraded && !r.allowed);
+}
+
+#[tokio::test]
+async fn long_repeated_value_is_redacted_at_every_occurrence() {
+    // 300-byte token: only its first occurrence is matched (lookahead `!`), the rest must be
+    // found by propagation with no needle-length cap.
+    let t: String = (0..300)
+        .map(|i| if i % 2 == 0 { 'k' } else { 'Q' })
+        .collect();
+    let cfg = RawOrgConfig {
+        rules: vec![rule(
+            1,
+            "tok",
+            "custom_regex",
+            "both",
+            &format!("{t}(?=!)"),
+            "redact",
+        )],
+        disabled_builtins: vec![],
+    };
+    let f = plain(FakeSource::with(Some(1), cfg));
+    let text = format!("{t}! mid {t}? end {}", t.to_uppercase());
+    let r = f.filter_input(&text, None, Some(1), None).await;
+    assert!(!r.degraded);
+    assert_eq!(
+        r.filtered_text,
+        "[REDACTED:TOK]! mid [REDACTED:TOK]? end [REDACTED:TOK]"
+    );
+}
+
+#[tokio::test]
+async fn propagation_unicode_case_needle_keeps_offsets_aligned() {
+    let cfg = RawOrgConfig {
+        rules: vec![rule(
+            1,
+            "r",
+            "custom_regex",
+            "both",
+            "Éclair(?=!)",
+            "redact",
+        )],
+        disabled_builtins: vec![],
+    };
+    let f = plain(FakeSource::with(Some(1), cfg));
+    // 'İ' grows when lowercased; offsets must still land on the original bytes.
+    let r = f
+        .filter_input("İİİ Éclair! ÉCLAIR end", None, Some(1), None)
+        .await;
+    assert_eq!(r.filtered_text, "İİİ [REDACTED:R]! [REDACTED:R] end");
 }

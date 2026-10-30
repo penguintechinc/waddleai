@@ -530,21 +530,41 @@ fn decide(text: &str, hits: &[Hit]) -> Option<(FilterAction, String)> {
     Some((FilterAction::Log, text.to_owned()))
 }
 
-/// Longest matched text (bytes) whose other occurrences are searched; longer matches are
-/// redacted by their own recorded span only.
-const PROPAGATE_MAX_NEEDLE: usize = 256;
-
-/// Case-insensitive non-overlapping occurrences of `needle` in `text` as byte spans, using a
-/// linear-time escaped-literal regex. Empty on any failure: every match's own span is redacted
-/// regardless, so this is a parity extra, never a safety dependency.
-fn occurrences(text: &str, needle: &str) -> Vec<(usize, usize)> {
-    if needle.is_empty() || needle.len() > PROPAGATE_MAX_NEEDLE {
+/// All occurrences of the given needles in `text` in ONE linear Aho-Corasick pass, as
+/// `(start, end, label)` byte spans of the original text. Matching is ASCII-case-insensitive
+/// (offset-preserving); each needle is also searched in its Unicode lower/upper-cased form so
+/// common non-ASCII case variants are covered. No needle-length cap: cost is linear in text.
+fn occurrences(text: &str, needles: &[(String, usize)]) -> Vec<(usize, usize, usize)> {
+    let mut pats: Vec<&str> = Vec::new();
+    let mut labels: Vec<usize> = Vec::new();
+    let variants: Vec<(String, String)> = needles
+        .iter()
+        .map(|(n, _)| (n.to_lowercase(), n.to_uppercase()))
+        .collect();
+    for ((n, label), (lo, up)) in needles.iter().zip(&variants) {
+        for v in [n.as_str(), lo.as_str(), up.as_str()] {
+            if !v.is_empty() && !pats.contains(&v) {
+                pats.push(v);
+                labels.push(*label);
+            }
+        }
+    }
+    if pats.is_empty() {
         return Vec::new();
     }
-    match regex::Regex::new(&format!("(?i){}", regex::escape(needle))) {
-        Ok(re) => re.find_iter(text).map(|m| (m.start(), m.end())).collect(),
-        Err(_) => Vec::new(),
-    }
+    let ac = match aho_corasick::AhoCorasick::builder()
+        .ascii_case_insensitive(true)
+        .match_kind(aho_corasick::MatchKind::Standard)
+        // The default (DFA) build is super-linear on very long needles; the NFA is linear.
+        .kind(Some(aho_corasick::AhoCorasickKind::ContiguousNFA))
+        .build(&pats)
+    {
+        Ok(ac) => ac,
+        Err(_) => return Vec::new(),
+    };
+    ac.find_overlapping_iter(text)
+        .map(|m| (m.start(), m.end(), labels[m.pattern().as_usize()]))
+        .collect()
 }
 
 /// Distinct matched texts for which other occurrences are searched (parity extra; bounded so
@@ -552,7 +572,7 @@ fn occurrences(text: &str, needle: &str) -> Vec<(usize, usize)> {
 const PROPAGATE_CAP: usize = 64;
 
 /// `_apply_redactions` by span, union-merged: every byte covered by ANY redact hit's recorded
-/// spans (plus, for a bounded number of short distinct texts, other case-insensitive occurrences
+/// spans (plus, for a bounded number of distinct texts, other case-insensitive occurrences
 /// as Python's re-sub does) is redacted. Overlapping spans merge into their union, labelled by
 /// the earliest hit. This is intentionally safer than Python, which leaves a fragment when a
 /// later wider match overlaps an earlier substitution. `None` if a span is unusable.
@@ -560,15 +580,17 @@ fn apply_redactions(text: &str, redacts: &[&Hit]) -> Option<String> {
     use std::collections::HashSet;
     let mut all: Vec<(usize, usize, usize)> = Vec::new(); // (start, end, label hit index)
     let mut propagated: HashSet<String> = HashSet::new();
+    let mut needles: Vec<(String, usize)> = Vec::new();
     for (idx, h) in redacts.iter().enumerate() {
         let (s, e) = h.span;
         let own = text.get(s..e).filter(|t| !t.is_empty())?;
         all.push((s, e, idx));
         all.extend(h.extra.iter().map(|&(s, e)| (s, e, idx)));
         if propagated.len() < PROPAGATE_CAP && propagated.insert(own.to_lowercase()) {
-            all.extend(occurrences(text, own).into_iter().map(|(s, e)| (s, e, idx)));
+            needles.push((own.to_owned(), idx));
         }
     }
+    all.extend(occurrences(text, &needles));
     all.sort_unstable();
     let mut merged: Vec<(usize, usize, usize)> = Vec::new();
     for (s, e, idx) in all {
