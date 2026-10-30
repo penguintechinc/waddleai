@@ -12,6 +12,9 @@ global:
 # gRPC TLS from a cert-manager-issued Secret (see classification.tls). CI-built
 # tag below is a placeholder until the first Gamma image is published.
 classification:
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
   enabled: true
   jwt:
     issuer: "https://waddleai-gamma.penguintech.cloud"

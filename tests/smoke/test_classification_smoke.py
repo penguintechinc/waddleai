@@ -318,9 +318,25 @@ def test_hpa_scale_out_rebalances_clients() -> None:
     pb, _ = _stubs()
     del pb
     dep = _deployment()
-    original = int(_kubectl("get", dep, "-o", "jsonpath={.spec.replicas}") or "1")
+    # Survive a hard-killed earlier run: the true baseline lives in annotations on the
+    # cluster objects (set once, cleared on teardown), not only in this process.
+    ann = "smoke.waddleai.io/original"
+    saved = _kubectl(
+        "get", dep, "-o", "jsonpath={.metadata.annotations.smoke\\.waddleai\\.io/original}"
+    )
+    original = int(saved or _kubectl("get", dep, "-o", "jsonpath={.spec.replicas}") or "1")
+    _kubectl("annotate", dep, f"{ann}={original}", "--overwrite")
     hpa = _kubectl("get", "hpa", "-l", SELECTOR, "-o", "name", check=False).split()
-    hpa_min = _kubectl("get", hpa[0], "-o", "jsonpath={.spec.minReplicas}") if hpa else ""
+    hpa_min = ""
+    if hpa:
+        saved_min = _kubectl(
+            "get",
+            hpa[0],
+            "-o",
+            "jsonpath={.metadata.annotations.smoke\\.waddleai\\.io/original}",
+        )
+        hpa_min = saved_min or _kubectl("get", hpa[0], "-o", "jsonpath={.spec.minReplicas}")
+        _kubectl("annotate", hpa[0], f"{ann}={hpa_min}", "--overwrite")
     opts: list[tuple[str, object]] = [
         ("grpc.service_config", json.dumps({"loadBalancingConfig": [{"round_robin": {}}]})),
         ("grpc.dns_min_time_between_resolutions_ms", 5000),
@@ -358,6 +374,9 @@ def test_hpa_scale_out_rebalances_clients() -> None:
                 check=False,
             )
         _kubectl("scale", dep, f"--replicas={original}", check=False)
+        _kubectl("annotate", dep, f"{ann}-", check=False)
+        if hpa:
+            _kubectl("annotate", hpa[0], f"{ann}-", check=False)
 
 
 def _wait_ready_pods(count: int, timeout_s: int = 300) -> list[str]:

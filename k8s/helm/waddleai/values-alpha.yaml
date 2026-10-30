@@ -237,4 +237,5 @@ classification:
   env:
     LOG_LEVEL: DEBUG
   otel:
-    endpoint: "http://otel-collector.monitoring:4318"
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"

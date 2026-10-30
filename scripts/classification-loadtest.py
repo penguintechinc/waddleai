@@ -113,7 +113,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--requests", type=int, default=500)
     ap.add_argument("--warmup", type=int, default=20)
-    ap.add_argument("--concurrency", type=int, default=1)
+    ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.environ.get("CLASSIFICATION_LOAD_CONCURRENCY", "8")),
+        help="parallel callers (default 8 / CLASSIFICATION_LOAD_CONCURRENCY); 1 understates p99",
+    )
     ap.add_argument("--budget-ms", type=float, default=DEFAULT_BUDGET_MS)
     a = ap.parse_args()
     return run(a.requests, a.warmup, a.concurrency, a.budget_ms)

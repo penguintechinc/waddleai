@@ -268,6 +268,28 @@ def _helm(*args):
     )
 
 
+_ANCHOR = (
+    "--set",
+    "classification.jwt.issuer=https://a.test",
+    "--set",
+    "classification.jwt.jwksUrl=https://a.test/jwks.json",
+)
+
+
+def test_otel_is_grpc_4317_in_every_env_and_non_grpc_is_refused():
+    """Every overlay renders OTLP gRPC on :4317; any other protocol fails the render.
+
+    The service ships only OTLP gRPC exporters, so http/protobuf (:4318) would go dark.
+    """
+    for env in ("alpha", "beta", "gamma", "production"):
+        r = _helm("-f", f"values-{env}.yaml", *_ANCHOR)
+        assert r.returncode == 0, (env, r.stderr[-300:])
+        assert 'value: "http://otel-collector.monitoring:4317"' in r.stdout, env
+        assert "OTEL_EXPORTER_OTLP_PROTOCOL" in r.stdout and 'value: "grpc"' in r.stdout, env
+    r = _helm("-f", "values-alpha.yaml", "--set", "classification.otel.protocol=http/protobuf")
+    assert r.returncode != 0 and "otel.protocol must be 'grpc'" in r.stderr
+
+
 def test_render_fails_when_trust_anchor_unset():
     """No publicHost, issuer or jwksUrl => the render errors; no vendor-domain default."""
     r = _helm("-f", "values-production.yaml")

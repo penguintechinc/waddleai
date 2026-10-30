@@ -14,6 +14,9 @@ engine's ProcessPoolExecutor. Scale with replicas, not hypercorn workers.
 {{- if and $c.spiffeAllowedIds (not $c.tls.enabled) -}}
 {{- fail "classification: spiffeAllowedIds requires classification.tls.enabled=true (mTLS)" -}}
 {{- end -}}
+{{- if ne (toString $c.otel.protocol) "grpc" -}}
+{{- fail (printf "classification: otel.protocol must be 'grpc' (got %q) -- the service only ships OTLP gRPC exporters; point otel.endpoint at the collector gRPC port 4317" (toString $c.otel.protocol)) -}}
+{{- end -}}
 {{- $jwt := include "waddleai.classification.jwt" . | fromJson -}}
 {{- $tlsDir := "/etc/waddleai/classification-tls" -}}
 {{- $caDir := "/etc/waddleai/classification-client-ca" -}}

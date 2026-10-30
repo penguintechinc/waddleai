@@ -423,9 +423,12 @@ classification:
   # REQUIRES a client CA (tls.clientCa). Empty = server-TLS + JWT only.
   spiffeAllowedIds: []
 
+  # gRPC ONLY: the service ships just the OTLP gRPC exporters (no HTTP exporter in the
+  # hash-locked image), so the endpoint is the collector's gRPC port and the template
+  # fails the render for any other protocol.
   otel:
-    endpoint: "http://otel-collector.monitoring:4318"
-    protocol: "http/protobuf"
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
 
   # Valkey cache. Empty = the chart's own valkey Service.
   redisUrl: ""

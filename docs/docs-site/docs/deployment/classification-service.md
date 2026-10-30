@@ -78,7 +78,9 @@ classification scope, or an allow-listed SPIFFE mTLS identity.
 |---|---|
 | Image real-model test | `NER_MODEL_REQUIRED=1 pytest -m ner_model` (in-image; fails, never skips, when set); `make test-classification-real` |
 | Live smoke | `CLASSIFICATION_SMOKE_ENDPOINT=host:50051 make smoke-test-classification` (skips without the variable; with it, nothing skips). See `tests/smoke/test_classification_smoke.py` for the other `CLASSIFICATION_SMOKE_*` variables |
-| Load | `make loadtest-classification` prints `p99_analyze_latency_warm_cache_miss_ms`; exit 2 if over the budget. The budget is an owner decision; the script never relaxes it |
+| Load | `make loadtest-classification` prints `p99_analyze_latency_warm_cache_miss_ms` (default `--concurrency 8`; override with `CLASSIFICATION_LOAD_CONCURRENCY` or the flag); exit 2 if over the budget. The budget is an owner decision; the script never relaxes it |
+
+The telemetry smoke test starts an OTLP/gRPC sink on the test host (`CLASSIFICATION_SMOKE_OTLP_SINK`, default `0.0.0.0:4317`), so the deployment's `classification.otel.endpoint` must point at that host:4317 for the run. The chart only accepts `otel.protocol: grpc` (the image ships OTLP gRPC exporters only) and the default endpoint is the collector's `:4317`.
 
 Alpha is amd64-only for now. The live smoke checks: authenticated Analyze returns a PERSON span,
 unauthenticated is rejected, `/readyz` flips 503 when the pool is killed and recovers, telemetry

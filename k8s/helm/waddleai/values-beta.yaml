@@ -341,6 +341,9 @@ monitoring:
 # gRPC TLS from a cert-manager-issued Secret (see classification.tls). CI-built
 # tag below is a placeholder until the first Beta image is published.
 classification:
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
   enabled: true
   jwt:
     host: "waddleai.penguintech.cloud"

@@ -13,6 +13,9 @@ global:
 # that the release pipeline MUST replace -- an all-zero digest never resolves, so
 # an unreplaced value fails loudly at image pull rather than running unpinned.
 classification:
+  otel:
+    endpoint: "http://otel-collector.monitoring:4317"
+    protocol: "grpc"
   enabled: true
   # Trust anchor intentionally NOT set: operator MUST supply classification.jwt.issuer
   # + classification.jwt.jwksUrl (https) -- the render fails until they do.
