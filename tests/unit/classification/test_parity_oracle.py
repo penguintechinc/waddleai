@@ -7,6 +7,7 @@ deletes the original. This test feeds the SAME raw entities through both and fai
 from __future__ import annotations
 
 import json
+from collections import Counter
 from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ CORPUS_PATH = Path(__file__).parents[2] / "fixtures" / "classification" / "corpu
 pb: Any = _pb  # protoc gencode has no stubs
 MAX_CHARS = mapping.MAX_ANALYZED_CHARS
 
-Violation = tuple[str, str, float, bytes | str]
+Violation = tuple[str, str, float, str]
 
 
 def _load_corpus() -> list[dict[str, Any]]:
@@ -48,26 +49,31 @@ def _raw(entry: dict[str, Any]) -> list[RawEntity]:
 
 
 def _worker_dicts(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    """The dict contract ``ner_analyze`` returns; ``text`` is cut from the analyzed window."""
+    """The dict contract ``ner_analyze`` returns, as a window-respecting worker emits it.
+
+    Presidio only analyzes the first 2000 code points, so a real worker never reports a span
+    starting past the window and cuts a straddling span at it; ``text`` comes from that window.
+    """
     analyzed = entry["text"][:MAX_CHARS]
     return [
         {
             "entity_type": e["entity_type"],
-            "text": analyzed[e["start"] : e["end"]],
+            "text": analyzed[e["start"] : min(e["end"], MAX_CHARS)],
             "start": e["start"],
-            "end": e["end"],
+            "end": min(e["end"], MAX_CHARS),
             "score": e["score"],
         }
         for e in entry["entities"]
+        if e["start"] < MAX_CHARS
     ]
 
 
-def _service_set(entry: dict[str, Any]) -> set[Violation]:
+def _service_set(entry: dict[str, Any]) -> Counter[Violation]:
     """Violations derived from the service mapper, recovering text via the byte offsets."""
     disabled = frozenset(entry["disabled"])
     analyzed_bytes = entry["text"][:MAX_CHARS].encode("utf-8")
     res = mapping.map_spans(entry["text"], _raw(entry), disabled)
-    return {
+    return Counter(
         (
             s.entity_label,
             _ACTION_NAME[s.action],
@@ -75,10 +81,10 @@ def _service_set(entry: dict[str, Any]) -> set[Violation]:
             analyzed_bytes[s.start_byte : s.end_byte].decode("utf-8"),
         )
         for s in res.spans
-    }
+    )
 
 
-async def _oracle_set(entry: dict[str, Any], mp: pytest.MonkeyPatch) -> set[Violation]:
+async def _oracle_set(entry: dict[str, Any], mp: pytest.MonkeyPatch) -> Counter[Violation]:
     """Violations from the real ``ContentFilter._run_ner_patterns`` with the model stubbed."""
     dicts = _worker_dicts(entry)
     pool: Executor = ThreadPoolExecutor(max_workers=1)
@@ -95,23 +101,24 @@ async def _oracle_set(entry: dict[str, Any], mp: pytest.MonkeyPatch) -> set[Viol
         violations = await cf._run_ner_patterns(entry["text"], "input", None)
     finally:
         pool.shutdown(wait=True)
-    return {
+    return Counter(
         (v.rule_name[len("ner:") :], v.action, round(v.confidence, 6), v.full_matched_text)
         for v in violations
-    }
+    )
 
 
 def test_corpus_integrity_and_coverage() -> None:
     """Corpus offsets must point at the recorded match and cover the required edge cases."""
     names = {c["name"] for c in CORPUS}
     for entry in CORPUS:
-        analyzed = entry["text"][:MAX_CHARS]
         for e in entry["entities"]:
-            assert analyzed[e["start"] : e["end"]] == e["match"], entry["name"]
+            assert entry["text"][e["start"] : e["end"]] == e["match"], entry["name"]
     types = {e["entity_type"] for c in CORPUS for e in c["entities"]}
     assert {"PERSON", "US_SSN", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD"} <= types
     assert {"LOCATION", "ORG", "NRP", "FOO_BAR"} <= types
     assert {"unicode_emoji", "empty", "no_pii", "long_over_2000_truncated"} <= names
+    assert {"duplicate_entity_double_emit_guard", "entity_past_2000_window"} <= names
+    assert any(e["start"] >= MAX_CHARS for c in CORPUS for e in c["entities"])
     assert any(len(c["text"]) > MAX_CHARS for c in CORPUS)
     assert any(len(c["text"].encode()) > len(c["text"]) for c in CORPUS)
 
@@ -120,7 +127,7 @@ def test_corpus_integrity_and_coverage() -> None:
 async def test_parity_spans_equal_content_filter_violations(
     entry: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Service mapper output equals ContentFilter tier-3 violations (label/action/conf/text)."""
+    """Service mapper output equals ContentFilter tier-3 violations, as multisets (counts match)."""
     service = _service_set(entry)
     oracle = await _oracle_set(entry, monkeypatch)
     assert service == oracle
@@ -131,8 +138,8 @@ async def test_parity_is_not_vacuous(monkeypatch: pytest.MonkeyPatch) -> None:
     kept = dropped = 0
     for entry in CORPUS:
         oracle = await _oracle_set(entry, monkeypatch)
-        kept += len(oracle)
-        dropped += len(entry["entities"]) - len(oracle)
+        kept += sum(oracle.values())
+        dropped += len(entry["entities"]) - sum(oracle.values())
     print(f"parity non-vacuous: kept={kept} dropped={dropped}")
     assert kept > 0
     assert dropped > 0
