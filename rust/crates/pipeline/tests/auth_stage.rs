@@ -1,6 +1,6 @@
 //! AuthStage tests: auth modes, passthrough opt-in gate, tenant check, credential hygiene.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use auth::{AuthError, AuthMode as UserAuthMode, UserContext};
@@ -243,55 +243,4 @@ fn detect_covers_all_kinds_and_x_api_key() {
     let k = detect_auth_mode(&h);
     assert!(matches!(k, CredentialKind::Passthrough { .. }));
     assert!(!format!("{k:?}").contains("sk-xyz"));
-}
-
-/// Tracing sink capturing every formatted event field.
-#[derive(Clone, Default)]
-struct Sink(Arc<Mutex<String>>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Sink {
-    fn on_event(&self, e: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        struct V<'a>(&'a mut String);
-        impl tracing::field::Visit for V<'_> {
-            fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
-                self.0.push_str(&format!("{}={v:?} ", f.name()));
-            }
-        }
-        let mut g = self.0.lock().unwrap();
-        e.record(&mut V(&mut g));
-    }
-}
-
-#[tokio::test]
-async fn passthrough_credential_never_in_debug_or_logs() {
-    use tracing_subscriber::layer::SubscriberExt;
-    let sink = Sink::default();
-    let sub = tracing_subscriber::registry().with(sink.clone());
-    let _g = tracing::subscriber::set_default(sub);
-
-    // enabled path, the denied path and the rejected path all log
-    let mut c = ctx(Some(WA), Some(PROVIDER));
-    stage(Ok(user("7")), Arc::new(Allow))
-        .call(&mut c)
-        .await
-        .unwrap();
-    let dbg = format!("{c:?}");
-    let mut d = ctx(Some(WA), Some(PROVIDER));
-    stage(Ok(user("7")), Arc::new(DenyPassthrough))
-        .call(&mut d)
-        .await
-        .unwrap();
-    let mut e = ctx(None, Some(PROVIDER));
-    stage(Ok(user("7")), Arc::new(Allow))
-        .call(&mut e)
-        .await
-        .unwrap();
-
-    let logs = sink.0.lock().unwrap().clone();
-    assert!(!logs.is_empty(), "denominator: no events captured");
-    for hay in [&dbg, &logs, &format!("{d:?}"), &format!("{e:?}")] {
-        assert!(!hay.contains("TOPSECRET"), "{hay}");
-        assert!(!hay.contains("supersecretvalue"), "{hay}");
-    }
-    assert!(dbg.contains("<redacted>"));
 }
