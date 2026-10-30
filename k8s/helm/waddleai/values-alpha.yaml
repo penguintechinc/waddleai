@@ -215,6 +215,8 @@ podSecurityAdmission:
 # beta/gamma/production -- those mount a cert-manager TLS Secret.
 classification:
   enabled: true
+  jwt:
+    host: "waddleai.localhost.local"
   replicaCount: 1
   image:
     tag: alpha-latest

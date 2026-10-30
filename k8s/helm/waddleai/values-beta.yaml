@@ -342,6 +342,8 @@ monitoring:
 # tag below is a placeholder until the first Beta image is published.
 classification:
   enabled: true
+  jwt:
+    host: "waddleai.penguintech.cloud"
   replicaCount: 1
   image:
     repository: classification

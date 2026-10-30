@@ -335,3 +335,16 @@ def test_onprem_custom_issuer_egress_follows_jwks_host():
     assert env["JWT_ISSUER"]["value"] == "https://sso.corp.internal"
     assert "sso.corp.internal" in _egress_fqdns(docs)
     assert "waddleai.penguintech.cloud" not in _egress_fqdns(docs)
+
+
+def test_trust_anchor_never_inherits_vendor_ingress_hosts_default():
+    """Ingress on with the default (vendor) ingress.hosts must NOT derive the anchor."""
+    r = _helm("--set", "ingress.enabled=true", "--set", "classification.enabled=true")
+    assert r.returncode != 0 and "trust anchor is not configured" in r.stderr
+    r = _helm(
+        "--set", "ingress.enabled=true",
+        "--set", "httproute.host=vendor.example.test",
+        "--set", "classification.enabled=true",
+    )  # fmt: skip
+    assert r.returncode != 0 and "trust anchor is not configured" in r.stderr
+    assert "penguintech.io" not in r.stdout

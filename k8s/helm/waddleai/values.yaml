@@ -409,10 +409,12 @@ classification:
 
   # Token verification (shared.auth.jwks_verifier). JWKS_URL MUST be https:
   # management publishes /.well-known/jwks.json, so point at its public https host.
-  # Empty = derived from the chart's public host (httproute.host / ingress host).
-  # NO vendor default: the render FAILS if neither is configured. The same resolved
-  # JWKS host feeds the Cilium egress allow-list.
+  # Set issuer+jwksUrl explicitly, or `host` (derives https://<host> and
+  # https://<host>/.well-known/jwks.json). NEVER inherited from ingress.hosts /
+  # httproute.host (their defaults include a vendor domain); the render FAILS if
+  # unset. The same resolved JWKS host feeds the Cilium egress allow-list.
   jwt:
+    host: ""
     issuer: ""
     audience: "waddleai-classification"
     jwksUrl: ""
