@@ -25,9 +25,12 @@ repos:
         # templates synced verbatim from the admin repo -- CLAUDE.md forbids
         # editing them here, so a whitespace drift in the upstream template
         # must not fail (or be silently "fixed" in) this repo's gate.
-        exclude: ^\.claude/(?!.*\.local\.md$)[^/]*\.md$
+        #
+        # rust/crates/*/lua/ are Python-owned Lua scripts exported byte-for-byte
+        # (rust/scripts/gen-token-lua.py); a whitespace "fix" would trip the drift gate.
+        exclude: ^(\.claude/(?!.*\.local\.md$)[^/]*\.md|rust/crates/[^/]+/lua/[^/]+\.lua)$
       - id: end-of-file-fixer
-        exclude: ^\.claude/(?!.*\.local\.md$)[^/]*\.md$
+        exclude: ^(\.claude/(?!.*\.local\.md$)[^/]*\.md|rust/crates/[^/]+/lua/[^/]+\.lua)$
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-added-large-files

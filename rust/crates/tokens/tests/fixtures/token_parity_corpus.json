@@ -1,0 +1,2105 @@
+{
+ "convert_cases": [
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "gpt-4o",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gpt-4o",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gpt-4o",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "gpt-4o",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "gpt-4o",
+   "output_tokens": 3,
+   "provider": "openai"
+  },
+  {
+   "expected": 12,
+   "input_tokens": 100,
+   "model": "gpt-4o",
+   "output_tokens": 50,
+   "provider": "openai"
+  },
+  {
+   "expected": 1573,
+   "input_tokens": 12345,
+   "model": "gpt-4o",
+   "output_tokens": 6789,
+   "provider": "openai"
+  },
+  {
+   "expected": 100000,
+   "input_tokens": 999999,
+   "model": "gpt-4o",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "gpt-4o-mini",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gpt-4o-mini",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gpt-4o-mini",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "gpt-4o-mini",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "gpt-4o-mini",
+   "output_tokens": 3,
+   "provider": "openai"
+  },
+  {
+   "expected": 4,
+   "input_tokens": 100,
+   "model": "gpt-4o-mini",
+   "output_tokens": 50,
+   "provider": "openai"
+  },
+  {
+   "expected": 580,
+   "input_tokens": 12345,
+   "model": "gpt-4o-mini",
+   "output_tokens": 6789,
+   "provider": "openai"
+  },
+  {
+   "expected": 33334,
+   "input_tokens": 999999,
+   "model": "gpt-4o-mini",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "gpt-4-turbo",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gpt-4-turbo",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gpt-4-turbo",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "gpt-4-turbo",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "gpt-4-turbo",
+   "output_tokens": 3,
+   "provider": "openai"
+  },
+  {
+   "expected": 12,
+   "input_tokens": 100,
+   "model": "gpt-4-turbo",
+   "output_tokens": 50,
+   "provider": "openai"
+  },
+  {
+   "expected": 1573,
+   "input_tokens": 12345,
+   "model": "gpt-4-turbo",
+   "output_tokens": 6789,
+   "provider": "openai"
+  },
+  {
+   "expected": 100000,
+   "input_tokens": 999999,
+   "model": "gpt-4-turbo",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "gpt-4",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gpt-4",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gpt-4",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "gpt-4",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "gpt-4",
+   "output_tokens": 3,
+   "provider": "openai"
+  },
+  {
+   "expected": 12,
+   "input_tokens": 100,
+   "model": "gpt-4",
+   "output_tokens": 50,
+   "provider": "openai"
+  },
+  {
+   "expected": 1573,
+   "input_tokens": 12345,
+   "model": "gpt-4",
+   "output_tokens": 6789,
+   "provider": "openai"
+  },
+  {
+   "expected": 100000,
+   "input_tokens": 999999,
+   "model": "gpt-4",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 3,
+   "provider": "openai"
+  },
+  {
+   "expected": 6,
+   "input_tokens": 100,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 50,
+   "provider": "openai"
+  },
+  {
+   "expected": 843,
+   "input_tokens": 12345,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 6789,
+   "provider": "openai"
+  },
+  {
+   "expected": 50000,
+   "input_tokens": 999999,
+   "model": "gpt-3.5-turbo",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 3,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 10,
+   "input_tokens": 100,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 50,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1405,
+   "input_tokens": 12345,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 6789,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 83334,
+   "input_tokens": 999999,
+   "model": "claude-3-5-sonnet-latest",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 3,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 15,
+   "input_tokens": 100,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 50,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1995,
+   "input_tokens": 12345,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 6789,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 125000,
+   "input_tokens": 999999,
+   "model": "claude-3-opus-20240229",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 3,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 10,
+   "input_tokens": 100,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 50,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1405,
+   "input_tokens": 12345,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 6789,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 83334,
+   "input_tokens": 999999,
+   "model": "claude-3-sonnet-20240229",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 0,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 3,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 5,
+   "input_tokens": 100,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 50,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 686,
+   "input_tokens": 12345,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 6789,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 40000,
+   "input_tokens": 999999,
+   "model": "claude-3-haiku-20240307",
+   "output_tokens": 1,
+   "provider": "anthropic"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "llama3.2",
+   "output_tokens": 0,
+   "provider": "ollama"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "llama3.2",
+   "output_tokens": 0,
+   "provider": "ollama"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "llama3.2",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "llama3.2",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "llama3.2",
+   "output_tokens": 3,
+   "provider": "ollama"
+  },
+  {
+   "expected": 3,
+   "input_tokens": 100,
+   "model": "llama3.2",
+   "output_tokens": 50,
+   "provider": "ollama"
+  },
+  {
+   "expected": 381,
+   "input_tokens": 12345,
+   "model": "llama3.2",
+   "output_tokens": 6789,
+   "provider": "ollama"
+  },
+  {
+   "expected": 20000,
+   "input_tokens": 999999,
+   "model": "llama3.2",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "llama3.1",
+   "output_tokens": 0,
+   "provider": "ollama"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "llama3.1",
+   "output_tokens": 0,
+   "provider": "ollama"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "llama3.1",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "llama3.1",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "llama3.1",
+   "output_tokens": 3,
+   "provider": "ollama"
+  },
+  {
+   "expected": 3,
+   "input_tokens": 100,
+   "model": "llama3.1",
+   "output_tokens": 50,
+   "provider": "ollama"
+  },
+  {
+   "expected": 381,
+   "input_tokens": 12345,
+   "model": "llama3.1",
+   "output_tokens": 6789,
+   "provider": "ollama"
+  },
+  {
+   "expected": 20000,
+   "input_tokens": 999999,
+   "model": "llama3.1",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "mistral",
+   "output_tokens": 0,
+   "provider": "ollama"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "mistral",
+   "output_tokens": 0,
+   "provider": "ollama"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "mistral",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "mistral",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "mistral",
+   "output_tokens": 3,
+   "provider": "ollama"
+  },
+  {
+   "expected": 3,
+   "input_tokens": 100,
+   "model": "mistral",
+   "output_tokens": 50,
+   "provider": "ollama"
+  },
+  {
+   "expected": 424,
+   "input_tokens": 12345,
+   "model": "mistral",
+   "output_tokens": 6789,
+   "provider": "ollama"
+  },
+  {
+   "expected": 22223,
+   "input_tokens": 999999,
+   "model": "mistral",
+   "output_tokens": 1,
+   "provider": "ollama"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 0,
+   "provider": "gemini"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 0,
+   "provider": "gemini"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 1,
+   "provider": "gemini"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 1,
+   "provider": "gemini"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 3,
+   "provider": "gemini"
+  },
+  {
+   "expected": 10,
+   "input_tokens": 100,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 50,
+   "provider": "gemini"
+  },
+  {
+   "expected": 1405,
+   "input_tokens": 12345,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 6789,
+   "provider": "gemini"
+  },
+  {
+   "expected": 83334,
+   "input_tokens": 999999,
+   "model": "gemini-1.5-pro",
+   "output_tokens": 1,
+   "provider": "gemini"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 0,
+   "provider": "gemini"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 0,
+   "provider": "gemini"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 1,
+   "provider": "gemini"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 1,
+   "provider": "gemini"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 3,
+   "provider": "gemini"
+  },
+  {
+   "expected": 4,
+   "input_tokens": 100,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 50,
+   "provider": "gemini"
+  },
+  {
+   "expected": 580,
+   "input_tokens": 12345,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 6789,
+   "provider": "gemini"
+  },
+  {
+   "expected": 33334,
+   "input_tokens": 999999,
+   "model": "gemini-1.5-flash",
+   "output_tokens": 1,
+   "provider": "gemini"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "command-r-plus",
+   "output_tokens": 0,
+   "provider": "cohere"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "command-r-plus",
+   "output_tokens": 0,
+   "provider": "cohere"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "command-r-plus",
+   "output_tokens": 1,
+   "provider": "cohere"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "command-r-plus",
+   "output_tokens": 1,
+   "provider": "cohere"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "command-r-plus",
+   "output_tokens": 3,
+   "provider": "cohere"
+  },
+  {
+   "expected": 8,
+   "input_tokens": 100,
+   "model": "command-r-plus",
+   "output_tokens": 50,
+   "provider": "cohere"
+  },
+  {
+   "expected": 1162,
+   "input_tokens": 12345,
+   "model": "command-r-plus",
+   "output_tokens": 6789,
+   "provider": "cohere"
+  },
+  {
+   "expected": 66667,
+   "input_tokens": 999999,
+   "model": "command-r-plus",
+   "output_tokens": 1,
+   "provider": "cohere"
+  },
+  {
+   "expected": 0,
+   "input_tokens": 0,
+   "model": "command-r",
+   "output_tokens": 0,
+   "provider": "cohere"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "command-r",
+   "output_tokens": 0,
+   "provider": "cohere"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "command-r",
+   "output_tokens": 1,
+   "provider": "cohere"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 1,
+   "model": "command-r",
+   "output_tokens": 1,
+   "provider": "cohere"
+  },
+  {
+   "expected": 2,
+   "input_tokens": 5,
+   "model": "command-r",
+   "output_tokens": 3,
+   "provider": "cohere"
+  },
+  {
+   "expected": 5,
+   "input_tokens": 100,
+   "model": "command-r",
+   "output_tokens": 50,
+   "provider": "cohere"
+  },
+  {
+   "expected": 719,
+   "input_tokens": 12345,
+   "model": "command-r",
+   "output_tokens": 6789,
+   "provider": "cohere"
+  },
+  {
+   "expected": 40000,
+   "input_tokens": 999999,
+   "model": "command-r",
+   "output_tokens": 1,
+   "provider": "cohere"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "no-such-model",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "no-such-model",
+   "output_tokens": 0,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "no-such-model",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "no-such-model",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 5,
+   "model": "no-such-model",
+   "output_tokens": 3,
+   "provider": "openai"
+  },
+  {
+   "expected": 20,
+   "input_tokens": 100,
+   "model": "no-such-model",
+   "output_tokens": 50,
+   "provider": "openai"
+  },
+  {
+   "expected": 2592,
+   "input_tokens": 12345,
+   "model": "no-such-model",
+   "output_tokens": 6789,
+   "provider": "openai"
+  },
+  {
+   "expected": 100000,
+   "input_tokens": 999999,
+   "model": "no-such-model",
+   "output_tokens": 1,
+   "provider": "openai"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gpt-4",
+   "output_tokens": 0,
+   "provider": "nobody"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gpt-4",
+   "output_tokens": 0,
+   "provider": "nobody"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 0,
+   "model": "gpt-4",
+   "output_tokens": 1,
+   "provider": "nobody"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 1,
+   "model": "gpt-4",
+   "output_tokens": 1,
+   "provider": "nobody"
+  },
+  {
+   "expected": 1,
+   "input_tokens": 5,
+   "model": "gpt-4",
+   "output_tokens": 3,
+   "provider": "nobody"
+  },
+  {
+   "expected": 20,
+   "input_tokens": 100,
+   "model": "gpt-4",
+   "output_tokens": 50,
+   "provider": "nobody"
+  },
+  {
+   "expected": 2592,
+   "input_tokens": 12345,
+   "model": "gpt-4",
+   "output_tokens": 6789,
+   "provider": "nobody"
+  },
+  {
+   "expected": 100000,
+   "input_tokens": 999999,
+   "model": "gpt-4",
+   "output_tokens": 1,
+   "provider": "nobody"
+  }
+ ],
+ "count_cases": [
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 16,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:ascii_sentence",
+   "provider": "openai",
+   "text": "The quick brown fox jumps over the lazy dog. 1234567890!"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 9,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:whitespace",
+   "provider": "openai",
+   "text": "  leading and trailing \t\n\n  spaces   "
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 16,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:code",
+   "provider": "openai",
+   "text": "fn main() {\n    println!(\"hi {}\", 1 + 2);\n}\n"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 18,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:cjk",
+   "provider": "openai",
+   "text": "你好，世界。これはテストです。안녕하세요"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 20,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:rtl",
+   "provider": "openai",
+   "text": "مرحبا بالعالم שלום עולם"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 14,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:digits",
+   "provider": "openai",
+   "text": "3.14159265358979323846264338327950288"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2002,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:long_ascii",
+   "provider": "openai",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet "
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 3001,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:long_unicode",
+   "provider": "openai",
+   "text": "héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 "
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 8,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:special_fim",
+   "provider": "openai",
+   "text": "x <|fim_prefix|> y <|fim_suffix|> z"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 3,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:special_endofprompt",
+   "provider": "openai",
+   "text": "<|endofprompt|>"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 4,
+   "model": "gpt-4",
+   "name": "openai:gpt-4:special_unicode",
+   "provider": "openai",
+   "text": "日本語 <|endoftext|> 😀"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gpt-3.5-turbo",
+   "name": "openai:gpt-3.5-turbo:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gpt-3.5-turbo",
+   "name": "openai:gpt-3.5-turbo:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gpt-3.5-turbo",
+   "name": "openai:gpt-3.5-turbo:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gpt-3.5-turbo",
+   "name": "openai:gpt-3.5-turbo:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gpt-3.5-turbo",
+   "name": "openai:gpt-3.5-turbo:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 16,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:ascii_sentence",
+   "provider": "openai",
+   "text": "The quick brown fox jumps over the lazy dog. 1234567890!"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 9,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:whitespace",
+   "provider": "openai",
+   "text": "  leading and trailing \t\n\n  spaces   "
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 16,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:code",
+   "provider": "openai",
+   "text": "fn main() {\n    println!(\"hi {}\", 1 + 2);\n}\n"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 18,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:cjk",
+   "provider": "openai",
+   "text": "你好，世界。これはテストです。안녕하세요"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 20,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:rtl",
+   "provider": "openai",
+   "text": "مرحبا بالعالم שלום עולם"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 14,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:digits",
+   "provider": "openai",
+   "text": "3.14159265358979323846264338327950288"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2002,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:long_ascii",
+   "provider": "openai",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet "
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 3001,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:long_unicode",
+   "provider": "openai",
+   "text": "héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 héllo wörld 😀 你好 "
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 8,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:special_fim",
+   "provider": "openai",
+   "text": "x <|fim_prefix|> y <|fim_suffix|> z"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 3,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:special_endofprompt",
+   "provider": "openai",
+   "text": "<|endofprompt|>"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 4,
+   "model": "gpt-4o",
+   "name": "openai:gpt-4o:special_unicode",
+   "provider": "openai",
+   "text": "日本語 <|endoftext|> 😀"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gpt-4o-mini",
+   "name": "openai:gpt-4o-mini:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gpt-4o-mini",
+   "name": "openai:gpt-4o-mini:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gpt-4o-mini",
+   "name": "openai:gpt-4o-mini:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gpt-4o-mini",
+   "name": "openai:gpt-4o-mini:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gpt-4o-mini",
+   "name": "openai:gpt-4o-mini:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gpt-4-turbo",
+   "name": "openai:gpt-4-turbo:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gpt-4-turbo",
+   "name": "openai:gpt-4-turbo:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gpt-4-turbo",
+   "name": "openai:gpt-4-turbo:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gpt-4-turbo",
+   "name": "openai:gpt-4-turbo:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gpt-4-turbo",
+   "name": "openai:gpt-4-turbo:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "o1",
+   "name": "openai:o1:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "o1",
+   "name": "openai:o1:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "o1",
+   "name": "openai:o1:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "o1",
+   "name": "openai:o1:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "o1",
+   "name": "openai:o1:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gpt-5",
+   "name": "openai:gpt-5:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gpt-5",
+   "name": "openai:gpt-5:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gpt-5",
+   "name": "openai:gpt-5:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gpt-5",
+   "name": "openai:gpt-5:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gpt-5",
+   "name": "openai:gpt-5:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "claude-3-5-sonnet-latest",
+   "name": "anthropic:claude-3-5-sonnet-latest:empty",
+   "provider": "anthropic",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "claude-3-5-sonnet-latest",
+   "name": "anthropic:claude-3-5-sonnet-latest:ascii_short",
+   "provider": "anthropic",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "claude-3-5-sonnet-latest",
+   "name": "anthropic:claude-3-5-sonnet-latest:unicode_latin",
+   "provider": "anthropic",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "claude-3-5-sonnet-latest",
+   "name": "anthropic:claude-3-5-sonnet-latest:emoji",
+   "provider": "anthropic",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "claude-3-5-sonnet-latest",
+   "name": "anthropic:claude-3-5-sonnet-latest:special_endoftext",
+   "provider": "anthropic",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gemini-1.5-pro",
+   "name": "gemini:gemini-1.5-pro:empty",
+   "provider": "gemini",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gemini-1.5-pro",
+   "name": "gemini:gemini-1.5-pro:ascii_short",
+   "provider": "gemini",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gemini-1.5-pro",
+   "name": "gemini:gemini-1.5-pro:unicode_latin",
+   "provider": "gemini",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gemini-1.5-pro",
+   "name": "gemini:gemini-1.5-pro:emoji",
+   "provider": "gemini",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gemini-1.5-pro",
+   "name": "gemini:gemini-1.5-pro:special_endoftext",
+   "provider": "gemini",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "llama3.2",
+   "name": "ollama:llama3.2:empty",
+   "provider": "ollama",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "llama3.2",
+   "name": "ollama:llama3.2:ascii_short",
+   "provider": "ollama",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "llama3.2",
+   "name": "ollama:llama3.2:unicode_latin",
+   "provider": "ollama",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "llama3.2",
+   "name": "ollama:llama3.2:emoji",
+   "provider": "ollama",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "llama3.2",
+   "name": "ollama:llama3.2:special_endoftext",
+   "provider": "ollama",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "totally-unknown-model",
+   "name": "openai:totally-unknown-model:empty",
+   "provider": "openai",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "totally-unknown-model",
+   "name": "openai:totally-unknown-model:ascii_short",
+   "provider": "openai",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "totally-unknown-model",
+   "name": "openai:totally-unknown-model:unicode_latin",
+   "provider": "openai",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "totally-unknown-model",
+   "name": "openai:totally-unknown-model:emoji",
+   "provider": "openai",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "totally-unknown-model",
+   "name": "openai:totally-unknown-model:special_endoftext",
+   "provider": "openai",
+   "text": "before <|endoftext|> after"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 0,
+   "model": "gpt-4",
+   "name": "mystery:gpt-4:empty",
+   "provider": "mystery",
+   "text": ""
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 2,
+   "model": "gpt-4",
+   "name": "mystery:gpt-4:ascii_short",
+   "provider": "mystery",
+   "text": "hello world"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 19,
+   "model": "gpt-4",
+   "name": "mystery:gpt-4:unicode_latin",
+   "provider": "mystery",
+   "text": "Café naïve façade — “quotes” and ünïcödé"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 22,
+   "model": "gpt-4",
+   "name": "mystery:gpt-4:emoji",
+   "provider": "mystery",
+   "text": "Great job 😀🚀👨‍👩‍👧 done ❤️"
+  },
+  {
+   "encoding": "cl100k_base",
+   "expected_count": 6,
+   "model": "gpt-4",
+   "name": "mystery:gpt-4:special_endoftext",
+   "provider": "mystery",
+   "text": "before <|endoftext|> after"
+  }
+ ],
+ "estimate_cases": [
+  {
+   "expected_input": 6,
+   "expected_output": 12,
+   "messages": [
+    {
+     "content": "hello there general kenobi",
+     "role": "user"
+    }
+   ],
+   "name": "plain"
+  },
+  {
+   "expected_input": 27,
+   "expected_output": 54,
+   "messages": [
+    {
+     "content": "You are a helpful assistant.",
+     "role": "system"
+    },
+    {
+     "content": "Summarise the plot of Hamlet in two lines.",
+     "role": "user"
+    },
+    {
+     "content": "Prince avenges father. Everyone dies.",
+     "role": "assistant"
+    },
+    {
+     "content": "Thanks!",
+     "name": "alice",
+     "role": "user"
+    }
+   ],
+   "name": "roles"
+  },
+  {
+   "expected_input": 1,
+   "expected_output": 2,
+   "messages": [],
+   "name": "empty_list"
+  },
+  {
+   "expected_input": 1,
+   "expected_output": 2,
+   "messages": [
+    {
+     "content": "",
+     "role": "user"
+    }
+   ],
+   "name": "empty_content"
+  },
+  {
+   "expected_input": 1,
+   "expected_output": 2,
+   "messages": [
+    {
+     "content": null,
+     "role": "assistant"
+    }
+   ],
+   "name": "none_content"
+  },
+  {
+   "expected_input": 1,
+   "expected_output": 2,
+   "messages": [
+    {
+     "role": "user"
+    }
+   ],
+   "name": "missing_content"
+  },
+  {
+   "expected_input": 30,
+   "expected_output": 60,
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "describe this image please",
+       "type": "text"
+      },
+      {
+       "image_url": {
+        "detail": "low",
+        "url": "http://x/y.png"
+       },
+       "type": "image_url"
+      },
+      "bare string block",
+      null,
+      7
+     ],
+     "role": "user"
+    }
+   ],
+   "name": "blocks"
+  },
+  {
+   "expected_input": 7,
+   "expected_output": 14,
+   "messages": [
+    {
+     "content": [
+      {
+       "text": 12345,
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "name": "text_block_nonstr"
+  },
+  {
+   "expected_input": 31,
+   "expected_output": 62,
+   "messages": [
+    {
+     "content": null,
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"city\": \"Paris\"}",
+        "name": "get_weather"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "sunny, 21C",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    }
+   ],
+   "name": "tool_calls"
+  },
+  {
+   "expected_input": 5,
+   "expected_output": 10,
+   "messages": [
+    {
+     "b": true,
+     "content": "x",
+     "f": 1.0,
+     "n": 12,
+     "role": "user",
+     "s": "plain",
+     "z": false
+    }
+   ],
+   "name": "extra_scalars"
+  },
+  {
+   "expected_input": 11,
+   "expected_output": 22,
+   "messages": [
+    {
+     "content": "q",
+     "meta": {
+      "a": [
+       1,
+       2.5,
+       true,
+       null,
+       "it's"
+      ],
+      "b": {}
+     },
+     "role": "user"
+    }
+   ],
+   "name": "nested_repr"
+  },
+  {
+   "expected_input": 18,
+   "expected_output": 36,
+   "messages": [
+    {
+     "content": "q",
+     "m": [
+      "has \"double\"",
+      "has 'single'",
+      "both ' and \"",
+      "tab\there",
+      "nl\nx"
+     ],
+     "role": "user"
+    }
+   ],
+   "name": "repr_quotes"
+  },
+  {
+   "expected_input": 15,
+   "expected_output": 30,
+   "messages": [
+    {
+     "content": "q",
+     "m": [
+      "a b",
+      "c​d",
+      "e f",
+      "g﻿h",
+      "",
+      ""
+     ],
+     "role": "user"
+    }
+   ],
+   "name": "repr_nonprintable"
+  },
+  {
+   "expected_input": 8,
+   "expected_output": 16,
+   "messages": [
+    {
+     "content": "q",
+     "m": [
+      "café",
+      "日本語",
+      "😀",
+      "\u0007bell"
+     ],
+     "role": "user"
+    }
+   ],
+   "name": "repr_unicode"
+  },
+  {
+   "expected_input": 12,
+   "expected_output": 24,
+   "messages": [
+    {
+     "content": "q",
+     "m": [
+      1e+16,
+      1.5e-07,
+      0.0001,
+      123456789.125,
+      1e+300
+     ],
+     "role": "user"
+    }
+   ],
+   "name": "float_exponents"
+  },
+  {
+   "expected_input": 3,
+   "expected_output": 6,
+   "messages": [
+    {
+     "content": 123456789012,
+     "role": "user"
+    }
+   ],
+   "name": "scalar_content_int"
+  },
+  {
+   "expected_input": 5,
+   "expected_output": 10,
+   "messages": [
+    {
+     "content": {
+      "k": "vvvvvvvvvvvv"
+     },
+     "role": "user"
+    }
+   ],
+   "name": "dict_content"
+  },
+  {
+   "expected_input": 12,
+   "expected_output": 24,
+   "messages": [
+    "a bare string message of some length",
+    123456789,
+    null,
+    true
+   ],
+   "name": "non_mapping_messages"
+  },
+  {
+   "expected_input": 4,
+   "expected_output": 8,
+   "messages": [
+    {
+     "content": "日本語日本語日本語日本語日本語日本語",
+     "role": "user"
+    }
+   ],
+   "name": "unicode_chars_not_bytes"
+  },
+  {
+   "expected_input": 2500,
+   "expected_output": 5000,
+   "messages": [
+    {
+     "content": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+     "role": "user"
+    }
+   ],
+   "name": "long"
+  },
+  {
+   "expected_input": 1,
+   "expected_output": 2,
+   "messages": [
+    {
+     "content": "abc",
+     "role": "user"
+    }
+   ],
+   "name": "tiny_floor_one"
+  }
+ ],
+ "rate_rows": [
+  {
+   "base_cost_per_waddleai_token": 0.0025,
+   "input_rate": 10.0,
+   "model": "gpt-4o",
+   "output_rate": 20.0,
+   "provider": "openai"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.0001,
+   "input_rate": 30.0,
+   "model": "gpt-4o-mini",
+   "output_rate": 40.0,
+   "provider": "openai"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.001,
+   "input_rate": 10.0,
+   "model": "gpt-4-turbo",
+   "output_rate": 20.0,
+   "provider": "openai"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.003,
+   "input_rate": 10.0,
+   "model": "gpt-4",
+   "output_rate": 20.0,
+   "provider": "openai"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.0005,
+   "input_rate": 20.0,
+   "model": "gpt-3.5-turbo",
+   "output_rate": 30.0,
+   "provider": "openai"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.003,
+   "input_rate": 12.0,
+   "model": "claude-3-5-sonnet-latest",
+   "output_rate": 18.0,
+   "provider": "anthropic"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.015,
+   "input_rate": 8.0,
+   "model": "claude-3-opus-20240229",
+   "output_rate": 15.0,
+   "provider": "anthropic"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.003,
+   "input_rate": 12.0,
+   "model": "claude-3-sonnet-20240229",
+   "output_rate": 18.0,
+   "provider": "anthropic"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.00025,
+   "input_rate": 25.0,
+   "model": "claude-3-haiku-20240307",
+   "output_rate": 35.0,
+   "provider": "anthropic"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.0,
+   "input_rate": 50.0,
+   "model": "llama3.2",
+   "output_rate": 50.0,
+   "provider": "ollama"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.0,
+   "input_rate": 50.0,
+   "model": "llama3.1",
+   "output_rate": 50.0,
+   "provider": "ollama"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.0,
+   "input_rate": 45.0,
+   "model": "mistral",
+   "output_rate": 45.0,
+   "provider": "ollama"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.00125,
+   "input_rate": 12.0,
+   "model": "gemini-1.5-pro",
+   "output_rate": 18.0,
+   "provider": "gemini"
+  },
+  {
+   "base_cost_per_waddleai_token": 7.5e-05,
+   "input_rate": 30.0,
+   "model": "gemini-1.5-flash",
+   "output_rate": 40.0,
+   "provider": "gemini"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.003,
+   "input_rate": 15.0,
+   "model": "command-r-plus",
+   "output_rate": 20.0,
+   "provider": "cohere"
+  },
+  {
+   "base_cost_per_waddleai_token": 0.0005,
+   "input_rate": 25.0,
+   "model": "command-r",
+   "output_rate": 30.0,
+   "provider": "cohere"
+  }
+ ],
+ "tiktoken_version": "0.14.0"
+}
