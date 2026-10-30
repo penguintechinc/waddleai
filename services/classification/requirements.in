@@ -17,3 +17,4 @@ prometheus-client>=0.20
 penguin-licensing==0.1.0
 opentelemetry-sdk>=1.44
 opentelemetry-exporter-otlp-proto-grpc>=1.44
+opentelemetry-exporter-prometheus==0.65b0  # beta line paired with otel 1.44

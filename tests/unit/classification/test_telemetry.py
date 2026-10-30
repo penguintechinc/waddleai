@@ -226,6 +226,58 @@ async def test_span_has_no_text_or_entity_text(rig: Rig) -> None:
     assert logs, "degraded path must have logged (denominator)"
 
 
+async def test_unexpected_exception_text_never_reaches_span() -> None:
+    """A plain RuntimeError(canary) escaping _analyze leaves no canary on the span."""
+    telemetry, spans, _r = make_telemetry()
+    svc = ClassificationServicer(
+        FakeEngine(), FakeCache(), FakeGate(), FakePolicy(), 4096, telemetry=telemetry
+    )
+
+    async def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError(f"unexpected {CANARY}")
+
+    svc._analyze = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await svc.Analyze(req(text=f"x {CANARY}"), _Ctx())
+    (span,) = spans.get_finished_spans()
+    assert span.status.status_code.name == "ERROR"
+    assert not span.events and span.status.description is None
+    assert CANARY not in attr_text(span)
+
+
+def test_attribute_builder_failure_is_swallowed() -> None:
+    """A raising attribute builder cannot break the caller's finally block."""
+    telemetry, _s, _r = make_telemetry()
+
+    def bad() -> dict[str, Any]:
+        raise RuntimeError("backend gone")
+
+    telemetry.set_attributes(object(), bad)
+
+
+async def test_metrics_endpoint_includes_classification_metrics() -> None:
+    """/metrics (default prometheus registry) exposes the new OTel classification metrics."""
+    from services.classification.app import create_app
+
+    cfg = ClassificationConfig.from_env()
+    telemetry = tel.init_telemetry(cfg, set_global=False, prometheus=True)
+    try:
+        telemetry.record_request("ok")
+        telemetry.record_cache("hit")
+        telemetry.observe_duration(0.01)
+        resp = await create_app(cfg, engine=object()).test_client().get("/metrics")
+        body = (await resp.get_data()).decode()
+        for name in (
+            "waddleai_classification_requests_total",
+            "waddleai_classification_cache_total",
+            "waddleai_classification_duration_seconds",
+        ):
+            assert name in body, name
+        assert "classification_auth_failures_total" in body  # existing prometheus metrics too
+    finally:
+        telemetry.shutdown(timeout_ms=500)  # unregisters the reader's collector
+
+
 async def test_trace_context_propagated_from_metadata(rig: Rig) -> None:
     """A W3C traceparent in gRPC metadata makes the span a child of the caller's span."""
     trace_id, parent_id = "0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331"

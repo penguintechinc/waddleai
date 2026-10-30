@@ -16,6 +16,7 @@ from typing import Any
 
 from opentelemetry import metrics, trace
 from opentelemetry.context import Context
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.metrics import CallbackOptions, Meter, MeterProvider, Observation
 from opentelemetry.propagate import extract
 from opentelemetry.sdk.metrics import MeterProvider as SdkMeterProvider
@@ -23,7 +24,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import Tracer, TracerProvider
+from opentelemetry.trace import Status, StatusCode, Tracer, TracerProvider
 
 from services.classification.app.config import ClassificationConfig
 from services.classification.app.grpc_gen import classification_pb2 as _pb
@@ -125,9 +126,13 @@ class Telemetry:
         except Exception:  # noqa: BLE001 - bad/absent metadata just means a root span
             return None
 
-    def set_attributes(self, span: Any, attrs: dict[str, Any]) -> None:
-        """Set span attributes (caller guarantees they are PII-free scalars)."""
-        _safe(lambda: span.set_attributes(attrs))
+    def set_attributes(self, span: Any, attrs: Callable[[], dict[str, Any]]) -> None:
+        """Set span attributes from a lazy builder (PII-free scalars; builder errors swallowed)."""
+        _safe(lambda: span.set_attributes(attrs()))
+
+    def mark_error(self, span: Any) -> None:
+        """Flag the span ERROR with no description (never an exception string: PII risk)."""
+        _safe(lambda: span.set_status(Status(StatusCode.ERROR)))
 
     def shutdown(self, timeout_ms: int = 5000) -> None:
         """Flush and stop owned providers (bounded wait; errors swallowed)."""
@@ -211,12 +216,16 @@ def get_telemetry() -> Telemetry:
         return _default
 
 
-def init_telemetry(cfg: ClassificationConfig, *, set_global: bool = True) -> Telemetry:
+def init_telemetry(
+    cfg: ClassificationConfig, *, set_global: bool = True, prometheus: bool | None = None
+) -> Telemetry:
     """Configure OTLP tracing + metrics from ``OTEL_*`` env; a dead exporter is non-fatal.
 
     Exporters are asynchronous (batch / periodic), so an unreachable collector can
     only drop data, never fail a request. ``set_global=False`` keeps providers private
-    (tests). ``cfg`` is accepted for symmetry with other service init hooks.
+    (tests). ``prometheus`` (default: same as ``set_global``) also exposes the OTel metrics
+    on the default prometheus registry so ``/metrics`` scrapes see them.
+    ``cfg`` is accepted for symmetry.
     """
     global _default
     del cfg  # no config-sourced destinations by design: OTEL_* env only
@@ -232,6 +241,8 @@ def init_telemetry(cfg: ClassificationConfig, *, set_global: bool = True) -> Tel
             exporting = True
         except Exception as exc:  # noqa: BLE001 - broken exporter must not stop the service
             log.warning("telemetry_exporter_init_failed", error_type=type(exc).__name__)
+    if set_global if prometheus is None else prometheus:
+        readers.append(PrometheusMetricReader())  # registers on the default registry (/metrics)
     mp = SdkMeterProvider(resource=resource, metric_readers=readers)
     with _lock:
         if set_global:

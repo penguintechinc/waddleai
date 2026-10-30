@@ -152,18 +152,25 @@ class ClassificationServicer(_ServicerBase):  # type: ignore[misc]  # protoc bas
         obs = _Obs()
         started = time.monotonic()
         parent = self._tel.extract_context(context)
-        with self._tel.tracer.start_as_current_span(SPAN_ANALYZE, context=parent) as span:
+        # record_exception/set_status_on_exception OFF: an unexpected exception's str() could
+        # embed request text (PII); the span gets a description-less ERROR status instead.
+        with self._tel.tracer.start_as_current_span(
+            SPAN_ANALYZE, context=parent, record_exception=False, set_status_on_exception=False
+        ) as span:
             try:
                 response = await self._analyze(request, context, obs)
             except grpc.aio.AbortError:
                 obs.outcome = "invalid"
+                raise
+            except Exception:
+                self._tel.mark_error(span)
                 raise
             finally:
                 self._tel.record_request(obs.outcome)
                 self._tel.observe_duration(time.monotonic() - started)
                 self._tel.set_attributes(
                     span,
-                    {
+                    lambda: {
                         "cache.hit": obs.cache_hit,
                         "ner.backend": str(self._engine.backend),
                         "ner.status": obs.ner_status,
