@@ -202,8 +202,12 @@ pub(crate) enum Pattern {
 
 impl Pattern {
     /// Compiles `pattern`, preferring the linear engine; `limit` bounds the fancy fallback.
-    pub(crate) fn build(pattern: &str, limit: usize) -> Result<Self, fancy_regex::Error> {
-        let full = format!("(?is){pattern}");
+    pub(crate) fn build(
+        pattern: &str,
+        limit: usize,
+        flags: &str,
+    ) -> Result<Self, fancy_regex::Error> {
+        let full = format!("(?{flags}){pattern}");
         if let Ok(re) = regex::Regex::new(&full) {
             return Ok(Self::Linear(re));
         }
@@ -246,7 +250,9 @@ const BUILTIN_BACKTRACK_LIMIT: usize = 100_000_000;
 
 /// Builds an org custom rule pattern (tight backtrack limit).
 pub(crate) fn build_regex(pattern: &str) -> Result<Pattern, fancy_regex::Error> {
-    Pattern::build(pattern, CUSTOM_BACKTRACK_LIMIT)
+    // Multiline: `^`/`$` anchor per line, so each part of a joined multi-part message acts as
+    // its own line (a no-op for patterns without anchors and for single-line text).
+    Pattern::build(pattern, CUSTOM_BACKTRACK_LIMIT, "ism")
 }
 
 /// Outcome of the tier-2 scan beyond its hits.
@@ -288,8 +294,8 @@ impl ContentFilter {
     ) -> Result<Self, BuildError> {
         let mut builtins = Vec::with_capacity(BUILTIN_PATTERNS.len());
         for (name, pattern, confidence) in BUILTIN_PATTERNS {
-            let regex =
-                Pattern::build(pattern, BUILTIN_BACKTRACK_LIMIT).map_err(|_| BuildError(name))?;
+            let regex = Pattern::build(pattern, BUILTIN_BACKTRACK_LIMIT, "is")
+                .map_err(|_| BuildError(name))?;
             builtins.push(Builtin {
                 name,
                 regex,

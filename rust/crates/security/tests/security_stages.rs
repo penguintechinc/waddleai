@@ -43,6 +43,22 @@ fn rig() -> Rig {
     let cfg = RawOrgConfig {
         rules: vec![
             FilterRule {
+                id: 3,
+                name: "anch".into(),
+                rule_type: "custom_regex".into(),
+                target: "both".into(),
+                pattern: r"^ZIP[A-Z]{4}$".into(),
+                action: "redact".into(),
+            },
+            FilterRule {
+                id: 4,
+                name: "cross".into(),
+                rule_type: "custom_regex".into(),
+                target: "both".into(),
+                pattern: r"AAA\sBBB".into(),
+                action: "redact".into(),
+            },
+            FilterRule {
                 id: 2,
                 name: "split".into(),
                 rule_type: "custom_regex".into(),
@@ -331,4 +347,103 @@ async fn out_stage_shares_the_seeded_filter() {
     let s = stage_in(&r, &[]).await;
     assert!(Arc::ptr_eq(s.filter(), &r.filter));
     assert!(Arc::ptr_eq(s.out_stage().filter(), s.filter()));
+}
+
+/// Counts `content filter decision` debug events (one per `filter_input`/`filter_output` run).
+struct RunCounter(Arc<AtomicUsize>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RunCounter {
+    fn on_event(&self, e: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if e.metadata().target().ends_with("content_filter") {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+fn counted() -> (Arc<AtomicUsize>, tracing::subscriber::DefaultGuard) {
+    use tracing_subscriber::layer::SubscriberExt;
+    let n = Arc::new(AtomicUsize::new(0));
+    let sub = tracing_subscriber::registry().with(RunCounter(n.clone()));
+    (n, tracing::subscriber::set_default(sub))
+}
+
+fn parts(texts: &[&str]) -> Value {
+    json!({"role":"user","content": texts.iter().map(|t| json!({"type":"text","text":t})).collect::<Vec<_>>()})
+}
+
+#[tokio::test]
+async fn anchored_rule_matches_one_part_of_many() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let mut c = ctx(vec![parts(&["hello", "ZIPABCD", "world"])]);
+    s.call(&mut c).await.unwrap();
+    assert!(!c.blocked);
+    assert!(c.pii_detected);
+    let p = c.messages[0]["content"].as_array().unwrap();
+    assert_eq!(p[0]["text"], "hello");
+    assert_eq!(p[2]["text"], "world");
+    assert!(!p[1]["text"].as_str().unwrap().contains("ZIPABCD"));
+}
+
+#[tokio::test]
+async fn many_slots_cost_exactly_one_filter_run() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let texts: Vec<String> = (0..40).map(|i| format!("part {i}")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut c = ctx(vec![parts(&refs)]);
+    let (n, _g) = counted();
+    s.call(&mut c).await.unwrap();
+    assert_eq!(n.load(Ordering::SeqCst), 1);
+    // positive control: the counter sees a run for a redacting message too
+    let mut c = ctx(vec![parts(&["a", "ZIPABCD"])]);
+    s.call(&mut c).await.unwrap();
+    assert_eq!(n.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn redaction_crossing_part_boundary_blocks() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let mut c = ctx(vec![parts(&["xx AAA", "BBB yy"])]);
+    s.call(&mut c).await.unwrap();
+    assert!(c.blocked);
+    assert_eq!(c.block_reason.as_deref(), Some("pii_detected"));
+}
+
+#[tokio::test]
+async fn empty_and_whitespace_slots_skipped() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let mut c = ctx(vec![parts(&["", "  \n ", "\t"])]);
+    let (n, _g) = counted();
+    s.call(&mut c).await.unwrap();
+    assert_eq!(n.load(Ordering::SeqCst), 0);
+    assert!(!c.blocked);
+    assert_eq!(c.messages[0]["content"][1]["text"], "  \n ");
+}
+
+#[tokio::test]
+async fn multiline_slot_text_maps_back() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let mut c = ctx(vec![parts(&["l1\nZIPABCD\nl3", "tail"])]);
+    s.call(&mut c).await.unwrap();
+    assert!(!c.blocked);
+    let p = c.messages[0]["content"].as_array().unwrap();
+    assert!(p[0]["text"].as_str().unwrap().starts_with("l1\n"));
+    assert!(p[0]["text"].as_str().unwrap().ends_with("\nl3"));
+    assert_eq!(p[1]["text"], "tail");
+}
+
+#[tokio::test]
+async fn slot_count_over_cap_blocks() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let texts: Vec<String> = (0..300).map(|i| format!("p{i}")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut c = ctx(vec![parts(&refs)]);
+    s.call(&mut c).await.unwrap();
+    assert!(c.blocked);
+    assert_eq!(c.block_reason.as_deref(), Some("pii_detected"));
 }

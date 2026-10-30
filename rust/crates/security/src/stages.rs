@@ -101,13 +101,17 @@ impl SecurityInStage {
     }
 }
 
-/// Filters one message's text slots, rewriting them in place. `None` = hard block (or an
-/// unsupported shape, which fails closed); `Some(violated)` otherwise.
+/// Most text slots one message may carry before it is refused (fail closed, bounds work).
+const MAX_SLOTS: usize = 256;
+
+/// Filters one message in a single `filter_input` call over its joined text, then maps the
+/// redaction back into the slots. `None` = hard block (a block verdict, an unsupported shape,
+/// too many slots, or a redaction that cannot be mapped back); `Some(violated)` otherwise.
 ///
-/// Slots come from the same walker as the prompt scanner, so everything detected is also
-/// redacted. The joined text (the scanner's unit) is filtered first so a rule split across
-/// parts still fires; after per-slot redaction the joined result is re-checked and any
-/// leftover hit blocks rather than leaks.
+/// Slots come from the same walker as the prompt scanner, joined with `"\n"` (custom rules are
+/// multiline, so anchors apply per part). Empty/whitespace-only slots are not sent. Mapping
+/// back splits the redacted text on `"\n"`; if the line count changed (a span crossed a part
+/// boundary) the message is blocked rather than guessed at.
 async fn filter_message(
     filter: &ContentFilter,
     msg: &mut Value,
@@ -115,39 +119,45 @@ async fn filter_message(
     org: Option<i64>,
 ) -> Option<bool> {
     let (ok, ptrs) = message_slots(msg);
-    if !ok {
+    if !ok || ptrs.len() > MAX_SLOTS {
         return None;
     }
-    let join = |m: &Value| -> String {
-        ptrs.iter()
-            .filter_map(|p| m.pointer(p).and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    if ptrs.is_empty() {
+    let active: Vec<&String> = ptrs
+        .iter()
+        .filter(|p| {
+            msg.pointer(p)
+                .and_then(Value::as_str)
+                .is_some_and(|t| !t.trim().is_empty())
+        })
+        .collect();
+    if active.is_empty() {
         return Some(false);
     }
-    let joined = filter.filter_input(&join(msg), user, org, None).await;
-    if !joined.allowed {
+    let texts: Vec<String> = active
+        .iter()
+        .filter_map(|p| msg.pointer(p).and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    let joined = texts.join("\n");
+    let r = filter.filter_input(&joined, user, org, None).await;
+    if !r.allowed {
         return None;
     }
-    if joined.violations.is_empty() {
-        return Some(false);
+    if r.filtered_text == joined {
+        return Some(!r.violations.is_empty());
     }
-    for p in &ptrs {
-        let Some(Value::String(s)) = msg.pointer_mut(p) else {
+    let segments: Vec<&str> = r.filtered_text.split('\n').collect();
+    let lines: Vec<usize> = texts.iter().map(|t| t.matches('\n').count() + 1).collect();
+    if segments.len() != lines.iter().sum::<usize>() {
+        tracing::warn!("security_in: redaction crossed a part boundary; blocking");
+        return None;
+    }
+    let mut at = 0;
+    for (p, n) in active.iter().zip(&lines) {
+        let Some(Value::String(slot)) = msg.pointer_mut(p) else {
             return None;
         };
-        let r = filter.filter_input(s, user, org, None).await;
-        if !r.allowed {
-            return None;
-        }
-        *s = r.filtered_text;
-    }
-    let now = join(msg);
-    let again = filter.filter_input(&now, user, org, None).await;
-    if !again.allowed || again.filtered_text != now {
-        return None;
+        *slot = segments[at..at + n].join("\n");
+        at += n;
     }
     Some(true)
 }
