@@ -820,3 +820,46 @@ afterwards for readiness.
       cpu: "250m"
 {{- end }}
 {{- end }}
+
+{{/*
+Image name for the classification service (same digest/registry rules as proxy).
+*/}}
+{{- define "waddleai.classification.image" -}}
+{{- $i := .Values.classification.image -}}
+{{- if $i.digest }}
+{{- if .Values.global.imageRegistry }}
+{{- printf "%s/%s@%s" .Values.global.imageRegistry $i.repository $i.digest }}
+{{- else }}
+{{- printf "%s@%s" $i.repository $i.digest }}
+{{- end }}
+{{- else if .Values.global.imageRegistry }}
+{{- printf "%s/%s:%s" .Values.global.imageRegistry $i.repository $i.tag }}
+{{- else }}
+{{- printf "%s:%s" $i.repository $i.tag }}
+{{- end }}
+{{- end }}
+
+{{/*
+Name of the Secret holding the classification gRPC server cert/key.
+*/}}
+{{- define "waddleai.classification.tlsSecret" -}}
+{{- default (printf "%s-classification-tls" (include "waddleai.fullname" .)) .Values.classification.tls.secretName -}}
+{{- end }}
+
+{{/*
+Classification NER-cache HMAC key (min 32 bytes): explicit override wins, else
+reuse the live Secret's value (lookup) so upgrades never rotate it, else
+generate 64 random chars (first install / helm template).
+*/}}
+{{- define "waddleai.classificationHmacKey" -}}
+{{- if .Values.secrets.classificationNerCacheHmacKey -}}
+{{- .Values.secrets.classificationNerCacheHmacKey -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Values.namespace "waddleai-secrets" -}}
+{{- if and $existing (hasKey $existing.data "classification-ner-cache-hmac-key") -}}
+{{- index $existing.data "classification-ner-cache-hmac-key" | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 64 -}}
+{{- end -}}
+{{- end -}}
+{{- end }}

@@ -806,8 +806,22 @@ jobs:
       # of which this suite exercises).
       run: make test-coverage
 
+  # Real Presidio+spaCy suite INSIDE the built classification image. A skip or a
+  # zero-collected run is a FAIL (the model is baked at build time), so this gate
+  # cannot silently stop testing the model. Asserts collected >= 1.
+  test-classification-real:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Run ner_model suite in-image (NER_MODEL_REQUIRED=1)
+      run: make test-classification-real
+
   build-platform:
-    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-contract, test-integration, test-e2e, test-penguincode]
+    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-classification-real, test-contract, test-integration, test-e2e, test-penguincode]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -828,7 +842,7 @@ jobs:
         # expands it across both platforms; the `include` entry below then
         # merges context/dockerfile onto each of those two combinations,
         # exactly as it already does for `management`.
-        service: [proxy, management, webui]
+        service: [proxy, management, webui, classification]
         include:
           - service: webui
             context: ./services/webui
@@ -839,6 +853,12 @@ jobs:
           - service: management
             context: .
             dockerfile: ./services/management/Dockerfile
+          # classification (PII-NER gRPC service): repo-root context so the image can
+          # COPY the shared/ package. Published at beta+ only (this workflow never
+          # runs for alpha/pre-alpha, which are local builds).
+          - service: classification
+            context: .
+            dockerfile: ./services/classification/Dockerfile
 
     steps:
     - name: Checkout code
@@ -936,7 +956,7 @@ jobs:
   # Mirror of build-platform for linux/arm64 only; pushes the same per-arch
   # `-arm64` tags merge-manifests folds into the multi-arch index when enabled.
   build-platform-arm64:
-    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-contract, test-integration, test-e2e, test-penguincode]
+    needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-classification-real, test-contract, test-integration, test-e2e, test-penguincode]
     if: ${{ vars.ENABLE_ARM64_BUILDS == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -956,7 +976,7 @@ jobs:
         # expands it across both platforms; the `include` entry below then
         # merges context/dockerfile onto each of those two combinations,
         # exactly as it already does for `management`.
-        service: [proxy, management, webui]
+        service: [proxy, management, webui, classification]
         include:
           - service: webui
             context: ./services/webui
@@ -967,6 +987,12 @@ jobs:
           - service: management
             context: .
             dockerfile: ./services/management/Dockerfile
+          # classification (PII-NER gRPC service): repo-root context so the image can
+          # COPY the shared/ package. Published at beta+ only (this workflow never
+          # runs for alpha/pre-alpha, which are local builds).
+          - service: classification
+            context: .
+            dockerfile: ./services/classification/Dockerfile
 
     steps:
     - name: Checkout code
@@ -1074,7 +1100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [proxy, management, webui]
+        service: [proxy, management, webui, classification]
 
     steps:
     - name: Checkout code
@@ -1344,7 +1370,7 @@ jobs:
       security-events: write
     strategy:
       matrix:
-        service: [proxy, management, webui]
+        service: [proxy, management, webui, classification]
 
     steps:
     - name: Run Trivy vulnerability scanner

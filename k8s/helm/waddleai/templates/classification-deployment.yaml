@@ -1,0 +1,180 @@
+{{/*
+Classification service (PII-NER over gRPC). Security posture is fixed here, not
+env-tunable: non-root, read-only root FS (only /tmp is writable, via emptyDir),
+no privilege escalation, all caps dropped, RuntimeDefault seccomp, no SA token,
+no hostNetwork. The container command/args are deliberately NOT set: the image
+entrypoint runs `hypercorn --workers 0` and any other worker count breaks the
+engine's ProcessPoolExecutor. Scale with replicas, not hypercorn workers.
+*/}}
+{{- if .Values.classification.enabled -}}
+{{- $c := .Values.classification -}}
+{{- if not (or $c.tls.enabled $c.tls.allowInsecure) -}}
+{{- fail "classification: gRPC TLS is required -- set classification.tls.enabled=true (or classification.tls.allowInsecure=true for dev ONLY)" -}}
+{{- end -}}
+{{- if and $c.spiffeAllowedIds (not $c.tls.enabled) -}}
+{{- fail "classification: spiffeAllowedIds requires classification.tls.enabled=true (mTLS)" -}}
+{{- end -}}
+{{- $host := include "waddleai.publicHost" . | default "waddleai.penguintech.io" -}}
+{{- $tlsDir := "/etc/waddleai/classification-tls" -}}
+{{- $caDir := "/etc/waddleai/classification-client-ca" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "waddleai.fullname" . }}-classification
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+  annotations:
+    checkov.io/skip1: "CKV_K8S_35=NER_CACHE_HMAC_KEY is read from env by the app; sourced from a Secret ref, never a literal"
+    checkov.io/skip2: "CKV2_K8S_6=Isolation is enforced by CiliumNetworkPolicy (classification-network-policy.yaml), which checkov cannot see"
+spec:
+  # Omitted when autoscaling is enabled so a helm upgrade never fights the HPA.
+  {{- if not $c.autoscaling.enabled }}
+  replicas: {{ $c.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: classification
+  template:
+    metadata:
+      labels:
+        {{- include "waddleai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: classification
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "waddleai.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml $c.podSecurityContext | nindent 8 }}
+      containers:
+        - name: classification
+          securityContext:
+            {{- toYaml $c.securityContext | nindent 12 }}
+          image: {{ include "waddleai.classification.image" . }}
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $c.service.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ $c.service.grpcPort }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := $c.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: HTTP_PORT
+              value: {{ $c.service.httpPort | quote }}
+            - name: GRPC_PORT
+              value: {{ $c.service.grpcPort | quote }}
+            - name: NER_POOL_WORKERS
+              value: {{ $c.nerPoolWorkers | quote }}
+            - name: NER_CACHE_TTL_SECONDS
+              value: {{ $c.nerCacheTtlSeconds | quote }}
+            - name: REDIS_URL
+              value: {{ default (printf "redis://%s-valkey:6379/0" (include "waddleai.fullname" .)) $c.redisUrl | quote }}
+            - name: JWT_ISSUER
+              value: {{ default (printf "https://%s" $host) $c.jwt.issuer | quote }}
+            - name: JWT_AUDIENCE
+              value: {{ $c.jwt.audience | quote }}
+            - name: JWKS_URL
+              value: {{ default (printf "https://%s/.well-known/jwks.json" $host) $c.jwt.jwksUrl | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "waddleai-classification"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $c.otel.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ $c.otel.protocol | quote }}
+            {{- if $c.tls.enabled }}
+            - name: GRPC_TLS_CERT_FILE
+              value: "{{ $tlsDir }}/tls.crt"
+            - name: GRPC_TLS_KEY_FILE
+              value: "{{ $tlsDir }}/tls.key"
+            {{- if $c.spiffeAllowedIds }}
+            - name: GRPC_TLS_CLIENT_CA_FILE
+              value: {{ if $c.tls.clientCa.secretName }}"{{ $caDir }}/{{ $c.tls.clientCa.key }}"{{ else }}"{{ $tlsDir }}/ca.crt"{{ end }}
+            - name: SPIFFE_ALLOWED_IDS
+              value: {{ join "," $c.spiffeAllowedIds | quote }}
+            {{- end }}
+            {{- else }}
+            # DEV ONLY: plaintext gRPC. Never set outside alpha.
+            - name: ALLOW_INSECURE_GRPC
+              value: "1"
+            {{- end }}
+            - name: NER_CACHE_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.hmacKey.secretName }}
+                  key: {{ $c.hmacKey.key }}
+          startupProbe:
+            httpGet:
+              path: {{ $c.startupProbe.path }}
+              port: http
+            initialDelaySeconds: {{ $c.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ $c.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ $c.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ $c.startupProbe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ $c.livenessProbe.path }}
+              port: http
+            periodSeconds: {{ $c.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ $c.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ $c.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ $c.readinessProbe.path }}
+              port: http
+            periodSeconds: {{ $c.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ $c.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ $c.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if $c.tls.enabled }}
+            - name: tls
+              mountPath: {{ $tlsDir }}
+              readOnly: true
+            {{- if and $c.spiffeAllowedIds $c.tls.clientCa.secretName }}
+            - name: client-ca
+              mountPath: {{ $caDir }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $c.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "waddleai.classification.tlsSecret" . }}
+            defaultMode: 0440
+        {{- if and $c.spiffeAllowedIds $c.tls.clientCa.secretName }}
+        - name: client-ca
+          secret:
+            secretName: {{ $c.tls.clientCa.secretName }}
+            defaultMode: 0440
+        {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

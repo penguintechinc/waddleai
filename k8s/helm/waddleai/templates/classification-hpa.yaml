@@ -1,0 +1,28 @@
+{{/*
+CPU-based HPA for classification. NOTE: a queue-depth custom metric (saturation of
+MAX_QUEUE_DEPTH) is the better scaling signal but needs a metrics adapter -- deferred.
+*/}}
+{{- if and .Values.classification.enabled .Values.classification.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "waddleai.fullname" . }}-classification
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: classification
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "waddleai.fullname" . }}-classification
+  minReplicas: {{ .Values.classification.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.classification.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.classification.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
