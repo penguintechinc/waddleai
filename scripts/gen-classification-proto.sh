@@ -1,6 +1,9 @@
 #!/bin/bash
 # Regenerate the classification v1 gRPC stubs + golden FileDescriptorSet.
 #
+# Also emits classification_pb2.pyi so mypy sees the message/enum symbols that
+# the runtime descriptor builder defines dynamically.
+#
 # Deterministic: grpcio-tools is pinned EXACTLY (stubs embed the protobuf gencode
 # version, so a different grpcio-tools produces a different diff). The CI drift
 # gate runs this script and then `git diff --exit-code`.
@@ -33,12 +36,13 @@ trap 'rm -rf "$TMP"' EXIT
     -I "$PROTO_ROOT" \
     --python_out="$TMP" \
     --grpc_python_out="$TMP" \
+    --pyi_out="$TMP" \
     --descriptor_set_out="$DESC_OUT" \
     "$PROTO_REL"
 
 mkdir -p "$OUT_DIR"
 src="$TMP/waddleai/classification/v1"
-for f in classification_pb2.py classification_pb2_grpc.py; do
+for f in classification_pb2.py classification_pb2_grpc.py classification_pb2.pyi; do
     [ -f "$src/$f" ] || { echo "Error: protoc did not produce $f" >&2; exit 1; }
     # Flat package: rewrite the absolute cross-import to a relative one.
     sed -E 's/^from waddleai\.classification\.v1 import classification_pb2/from . import classification_pb2/' \
@@ -49,4 +53,4 @@ cat > "$OUT_DIR/__init__.py" <<'PYEOF'
 """Generated gRPC stubs for waddleai.classification.v1 (generated)."""
 PYEOF
 
-echo "Generated: $OUT_DIR/classification_pb2{,_grpc}.py and $DESC_OUT"
+echo "Generated: $OUT_DIR/classification_pb2{.py,.pyi,_grpc.py} and $DESC_OUT"

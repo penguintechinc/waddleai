@@ -275,11 +275,12 @@ async def test_real_mtls_spiffe_over_tls_channel(tmp_path: Path) -> None:
         ok = await call(client_creds([x509.UniformResourceIdentifier(SPIFFE)]))
         assert ok.ner_status == pb.NER_STATUS_OK
 
-        for sans in (
+        bad_san_sets: list[list[x509.GeneralName]] = [
             [x509.UniformResourceIdentifier("spiffe://penguintech.io/test/other")],
             [x509.DNSName("spiffe.example")],
             [x509.UniformResourceIdentifier("https://penguintech.io/test/proxy")],
-        ):
+        ]
+        for sans in bad_san_sets:
             with pytest.raises(grpc.aio.AioRpcError) as ei:
                 await call(client_creds(sans))
             assert ei.value.code() == grpc.StatusCode.UNAUTHENTICATED

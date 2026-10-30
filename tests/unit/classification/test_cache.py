@@ -85,7 +85,8 @@ async def test_value_contains_no_text(cache: NerCache, client: fakeredis.FakeAsy
     for needle in ("Jane", "Smithers", "555-867-5309", "merger", TEXT):
         assert needle.encode() not in stored
     for k in await client.keys("*"):
-        assert b"Jane" not in k and k.startswith(b"clsf:")
+        kb = k.encode() if isinstance(k, str) else k
+        assert b"Jane" not in kb and kb.startswith(b"clsf:")
 
 
 async def test_degraded_results_never_cached(

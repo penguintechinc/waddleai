@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import grpc
 import pytest
@@ -266,7 +266,7 @@ async def test_metrics_endpoint_includes_classification_metrics() -> None:
         telemetry.record_cache("hit")
         telemetry.observe_duration(0.01)
         resp = await create_app(cfg, engine=object()).test_client().get("/metrics")
-        body = (await resp.get_data()).decode()
+        body = await resp.get_data(as_text=True)
         for name in (
             "waddleai_classification_requests_total",
             "waddleai_classification_cache_total",
@@ -300,7 +300,7 @@ def test_entity_type_label_cardinality_bounded() -> None:
     assert tel.entity_type_label(987654) == "OTHER"
     assert tel.entity_type_label(pb.ENTITY_TYPE_UNSPECIFIED) == "OTHER"
     telemetry, _s, reader = make_telemetry()
-    spans = [pb.EntitySpan(entity_type=n) for n in (987650, 987651, 987652)]
+    spans = [pb.EntitySpan(entity_type=cast(Any, n)) for n in (987650, 987651, 987652)]
     telemetry.record_entities(spans)
     pts = metric_points(reader)["waddleai_classification_entities_total"]
     assert label_sets(pts) == [{"entity_type": "OTHER"}]
@@ -371,7 +371,7 @@ def test_emit_failures_are_swallowed() -> None:
     telemetry.record_request("ok")
     telemetry.observe_duration(0.1)
     telemetry.record_cache("hit")
-    telemetry.record_entities([pb.EntitySpan(entity_type=1)])
+    telemetry.record_entities([pb.EntitySpan(entity_type=cast(Any, 1))])
     telemetry.extract_context(object())  # no invocation_metadata -> root context, no raise
 
 
