@@ -57,6 +57,8 @@ paths = [
   '''^tests/unit/security/test_content_filter_redaction\.py$''',
   '''^tests/unit/test_prompt_security_merge\.py$''',
   '''^services/webui/src/test/VirtualKeys\.test\.jsx$''',
+  '''^scripts/export-patterns\.py$''',
+  '''^rust/crates/security/tests/fixtures/patterns\.json$''',
 ]
 
 [[rules]]
