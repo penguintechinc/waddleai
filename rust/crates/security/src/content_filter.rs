@@ -305,6 +305,11 @@ impl ContentFilter {
         })
     }
 
+    /// The rules store this filter reads (so callers can seed exactly the store in use).
+    pub fn rules(&self) -> &Arc<RulesStore> {
+        &self.rules
+    }
+
     /// Filters a prompt before it reaches the model. `user_id`/`ip` are for the audit layer
     /// and are intentionally not logged here.
     pub async fn filter_input(

@@ -9,7 +9,7 @@ use auth::{AuthMode as UserAuthMode, UserContext};
 use pipeline::{FlagResolver, PipelineContext, Stage, StageError, StaticFlagResolver};
 use security::{
     ContentFilter, FailModes, FilterRule, Policy, RawOrgConfig, RulesError, RulesSource,
-    RulesStore, SecurityInStage, SecurityOutStage,
+    RulesStore, SecurityInStage,
 };
 use serde_json::{json, Value};
 
@@ -36,32 +36,37 @@ impl RulesSource for FakeSource {
 struct Rig {
     source: Arc<FakeSource>,
     filter: Arc<ContentFilter>,
-    rules: Arc<RulesStore>,
 }
 
 fn rig() -> Rig {
     let source = Arc::new(FakeSource::default());
     let cfg = RawOrgConfig {
-        rules: vec![FilterRule {
-            id: 1,
-            name: "blk".into(),
-            rule_type: "custom_regex".into(),
-            target: "both".into(),
-            pattern: "BLOCKME".into(),
-            action: "block".into(),
-        }],
+        rules: vec![
+            FilterRule {
+                id: 2,
+                name: "split".into(),
+                rule_type: "custom_regex".into(),
+                target: "both".into(),
+                pattern: r"SPLIT\sME".into(),
+                action: "block".into(),
+            },
+            FilterRule {
+                id: 1,
+                name: "blk".into(),
+                rule_type: "custom_regex".into(),
+                target: "both".into(),
+                pattern: "BLOCKME".into(),
+                action: "block".into(),
+            },
+        ],
         disabled_builtins: vec![],
     };
     // The fake source does not merge scopes (the DB source does), so seed both.
     source.configs.lock().unwrap().insert(None, cfg.clone());
     source.configs.lock().unwrap().insert(Some(7), cfg);
     let rules = Arc::new(RulesStore::new(source.clone(), None));
-    let filter = Arc::new(ContentFilter::new(rules.clone(), None, FailModes::default()).unwrap());
-    Rig {
-        source,
-        filter,
-        rules,
-    }
+    let filter = Arc::new(ContentFilter::new(rules, None, FailModes::default()).unwrap());
+    Rig { source, filter }
 }
 
 fn flags(on: &[&str]) -> Arc<dyn FlagResolver> {
@@ -69,15 +74,9 @@ fn flags(on: &[&str]) -> Arc<dyn FlagResolver> {
 }
 
 async fn stage_in(r: &Rig, on: &[&str]) -> SecurityInStage {
-    SecurityInStage::start(
-        Policy::named("strict"),
-        r.filter.clone(),
-        r.rules.clone(),
-        &[],
-        flags(on),
-    )
-    .await
-    .expect("start")
+    SecurityInStage::start(Policy::named("strict"), r.filter.clone(), &[], flags(on))
+        .await
+        .expect("start")
 }
 
 fn ctx(messages: Vec<Value>) -> PipelineContext {
@@ -131,6 +130,7 @@ async fn pii_hard_block_400_pii_detected() {
     assert!(c.blocked);
     assert_eq!(c.status_code, 400);
     assert_eq!(c.block_reason.as_deref(), Some("pii_detected"));
+    assert_eq!(c.messages[0]["content"], "hello BLOCKME world");
 }
 
 #[tokio::test]
@@ -192,7 +192,7 @@ async fn security_v2_flag_on_fails_loudly() {
     let mut c = ctx(vec![json!({"role":"user","content":"hello"})]);
     let e = s.call(&mut c).await.unwrap_err();
     assert!(matches!(e, StageError::Unsupported("security_v2")));
-    let o = SecurityOutStage::new(r.filter.clone(), flags(&["waddleai.security_v2"]));
+    let o = s.out_stage();
     let mut c = ctx(vec![]);
     c.response_text = "hi".into();
     assert!(matches!(
@@ -214,7 +214,7 @@ async fn start_seeds_rules_cache_and_try_new_path() {
 #[tokio::test]
 async fn output_filter_redacts_response_text() {
     let r = rig();
-    let s = SecurityOutStage::new(r.filter.clone(), flags(&[]));
+    let s = stage_in(&r, &[]).await.out_stage();
     let mut c = ctx(vec![]);
     c.response_text = "reach me at bob@example.com".into();
     s.call(&mut c).await.unwrap();
@@ -226,7 +226,7 @@ async fn output_filter_redacts_response_text() {
 #[tokio::test]
 async fn output_empty_response_passthrough() {
     let r = rig();
-    let s = SecurityOutStage::new(r.filter.clone(), flags(&[]));
+    let s = stage_in(&r, &[]).await.out_stage();
     let mut c = ctx(vec![]);
     s.call(&mut c).await.unwrap();
     assert!(!c.blocked);
@@ -235,13 +235,14 @@ async fn output_empty_response_passthrough() {
 #[tokio::test]
 async fn output_block_sets_status_and_reason_per_python() {
     let r = rig();
-    let s = SecurityOutStage::new(r.filter.clone(), flags(&[]));
+    let s = stage_in(&r, &[]).await.out_stage();
     let mut c = ctx(vec![]);
     c.response_text = "leak BLOCKME".into();
     s.call(&mut c).await.unwrap();
     assert!(c.blocked);
     assert_eq!(c.status_code, 400);
     assert_eq!(c.block_reason.as_deref(), Some("response_blocked_pii"));
+    assert_eq!(c.response_text, "leak BLOCKME");
 }
 
 #[tokio::test]
@@ -271,4 +272,63 @@ async fn non_string_content_blocks_handled_as_python() {
     let mut c = ctx(vec![json!({"role":"user","content":42})]);
     s.call(&mut c).await.unwrap();
     assert!(c.blocked);
+}
+
+#[tokio::test]
+async fn tool_call_arguments_pii_detected_and_redacted() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let mut c = ctx(vec![
+        json!({"role":"assistant","content":null,"tool_calls":[
+        {"id":"1","type":"function","function":{"name":"send","arguments":"{\"to\":\"bob@example.com\"}"}}]}),
+    ]);
+    s.call(&mut c).await.unwrap();
+    assert!(!c.blocked);
+    assert!(c.pii_detected);
+    let out = c.messages[0].to_string();
+    assert!(!out.contains("bob@example.com"), "leaked: {out}");
+    assert_eq!(c.messages[0]["tool_calls"][0]["id"], "1");
+}
+
+#[tokio::test]
+async fn function_call_arguments_pii_redacted() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    let mut c = ctx(vec![
+        json!({"role":"assistant","content":"x","function_call":{"name":"f","arguments":"mail bob@example.com"}}),
+    ]);
+    s.call(&mut c).await.unwrap();
+    assert!(!c.messages[0].to_string().contains("bob@example.com"));
+}
+
+#[tokio::test]
+async fn block_rule_split_across_parts_still_blocks() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    // BLOCKME is a regex rule; split so neither part matches alone but the joined unit does
+    // (rule pattern below spans the join newline).
+    let mut c = ctx(vec![json!({"role":"user","content":[
+        {"type":"text","text":"SPLIT"},{"type":"text","text":"ME"}]})]);
+    s.call(&mut c).await.unwrap();
+    assert!(c.blocked);
+    assert_eq!(c.block_reason.as_deref(), Some("pii_detected"));
+}
+
+#[tokio::test]
+async fn v2_flag_on_with_empty_input_still_passes_through() {
+    let r = rig();
+    let s = stage_in(&r, &["waddleai.security_v2"]).await;
+    let mut c = ctx(vec![]);
+    s.call(&mut c).await.unwrap();
+    let mut c = ctx(vec![]);
+    s.out_stage().call(&mut c).await.unwrap();
+    assert!(!c.blocked);
+}
+
+#[tokio::test]
+async fn out_stage_shares_the_seeded_filter() {
+    let r = rig();
+    let s = stage_in(&r, &[]).await;
+    assert!(Arc::ptr_eq(s.filter(), &r.filter));
+    assert!(Arc::ptr_eq(s.out_stage().filter(), s.filter()));
 }

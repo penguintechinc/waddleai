@@ -290,9 +290,11 @@ impl PromptScanner {
     pub fn scan_messages(&self, messages: &[Value]) -> Vec<Threat> {
         let mut out = Vec::new();
         for m in messages {
-            let mut texts: Vec<&str> = Vec::new();
-            let mut ok = collect_content(m.get("content"), &mut texts);
-            ok &= collect_tool_calls(m, &mut texts);
+            let (ok, ptrs) = message_slots(m);
+            let texts: Vec<&str> = ptrs
+                .iter()
+                .filter_map(|p| m.pointer(p).and_then(Value::as_str))
+                .collect();
             if !ok {
                 out.push(self.unsupported());
             }
@@ -416,14 +418,33 @@ const NON_TEXT_PART_TYPES: &[&str] = &["image_url", "image", "input_image", "inp
 /// Keys whose string/array/object values can carry text reaching the model.
 const TEXT_KEYS: &[&str] = &["text", "content", "input", "arguments", "partial_json"];
 
-/// Collect scannable strings from a `content` value; false means unsupported shape.
-fn collect_content<'a>(v: Option<&'a Value>, out: &mut Vec<&'a str>) -> bool {
+/// Escapes one object key as a JSON-pointer segment.
+fn seg(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+/// Every text-bearing string slot of one message, as JSON pointers relative to the message,
+/// plus whether every part had a supported shape (false = fail closed).
+///
+/// This is the SINGLE field walker: the prompt scanner reads these slots and the content
+/// filter rewrites the same slots, so detection and redaction coverage cannot drift apart.
+pub(crate) fn message_slots(m: &Value) -> (bool, Vec<String>) {
+    let mut out = Vec::new();
+    let mut ok = collect_content(m.get("content"), "/content", &mut out);
+    ok &= collect_tool_calls(m, &mut out);
+    (ok, out)
+}
+
+/// Collect scannable string slots from a `content` value; false means unsupported shape.
+fn collect_content(v: Option<&Value>, ptr: &str, out: &mut Vec<String>) -> bool {
     match v {
-        Some(Value::String(s)) => {
-            out.push(s);
+        Some(Value::String(_)) => {
+            out.push(ptr.to_string());
             true
         }
-        Some(Value::Array(parts)) => parts.iter().fold(true, |ok, p| collect_part(p, out) & ok),
+        Some(Value::Array(parts)) => parts.iter().enumerate().fold(true, |ok, (i, p)| {
+            collect_part(p, &format!("{ptr}/{i}"), out) & ok
+        }),
         // Null/missing content is judged by `collect_tool_calls` (legal only with a call).
         None | Some(Value::Null) => true,
         _ => false,
@@ -448,15 +469,15 @@ fn is_pure_file_reference(o: &serde_json::Map<String, Value>) -> bool {
     top_ok && o.keys().all(|k| FILE_PART_KEYS.contains(&k.as_str()))
 }
 
-/// Collect text from one content part (string or typed object).
+/// Collect slots from one content part (string or typed object).
 ///
 /// Every part has its TEXT_KEYS scanned, even image/audio/file ones (regression:
 /// text smuggled into a "non-text" part). A `file` part with an inline payload is
 /// unscannable and fails closed; pure references (URL/file id) carry no text.
-fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
+fn collect_part(p: &Value, ptr: &str, out: &mut Vec<String>) -> bool {
     match p {
-        Value::String(s) => {
-            out.push(s);
+        Value::String(_) => {
+            out.push(ptr.to_string());
             true
         }
         Value::Object(o) => {
@@ -467,7 +488,7 @@ fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
             for k in TEXT_KEYS {
                 if let Some(v) = o.get(*k) {
                     found = true;
-                    ok &= collect_value(v, out);
+                    ok &= collect_value(v, &format!("{ptr}/{}", seg(k)), out);
                 }
             }
             if ty == "file" && !is_pure_file_reference(o) {
@@ -479,15 +500,19 @@ fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
     }
 }
 
-/// Collect every string reachable inside a text-bearing value (objects/arrays recursed).
-fn collect_value<'a>(v: &'a Value, out: &mut Vec<&'a str>) -> bool {
+/// Collect every string slot reachable inside a text-bearing value (objects/arrays recursed).
+fn collect_value(v: &Value, ptr: &str, out: &mut Vec<String>) -> bool {
     match v {
-        Value::String(s) => {
-            out.push(s);
+        Value::String(_) => {
+            out.push(ptr.to_string());
             true
         }
-        Value::Array(a) => a.iter().fold(true, |ok, x| collect_value(x, out) & ok),
-        Value::Object(o) => o.values().fold(true, |ok, x| collect_value(x, out) & ok),
+        Value::Array(a) => a.iter().enumerate().fold(true, |ok, (i, x)| {
+            collect_value(x, &format!("{ptr}/{i}"), out) & ok
+        }),
+        Value::Object(o) => o.iter().fold(true, |ok, (k, x)| {
+            collect_value(x, &format!("{ptr}/{}", seg(k)), out) & ok
+        }),
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
     }
 }
@@ -501,16 +526,16 @@ fn is_call_shape(c: &Value) -> bool {
     })
 }
 
-/// Collect tool/function-call text (whole objects); false on unrecognized call
+/// Collect tool/function-call slots (whole objects); false on unrecognized call
 /// shapes, or when content is absent and no recognized call carries it.
-fn collect_tool_calls<'a>(m: &'a Value, out: &mut Vec<&'a str>) -> bool {
+fn collect_tool_calls(m: &Value, out: &mut Vec<String>) -> bool {
     let mut has_call = false;
     let mut ok = true;
     match m.get("tool_calls") {
         None => {}
         Some(Value::Array(calls)) => {
-            for c in calls {
-                collect_value(c, out);
+            for (i, c) in calls.iter().enumerate() {
+                collect_value(c, &format!("/tool_calls/{i}"), out);
                 if is_call_shape(c) {
                     has_call = true;
                 } else {
@@ -519,12 +544,12 @@ fn collect_tool_calls<'a>(m: &'a Value, out: &mut Vec<&'a str>) -> bool {
             }
         }
         Some(other) => {
-            collect_value(other, out);
+            collect_value(other, "/tool_calls", out);
             ok = false;
         }
     }
     if let Some(f) = m.get("function_call") {
-        collect_value(f, out);
+        collect_value(f, "/function_call", out);
         if f.as_object()
             .is_some_and(|o| o.contains_key("arguments") || o.contains_key("name"))
         {

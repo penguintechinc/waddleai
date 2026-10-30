@@ -9,8 +9,7 @@ use pipeline::{FlagResolver, PipelineContext, Stage, StageError};
 use serde_json::Value;
 
 use crate::content_filter::ContentFilter;
-use crate::prompt::{Policy, PromptScanner, SecurityError};
-use crate::rules::RulesStore;
+use crate::prompt::{message_slots, Policy, PromptScanner, SecurityError};
 
 /// Flag whose ON state routes an org to the security v2 path (not ported; fails loudly).
 const SECURITY_V2_FLAG: &str = "waddleai.security_v2";
@@ -53,17 +52,27 @@ pub struct SecurityInStage {
 }
 
 impl SecurityInStage {
-    /// Starts the stage: verifies the pattern table (`try_new`, loud) and seeds the rules cache
-    /// for the global scope plus `seed_orgs` so the filter never runs on a cold empty cache.
+    /// Starts the stage: verifies the pattern table (`try_new`, loud) and seeds the filter's OWN
+    /// rules store (global scope plus `seed_orgs`), so the filter this stage uses is guaranteed
+    /// seeded. Build the output stage with [`SecurityInStage::out_stage`] so both share it.
     pub async fn start(
         policy: Policy,
         filter: Arc<ContentFilter>,
-        rules: Arc<RulesStore>,
         seed_orgs: &[i64],
         flags: Arc<dyn FlagResolver>,
     ) -> Result<Self, StartError> {
-        let scanner = PromptScanner::try_new(policy)?;
-        let report = rules.seed(seed_orgs).await;
+        Self::build(PromptScanner::try_new(policy), filter, seed_orgs, flags).await
+    }
+
+    /// Assembles the stage from a scanner build result and seeds the filter's store.
+    async fn build(
+        scanner: Result<PromptScanner, SecurityError>,
+        filter: Arc<ContentFilter>,
+        seed_orgs: &[i64],
+        flags: Arc<dyn FlagResolver>,
+    ) -> Result<Self, StartError> {
+        let scanner = scanner?;
+        let report = filter.rules().seed(seed_orgs).await;
         if report.loaded == 0 {
             return Err(StartError::Seed(report.failed));
         }
@@ -76,74 +85,71 @@ impl SecurityInStage {
             flags,
         })
     }
-}
 
-/// Outcome of filtering one piece of text.
-enum Verdict {
-    Blocked,
-    Text { text: String, violated: bool },
-}
-
-async fn filter_text(
-    filter: &ContentFilter,
-    text: &str,
-    user: Option<i64>,
-    org: Option<i64>,
-) -> Verdict {
-    let r = filter.filter_input(text, user, org, None).await;
-    if !r.allowed {
-        return Verdict::Blocked;
+    /// The seeded content filter this stage uses.
+    pub fn filter(&self) -> &Arc<ContentFilter> {
+        &self.filter
     }
-    Verdict::Text {
-        text: r.filtered_text,
-        violated: !r.violations.is_empty(),
+
+    /// Output stage sharing this stage's seeded filter and flag resolver (mis-wiring is
+    /// structurally impossible).
+    pub fn out_stage(&self) -> SecurityOutStage {
+        SecurityOutStage {
+            filter: Arc::clone(&self.filter),
+            flags: Arc::clone(&self.flags),
+        }
     }
 }
 
-/// Filters a message's content in place (string, or the text of each content part). Returns
-/// `Some(violated)` or `None` when a hard block fired. Non-text parts and null content are kept.
-async fn filter_content(
+/// Filters one message's text slots, rewriting them in place. `None` = hard block (or an
+/// unsupported shape, which fails closed); `Some(violated)` otherwise.
+///
+/// Slots come from the same walker as the prompt scanner, so everything detected is also
+/// redacted. The joined text (the scanner's unit) is filtered first so a rule split across
+/// parts still fires; after per-slot redaction the joined result is re-checked and any
+/// leftover hit blocks rather than leaks.
+async fn filter_message(
     filter: &ContentFilter,
     msg: &mut Value,
     user: Option<i64>,
     org: Option<i64>,
 ) -> Option<bool> {
-    let mut violated = false;
-    let Some(content) = msg.get_mut("content") else {
-        return Some(false);
-    };
-    match content {
-        Value::String(s) => match filter_text(filter, s, user, org).await {
-            Verdict::Blocked => return None,
-            Verdict::Text { text, violated: v } => {
-                *s = text;
-                violated |= v;
-            }
-        },
-        Value::Array(parts) => {
-            for part in parts {
-                let slot = match part {
-                    Value::String(s) => Some(s),
-                    Value::Object(o) => match o.get_mut("text") {
-                        Some(Value::String(s)) => Some(s),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if let Some(s) = slot {
-                    match filter_text(filter, s, user, org).await {
-                        Verdict::Blocked => return None,
-                        Verdict::Text { text, violated: v } => {
-                            *s = text;
-                            violated |= v;
-                        }
-                    }
-                }
-            }
-        }
-        _ => {}
+    let (ok, ptrs) = message_slots(msg);
+    if !ok {
+        return None;
     }
-    Some(violated)
+    let join = |m: &Value| -> String {
+        ptrs.iter()
+            .filter_map(|p| m.pointer(p).and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if ptrs.is_empty() {
+        return Some(false);
+    }
+    let joined = filter.filter_input(&join(msg), user, org, None).await;
+    if !joined.allowed {
+        return None;
+    }
+    if joined.violations.is_empty() {
+        return Some(false);
+    }
+    for p in &ptrs {
+        let Some(Value::String(s)) = msg.pointer_mut(p) else {
+            return None;
+        };
+        let r = filter.filter_input(s, user, org, None).await;
+        if !r.allowed {
+            return None;
+        }
+        *s = r.filtered_text;
+    }
+    let now = join(msg);
+    let again = filter.filter_input(&now, user, org, None).await;
+    if !again.allowed || again.filtered_text != now {
+        return None;
+    }
+    Some(true)
 }
 
 #[async_trait]
@@ -173,7 +179,7 @@ impl Stage for SecurityInStage {
         let mut filtered = ctx.messages.clone();
         let mut pii = false;
         for msg in &mut filtered {
-            match filter_content(&self.filter, msg, user, org).await {
+            match filter_message(&self.filter, msg, user, org).await {
                 None => {
                     ctx.blocked = true;
                     ctx.status_code = 400;
@@ -198,9 +204,9 @@ pub struct SecurityOutStage {
 }
 
 impl SecurityOutStage {
-    /// Stage over a shared (already seeded) content filter.
-    pub fn new(filter: Arc<ContentFilter>, flags: Arc<dyn FlagResolver>) -> Self {
-        Self { filter, flags }
+    /// The shared content filter this stage uses.
+    pub fn filter(&self) -> &Arc<ContentFilter> {
+        &self.filter
     }
 }
 
@@ -233,5 +239,79 @@ impl Stage for SecurityOutStage {
         ctx.response_text = r.filtered_text;
         tracing::debug!(violations = r.violations.len(), "security_out: filtered");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content_filter::FailModes;
+    use crate::rules::{RawOrgConfig, RulesError, RulesSource, RulesStore};
+    use pipeline::StaticFlagResolver;
+
+    /// Source that loads only the global scope and fails every org scope.
+    struct GlobalOnly;
+
+    #[async_trait]
+    impl RulesSource for GlobalOnly {
+        async fn load(&self, org: Option<i64>) -> Result<RawOrgConfig, RulesError> {
+            match org {
+                None => Ok(RawOrgConfig::default()),
+                Some(_) => Err(RulesError::Source("down".into())),
+            }
+        }
+    }
+
+    /// Source that always fails.
+    struct Dead;
+
+    #[async_trait]
+    impl RulesSource for Dead {
+        async fn load(&self, _: Option<i64>) -> Result<RawOrgConfig, RulesError> {
+            Err(RulesError::Source("down".into()))
+        }
+    }
+
+    fn filter(src: Arc<dyn RulesSource>) -> Arc<ContentFilter> {
+        let store = Arc::new(RulesStore::new(src, None));
+        Arc::new(ContentFilter::new(store, None, FailModes::default()).unwrap())
+    }
+
+    fn flags() -> Arc<dyn FlagResolver> {
+        Arc::new(StaticFlagResolver::default())
+    }
+
+    #[tokio::test]
+    async fn broken_pattern_table_fails_start_loudly() {
+        let err = SecurityError::Compile {
+            index: 0,
+            message: "bad".into(),
+        };
+        let r = SecurityInStage::build(Err(err), filter(Arc::new(GlobalOnly)), &[], flags()).await;
+        assert!(matches!(r, Err(StartError::Scanner(_))));
+    }
+
+    #[tokio::test]
+    async fn zero_seeded_scopes_fails_start_loudly() {
+        let r = SecurityInStage::start(
+            Policy::named("strict"),
+            filter(Arc::new(Dead)),
+            &[],
+            flags(),
+        )
+        .await;
+        assert!(matches!(r, Err(StartError::Seed(1))));
+    }
+
+    #[tokio::test]
+    async fn partial_seed_still_starts() {
+        let r = SecurityInStage::start(
+            Policy::named("strict"),
+            filter(Arc::new(GlobalOnly)),
+            &[9],
+            flags(),
+        )
+        .await;
+        assert!(r.is_ok());
     }
 }
