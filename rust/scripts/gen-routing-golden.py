@@ -367,7 +367,8 @@ def _python_errors(req):
 def main():
     """Emit the golden JSON (worlds + rows with Python-computed decisions)."""
     engine_mod.persist_trace = _noop_persist
-    rng = random.Random(20261030)
+    # deterministic seeded PRNG for reproducible golden fixtures; not security-sensitive
+    rng = random.Random(20261030)  # nosec B311
     rows = []
     for world in WORLDS:
         seen = set()
