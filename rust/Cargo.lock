@@ -1956,6 +1956,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "metering"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "auth",
+ "chrono",
+ "db",
+ "pipeline",
+ "quota",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "telemetry",
+ "thiserror",
+ "tokens",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
