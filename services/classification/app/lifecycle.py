@@ -28,6 +28,7 @@ from services.classification.app.grpc_server import build_grpc_server, load_serv
 from services.classification.app.health import HealthMirror, evaluate_readiness
 from services.classification.app.obs import get_logger
 from services.classification.app.servicer import ClassificationServicer
+from services.classification.app.telemetry import init_telemetry
 
 SHUTDOWN_GRACE_SECONDS = 20.0
 HEALTH_SYNC_INTERVAL_SECONDS = 1.0
@@ -98,6 +99,7 @@ async def startup(app: Quart) -> None:
     rt: Runtime = app.extensions["classification_runtime"]
     cfg: ClassificationConfig = app.config["CLASSIFICATION"]
     cfg.validate_transport()
+    init_telemetry(cfg)  # before servicer/interceptor build; OTLP from OTEL_* env, non-fatal
     credentials = load_server_credentials(cfg)
     if credentials is None:
         log.warning(

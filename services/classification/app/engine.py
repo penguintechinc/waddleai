@@ -164,6 +164,11 @@ class NerEngine:
         return self._ready
 
     @property
+    def queue_depth(self) -> int:
+        """In-flight NER jobs occupying the pool (feeds the queue-depth gauge)."""
+        return self._inflight
+
+    @property
     def backend(self) -> str:
         """Active NER backend reported by the workers ('none' when unavailable)."""
         return self._info.backend

@@ -15,3 +15,5 @@ grpcio-health-checking==1.81.1  # grpc.health.v1 (matches grpcio-tools)
 PyJWT[crypto]>=2.8
 prometheus-client>=0.20
 penguin-licensing==0.1.0
+opentelemetry-sdk>=1.44
+opentelemetry-exporter-otlp-proto-grpc>=1.44

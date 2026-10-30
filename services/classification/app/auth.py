@@ -23,6 +23,7 @@ from penguin_aaa.authn.types import Claims
 from prometheus_client import Counter
 
 from services.classification.app.obs import get_logger
+from services.classification.app.telemetry import Telemetry, get_telemetry
 from shared.auth.jwks_verifier import (
     JWKSVerificationError,
     JWKSVerifier,
@@ -158,8 +159,10 @@ class JwtAuthInterceptor(grpc.aio.ServerInterceptor):  # type: ignore[misc]  # g
         verifier: TokenVerifier,
         spiffe_allowed_ids: frozenset[str] = frozenset(),
         required_scope: str = REQUIRED_SCOPE,
+        telemetry: Telemetry | None = None,
     ) -> None:
-        """Bind the token verifier, SPIFFE allow-list (empty = disabled) and required scope."""
+        """Bind the verifier, SPIFFE allow-list (empty = disabled), scope and telemetry."""
+        self._tel = telemetry if telemetry is not None else get_telemetry()
         self._verifier = verifier
         self._spiffe = spiffe_allowed_ids
         self._scope = required_scope
@@ -185,6 +188,7 @@ class JwtAuthInterceptor(grpc.aio.ServerInterceptor):  # type: ignore[misc]  # g
             decision = await self.authenticate(context)
             if decision.code is not None:
                 _AUTH_FAILURES.labels(reason=decision.reason).inc()
+                self._tel.record_request("unauth")
                 log.warning("classification_auth_rejected", reason=decision.reason)
                 await context.abort(decision.code, decision.reason)
             return await behavior(request, context)
